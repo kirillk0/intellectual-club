@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+APP_DIR="${REPO_ROOT}/server"
+FRONTEND_DIR="${REPO_ROOT}/frontend"
+
+SESSION_NAME="${IC_V2_SCREEN_NAME:-ic-v2-phx}"
+SCREEN_DIR="${IC_V2_SCREEN_DIR:-${REPO_ROOT}/assets/screen-sockets}"
+PORT="${IC_V2_PORT:-4000}"
+PID_FILE="${IC_V2_PID_FILE:-${REPO_ROOT}/assets/${SESSION_NAME}.pid}"
+SERVER_SCRIPT="${REPO_ROOT}/bin/run-dev-server"
+
+screen_cmd() {
+  mkdir -p "${SCREEN_DIR}"
+  chmod 700 "${SCREEN_DIR}"
+  SCREENDIR="${SCREEN_DIR}" screen "$@"
+}
+
+refresh_screen_sockets() {
+  screen_cmd -wipe >/dev/null 2>&1 || true
+}
+
+screen_running() {
+  local output
+
+  refresh_screen_sockets
+  output="$(screen_cmd -ls 2>/dev/null || true)"
+  grep -q "[0-9][0-9]*\\.${SESSION_NAME}[[:space:]]" <<< "${output}"
+}
+
+port_pids() {
+  lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true
+}
+
+recorded_pid() {
+  if [[ -f "${PID_FILE}" ]]; then
+    tr -d '[:space:]' < "${PID_FILE}"
+  fi
+}
+
+watcher_seed_pids() {
+  {
+    pgrep -f "${APP_DIR}/_build/esbuild-.*js/app.js.*--watch" 2>/dev/null || true
+    pgrep -f "${APP_DIR}/_build/tailwind-.*--watch" 2>/dev/null || true
+    pgrep -f "${FRONTEND_DIR}/node_modules/.bin/vite build --watch" 2>/dev/null || true
+    pgrep -f "${FRONTEND_DIR}/node_modules/@esbuild/.*/esbuild --service=" 2>/dev/null || true
+  } | awk '!seen[$0]++'
+}
+
+watcher_chain_pids() {
+  local pid="${1:-}"
+  local cmd
+
+  while [[ -n "${pid}" && "${pid}" != "0" && "${pid}" != "1" ]]; do
+    cmd="$(ps -o command= -p "${pid}" 2>/dev/null | sed 's/^ *//')"
+    [[ -z "${cmd}" ]] && break
+
+    case "${cmd}" in
+      *"${APP_DIR}/_build/esbuild-"*--watch*|\
+      *"${APP_DIR}/_build/tailwind-"*--watch*|\
+      *"${FRONTEND_DIR}/node_modules/.bin/vite build --watch"*|\
+      *"${FRONTEND_DIR}/node_modules/@esbuild/"*--service=*|\
+      "npm run build:watch"|\
+      "npm run build:watch "*)
+        printf '%s\n' "${pid}"
+        ;;
+    esac
+
+    pid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ' || true)"
+  done
+}
+
+watcher_pids() {
+  local seed_pid
+
+  while read -r seed_pid; do
+    [[ -z "${seed_pid}" ]] && continue
+    watcher_chain_pids "${seed_pid}"
+  done < <(watcher_seed_pids) | awk '!seen[$0]++'
+}
+
+kill_pid_list() {
+  local signal="${1:-TERM}"
+  local pid_list="${2:-}"
+
+  [[ -z "${pid_list}" ]] && return 0
+  kill "-${signal}" ${pid_list} 2>/dev/null || true
+}
+
+cleanup_orphan_watchers() {
+  local pid_list
+  local remaining
+
+  pid_list="$(watcher_pids)"
+  [[ -z "${pid_list}" ]] && return 0
+
+  printf 'Cleaning stale watcher processes: %s\n' "$(echo "${pid_list}" | tr '\n' ' ')"
+  kill_pid_list TERM "${pid_list}"
+  sleep 1
+
+  remaining="$(printf '%s\n' "${pid_list}" | while read -r pid; do kill -0 "${pid}" 2>/dev/null && printf '%s\n' "${pid}"; done || true)"
+  kill_pid_list KILL "${remaining}"
+}
+
+wait_for_port_closed() {
+  local attempts=20
+
+  while [[ ${attempts} -gt 0 ]]; do
+    [[ -z "$(port_pids)" ]] && return 0
+    sleep 0.5
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+wait_for_pid_exit() {
+  local pid="${1:-}"
+  local attempts=20
+
+  [[ -z "${pid}" ]] && return 0
+
+  while [[ ${attempts} -gt 0 ]]; do
+    kill -0 "${pid}" 2>/dev/null || return 0
+    sleep 0.5
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+status() {
+  local listen_pids
+  local pid_list
+  local managed_pid
+
+  if screen_running; then
+    printf 'screen: %s running\n' "${SESSION_NAME}"
+  else
+    printf 'screen: %s stopped\n' "${SESSION_NAME}"
+  fi
+
+  managed_pid="$(recorded_pid)"
+  if [[ -n "${managed_pid}" ]]; then
+    printf 'pid file: %s (%s)\n' "${managed_pid}" "${PID_FILE}"
+  else
+    printf 'pid file: none\n'
+  fi
+
+  listen_pids="$(port_pids)"
+  if [[ -n "${listen_pids}" ]]; then
+    printf 'port %s: %s\n' "${PORT}" "$(echo "${listen_pids}" | tr '\n' ' ')"
+  else
+    printf 'port %s: closed\n' "${PORT}"
+  fi
+
+  pid_list="$(watcher_pids)"
+  if [[ -n "${pid_list}" ]]; then
+    printf 'watchers:\n'
+    ps -o pid,ppid,etime,%cpu,%mem,command -p $(echo "${pid_list}" | tr '\n' ' ')
+  else
+    printf 'watchers: none\n'
+  fi
+}
+
+start() {
+  if screen_running || [[ -n "$(port_pids)" ]]; then
+    printf 'Server already appears to be running. Use restart or stop first.\n' >&2
+    exit 1
+  fi
+
+  refresh_screen_sockets
+  cleanup_orphan_watchers
+  rm -f "${PID_FILE}"
+  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}'"
+  printf 'Started %s on port %s\n' "${SESSION_NAME}" "${PORT}"
+}
+
+stop() {
+  local pid_list
+  local listen_pids
+  local managed_pid
+
+  if screen_running; then
+    screen_cmd -S "${SESSION_NAME}" -X quit || true
+  fi
+
+  listen_pids="$(port_pids)"
+  kill_pid_list TERM "${listen_pids}"
+  managed_pid="$(recorded_pid)"
+  kill_pid_list TERM "${managed_pid}"
+
+  if ! wait_for_port_closed; then
+    listen_pids="$(port_pids)"
+    kill_pid_list KILL "${listen_pids}"
+  fi
+
+  if ! wait_for_pid_exit "${managed_pid}"; then
+    kill_pid_list KILL "${managed_pid}"
+  fi
+
+  rm -f "${PID_FILE}"
+
+  cleanup_orphan_watchers
+
+  pid_list="$(watcher_pids)"
+  if [[ -n "${pid_list}" ]]; then
+    printf 'Watchers still alive after stop: %s\n' "$(echo "${pid_list}" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+
+  printf 'Stopped %s\n' "${SESSION_NAME}"
+}
+
+restart() {
+  stop
+  start
+}
+
+attach() {
+  refresh_screen_sockets
+  mkdir -p "${SCREEN_DIR}"
+  chmod 700 "${SCREEN_DIR}"
+  exec env SCREENDIR="${SCREEN_DIR}" screen -r "${SESSION_NAME}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./bin/dev-screen <start|stop|restart|status|attach|cleanup>
+EOF
+}
+
+main() {
+  local command="${1:-status}"
+
+  case "${command}" in
+    start)
+      start
+      ;;
+    stop)
+      stop
+      ;;
+    restart)
+      restart
+      ;;
+    status)
+      status
+      ;;
+    attach)
+      attach
+      ;;
+    cleanup)
+      cleanup_orphan_watchers
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,16 @@
+<Layouts.app flash={@flash} current_scope={assigns[:current_scope]}>
+  <:header>
+    <div class="min-w-0">
+      <div class="truncate text-sm font-semibold leading-6 text-zinc-900">Intellectual Club</div>
+      <div class="text-xs text-zinc-500">Phoenix LiveView + Ash + SQLite</div>
+    </div>
+  </:header>
+
+  <:header_actions>
+    <.button navigate={~p"/"} variant="primary">Open chats</.button>
+  </:header_actions>
+
+  <div class="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-700 shadow-sm">
+    This page is kept as a simple landing screen. The main workflow is in Chats.
+  </div>
+</Layouts.app>

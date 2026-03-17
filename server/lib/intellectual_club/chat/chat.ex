@@ -1,0 +1,185 @@
+defmodule IntellectualClub.Chat.Chat do
+  @moduledoc """
+  A chat thread.
+  """
+
+  use IntellectualClub.Resource,
+    domain: IntellectualClub.Chat,
+    extensions: [AshJsonApi.Resource],
+    authorizers: [Ash.Policy.Authorizer]
+
+  alias IntellectualClub.Chat.Changes.CreateFirstMessages
+  alias IntellectualClub.Chat.Changes.DeleteChatDependents
+  alias IntellectualClub.Chat.Changes.NormalizeChatFields
+  alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
+
+  defp maybe_manage_knowledge_block_bindings(changeset, _context) do
+    case Ash.Changeset.fetch_argument(changeset, :knowledge_block_bindings) do
+      {:ok, nil} ->
+        changeset
+
+      {:ok, bindings} ->
+        Ash.Changeset.manage_relationship(
+          changeset,
+          :knowledge_block_bindings,
+          bindings,
+          type: :direct_control,
+          order_is_key: :sequence,
+          on_no_match: {:create, :create},
+          on_match: {:update, :update},
+          on_missing: {:destroy, :destroy}
+        )
+
+      :error ->
+        changeset
+    end
+  end
+
+  sqlite do
+    table("chats")
+    repo(IntellectualClub.Repo)
+  end
+
+  postgres do
+    table("chats")
+    repo(IntellectualClub.PostgresRepo)
+  end
+
+  attributes do
+    integer_primary_key(:id)
+
+    attribute :title, :string do
+      allow_nil?(false)
+      public?(true)
+      default("Untitled chat")
+    end
+
+    attribute :note, :string do
+      allow_nil?(true)
+      public?(true)
+      default("")
+      constraints(trim?: false, allow_empty?: true)
+    end
+
+    attribute :variables, :map do
+      allow_nil?(true)
+      public?(true)
+      default(%{})
+    end
+
+    create_timestamp(:created_at)
+    update_timestamp(:updated_at)
+  end
+
+  relationships do
+    belongs_to :owner, IntellectualClub.Accounts.User,
+      allow_nil?: false,
+      attribute_type: :integer
+
+    belongs_to :bot, IntellectualClub.Bots.Bot,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    belongs_to :llm_configuration, IntellectualClub.Llm.LlmConfiguration,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    belongs_to :last_message, IntellectualClub.Chat.ChatMessage,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    has_many :messages, IntellectualClub.Chat.ChatMessage
+
+    has_many :knowledge_block_bindings, IntellectualClub.Chat.ChatKnowledgeBlock do
+      destination_attribute(:chat_id)
+    end
+  end
+
+  calculations do
+    calculate :message_count, :integer, {IntellectualClub.Chat.Calculations.MessageCount, []} do
+      public?(true)
+    end
+
+    calculate :active_root_message_id,
+              :integer,
+              {IntellectualClub.Chat.Calculations.ActiveRootMessageId, []} do
+      public?(false)
+    end
+  end
+
+  json_api do
+    type "chats"
+  end
+
+  actions do
+    defaults([:read])
+
+    destroy :destroy do
+      primary?(true)
+      require_atomic?(false)
+      change({DeleteChatDependents, []})
+    end
+
+    create :create do
+      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+
+      argument :knowledge_block_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      change(relate_actor(:owner))
+      change({NormalizeChatFields, []})
+      change(&maybe_manage_knowledge_block_bindings/2)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+      )
+
+      change({CreateFirstMessages, []})
+    end
+
+    update :update do
+      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+      require_atomic?(false)
+
+      argument :knowledge_block_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      change({NormalizeChatFields, []})
+      change(&maybe_manage_knowledge_block_bindings/2)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+      )
+    end
+
+    update :set_last_message do
+      accept([:last_message_id])
+      require_atomic?(false)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:last_message], access: :writable, required?: false}
+      )
+    end
+  end
+
+  policies do
+    policy action_type(:read) do
+      authorize_if relates_to_actor_via(:owner)
+    end
+
+    policy action_type(:create) do
+      authorize_if actor_present()
+    end
+
+    policy action_type([:update, :destroy]) do
+      authorize_if relates_to_actor_via(:owner)
+    end
+  end
+end

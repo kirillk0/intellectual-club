@@ -1,0 +1,34 @@
+# Intellectual Club
+
+V2 is now split into a standalone repository with a Phoenix/Ash backend and a Vue SPA frontend.
+
+## Repository layout
+
+- `server/` — Phoenix/Ash application
+- `frontend/` — Vite SPA built into `server/priv/static/assets`
+- `data/` — SQLite databases for local development and test runs
+- `outlets/` — standalone outlet runners used by the tool runtime
+- `bin/` — repository-level helper scripts
+- `docs/` — system documentation
+- `assets/` — local temporary artifacts and runtime files (gitignored)
+
+## Local development
+
+1. `cd server && mix setup`
+2. `./bin/dev-screen start`
+3. Open `http://localhost:4000`
+
+Helpful commands:
+
+- `./bin/dev-screen status`
+- `./bin/dev-screen attach`
+- `./bin/dev-screen stop`
+- `./bin/run-dev-server` to run the server in the foreground
+
+SQLite databases live under `data/` at the repository root.
+
+## Docker
+
+The root `Dockerfile` builds the Phoenix release from `server/` and the SPA from `frontend/`.
+
+The root `compose.yaml` is configured for the PostgreSQL-backed deployment profile.

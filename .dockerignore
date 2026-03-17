@@ -1,0 +1,17 @@
+.DS_Store
+.git
+.gitignore
+.idea
+.pytest_cache
+__pycache__
+assets
+data
+frontend/dist
+frontend/node_modules
+outlets/**/__pycache__
+server/.elixir_ls
+server/_build
+server/cover
+server/deps
+server/doc
+server/tmp

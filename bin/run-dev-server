@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+APP_DIR="${REPO_ROOT}/server"
+SESSION_NAME="${IC_V2_SCREEN_NAME:-ic-v2-phx}"
+PID_FILE="${IC_V2_PID_FILE:-${REPO_ROOT}/assets/${SESSION_NAME}.pid}"
+
+descendants_of() {
+  local parent_pid="${1:-}"
+  local child_pid
+
+  while read -r child_pid; do
+    [[ -z "${child_pid}" ]] && continue
+    descendants_of "${child_pid}"
+    printf '%s\n' "${child_pid}"
+  done < <(pgrep -P "${parent_pid}" 2>/dev/null || true)
+}
+
+cleanup() {
+  local exit_code=$?
+  local descendant_pids
+
+  trap - EXIT INT TERM
+
+  if [[ -n "${server_pid:-}" ]]; then
+    descendant_pids="$(descendants_of "${server_pid}" | awk '!seen[$0]++')"
+
+    if [[ -n "${descendant_pids}" ]]; then
+      kill ${descendant_pids} 2>/dev/null || true
+    fi
+
+    kill "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" 2>/dev/null || true
+
+    if [[ -n "${descendant_pids}" ]]; then
+      sleep 1
+      kill -9 ${descendant_pids} 2>/dev/null || true
+    fi
+  fi
+
+  rm -f "${PID_FILE}"
+
+  exit "${exit_code}"
+}
+
+trap cleanup EXIT INT TERM
+
+cd "${APP_DIR}"
+mkdir -p "$(dirname -- "${PID_FILE}")"
+mix picosat.sync
+mix phx.server &
+server_pid=$!
+printf '%s\n' "${server_pid}" > "${PID_FILE}"
+wait "${server_pid}"

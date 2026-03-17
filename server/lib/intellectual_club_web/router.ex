@@ -1,0 +1,200 @@
+defmodule IntellectualClubWeb.Router do
+  use IntellectualClubWeb, :router
+
+  use AshAuthentication.Phoenix.Router
+
+  import AshAuthentication.Plug.Helpers
+
+  pipeline :browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {IntellectualClubWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug :load_from_session
+  end
+
+  pipeline :api do
+    plug :accepts, ["json"]
+  end
+
+  pipeline :api_session do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :protect_from_forgery
+    plug :load_from_session
+    plug :set_actor, :user
+  end
+
+  pipeline :api_mixed_session do
+    plug :fetch_session
+    plug :protect_from_forgery
+    plug :load_from_session
+    plug :set_actor, :user
+  end
+
+  pipeline :ash_json_api do
+    plug :accepts, ["jsonapi", "json"]
+    plug :fetch_session
+    plug :protect_from_forgery
+    plug :load_from_session
+    plug :set_actor, :user
+  end
+
+  scope "/", IntellectualClubWeb do
+    pipe_through :browser
+
+    auth_routes AuthController, IntellectualClub.Accounts.User, path: "/auth"
+    sign_out_route AuthController
+
+    sign_in_route(
+      auth_routes_prefix: "/auth",
+      on_mount: [{IntellectualClubWeb.LiveUserAuth, :live_no_user}]
+    )
+
+    get "/login", SpaController, :index
+    get "/", SpaController, :index
+    get "/settings", SpaController, :index
+    get "/settings/*path", SpaController, :index
+    get "/administration", SpaController, :index
+    get "/administration/*path", SpaController, :index
+    get "/chats/*path", SpaController, :index
+    get "/catalogs/*path", SpaController, :index
+    get "/outlets/*path", SpaController, :index
+  end
+
+  scope "/api/outlet", IntellectualClubWeb do
+    pipe_through :api
+
+    post "/poll/", OutletController, :poll
+    post "/complete/", OutletController, :complete
+    post "/calls/:call_id/files", OutletController, :upload_file
+    get "/calls/:call_id/contents/:content_id/file", OutletController, :download_file
+
+    post "/pair/start/", OutletController, :pair_start
+    post "/pair/poll/", OutletController, :pair_poll
+  end
+
+  scope "/api/outlet", IntellectualClubWeb do
+    pipe_through :api_session
+
+    post "/pair/approve/", OutletController, :pair_approve
+  end
+
+  scope "/api/bff", IntellectualClubWeb.Bff do
+    pipe_through :api_session
+
+    get "/auth/me", SessionController, :show
+    post "/auth/login", SessionController, :create
+    post "/auth/logout", SessionController, :delete
+
+    get "/me", MeController, :show
+    get "/me/groups", MeController, :groups
+    post "/me/change-password", MeController, :change_password
+
+    get "/admin/users", AdminUsersController, :index
+    get "/admin/users/:id", AdminUsersController, :show
+    post "/admin/users", AdminUsersController, :create
+    patch "/admin/users/:id", AdminUsersController, :update
+    delete "/admin/users/:id", AdminUsersController, :delete
+    post "/admin/users/:id/reset-password", AdminUsersController, :reset_password
+
+    get "/admin/user-groups", AdminUserGroupsController, :index
+    get "/admin/user-groups/:id", AdminUserGroupsController, :show
+    post "/admin/user-groups", AdminUserGroupsController, :create
+    patch "/admin/user-groups/:id", AdminUserGroupsController, :update
+    delete "/admin/user-groups/:id", AdminUserGroupsController, :delete
+
+    get "/chats", ChatsController, :index
+    get "/chats/search", ChatsController, :search
+    post "/chats", ChatsController, :create
+    get "/chats/:id/state", ChatsController, :state
+    get "/chats/:id/search", ChatsController, :search_messages
+    patch "/chats/:id", ChatsController, :update
+    delete "/chats/:id", ChatsController, :delete
+
+    post "/chats/:id/send", ChatsController, :send
+    post "/chats/:id/generate", ChatsController, :generate
+    post "/chats/:id/switch-branch", ChatsController, :switch_branch
+    post "/chats/:id/activate-branch", ChatsController, :activate_branch
+
+    post "/chat-messages/:id/cancel", ChatMessagesController, :cancel
+    post "/chat-messages/:id/retry-last-step", ChatMessagesController, :retry_last_step
+    post "/chat-messages/:id/delete", ChatMessagesController, :delete
+    patch "/chat-messages/:id", ChatMessagesController, :update
+    get "/chat-messages/:id/poll", ChatMessagesController, :poll
+
+    get "/chat-messages/:message_id/steps/:step_id/raw", ChatMessagesController, :step_raw
+
+    get "/chat-messages/:message_id/contents/:content_id/full",
+        ChatMessagesController,
+        :content_full
+
+    get "/chat-messages/:message_id/contents/:content_id/file",
+        ChatMessagesController,
+        :content_file
+
+    post "/chat-knowledge-blocks", ChatKnowledgeBlocksController, :create
+    patch "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :update
+    delete "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :delete
+
+    get "/tools/types", ToolsController, :types
+    post "/tools/:id/discover", ToolsController, :discover
+    get "/bots/:id/shares", BotSharesController, :show
+    put "/bots/:id/shares", BotSharesController, :update
+    get "/llm-configurations/:id/shares", LlmConfigurationSharesController, :show
+    put "/llm-configurations/:id/shares", LlmConfigurationSharesController, :update
+  end
+
+  scope "/api/bff", IntellectualClubWeb.Bff do
+    pipe_through :api_mixed_session
+
+    get "/bots/:id/image", BotImagesController, :show
+    post "/bots/:id/image", BotImagesController, :update
+    delete "/bots/:id/image", BotImagesController, :delete
+
+    get "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :show
+    post "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :update
+    delete "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :delete
+  end
+
+  scope "/api/ash" do
+    pipe_through :ash_json_api
+    forward "/", IntellectualClubWeb.AshJsonApiRouter
+  end
+
+  scope "/" do
+    pipe_through :browser
+
+    import AshAdmin.Router
+
+    ash_admin "/admin",
+      on_mount: [
+        AshAuthentication.Phoenix.LiveSession,
+        {IntellectualClubWeb.LiveUserAuth, :admin_required}
+      ],
+      session: [{AshAuthentication.Phoenix.LiveSession, :generate_session, []}]
+  end
+
+  # Other scopes may use custom stacks.
+  # scope "/api", IntellectualClubWeb do
+  #   pipe_through :api
+  # end
+
+  # Enable LiveDashboard in development
+  if Application.compile_env(:intellectual_club, :dev_routes) do
+    # If you want to use the LiveDashboard in production, you should put
+    # it behind authentication and allow only admins to access it.
+    # If your application does not have an admins-only section yet,
+    # you can use Plug.BasicAuth to set up some basic authentication
+    # as long as you are also using SSL (which you should anyway).
+    import Phoenix.LiveDashboard.Router
+
+    scope "/dev" do
+      pipe_through :browser
+
+      live_dashboard "/dashboard", metrics: IntellectualClubWeb.Telemetry
+    end
+  end
+end

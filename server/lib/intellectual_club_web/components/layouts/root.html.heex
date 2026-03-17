@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <.live_title default="IntellectualClub" suffix=" · Phoenix Framework">
+      {assigns[:page_title]}
+    </.live_title>
+    <link phx-track-static rel="stylesheet" href={tracked_asset_path(~p"/assets/css/app.css")} />
+    <%= if assigns[:spa] do %>
+      <link
+        phx-track-static
+        rel="stylesheet"
+        href={tracked_asset_path(~p"/assets/css/spa.css")}
+      />
+    <% end %>
+    <%= unless assigns[:spa] do %>
+      <script
+        defer
+        phx-track-static
+        type="text/javascript"
+        src={tracked_asset_path(~p"/assets/js/app.js")}
+      >
+      </script>
+    <% end %>
+    <%= if assigns[:spa] do %>
+      <script
+        phx-track-static
+        type="module"
+        src={tracked_asset_path(~p"/assets/js/spa.js")}
+      >
+      </script>
+    <% end %>
+  </head>
+  <body class={unless assigns[:spa], do: "min-h-screen bg-zinc-50 text-zinc-900 antialiased"}>
+    {@inner_content}
+  </body>
+</html>

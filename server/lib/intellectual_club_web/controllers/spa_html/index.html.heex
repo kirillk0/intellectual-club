@@ -1,0 +1,8 @@
+<div
+  id="spa-root"
+  data-current-user-id={if @current_user, do: @current_user.id, else: ""}
+  data-current-user-username={if @current_user, do: @current_user.username, else: ""}
+  data-current-user-is-admin={if @current_user, do: @current_user.is_admin, else: ""}
+>
+  <p class="muted" style="padding: 16px">Loading…</p>
+</div>

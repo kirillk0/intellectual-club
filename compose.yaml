@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: intellectual_club
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d intellectual_club"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://postgres:password@db:5432/intellectual_club
+      SECRET_KEY_BASE: jxc3+D6zxaH82CtZgqwNoBx0T/Zg5iy5tjVLC0rt2iH96Him1r9dw3De5yQJR4Xg
+      TOKEN_SIGNING_SECRET: dev-token-signing-secret
+      PHX_HOST: localhost
+      PORT: "4000"
+      POOL_SIZE: "10"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

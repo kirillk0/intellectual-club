@@ -1,0 +1,394 @@
+<template>
+  <section class="card stack catalog-tags-card knowledge-tags-panel">
+    <div class="knowledge-tags-panel__header">
+      <strong>{{ title }}</strong>
+      <div class="knowledge-tags-panel__header-actions">
+        <button
+          type="button"
+          class="icon-button knowledge-tags-panel__add-button"
+          :disabled="mutationLoading"
+          aria-label="Add root tag"
+          title="Add root tag"
+          @click="startCreateRoot"
+        >
+          +
+        </button>
+        <button type="button" class="link" :disabled="!hasActiveFilter || mutationLoading" @click="emit('clear-filter')">
+          Clear
+        </button>
+        <slot name="header-extra"></slot>
+      </div>
+    </div>
+
+    <form v-if="editorMode" class="knowledge-tags-panel__editor" @submit.prevent="submitEditor">
+      <div class="knowledge-tags-panel__editor-title">{{ editorTitle }}</div>
+      <p v-if="editorContext" class="muted knowledge-tags-panel__editor-context">{{ editorContext }}</p>
+
+      <label class="knowledge-tags-panel__editor-field">
+        <span>Name</span>
+        <input
+          ref="editorInputRef"
+          v-model="editorName"
+          type="text"
+          class="full"
+          placeholder="Tag name"
+          :disabled="mutationLoading"
+          @input="editorError = null"
+        />
+      </label>
+
+      <p v-if="editorError" class="error-text">{{ editorError }}</p>
+
+      <div class="knowledge-tags-panel__editor-actions">
+        <button type="button" :disabled="mutationLoading" @click="cancelEditor">Cancel</button>
+        <button type="submit" class="primary" :disabled="submitDisabled">
+          {{ editorSubmitLabel }}
+        </button>
+      </div>
+    </form>
+
+    <p v-if="tagsLoading" class="muted">Loading…</p>
+    <p v-else-if="tagsError" class="error-text">{{ tagsError }}</p>
+    <KnowledgeTagsTree
+      v-else
+      :tags="tags"
+      :selectedId="selectedId"
+      :showNoTagsOption="showNoTagsOption"
+      :noTagsSelected="noTagsSelected"
+      :noTagsLabel="noTagsLabel"
+      :storageKey="storageKey"
+      :defaultExpandDepth="defaultExpandDepth"
+      :showItemActions="true"
+      :actionsDisabled="mutationLoading"
+      @select="emit('select', $event)"
+      @select-no-tags="emit('select-no-tags')"
+      @rename="startRename"
+      @add-child="startCreateChild"
+      @delete="deleteTag"
+    />
+
+    <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
+  </section>
+</template>
+
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref } from 'vue';
+import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
+import {
+  fieldErrorsFromJsonApiErrors,
+  formErrorsFromJsonApiErrors,
+  getJsonApiErrors,
+  jsonApiCreate,
+  jsonApiDelete,
+  jsonApiList,
+  jsonApiUpdate,
+  relationshipId,
+  toIntId,
+  type JsonApiResource,
+} from '@/api/jsonApi';
+
+type TagEditorMode = 'create-root' | 'rename' | 'create-child';
+
+const props = withDefaults(
+  defineProps<{
+    title?: string;
+    selectedId?: number | null;
+    noTagsSelected?: boolean;
+    hasActiveFilter?: boolean;
+    showNoTagsOption?: boolean;
+    noTagsLabel?: string;
+    storageKey?: string;
+    defaultExpandDepth?: number;
+  }>(),
+  {
+    title: 'Tags',
+    selectedId: null,
+    noTagsSelected: false,
+    hasActiveFilter: false,
+    showNoTagsOption: true,
+    noTagsLabel: 'No tags',
+    storageKey: 'ic.knowledge_tags.tree.open_state.v1',
+    defaultExpandDepth: 2,
+  }
+);
+
+const emit = defineEmits<{
+  (e: 'select', id: number): void;
+  (e: 'select-no-tags'): void;
+  (e: 'clear-filter'): void;
+}>();
+
+const tagsLoading = ref(false);
+const tagsError = ref<string | null>(null);
+const tags = ref<KnowledgeTagTreeItem[]>([]);
+const mutationLoading = ref(false);
+
+const editorMode = ref<TagEditorMode | null>(null);
+const editorTagId = ref<number | null>(null);
+const editorName = ref('');
+const editorError = ref<string | null>(null);
+const editorInputRef = ref<HTMLInputElement | null>(null);
+
+function parseTagRow(resource: JsonApiResource): KnowledgeTagTreeItem | null {
+  const id = toIntId(resource.id);
+  if (!id) return null;
+
+  const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  const parentId =
+    (typeof attrs.parent_id === 'number' ? attrs.parent_id : toIntId(attrs.parent_id as string | number | null)) ??
+    relationshipId(resource, 'parent');
+
+  return {
+    id,
+    name: String(attrs.name || '').trim(),
+    full_name: String(attrs.full_name || '').trim(),
+    parent_id: parentId ?? null,
+  };
+}
+
+function describeMutationError(error: unknown, fallbackMessage: string) {
+  const jsonApiErrors = getJsonApiErrors(error);
+  if (jsonApiErrors?.length) {
+    const fieldErrors = fieldErrorsFromJsonApiErrors(jsonApiErrors);
+
+    for (const field of ['name', 'parent_id']) {
+      const messages = fieldErrors[field];
+      if (messages?.length) return messages.join(' ');
+    }
+
+    const formErrors = formErrorsFromJsonApiErrors(jsonApiErrors);
+    if (formErrors.length) return formErrors.join(' ');
+  }
+
+  return error instanceof Error ? error.message : fallbackMessage;
+}
+
+const currentEditorTag = computed(() => {
+  const id = editorTagId.value;
+  if (!id) return null;
+  return tags.value.find((tag) => tag.id === id) || null;
+});
+
+const editorTitle = computed(() => {
+  switch (editorMode.value) {
+    case 'create-root':
+      return 'New tag';
+    case 'rename':
+      return 'Rename tag';
+    case 'create-child':
+      return 'Add child tag';
+    default:
+      return '';
+  }
+});
+
+const editorContext = computed(() => {
+  const tag = currentEditorTag.value;
+  if (!tag) return '';
+
+  if (editorMode.value === 'rename') return tag.full_name || tag.name;
+  if (editorMode.value === 'create-child') return `Parent: ${tag.full_name || tag.name}`;
+  return '';
+});
+
+const editorSubmitLabel = computed(() => (editorMode.value === 'rename' ? 'Save' : 'Create'));
+const submitDisabled = computed(() => mutationLoading.value || !editorName.value.trim());
+
+async function focusEditorInput() {
+  await nextTick();
+  editorInputRef.value?.focus();
+  editorInputRef.value?.select();
+}
+
+function resetEditor() {
+  editorMode.value = null;
+  editorTagId.value = null;
+  editorName.value = '';
+  editorError.value = null;
+}
+
+function cancelEditor() {
+  resetEditor();
+}
+
+function startCreateRoot() {
+  editorMode.value = 'create-root';
+  editorTagId.value = null;
+  editorName.value = '';
+  editorError.value = null;
+  void focusEditorInput();
+}
+
+function startRename(tagId: number) {
+  const tag = tags.value.find((row) => row.id === tagId);
+  if (!tag) return;
+
+  editorMode.value = 'rename';
+  editorTagId.value = tagId;
+  editorName.value = tag.name || '';
+  editorError.value = null;
+  void focusEditorInput();
+}
+
+function startCreateChild(tagId: number) {
+  const tag = tags.value.find((row) => row.id === tagId);
+  if (!tag) return;
+
+  editorMode.value = 'create-child';
+  editorTagId.value = tagId;
+  editorName.value = '';
+  editorError.value = null;
+  void focusEditorInput();
+}
+
+async function loadTags() {
+  tagsLoading.value = true;
+  tagsError.value = null;
+
+  try {
+    const params = new URLSearchParams();
+    params.set('sort', 'full_name');
+    const payload = await jsonApiList('/api/ash/knowledge-tags', params);
+    tags.value = (payload.data || []).map(parseTagRow).filter((tag): tag is KnowledgeTagTreeItem => Boolean(tag));
+  } catch (error) {
+    console.error(error);
+    tagsError.value = error instanceof Error ? error.message : 'Failed to load tags.';
+  } finally {
+    tagsLoading.value = false;
+  }
+}
+
+async function submitEditor() {
+  if (!editorMode.value) return;
+
+  const name = editorName.value.trim();
+  if (!name) {
+    editorError.value = 'Name is required.';
+    return;
+  }
+
+  mutationLoading.value = true;
+  editorError.value = null;
+  tagsError.value = null;
+
+  try {
+    if (editorMode.value === 'create-root') {
+      await jsonApiCreate('/api/ash/knowledge-tags', 'knowledge-tags', {
+        name,
+        parent_id: null,
+      });
+    } else if (editorMode.value === 'rename') {
+      const tag = currentEditorTag.value;
+      if (!tag) throw new Error('Tag not found.');
+
+      await jsonApiUpdate('/api/ash/knowledge-tags', 'knowledge-tags', tag.id, {
+        name,
+        parent_id: tag.parent_id,
+      });
+    } else if (editorMode.value === 'create-child') {
+      if (!editorTagId.value) throw new Error('Parent tag not found.');
+
+      await jsonApiCreate('/api/ash/knowledge-tags', 'knowledge-tags', {
+        name,
+        parent_id: editorTagId.value,
+      });
+    }
+
+    resetEditor();
+    await loadTags();
+  } catch (error) {
+    console.error(error);
+    editorError.value = describeMutationError(error, 'Failed to save tag.');
+  } finally {
+    mutationLoading.value = false;
+  }
+}
+
+async function deleteTag(tagId: number) {
+  const tag = tags.value.find((row) => row.id === tagId);
+  const label = tag?.full_name || tag?.name || `Tag #${tagId}`;
+  if (!window.confirm(`Delete tag "${label}"?`)) return;
+
+  mutationLoading.value = true;
+  editorError.value = null;
+  tagsError.value = null;
+
+  try {
+    const shouldClearFilter = props.selectedId === tagId;
+
+    await jsonApiDelete('/api/ash/knowledge-tags', tagId);
+
+    if (editorTagId.value === tagId) resetEditor();
+
+    await loadTags();
+
+    if (shouldClearFilter) {
+      emit('clear-filter');
+    }
+  } catch (error) {
+    console.error(error);
+    tagsError.value = describeMutationError(error, 'Failed to delete tag.');
+  } finally {
+    mutationLoading.value = false;
+  }
+}
+
+onMounted(() => {
+  void loadTags();
+});
+</script>
+
+<style scoped>
+.knowledge-tags-panel {
+  gap: 10px;
+}
+
+.knowledge-tags-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.knowledge-tags-panel__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.knowledge-tags-panel__add-button {
+  width: 30px;
+  height: 30px;
+  font-size: 20px;
+}
+
+.knowledge-tags-panel__editor {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e9e9e9;
+  border-radius: 12px;
+  background: #fafafa;
+}
+
+.knowledge-tags-panel__editor-title {
+  font-weight: 700;
+}
+
+.knowledge-tags-panel__editor-context {
+  margin: 0;
+}
+
+.knowledge-tags-panel__editor-field {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-tags-panel__editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+</style>
