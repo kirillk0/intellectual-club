@@ -32,6 +32,10 @@ function normalizeSequences(items: KnowledgeBlockLinkItem[]) {
   return sortBySequence(items || []).map((item, idx) => ({ ...item, sequence: idx }));
 }
 
+function reindexInCurrentOrder(items: KnowledgeBlockLinkItem[]) {
+  return [...(items || [])].map((item, idx) => ({ ...item, sequence: idx }));
+}
+
 function normalizeForCompare(items: KnowledgeBlockLinkItem[]) {
   return sortBySequence(items).map((i) => ({
     block: i.block,
@@ -150,7 +154,7 @@ export function useKnowledgeBlockBindingsDraft(params: {
     const tmp = next[idx];
     next[idx] = next[target];
     next[target] = tmp;
-    draft.value = normalizeSequences(next);
+    draft.value = reindexInCurrentOrder(next);
   };
 
   return {
