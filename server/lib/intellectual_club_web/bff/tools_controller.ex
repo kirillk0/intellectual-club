@@ -6,7 +6,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
   use IntellectualClubWeb, :controller
 
   alias IntellectualClub.Tools.DriverMetadata
-  alias IntellectualClub.Tools.{Discovery, ToolInstance}
+  alias IntellectualClub.Tools.{Discovery, ToolFunction, ToolInstance}
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -29,17 +29,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
           created: stats.created,
           updated: stats.updated,
           total: stats.total,
-          functions:
-            Enum.map(functions, fn fn_record ->
-              %{
-                id: fn_record.id,
-                name: fn_record.name,
-                description: fn_record.description,
-                parameters_schema: fn_record.parameters_schema,
-                enabled: fn_record.enabled,
-                discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
-              }
-            end)
+          functions: Enum.map(functions, &serialize_function/1)
         })
       rescue
         exception ->
@@ -47,6 +37,52 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
           |> put_status(:unprocessable_entity)
           |> json(%{error: Exception.message(exception)})
       end
+    end
+  end
+
+  def update_function(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
+      try do
+        function_id = String.to_integer(id)
+        enabled = parse_enabled!(params)
+
+        function =
+          ToolFunction
+          |> Ash.get!(function_id, actor: actor)
+          |> Ash.Changeset.for_update(:update, %{enabled: enabled}, actor: actor)
+          |> Ash.update!()
+
+        json(conn, serialize_function(function))
+      rescue
+        exception ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: Exception.message(exception)})
+      end
+    end
+  end
+
+  defp serialize_function(fn_record) do
+    %{
+      id: fn_record.id,
+      name: fn_record.name,
+      description: fn_record.description,
+      parameters_schema: fn_record.parameters_schema,
+      enabled: fn_record.enabled,
+      discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
+    }
+  end
+
+  defp parse_enabled!(params) do
+    case Map.fetch(params, "enabled") do
+      {:ok, value} ->
+        case Helpers.parse_boolean(value, nil) do
+          value when is_boolean(value) -> value
+          _other -> raise ArgumentError, "enabled must be a boolean"
+        end
+
+      :error ->
+        raise ArgumentError, "enabled is required"
     end
   end
 end

@@ -377,7 +377,6 @@ import { api, isHttpError } from '@/api/client';
 import {
   createJsonApiIncludedIndex,
   jsonApiGet,
-  jsonApiUpdate,
   relatedResources,
   toIntId,
   type JsonApiResource,
@@ -931,8 +930,16 @@ function applyToolDocument(payload: JsonApiSingleResponse) {
 }
 
 watch(
-  [() => editor.numericId.value, () => form.type, () => toolTypes.value],
-  () => {
+  () => [editor.numericId.value, form.type, isNew.value] as const,
+  (current, previous) => {
+    const [toolId, toolType, isNewRoute] = current;
+    const [prevToolId, prevToolType, prevIsNewRoute] = previous || [];
+
+    const recordChanged = toolId !== prevToolId || isNewRoute !== prevIsNewRoute;
+    const newToolTypeChanged = isNewRoute && toolType !== prevToolType;
+
+    if (!recordChanged && !newToolTypeChanged) return;
+
     syncDefaultsForFormAndBase();
     discoverStats.value = null;
     functions.value = [];
@@ -1023,8 +1030,12 @@ async function toggleFunction(fn: ToolFunctionRow, event: Event) {
   savingFunctionIds.value = new Set([...savingFunctionIds.value, fn.id]);
 
   try {
-    await jsonApiUpdate('/api/ash/tool-functions', 'tool-functions', fn.id, { enabled: nextEnabled });
-    functions.value = functions.value.map((row) => (row.id === fn.id ? { ...row, enabled: nextEnabled } : row));
+    const payload = await api.patch<{ enabled?: boolean }>(`/api/bff/tool-functions/${fn.id}`, {
+      enabled: nextEnabled,
+    });
+
+    const persistedEnabled = typeof payload?.enabled === 'boolean' ? payload.enabled : nextEnabled;
+    functions.value = functions.value.map((row) => (row.id === fn.id ? { ...row, enabled: persistedEnabled } : row));
   } catch (e) {
     console.error(e);
     alert('Failed to update function.');
@@ -1061,6 +1072,10 @@ watch(
   () => {
     syncDefaultsForFormAndBase();
     resetConfigText();
+
+    if (functionsMode.value === 'fixed') {
+      setFixedFunctions();
+    }
   }
 );
 
