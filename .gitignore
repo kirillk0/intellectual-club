@@ -25,3 +25,4 @@ __pycache__/
 /data/*.db-wal
 AGENTS.md
 /.playwright-cli
+/server/assets
