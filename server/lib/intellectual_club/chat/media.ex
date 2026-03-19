@@ -3,7 +3,7 @@ defmodule IntellectualClub.Chat.Media do
   Shared helpers for persisted media contents and LLM projection.
   """
 
-  alias IntellectualClub.Files
+  alias IntellectualClub.Generation.NativeModalities
 
   @type media_descriptor :: %{
           required(:external_id) => String.t(),
@@ -89,7 +89,7 @@ defmodule IntellectualClub.Chat.Media do
             if text == "", do: [], else: [%{"type" => "text", "text" => text}]
 
           :media ->
-            build_chat_media_blocks(content, supports_image_input)
+            build_chat_media_blocks(content, supports_image_input, opts)
 
           _other ->
             []
@@ -129,7 +129,7 @@ defmodule IntellectualClub.Chat.Media do
           if text == "", do: [], else: [%{"type" => text_type, "text" => text}]
 
         :media ->
-          build_responses_media_blocks(content, supports_image_input, text_type)
+          build_responses_media_blocks(content, supports_image_input, text_type, opts)
 
         _other ->
           []
@@ -190,52 +190,58 @@ defmodule IntellectualClub.Chat.Media do
 
   def media_content?(_other), do: false
 
-  defp build_chat_media_blocks(content, supports_image_input) do
+  defp build_chat_media_blocks(content, supports_image_input, opts)
+       when is_list(opts) do
     placeholder = %{"type" => "text", "text" => placeholder_text(content)}
 
-    case maybe_native_image_block(content, supports_image_input) do
-      nil -> [placeholder]
-      image_block -> [placeholder, image_block]
+    case maybe_native_image_block(content, supports_image_input, opts) do
+      :skip -> [placeholder]
+      {:fallback, text} -> [placeholder, %{"type" => "text", "text" => "\n" <> text}]
+      {:ok, image_block} -> [placeholder, image_block]
     end
   end
 
-  defp build_responses_media_blocks(content, supports_image_input, text_type) do
+  defp build_responses_media_blocks(content, supports_image_input, text_type, opts)
+       when is_list(opts) do
     placeholder = %{"type" => text_type, "text" => placeholder_text(content)}
 
-    case maybe_native_responses_image_block(content, supports_image_input, text_type) do
-      nil -> [placeholder]
-      image_block -> [placeholder, image_block]
+    case maybe_native_responses_image_block(content, supports_image_input, text_type, opts) do
+      :skip -> [placeholder]
+      {:fallback, text} -> [placeholder, %{"type" => text_type, "text" => text}]
+      {:ok, image_block} -> [placeholder, image_block]
     end
   end
 
-  defp maybe_native_image_block(content, true) do
-    case maybe_image_data_url(content) do
-      nil -> nil
-      data_url -> %{"type" => "image_url", "image_url" => %{"url" => data_url}}
+  defp maybe_native_image_block(content, true, opts) when is_list(opts) do
+    case NativeModalities.project_media_content(content, opts) do
+      {:ok, %{modality: :image, data_url: data_url}} ->
+        {:ok, %{"type" => "image_url", "image_url" => %{"url" => data_url}}}
+
+      {:error, text} when is_binary(text) ->
+        {:fallback, text}
+
+      _other ->
+        :skip
     end
   end
 
-  defp maybe_native_image_block(_content, _supports_image_input), do: nil
+  defp maybe_native_image_block(_content, _supports_image_input, _opts), do: :skip
 
-  defp maybe_native_responses_image_block(content, true, "input_text") do
-    case maybe_image_data_url(content) do
-      nil -> nil
-      data_url -> %{"type" => "input_image", "image_url" => data_url}
+  defp maybe_native_responses_image_block(content, true, "input_text", opts) when is_list(opts) do
+    case NativeModalities.project_media_content(content, opts) do
+      {:ok, %{modality: :image, data_url: data_url}} ->
+        {:ok, %{"type" => "input_image", "image_url" => data_url}}
+
+      {:error, text} when is_binary(text) ->
+        {:fallback, text}
+
+      _other ->
+        :skip
     end
   end
 
-  defp maybe_native_responses_image_block(_content, _supports_image_input, _text_type), do: nil
-
-  defp maybe_image_data_url(content) do
-    with %{} = media <- media_descriptor(content),
-         true <- media.is_image,
-         file_id when is_integer(file_id) <- media.file_id,
-         {:ok, {_file, payload}} <- Files.load_payload(file_id) do
-      "data:#{media.mime_type};base64," <> Base.encode64(payload)
-    else
-      _ -> nil
-    end
-  end
+  defp maybe_native_responses_image_block(_content, _supports_image_input, _text_type, _opts),
+    do: :skip
 
   defp file_for_content(content) do
     case map_get(content, :file, "file") do

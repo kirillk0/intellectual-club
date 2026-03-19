@@ -25,6 +25,7 @@ defmodule IntellectualClub.Generation.History do
   def build_messages(history, opts \\ []) when is_list(history) and is_list(opts) do
     history_mode = Keyword.get(opts, :history_mode, :agent)
     supports_image_input = Keyword.get(opts, :supports_image_input, false)
+    provider_type = Keyword.get(opts, :provider_type)
 
     system_prompt =
       opts
@@ -35,11 +36,15 @@ defmodule IntellectualClub.Generation.History do
     history_messages =
       case history_mode do
         :responses ->
-          build_responses_input_items(history, supports_image_input: supports_image_input)
+          build_responses_input_items(history,
+            supports_image_input: supports_image_input,
+            provider_type: provider_type
+          )
 
         _other ->
           build_chat_completions_history_messages(history,
-            supports_image_input: supports_image_input
+            supports_image_input: supports_image_input,
+            provider_type: provider_type
           )
       end
 

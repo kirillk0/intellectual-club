@@ -41,6 +41,9 @@ ARG OUTLET_GID=1000
 ENV OUTLET_USER="${OUTLET_USER}"
 ENV HOME="/home/${OUTLET_USER}"
 
+COPY outlets/shell/requirements.txt /tmp/shell-requirements.txt
+COPY outlets/shell/requirements.additional.txt /tmp/shell-requirements-additional.txt
+
 RUN groupadd --gid "${OUTLET_GID}" "${OUTLET_USER}" \
     && useradd --uid "${OUTLET_UID}" --gid "${OUTLET_GID}" --create-home --shell /bin/bash "${OUTLET_USER}" \
     && echo "${OUTLET_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${OUTLET_USER}" \
@@ -50,23 +53,8 @@ RUN groupadd --gid "${OUTLET_GID}" "${OUTLET_USER}" \
 
 RUN python -m venv "/home/${OUTLET_USER}/.venv" \
     && "/home/${OUTLET_USER}/.venv/bin/python" -m pip install --upgrade pip setuptools wheel \
-    && "/home/${OUTLET_USER}/.venv/bin/pip" install \
-      httpx \
-      numpy \
-      pandas \
-      matplotlib \
-      requests \
-      scipy \
-      seaborn \
-      pillow \
-      beautifulsoup4 \
-      openpyxl \
-      lxml \
-      markitdown[all] \
-      rich \
-      tqdm \
-      ipython \
-      pytest \
+    && "/home/${OUTLET_USER}/.venv/bin/pip" install -r /tmp/shell-requirements.txt \
+    && "/home/${OUTLET_USER}/.venv/bin/pip" install -r /tmp/shell-requirements-additional.txt \
     && chown -R "${OUTLET_UID}:${OUTLET_GID}" "/home/${OUTLET_USER}/.venv"
 
 ENV PATH="/home/${OUTLET_USER}/.venv/bin:${PATH}"

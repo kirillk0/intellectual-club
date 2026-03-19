@@ -34,6 +34,18 @@ cp .env.template .env
 docker compose up --build
 ```
 
+For a non-Docker install, create a Python environment and install the runtime requirements:
+
+```bash
+python -m pip install -r outlets/shell/requirements.txt
+```
+
+If you also want the extra preinstalled data/science/utility packages that are baked into the Docker image for agent work, install:
+
+```bash
+python -m pip install -r outlets/shell/requirements.additional.txt
+```
+
 If `OUTLET_TOKEN` is empty, the container prints a verification URL and a short code. Open the URL in the browser while logged in and approve the request.
 
 The host folder `./share` is mounted into the container at `/mnt/share`.

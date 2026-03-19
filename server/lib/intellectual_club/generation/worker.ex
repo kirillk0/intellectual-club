@@ -1319,7 +1319,10 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp media_projection_opts(state) do
-    [supports_image_input: Map.get(state.context, :supports_image_input, false)]
+    [
+      supports_image_input: Map.get(state.context, :supports_image_input, false),
+      provider_type: Map.get(state.context, :provider_type)
+    ]
   end
 
   defp decorate_tool_result(call, %ExecutionResult{} = result) do

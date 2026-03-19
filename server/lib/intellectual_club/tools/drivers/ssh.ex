@@ -249,8 +249,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          {:ok, remote_path} <- read_required_path_arg(args, "local_path"),
          :ok <- ensure_ssh_started(),
          {:ok, payload} <- read_remote_file(cfg, auth, remote_path),
-         mime_type = MIME.from_path(remote_path),
-         true <- String.starts_with?(mime_type, "image/"),
+         {:ok, mime_type} <- detect_image_mime(payload),
          {:ok, file} <- Files.create_from_binary(Path.basename(remote_path), mime_type, payload) do
       {:ok,
        %ExecutionResult{
@@ -260,10 +259,20 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          artifacts: []
        }}
     else
-      false -> {:error, "Remote file is not recognized as image/*."}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @doc false
+  @spec detect_image_mime(binary()) :: {:ok, String.t()} | {:error, String.t()}
+  def detect_image_mime(payload) when is_binary(payload) do
+    case ExImageInfo.info(payload) do
+      {mime_type, _width, _height, _variant} -> {:ok, mime_type}
+      nil -> {:error, "File content is not a valid image."}
+    end
+  end
+
+  def detect_image_mime(_payload), do: {:error, "File content is not a valid image."}
 
   defp download_file(
          %ToolInstance{} = tool_instance,

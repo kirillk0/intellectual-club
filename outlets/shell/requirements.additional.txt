@@ -1,0 +1,15 @@
+httpx
+numpy
+pandas
+matplotlib
+requests
+scipy
+seaborn
+beautifulsoup4
+openpyxl
+lxml
+markitdown[all]
+rich
+tqdm
+ipython
+pytest

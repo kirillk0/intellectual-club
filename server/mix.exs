@@ -78,6 +78,7 @@ defmodule IntellectualClub.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:req, "~> 0.4"},
+      {:ex_image_info, "~> 1.0"},
       {:extractous_ex, "~> 0.2.1"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
@@ -92,10 +93,23 @@ defmodule IntellectualClub.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get", "deps.compile", "picosat.sync", "ecto.setup", "assets.setup", "assets.build"],
+      setup: [
+        "deps.get",
+        "deps.compile",
+        "picosat.sync",
+        "ecto.setup",
+        "assets.setup",
+        "assets.build"
+      ],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["deps.compile", "picosat.sync", "ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      test: [
+        "deps.compile",
+        "picosat.sync",
+        "ecto.create --quiet",
+        "ecto.migrate --quiet",
+        "test"
+      ],
       "spa.setup": ["cmd --cd ../frontend npm install"],
       "spa.build": ["cmd --cd ../frontend npm run build"],
       "assets.setup": [

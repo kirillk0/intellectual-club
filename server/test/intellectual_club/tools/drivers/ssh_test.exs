@@ -77,6 +77,15 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     assert {:error, "Unknown function: unknown"} = Ssh.execute(tool_instance, "unknown", %{})
   end
 
+  test "detect_image_mime returns detected mime type for valid image payload" do
+    assert {:ok, "image/png"} = Ssh.detect_image_mime(image_payload())
+  end
+
+  test "detect_image_mime rejects invalid image payload" do
+    assert {:error, "File content is not a valid image."} =
+             Ssh.detect_image_mime("<html><body>404 Not Found</body></html>")
+  end
+
   defp create_tool_instance!(actor, attrs) when is_map(attrs) do
     ToolInstance
     |> Ash.Changeset.for_create(
@@ -94,5 +103,11 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp image_payload do
+    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
+      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
   end
 end

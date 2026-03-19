@@ -225,12 +225,14 @@ defmodule IntellectualClub.Generation.Context do
         :responses ->
           # Responses providers use `instructions`, not `role=system` items.
           History.build_responses_input_items(history,
-            supports_image_input: supports_image_input
+            supports_image_input: supports_image_input,
+            provider_type: provider_type
           )
 
         _other ->
           History.build_chat_completions_history_messages(history,
-            supports_image_input: supports_image_input
+            supports_image_input: supports_image_input,
+            provider_type: provider_type
           )
       end
 

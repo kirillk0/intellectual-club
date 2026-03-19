@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import logging
 import mimetypes
 import os
@@ -14,6 +15,13 @@ from typing import Any
 
 from outlets.outlet_base import download_call_file, outlet_tool, run_outlet, upload_call_file
 
+try:
+    from PIL import Image as PILImage
+    from PIL import UnidentifiedImageError
+except ImportError:
+    PILImage = None
+    UnidentifiedImageError = OSError
+
 logger = logging.getLogger(__name__)
 
 _POSIX_SHELL_BASENAMES = {"bash", "zsh", "sh", "dash", "ksh"}
@@ -25,6 +33,38 @@ _TIMEOUT_DRAIN_SECONDS = 5.0
 # resets). Keep defaults conservative, but allow overrides via env vars.
 _MAX_STREAM_CHARS_DEFAULT = 200_000
 _MAX_SUMMARY_CHARS_DEFAULT = 50_000
+_JPEG_MAGIC_PREFIXES = (b"\xff\xd8\xff",)
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if any(data.startswith(prefix) for prefix in _JPEG_MAGIC_PREFIXES):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
+
+def _detect_image_mime(data: bytes) -> str | None:
+    if not data:
+        return None
+
+    if PILImage is not None:
+        try:
+            with PILImage.open(io.BytesIO(data)) as image:
+                detected_mime = PILImage.MIME.get(image.format)
+                image.verify()
+                if detected_mime:
+                    return str(detected_mime)
+        except (UnidentifiedImageError, OSError, ValueError):
+            return None
+
+    return _sniff_image_mime(data)
 
 
 def _load_env_int(key: str, default: int) -> int:
@@ -352,9 +392,9 @@ class ShellOutlet:
         with open(path, "rb") as f:
             data = f.read()
 
-        mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        if not mime_type.startswith("image/"):
-            raise ValueError("File is not recognized as image/*")
+        mime_type = _detect_image_mime(data)
+        if mime_type is None:
+            raise ValueError("File content is not a valid image.")
 
         uploaded = await upload_call_file(filename=os.path.basename(path), mime_type=mime_type, payload=data)
         summary = f"Image {uploaded.get('file_external_id', '')} attached from {path}"
