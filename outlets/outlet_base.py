@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.parse
 import uuid
 import webbrowser
 from dataclasses import dataclass
@@ -321,6 +322,14 @@ def _join_url(base: str, path: str) -> str:
     return base.rstrip("/") + "/" + path.lstrip("/")
 
 
+def _build_verification_url(*, server_url: str, user_code: str, verification_url: str) -> str:
+    user_code = str(user_code or "").strip()
+    if user_code:
+        encoded = urllib.parse.quote(user_code, safe="")
+        return _join_url(server_url, f"/outlets/connect?code={encoded}")
+    return str(verification_url or "").strip()
+
+
 def current_call_context() -> OutletCallContext | None:
     return _CALL_CONTEXT.get()
 
@@ -457,7 +466,11 @@ def _pair_with_server(*, server_url: str, default_name: str, metadata: dict[str,
 
         device_code = str(data.get("device_code") or "").strip()
         user_code = str(data.get("user_code") or "").strip()
-        verification_url = str(data.get("verification_url") or "").strip()
+        verification_url = _build_verification_url(
+            server_url=server_url,
+            user_code=user_code,
+            verification_url=str(data.get("verification_url") or "").strip(),
+        )
         interval = float(data.get("interval") or 2.0)
         expires_in = float(data.get("expires_in") or 900.0)
         if not device_code or not user_code or not verification_url:
