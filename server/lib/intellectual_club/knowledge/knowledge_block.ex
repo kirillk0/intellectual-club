@@ -193,10 +193,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     calculate :shared_outgoing,
               :boolean,
               expr(
-                exists(bot_bindings, enabled == true and exists(bot.shares)) or
+                exists(bot_bindings, enabled == true and bot.exists(shares)) or
                   exists(
                     llm_configuration_bindings,
-                    enabled == true and exists(llm_configuration.shares)
+                    enabled == true and llm_configuration.exists(shares)
                   )
               ) do
       public?(true)

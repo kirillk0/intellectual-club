@@ -171,7 +171,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
               expr(
                 exists(
                   bot_bindings,
-                  enabled == true and sharing_mode == :shared and exists(bot.shares)
+                  enabled == true and sharing_mode == :shared and bot.exists(shares)
                 )
               ) do
       public?(true)

@@ -265,6 +265,119 @@ defmodule IntellectualClub.Sharing.AccessTest do
              |> Ash.create()
   end
 
+  test "private resources do not become shared_outgoing because unrelated records are shared" do
+    %{user: owner} = user_fixture()
+    %{user: recipient} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+
+    shared_bot = create_bot!(owner, "Shared bot")
+    private_bot = create_bot!(owner, "Private bot")
+
+    shared_provider = create_provider!(owner, "Shared provider")
+    private_provider = create_provider!(owner, "Private provider")
+
+    shared_configuration = create_configuration!(owner, shared_provider, "shared-model")
+    private_configuration = create_configuration!(owner, private_provider, "private-model")
+
+    shared_tool = create_tool!(owner, "Shared tool")
+    private_tool = create_tool!(owner, "Private tool")
+
+    private_bot_block = create_block!(owner, "Private bot block", "Private bot block content")
+
+    private_config_block =
+      create_block!(owner, "Private config block", "Private config block content")
+
+    _ =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: shared_bot.id,
+          tool_instance_id: shared_tool.id,
+          alias: "shared_tool",
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 10
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    _ =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: private_bot.id,
+          tool_instance_id: private_tool.id,
+          alias: "private_tool",
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 10
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    _ =
+      BotKnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: private_bot.id,
+          knowledge_block_id: private_bot_block.id,
+          enabled: true,
+          sequence: 10
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    _ =
+      LlmConfigurationKnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          llm_configuration_id: private_configuration.id,
+          knowledge_block_id: private_config_block.id,
+          enabled: true,
+          sequence: 10
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    share_bot!(owner, shared_bot, group)
+    share_configuration!(owner, shared_configuration, group)
+
+    shared_tool_view =
+      Ash.get!(ToolInstance, shared_tool.id, actor: owner, load: [:shared_outgoing])
+
+    private_tool_view =
+      Ash.get!(ToolInstance, private_tool.id, actor: owner, load: [:shared_outgoing])
+
+    shared_provider_view =
+      Ash.get!(LlmProvider, shared_provider.id, actor: owner, load: [:shared_outgoing])
+
+    private_provider_view =
+      Ash.get!(LlmProvider, private_provider.id, actor: owner, load: [:shared_outgoing])
+
+    private_bot_block_view =
+      Ash.get!(KnowledgeBlock, private_bot_block.id, actor: owner, load: [:shared_outgoing])
+
+    private_config_block_view =
+      Ash.get!(KnowledgeBlock, private_config_block.id, actor: owner, load: [:shared_outgoing])
+
+    assert shared_tool_view.shared_outgoing == true
+    assert private_tool_view.shared_outgoing == false
+
+    assert shared_provider_view.shared_outgoing == true
+    assert private_provider_view.shared_outgoing == false
+
+    assert private_bot_block_view.shared_outgoing == false
+    assert private_config_block_view.shared_outgoing == false
+  end
+
   test "shared recipients can read nested configuration tags through shared bots and configurations" do
     %{user: owner} = user_fixture()
     %{user: recipient} = user_fixture()

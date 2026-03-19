@@ -113,7 +113,7 @@ defmodule IntellectualClub.Llm.LlmProvider do
       public?(true)
     end
 
-    calculate :shared_outgoing, :boolean, expr(exists(configurations.shares)) do
+    calculate :shared_outgoing, :boolean, expr(configurations.exists(shares)) do
       public?(true)
     end
   end
@@ -162,7 +162,8 @@ defmodule IntellectualClub.Llm.LlmProvider do
           auth_method: source.auth_method,
           base_url: source.base_url,
           api_key: if(preserve_credentials?, do: source.api_key, else: nil),
-          oauth_refresh_token: if(preserve_credentials?, do: source.oauth_refresh_token, else: nil)
+          oauth_refresh_token:
+            if(preserve_credentials?, do: source.oauth_refresh_token, else: nil)
         })
       end
 
