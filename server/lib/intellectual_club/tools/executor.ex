@@ -10,6 +10,7 @@ defmodule IntellectualClub.Tools.Executor do
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Registry
 
+  @null_byte <<0>>
   @truncation_notice "Truncated because length limit"
 
   @spec execute_llm_tool(
@@ -28,12 +29,12 @@ defmodule IntellectualClub.Tools.Executor do
       {:error, message} ->
         error_text = to_string(message || "Tool error")
 
-        %ExecutionResult{
+        sanitize_execution_result(%ExecutionResult{
           text: error_text,
           raw: %{"isError" => true, "error" => error_text},
           media: [],
           artifacts: []
-        }
+        })
     end
   end
 
@@ -90,6 +91,7 @@ defmodule IntellectualClub.Tools.Executor do
             artifacts: []
           }
       end
+      |> sanitize_execution_result()
 
     max_output_tokens =
       case Map.get(tool_instance, :max_output_tokens) do
@@ -111,6 +113,17 @@ defmodule IntellectualClub.Tools.Executor do
       raw: raw,
       media: result.media,
       artifacts: result.artifacts
+    }
+  end
+
+  @doc false
+  @spec sanitize_execution_result(ExecutionResult.t()) :: ExecutionResult.t()
+  def sanitize_execution_result(%ExecutionResult{} = result) do
+    %ExecutionResult{
+      text: sanitize_term(result.text),
+      raw: sanitize_term(result.raw),
+      media: sanitize_term(result.media),
+      artifacts: sanitize_term(result.artifacts)
     }
   end
 
@@ -189,4 +202,27 @@ defmodule IntellectualClub.Tools.Executor do
       _ -> out
     end
   end
+
+  defp sanitize_term(value) when is_binary(value) do
+    :binary.replace(value, @null_byte, "", [:global])
+  end
+
+  defp sanitize_term(value) when is_list(value) do
+    Enum.map(value, &sanitize_term/1)
+  end
+
+  defp sanitize_term(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {sanitize_term(key), sanitize_term(nested_value)}
+    end)
+  end
+
+  defp sanitize_term(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_term/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_term(value), do: value
 end
