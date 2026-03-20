@@ -608,7 +608,8 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
     image: parseImageAsset(attrs.image),
     first_messages,
     variables,
-    max_tool_rounds: typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 20),
+    max_tool_rounds:
+      typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 100),
     context_soft_limit_percent:
       typeof attrs.context_soft_limit_percent === 'number'
         ? attrs.context_soft_limit_percent
@@ -769,7 +770,7 @@ const editor = useCrudEditor<BotForm>({
     image: null,
     first_messages: [],
     variables: {},
-    max_tool_rounds: 20,
+    max_tool_rounds: 100,
     context_soft_limit_percent: 80,
     supports_file_processing: false,
     max_file_size_mb: 500,
