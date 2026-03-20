@@ -9,7 +9,7 @@ FRONTEND_DIR="${REPO_ROOT}/frontend"
 
 SESSION_NAME="${IC_V2_SCREEN_NAME:-ic-v2-phx}"
 SCREEN_DIR="${IC_V2_SCREEN_DIR:-${REPO_ROOT}/assets/screen-sockets}"
-PORT="${IC_V2_PORT:-4000}"
+PORT="${IC_V2_PORT:-${PORT:-4000}}"
 PID_FILE="${IC_V2_PID_FILE:-${REPO_ROOT}/assets/${SESSION_NAME}.pid}"
 SERVER_SCRIPT="${REPO_ROOT}/bin/run-dev-server"
 
@@ -175,7 +175,7 @@ start() {
   refresh_screen_sockets
   cleanup_orphan_watchers
   rm -f "${PID_FILE}"
-  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}'"
+  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && PORT='${PORT}' IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}'"
   printf 'Started %s on port %s\n' "${SESSION_NAME}" "${PORT}"
 }
 
