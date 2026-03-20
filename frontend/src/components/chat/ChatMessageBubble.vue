@@ -10,6 +10,7 @@
         @toggle="emit('toggle-working')"
         @step-info="(step) => emit('step-info', step)"
         @content-open="(payload) => emit('content-open', payload)"
+        @attachment-open="(payload) => emit('attachment-open', payload)"
       />
 
       <div class="message-content">

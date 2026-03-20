@@ -113,6 +113,7 @@
                     v-if="toolItemMedia(item).length"
                     :message-id="props.messageId"
                     :contents="toolItemMedia(item)"
+                    @preview="(payload) => emit('attachment-open', payload)"
                   />
                 </div>
               </div>
@@ -124,6 +125,7 @@
                     v-if="toolItemMedia(item).length"
                     :message-id="props.messageId"
                     :contents="toolItemMedia(item)"
+                    @preview="(payload) => emit('attachment-open', payload)"
                   />
                   <div v-else class="muted">No data</div>
                 </div>
@@ -164,6 +166,7 @@ const emit = defineEmits<{
   (e: 'toggle'): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
+  (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent }): void;
 }>();
 
 const steps = computed(() => props.steps || []);
