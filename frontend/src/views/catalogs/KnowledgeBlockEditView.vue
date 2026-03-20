@@ -215,6 +215,7 @@ import { parseImageAsset } from '@/features/media/image';
 import {
   createJsonApiIncludedIndex,
   jsonApiCreate,
+  jsonApiGet,
   jsonApiList,
   relatedResource,
   relatedResources,
@@ -505,6 +506,18 @@ const tagById = computed(() => {
   return map;
 });
 
+function mergeKnownTags(tags: KnowledgeTagRow[]) {
+  const byId = new Map<number, KnowledgeTagRow>();
+  for (const tag of includedTags.value || []) byId.set(tag.id, tag);
+  for (const tag of allTags.value || []) byId.set(tag.id, tag);
+  for (const tag of tags || []) byId.set(tag.id, tag);
+  allTags.value = Array.from(byId.values()).sort((a, b) => {
+    const left = a.full_name || a.name;
+    const right = b.full_name || b.name;
+    return left.localeCompare(right) || a.id - b.id;
+  });
+}
+
 const attachedTagIds = computed(() => {
   return stableIds(draftTagBindings.value.map((b) => b.tagId));
 });
@@ -637,12 +650,35 @@ function applyKnowledgeBlockDocument(payload: JsonApiSingleResponse) {
 
   originalTagBindings.value = bindingResources.map(parseTagBinding).filter((b): b is TagBinding => Boolean(b));
   draftTagBindings.value = originalTagBindings.value.map((binding) => ({ ...binding }));
-  includedTags.value = bindingResources
+  const documentTags = bindingResources
     .map((resource) => parseTagRow(relatedResource(resource, 'knowledge_tag', includedIndex)))
     .filter((tag): tag is KnowledgeTagRow => Boolean(tag));
+  includedTags.value = documentTags;
+  mergeKnownTags(documentTags);
   tempTagBindingId = -1;
   tagBindingsLoading.value = false;
   tagBindingsError.value = null;
+}
+
+async function ensureTagsLoaded(tagIds: number[]) {
+  const missingIds = stableIds(tagIds).filter((id) => id > 0 && !tagById.value.has(id));
+  if (!missingIds.length) return;
+
+  const loadedTags: KnowledgeTagRow[] = [];
+
+  await Promise.all(
+    missingIds.map(async (tagId) => {
+      try {
+        const payload = await jsonApiGet(`/api/ash/knowledge-tags/${tagId}`);
+        const tag = parseTagRow(payload.data);
+        if (tag) loadedTags.push(tag);
+      } catch (error) {
+        console.warn(`Failed to load knowledge tag ${tagId}`, error);
+      }
+    })
+  );
+
+  if (loadedTags.length) mergeKnownTags(loadedTags);
 }
 
 async function loadAllTags() {
@@ -668,6 +704,15 @@ async function loadAllTags() {
     allTagsLoading.value = false;
   }
 }
+
+watch(
+  () => attachedTagIds.value,
+  (tagIds) => {
+    if (!tagIds.length) return;
+    void ensureTagsLoaded(tagIds);
+  },
+  { immediate: true }
+);
 
 function openTagModal() {
   tagModalOpen.value = true;
