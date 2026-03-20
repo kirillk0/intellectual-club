@@ -12,10 +12,17 @@ SCREEN_DIR="${IC_V2_SCREEN_DIR:-${REPO_ROOT}/assets/screen-sockets}"
 PORT="${IC_V2_PORT:-${PORT:-4000}}"
 PID_FILE="${IC_V2_PID_FILE:-${REPO_ROOT}/assets/${SESSION_NAME}.pid}"
 SERVER_SCRIPT="${REPO_ROOT}/bin/run-dev-server"
+LOG_FILE="${IC_V2_LOG_FILE:-${REPO_ROOT}/assets/logs/dev-screen.log}"
+START_TIMEOUT_SECONDS="${IC_V2_START_TIMEOUT_SECONDS:-20}"
+START_STABILITY_POLLS="${IC_V2_START_STABILITY_POLLS:-2}"
+
+ensure_runtime_dirs() {
+  mkdir -p "${SCREEN_DIR}" "$(dirname -- "${PID_FILE}")" "$(dirname -- "${LOG_FILE}")"
+  chmod 700 "${SCREEN_DIR}"
+}
 
 screen_cmd() {
-  mkdir -p "${SCREEN_DIR}"
-  chmod 700 "${SCREEN_DIR}"
+  ensure_runtime_dirs
   SCREENDIR="${SCREEN_DIR}" screen "$@"
 }
 
@@ -39,6 +46,13 @@ recorded_pid() {
   if [[ -f "${PID_FILE}" ]]; then
     tr -d '[:space:]' < "${PID_FILE}"
   fi
+}
+
+recorded_pid_alive() {
+  local pid
+
+  pid="$(recorded_pid)"
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
 }
 
 watcher_seed_pids() {
@@ -132,6 +146,66 @@ wait_for_pid_exit() {
   return 1
 }
 
+wait_for_startup() {
+  local attempts=$((START_TIMEOUT_SECONDS * 2))
+  local stable_polls=0
+  local saw_activity=0
+  local screen_state=0
+  local pid_state=0
+  local port_state=0
+
+  while [[ ${attempts} -gt 0 ]]; do
+    screen_state=0
+    pid_state=0
+    port_state=0
+
+    if screen_running; then
+      screen_state=1
+    fi
+
+    if recorded_pid_alive; then
+      pid_state=1
+    fi
+
+    if [[ -n "$(port_pids)" ]]; then
+      port_state=1
+    fi
+
+    if [[ ${screen_state} -eq 1 || ${pid_state} -eq 1 || ${port_state} -eq 1 || -f "${PID_FILE}" ]]; then
+      saw_activity=1
+    fi
+
+    if [[ ${screen_state} -eq 1 && ${pid_state} -eq 1 && ${port_state} -eq 1 ]]; then
+      stable_polls=$((stable_polls + 1))
+      if [[ ${stable_polls} -ge ${START_STABILITY_POLLS} ]]; then
+        return 0
+      fi
+    else
+      stable_polls=0
+    fi
+
+    if [[ ${saw_activity} -eq 1 && ${screen_state} -eq 0 && ${pid_state} -eq 0 && ${port_state} -eq 0 && ! -f "${PID_FILE}" ]]; then
+      return 1
+    fi
+
+    sleep 0.5
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+tail_log() {
+  local lines="${1:-80}"
+
+  if [[ ! -f "${LOG_FILE}" ]]; then
+    printf 'Log file does not exist yet: %s\n' "${LOG_FILE}" >&2
+    return 1
+  fi
+
+  tail -n "${lines}" "${LOG_FILE}"
+}
+
 status() {
   local listen_pids
   local pid_list
@@ -172,10 +246,22 @@ start() {
     exit 1
   fi
 
+  ensure_runtime_dirs
   refresh_screen_sockets
   cleanup_orphan_watchers
   rm -f "${PID_FILE}"
-  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && PORT='${PORT}' IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}'"
+  : > "${LOG_FILE}"
+  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && PORT='${PORT}' IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}' >> '${LOG_FILE}' 2>&1"
+
+  if ! wait_for_startup; then
+    printf 'Failed to start %s on port %s\n' "${SESSION_NAME}" "${PORT}" >&2
+    status >&2 || true
+    printf 'Recent log output (%s):\n' "${LOG_FILE}" >&2
+    tail_log 80 >&2 || true
+    stop >/dev/null 2>&1 || true
+    exit 1
+  fi
+
   printf 'Started %s on port %s\n' "${SESSION_NAME}" "${PORT}"
 }
 
@@ -221,15 +307,28 @@ restart() {
 }
 
 attach() {
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    printf 'attach requires an interactive TTY. Use status or logs instead.\n' >&2
+    exit 1
+  fi
+
   refresh_screen_sockets
-  mkdir -p "${SCREEN_DIR}"
-  chmod 700 "${SCREEN_DIR}"
+  if ! screen_running; then
+    printf 'No running screen session named %s.\n' "${SESSION_NAME}" >&2
+    exit 1
+  fi
+
+  ensure_runtime_dirs
   exec env SCREENDIR="${SCREEN_DIR}" screen -r "${SESSION_NAME}"
+}
+
+logs() {
+  tail_log "${1:-80}"
 }
 
 usage() {
   cat <<'EOF'
-Usage: ./bin/dev-screen <start|stop|restart|status|attach|cleanup>
+Usage: ./bin/dev-screen <start|stop|restart|status|attach|logs|cleanup>
 EOF
 }
 
@@ -251,6 +350,9 @@ main() {
       ;;
     attach)
       attach
+      ;;
+    logs)
+      logs "${2:-80}"
       ;;
     cleanup)
       cleanup_orphan_watchers

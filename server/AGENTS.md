@@ -7,7 +7,8 @@ This is a web application written using the Phoenix web framework.
   - Stop: `./bin/dev-screen stop`
   - Restart: `./bin/dev-screen restart`
   - Status: `./bin/dev-screen status`
-  - Attach: `./bin/dev-screen attach` (detach with `Ctrl-a d`)
+  - Logs: `./bin/dev-screen logs`
+  - Attach: `./bin/dev-screen attach` (interactive terminals only; detach with `Ctrl-a d`)
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
