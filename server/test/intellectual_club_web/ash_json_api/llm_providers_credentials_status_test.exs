@@ -5,7 +5,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersCredentialsStatusTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
-  alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
 
   defp json_api_get(conn, path) do
     conn
@@ -98,5 +98,92 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersCredentialsStatusTest do
     assert attrs_without["credentials_present"] == []
     refute Map.has_key?(attrs_without, "api_key")
     refute Map.has_key?(attrs_without, "oauth_refresh_token")
+  end
+
+  test "shared providers stay unique in index and load by id when multiple shared configurations point to them",
+       %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: recipient, password: password} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Shared responses provider",
+          type: :responses,
+          auth_method: :openai_oauth_refresh_token,
+          base_url: "https://api.openai.com/v1",
+          oauth_refresh_token: "rt_test_123"
+        },
+        actor: owner
+      )
+      |> Ash.create!(actor: owner)
+
+    configuration_a = create_configuration!(owner, provider, "shared-model-a")
+    configuration_b = create_configuration!(owner, provider, "shared-model-b")
+
+    share_configuration!(owner, configuration_a, group)
+    share_configuration!(owner, configuration_b, group)
+
+    index_response =
+      conn
+      |> recycle()
+      |> sign_in_conn(recipient.username, password)
+      |> json_api_get("/api/ash/llm-providers")
+      |> json_response(200)
+
+    provider_ids =
+      index_response["data"]
+      |> Enum.filter(&(&1["type"] == "llm-providers"))
+      |> Enum.map(&String.to_integer(&1["id"]))
+
+    assert Enum.count(provider_ids, &(&1 == provider.id)) == 1
+
+    show_response =
+      conn
+      |> recycle()
+      |> sign_in_conn(recipient.username, password)
+      |> json_api_get("/api/ash/llm-providers/#{provider.id}")
+      |> json_response(200)
+
+    attrs = show_response["data"]["attributes"]
+    assert attrs["name"] == "Shared responses provider"
+    assert attrs["shared_incoming"] == true
+    assert attrs["shared_outgoing"] == true
+    assert attrs["credentials_present"] == ["oauth_refresh_token"]
+    refute Map.has_key?(attrs, "api_key")
+    refute Map.has_key?(attrs, "oauth_refresh_token")
+  end
+
+  defp create_configuration!(actor, provider, model_name) do
+    LlmConfiguration
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        provider_id: provider.id,
+        model_name: model_name,
+        note: "cfg",
+        parameters: %{},
+        enabled: true,
+        timeout_seconds: 30,
+        context_length: 2048,
+        supports_cache_control: false,
+        supports_image_input: false
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp share_configuration!(actor, configuration, group) do
+    LlmConfigurationShare
+    |> Ash.Changeset.for_create(
+      :create,
+      %{llm_configuration_id: configuration.id, user_group_id: group.id},
+      actor: actor
+    )
+    |> Ash.create!()
   end
 end

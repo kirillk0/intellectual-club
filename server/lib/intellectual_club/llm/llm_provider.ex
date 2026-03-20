@@ -113,7 +113,7 @@ defmodule IntellectualClub.Llm.LlmProvider do
       public?(true)
     end
 
-    calculate :shared_outgoing, :boolean, expr(configurations.exists(shares)) do
+    calculate :shared_outgoing, :boolean, expr(exists(configurations, exists(shares))) do
       public?(true)
     end
   end
