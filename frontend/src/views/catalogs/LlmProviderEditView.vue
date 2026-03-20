@@ -67,7 +67,12 @@
 
           <label :class="{ 'field-error': errors.hasField('base_url') }">
             Base URL
-            <input v-model="form.base_url" class="full" @input="errors.clearField('base_url')" />
+            <EditableCombobox
+              v-model="form.base_url"
+              :options="baseUrlSuggestions"
+              :placeholder="baseUrlPlaceholder"
+              toggle-label="Show base URL options"
+            />
             <div v-if="errors.hasField('base_url')" class="error-text">{{ errors.messageFor('base_url') }}</div>
           </label>
         </div>
@@ -182,6 +187,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import CrudHeader from '@/components/CrudHeader.vue';
+import EditableCombobox from '@/components/EditableCombobox.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { jsonApiGet, type JsonApiResource } from '@/api/jsonApi';
@@ -198,6 +204,15 @@ type ProviderForm = {
   shared_incoming: boolean;
   shared_outgoing: boolean;
 };
+
+const PROVIDER_BASE_URL_OPTIONS: Record<string, string[]> = {
+  openrouter_chat_completion: ['https://openrouter.ai/api/v1'],
+  responses: ['https://api.openai.com/v1', 'https://chatgpt.com/backend-api/codex'],
+};
+
+function baseUrlOptionsForType(type: string): string[] {
+  return PROVIDER_BASE_URL_OPTIONS[String(type || '').trim()] || [];
+}
 
 function fromApi(resource: JsonApiResource): Partial<ProviderForm> {
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
@@ -298,12 +313,22 @@ const authMethodOptions = computed(() => {
   return options;
 });
 
+const baseUrlSuggestions = computed(() => baseUrlOptionsForType(form.type));
+const baseUrlPlaceholder = computed(() => baseUrlSuggestions.value[0] || '');
+
 watch(
   () => form.type,
   (type) => {
     if (String(type || '').trim() !== 'responses' && form.auth_method === 'openai_oauth_refresh_token') {
       form.auth_method = 'api_key';
     }
+  }
+);
+
+watch(
+  () => form.base_url,
+  () => {
+    errors.clearField('base_url');
   }
 );
 
