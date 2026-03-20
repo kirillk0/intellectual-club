@@ -274,7 +274,10 @@ async function loadBlocks() {
   try {
     const params = new URLSearchParams();
     params.set('sort', 'name');
-    params.set('fields[knowledge-blocks]', 'name,version,type,token_count,image');
+    params.set(
+      'fields[knowledge-blocks]',
+      'name,version,type,token_count,image,shared_incoming,shared_outgoing'
+    );
     const q = String(route.query.q || '').trim();
     if (q) params.set('q', q);
     if (selectedNoTags.value) params.set('no_tags', 'true');
