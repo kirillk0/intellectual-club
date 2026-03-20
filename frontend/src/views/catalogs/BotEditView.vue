@@ -551,8 +551,8 @@ type ToolInstanceOption = {
   id: number;
   name: string;
   type: string;
-  outlet_online: boolean;
-  can_edit: boolean;
+  outlet_online: boolean | null;
+  can_edit: boolean | null;
 };
 type ToolBindingRow = {
   id: number;
@@ -658,12 +658,15 @@ function parseToolInstanceOption(resource: JsonApiResource | null | undefined): 
   const id = toIntId(resource.id);
   if (!id) return null;
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  const hasOutletOnline = Object.prototype.hasOwnProperty.call(attrs, 'outlet_online');
+  const hasCanEdit = Object.prototype.hasOwnProperty.call(attrs, 'can_edit');
+
   return {
     id,
     name: String(attrs.name || '').trim(),
     type: String(attrs.type || '').trim(),
-    outlet_online: Boolean(attrs.outlet_online),
-    can_edit: attrs.can_edit !== false,
+    outlet_online: hasOutletOnline ? Boolean(attrs.outlet_online) : null,
+    can_edit: hasCanEdit ? attrs.can_edit !== false : null,
   } satisfies ToolInstanceOption;
 }
 
@@ -1197,7 +1200,16 @@ function mergeToolLibrary(tools: ToolInstanceOption[]) {
   const byId = new Map<number, ToolInstanceOption>();
 
   for (const tool of toolLibrary.value) byId.set(tool.id, tool);
-  for (const tool of tools) byId.set(tool.id, tool);
+  for (const tool of tools) {
+    const existing = byId.get(tool.id);
+
+    byId.set(tool.id, {
+      ...existing,
+      ...tool,
+      outlet_online: tool.outlet_online ?? existing?.outlet_online ?? false,
+      can_edit: tool.can_edit ?? existing?.can_edit ?? true,
+    });
+  }
 
   toolLibrary.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
 }
