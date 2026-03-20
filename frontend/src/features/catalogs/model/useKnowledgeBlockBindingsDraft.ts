@@ -112,14 +112,26 @@ export function useKnowledgeBlockBindingsDraft(params: {
     if (!additions.length) return;
 
     const next = [...draft.value];
+    const addedSelection = selectionEnabled ? defaultSelection : undefined;
+    let nextSequence =
+      Math.max(
+        -1,
+        ...next
+          .filter((item) =>
+            !selectionEnabled || normalizeSelection(item.selection, true) === addedSelection
+          )
+          .map((item) => Number(item.sequence) || 0)
+      ) + 1;
+
     for (const id of additions) {
       next.push({
         id: tempId--,
         block: id,
         enabled: true,
-        sequence: 0,
-        ...(selectionEnabled ? { selection: defaultSelection } : {}),
+        sequence: nextSequence,
+        ...(selectionEnabled ? { selection: addedSelection } : {}),
       });
+      nextSequence += 1;
     }
 
     draft.value = normalizeSequences(next);
