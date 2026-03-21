@@ -14,10 +14,15 @@
       />
 
       <div class="message-content">
-        <template v-for="(partHtml, partIdx) in messageHtmlParts" :key="partIdx">
-          <div v-html="partHtml"></div>
+        <template v-for="(part, partIdx) in messageParts" :key="part.key">
+          <div class="message-answer-part">
+            <span v-if="part.showTimestamp && part.timestamp" class="message-answer-time">
+              {{ part.timestamp }}
+            </span>
+            <div v-html="part.html"></div>
+          </div>
           <hr
-            v-if="msg.role === 'assistant' && partIdx < messageHtmlParts.length - 1"
+            v-if="msg.role === 'assistant' && partIdx < messageParts.length - 1"
             class="message-answer-divider"
             aria-hidden="true"
           />
@@ -121,9 +126,15 @@
 import { computed } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
-import type { ChatBranchMessage, ChatMessageContent, ChatMessageStep } from '@/types/api';
+import type {
+  ChatBranchMessage,
+  ChatMessageContent,
+  ChatMessageItem,
+  ChatMessageStep,
+} from '@/types/api';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
+import { formatTimeOfDay } from '@/utils/dates';
 
 interface Props {
   message: ChatBranchMessage;
@@ -182,18 +193,48 @@ const joinTextContents = (contents: ChatMessageContent[] | null | undefined) => 
     .join('');
 };
 
-const messagePrimaryParts = computed(() => {
+type MessagePart = {
+  key: string;
+  html: string;
+  timestamp: string;
+  showTimestamp: boolean;
+};
+
+const partKey = (step: ChatMessageStep, item: ChatMessageItem, index: number) => {
+  if (typeof item.id === 'number' && item.id > 0) return `item-${item.id}`;
+  const stepSeq = typeof step.sequence === 'number' ? step.sequence : 0;
+  const itemSeq = typeof item.sequence === 'number' ? item.sequence : 0;
+  return `item-${stepSeq}-${itemSeq}-${index}`;
+};
+
+const messageParts = computed<MessagePart[]>(() => {
   const wantedType = msg.value.role === 'user' ? 'input' : 'answer';
   const steps = (msg.value.steps || []).slice().sort(sortBySequence);
-  const parts: string[] = [];
+  const parts: MessagePart[] = [];
+  let answerIndex = 0;
 
   for (const step of steps) {
     const items = (step.items || []).slice().sort(sortBySequence);
     for (const item of items) {
       if (!item || item.type !== wantedType) continue;
       const text = joinTextContents(item.contents);
-      if (text.trim()) parts.push(text);
+      if (!text.trim()) continue;
+
+      parts.push({
+        key: partKey(step, item, answerIndex),
+        html: renderMessage(text, { highlightCode: shouldHighlightCode.value }),
+        timestamp: formatTimeOfDay(item.created_at || step.created_at),
+        showTimestamp: msg.value.role === 'assistant',
+      });
+      answerIndex += 1;
     }
+  }
+
+  if (msg.value.role === 'assistant' && msg.value.status !== 'generating' && parts.length > 0) {
+    parts[parts.length - 1] = {
+      ...parts[parts.length - 1],
+      showTimestamp: false,
+    };
   }
 
   return parts;
@@ -218,12 +259,6 @@ const messageMediaContents = computed(() => {
   if (msg.value.role === 'user') return collectItemContents(['input']).filter((content) => content.kind === 'media');
   return collectItemContents(['artifact']).filter((content) => content.kind === 'media');
 });
-
-const messageHtmlParts = computed(() =>
-  messagePrimaryParts.value.map((part) =>
-    renderMessage(part, { highlightCode: shouldHighlightCode.value })
-  )
-);
 
 const branchDisabled = computed(() => {
   if (!messageId.value) return true;
@@ -270,9 +305,26 @@ const setBubbleEl = (el: Element | null) => {
 </script>
 
 <style scoped>
+.message-answer-part::after {
+  content: '';
+  display: block;
+  clear: both;
+}
+
 .message-answer-divider {
   border: 0;
   border-top: 1px solid #d0d7de;
   margin: 10px 0;
+}
+
+.message-answer-time {
+  float: right;
+  margin-left: 12px;
+  margin-bottom: 4px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>

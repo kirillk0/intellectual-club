@@ -23,6 +23,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
         items: [
           :id,
           :sequence,
+          :created_at,
           :type,
           contents: [
             :id,

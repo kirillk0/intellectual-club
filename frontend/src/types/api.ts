@@ -139,6 +139,7 @@ export type ChatMessageContent = {
 export type ChatMessageItem = {
   id: number;
   sequence: number;
+  created_at?: string | null;
   type: string;
   contents?: ChatMessageContent[] | null;
 };

@@ -33,6 +33,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
     defstruct [
       :key,
       :sequence,
+      :created_at,
       :type,
       contents_by_sequence: %{}
     ]
@@ -278,6 +279,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           key: item_key,
           type: item_type,
           sequence: sequence,
+          created_at: DateTime.utc_now(),
           contents_by_sequence: %{}
         }
 
@@ -398,6 +400,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
     %{
       id: -100 - (item.sequence || 0),
       sequence: item.sequence,
+      created_at: if(item.created_at, do: DateTime.to_iso8601(item.created_at), else: nil),
       type: Atom.to_string(item.type || :other),
       contents:
         item.contents_by_sequence
@@ -421,6 +424,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   defp item_persistable(%Item{} = item) do
     %{
       sequence: item.sequence,
+      created_at: item.created_at,
       type: Atom.to_string(item.type || :other),
       contents:
         item.contents_by_sequence

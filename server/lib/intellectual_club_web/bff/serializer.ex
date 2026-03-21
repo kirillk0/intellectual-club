@@ -285,6 +285,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     %{
       id: item.id,
       sequence: item.sequence,
+      created_at: datetime_iso(item.created_at),
       type: type,
       contents:
         contents
@@ -365,6 +366,11 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp normalize_runtime_item(item) when is_map(item) do
     type = map_get(item, :type, "type") |> atom_to_string()
 
+    created_at =
+      item
+      |> map_get(:created_at, "created_at")
+      |> datetime_iso()
+
     contents =
       item
       |> map_get(:contents, "contents", [])
@@ -372,7 +378,9 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       |> Enum.filter(&content_visible_in_bff?(&1, type))
       |> Enum.map(&normalize_runtime_content(&1, type))
 
-    put_key(item, :contents, "contents", contents)
+    item
+    |> put_key(:created_at, "created_at", created_at)
+    |> put_key(:contents, "contents", contents)
   end
 
   defp normalize_runtime_item(item), do: item

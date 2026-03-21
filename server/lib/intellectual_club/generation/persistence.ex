@@ -473,12 +473,18 @@ defmodule IntellectualClub.Generation.Persistence do
 
     item_rows =
       Enum.map(items, fn item ->
+        created_at =
+          case Map.get(item, :created_at) do
+            %DateTime{} = dt -> dt
+            _ -> now
+          end
+
         %{
           chat_message_step_id: step_id,
           owner_id: owner_id,
           sequence: Map.get(item, :sequence, 1),
           type: Map.get(item, :type, "other") |> to_string(),
-          created_at: now,
+          created_at: created_at,
           updated_at: now
         }
       end)
