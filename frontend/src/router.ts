@@ -7,8 +7,6 @@ import BotEditView from './views/catalogs/BotEditView.vue';
 import BotsIndexView from './views/catalogs/BotsIndexView.vue';
 import KnowledgeBlockEditView from './views/catalogs/KnowledgeBlockEditView.vue';
 import KnowledgeBlocksIndexView from './views/catalogs/KnowledgeBlocksIndexView.vue';
-import KnowledgeTagEditView from './views/catalogs/KnowledgeTagEditView.vue';
-import KnowledgeTagsIndexView from './views/catalogs/KnowledgeTagsIndexView.vue';
 import LlmConfigurationEditView from './views/catalogs/LlmConfigurationEditView.vue';
 import LlmConfigurationsIndexView from './views/catalogs/LlmConfigurationsIndexView.vue';
 import LlmProviderEditView from './views/catalogs/LlmProviderEditView.vue';
@@ -66,13 +64,11 @@ export const router = createRouter({
     },
     {
       path: '/catalogs/knowledge-tags',
-      name: 'knowledge-tags',
-      component: KnowledgeTagsIndexView,
+      redirect: '/catalogs/knowledge-blocks',
     },
     {
       path: '/catalogs/knowledge-tags/:id(\\d+|new)',
-      name: 'knowledge-tag',
-      component: KnowledgeTagEditView,
+      redirect: '/catalogs/knowledge-blocks',
     },
     {
       path: '/catalogs/llm-providers',

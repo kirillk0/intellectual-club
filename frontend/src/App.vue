@@ -18,7 +18,6 @@
         <RouterLink to="/catalogs/bots">Bots</RouterLink>
         <RouterLink to="/catalogs/tools">Tools</RouterLink>
         <RouterLink to="/catalogs/knowledge-blocks">Knowledge Blocks</RouterLink>
-        <RouterLink to="/catalogs/knowledge-tags">Knowledge Tags</RouterLink>
         <RouterLink to="/catalogs/llm-providers">LLM Providers</RouterLink>
         <RouterLink to="/catalogs/llm-configurations">LLM Configurations</RouterLink>
         <RouterLink v-if="currentUser?.is_admin" to="/administration/users">Administration</RouterLink>

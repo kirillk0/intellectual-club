@@ -12,11 +12,6 @@
         <div class="muted">Reusable content blocks attached to bots and configurations.</div>
       </RouterLink>
 
-      <RouterLink class="card catalog-card" to="/catalogs/knowledge-tags">
-        <div class="catalog-card__title">Knowledge Tags</div>
-        <div class="muted">Hierarchical tags for organizing your knowledge base.</div>
-      </RouterLink>
-
       <RouterLink class="card catalog-card" to="/catalogs/bots">
         <div class="catalog-card__title">Bots</div>
         <div class="muted">Bot profiles with defaults and attached knowledge blocks.</div>
@@ -59,4 +54,3 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
   font-weight: 700;
 }
 </style>
-
