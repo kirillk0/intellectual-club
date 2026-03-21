@@ -57,6 +57,7 @@
                 Step {{ currentStepNumber }}
               </button>
               <span v-else class="working-step-number">Step {{ currentStepNumber }}</span>
+              <span v-if="currentStepTime" class="working-step-time">{{ currentStepTime }}</span>
             </div>
 
             <div v-for="item in providerItems(currentStep)" :key="item.id" class="working-item">
@@ -147,6 +148,7 @@ import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type { ChatMessageContent, ChatMessageItem, ChatMessageStep } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { displayTimestampIso, formatTimeOfDay } from '@/utils/dates';
 
 interface Props {
   messageId: number | null;
@@ -194,6 +196,7 @@ const currentStepNumber = computed(() => {
   if (!currentStep.value) return null;
   return stepNumber(currentStep.value, currentStepIndex.value);
 });
+const currentStepTime = computed(() => formatTimeOfDay(displayTimestampIso(currentStep.value)));
 
 const stepOptions = computed(() =>
   steps.value.map((step, index) => ({
@@ -469,6 +472,13 @@ const toolCallInfo = (item: Pick<ChatMessageItem, 'contents'>) => {
   color: #6b7280;
 }
 
+.working-step-time {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
 .working-item-title {
   font-size: 0.78rem;
   text-transform: uppercase;
@@ -501,6 +511,7 @@ const toolCallInfo = (item: Pick<ChatMessageItem, 'contents'>) => {
   align-items: center;
   gap: 8px;
   font-size: 0.95em;
+  width: 100%;
 }
 
 .working-step-links-secondary {

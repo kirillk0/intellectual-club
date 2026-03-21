@@ -81,6 +81,8 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       end)
 
     assert is_map(assistant)
+    assert is_binary(assistant["finished_at"])
+    assert is_binary(get_in(assistant, ["steps", Access.at(0), "finished_at"]))
 
     assert Enum.any?(all_text_contents(assistant), &String.contains?(&1, "TAIL"))
   end

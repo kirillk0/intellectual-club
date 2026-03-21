@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
+  alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
   sqlite do
@@ -84,6 +85,11 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       constraints(min: 0.0)
     end
 
+    attribute :finished_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -135,6 +141,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
 
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:chat_message]})
+      change({SetFinishedAtFromStatus, []})
     end
 
     update :update do

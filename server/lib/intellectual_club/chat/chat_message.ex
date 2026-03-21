@@ -9,6 +9,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.MessageContentFts
+  alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
   alias IntellectualClub.Chat.Changes.SetDefaultParentFromChatLastMessage
   alias IntellectualClub.Chat.Changes.ValidateParentMessage
@@ -49,6 +50,11 @@ defmodule IntellectualClub.Chat.ChatMessage do
       allow_nil?(false)
       public?(true)
       default(0)
+    end
+
+    attribute :finished_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
     end
 
     create_timestamp(:created_at)
@@ -117,6 +123,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       )
 
       change({ValidateParentMessage, []})
+      change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
     end
 
@@ -134,6 +141,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change({ValidateParentMessage, []})
       change(set_attribute(:role, :user))
       change(set_attribute(:status, :done))
+      change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
     end
 
@@ -150,6 +158,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change({ValidateParentMessage, []})
       change(set_attribute(:role, :assistant))
       change(set_attribute(:status, :generating))
+      change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
     end
 

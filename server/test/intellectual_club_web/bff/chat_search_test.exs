@@ -46,6 +46,8 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     assert is_binary(List.first(payload["active"])["snippet"])
     assert is_binary(List.first(payload["inactive"])["snippet"])
+    assert is_binary(List.first(payload["active"])["finished_at"])
+    assert is_binary(List.first(payload["inactive"])["finished_at"])
   end
 
   test "GET /api/bff/chats/:id/search returns empty results for empty term", %{conn: conn} do

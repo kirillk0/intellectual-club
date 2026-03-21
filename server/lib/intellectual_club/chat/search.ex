@@ -32,6 +32,7 @@ defmodule IntellectualClub.Chat.Search do
           content: String.t(),
           snippet: String.t() | nil,
           created_at: String.t() | nil,
+          finished_at: String.t() | nil,
           llm_configuration_id: integer() | nil
         }
 
@@ -289,6 +290,7 @@ defmodule IntellectualClub.Chat.Search do
       content: content,
       snippet: build_snippet(content, search),
       created_at: datetime_iso(message.created_at),
+      finished_at: datetime_iso(Map.get(message, :finished_at)),
       llm_configuration_id: message.llm_configuration_id
     }
   end

@@ -12,6 +12,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
         :id,
         :sequence,
         :created_at,
+        :finished_at,
         :status,
         :response_final,
         :input_tokens,

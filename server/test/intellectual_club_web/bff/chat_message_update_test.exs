@@ -35,6 +35,15 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
         parent_id: user_message.id
       )
 
+    before_update =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [:finished_at]]
+      )
+
+    before_finished_at = before_update.finished_at
+    [before_step] = Enum.sort_by(before_update.steps || [], & &1.sequence)
+
     conn =
       patch(conn, ~p"/api/bff/chat-messages/#{assistant_message.id}", %{
         "content" => "New answer"
@@ -44,6 +53,17 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
     assistant_payload = find_message(payload["branch"] || [], assistant_message.id)
 
     assert answer_text_contents(assistant_payload) == ["New answer"]
+
+    after_update =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [:finished_at]]
+      )
+
+    [after_step] = Enum.sort_by(after_update.steps || [], & &1.sequence)
+
+    assert after_update.finished_at == before_finished_at
+    assert after_step.finished_at == before_step.finished_at
   end
 
   test "PATCH /api/bff/chat-messages/:id updates multiple answer contents via contents payload",

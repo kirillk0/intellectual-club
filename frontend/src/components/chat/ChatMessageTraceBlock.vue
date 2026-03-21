@@ -106,7 +106,7 @@ import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type { ChatBranchMessage, ChatMessageContent, ChatMessageItem, ChatMessageStep } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
-import { formatRelativeDateTime } from '@/utils/dates';
+import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
 
 interface Props {
   message: ChatBranchMessage;
@@ -288,7 +288,7 @@ const stepGroups = computed(() => {
   return steps.map((step, index) => ({
     key: String(step.id ?? `seq:${step.sequence ?? 0}`),
     sequence: typeof step.sequence === 'number' ? step.sequence : index + 1,
-    createdAt: step.created_at || null,
+    createdAt: displayTimestampIso(step),
     step,
     normalItems: orderedItemsForStep(step).filter((item) => !isToolItem(item)),
     toolRows: toolRowsForStep(orderedItemsForStep(step).filter(isToolItem)),

@@ -30,7 +30,7 @@ import {
   type PendingChatFile,
 } from '@/features/chat/attachments';
 import { copyTextWithFallback } from '@/utils/clipboard';
-import { formatRelativeDateTime } from '@/utils/dates';
+import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
 import type {
   Bot,
   Chat,
@@ -83,6 +83,7 @@ type PollResponse = {
   status: string;
   current_step: ChatMessageStep | null;
   steps?: ChatMessageStep[] | null;
+  finished_at?: string | null;
   token_count?: number | null;
   error_detail?: string | null;
 };
@@ -517,7 +518,7 @@ export function useChatViewModel() {
   );
 
   const searchHitMeta = (hit: ChatMessageSearchHit) => {
-    const time = formatRelativeDateTime(hit.created_at ?? null);
+    const time = formatRelativeDateTime(displayTimestampIso(hit));
     const cfgLabel =
       hit.role === 'assistant' ? messageConfigLabel(hit.llm_configuration_id ?? null) : '';
     if (time && cfgLabel) return `${time} (${cfgLabel})`;
@@ -665,7 +666,7 @@ export function useChatViewModel() {
   };
 
   const messageMetaLabel = (msg: ChatBranchMessage) => {
-    const time = formatRelativeDateTime(msg.created_at);
+    const time = formatRelativeDateTime(displayTimestampIso(msg));
     const cfgLabel =
       msg.role === 'assistant' ? messageConfigLabel(msg.llm_configuration_id) : '';
     if (time && cfgLabel) return `${time} (${cfgLabel})`;
@@ -996,6 +997,7 @@ export function useChatViewModel() {
       if (current) {
         const patch: Partial<ChatBranchMessage> = {
           status: response.status as ChatBranchMessage['status'],
+          finished_at: response.finished_at ?? undefined,
           error_detail: response.error_detail ?? undefined,
         };
 

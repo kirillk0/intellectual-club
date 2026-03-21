@@ -8,6 +8,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.RuntimeTrace
 
   test "rollback_steps_for_retry! removes the selected step range and resets the message" do
     %{user: actor} = user_fixture()
@@ -70,7 +71,105 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert message.status == :generating
     assert message.error_detail == nil
     assert message.token_count == 0
+    assert message.finished_at == nil
     assert Enum.map(message.steps || [], & &1.sequence) == [1]
+  end
+
+  test "persisted intermediate steps get finished_at while the next step remains open" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Multi-step finished at", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert assistant_message.finished_at == nil
+
+    step_1_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{
+          "model" => "demo-model",
+          "messages" => [%{"role" => "user", "content" => "Hello"}]
+        },
+        []
+      )
+
+    step_1 =
+      RuntimeTrace.new_step(
+        id: step_1_id,
+        sequence: 1,
+        raw_request: %{"model" => "demo-model"}
+      )
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Step one"})
+
+    :ok = Persistence.persist_step_trace_only!(assistant_message.id, step_1)
+
+    step_2_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        2,
+        %{
+          "model" => "demo-model",
+          "messages" => [%{"role" => "assistant", "content" => "Step one"}]
+        },
+        []
+      )
+
+    step_2 =
+      RuntimeTrace.new_step(
+        id: step_2_id,
+        sequence: 2,
+        raw_request: %{"model" => "demo-model"}
+      )
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Final answer"})
+
+    interim_message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [:finished_at]]
+      )
+
+    assert interim_message.finished_at == nil
+
+    [persisted_step_1, open_step_2] = Enum.sort_by(interim_message.steps || [], & &1.sequence)
+    assert persisted_step_1.sequence == 1
+    assert %DateTime{} = persisted_step_1.finished_at
+    assert open_step_2.sequence == 2
+    assert open_step_2.finished_at == nil
+
+    Persistence.persist_completed!(assistant_message.id, step_2)
+
+    final_message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [:finished_at]]
+      )
+
+    assert final_message.status == :done
+    assert %DateTime{} = final_message.finished_at
+
+    finished_steps = Enum.sort_by(final_message.steps || [], & &1.sequence)
+    assert Enum.map(finished_steps, & &1.sequence) == [1, 2]
+    assert Enum.all?(finished_steps, &match?(%DateTime{}, &1.finished_at))
   end
 
   defp create_step!(message_id, sequence, actor) do

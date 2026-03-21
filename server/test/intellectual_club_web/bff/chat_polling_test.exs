@@ -39,7 +39,9 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     assert payload["runtime"] == true
     assert payload["status"] == "generating"
+    assert payload["finished_at"] == nil
     assert is_map(payload["current_step"])
+    assert payload["current_step"]["finished_at"] == nil
     assert is_binary(answer1)
 
     Process.sleep(40)
@@ -48,7 +50,9 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     assert byte_size(answer2) >= byte_size(answer1)
 
-    wait_for_generation_to_finish(conn, context.message_id)
+    final_payload = wait_for_generation_to_finish(conn, context.message_id)
+
+    assert is_binary(final_payload["finished_at"])
   end
 
   test "raw request is persisted to step immediately and readable while generation is running", %{
@@ -123,9 +127,11 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     assert payload["runtime"] == false
     assert payload["status"] in ["done", "canceled", "error"]
+    assert is_binary(payload["finished_at"])
     assert is_integer(payload["token_count"])
     assert is_list(payload["steps"])
     assert is_map(payload["current_step"])
+    assert is_binary(payload["current_step"]["finished_at"])
 
     {_payload, answer} = poll_answer_text(conn, context.message_id)
     assert String.trim(answer) != ""
@@ -206,7 +212,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
       |> json_response(200)
 
     if payload["status"] in ["done", "canceled", "error"] do
-      :ok
+      payload
     else
       Process.sleep(20)
       wait_for_generation_to_finish(conn, message_id, attempts_left - 1)

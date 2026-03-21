@@ -147,6 +147,7 @@ export type ChatMessageStep = {
   id: number;
   sequence: number;
   created_at?: string | null;
+  finished_at?: string | null;
   status?: string | null;
   response_final?: boolean | null;
   input_tokens?: number | null;
@@ -165,6 +166,7 @@ export type ChatBranchMessage = {
   error_detail?: string | null;
   token_count?: number | null;
   created_at?: string | null;
+  finished_at?: string | null;
   llm_configuration_id?: number | null;
   steps?: ChatMessageStep[] | null;
   prev_sibling_id?: number | null;

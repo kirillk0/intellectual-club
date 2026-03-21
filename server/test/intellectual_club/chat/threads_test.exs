@@ -152,6 +152,32 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert message.token_count == 2
   end
 
+  test "adding a user message sets finished_at on the message and initial step" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Finished at chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, message} = Threads.add_message(chat, :user, "hello", actor: actor, parent_id: nil)
+
+    loaded =
+      Ash.get!(ChatMessage, message.id,
+        actor: actor,
+        load: [steps: [:finished_at]]
+      )
+
+    assert %DateTime{} = loaded.finished_at
+
+    [step] = Enum.sort_by(loaded.steps || [], & &1.sequence)
+    assert %DateTime{} = step.finished_at
+  end
+
   test "add_user_message uses chat last_message as default parent" do
     %{user: actor} = user_fixture()
 

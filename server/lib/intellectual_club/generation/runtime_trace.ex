@@ -188,6 +188,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       id: step.id || -1,
       sequence: step.sequence || 1,
       created_at: created_at,
+      finished_at: nil,
       status: status_string(step.status),
       response_final: step.response_final || false,
       input_tokens: step.input_tokens,

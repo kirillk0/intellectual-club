@@ -21,6 +21,7 @@ export type ChatMessageSearchHit = {
   content: string;
   snippet?: string;
   created_at?: string | null;
+  finished_at?: string | null;
   llm_configuration_id?: number | null;
 };
 

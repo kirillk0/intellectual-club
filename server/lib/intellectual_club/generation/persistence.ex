@@ -39,13 +39,14 @@ defmodule IntellectualClub.Generation.Persistence do
           cached_input_tokens: nil,
           reasoning_tokens: nil,
           cost: nil,
+          finished_at: nil,
           created_at: started_at,
           updated_at: now
         }
 
         _ =
           repo.insert_all("chat_message_steps", [step_row],
-            on_conflict: {:replace, [:raw_request, :updated_at, :status]},
+            on_conflict: {:replace, [:raw_request, :updated_at, :status, :finished_at]},
             conflict_target: [:chat_message_id, :sequence]
           )
 
@@ -133,7 +134,7 @@ defmodule IntellectualClub.Generation.Persistence do
       from(s in "chat_message_steps",
         where: s.chat_message_id in ^ids and s.status in ["waiting_provider", "waiting_tools"]
       )
-      |> repo.update_all(set: [status: "canceled", updated_at: now])
+      |> repo.update_all(set: [status: "canceled", finished_at: now, updated_at: now])
     end
 
     from(m in "chat_messages", where: m.chat_id == ^chat_id and m.status == "generating")
@@ -141,6 +142,7 @@ defmodule IntellectualClub.Generation.Persistence do
       set: [
         status: "canceled",
         error_detail: "Orphaned generation (worker not found)",
+        finished_at: now,
         updated_at: now
       ]
     )
@@ -156,13 +158,14 @@ defmodule IntellectualClub.Generation.Persistence do
       where:
         s.chat_message_id == ^message_id and s.status in ["waiting_provider", "waiting_tools"]
     )
-    |> repo.update_all(set: [status: "canceled", updated_at: now])
+    |> repo.update_all(set: [status: "canceled", finished_at: now, updated_at: now])
 
     from(m in "chat_messages", where: m.id == ^message_id and m.status == "generating")
     |> repo.update_all(
       set: [
         status: "canceled",
         error_detail: "Orphaned generation (worker not found)",
+        finished_at: now,
         updated_at: now
       ]
     )
@@ -184,6 +187,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: "done",
           error_detail: nil,
           token_count: TokenCounter.estimate(answer_text),
+          finished_at: now,
           updated_at: now
         ]
       )
@@ -216,6 +220,7 @@ defmodule IntellectualClub.Generation.Persistence do
         set: [
           status: "canceled",
           token_count: TokenCounter.estimate(answer_text),
+          finished_at: now,
           updated_at: now
         ]
       )
@@ -249,6 +254,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: "error",
           error_detail: error_text,
           token_count: TokenCounter.estimate(answer_text),
+          finished_at: now,
           updated_at: now
         ]
       )
@@ -316,6 +322,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: "generating",
           error_detail: nil,
           token_count: 0,
+          finished_at: nil,
           updated_at: now
         ]
       )
@@ -358,6 +365,7 @@ defmodule IntellectualClub.Generation.Persistence do
       end
 
     response_final = Map.get(persistable, :response_final, false)
+    finished_at = if(step_status in ["done", "canceled", "error"], do: now, else: nil)
 
     raw_request = dump_json(Map.get(persistable, :raw_request) || %{})
     raw_response = dump_json(Map.get(persistable, :raw_response))
@@ -375,6 +383,7 @@ defmodule IntellectualClub.Generation.Persistence do
       cached_input_tokens: Map.get(persistable, :cached_input_tokens),
       reasoning_tokens: Map.get(persistable, :reasoning_tokens),
       cost: Map.get(persistable, :cost),
+      finished_at: finished_at,
       created_at: created_at,
       updated_at: now
     }
@@ -393,6 +402,7 @@ defmodule IntellectualClub.Generation.Persistence do
              :cached_input_tokens,
              :reasoning_tokens,
              :cost,
+             :finished_at,
              :updated_at
            ]},
         conflict_target: [:chat_message_id, :sequence]

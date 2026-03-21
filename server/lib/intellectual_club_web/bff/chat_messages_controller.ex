@@ -30,7 +30,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
       case GenerationSupervisor.poll_generation(message_id, %{}, []) do
         {:ok, runtime} ->
-          steps = load_persisted_steps(message_id, actor)
+          message = load_persisted_message(message_id, actor)
+          steps = serialize_message_steps(message)
           current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
 
           json(conn, %{
@@ -38,7 +39,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
             runtime: true,
             status: Atom.to_string(runtime.status),
             current_step: current_step,
-            steps: steps
+            steps: steps,
+            token_count: if(message, do: message.token_count, else: nil),
+            error_detail: if(message, do: message.error_detail, else: nil),
+            finished_at: if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
           })
 
         :not_found ->
@@ -803,10 +807,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           message
         end
 
-      steps =
-        (message.steps || [])
-        |> Enum.sort_by(& &1.sequence)
-        |> Enum.map(&Serializer.step/1)
+      steps = serialize_message_steps(message)
 
       current_step =
         case steps do
@@ -821,7 +822,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         token_count: message.token_count,
         current_step: current_step,
         steps: steps,
-        error_detail: message.error_detail
+        error_detail: message.error_detail,
+        finished_at: Serializer.datetime_iso(message.finished_at)
       })
     else
       {:error, _error} ->
@@ -831,19 +833,25 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     end
   end
 
-  defp load_persisted_steps(message_id, actor) when is_integer(message_id) do
+  defp load_persisted_message(message_id, actor) when is_integer(message_id) do
     case Ash.get(ChatMessage, message_id,
            actor: actor,
            load: Loads.message_tree(),
            strict?: true
          ) do
       {:ok, message} ->
-        (message.steps || [])
-        |> Enum.sort_by(& &1.sequence)
-        |> Enum.map(&Serializer.step/1)
+        message
 
       {:error, _error} ->
-        []
+        nil
     end
+  end
+
+  defp serialize_message_steps(nil), do: []
+
+  defp serialize_message_steps(message) do
+    (message.steps || [])
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.map(&Serializer.step/1)
   end
 end
