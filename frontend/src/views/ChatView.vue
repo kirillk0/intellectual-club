@@ -114,6 +114,7 @@
                   msg.id &&
                   vm.openStepDetails({
                     messageId: msg.id,
+                    messageStatus: msg.status,
                     step,
                     closed: msg.status !== 'generating' || Boolean(step.response_final),
                   })
@@ -293,8 +294,11 @@
       <ChatStepDetailsModal
         :open="vm.stepDetailsOpen"
         :step="vm.stepDetailsStep"
+        :message-id="vm.stepDetailsMessageId"
+        :message-status="vm.stepDetailsMessageStatus"
         :show-billing="vm.stepDetailsShowBilling"
         :show-response="vm.stepDetailsShowResponse"
+        :retry-from-step-pending="vm.stepDetailsRetryFromStepPending"
         :request-loading="vm.stepDetailsRequestLoading"
         :request-error="vm.stepDetailsRequestError"
         :request-payload="vm.stepDetailsRequestPayload"
@@ -302,6 +306,7 @@
         :response-error="vm.stepDetailsResponseError"
         :response-payload="vm.stepDetailsResponsePayload"
         @close="vm.closeStepDetails"
+        @retry-from-step="vm.retryFromStep"
       />
     </Teleport>
 

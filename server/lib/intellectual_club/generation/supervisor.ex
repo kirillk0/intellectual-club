@@ -13,6 +13,7 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Generation.Worker
 
   @manual_retry_statuses [:error, :canceled]
+  @retry_from_step_statuses [:done, :error, :canceled]
   @resume_retry_statuses [:generating]
 
   def start_link(init_arg) do
@@ -47,7 +48,42 @@ defmodule IntellectualClub.Generation.Supervisor do
          :ok <- Persistence.cancel_orphaned_generating_messages!(context.chat_id),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
-         :ok <- Persistence.rollback_last_step_for_retry!(context.message_id, step_sequence) do
+         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
+      step_id =
+        Persistence.ensure_step_started!(
+          context.message_id,
+          step_sequence,
+          context.request_payload || %{},
+          []
+        )
+
+      context = %{context | step_id: step_id}
+      start_worker(context)
+    else
+      nil ->
+        {:error, :no_steps_to_retry}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, :retry_failed}
+    end
+  end
+
+  def retry_from_step(message_id, step_id, opts \\ [])
+      when is_integer(message_id) and is_integer(step_id) and is_list(opts) do
+    retry_opts =
+      opts
+      |> Keyword.put(:step_id, step_id)
+      |> Keyword.put_new(:allowed_statuses, @retry_from_step_statuses)
+
+    with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
+         :ok <- cancel_for_chat(context.chat_id),
+         :ok <- Persistence.cancel_orphaned_generating_messages!(context.chat_id),
+         step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
+           Map.get(context, :initial_step_sequence),
+         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
       step_id =
         Persistence.ensure_step_started!(
           context.message_id,
@@ -77,7 +113,7 @@ defmodule IntellectualClub.Generation.Supervisor do
     with {:ok, context} <- Context.prepare_retry(message_id, resume_opts),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
-         :ok <- Persistence.rollback_last_step_for_retry!(context.message_id, step_sequence) do
+         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
       step_id =
         Persistence.ensure_step_started!(
           context.message_id,

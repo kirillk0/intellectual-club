@@ -72,6 +72,125 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
     assert String.contains?(payload["error"], "error or canceled")
   end
 
+  test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step retries a done message from an earlier step",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Retry from done step")
+
+    {assistant_message, [step_1, step_2, step_3]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :done, "hello", 3)
+
+    conn =
+      post(
+        conn,
+        ~p"/api/bff/chat-messages/#{assistant_message.id}/steps/#{step_2.id}/retry-from-step",
+        %{}
+      )
+
+    payload = json_response(conn, 200)
+
+    assert get_in(payload, ["generation", "message_id"]) == assistant_message.id
+    assert {:ok, _step} = Ash.get(ChatMessageStep, step_1.id, actor: actor)
+    assert {:error, _error} = Ash.get(ChatMessageStep, step_2.id, actor: actor)
+    assert {:error, _error} = Ash.get(ChatMessageStep, step_3.id, actor: actor)
+
+    retried = find_message(payload["branch"] || [], assistant_message.id)
+    assert retried["status"] in ["generating", "done"]
+
+    wait_for_generation_to_finish(conn, assistant_message.id)
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [preserved_step, retried_step] = Enum.sort_by(message.steps || [], & &1.sequence)
+
+    assert preserved_step.id == step_1.id
+    assert retried_step.sequence == 2
+    assert retried_step.id != step_2.id
+  end
+
+  test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step retries a canceled message from an earlier step",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Retry from canceled step")
+
+    {assistant_message, [step_1, step_2, step_3]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :canceled, "hello", 3)
+
+    conn =
+      post(
+        conn,
+        ~p"/api/bff/chat-messages/#{assistant_message.id}/steps/#{step_2.id}/retry-from-step",
+        %{}
+      )
+
+    payload = json_response(conn, 200)
+
+    assert get_in(payload, ["generation", "message_id"]) == assistant_message.id
+    assert {:ok, _step} = Ash.get(ChatMessageStep, step_1.id, actor: actor)
+    assert {:error, _error} = Ash.get(ChatMessageStep, step_2.id, actor: actor)
+    assert {:error, _error} = Ash.get(ChatMessageStep, step_3.id, actor: actor)
+
+    wait_for_generation_to_finish(conn, assistant_message.id)
+  end
+
+  test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step rejects generating messages",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Retry from generating step")
+
+    {assistant_message, [step]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :generating, "hello", 1)
+
+    conn =
+      post(
+        conn,
+        ~p"/api/bff/chat-messages/#{assistant_message.id}/steps/#{step.id}/retry-from-step",
+        %{}
+      )
+
+    payload = json_response(conn, 422)
+
+    assert payload["error"] == "Retry from this step is available after generation stops."
+    assert {:ok, _step} = Ash.get(ChatMessageStep, step.id, actor: actor)
+
+    message = Ash.get!(ChatMessage, assistant_message.id, actor: actor)
+    assert message.status == :generating
+  end
+
+  test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step returns 404 for a step from another message",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Retry wrong step")
+
+    {assistant_message, [_step_1, _step_2]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :done, "hello", 2)
+
+    {_other_message, [other_step]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :done, "another", 1)
+
+    conn =
+      post(
+        conn,
+        ~p"/api/bff/chat-messages/#{assistant_message.id}/steps/#{other_step.id}/retry-from-step",
+        %{}
+      )
+
+    payload = json_response(conn, 404)
+    assert payload["error"] == "Step not found"
+  end
+
   defp create_chat!(actor, title) do
     Chat
     |> Ash.Changeset.for_create(:create, %{title: title, note: "", variables: %{}}, actor: actor)
@@ -79,6 +198,14 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
   end
 
   defp create_retryable_assistant_message!(chat, actor, status, prompt) do
+    {assistant_message, [old_step]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, status, prompt, 1)
+
+    {assistant_message, old_step}
+  end
+
+  defp create_retryable_assistant_message_with_steps!(chat, actor, status, prompt, step_count)
+       when is_integer(step_count) and step_count > 0 do
     {:ok, user_message} = Threads.add_message_to_end(chat, :user, prompt, actor: actor)
 
     assistant_message =
@@ -97,28 +224,35 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
       )
       |> Ash.create!(actor: actor)
 
-    old_step =
-      ChatMessageStep
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          chat_message_id: assistant_message.id,
-          sequence: 1,
-          status: status,
-          raw_request: %{
-            "model" => "demo-model",
-            "messages" => [%{"role" => "user", "content" => prompt}],
-            "stream" => true
+    steps =
+      Enum.map(1..step_count, fn sequence ->
+        ChatMessageStep
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            chat_message_id: assistant_message.id,
+            sequence: sequence,
+            status: retryable_step_status(status),
+            raw_request: %{
+              "model" => "demo-model",
+              "messages" => [
+                %{"role" => "user", "content" => "#{prompt} step #{sequence}"}
+              ],
+              "stream" => true
+            },
+            raw_response: %{},
+            response_final: status == :done and sequence == step_count
           },
-          raw_response: %{},
-          response_final: false
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
+      end)
 
-    {assistant_message, old_step}
+    {assistant_message, steps}
   end
+
+  defp retryable_step_status(:generating), do: :waiting_provider
+  defp retryable_step_status(status), do: status
 
   defp wait_for_generation_to_finish(conn, message_id, attempts_left \\ 200)
 

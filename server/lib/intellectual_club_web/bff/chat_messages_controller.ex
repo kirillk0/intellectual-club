@@ -64,12 +64,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
       case GenerationSupervisor.retry_last_step(message_id, actor: actor) do
         {:ok, context} ->
-          {messages, branch_meta_by_id} = load_branch(context.chat_id, actor)
-
-          json(conn, %{
-            branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
-            generation: %{message_id: context.message_id}
-          })
+          render_retry_generation(conn, context, actor)
 
         {:error, :not_found} ->
           conn
@@ -85,6 +80,68 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "Message must be in error or canceled state."})
+
+        {:error, :no_steps_to_retry} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "No steps to retry."})
+
+        {:error, :invalid_step_request} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Step request payload is unavailable."})
+
+        {:error, :configuration_not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Configuration not found."})
+
+        {:error, :already_running} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Message generation is already running."})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Failed to retry generation: #{inspect(reason)}"})
+
+        other ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Failed to retry generation: #{inspect(other)}"})
+      end
+    end
+  end
+
+  def retry_from_step(conn, %{"message_id" => message_id, "step_id" => step_id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
+      message_id = String.to_integer(message_id)
+      step_id = String.to_integer(step_id)
+
+      case GenerationSupervisor.retry_from_step(message_id, step_id, actor: actor) do
+        {:ok, context} ->
+          render_retry_generation(conn, context, actor)
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Message not found"})
+
+        {:error, :step_not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Step not found"})
+
+        {:error, :assistant_only} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Only assistant messages can be retried."})
+
+        {:error, :invalid_status} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Retry from this step is available after generation stops."})
 
         {:error, :no_steps_to_retry} ->
           conn
@@ -339,6 +396,15 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
     branch_meta_by_id = Map.new(branch_meta, fn node -> {node.id, node} end)
     {messages, branch_meta_by_id}
+  end
+
+  defp render_retry_generation(conn, context, actor) when is_map(context) do
+    {messages, branch_meta_by_id} = load_branch(context.chat_id, actor)
+
+    json(conn, %{
+      branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
+      generation: %{message_id: context.message_id}
+    })
   end
 
   defp wanted_item_type(:user), do: :input

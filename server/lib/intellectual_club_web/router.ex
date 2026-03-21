@@ -121,6 +121,11 @@ defmodule IntellectualClubWeb.Router do
 
     post "/chat-messages/:id/cancel", ChatMessagesController, :cancel
     post "/chat-messages/:id/retry-last-step", ChatMessagesController, :retry_last_step
+
+    post "/chat-messages/:message_id/steps/:step_id/retry-from-step",
+         ChatMessagesController,
+         :retry_from_step
+
     post "/chat-messages/:id/delete", ChatMessagesController, :delete
     patch "/chat-messages/:id", ChatMessagesController, :update
     get "/chat-messages/:id/poll", ChatMessagesController, :poll

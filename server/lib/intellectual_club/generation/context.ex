@@ -70,8 +70,8 @@ defmodule IntellectualClub.Generation.Context do
 
     with {:ok, message} <- load_retry_message(message_id, actor),
          :ok <- validate_retry_message(message, allowed_statuses),
-         {:ok, last_step} <- load_last_retry_step(message),
-         {:ok, request_payload} <- normalize_retry_request_payload(last_step.raw_request),
+         {:ok, retry_step} <- load_retry_step(message, opts),
+         {:ok, request_payload} <- normalize_retry_request_payload(retry_step.raw_request),
          {:ok, chat} <- load_retry_chat(message),
          {:ok, llm_configuration} <- resolve_retry_configuration(message, chat, actor) do
       {tools_payload, tool_instances_by_alias} =
@@ -140,7 +140,7 @@ defmodule IntellectualClub.Generation.Context do
         context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
         cache_control_enabled: false,
         history_length: nil,
-        initial_step_sequence: last_step.sequence,
+        initial_step_sequence: retry_step.sequence,
         chunk_delay_ms:
           Keyword.get(
             opts,
@@ -462,6 +462,35 @@ defmodule IntellectualClub.Generation.Context do
   defp normalize_status("canceled"), do: :canceled
   defp normalize_status("done"), do: :done
   defp normalize_status(_other), do: nil
+
+  defp load_retry_step(message, opts) when is_map(message) and is_list(opts) do
+    case Keyword.fetch(opts, :step_id) do
+      {:ok, step_id} -> load_retry_step_by_id(message, step_id)
+      :error -> load_last_retry_step(message)
+    end
+  end
+
+  defp load_retry_step_by_id(message, step_id)
+       when is_map(message) and is_integer(step_id) and step_id > 0 do
+    step =
+      message
+      |> Map.get(:steps, [])
+      |> Enum.find(fn
+        %{id: id, sequence: sequence}
+        when id == step_id and is_integer(sequence) and sequence > 0 ->
+          true
+
+        _other ->
+          false
+      end)
+
+    case step do
+      nil -> {:error, :step_not_found}
+      step -> {:ok, step}
+    end
+  end
+
+  defp load_retry_step_by_id(_message, _step_id), do: {:error, :step_not_found}
 
   defp load_last_retry_step(message) when is_map(message) do
     steps = Map.get(message, :steps) || []

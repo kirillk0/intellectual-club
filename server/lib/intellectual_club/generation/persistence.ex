@@ -270,26 +270,31 @@ defmodule IntellectualClub.Generation.Persistence do
 
   def rollback_last_step_for_retry!(message_id, step_sequence)
       when is_integer(message_id) and is_integer(step_sequence) and step_sequence > 0 do
+    rollback_steps_for_retry!(message_id, step_sequence)
+  end
+
+  def rollback_steps_for_retry!(message_id, from_sequence)
+      when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 do
     now = DateTime.utc_now()
     repo = Db.repo()
 
     repo.transaction(fn ->
-      step_id =
-        repo.one(
+      step_ids =
+        repo.all(
           from(s in "chat_message_steps",
-            where: s.chat_message_id == ^message_id and s.sequence == ^step_sequence,
+            where: s.chat_message_id == ^message_id and s.sequence >= ^from_sequence,
             select: s.id
           )
         )
 
-      if is_nil(step_id) do
+      if step_ids == [] do
         raise ArgumentError, "Retry step not found"
       end
 
       item_ids =
         repo.all(
           from(i in "chat_message_items",
-            where: i.chat_message_step_id == ^step_id,
+            where: i.chat_message_step_id in ^step_ids,
             select: i.id
           )
         )
@@ -299,10 +304,10 @@ defmodule IntellectualClub.Generation.Persistence do
         |> repo.delete_all()
       end
 
-      from(i in "chat_message_items", where: i.chat_message_step_id == ^step_id)
+      from(i in "chat_message_items", where: i.chat_message_step_id in ^step_ids)
       |> repo.delete_all()
 
-      from(s in "chat_message_steps", where: s.id == ^step_id)
+      from(s in "chat_message_steps", where: s.id in ^step_ids)
       |> repo.delete_all()
 
       from(m in "chat_messages", where: m.id == ^message_id)

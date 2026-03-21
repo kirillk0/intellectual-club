@@ -54,7 +54,7 @@
             />
           </template>
 
-          <template v-else>
+          <template v-else-if="activeTab === 'response'">
             <div v-if="responseLoading" class="muted">Loading payload…</div>
             <div v-else-if="responseErrorText" class="error-text">{{ responseErrorText }}</div>
             <JsonTreeView
@@ -63,6 +63,24 @@
               :value="responsePayloadValue"
               :download-filename="responseDownloadFilename"
             />
+          </template>
+
+          <template v-else>
+            <div class="step-actions-panel">
+              <p v-if="showGeneratingNote" class="muted step-actions-note">
+                Retry from this step is available after generation stops.
+              </p>
+              <button
+                v-else
+                type="button"
+                class="link step-actions-link"
+                :disabled="!canRetryFromStep || retryFromStepPending"
+                @click="emit('retry-from-step')"
+              >
+                {{ retryFromStepPending ? 'Retrying…' : 'Retry from this step' }}
+              </button>
+              <p v-if="showUnavailableNote" class="muted step-actions-note">Step is not available.</p>
+            </div>
           </template>
         </div>
 
@@ -84,6 +102,8 @@ import type { ChatMessageStep } from '@/types/api';
 interface Props {
   open: boolean;
   step: ChatMessageStep | null;
+  messageId?: number | null;
+  messageStatus?: string | null;
   showBilling?: boolean;
   showResponse?: boolean;
   requestLoading?: boolean;
@@ -92,11 +112,14 @@ interface Props {
   responseLoading?: boolean;
   responseError?: string;
   responsePayload?: unknown;
+  retryFromStepPending?: boolean;
 }
 
-type TabKey = 'billing' | 'request' | 'response';
+type TabKey = 'billing' | 'request' | 'response' | 'actions';
 
 const props = withDefaults(defineProps<Props>(), {
+  messageId: null,
+  messageStatus: null,
   showBilling: false,
   showResponse: false,
   requestLoading: false,
@@ -105,15 +128,20 @@ const props = withDefaults(defineProps<Props>(), {
   responseLoading: false,
   responseError: '',
   responsePayload: null,
+  retryFromStepPending: false,
 });
 
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  (e: 'retry-from-step'): void;
+}>();
 
 const tabs = computed<Array<{ id: TabKey; label: string }>>(() => {
   const list: Array<{ id: TabKey; label: string }> = [];
   if (props.showBilling) list.push({ id: 'billing', label: 'Billing' });
   list.push({ id: 'request', label: 'Raw request' });
   if (props.showResponse) list.push({ id: 'response', label: 'Raw response' });
+  list.push({ id: 'actions', label: 'Actions' });
   return list;
 });
 
@@ -152,6 +180,10 @@ const responsePayloadValue = computed(() => props.responsePayload ?? null);
 
 const requestDownloadFilename = computed(() => `step-${stepLabel.value}-raw-request.json`);
 const responseDownloadFilename = computed(() => `step-${stepLabel.value}-raw-response.json`);
+const retryFromStepPending = computed(() => Boolean(props.retryFromStepPending));
+const canRetryFromStep = computed(() => Number(props.messageId || 0) > 0 && Number(props.step?.id || 0) > 0);
+const showGeneratingNote = computed(() => props.messageStatus === 'generating');
+const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetryFromStep.value);
 
 const formatMetric = (value: unknown) => {
   if (value == null || value === '') return '—';
@@ -198,6 +230,22 @@ const formatCost = (value: unknown) => {
 
 .step-panel {
   margin-top: 10px;
+}
+
+.step-actions-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.step-actions-link {
+  padding: 0;
+}
+
+.step-actions-note {
+  margin: 0;
 }
 
 .step-info-row {

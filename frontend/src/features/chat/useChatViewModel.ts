@@ -1535,8 +1535,11 @@ export function useChatViewModel() {
 
   const stepDetailsOpen = ref(false);
   const stepDetailsStep = ref<ChatMessageStep | null>(null);
+  const stepDetailsMessageId = ref<number | null>(null);
+  const stepDetailsMessageStatus = ref<ChatBranchMessage['status'] | null>(null);
   const stepDetailsShowBilling = ref(false);
   const stepDetailsShowResponse = ref(false);
+  const stepDetailsRetryFromStepPending = ref(false);
 
   const stepDetailsRequestLoading = ref(false);
   const stepDetailsRequestError = ref('');
@@ -1607,13 +1610,17 @@ export function useChatViewModel() {
 
   const openStepDetails = (payload: {
     messageId: number;
+    messageStatus: ChatBranchMessage['status'];
     step: ChatMessageStep;
     closed: boolean;
   }) => {
     stepDetailsOpen.value = true;
     stepDetailsStep.value = payload.step;
+    stepDetailsMessageId.value = payload.messageId;
+    stepDetailsMessageStatus.value = payload.messageStatus;
     stepDetailsShowBilling.value = Boolean(payload.closed);
     stepDetailsShowResponse.value = Boolean(payload.closed);
+    stepDetailsRetryFromStepPending.value = false;
 
     const stepId = Number(payload.step.id || 0);
     void loadStepDetailsRaw('request', { messageId: payload.messageId, stepId });
@@ -1630,8 +1637,11 @@ export function useChatViewModel() {
   const closeStepDetails = () => {
     stepDetailsOpen.value = false;
     stepDetailsStep.value = null;
+    stepDetailsMessageId.value = null;
+    stepDetailsMessageStatus.value = null;
     stepDetailsShowBilling.value = false;
     stepDetailsShowResponse.value = false;
+    stepDetailsRetryFromStepPending.value = false;
     stepDetailsRequestLoading.value = false;
     stepDetailsRequestError.value = '';
     stepDetailsRequestPayload.value = null;
@@ -1640,6 +1650,57 @@ export function useChatViewModel() {
     stepDetailsResponseError.value = '';
     stepDetailsResponsePayload.value = null;
     stepDetailsResponseToken.value += 1;
+  };
+
+  const retryFromStep = async () => {
+    const messageId = stepDetailsMessageId.value;
+    const step = stepDetailsStep.value;
+    const stepId = Number(step?.id || 0);
+
+    if (!messageId || !stepId) return;
+    if (stepDetailsRetryFromStepPending.value) return;
+
+    if (stepDetailsMessageStatus.value === 'generating') {
+      alert('Retry from this step is available after generation stops.');
+      return;
+    }
+
+    const stepNumber =
+      typeof step?.sequence === 'number' && Number.isFinite(step.sequence) && step.sequence > 0
+        ? step.sequence
+        : '—';
+
+    const ok = confirm(
+      `Retry from step ${stepNumber}? This will delete this step and all following steps for this message.`
+    );
+
+    if (!ok) return;
+
+    stepDetailsRetryFromStepPending.value = true;
+    loadError.value = '';
+
+    try {
+      const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+        `/api/bff/chat-messages/${messageId}/steps/${stepId}/retry-from-step`,
+        {}
+      );
+
+      branch.value = payload.branch || [];
+
+      const generationId = payload.generation?.message_id;
+      closeStepDetails();
+
+      if (generationId) {
+        await startPolling(generationId);
+      }
+
+      void scrollToLastMessage({ behavior: 'smooth', block: 'end' });
+    } catch (error) {
+      console.error(error);
+      alert(errorMessage(error, 'Failed to retry from this step.'));
+    } finally {
+      stepDetailsRetryFromStepPending.value = false;
+    }
   };
 
   const contentFullOpen = ref(false);
@@ -2303,8 +2364,11 @@ export function useChatViewModel() {
     saveNote,
     stepDetailsOpen,
     stepDetailsStep,
+    stepDetailsMessageId,
+    stepDetailsMessageStatus,
     stepDetailsShowBilling,
     stepDetailsShowResponse,
+    stepDetailsRetryFromStepPending,
     stepDetailsRequestLoading,
     stepDetailsRequestError,
     stepDetailsRequestPayload,
@@ -2313,6 +2377,7 @@ export function useChatViewModel() {
     stepDetailsResponsePayload,
     openStepDetails,
     closeStepDetails,
+    retryFromStep,
     contentFullOpen,
     contentFullTitle,
     contentFullLoading,
