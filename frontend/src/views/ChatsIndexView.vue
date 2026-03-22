@@ -4,18 +4,6 @@
       <div class="toolbar fill">
         <strong>Chats</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button v-if="hasActiveBotFilter" type="button" @click="setBotFilter('')">Clear filter</button>
-          <button
-            v-if="isFilterMobile && !filterOpen"
-            class="panel-toggle"
-            type="button"
-            :class="{ 'active-filter': hasActiveBotFilter }"
-            @click="openFilter"
-            aria-label="Show bots"
-            title="Show bots"
-          >
-            🤖
-          </button>
           <button class="primary" style="white-space: nowrap" @click="openCreateChatModal" :disabled="creating">
             {{ creating ? 'Creating…' : 'New chat' }}
           </button>
@@ -23,172 +11,150 @@
       </div>
     </StackToolbarTeleport>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
-
-    <div v-else class="chat-list-layout">
-      <aside
-        class="sidebar chat-filter-panel"
-        :class="{ overlay: isFilterMobile, 'align-left': isFilterMobile }"
-        v-show="!isFilterMobile || filterOpen"
-      >
-        <div class="panel-header">
-          <h3 style="margin: 0">Bots</h3>
-          <div class="spacer"></div>
-          <button
-            v-if="isFilterMobile"
-            class="panel-toggle"
-            type="button"
-            @click="closeFilter"
-            aria-label="Hide bots"
-            title="Hide bots"
-          >
-            ◀
-          </button>
-        </div>
-
-        <div class="chat-search">
-          <input
-            v-model="botSearchTerm"
-            type="search"
-            class="full"
-            placeholder="Search bots"
-            aria-label="Search bots"
+    <div class="split-wrapper">
+      <div class="catalog-split">
+        <aside class="catalog-split__sidebar">
+          <ChatBotFiltersPanel
+            v-model:searchTerm="botSearchTerm"
+            :sortMode="botSortModeValue"
+            :selectedFilter="botFilter"
+            :hasActiveFilter="hasActiveBotFilter"
+            :allBotsCount="allBotsCount"
+            :showNoBotOption="showNoBotOption"
+            :noBotChatCount="noBotChatCount"
+            :options="visibleBotFilterOptions"
+            :emptyState="botFilterEmptyState"
+            @toggle-sort="toggleBotSortMode"
+            @select-filter="setBotFilter"
+            @clear-filter="setBotFilter('')"
           />
-          <button
-            type="button"
-            class="sort-toggle"
-            :class="{ active: botSortModeValue === 'recent_activity' }"
-            :aria-label="botSortToggleLabel"
-            :title="botSortToggleLabel"
-            @click="toggleBotSortMode"
-          >
-            <span aria-hidden="true">{{ botSortModeValue === 'recent_activity' ? '🕒' : 'A↕' }}</span>
-          </button>
-          <button v-if="botSearchTerm" type="button" @click="botSearchTerm = ''">Clear</button>
-        </div>
+        </aside>
 
-        <div class="list bot-filter-list">
-          <button
-            type="button"
-            class="row bot-filter-item"
-            :class="{ active: botFilter === '' }"
-            @click="setBotFilter('')"
-          >
-            <span class="bot-filter-name">All bots</span>
-            <ImageThumbnail :label="'All bots'" :size="36" :hideWithoutImage="true" />
-            <span class="muted bot-filter-count">{{ allBotsCount }}</span>
-          </button>
+        <main class="catalog-split__main stack">
+          <section class="card stack">
+            <div class="chat-search">
+              <input
+                v-model="chatSearchTerm"
+                type="search"
+                class="full"
+                placeholder="Search chats"
+                aria-label="Search chats"
+              />
+              <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
+            </div>
+          </section>
 
-          <button
-            v-if="showNoBotOption"
-            type="button"
-            class="row bot-filter-item"
-            :class="{ active: botFilter === 'none' }"
-            @click="setBotFilter('none')"
-          >
-            <span class="bot-filter-name">No bot</span>
-            <ImageThumbnail :label="'No bot'" :size="36" :hideWithoutImage="true" />
-            <span class="muted bot-filter-count">{{ noBotChatCount }}</span>
-          </button>
+          <p v-if="loading" class="muted">Loading…</p>
+          <p v-else-if="error" class="error-text">{{ error }}</p>
 
-          <button
-            v-for="opt in visibleBotFilterOptions"
-            :key="opt.value"
-            type="button"
-            class="row bot-filter-item"
-            :class="{ active: botFilter === opt.value }"
-            @click="setBotFilter(opt.value)"
-          >
-            <span class="bot-filter-name">{{ opt.label }}</span>
-            <ImageThumbnail :image="opt.image" :label="opt.label" :size="36" :hideWithoutImage="true" />
-            <span class="muted bot-filter-count">{{ opt.count }}</span>
-          </button>
+          <section v-else class="card stack chat-list-main">
+            <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
+            <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
-          <p v-if="botFilterEmptyState" class="muted">{{ botFilterEmptyState }}</p>
-        </div>
+            <div class="list">
+              <RouterLink
+                v-for="c in visibleChats"
+                :key="c.id"
+                class="row"
+                :class="chatResultClass(c)"
+                :to="chatResultLink(c)"
+              >
+                <div class="chat-result-main">
+                  <div class="chat-result-title">
+                    <span class="chat-result-name">{{ chatLabel(c) }}</span>
+                    <span v-if="c.llm_configuration_label" class="chat-result-config">
+                      ({{ c.llm_configuration_label }})
+                    </span>
+                  </div>
+                  <div class="chat-result-meta">
+                    <div class="muted">
+                      {{ niceDate(c.last_activity_at || c.created_at) }} ·
+                      {{ c.message_count ?? 0 }} msgs
+                    </div>
+                    <span
+                      v-if="c.active_generation_message_id"
+                      class="chat-result-generating"
+                      aria-label="Generating"
+                      title="Generating"
+                    >
+                      <span class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></span>
+                    </span>
+                  </div>
+                  <div v-if="!hasChatSearch && c.first_message_preview" class="chat-first-preview">
+                    <div class="chat-first-preview-bubble" :class="previewBubbleClass(c.first_message_role)">
+                      {{ formatPreview(c.first_message_preview) }}
+                    </div>
+                  </div>
+                  <div
+                    v-if="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' && c.snippet"
+                    class="chat-search-snippet"
+                  >
+                    {{ c.snippet }}
+                  </div>
+                </div>
+
+                <div class="chat-result-badges">
+                  <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
+                    {{ matchBadgeLabel(c.match_type) }}
+                  </span>
+                </div>
+              </RouterLink>
+            </div>
+
+            <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
+              <button type="button" :disabled="loading || pageNumber <= 1" @click="goToPreviousPage">
+                Previous
+              </button>
+              <span class="muted">Page {{ pageNumber }} of {{ totalPages }}</span>
+              <button type="button" :disabled="loading || !hasNextPage" @click="goToNextPage">
+                Next
+              </button>
+            </div>
+
+            <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
+            <p v-if="chatSearchEmptyState" class="muted">{{ chatSearchEmptyState }}</p>
+          </section>
+        </main>
+      </div>
+
+      <transition name="fade">
+        <div v-if="isMobile && filterOpen" class="panel-backdrop" @click="closeFilter"></div>
+      </transition>
+
+      <aside v-if="isMobile && filterOpen" class="sidebar overlay align-left">
+        <ChatBotFiltersPanel
+          v-model:searchTerm="botSearchTerm"
+          :sortMode="botSortModeValue"
+          :selectedFilter="botFilter"
+          :hasActiveFilter="hasActiveBotFilter"
+          :allBotsCount="allBotsCount"
+          :showNoBotOption="showNoBotOption"
+          :noBotChatCount="noBotChatCount"
+          :options="visibleBotFilterOptions"
+          :emptyState="botFilterEmptyState"
+          @toggle-sort="toggleBotSortMode"
+          @select-filter="setBotFilter"
+          @clear-filter="setBotFilter('')"
+        >
+          <template #header-extra>
+            <button class="panel-toggle" type="button" @click="closeFilter" aria-label="Hide bots filter">
+              ◀
+            </button>
+          </template>
+        </ChatBotFiltersPanel>
       </aside>
 
-      <section class="card stack chat-list-main">
-        <div class="chat-search">
-          <input
-            v-model="chatSearchTerm"
-            type="search"
-            class="full"
-            placeholder="Search chats"
-            aria-label="Search chats"
-          />
-          <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
-        </div>
-
-        <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
-        <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
-
-        <div class="list">
-          <RouterLink
-            v-for="c in visibleChats"
-            :key="c.id"
-            class="row"
-            :class="chatResultClass(c)"
-            :to="chatResultLink(c)"
-          >
-            <div class="chat-result-main">
-              <div class="chat-result-title">
-                <span class="chat-result-name">{{ chatLabel(c) }}</span>
-                <span v-if="c.llm_configuration_label" class="chat-result-config">
-                  ({{ c.llm_configuration_label }})
-                </span>
-              </div>
-              <div class="chat-result-meta">
-                <div class="muted">
-                  {{ niceDate(c.last_activity_at || c.created_at) }} ·
-                  {{ c.message_count ?? 0 }} msgs
-                </div>
-                <span
-                  v-if="c.active_generation_message_id"
-                  class="chat-result-generating"
-                  aria-label="Generating"
-                  title="Generating"
-                >
-                  <span class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></span>
-                </span>
-              </div>
-              <div v-if="!hasChatSearch && c.first_message_preview" class="chat-first-preview">
-                <div class="chat-first-preview-bubble" :class="previewBubbleClass(c.first_message_role)">
-                  {{ formatPreview(c.first_message_preview) }}
-                </div>
-              </div>
-              <div v-if="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' && c.snippet" class="chat-search-snippet">
-                {{ c.snippet }}
-              </div>
-            </div>
-
-            <div class="chat-result-badges">
-              <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
-                {{ matchBadgeLabel(c.match_type) }}
-              </span>
-            </div>
-          </RouterLink>
-        </div>
-
-        <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
-          <button type="button" :disabled="loading || pageNumber <= 1" @click="goToPreviousPage">
-            Previous
-          </button>
-          <span class="muted">Page {{ pageNumber }} of {{ totalPages }}</span>
-          <button type="button" :disabled="loading || !hasNextPage" @click="goToNextPage">
-            Next
-          </button>
-        </div>
-
-        <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
-        <p v-if="chatSearchEmptyState" class="muted">{{ chatSearchEmptyState }}</p>
-      </section>
+      <button
+        v-if="isMobile && !filterOpen"
+        class="panel-toggle floating left"
+        :class="{ 'active-filter': hasActiveBotFilter }"
+        type="button"
+        @click="openFilter"
+        aria-label="Show bots filter"
+      >
+        🤖
+      </button>
     </div>
-
-    <transition name="fade">
-      <div v-if="isFilterMobile && filterOpen" class="panel-backdrop" @click="closeFilter"></div>
-    </transition>
 
     <Teleport to="body">
       <BotSelectorModal
@@ -212,7 +178,7 @@ import { RouterLink, useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
-import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { parseImageAsset } from '@/features/media/image';
@@ -297,16 +263,11 @@ const botSortModeValue = computed({
     botSortMode.value = value === 'recent_activity' ? 'recent_activity' : 'name';
   },
 });
-const botSortToggleLabel = computed(() => {
-  return botSortModeValue.value === 'recent_activity'
-    ? 'Sort: Recent activity. Switch to Name.'
-    : 'Sort: Name. Switch to Recent activity.';
-});
 
 const isMobile = ref(false);
-const isFilterMobile = ref(false);
-const filterOpen = ref(true);
-const previewLength = computed(() => (isMobile.value ? 100 : 200));
+const isCompact = ref(false);
+const filterOpen = ref(false);
+const previewLength = computed(() => (isCompact.value ? 100 : 200));
 
 const hasChatSearch = computed(() => chatSearchTerm.value.trim().length > 0);
 const hasActiveBotFilter = computed(() => String(botFilter.value || '').trim().length > 0);
@@ -316,7 +277,6 @@ function openFilter() {
 }
 
 function closeFilter() {
-  if (!isFilterMobile.value) return;
   filterOpen.value = false;
 }
 
@@ -329,7 +289,7 @@ function setBotFilter(value: string) {
   botFilter.value = value;
   pageNumber.value = 1;
   void loadChats();
-  if (isFilterMobile.value) filterOpen.value = false;
+  if (isMobile.value) filterOpen.value = false;
 }
 
 const noBotChatCount = computed(() => {
@@ -414,9 +374,10 @@ const chatListEmptyState = computed(() => {
 });
 
 function updateIsMobile() {
-  isMobile.value = window.matchMedia('(max-width: 720px)').matches;
-  isFilterMobile.value = window.matchMedia('(max-width: 900px)').matches;
-  filterOpen.value = !isFilterMobile.value;
+  isCompact.value = window.matchMedia('(max-width: 720px)').matches;
+  const mobile = window.matchMedia('(max-width: 860px)').matches;
+  isMobile.value = mobile;
+  if (!mobile) filterOpen.value = false;
 }
 
 function niceDate(iso: string | null) {
@@ -723,17 +684,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.chat-list-layout {
-  display: grid;
-  grid-template-columns: 340px 1fr;
-  gap: 12px;
-  align-items: start;
-}
-
-.bot-filter-list {
-  gap: 6px;
-}
-
 .chat-list-main {
   gap: 10px;
 }
@@ -749,57 +699,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.sort-toggle {
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  border: 1px solid #d2d8e2;
-  background: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #4b5563;
-  padding: 0;
-  line-height: 1;
-}
-
-.sort-toggle:hover {
-  border-color: #b7c5dc;
-}
-
-.sort-toggle.active {
-  background: #f1f7ff;
-  border-color: #b8d6ff;
-  color: #1d4ed8;
-}
-
-.bot-filter-item {
-  cursor: pointer;
-  text-align: left;
-  background: #fff;
-  padding: 8px 10px;
-  justify-content: flex-start;
-}
-
-.bot-filter-item.active {
-  background: #f1f7ff;
-  border-color: #b8d6ff;
-}
-
-.bot-filter-name {
-  font-weight: 600;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.bot-filter-count {
-  margin-left: auto;
-  flex: 0 0 auto;
 }
 
 .chat-search-snippet {
@@ -894,11 +793,5 @@ onBeforeUnmount(() => {
 .chat-result-config {
   color: #6b7280;
   font-size: 0.85rem;
-}
-
-@media (max-width: 900px) {
-  .chat-list-layout {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

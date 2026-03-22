@@ -110,6 +110,7 @@ const props = withDefaults(
     storageKey?: string;
     defaultExpandDepth?: number;
     indentPx?: number;
+    expandAll?: boolean;
     showItemActions?: boolean;
     actionsDisabled?: boolean;
   }>(),
@@ -123,6 +124,7 @@ const props = withDefaults(
     storageKey: 'ic.knowledge_tags.tree.open_state.v1',
     defaultExpandDepth: 2,
     indentPx: 14,
+    expandAll: false,
     showItemActions: false,
     actionsDisabled: false,
   }
@@ -270,6 +272,7 @@ const forcedOpenIds = computed(() => {
 });
 
 function isOpen(id: number, depth: number) {
+  if (props.expandAll) return true;
   if (forcedOpenIds.value.has(id)) return true;
 
   const persisted = openState.value[String(id)];

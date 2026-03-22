@@ -20,6 +20,17 @@
       </div>
     </div>
 
+    <div class="knowledge-tags-panel__filter">
+      <input
+        v-model="tagFilter"
+        type="search"
+        class="full"
+        placeholder="Filter tags"
+        aria-label="Filter tags"
+      />
+      <button v-if="tagFilter" type="button" @click="tagFilter = ''">Clear</button>
+    </div>
+
     <form v-if="editorMode" class="knowledge-tags-panel__editor" @submit.prevent="submitEditor">
       <div class="knowledge-tags-panel__editor-title">{{ editorTitle }}</div>
       <p v-if="editorContext" class="muted knowledge-tags-panel__editor-context">{{ editorContext }}</p>
@@ -51,13 +62,14 @@
     <p v-else-if="tagsError" class="error-text">{{ tagsError }}</p>
     <KnowledgeTagsTree
       v-else
-      :tags="tags"
+      :tags="visibleTags"
       :selectedId="selectedId"
-      :showNoTagsOption="showNoTagsOption"
+      :showNoTagsOption="showTreeNoTagsOption"
       :noTagsSelected="noTagsSelected"
       :noTagsLabel="noTagsLabel"
       :storageKey="storageKey"
       :defaultExpandDepth="defaultExpandDepth"
+      :expandAll="hasTagFilter"
       :showItemActions="true"
       :actionsDisabled="mutationLoading"
       @select="emit('select', $event)"
@@ -67,7 +79,7 @@
       @delete="deleteTag"
     />
 
-    <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
+    <p v-if="visibleTagsEmptyState" class="muted">{{ visibleTagsEmptyState }}</p>
   </section>
 </template>
 
@@ -122,12 +134,17 @@ const tagsLoading = ref(false);
 const tagsError = ref<string | null>(null);
 const tags = ref<KnowledgeTagTreeItem[]>([]);
 const mutationLoading = ref(false);
+const tagFilter = ref('');
 
 const editorMode = ref<TagEditorMode | null>(null);
 const editorTagId = ref<number | null>(null);
 const editorName = ref('');
 const editorError = ref<string | null>(null);
 const editorInputRef = ref<HTMLInputElement | null>(null);
+
+function normalizeTagFilter(value: string) {
+  return value.trim().toLowerCase();
+}
 
 function parseTagRow(resource: JsonApiResource): KnowledgeTagTreeItem | null {
   const id = toIntId(resource.id);
@@ -167,6 +184,83 @@ const currentEditorTag = computed(() => {
   const id = editorTagId.value;
   if (!id) return null;
   return tags.value.find((tag) => tag.id === id) || null;
+});
+
+const hasTagFilter = computed(() => normalizeTagFilter(tagFilter.value).length > 0);
+const tagById = computed(() => {
+  const map = new Map<number, KnowledgeTagTreeItem>();
+  for (const tag of tags.value) map.set(tag.id, tag);
+  return map;
+});
+const childrenByParent = computed(() => {
+  const map = new Map<number | null, KnowledgeTagTreeItem[]>();
+
+  for (const tag of tags.value) {
+    const parentId = tag.parent_id ?? null;
+    const children = map.get(parentId) || [];
+    children.push(tag);
+    map.set(parentId, children);
+  }
+
+  return map;
+});
+
+function collectAncestorIds(tagId: number, byId: Map<number, KnowledgeTagTreeItem>, out: Set<number>) {
+  const visited = new Set<number>();
+  let current = byId.get(tagId) || null;
+
+  while (current?.parent_id) {
+    const parentId = current.parent_id;
+    if (!parentId || visited.has(parentId)) break;
+    visited.add(parentId);
+    out.add(parentId);
+    current = byId.get(parentId) || null;
+  }
+}
+
+function collectDescendantIds(tagId: number, byParent: Map<number | null, KnowledgeTagTreeItem[]>, out: Set<number>) {
+  const stack = [tagId];
+  const visited = new Set<number>();
+
+  while (stack.length) {
+    const currentId = stack.pop();
+    if (!currentId) continue;
+    const children = byParent.get(currentId) || [];
+
+    for (const child of children) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      out.add(child.id);
+      stack.push(child.id);
+    }
+  }
+}
+
+const visibleTags = computed(() => {
+  const filter = normalizeTagFilter(tagFilter.value);
+  if (!filter) return tags.value;
+
+  const visibleIds = new Set<number>();
+  const byId = tagById.value;
+  const byParent = childrenByParent.value;
+
+  for (const tag of tags.value) {
+    const haystack = `${tag.name} ${tag.full_name}`.toLowerCase();
+    if (!haystack.includes(filter)) continue;
+
+    visibleIds.add(tag.id);
+    collectAncestorIds(tag.id, byId, visibleIds);
+    collectDescendantIds(tag.id, byParent, visibleIds);
+  }
+
+  return tags.value.filter((tag) => visibleIds.has(tag.id));
+});
+
+const showTreeNoTagsOption = computed(() => props.showNoTagsOption && !hasTagFilter.value);
+const visibleTagsEmptyState = computed(() => {
+  if (tagsLoading.value || tagsError.value) return '';
+  if (hasTagFilter.value) return visibleTags.value.length ? '' : 'No tags match the current filter.';
+  return tags.value.length ? '' : 'No tags.';
 });
 
 const editorTitle = computed(() => {
@@ -355,6 +449,12 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
+}
+
+.knowledge-tags-panel__filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .knowledge-tags-panel__add-button {
