@@ -35,6 +35,28 @@ defmodule IntellectualClub.Chat.Chat do
     end
   end
 
+  defp maybe_manage_tool_bindings(changeset, _context) do
+    case Ash.Changeset.fetch_argument(changeset, :tool_bindings) do
+      {:ok, nil} ->
+        changeset
+
+      {:ok, bindings} ->
+        Ash.Changeset.manage_relationship(
+          changeset,
+          :tool_bindings,
+          bindings,
+          type: :direct_control,
+          order_is_key: :sequence,
+          on_no_match: {:create, :create},
+          on_match: {:update, :update},
+          on_missing: {:destroy, :destroy}
+        )
+
+      :error ->
+        changeset
+    end
+  end
+
   sqlite do
     table("chats")
     repo(IntellectualClub.Repo)
@@ -93,6 +115,11 @@ defmodule IntellectualClub.Chat.Chat do
     has_many :knowledge_block_bindings, IntellectualClub.Chat.ChatKnowledgeBlock do
       destination_attribute(:chat_id)
     end
+
+    has_many :tool_bindings, IntellectualClub.Tools.ChatToolBinding do
+      destination_attribute(:chat_id)
+      public?(true)
+    end
   end
 
   calculations do
@@ -128,9 +155,15 @@ defmodule IntellectualClub.Chat.Chat do
         public?(true)
       end
 
+      argument :tool_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(relate_actor(:owner))
       change({NormalizeChatFields, []})
       change(&maybe_manage_knowledge_block_bindings/2)
+      change(&maybe_manage_tool_bindings/2)
 
       change(
         {RequireRelatedAccessByActor,
@@ -149,8 +182,14 @@ defmodule IntellectualClub.Chat.Chat do
         public?(true)
       end
 
+      argument :tool_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change({NormalizeChatFields, []})
       change(&maybe_manage_knowledge_block_bindings/2)
+      change(&maybe_manage_tool_bindings/2)
 
       change(
         {RequireRelatedAccessByActor,

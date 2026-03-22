@@ -6,8 +6,16 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Bots.Bot
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Outlets.PairingRequest
-  alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, ToolFunction, ToolInstance}
+
+  alias IntellectualClub.Tools.{
+    BotToolBinding,
+    BotUserToolBinding,
+    ChatToolBinding,
+    ToolFunction,
+    ToolInstance
+  }
 
   test "DELETE /api/ash/tool-instances/:id deletes owned tool instance", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
@@ -124,6 +132,30 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
       )
       |> Ash.create!(actor: actor)
 
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Delete tool chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _chat_binding =
+      ChatToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_id: chat.id,
+          tool_instance_id: tool.id,
+          alias: "chat_web",
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     pairing =
       PairingRequest
       |> Ash.Changeset.for_create(
@@ -160,6 +192,9 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
     refute Ash.read!(BotToolBinding, actor: actor) |> Enum.any?(&(&1.tool_instance_id == tool.id))
 
     refute Ash.read!(BotUserToolBinding, actor: actor)
+           |> Enum.any?(&(&1.tool_instance_id == tool.id))
+
+    refute Ash.read!(ChatToolBinding, actor: actor)
            |> Enum.any?(&(&1.tool_instance_id == tool.id))
 
     updated_pairing = Ash.get!(PairingRequest, pairing.id, authorize?: false)

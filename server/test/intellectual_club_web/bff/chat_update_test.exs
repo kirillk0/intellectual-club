@@ -7,7 +7,11 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag, LlmProvider}
+
+  require Ash.Query
 
   test "PATCH /api/bff/chats/:id switches to the latest compatible configuration when bot changes",
        %{
@@ -75,6 +79,95 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     assert payload["chat"]["bot_id"] == bot.id
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
+  end
+
+  test "PATCH /api/bff/chats/:id manages chat tool bindings", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Tool bindings chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    tool_a =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Tool A",
+          config: %{"server_url" => "https://example.com/a"},
+          secrets: %{"bearer_token" => "a"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    tool_b =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Tool B",
+          config: %{"server_url" => "https://example.com/b"},
+          secrets: %{"bearer_token" => "b"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _payload =
+      conn
+      |> patch(~p"/api/bff/chats/#{chat.id}", %{
+        "tool_bindings" => [
+          %{"tool_instance_id" => tool_a.id, "alias" => "web", "enabled" => true},
+          %{"tool_instance_id" => tool_b.id, "alias" => "reader", "enabled" => false}
+        ]
+      })
+      |> json_response(200)
+
+    bindings =
+      ChatToolBinding
+      |> Ash.Query.filter(chat_id == ^chat.id)
+      |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(bindings, &{&1.alias, &1.tool_instance_id, &1.enabled, &1.sequence}) == [
+             {"web", tool_a.id, true, 0},
+             {"reader", tool_b.id, false, 1}
+           ]
+
+    [first_binding | _] = bindings
+
+    _payload =
+      conn
+      |> patch(~p"/api/bff/chats/#{chat.id}", %{
+        "tool_bindings" => [
+          %{
+            "id" => first_binding.id,
+            "tool_instance_id" => tool_b.id,
+            "alias" => "web",
+            "enabled" => false
+          }
+        ]
+      })
+      |> json_response(200)
+
+    bindings =
+      ChatToolBinding
+      |> Ash.Query.filter(chat_id == ^chat.id)
+      |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(bindings, &{&1.alias, &1.tool_instance_id, &1.enabled, &1.sequence}) == [
+             {"web", tool_b.id, false, 0}
+           ]
   end
 
   defp create_provider!(actor, name) do

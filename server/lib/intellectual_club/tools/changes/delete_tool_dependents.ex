@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.Changes.DeleteToolDependents do
   - `tool_functions.tool_instance_id -> tool_instances.id`
   - `bot_tool_bindings.tool_instance_id -> tool_instances.id`
   - `bot_user_tool_bindings.tool_instance_id -> tool_instances.id`
+  - `chat_tool_bindings.tool_instance_id -> tool_instances.id`
   - `outlet_pairing_requests.tool_instance_id -> tool_instances.id`
   """
 
@@ -24,6 +25,7 @@ defmodule IntellectualClub.Tools.Changes.DeleteToolDependents do
       delete_tool_functions(repo, tool_instance_id)
       delete_bot_tool_bindings(repo, tool_instance_id)
       delete_bot_user_tool_bindings(repo, tool_instance_id)
+      delete_chat_tool_bindings(repo, tool_instance_id)
       clear_outlet_pairing_requests(repo, tool_instance_id)
 
       changeset
@@ -62,6 +64,17 @@ defmodule IntellectualClub.Tools.Changes.DeleteToolDependents do
   end
 
   defp delete_bot_user_tool_bindings(_repo, _tool_instance_id), do: :ok
+
+  defp delete_chat_tool_bindings(repo, tool_instance_id) when is_integer(tool_instance_id) do
+    _ =
+      repo.delete_all(
+        from(ctb in "chat_tool_bindings", where: ctb.tool_instance_id == ^tool_instance_id)
+      )
+
+    :ok
+  end
+
+  defp delete_chat_tool_bindings(_repo, _tool_instance_id), do: :ok
 
   defp clear_outlet_pairing_requests(repo, tool_instance_id) when is_integer(tool_instance_id) do
     _ =

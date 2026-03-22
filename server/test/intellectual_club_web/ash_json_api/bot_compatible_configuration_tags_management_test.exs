@@ -54,7 +54,9 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
   defp ids_from_included(_resp, _type), do: []
 
-  test "GET /api/ash/bots/:id includes attached resources and actor-specific overrides", %{conn: conn} do
+  test "GET /api/ash/bots/:id includes attached resources and actor-specific overrides", %{
+    conn: conn
+  } do
     %{user: owner} = user_fixture()
     %{user: recipient, password: password} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
@@ -171,12 +173,18 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
     assert relationship_ids(response, "knowledge_block_bindings") == [block_binding.id]
     assert relationship_ids(response, "compatible_configuration_tag_bindings") == [tag_binding.id]
-    assert relationship_ids(response, "tool_bindings") == Enum.sort([shared_binding.id, per_user_binding.id])
+
+    assert relationship_ids(response, "tool_bindings") ==
+             Enum.sort([shared_binding.id, per_user_binding.id])
+
     assert relationship_ids(response, "user_tool_bindings") == [recipient_override.id]
 
     assert ids_from_included(response, "knowledge-blocks") == [block.id]
     assert ids_from_included(response, "llm-configuration-tags") == [tag.id]
-    assert ids_from_included(response, "tool-instances") == Enum.sort([shared_tool.id, recipient_tool.id])
+
+    assert ids_from_included(response, "tool-instances") ==
+             Enum.sort([shared_tool.id, recipient_tool.id])
+
     assert ids_from_included(response, "bot-user-tool-bindings") == [recipient_override.id]
     refute owner_override.id in ids_from_included(response, "bot-user-tool-bindings")
   end
@@ -257,8 +265,13 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       |> Ash.read!(actor: actor)
 
     assert Enum.map(block_bindings1, & &1.knowledge_block_id) == [block1.id, block2.id]
-    assert relationship_ids(resp1, "compatible_configuration_tag_bindings") == Enum.sort(Enum.map(bindings1, & &1.id))
-    assert relationship_ids(resp1, "knowledge_block_bindings") == Enum.map(block_bindings1, & &1.id)
+
+    assert relationship_ids(resp1, "compatible_configuration_tag_bindings") ==
+             Enum.sort(Enum.map(bindings1, & &1.id))
+
+    assert relationship_ids(resp1, "knowledge_block_bindings") ==
+             Enum.map(block_bindings1, & &1.id)
+
     assert ids_from_included(resp1, "llm-configuration-tags") == Enum.sort([tag1.id, tag2.id])
     assert ids_from_included(resp1, "knowledge-blocks") == Enum.sort([block1.id, block2.id])
 
@@ -305,8 +318,13 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       |> Ash.read!(actor: actor)
 
     assert Enum.map(block_bindings2, & &1.knowledge_block_id) == [block1.id]
-    assert relationship_ids(resp2, "compatible_configuration_tag_bindings") == Enum.map(bindings2, & &1.id)
-    assert relationship_ids(resp2, "knowledge_block_bindings") == Enum.map(block_bindings2, & &1.id)
+
+    assert relationship_ids(resp2, "compatible_configuration_tag_bindings") ==
+             Enum.map(bindings2, & &1.id)
+
+    assert relationship_ids(resp2, "knowledge_block_bindings") ==
+             Enum.map(block_bindings2, & &1.id)
+
     assert ids_from_included(resp2, "llm-configuration-tags") == [tag1.id]
     assert ids_from_included(resp2, "knowledge-blocks") == [block1.id]
   end

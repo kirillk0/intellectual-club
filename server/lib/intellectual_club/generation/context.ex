@@ -18,7 +18,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
-  alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, Registry, ToolFunction}
+  alias IntellectualClub.Tools.BindingResolver
 
   require Ash.Query
 
@@ -74,10 +74,11 @@ defmodule IntellectualClub.Generation.Context do
          {:ok, request_payload} <- normalize_retry_request_payload(retry_step.raw_request),
          {:ok, chat} <- load_retry_chat(message),
          {:ok, llm_configuration} <- resolve_retry_configuration(message, chat, actor) do
-      {tools_payload, tool_instances_by_alias} =
-        load_tools_for_bot(chat.bot_id, actor)
+      tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+      tool_instances_by_alias = tool_resolution.tool_instances_by_alias
 
-      tools_payload = maybe_disable_tools_for_retry(request_payload, tools_payload)
+      tools_payload =
+        maybe_disable_tools_for_retry(request_payload, tool_resolution.tools_payload)
 
       provider = llm_configuration && Map.get(llm_configuration, :provider)
 
@@ -249,8 +250,9 @@ defmodule IntellectualClub.Generation.Context do
           end
       end
 
-    {tools_payload, tool_instances_by_alias} =
-      load_tools_for_bot(chat.bot_id, actor)
+    tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+    tools_payload = tool_resolution.tools_payload
+    tool_instances_by_alias = tool_resolution.tool_instances_by_alias
 
     {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
      provider_oauth_refresh_token, model_name, parameters, timeout_ms, request_payload, messages,
@@ -726,156 +728,6 @@ defmodule IntellectualClub.Generation.Context do
       _ -> nil
     end
   end
-
-  defp load_tools_for_bot(bot_id, actor) when is_integer(bot_id) do
-    bot_bindings =
-      BotToolBinding
-      |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
-      |> Ash.Query.sort(sequence: :asc, id: :asc)
-      |> Ash.Query.load(:tool_instance)
-      |> Ash.read!(actor: actor)
-
-    user_bindings =
-      BotUserToolBinding
-      |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
-      |> Ash.Query.sort(sequence: :asc, id: :asc)
-      |> Ash.Query.load(:tool_instance)
-      |> Ash.read!(actor: actor)
-
-    base_aliases =
-      Enum.reduce(bot_bindings, %{}, fn binding, acc ->
-        alias_value = binding.alias |> to_string() |> String.trim()
-
-        cond do
-          alias_value == "" ->
-            acc
-
-          binding.sharing_mode == :per_user ->
-            # Base per-user bindings only declare the alias; the actual instance is taken
-            # from BotUserToolBinding.
-            acc
-
-          true ->
-            tool_instance = Map.get(binding, :tool_instance)
-            if is_map(tool_instance), do: Map.put(acc, alias_value, tool_instance), else: acc
-        end
-      end)
-
-    tool_instances_by_alias =
-      Enum.reduce(user_bindings, base_aliases, fn binding, acc ->
-        alias_value = binding.alias |> to_string() |> String.trim()
-        tool_instance = Map.get(binding, :tool_instance)
-
-        if alias_value != "" and is_map(tool_instance) do
-          Map.put(acc, alias_value, tool_instance)
-        else
-          acc
-        end
-      end)
-
-    tools_payload =
-      tool_instances_by_alias
-      |> Enum.flat_map(fn {alias_value, tool_instance} ->
-        functions = list_model_functions(tool_instance, actor)
-
-        Enum.flat_map(functions, fn fn_spec ->
-          if fn_spec.enabled do
-            [
-              %{
-                "type" => "function",
-                "function" => %{
-                  "name" => "#{alias_value}__#{fn_spec.name}",
-                  "description" => to_string(fn_spec.description || ""),
-                  "parameters" =>
-                    if(
-                      is_map(fn_spec.parameters_schema) and
-                        map_size(fn_spec.parameters_schema) > 0,
-                      do: fn_spec.parameters_schema,
-                      else: %{"type" => "object", "properties" => %{}}
-                    )
-                }
-              }
-            ]
-          else
-            []
-          end
-        end)
-      end)
-
-    {tools_payload, tool_instances_by_alias}
-  end
-
-  defp load_tools_for_bot(_bot_id, _actor), do: {[], %{}}
-
-  defp list_model_functions(tool_instance, actor) when is_map(tool_instance) do
-    tool_type = tool_instance.type |> to_string() |> String.trim()
-    driver = Registry.driver_for_type!(tool_type)
-
-    case driver.functions_mode() do
-      :stored ->
-        ToolFunction
-        |> Ash.Query.filter(tool_instance_id == ^tool_instance.id)
-        |> Ash.Query.sort(name: :asc, id: :asc)
-        |> Ash.read!(actor: actor)
-        |> Enum.map(fn fn_record ->
-          %{
-            name: fn_record.name,
-            description: fn_record.description || "",
-            parameters_schema: fn_record.parameters_schema || %{},
-            enabled: fn_record.enabled
-          }
-        end)
-
-      :fixed ->
-        if function_exported?(driver, :fixed_functions, 1) do
-          apply(driver, :fixed_functions, [tool_instance])
-          |> List.wrap()
-          |> Enum.map(&normalize_fixed_function/1)
-          |> Enum.reject(&is_nil/1)
-        else
-          []
-        end
-    end
-  end
-
-  defp list_model_functions(_tool_instance, _actor), do: []
-
-  defp normalize_fixed_function(raw) when is_map(raw) do
-    name = raw |> Map.get("name", Map.get(raw, :name, "")) |> to_string() |> String.trim()
-
-    if name == "" do
-      nil
-    else
-      description =
-        raw
-        |> Map.get("description", Map.get(raw, :description, ""))
-        |> to_string()
-
-      parameters_schema =
-        cond do
-          is_map(Map.get(raw, "schema")) -> Map.get(raw, "schema")
-          is_map(Map.get(raw, :schema)) -> Map.get(raw, :schema)
-          is_map(Map.get(raw, "parameters_schema")) -> Map.get(raw, "parameters_schema")
-          is_map(Map.get(raw, :parameters_schema)) -> Map.get(raw, :parameters_schema)
-          true -> %{"type" => "object", "properties" => %{}}
-        end
-
-      enabled =
-        case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
-          false -> false
-          _ -> true
-        end
-
-      %{
-        name: name,
-        description: description,
-        parameters_schema: parameters_schema,
-        enabled: enabled
-      }
-    end
-  end
-
-  defp normalize_fixed_function(_other), do: nil
 
   defp load_bot_blocks(bot_id, actor) when is_integer(bot_id) do
     BotKnowledgeBlock

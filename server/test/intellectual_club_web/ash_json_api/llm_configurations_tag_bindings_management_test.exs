@@ -6,6 +6,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Knowledge.KnowledgeBlock
+
   alias IntellectualClub.Llm.{
     LlmConfiguration,
     LlmConfigurationKnowledgeBlock,
@@ -65,7 +66,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
   defp ids_from_included(_resp, _type), do: []
 
-  test "GET /api/ash/llm-configurations/:id includes provider, tags, and knowledge blocks", %{conn: conn} do
+  test "GET /api/ash/llm-configurations/:id includes provider, tags, and knowledge blocks", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
 
     provider =
@@ -141,7 +144,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       conn
       |> recycle()
       |> sign_in_conn(actor.username, password)
-      |> json_api_get("/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}")
+      |> json_api_get(
+        "/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}"
+      )
       |> json_response(200)
 
     assert relationship_ids(response, "provider") == [provider.id]
@@ -221,32 +226,35 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     resp1 =
       conn
-      |> json_api_patch("/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}", %{
-        "data" => %{
-          "type" => "llm-configurations",
-          "id" => "#{configuration.id}",
-          "attributes" => %{
-            "tag_bindings" => [
-              %{"llm_configuration_tag_id" => tag1.id},
-              %{"llm_configuration_tag_id" => tag2.id}
-            ],
-            "knowledge_block_bindings" => [
-              %{
-                "knowledge_block_id" => block1.id,
-                "enabled" => true,
-                "selection" => "bottom",
-                "sequence" => 0
-              },
-              %{
-                "knowledge_block_id" => block2.id,
-                "enabled" => true,
-                "selection" => "top",
-                "sequence" => 1
-              }
-            ]
+      |> json_api_patch(
+        "/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}",
+        %{
+          "data" => %{
+            "type" => "llm-configurations",
+            "id" => "#{configuration.id}",
+            "attributes" => %{
+              "tag_bindings" => [
+                %{"llm_configuration_tag_id" => tag1.id},
+                %{"llm_configuration_tag_id" => tag2.id}
+              ],
+              "knowledge_block_bindings" => [
+                %{
+                  "knowledge_block_id" => block1.id,
+                  "enabled" => true,
+                  "selection" => "bottom",
+                  "sequence" => 0
+                },
+                %{
+                  "knowledge_block_id" => block2.id,
+                  "enabled" => true,
+                  "selection" => "top",
+                  "sequence" => 1
+                }
+              ]
+            }
           }
         }
-      })
+      )
       |> json_response(200)
 
     bindings1 =
@@ -263,10 +271,15 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       |> Ash.Query.sort(selection: :asc, sequence: :asc)
       |> Ash.read!(actor: actor)
 
-    assert Enum.sort(Enum.map(block_bindings1, & &1.knowledge_block_id)) == Enum.sort([block1.id, block2.id])
+    assert Enum.sort(Enum.map(block_bindings1, & &1.knowledge_block_id)) ==
+             Enum.sort([block1.id, block2.id])
+
     assert relationship_ids(resp1, "provider") == [provider.id]
     assert relationship_ids(resp1, "tag_bindings") == Enum.sort(Enum.map(bindings1, & &1.id))
-    assert relationship_ids(resp1, "knowledge_block_bindings") == Enum.sort(Enum.map(block_bindings1, & &1.id))
+
+    assert relationship_ids(resp1, "knowledge_block_bindings") ==
+             Enum.sort(Enum.map(block_bindings1, & &1.id))
+
     assert ids_from_included(resp1, "llm-providers") == [provider.id]
     assert ids_from_included(resp1, "llm-configuration-tags") == Enum.sort([tag1.id, tag2.id])
     assert ids_from_included(resp1, "knowledge-blocks") == Enum.sort([block1.id, block2.id])
@@ -279,26 +292,29 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     resp2 =
       conn
-      |> json_api_patch("/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}", %{
-        "data" => %{
-          "type" => "llm-configurations",
-          "id" => "#{configuration.id}",
-          "attributes" => %{
-            "tag_bindings" => [
-              %{"id" => binding1.id, "llm_configuration_tag_id" => tag1.id}
-            ],
-            "knowledge_block_bindings" => [
-              %{
-                "id" => block_binding1.id,
-                "knowledge_block_id" => block1.id,
-                "enabled" => true,
-                "selection" => "bottom",
-                "sequence" => 0
-              }
-            ]
+      |> json_api_patch(
+        "/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}",
+        %{
+          "data" => %{
+            "type" => "llm-configurations",
+            "id" => "#{configuration.id}",
+            "attributes" => %{
+              "tag_bindings" => [
+                %{"id" => binding1.id, "llm_configuration_tag_id" => tag1.id}
+              ],
+              "knowledge_block_bindings" => [
+                %{
+                  "id" => block_binding1.id,
+                  "knowledge_block_id" => block1.id,
+                  "enabled" => true,
+                  "selection" => "bottom",
+                  "sequence" => 0
+                }
+              ]
+            }
           }
         }
-      })
+      )
       |> json_response(200)
 
     bindings2 =
@@ -317,7 +333,10 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert Enum.map(block_bindings2, & &1.knowledge_block_id) == [block1.id]
     assert relationship_ids(resp2, "provider") == [provider.id]
     assert relationship_ids(resp2, "tag_bindings") == Enum.map(bindings2, & &1.id)
-    assert relationship_ids(resp2, "knowledge_block_bindings") == Enum.map(block_bindings2, & &1.id)
+
+    assert relationship_ids(resp2, "knowledge_block_bindings") ==
+             Enum.map(block_bindings2, & &1.id)
+
     assert ids_from_included(resp2, "llm-providers") == [provider.id]
     assert ids_from_included(resp2, "llm-configuration-tags") == [tag1.id]
     assert ids_from_included(resp2, "knowledge-blocks") == [block1.id]

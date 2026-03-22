@@ -178,7 +178,9 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
       |> json_response(200)
 
     assert relationship_ids(response, "functions") == Enum.sort([function1.id, function2.id])
-    assert ids_from_included(response, "tool-functions") == Enum.sort([function1.id, function2.id])
+
+    assert ids_from_included(response, "tool-functions") ==
+             Enum.sort([function1.id, function2.id])
   end
 
   defp create_tool_function!(actor, tool, name) do

@@ -260,59 +260,26 @@
           <p v-if="toolBindingsLoading" class="muted">Loading…</p>
           <p v-else-if="toolBindingsError" class="error-text">{{ toolBindingsError }}</p>
 
-          <div v-else class="stack" style="gap: 10px">
-            <p v-if="!isNew && !toolBindings.length" class="muted">No tools attached.</p>
-
-            <div v-else class="stack" style="gap: 10px">
-              <div v-for="bt in sortedToolBindings" :key="bt.id" class="card" style="padding: 10px">
-                <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-                  <div style="min-width: 0">
-                    <div style="font-weight: 700">{{ bt.alias }}</div>
-                    <div class="muted" style="font-size: 0.85rem; display: flex; align-items: center; gap: 6px; min-width: 0">
-                      <span
-                        v-if="toolInstanceIsOutlet(bt.tool_instance_id)"
-                        class="status-dot"
-                        :class="toolInstanceOnline(bt.tool_instance_id) ? 'success' : 'danger'"
-                        :title="toolInstanceOnline(bt.tool_instance_id) ? 'Online' : 'Offline'"
-                      />
-                      <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
-                        {{ baseToolBindingLabel(bt) }}
-                      </span>
-                    </div>
-                    <div class="muted" style="font-size: 0.85rem; margin-top: 4px">
-                      sharing: {{ bt.sharing_mode }}
-                    </div>
-                  </div>
-
-                  <div class="flex" style="gap: 8px; align-items: center">
-                    <label class="flex" style="gap: 6px; white-space: nowrap">
-                      <input
-                        type="checkbox"
-                        :checked="bt.enabled"
-                        :disabled="toolBindingsSavingIds.has(bt.id) || sharedReadonly"
-                        @change="toggleToolBinding(bt, $event)"
-                      />
-                      enabled
-                    </label>
-                    <button type="button" :disabled="toolBindingsSaving || sharedReadonly" @click="moveToolBinding(bt, -1)">
-                      Move up
-                    </button>
-                    <button type="button" :disabled="toolBindingsSaving || sharedReadonly" @click="moveToolBinding(bt, 1)">
-                      Move down
-                    </button>
-                    <button
-                      type="button"
-                      class="danger"
-                      :disabled="toolBindingsSaving || sharedReadonly"
-                      @click="removeToolBinding(bt)"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <ToolBindingsCard
+            v-else
+            :show-header="false"
+            :items="sortedToolBindings"
+            :toolLabel="toolBindingLabel"
+            :toolIsOutlet="toolBindingIsOutlet"
+            :toolIsOnline="toolBindingIsOnline"
+            emptyText="No tools attached."
+            toggleLabel="enabled"
+            :readonly="sharedReadonly"
+            :toggleDisabled="(item) => toolBindingsSavingIds.has(item.id)"
+            :actionsDisabled="() => toolBindingsSaving"
+            @toggle="handleToolBindingToggle"
+            @move="moveToolBinding"
+            @remove="removeToolBindingById"
+          >
+            <template #item-meta-extra="{ item }">
+              <div class="muted" style="font-size: 0.85rem; margin-top: 4px">sharing: {{ item.sharing_mode }}</div>
+            </template>
+          </ToolBindingsCard>
         </div>
 
         <div
@@ -502,6 +469,7 @@ import CrudHeader from '@/components/CrudHeader.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
+import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import { deleteBotImage, uploadBotImage } from '@/api/images';
@@ -1266,6 +1234,10 @@ function baseToolBindingLabel(binding: ToolBindingRow) {
   return toolInstanceLabel(binding.tool_instance_id);
 }
 
+const toolBindingLabel = (binding: ToolBindingRow) => baseToolBindingLabel(binding);
+const toolBindingIsOutlet = (binding: ToolBindingRow) => toolInstanceIsOutlet(binding.tool_instance_id);
+const toolBindingIsOnline = (binding: ToolBindingRow) => toolInstanceOnline(binding.tool_instance_id);
+
 const toolBindingsLoading = ref(false);
 const toolBindingsError = ref<string | null>(null);
 const toolBindings = ref<ToolBindingRow[]>([]);
@@ -1449,11 +1421,7 @@ async function removeToolBinding(binding: ToolBindingRow) {
   }
 }
 
-async function toggleToolBinding(binding: ToolBindingRow, event: Event) {
-  const target = event.target as HTMLInputElement | null;
-  if (!target) return;
-  const nextEnabled = Boolean(target.checked);
-
+async function toggleToolBinding(binding: ToolBindingRow, nextEnabled: boolean) {
   if (toolBindingsSavingIds.value.has(binding.id)) return;
   toolBindingsSavingIds.value = new Set([...toolBindingsSavingIds.value, binding.id]);
 
@@ -1470,6 +1438,16 @@ async function toggleToolBinding(binding: ToolBindingRow, event: Event) {
     next.delete(binding.id);
     toolBindingsSavingIds.value = next;
   }
+}
+
+function removeToolBindingById(id: number) {
+  const binding = toolBindings.value.find((row) => row.id === id);
+  if (!binding) return;
+  void removeToolBinding(binding);
+}
+
+function handleToolBindingToggle(binding: ToolBindingRow, enabled: boolean) {
+  void toggleToolBinding(binding, enabled);
 }
 
 async function moveToolBinding(binding: ToolBindingRow, delta: number) {

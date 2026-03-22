@@ -87,6 +87,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
       destination_attribute(:tool_instance_id)
     end
 
+    has_many :chat_bindings, IntellectualClub.Tools.ChatToolBinding do
+      destination_attribute(:tool_instance_id)
+    end
+
     has_many :functions, IntellectualClub.Tools.ToolFunction do
       destination_attribute(:tool_instance_id)
       public?(true)

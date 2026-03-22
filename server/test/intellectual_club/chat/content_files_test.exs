@@ -62,7 +62,9 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
     ChatMessage
     |> Ash.Changeset.for_create(
       :add_message,
-      %{chat_id: chat.id, role: :assistant, status: :done}, actor: actor)
+      %{chat_id: chat.id, role: :assistant, status: :done},
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
   end
 
@@ -70,7 +72,9 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
     ChatMessageStep
     |> Ash.Changeset.for_create(
       :create,
-      %{chat_message_id: message.id, sequence: 1, status: :done}, actor: actor)
+      %{chat_message_id: message.id, sequence: 1, status: :done},
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
   end
 
@@ -78,7 +82,9 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
     ChatMessageItem
     |> Ash.Changeset.for_create(
       :create,
-      %{chat_message_step_id: step.id, sequence: 1, type: :artifact}, actor: actor)
+      %{chat_message_step_id: step.id, sequence: 1, type: :artifact},
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
   end
 

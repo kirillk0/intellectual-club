@@ -10,6 +10,8 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
 
@@ -47,6 +49,29 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       )
       |> Ash.create!(actor: actor)
 
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Delete tool binding",
+          config: %{"server_url" => "https://example.com/delete"},
+          secrets: %{"bearer_token" => "delete"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _tool_binding =
+      ChatToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_id: chat.id, tool_instance_id: tool.id, alias: "web", enabled: true, sequence: 0},
+        actor: actor
+      )
+      |> Ash.create!()
+
     conn = delete(conn, ~p"/api/bff/chats/#{chat.id}")
     assert %{"status" => "ok"} = json_response(conn, 200)
 
@@ -66,5 +91,12 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       |> Ash.read!(actor: actor)
 
     assert bindings == []
+
+    tool_bindings =
+      ChatToolBinding
+      |> Ash.Query.filter(chat_id == ^chat.id)
+      |> Ash.read!(actor: actor)
+
+    assert tool_bindings == []
   end
 end

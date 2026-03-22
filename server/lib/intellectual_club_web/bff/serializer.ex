@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
+  alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
@@ -17,6 +18,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Tools.ToolInstance
 
   @tool_result_preview_char_limit 600
   @tool_result_preview_line_limit 5
@@ -231,6 +233,30 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       enabled: binding.enabled,
       sequence: binding.sequence,
       knowledge_block: if(is_map(block), do: knowledge_block_option(block), else: nil)
+    }
+  end
+
+  def tool_instance_option(%ToolInstance{} = tool) do
+    %{
+      id: tool.id,
+      name: tool.name,
+      type: tool.type,
+      outlet_online: loaded_value(Map.get(tool, :outlet_online)),
+      can_edit: loaded_value(Map.get(tool, :can_edit))
+    }
+  end
+
+  def chat_tool_binding(%ChatToolBinding{} = binding) do
+    tool_instance = Map.get(binding, :tool_instance)
+
+    %{
+      id: binding.id,
+      chat_id: binding.chat_id,
+      tool_instance_id: binding.tool_instance_id,
+      alias: binding.alias,
+      enabled: binding.enabled,
+      sequence: binding.sequence,
+      tool_instance: if(is_map(tool_instance), do: tool_instance_option(tool_instance), else: nil)
     }
   end
 

@@ -9,6 +9,7 @@ defmodule IntellectualClub.Chat.Changes.DeleteChatDependents do
   - `chat_message_items.chat_message_step_id -> chat_message_steps.id`
   - `chat_message_contents.chat_message_item_id -> chat_message_items.id`
   - `chat_knowledge_blocks.chat_id -> chats.id`
+  - `chat_tool_bindings.chat_id -> chats.id`
   - `chats.last_message_id -> chat_messages.id`
 
   Without cleaning up dependents (and clearing `last_message_id`) first, a chat
@@ -36,6 +37,7 @@ defmodule IntellectualClub.Chat.Changes.DeleteChatDependents do
 
       clear_last_message(repo, chat_id, owner_id)
       delete_chat_knowledge_blocks(repo, chat_id, owner_id)
+      delete_chat_tool_bindings(repo, chat_id, owner_id)
       delete_chat_messages_tree(repo, chat_id, owner_id)
 
       changeset
@@ -64,6 +66,18 @@ defmodule IntellectualClub.Chat.Changes.DeleteChatDependents do
   end
 
   defp delete_chat_knowledge_blocks(_repo, _chat_id, _owner_id), do: :ok
+
+  defp delete_chat_tool_bindings(repo, chat_id, owner_id) when is_integer(owner_id) do
+    repo.delete_all(
+      from(tb in "chat_tool_bindings",
+        where: tb.chat_id == ^chat_id and tb.owner_id == ^owner_id
+      )
+    )
+
+    :ok
+  end
+
+  defp delete_chat_tool_bindings(_repo, _chat_id, _owner_id), do: :ok
 
   defp delete_chat_messages_tree(repo, chat_id, owner_id) when is_integer(owner_id) do
     message_ids =

@@ -37,34 +37,27 @@
             Unsaved tool bindings are not included here. Save the bot to include newly added tools.
           </p>
 
-          <div v-if="!persistedTools.length" class="muted">No tools attached.</div>
-          <div v-else class="stack" style="gap: 10px; max-height: 45vh; overflow: auto">
-            <div v-for="binding in persistedTools" :key="binding.id" class="card" style="padding: 10px">
-              <div class="flex" style="justify-content: space-between; gap: 12px; align-items: center">
-                <div style="min-width: 0">
-                  <div class="flex" style="gap: 8px; align-items: center">
-                    <div style="font-weight: 600">{{ binding.alias }}</div>
-                    <span v-if="!binding.enabled" class="muted" style="font-size: 0.85rem">(disabled)</span>
-                  </div>
-                  <div
-                    class="muted"
-                    style="
-                      font-size: 0.85rem;
-                      white-space: nowrap;
-                      overflow: hidden;
-                      text-overflow: ellipsis;
-                    "
-                  >
-                    {{ toolLabel(binding) }}
-                  </div>
-                </div>
+          <div style="max-height: 45vh; overflow: auto">
+            <ToolBindingsCard
+              :show-header="false"
+              :items="persistedTools"
+              :toolLabel="toolLabel"
+              emptyText="No tools attached."
+              :show-toggle="false"
+              :show-actions="false"
+              readonly
+            >
+              <template #item-meta-extra="{ item }">
+                <div v-if="!item.enabled" class="muted" style="font-size: 0.85rem; margin-top: 4px">(disabled)</div>
+              </template>
 
+              <template #item-secondary-actions="{ item }">
                 <div class="stack" style="gap: 6px">
                   <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
                     <input
-                      v-model="toolModes[String(binding.id)]"
+                      v-model="toolModes[String(item.id)]"
                       type="radio"
-                      :name="`tool-mode-${binding.id}`"
+                      :name="`tool-mode-${item.id}`"
                       value="shared"
                       :disabled="saving"
                     />
@@ -72,28 +65,30 @@
                   </label>
                   <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
                     <input
-                      v-model="toolModes[String(binding.id)]"
+                      v-model="toolModes[String(item.id)]"
                       type="radio"
-                      :name="`tool-mode-${binding.id}`"
+                      :name="`tool-mode-${item.id}`"
                       value="per_user"
                       :disabled="saving"
                     />
                     <span>Per-user</span>
                   </label>
                 </div>
-              </div>
+              </template>
 
-              <p
-                v-if="toolModes[String(binding.id)] === 'shared'"
-                class="muted"
-                style="margin: 8px 0 0; font-size: 0.85rem"
-              >
-                Shared tools run using your tool credentials for all group members.
-              </p>
-              <p v-else class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
-                Per-user tools must be connected by each group member for this alias.
-              </p>
-            </div>
+              <template #item-footer="{ item }">
+                <p
+                  v-if="toolModes[String(item.id)] === 'shared'"
+                  class="muted"
+                  style="margin: 8px 0 0; font-size: 0.85rem"
+                >
+                  Shared tools run using your tool credentials for all group members.
+                </p>
+                <p v-else class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
+                  Per-user tools must be connected by each group member for this alias.
+                </p>
+              </template>
+            </ToolBindingsCard>
           </div>
 
           <div v-if="requiresConfirmation" class="card stack" style="padding: 10px; margin-top: 12px">
@@ -122,6 +117,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import type { Group } from '@/types/api';
 
 export type BotShareToolBinding = {

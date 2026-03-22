@@ -128,18 +128,21 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksTagBindingsManagementTes
 
     resp1 =
       conn
-      |> json_api_patch("/api/ash/knowledge-blocks/#{block.id}?#{@knowledge_block_include_query}", %{
-        "data" => %{
-          "type" => "knowledge-blocks",
-          "id" => "#{block.id}",
-          "attributes" => %{
-            "tag_bindings" => [
-              %{"knowledge_tag_id" => tag1.id},
-              %{"knowledge_tag_id" => tag2.id}
-            ]
+      |> json_api_patch(
+        "/api/ash/knowledge-blocks/#{block.id}?#{@knowledge_block_include_query}",
+        %{
+          "data" => %{
+            "type" => "knowledge-blocks",
+            "id" => "#{block.id}",
+            "attributes" => %{
+              "tag_bindings" => [
+                %{"knowledge_tag_id" => tag1.id},
+                %{"knowledge_tag_id" => tag2.id}
+              ]
+            }
           }
         }
-      })
+      )
       |> json_response(200)
 
     bindings1 =
@@ -156,17 +159,20 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksTagBindingsManagementTes
 
     resp2 =
       conn
-      |> json_api_patch("/api/ash/knowledge-blocks/#{block.id}?#{@knowledge_block_include_query}", %{
-        "data" => %{
-          "type" => "knowledge-blocks",
-          "id" => "#{block.id}",
-          "attributes" => %{
-            "tag_bindings" => [
-              %{"id" => binding1.id, "knowledge_tag_id" => tag1.id}
-            ]
+      |> json_api_patch(
+        "/api/ash/knowledge-blocks/#{block.id}?#{@knowledge_block_include_query}",
+        %{
+          "data" => %{
+            "type" => "knowledge-blocks",
+            "id" => "#{block.id}",
+            "attributes" => %{
+              "tag_bindings" => [
+                %{"id" => binding1.id, "knowledge_tag_id" => tag1.id}
+              ]
+            }
           }
         }
-      })
+      )
       |> json_response(200)
 
     bindings2 =

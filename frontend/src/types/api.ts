@@ -85,6 +85,14 @@ export type KnowledgeBlock = {
   shared_outgoing?: boolean;
 };
 
+export type ToolInstanceOption = {
+  id: number;
+  name: string;
+  type: string;
+  outlet_online?: boolean | null;
+  can_edit?: boolean | null;
+};
+
 export type UserKnowledgeBlock = {
   id: number;
   knowledge_block_id: number;
@@ -116,6 +124,16 @@ export type ChatKnowledgeBlock = {
   enabled: boolean;
   sequence: number;
   knowledge_block?: KnowledgeBlock | null;
+};
+
+export type ChatToolBinding = {
+  id: number;
+  chat_id: number;
+  tool_instance_id: number;
+  alias: string;
+  enabled: boolean;
+  sequence: number;
+  tool_instance?: ToolInstanceOption | null;
 };
 
 export type ChatMessageContent = {

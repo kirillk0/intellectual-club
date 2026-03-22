@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.BotToolBinding
+  alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
 
   test "builds system prompt from bot blocks and prepends it to chat history" do
@@ -211,6 +212,104 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert %{} = context.tool_instances_by_alias
     assert context.tool_instances_by_alias["web"].id == tool_instance.id
+
+    assert Enum.any?(context.tools_payload, fn item ->
+             get_in(item, ["function", "name"]) == "web__web_search"
+           end)
+  end
+
+  test "chat tool binding overrides bot tool binding with the same alias" do
+    %{user: actor} = user_fixture()
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Override bot",
+          first_messages: [],
+          variables: %{},
+          max_tool_rounds: 10,
+          context_soft_limit_percent: 80,
+          history_mode: :chat
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    bot_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Bot Search",
+          config: %{},
+          secrets: %{"token" => "bot-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Chat Search",
+          config: %{},
+          secrets: %{"token" => "chat-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _ =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: bot_tool.id,
+          alias: "web",
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Override chat", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _ =
+      ChatToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_id: chat.id,
+          tool_instance_id: chat_tool.id,
+          alias: "web",
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Find docs", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.tool_instances_by_alias["web"].id == chat_tool.id
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"

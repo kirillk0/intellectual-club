@@ -13,6 +13,7 @@ defmodule IntellectualClub.Tools do
     resource(IntellectualClub.Tools.ToolFunction)
     resource(IntellectualClub.Tools.BotToolBinding)
     resource(IntellectualClub.Tools.BotUserToolBinding)
+    resource(IntellectualClub.Tools.ChatToolBinding)
   end
 
   json_api do
@@ -76,6 +77,14 @@ defmodule IntellectualClub.Tools do
       end
 
       base_route "/bot-user-tool-bindings", IntellectualClub.Tools.BotUserToolBinding do
+        index(:read)
+        get(:read)
+        post(:create)
+        patch(:update)
+        delete(:destroy)
+      end
+
+      base_route "/chat-tool-bindings", IntellectualClub.Tools.ChatToolBinding do
         index(:read)
         get(:read)
         post(:create)

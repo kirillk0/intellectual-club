@@ -23,6 +23,9 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
+  alias IntellectualClub.Tools.BindingResolver
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Loads
@@ -351,7 +354,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat = Ash.get!(Chat, chat_id, actor: actor)
 
       allowed_fields =
-        ~w(title note bot_id llm_configuration_id variables knowledge_block_bindings)
+        ~w(title note bot_id llm_configuration_id variables knowledge_block_bindings tool_bindings)
 
       patch =
         params
@@ -416,8 +419,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       {messages, branch_meta_by_id} = load_branch(chat, actor)
 
       chat_blocks = load_chat_blocks(chat_id, actor)
+      chat_tool_bindings = load_chat_tool_bindings(chat_id, actor)
       prompt_sources = load_prompt_sources(chat, chat_blocks, actor)
       compiled_prompt_text = compiled_prompt_text(chat, prompt_sources)
+      tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
 
       counters =
         ChatMetrics.counters_from_history(chat, messages, actor, prompt_sources: prompt_sources)
@@ -425,6 +430,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       bots = load_bots(actor)
       llm_configurations = load_llm_configurations(actor)
       knowledge_blocks = load_knowledge_blocks(actor)
+      tool_instances = load_editable_tool_instances(actor)
 
       generating_message_id =
         messages
@@ -436,6 +442,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         chat: Serializer.chat_detail(chat),
         branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
         chat_blocks: Enum.map(chat_blocks, &Serializer.chat_block_binding/1),
+        chat_tool_bindings: Enum.map(chat_tool_bindings, &Serializer.chat_tool_binding/1),
         prompt_sources: %{
           bot: Enum.map(prompt_sources.bot, &prompt_binding/1),
           chat: Enum.map(prompt_sources.chat, &prompt_binding/1),
@@ -444,10 +451,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         },
         compiled_prompt_text: compiled_prompt_text,
         counters: counters,
+        active_tool_instances:
+          Enum.map(tool_resolution.active_tool_instances, &Serializer.tool_instance_option/1),
+        missing_required_per_user_tool_aliases: tool_resolution.missing_aliases,
         options: %{
           bots: Enum.map(bots, &Serializer.bot_option/1),
           llm_configurations: Enum.map(llm_configurations, &Serializer.configuration_option/1),
-          knowledge_blocks: Enum.map(knowledge_blocks, &Serializer.knowledge_block_option/1)
+          knowledge_blocks: Enum.map(knowledge_blocks, &Serializer.knowledge_block_option/1),
+          tool_instances: Enum.map(tool_instances, &Serializer.tool_instance_option/1)
         },
         active_generation_message_id: generating_message_id
       })
@@ -695,6 +706,61 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
         Map.put(acc, :knowledge_block_bindings, bindings)
 
+      {"tool_bindings", value}, acc ->
+        bindings =
+          value
+          |> List.wrap()
+          |> Enum.with_index()
+          |> Enum.map(fn
+            {%{} = item, index} ->
+              id = Helpers.parse_optional_integer(Map.get(item, "id"))
+              tool_instance_id = Helpers.parse_optional_integer(Map.get(item, "tool_instance_id"))
+
+              alias_value =
+                item
+                |> Map.get("alias", "")
+                |> to_string()
+                |> String.trim()
+
+              enabled =
+                case Map.get(item, "enabled", true) do
+                  false -> false
+                  "false" -> false
+                  _ -> true
+                end
+
+              cond do
+                not is_integer(tool_instance_id) ->
+                  nil
+
+                alias_value == "" ->
+                  nil
+
+                is_integer(id) and id > 0 ->
+                  %{
+                    id: id,
+                    tool_instance_id: tool_instance_id,
+                    alias: alias_value,
+                    enabled: enabled,
+                    sequence: index
+                  }
+
+                true ->
+                  %{
+                    tool_instance_id: tool_instance_id,
+                    alias: alias_value,
+                    enabled: enabled,
+                    sequence: index
+                  }
+              end
+
+            _other ->
+              nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        Map.put(acc, :tool_bindings, bindings)
+
       {key, value}, acc when key in ["title", "note"] ->
         Map.put(acc, String.to_existing_atom(key), value)
 
@@ -872,6 +938,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     |> Ash.read!(actor: actor)
   end
 
+  defp load_chat_tool_bindings(chat_id, actor) do
+    ChatToolBinding
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.Query.load([tool_instance: [:name, :type, :outlet_online, :can_edit]], strict?: true)
+    |> Ash.read!(actor: actor)
+  end
+
   defp load_prompt_sources(chat, chat_blocks, actor) do
     %{
       bot: load_bot_prompt_blocks(chat.bot_id, actor),
@@ -1015,6 +1089,16 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     |> Ash.Query.load(Loads.knowledge_block_option_load(), strict?: true)
     |> Ash.read!(actor: actor)
   end
+
+  defp load_editable_tool_instances(%{id: actor_id} = actor) when is_integer(actor_id) do
+    ToolInstance
+    |> Ash.Query.filter(owner_id == ^actor_id)
+    |> Ash.Query.sort(name: :asc, id: :asc)
+    |> Ash.Query.load([:outlet_online, :can_edit], strict?: true)
+    |> Ash.read!(actor: actor)
+  end
+
+  defp load_editable_tool_instances(_actor), do: []
 
   defp maybe_put_switch_direction(opts, direction) do
     case direction do

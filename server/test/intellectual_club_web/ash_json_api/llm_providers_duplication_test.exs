@@ -64,7 +64,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersDuplicationTest do
       })
       |> json_response(201)
 
-    duplicated = Ash.get!(LlmProvider, String.to_integer(response["data"]["id"]), actor: recipient)
+    duplicated =
+      Ash.get!(LlmProvider, String.to_integer(response["data"]["id"]), actor: recipient)
 
     assert duplicated.owner_id == recipient.id
     assert duplicated.base_url == source.base_url

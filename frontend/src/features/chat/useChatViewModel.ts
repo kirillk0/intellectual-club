@@ -2,7 +2,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router';
 
 import { api, isHttpError } from '@/api/client';
-import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { parseImageAsset } from '@/features/media/image';
@@ -37,10 +37,12 @@ import type {
   ChatBranchMessage,
   ChatMessageContent,
   ChatKnowledgeBlock,
+  ChatToolBinding,
   ChatMessageStep,
   ChatVariable,
   KnowledgeBlock,
   LlmConfiguration,
+  ToolInstanceOption,
 } from '@/types/api';
 
 type Counters = {
@@ -61,6 +63,7 @@ type ChatStatePayload = {
   chat: Chat;
   branch: ChatBranchMessage[];
   chat_blocks: ChatKnowledgeBlock[];
+  chat_tool_bindings: ChatToolBinding[];
   prompt_sources: {
     bot: PromptBinding[];
     chat: PromptBinding[];
@@ -69,10 +72,13 @@ type ChatStatePayload = {
   };
   compiled_prompt_text: string | null;
   counters: Counters;
+  active_tool_instances: ActiveToolInstance[];
+  missing_required_per_user_tool_aliases: string[];
   options: {
     bots: Bot[];
     llm_configurations: LlmConfiguration[];
     knowledge_blocks: KnowledgeBlock[];
+    tool_instances: ToolInstanceOption[];
   };
   active_generation_message_id: number | null;
 };
@@ -95,13 +101,12 @@ type ChatBlockLink = {
   sequence: number;
 };
 
-type ToolBindingRow = {
+type ChatToolBindingLink = {
   id: number;
   alias: string;
   enabled: boolean;
   sequence: number;
-  sharing_mode: string;
-  tool_instance_id: number | null;
+  tool_instance_id: number;
 };
 
 const normalizeText = (value: unknown) => String(value ?? '').trim();
@@ -127,55 +132,19 @@ const normalizeChatBlocksForCompare = (blocks: ChatBlockLink[]) => {
     .sort((a, b) => a.sequence - b.sequence || a.block - b.block);
 };
 
+const normalizeChatToolsForCompare = (bindings: ChatToolBindingLink[]) => {
+  return [...(bindings || [])]
+    .map((binding) => ({
+      alias: normalizeText(binding.alias),
+      tool_instance_id: Number(binding.tool_instance_id) || 0,
+      enabled: Boolean(binding.enabled),
+      sequence: Number(binding.sequence) || 0,
+    }))
+    .sort((a, b) => a.sequence - b.sequence || a.alias.localeCompare(b.alias) || a.tool_instance_id - b.tool_instance_id);
+};
+
 const normalizeIdList = (ids: number[] | null | undefined) =>
   Array.from(new Set((ids || []).filter((id): id is number => typeof id === 'number' && id > 0))).sort((a, b) => a - b);
-
-const parseToolBindingRow = (resource: JsonApiResource): ToolBindingRow | null => {
-  const id = toIntId(resource.id);
-  if (!id) return null;
-
-  const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  const alias = String(attrs.alias || '').trim();
-  const sharingMode = String(attrs.sharing_mode || 'shared').trim() || 'shared';
-  const sequence =
-    typeof attrs.sequence === 'number'
-      ? attrs.sequence
-      : Number.isFinite(Number(attrs.sequence))
-        ? Number(attrs.sequence)
-        : 0;
-  const embeddedTool =
-    attrs.tool_instance && typeof attrs.tool_instance === 'object'
-      ? (attrs.tool_instance as Record<string, unknown>)
-      : null;
-  const toolInstanceId =
-    relationshipId(resource, 'tool_instance') ??
-    (typeof attrs.tool_instance_id === 'number'
-      ? attrs.tool_instance_id
-      : toIntId(attrs.tool_instance_id as string | number | null | undefined)) ??
-    toIntId(embeddedTool?.id as string | number | null | undefined);
-
-  return {
-    id,
-    alias,
-    enabled: Boolean(attrs.enabled),
-    sequence,
-    sharing_mode: sharingMode,
-    tool_instance_id: toolInstanceId,
-  };
-};
-
-const parseToolInstanceMeta = (resource: JsonApiResource): ActiveToolInstance | null => {
-  const id = toIntId(resource.id);
-  if (!id) return null;
-
-  const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  return {
-    id,
-    name: String(attrs.name || '').trim() || `Tool #${id}`,
-    type: String(attrs.type || '').trim(),
-    outlet_online: Boolean(attrs.outlet_online),
-  };
-};
 
 export function useChatViewModel() {
   const route = useRoute();
@@ -551,119 +520,6 @@ export function useChatViewModel() {
   const botToolsLoading = ref(false);
   const botToolsError = ref('');
   const activeToolInstances = ref<ActiveToolInstance[]>([]);
-  const botToolsRequestToken = ref(0);
-
-  const loadBotToolsState = async (botId: number | null) => {
-    const token = botToolsRequestToken.value + 1;
-    botToolsRequestToken.value = token;
-
-    if (!botId) {
-      botToolsLoading.value = false;
-      botToolsError.value = '';
-      activeToolInstances.value = [];
-      missingRequiredPerUserToolAliases.value = [];
-      showMissingToolsBanner.value = false;
-      return;
-    }
-
-    botToolsLoading.value = true;
-    botToolsError.value = '';
-
-    try {
-      const botBindingsQuery = new URLSearchParams();
-      botBindingsQuery.set('filter[bot_id]', String(botId));
-      botBindingsQuery.set('sort', 'sequence');
-      botBindingsQuery.set(
-        'fields[bot-tool-bindings]',
-        'alias,enabled,sequence,sharing_mode,tool_instance'
-      );
-
-      const userBindingsQuery = new URLSearchParams();
-      userBindingsQuery.set('filter[bot_id]', String(botId));
-      userBindingsQuery.set('sort', 'sequence');
-      userBindingsQuery.set('fields[bot-user-tool-bindings]', 'alias,enabled,sequence,tool_instance');
-
-      const toolsQuery = new URLSearchParams();
-      toolsQuery.set('sort', 'name');
-      toolsQuery.set('fields[tool-instances]', 'name,type,outlet_online');
-
-      const [botBindingsPayload, userBindingsPayload, toolInstancesPayload] = await Promise.all([
-        jsonApiList('/api/ash/bot-tool-bindings', botBindingsQuery),
-        jsonApiList('/api/ash/bot-user-tool-bindings', userBindingsQuery),
-        jsonApiList('/api/ash/tool-instances', toolsQuery),
-      ]);
-
-      if (botToolsRequestToken.value !== token) return;
-
-      const botBindings = (botBindingsPayload.data || [])
-        .map(parseToolBindingRow)
-        .filter((row): row is ToolBindingRow => Boolean(row))
-        .filter((row) => row.enabled && row.alias !== '')
-        .sort((a, b) => a.sequence - b.sequence || a.id - b.id);
-
-      const userBindings = (userBindingsPayload.data || [])
-        .map(parseToolBindingRow)
-        .filter((row): row is ToolBindingRow => Boolean(row))
-        .filter((row) => row.enabled && row.alias !== '')
-        .sort((a, b) => a.sequence - b.sequence || a.id - b.id);
-
-      const toolById = new Map<number, ActiveToolInstance>();
-      for (const resource of toolInstancesPayload.data || []) {
-        const parsed = parseToolInstanceMeta(resource);
-        if (!parsed) continue;
-        toolById.set(parsed.id, parsed);
-      }
-
-      const aliasToToolId = new Map<string, number>();
-      const missingAliases = new Set<string>();
-
-      for (const binding of botBindings) {
-        if (binding.sharing_mode === 'per_user') {
-          missingAliases.add(binding.alias);
-          continue;
-        }
-
-        if (!binding.tool_instance_id) continue;
-        aliasToToolId.set(binding.alias, binding.tool_instance_id);
-      }
-
-      for (const binding of userBindings) {
-        if (!binding.tool_instance_id) continue;
-        aliasToToolId.set(binding.alias, binding.tool_instance_id);
-        missingAliases.delete(binding.alias);
-      }
-
-      const seenToolIds = new Set<number>();
-      const nextTools: ActiveToolInstance[] = [];
-
-      for (const toolId of aliasToToolId.values()) {
-        if (seenToolIds.has(toolId)) continue;
-        seenToolIds.add(toolId);
-        const tool = toolById.get(toolId);
-        nextTools.push({
-          id: toolId,
-          name: tool?.name || `Tool #${toolId}`,
-          type: tool?.type || '',
-          outlet_online: Boolean(tool?.outlet_online),
-        });
-      }
-
-      activeToolInstances.value = nextTools;
-      missingRequiredPerUserToolAliases.value = Array.from(missingAliases).sort((a, b) => a.localeCompare(b));
-      showMissingToolsBanner.value = missingRequiredPerUserToolAliases.value.length > 0;
-    } catch (error) {
-      if (botToolsRequestToken.value !== token) return;
-      console.error(error);
-      botToolsError.value = error instanceof Error ? error.message : 'Failed to load tools.';
-      activeToolInstances.value = [];
-      missingRequiredPerUserToolAliases.value = [];
-      showMissingToolsBanner.value = false;
-    } finally {
-      if (botToolsRequestToken.value === token) {
-        botToolsLoading.value = false;
-      }
-    }
-  };
 
   const messageMetaLabel = (msg: ChatBranchMessage) => {
     const time = formatRelativeDateTime(displayTimestampIso(msg));
@@ -1950,6 +1806,9 @@ export function useChatViewModel() {
   const chatBlocksOriginal = ref<ChatBlockLink[]>([]);
   const chatBlocksDraft = ref<ChatBlockLink[]>([]);
   let tempChatBlockId = -1;
+  const chatToolBindingsOriginal = ref<ChatToolBindingLink[]>([]);
+  const chatToolBindingsDraft = ref<ChatToolBindingLink[]>([]);
+  let tempChatToolBindingId = -1;
 
   const toChatBlockLinks = (bindings: ChatKnowledgeBlock[]) =>
     (bindings || []).map((b) => ({
@@ -1959,28 +1818,65 @@ export function useChatViewModel() {
       sequence: Number(b.sequence) || 0,
     }));
 
+  const toChatToolBindingLinks = (bindings: ChatToolBinding[]) =>
+    (bindings || []).map((binding) => ({
+      id: binding.id,
+      alias: String(binding.alias || '').trim(),
+      tool_instance_id: Number(binding.tool_instance_id) || 0,
+      enabled: Boolean(binding.enabled),
+      sequence: Number(binding.sequence) || 0,
+    }));
+
   const normalizeSequences = (items: ChatBlockLink[]) => {
     return [...items].map((item, idx) => ({ ...item, sequence: idx }));
   };
 
+  const normalizeToolSequences = (items: ChatToolBindingLink[]) => {
+    return [...items].map((item, idx) => ({ ...item, sequence: idx }));
+  };
+
   const chatBlocks = computed(() => chatBlocksDraft.value);
+  const chatToolBindings = computed(() => chatToolBindingsDraft.value);
 
   const chatVariablesOriginal = ref<Partial<ChatVariable>[]>([]);
   const chatVariables = ref<Partial<ChatVariable>[]>([]);
+  const toolLibrary = ref<ToolInstanceOption[]>([]);
+
+  const toolLibraryById = computed(() => {
+    const map = new Map<number, ToolInstanceOption>();
+    for (const tool of toolLibrary.value || []) {
+      if (typeof tool.id === 'number') {
+        map.set(tool.id, tool);
+      }
+    }
+    return map;
+  });
 
   const chatTabDirty = computed(() => {
     const varsA = normalizeVariablesForCompare(chatVariablesOriginal.value);
     const varsB = normalizeVariablesForCompare(chatVariables.value);
     const blocksA = normalizeChatBlocksForCompare(chatBlocksOriginal.value);
     const blocksB = normalizeChatBlocksForCompare(chatBlocksDraft.value);
-    return jsonStable(varsA) !== jsonStable(varsB) || jsonStable(blocksA) !== jsonStable(blocksB);
+    const toolsA = normalizeChatToolsForCompare(chatToolBindingsOriginal.value);
+    const toolsB = normalizeChatToolsForCompare(chatToolBindingsDraft.value);
+
+    return (
+      jsonStable(varsA) !== jsonStable(varsB) ||
+      jsonStable(blocksA) !== jsonStable(blocksB) ||
+      jsonStable(toolsA) !== jsonStable(toolsB)
+    );
   });
 
   const savingChatChanges = ref(false);
+  const newChatToolInstanceId = ref(0);
+  const newChatToolAlias = ref('');
 
   const cancelChatChanges = () => {
     chatVariables.value = [...chatVariablesOriginal.value];
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
+    chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
+    newChatToolInstanceId.value = 0;
+    newChatToolAlias.value = '';
   };
 
   const saveChatChanges = async () => {
@@ -1994,12 +1890,18 @@ export function useChatViewModel() {
           knowledge_block_id: b.block,
           enabled: Boolean(b.enabled),
         })),
+        tool_bindings: (chatToolBindingsDraft.value || []).map((binding) => ({
+          ...(binding.id > 0 ? { id: binding.id } : {}),
+          tool_instance_id: binding.tool_instance_id,
+          alias: String(binding.alias || '').trim(),
+          enabled: Boolean(binding.enabled),
+        })),
       });
 
       await loadChat({ mode: 'soft' });
     } catch (error) {
       console.error(error);
-      alert('Failed to save chat changes.');
+      alert(error instanceof Error ? error.message : 'Failed to save chat changes.');
     } finally {
       savingChatChanges.value = false;
     }
@@ -2053,6 +1955,89 @@ export function useChatViewModel() {
     const type = block?.type || 'Block';
     const tokens = block?.token_count ?? 0;
     return `${type} · ${tokens} tokens`;
+  };
+
+  const toolLabel = (toolInstanceId: number) => {
+    const tool = toolLibraryById.value.get(toolInstanceId);
+    if (!tool) return `Tool #${toolInstanceId}`;
+    return `${tool.name} (${tool.type})`;
+  };
+
+  const toolTypeLabel = (toolInstanceId: number) => {
+    return toolLibraryById.value.get(toolInstanceId)?.type || 'Tool';
+  };
+
+  const toolIsOutlet = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type === 'outlet';
+
+  const toolIsOnline = (toolInstanceId: number) => Boolean(toolLibraryById.value.get(toolInstanceId)?.outlet_online);
+
+  const addChatToolBinding = () => {
+    const toolInstanceId = Number(newChatToolInstanceId.value || 0);
+    const alias = String(newChatToolAlias.value || '').trim();
+
+    if (!toolInstanceId) {
+      alert('Choose a tool.');
+      return;
+    }
+
+    if (!alias) {
+      alert('Alias is required.');
+      return;
+    }
+
+    if (alias.includes('__')) {
+      alert('Alias must not contain "__".');
+      return;
+    }
+
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)) {
+      alert('Alias must start with a letter and contain only letters, numbers, "_" or "-".');
+      return;
+    }
+
+    if (chatToolBindingsDraft.value.some((binding) => binding.alias === alias)) {
+      alert('Alias is already used in this chat.');
+      return;
+    }
+
+    const next = normalizeToolSequences(chatToolBindingsDraft.value);
+    chatToolBindingsDraft.value = normalizeToolSequences([
+      ...next,
+      {
+        id: tempChatToolBindingId--,
+        alias,
+        tool_instance_id: toolInstanceId,
+        enabled: true,
+        sequence: next.length,
+      },
+    ]);
+
+    newChatToolInstanceId.value = 0;
+    newChatToolAlias.value = '';
+  };
+
+  const moveChatToolBinding = (binding: ChatToolBindingLink, delta: number) => {
+    const idx = chatToolBindingsDraft.value.findIndex((row) => row.id === binding.id);
+    if (idx === -1) return;
+    const nextIndex = idx + delta;
+    if (nextIndex < 0 || nextIndex >= chatToolBindingsDraft.value.length) return;
+    const next = [...chatToolBindingsDraft.value];
+    const current = next[idx];
+    next[idx] = next[nextIndex];
+    next[nextIndex] = current;
+    chatToolBindingsDraft.value = normalizeToolSequences(next);
+  };
+
+  const removeChatToolBinding = (bindingId: number) => {
+    chatToolBindingsDraft.value = normalizeToolSequences(
+      chatToolBindingsDraft.value.filter((binding) => binding.id !== bindingId)
+    );
+  };
+
+  const setChatToolBindingEnabled = (bindingId: number, enabled: boolean) => {
+    chatToolBindingsDraft.value = chatToolBindingsDraft.value.map((binding) =>
+      binding.id === bindingId ? { ...binding, enabled } : binding
+    );
   };
 
   const addVariableRow = () => {
@@ -2138,6 +2123,7 @@ export function useChatViewModel() {
     bots.value = payload.options?.bots || [];
     llmConfigurations.value = payload.options?.llm_configurations || [];
     knowledgeBlocks.value = payload.options?.knowledge_blocks || [];
+    toolLibrary.value = payload.options?.tool_instances || [];
 
     selectedConfig.value = payload.chat?.llm_configuration_id ?? '';
     configSyncStatus.value = 'synced';
@@ -2145,11 +2131,18 @@ export function useChatViewModel() {
 
     chatBlocksOriginal.value = normalizeSequences(toChatBlockLinks(payload.chat_blocks || []));
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
+    chatToolBindingsOriginal.value = normalizeToolSequences(toChatToolBindingLinks(payload.chat_tool_bindings || []));
+    chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
+    newChatToolInstanceId.value = 0;
+    newChatToolAlias.value = '';
 
     chatVariablesOriginal.value = payload.chat?.variables || [];
     chatVariables.value = [...chatVariablesOriginal.value];
-
-    void loadBotToolsState(payload.chat?.bot_id ?? null);
+    activeToolInstances.value = payload.active_tool_instances || [];
+    missingRequiredPerUserToolAliases.value = payload.missing_required_per_user_tool_aliases || [];
+    showMissingToolsBanner.value = missingRequiredPerUserToolAliases.value.length > 0;
+    botToolsLoading.value = false;
+    botToolsError.value = '';
 
     const generating = payload.active_generation_message_id || null;
     if (generating) {
@@ -2412,17 +2405,29 @@ export function useChatViewModel() {
     chatTabDirty,
     savingChatChanges,
     chatBlocks,
+    chatToolBindings,
     chatVariables,
+    toolLibrary,
+    newChatToolInstanceId,
+    newChatToolAlias,
     chatBlockName,
     chatBlockImage,
     chatBlockMeta,
+    toolLabel,
+    toolTypeLabel,
+    toolIsOutlet,
+    toolIsOnline,
     saveChatChanges,
     cancelChatChanges,
     openChatBlocksPicker,
     openNewBlock,
     openChatBlockEditor,
+    addChatToolBinding,
     moveChatBlock,
+    moveChatToolBinding,
     removeChatBlock,
+    removeChatToolBinding,
+    setChatToolBindingEnabled,
     touchChatBlocks,
     addVariableRow,
     chatBlocksPickerOpen,

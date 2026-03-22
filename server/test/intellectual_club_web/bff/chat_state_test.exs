@@ -17,6 +17,9 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag}
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Tools.BotToolBinding
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
 
   test "GET /api/bff/chats/:id/state returns trace for markdown user message", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
@@ -425,6 +428,102 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     assert get_in(block_payload, ["image", "url"]) ==
              "/api/bff/knowledge-blocks/#{block.id}/image"
+  end
+
+  test "GET /api/bff/chats/:id/state includes chat tool bindings and resolved active tools", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    bot = create_bot!(actor, "Tool bot", 80)
+
+    base_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Base tool",
+          config: %{"server_url" => "https://example.com/base"},
+          secrets: %{"bearer_token" => "base"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Chat tool",
+          config: %{"server_url" => "https://example.com/chat"},
+          secrets: %{"bearer_token" => "chat"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _ =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: base_tool.id,
+          alias: "web",
+          sharing_mode: :per_user,
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Chat tool state", note: "", bot_id: bot.id, variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _ =
+      ChatToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_id: chat.id,
+          tool_instance_id: chat_tool.id,
+          alias: "web",
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> json_response(200)
+
+    assert get_in(payload, ["missing_required_per_user_tool_aliases"]) == []
+
+    assert Enum.map(get_in(payload, ["chat_tool_bindings"]) || [], fn item ->
+             {item["alias"], item["tool_instance_id"], item["enabled"], item["sequence"]}
+           end) == [{"web", chat_tool.id, true, 0}]
+
+    assert Enum.any?(get_in(payload, ["active_tool_instances"]) || [], fn item ->
+             item["id"] == chat_tool.id and item["name"] == "Chat tool"
+           end)
+
+    assert Enum.any?(get_in(payload, ["options", "tool_instances"]) || [], fn item ->
+             item["id"] == chat_tool.id and item["can_edit"] == true
+           end)
   end
 
   defp all_text_contents(message_payload) do
