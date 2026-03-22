@@ -11,7 +11,16 @@ import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    # Allow `python outlets/shell/shell_outlet.py` by restoring the project root
+    # on sys.path before importing the package.
+    project_root = Path(__file__).resolve().parents[2]
+    project_root_str = os.fspath(project_root)
+    if project_root_str not in sys.path:
+        sys.path.insert(0, project_root_str)
 
 from outlets.outlet_base import download_call_file, outlet_tool, run_outlet, upload_call_file
 

@@ -40,6 +40,13 @@ For a non-Docker install, create a Python environment and install the runtime re
 python -m pip install -r outlets/shell/requirements.txt
 ```
 
+You can then start the outlet either as a module or as a script:
+
+```bash
+python -m outlets.shell.shell_outlet
+python outlets/shell/shell_outlet.py
+```
+
 If you also want the extra preinstalled data/science/utility packages that are baked into the Docker image for agent work, install:
 
 ```bash

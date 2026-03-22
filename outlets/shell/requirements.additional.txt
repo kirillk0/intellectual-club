@@ -1,4 +1,3 @@
-httpx
 numpy
 pandas
 matplotlib
