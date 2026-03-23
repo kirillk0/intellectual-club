@@ -22,32 +22,43 @@ defmodule IntellectualClub.Tools.Discovery do
   def discover_and_sync!(%ToolInstance{} = tool_instance, actor) do
     driver = Registry.driver_for_type!(to_string(tool_instance.type || ""))
 
-    now = DateTime.utc_now()
-
     case driver.discover(tool_instance) do
       {:ok, discovered} when is_list(discovered) ->
-        stats = sync_discovered_functions!(tool_instance, discovered, actor, now: now)
-
-        _ =
-          tool_instance
-          |> Ash.Changeset.for_update(:update_discovery_metadata, %{
-            last_discovered_at: now,
-            last_discovery_error: ""
-          })
-          |> Ash.update!(actor: actor)
-
-        functions = load_functions!(tool_instance.id, actor)
-        {stats, functions}
+        sync_discovered_functions!(tool_instance, discovered, actor)
 
       {:ok, _other} ->
-        mark_discovery_error!(tool_instance, actor, "Discovery returned an invalid payload")
+        record_discovery_error!(tool_instance, actor, "Discovery returned an invalid payload")
+        raise RuntimeError, "Discovery returned an invalid payload"
 
       {:error, reason} ->
-        mark_discovery_error!(tool_instance, actor, to_string(reason))
+        error_text = to_string(reason)
+        record_discovery_error!(tool_instance, actor, error_text)
+        raise RuntimeError, error_text
     end
   end
 
-  defp mark_discovery_error!(%ToolInstance{} = tool_instance, actor, error_text) do
+  @spec sync_discovered_functions!(ToolInstance.t(), list(map()), actor :: any(), keyword()) ::
+          {discover_result(), list(ToolFunction.t())}
+  def sync_discovered_functions!(%ToolInstance{} = tool_instance, discovered, actor, opts \\ [])
+      when is_list(discovered) and is_list(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    stats = do_sync_discovered_functions!(tool_instance, discovered, actor, now: now)
+
+    _ =
+      tool_instance
+      |> Ash.Changeset.for_update(:update_discovery_metadata, %{
+        last_discovered_at: now,
+        last_discovery_error: ""
+      })
+      |> Ash.update!(actor: actor)
+
+    functions = load_functions!(tool_instance.id, actor)
+    {stats, functions}
+  end
+
+  @spec record_discovery_error!(ToolInstance.t(), actor :: any(), String.t()) :: String.t()
+  def record_discovery_error!(%ToolInstance{} = tool_instance, actor, error_text) do
     error_text = error_text |> to_string() |> String.trim()
 
     _ =
@@ -57,10 +68,10 @@ defmodule IntellectualClub.Tools.Discovery do
       })
       |> Ash.update!(actor: actor)
 
-    raise RuntimeError, error_text
+    error_text
   end
 
-  defp sync_discovered_functions!(%ToolInstance{} = tool_instance, discovered, actor, opts)
+  defp do_sync_discovered_functions!(%ToolInstance{} = tool_instance, discovered, actor, opts)
        when is_list(discovered) and is_list(opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
 

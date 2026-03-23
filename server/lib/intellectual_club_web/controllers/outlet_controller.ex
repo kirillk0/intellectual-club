@@ -11,11 +11,15 @@ defmodule IntellectualClubWeb.OutletController do
   use IntellectualClubWeb, :controller
 
   require Logger
+  require Ash.Query
 
+  alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Files
   alias IntellectualClub.Outlets.{Auth, Pairing, Runtime}
+  alias IntellectualClub.Tools.{Discovery, ToolFunction}
+  alias IntellectualClub.Tools.Drivers.Outlet, as: OutletDriver
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
 
@@ -29,6 +33,8 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
+      _ = maybe_enqueue_auto_discovery(tool_instance, payload)
+
       case with_runtime(fn -> Runtime.poll(tool_instance, payload) end) do
         {:ok, {:ok, %{} = response}} ->
           json(conn, response)
@@ -88,12 +94,19 @@ defmodule IntellectualClubWeb.OutletController do
         |> put_status(:bad_request)
         |> json(%{error: "call_id is required."})
       else
+        running_call =
+          case with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end) do
+            {:ok, {:ok, %{} = call}} -> call
+            _other -> nil
+          end
+
         _ = maybe_log_large_complete_payload(conn, payload, tool_instance, call_id)
 
         case with_runtime(fn ->
                Runtime.complete(tool_instance, Map.put(payload, "call_id", call_id))
              end) do
           {:ok, :ok} ->
+            _ = maybe_sync_auto_discovery(tool_instance, running_call, payload)
             json(conn, %{status: "ok"})
 
           {:ok, {:error, :not_found}} ->
@@ -443,6 +456,129 @@ defmodule IntellectualClubWeb.OutletController do
     )
   end
 
+  defp maybe_enqueue_auto_discovery(tool_instance, payload)
+       when is_map(tool_instance) and is_map(payload) do
+    if auto_discovery_enabled?(tool_instance, payload) and no_tool_functions?(tool_instance) do
+      case with_runtime(fn ->
+             Runtime.enqueue_if_absent(tool_instance, "outlet.list_tools", %{})
+           end) do
+        {:ok, :ok} ->
+          :ok
+
+        {:ok, :already_present} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to enqueue outlet auto-discovery tool_instance_id=#{inspect(tool_instance.id)} " <>
+              "reason=#{inspect(reason)}"
+          )
+
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_enqueue_auto_discovery(_tool_instance, _payload), do: :ok
+
+  defp maybe_sync_auto_discovery(
+         %{owner_id: owner_id, id: tool_instance_id} = tool_instance,
+         %{function_name: "outlet.list_tools"},
+         payload
+       )
+       when is_integer(owner_id) and is_map(payload) do
+    actor = %User{id: owner_id}
+
+    try do
+      case normalize_outlet_status(payload) do
+        "done" ->
+          result_raw = normalize_result_raw(payload)
+
+          case OutletDriver.discovered_tools_from_raw(result_raw) do
+            {:ok, discovered} ->
+              _ = Discovery.sync_discovered_functions!(tool_instance, discovered, actor)
+              :ok
+
+            {:error, message} ->
+              _ = Discovery.record_discovery_error!(tool_instance, actor, message)
+              :ok
+          end
+
+        _other ->
+          error_text =
+            payload
+            |> Map.get("error_text", Map.get(payload, :error_text, ""))
+            |> to_string()
+            |> blank_to_default("Outlet discovery failed.")
+
+          _ = Discovery.record_discovery_error!(tool_instance, actor, error_text)
+          :ok
+      end
+    rescue
+      exception ->
+        Logger.warning(
+          "Failed to sync outlet auto-discovery tool_instance_id=#{inspect(tool_instance_id)} " <>
+            "error=#{Exception.message(exception)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_sync_auto_discovery(_tool_instance, _running_call, _payload), do: :ok
+
+  defp auto_discovery_enabled?(tool_instance, payload)
+       when is_map(tool_instance) and is_map(payload) do
+    to_string(Map.get(tool_instance, :type, "")) == "outlet" and
+      positive_poll_capacity?(payload)
+  end
+
+  defp no_tool_functions?(%{id: tool_instance_id}) when is_integer(tool_instance_id) do
+    ToolFunction
+    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(authorize?: false)
+    |> Enum.empty?()
+  end
+
+  defp positive_poll_capacity?(payload) when is_map(payload) do
+    case Map.get(payload, "capacity", Map.get(payload, :capacity)) do
+      nil -> true
+      value when is_integer(value) -> value > 0
+      value when is_float(value) -> value > 0
+
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {parsed, ""} -> parsed > 0
+          _ -> true
+        end
+
+      _other ->
+        true
+    end
+  end
+
+  defp normalize_outlet_status(payload) when is_map(payload) do
+    payload
+    |> Map.get("status", Map.get(payload, :status, "done"))
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "error" -> "error"
+      _ -> "done"
+    end
+  end
+
+  defp normalize_result_raw(payload) when is_map(payload) do
+    case Map.get(payload, "result_raw", Map.get(payload, :result_raw)) do
+      %{} = raw -> raw
+      nil -> %{}
+      other -> %{"result" => other}
+    end
+  end
+
   defp parse_optional_int(nil), do: nil
 
   defp parse_optional_int(value) when is_binary(value) do
@@ -453,6 +589,10 @@ defmodule IntellectualClubWeb.OutletController do
   end
 
   defp parse_optional_int(_other), do: nil
+
+  defp blank_to_default(value, default) when is_binary(value) and is_binary(default) do
+    if String.trim(value) == "", do: default, else: value
+  end
 
   defp read_full_body(conn, acc \\ "") do
     case read_body(conn) do

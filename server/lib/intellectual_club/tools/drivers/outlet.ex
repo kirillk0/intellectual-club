@@ -93,57 +93,8 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     with {:ok, {_text, %{} = raw}} <-
            normalize_discovery_result(
              Runtime.enqueue_and_wait(tool_instance, "outlet.list_tools", %{})
-           ),
-         tools when is_list(tools) <- Map.get(raw, "tools", Map.get(raw, :tools)) do
-      discovered =
-        Enum.flat_map(tools, fn item ->
-          if is_map(item) do
-            name =
-              item |> Map.get("name", Map.get(item, :name, "")) |> to_string() |> String.trim()
-
-            if name != "" do
-              description =
-                item
-                |> Map.get("description", Map.get(item, :description, ""))
-                |> to_string()
-
-              schema =
-                cond do
-                  is_map(Map.get(item, "input_schema")) -> Map.get(item, "input_schema")
-                  is_map(Map.get(item, :input_schema)) -> Map.get(item, :input_schema)
-                  is_map(Map.get(item, "schema")) -> Map.get(item, "schema")
-                  is_map(Map.get(item, :schema)) -> Map.get(item, :schema)
-                  true -> %{"type" => "object", "properties" => %{}}
-                end
-
-              schema =
-                if description != "" and is_map(schema) and
-                     Map.get(schema, "description") in [nil, ""] do
-                  Map.put(schema, "description", description)
-                else
-                  schema
-                end
-
-              [
-                %{
-                  "name" => name,
-                  "description" => description,
-                  "schema" => schema
-                }
-              ]
-            else
-              []
-            end
-          else
-            []
-          end
-        end)
-
-      if discovered == [] do
-        {:error, "Outlet discovery returned no tools."}
-      else
-        {:ok, discovered}
-      end
+           ) do
+      discovered_tools_from_raw(raw)
     else
       {:error, reason} -> {:error, reason}
       _other -> {:error, "Outlet discovery returned an invalid payload."}
@@ -192,5 +143,64 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
       end
 
     {:ok, {text, raw}}
+  end
+
+  @spec discovered_tools_from_raw(map()) :: {:ok, list(map())} | {:error, String.t()}
+  def discovered_tools_from_raw(%{} = raw) do
+    case Map.get(raw, "tools", Map.get(raw, :tools)) do
+      tools when is_list(tools) ->
+        discovered =
+          Enum.flat_map(tools, fn item ->
+            if is_map(item) do
+              name =
+                item |> Map.get("name", Map.get(item, :name, "")) |> to_string() |> String.trim()
+
+              if name != "" do
+                description =
+                  item
+                  |> Map.get("description", Map.get(item, :description, ""))
+                  |> to_string()
+
+                schema =
+                  cond do
+                    is_map(Map.get(item, "input_schema")) -> Map.get(item, "input_schema")
+                    is_map(Map.get(item, :input_schema)) -> Map.get(item, :input_schema)
+                    is_map(Map.get(item, "schema")) -> Map.get(item, "schema")
+                    is_map(Map.get(item, :schema)) -> Map.get(item, :schema)
+                    true -> %{"type" => "object", "properties" => %{}}
+                  end
+
+                schema =
+                  if description != "" and is_map(schema) and
+                       Map.get(schema, "description") in [nil, ""] do
+                    Map.put(schema, "description", description)
+                  else
+                    schema
+                  end
+
+                [
+                  %{
+                    "name" => name,
+                    "description" => description,
+                    "schema" => schema
+                  }
+                ]
+              else
+                []
+              end
+            else
+              []
+            end
+          end)
+
+        if discovered == [] do
+          {:error, "Outlet discovery returned no tools."}
+        else
+          {:ok, discovered}
+        end
+
+      _other ->
+        {:error, "Outlet discovery returned an invalid payload."}
+    end
   end
 end

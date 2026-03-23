@@ -71,6 +71,16 @@ defmodule IntellectualClub.Outlets.Runtime do
     )
   end
 
+  @spec enqueue_if_absent(tool_instance(), String.t(), map()) :: :ok | :already_present
+  def enqueue_if_absent(tool_instance, function_name, args, execution_context \\ nil)
+      when is_map(tool_instance) and is_binary(function_name) and is_map(args) do
+    GenServer.call(
+      __MODULE__,
+      {:enqueue_if_absent, tool_instance, function_name, args, execution_context},
+      5_000
+    )
+  end
+
   @spec fetch_running_call(tool_instance(), String.t()) :: {:ok, map()} | {:error, :not_found}
   def fetch_running_call(tool_instance, call_id)
       when is_map(tool_instance) and is_binary(call_id) do
@@ -201,6 +211,37 @@ defmodule IntellectualClub.Outlets.Runtime do
     else
       state = put_instance(state, tool_instance_id, instance)
       {:reply, {:error, "Runner is offline."}, state}
+    end
+  end
+
+  def handle_call(
+        {:enqueue_if_absent, tool_instance, function_name, args, execution_context},
+        _from,
+        state
+      ) do
+    tool_instance_id = tool_instance.id
+    cfg = Config.from_tool_instance(tool_instance)
+    now_ms = now_ms()
+
+    instance = get_instance(state, tool_instance_id, cfg)
+
+    if call_present?(instance, function_name) do
+      state = put_instance(state, tool_instance_id, instance)
+      {:reply, :already_present, state}
+    else
+      call = %{
+        call_id: Ecto.UUID.generate(),
+        function_name: function_name,
+        arguments: args || %{},
+        execution_context: execution_context,
+        status: :queued,
+        enqueued_at_ms: now_ms
+      }
+
+      instance = %{instance | pending: instance.pending ++ [call]}
+      {instance, state} = maybe_deliver_tasks(instance, state, tool_instance_id, now_ms)
+      state = put_instance(state, tool_instance_id, instance)
+      {:reply, :ok, state}
     end
   end
 
@@ -636,6 +677,11 @@ defmodule IntellectualClub.Outlets.Runtime do
       function: call.function_name,
       arguments: call.arguments || %{}
     }
+  end
+
+  defp call_present?(instance, function_name) when is_map(instance) and is_binary(function_name) do
+    Enum.any?(instance.pending, &(&1.function_name == function_name)) or
+      Enum.any?(instance.running, fn {_call_id, call} -> call.function_name == function_name end)
   end
 
   defp maybe_reply_prev_poll(nil), do: :ok
