@@ -3,6 +3,88 @@ function getCsrfToken(): string | null {
   return meta?.content || null;
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function looksLikeHtml(value: string): boolean {
+  return /<(?:!doctype|html|head|body|title|script|style)\b/i.test(value);
+}
+
+function extractMessageFromBodyJson(bodyJson: unknown): string | null {
+  if (!bodyJson || typeof bodyJson !== 'object') return null;
+
+  const payload = bodyJson as {
+    error?: unknown;
+    detail?: unknown;
+    message?: unknown;
+    errors?: unknown;
+  };
+
+  const directMessage =
+    asNonEmptyString(payload.error) ||
+    asNonEmptyString(payload.detail) ||
+    asNonEmptyString(payload.message);
+
+  if (directMessage) return directMessage;
+
+  if (Array.isArray(payload.errors)) {
+    for (const item of payload.errors) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as { detail?: unknown; title?: unknown; message?: unknown };
+      const message =
+        asNonEmptyString(entry.detail) ||
+        asNonEmptyString(entry.title) ||
+        asNonEmptyString(entry.message);
+      if (message) return message;
+    }
+  }
+
+  if (payload.errors && typeof payload.errors === 'object') {
+    const errors = payload.errors as { detail?: unknown; title?: unknown; message?: unknown };
+    return (
+      asNonEmptyString(errors.detail) ||
+      asNonEmptyString(errors.title) ||
+      asNonEmptyString(errors.message)
+    );
+  }
+
+  return null;
+}
+
+function extractMessageFromBodyText(bodyText: string): string | null {
+  const trimmed = bodyText.trim();
+  if (trimmed === '' || looksLikeHtml(trimmed)) return null;
+
+  const normalized = trimmed.replace(/\s+/g, ' ');
+  if (normalized.length <= 240) return normalized;
+  return `${normalized.slice(0, 237).trimEnd()}...`;
+}
+
+function defaultMessageForStatus(status: number, statusText: string): string {
+  if (status === 413) {
+    return 'Request body is too large. Try a smaller upload.';
+  }
+
+  return asNonEmptyString(statusText) || `Request failed with status ${status}.`;
+}
+
+function buildHttpErrorMessage(params: {
+  status: number;
+  statusText: string;
+  bodyText: string;
+  bodyJson: unknown | null;
+}): string {
+  const detail =
+    extractMessageFromBodyJson(params.bodyJson) ||
+    extractMessageFromBodyText(params.bodyText) ||
+    defaultMessageForStatus(params.status, params.statusText);
+
+  return `HTTP ${params.status}: ${detail}`;
+}
+
 export type ApiRequestOptions = RequestInit & {
   redirectOnUnauthorized?: boolean;
 };
@@ -14,8 +96,7 @@ export class HttpError extends Error {
   bodyJson: unknown | null;
 
   constructor(params: { status: number; statusText: string; bodyText: string; bodyJson: unknown | null }) {
-    const message = `HTTP ${params.status}: ${params.bodyText || params.statusText}`;
-    super(message);
+    super(buildHttpErrorMessage(params));
     this.name = 'HttpError';
     this.status = params.status;
     this.statusText = params.statusText;
@@ -26,6 +107,18 @@ export class HttpError extends Error {
 
 export function isHttpError(error: unknown): error is HttpError {
   return error instanceof Error && (error as HttpError).name === 'HttpError';
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (isHttpError(error)) {
+    return (
+      extractMessageFromBodyJson(error.bodyJson) ||
+      extractMessageFromBodyText(error.bodyText) ||
+      defaultMessageForStatus(error.status, error.statusText)
+    );
+  }
+
+  return error instanceof Error && error.message.trim() !== '' ? error.message : fallback;
 }
 
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {

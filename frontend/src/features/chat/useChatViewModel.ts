@@ -1,7 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { api, isHttpError } from '@/api/client';
+import { api, getApiErrorMessage } from '@/api/client';
 import { jsonApiList, toIntId } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
@@ -339,13 +339,7 @@ export function useChatViewModel() {
     return String(value);
   };
 
-  const errorMessage = (error: unknown, fallback: string) => {
-    if (isHttpError(error) && error.bodyJson && typeof (error.bodyJson as { error?: unknown }).error === 'string') {
-      return String((error.bodyJson as { error?: unknown }).error);
-    }
-
-    return error instanceof Error ? error.message : fallback;
-  };
+  const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
 
   const promptTokenCount = computed(() =>
     linkedBlocks.value.reduce((sum, item) => sum + (item.block.token_count || 0), 0)

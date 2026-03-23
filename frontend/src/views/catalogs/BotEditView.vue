@@ -463,7 +463,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
-import { api } from '@/api/client';
+import { api, getApiErrorMessage } from '@/api/client';
 import BotShareWizardModal, { type BotShareToolBinding } from '@/components/BotShareWizardModal.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
@@ -989,7 +989,7 @@ const handleImageSelected = async (event: Event) => {
     form.image = response.image;
   } catch (error) {
     console.error(error);
-    alert('Failed to upload image.');
+    alert(getApiErrorMessage(error, 'Failed to upload image.'));
   }
 };
 

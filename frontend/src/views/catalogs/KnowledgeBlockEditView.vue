@@ -204,6 +204,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
+import { getApiErrorMessage } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
@@ -787,7 +788,7 @@ const handleImageSelected = async (event: Event) => {
     form.image = response.image;
   } catch (error) {
     console.error(error);
-    alert('Failed to upload image.');
+    alert(getApiErrorMessage(error, 'Failed to upload image.'));
   }
 };
 
