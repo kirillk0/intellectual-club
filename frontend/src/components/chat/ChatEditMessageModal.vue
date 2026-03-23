@@ -104,8 +104,17 @@
                 :title="`${item.name}  (${formatFileBytes(item.size)})`"
               >
                 <span class="attachment-row__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
-                <span class="attachment-row__name">{{ item.name }}</span>
-                <span class="attachment-row__size">{{ formatFileBytes(item.size) }}</span>
+                <div class="attachment-row__meta">
+                  <span class="attachment-row__name">{{ item.name }}</span>
+                  <span class="attachment-row__status">{{ describePendingFileStatus(item) }}</span>
+                  <div
+                    v-if="item.uploadStatus !== 'idle' || item.progress > 0"
+                    class="attachment-row__progress"
+                    aria-hidden="true"
+                  >
+                    <span class="attachment-row__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
+                  </div>
+                </div>
                 <button
                   class="attachment-row__remove"
                   type="button"
@@ -141,9 +150,11 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import {
   clipboardHasStringContent,
+  describePendingFileUploadStatus,
   extractClipboardImageFiles,
   fileIconByMime,
   formatFileBytes,
+  pendingFileProgressPercent,
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
@@ -156,6 +167,7 @@ interface Props {
   pendingFiles?: PendingChatFile[];
   error?: string;
   saving?: boolean;
+  saveLabel?: string;
   attachmentsEnabled?: boolean;
   attachmentAccept?: string;
   attachmentHelp?: string;
@@ -248,9 +260,12 @@ const attachmentDropHint = computed(() =>
 );
 const title = computed(() => (props.mode === 'branch' ? 'Branch message' : 'Edit message'));
 const confirmLabel = computed(() => {
+  if ((props.saveLabel || '').trim() !== '') return props.saveLabel || '';
   if (saving.value) return props.mode === 'branch' ? 'Branching…' : 'Saving…';
   return props.mode === 'branch' ? 'Branch' : 'Save';
 });
+const describePendingFileStatus = describePendingFileUploadStatus;
+const pendingFileProgress = pendingFileProgressPercent;
 
 const handleWindowKeydown = (event: KeyboardEvent) => {
   if (!props.open || saving.value) return;
@@ -622,8 +637,6 @@ const handleDrop = (event: DragEvent) => {
 }
 
 .attachment-row__name {
-  flex: 1 1 auto;
-  min-width: 0;
   font-size: 0.82rem;
   font-weight: 500;
   line-height: 1.2;
@@ -633,11 +646,42 @@ const handleDrop = (event: DragEvent) => {
   color: #1a1a1a;
 }
 
+.attachment-row__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .attachment-row__size {
   flex: 0 0 auto;
   font-size: 0.72rem;
   color: #888;
   white-space: nowrap;
+}
+
+.attachment-row__status {
+  font-size: 0.72rem;
+  color: #667085;
+  line-height: 1.25;
+}
+
+.attachment-row__progress {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+
+.attachment-row__progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e, #22c55e);
 }
 
 .attachment-row__remove {

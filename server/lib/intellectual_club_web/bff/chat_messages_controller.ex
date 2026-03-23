@@ -18,6 +18,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.Generation.Persistence, as: GenerationPersistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
+  alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
@@ -225,59 +226,25 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
         with {:ok, text_updates} <-
                parse_message_text_update(params, editable_contents, allow_legacy?: true),
-             {:ok, media_removals, media_additions} <-
-               parse_message_media_update(params, editable_media, upload_policy) do
-          Enum.each(text_updates, fn {content, text} ->
-            content
-            |> Ash.Changeset.for_update(:update, %{content_text: text}, actor: actor)
-            |> Ash.update!(actor: actor)
-          end)
-
-          Enum.each(media_removals, fn content ->
-            Ash.destroy!(content, actor: actor)
-            maybe_delete_content_file(content)
-          end)
-
-          if media_additions != [] do
-            target_item = ensure_media_item!(message, actor)
-            next_sequence = next_content_sequence(target_item)
-
-            Enum.with_index(media_additions, next_sequence)
-            |> Enum.each(fn {file_id, sequence} ->
-              ChatMessageContent
-              |> Ash.Changeset.for_create(
-                :create,
-                %{
-                  chat_message_item_id: target_item.id,
-                  sequence: sequence,
-                  kind: :media,
-                  file_id: file_id
-                },
-                actor: actor
-              )
-              |> Ash.create!(actor: actor)
-            end)
-          end
-
-          message =
-            Ash.get!(ChatMessage, message_id,
-              actor: actor,
-              load: Loads.message_tree(),
-              strict?: true
-            )
-
-          token_count =
-            message
-            |> message_primary_text()
-            |> TokenCounter.estimate()
-
-          _message =
-            message
-            |> Ash.Changeset.for_update(:update_token_count, %{token_count: token_count},
-              actor: actor
-            )
-            |> Ash.update!(actor: actor)
-
+             {:ok, media_removals, prepared_uploads} <-
+               parse_message_media_update(params, editable_media),
+             {:ok, :updated} <-
+               ChatAttachments.with_prepared_file_ids(
+                 message.chat_id,
+                 actor,
+                 upload_policy,
+                 prepared_uploads,
+                 fn media_additions ->
+                   apply_message_update(
+                     message_id,
+                     message,
+                     actor,
+                     text_updates,
+                     media_removals,
+                     media_additions
+                   )
+                 end
+               ) do
           {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
 
           json(conn, %{
@@ -565,8 +532,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     end
   end
 
-  defp parse_message_media_update(params, editable_media, upload_policy)
-       when is_map(params) and is_list(editable_media) and is_map(upload_policy) do
+  defp parse_message_media_update(params, editable_media)
+       when is_map(params) and is_list(editable_media) do
     editable_media =
       editable_media
       |> Enum.filter(fn content ->
@@ -586,23 +553,15 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       |> Enum.filter(&(is_integer(&1) and &1 > 0))
       |> Enum.uniq()
 
-    uploads =
-      params
-      |> Map.get("files", [])
-      |> List.wrap()
-
-    with true <- Enum.all?(uploads, &match?(%Plug.Upload{}, &1)),
+    with {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
          [] <-
            Enum.reject(remove_ids, fn id ->
              MapSet.member?(editable_ids, id)
-           end),
-         {:ok, persisted_uploads} <- persist_uploaded_files(uploads, upload_policy) do
+           end) do
       removals = Enum.map(remove_ids, &Map.fetch!(editable_by_id, &1))
-      {:ok, removals, persisted_uploads}
-    else
-      false ->
-        {:error, "Invalid file upload."}
+      {:ok, removals, prepared_uploads}
 
+    else
       unknown when is_list(unknown) and unknown != [] ->
         {:error, "Some attachments cannot be edited."}
 
@@ -610,7 +569,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         {:error, reason}
 
       {:error, reason} ->
-        {:error, "Failed to persist uploaded files: #{inspect(reason)}"}
+        {:error, inspect(reason)}
     end
   end
 
@@ -661,28 +620,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp decode_json_list(value) when is_list(value), do: value
   defp decode_json_list(_other), do: []
-
-  defp persist_uploaded_files(uploads, upload_policy)
-       when is_list(uploads) and is_map(upload_policy) do
-    Enum.reduce_while(uploads, {:ok, []}, fn
-      %Plug.Upload{} = upload, {:ok, acc} ->
-        with :ok <- ChatUploadPolicy.validate_upload(upload, upload_policy),
-             {:ok, payload} <- File.read(upload.path),
-             {:ok, file} <-
-               Files.create_from_upload(%{
-                 filename: upload.filename,
-                 mime_type: upload.content_type,
-                 payload: payload
-               }) do
-          {:cont, {:ok, acc ++ [file.id]}}
-        else
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-
-      _other, _acc ->
-        {:halt, {:error, "Invalid file upload."}}
-    end)
-  end
 
   defp ensure_media_item!(%ChatMessage{} = message, actor) do
     item_type = media_item_type(message.role)
@@ -742,6 +679,68 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp maybe_delete_content_file(_content), do: :ok
+
+  defp apply_message_update(
+         message_id,
+         %ChatMessage{} = message,
+         actor,
+         text_updates,
+         media_removals,
+         media_additions
+       ) do
+    Enum.each(text_updates, fn {content, text} ->
+      content
+      |> Ash.Changeset.for_update(:update, %{content_text: text}, actor: actor)
+      |> Ash.update!(actor: actor)
+    end)
+
+    Enum.each(media_removals, fn content ->
+      Ash.destroy!(content, actor: actor)
+      maybe_delete_content_file(content)
+    end)
+
+    if media_additions != [] do
+      target_item = ensure_media_item!(message, actor)
+      next_sequence = next_content_sequence(target_item)
+
+      Enum.with_index(media_additions, next_sequence)
+      |> Enum.each(fn {file_id, sequence} ->
+        ChatMessageContent
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            chat_message_item_id: target_item.id,
+            sequence: sequence,
+            kind: :media,
+            file_id: file_id
+          },
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
+      end)
+    end
+
+    message =
+      Ash.get!(ChatMessage, message_id,
+        actor: actor,
+        load: Loads.message_tree(),
+        strict?: true
+      )
+
+    token_count =
+      message
+      |> message_primary_text()
+      |> TokenCounter.estimate()
+
+    _message =
+      message
+      |> Ash.Changeset.for_update(:update_token_count, %{token_count: token_count},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    {:ok, :updated}
+  end
 
   defp message_primary_text(%ChatMessage{} = message) do
     wanted_type = wanted_item_type(message.role)

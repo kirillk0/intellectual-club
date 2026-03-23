@@ -1,4 +1,4 @@
-function getCsrfToken(): string | null {
+export function getCsrfToken(): string | null {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]');
   return meta?.content || null;
 }

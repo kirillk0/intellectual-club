@@ -6,6 +6,14 @@ export type PendingChatFile = {
   name: string;
   size: number;
   mimeType: string;
+  uploadId: string | null;
+  uploadStatus: 'idle' | 'uploading' | 'uploaded' | 'error';
+  uploadedBytes: number;
+  progress: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  abortHandle: (() => void) | null;
+  error: string;
 };
 
 export type ExistingChatAttachment = {
@@ -42,7 +50,83 @@ export const createPendingChatFiles = (files: File[]) =>
     name: file.name,
     size: file.size,
     mimeType: file.type || 'application/octet-stream',
+    uploadId: null,
+    uploadStatus: 'idle' as const,
+    uploadedBytes: 0,
+    progress: 0,
+    speedBps: 0,
+    etaSeconds: null,
+    abortHandle: null,
+    error: '',
   }));
+
+export const pendingFileProgressPercent = (file: PendingChatFile) =>
+  Math.max(0, Math.min(100, Math.round((Number.isFinite(file.progress) ? file.progress : 0) * 100)));
+
+export const formatUploadSpeed = (bytesPerSecond: number) => {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '';
+  return `${formatFileBytes(bytesPerSecond)}/s`;
+};
+
+export const formatUploadEta = (etaSeconds: number | null) => {
+  if (etaSeconds == null || !Number.isFinite(etaSeconds) || etaSeconds < 0) return '';
+  if (etaSeconds < 60) return `${Math.round(etaSeconds)}s left`;
+
+  const minutes = Math.floor(etaSeconds / 60);
+  const seconds = Math.round(etaSeconds % 60);
+  return `${minutes}m ${seconds}s left`;
+};
+
+export const describePendingFileUploadStatus = (file: PendingChatFile) => {
+  if (file.uploadStatus === 'uploaded') {
+    return 'Uploaded';
+  }
+
+  if (file.uploadStatus === 'error') {
+    return file.error.trim() || 'Upload failed. Retry to continue.';
+  }
+
+  if (file.uploadStatus === 'uploading') {
+    const details = [
+      `${pendingFileProgressPercent(file)}%`,
+      `${formatFileBytes(file.uploadedBytes)} / ${formatFileBytes(file.size)}`,
+      formatUploadSpeed(file.speedBps),
+      formatUploadEta(file.etaSeconds),
+    ].filter(Boolean);
+
+    return `Uploading… ${details.join(' • ')}`;
+  }
+
+  return `${formatFileBytes(file.size)} ready to upload`;
+};
+
+export const overallPendingUploadProgress = (files: PendingChatFile[]) => {
+  const relevantFiles = files.filter(
+    (file) =>
+      file.uploadStatus === 'uploading' ||
+      file.uploadStatus === 'uploaded' ||
+      file.uploadedBytes > 0
+  );
+
+  if (relevantFiles.length === 0) {
+    return { active: false, progress: 0 };
+  }
+
+  const totalBytes = relevantFiles.reduce((sum, file) => sum + Math.max(0, file.size), 0);
+  const uploadedBytes = relevantFiles.reduce(
+    (sum, file) => sum + Math.min(Math.max(0, file.uploadedBytes), Math.max(0, file.size)),
+    0
+  );
+
+  if (totalBytes <= 0) {
+    return { active: false, progress: 0 };
+  }
+
+  return {
+    active: uploadedBytes < totalBytes,
+    progress: Math.max(0, Math.min(1, uploadedBytes / totalBytes)),
+  };
+};
 
 export const resolveChatUploadPolicy = (
   bot?: Bot | null,

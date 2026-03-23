@@ -1,7 +1,7 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { api, getApiErrorMessage } from '@/api/client';
+import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import { jsonApiList, toIntId } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
@@ -24,11 +24,20 @@ import {
   getAttachmentName,
   getAttachmentPreviewKind,
   mapContentToExistingAttachment,
+  overallPendingUploadProgress,
   resolveChatUploadPolicy,
   validateFilesForChatUpload,
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
+import {
+  abortChatUploadSession,
+  createChatUploadSession,
+  getChatUploadSession,
+  uploadChatChunk,
+  UploadAbortedError,
+  type ChatUploadInfo,
+} from '@/features/chat/upload';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
 import type {
@@ -271,6 +280,292 @@ export function useChatViewModel() {
   const showMissingToolsBanner = ref(false);
   const missingRequiredPerUserToolAliases = ref<string[]>([]);
   const pendingFiles = ref<PendingChatFile[]>([]);
+
+  const findPendingFile = (filesRef: Ref<PendingChatFile[]>, id: string) =>
+    filesRef.value.find((item) => item.id === id) || null;
+
+  const updatePendingFile = (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    updater: Partial<PendingChatFile> | ((current: PendingChatFile) => Partial<PendingChatFile>)
+  ) => {
+    let nextItem: PendingChatFile | null = null;
+
+    filesRef.value = filesRef.value.map((item) => {
+      if (item.id !== id) return item;
+      const patch = typeof updater === 'function' ? updater(item) : updater;
+      nextItem = { ...item, ...patch };
+      return nextItem;
+    });
+
+    return nextItem;
+  };
+
+  const syncPendingFileWithUpload = (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    upload: ChatUploadInfo,
+    extra: Partial<PendingChatFile> = {}
+  ) =>
+    updatePendingFile(filesRef, id, (current) => {
+      const uploadedBytes = Math.min(upload.uploaded_bytes || 0, current.size);
+      const uploadStatus =
+        upload.status === 'uploaded'
+          ? 'uploaded'
+          : upload.status === 'uploading'
+            ? 'uploading'
+            : 'error';
+
+      return {
+        uploadId: upload.upload_id,
+        uploadStatus,
+        uploadedBytes,
+        progress: current.size > 0 ? uploadedBytes / current.size : 1,
+        ...(uploadStatus === 'uploaded'
+          ? { speedBps: 0, etaSeconds: 0, abortHandle: null }
+          : {}),
+        ...extra,
+      };
+    });
+
+  const resolveChatUpload = async (chatIdValue: number, file: PendingChatFile) => {
+    if (file.uploadId) {
+      try {
+        const upload = await getChatUploadSession(chatIdValue, file.uploadId);
+        if (upload.status === 'uploading' || upload.status === 'uploaded') {
+          return upload;
+        }
+      } catch (error) {
+        if (!isHttpError(error) || error.status !== 404) throw error;
+      }
+    }
+
+    return createChatUploadSession(chatIdValue, file.file);
+  };
+
+  const uploadPendingFile = async (
+    filesRef: Ref<PendingChatFile[]>,
+    fileId: string,
+    chatIdValue: number
+  ) => {
+    const pending = findPendingFile(filesRef, fileId);
+    if (!pending) return null;
+
+    let upload = await resolveChatUpload(chatIdValue, pending);
+    let offset = Math.min(upload.uploaded_bytes || 0, pending.size);
+
+    if (upload.status !== 'uploading' && upload.status !== 'uploaded') {
+      upload = await createChatUploadSession(chatIdValue, pending.file);
+      offset = 0;
+    }
+
+    syncPendingFileWithUpload(filesRef, fileId, upload, {
+      error: '',
+      speedBps: 0,
+      etaSeconds: offset >= pending.size ? 0 : null,
+    });
+
+    if (upload.status === 'uploaded' || offset >= pending.size) {
+      syncPendingFileWithUpload(filesRef, fileId, upload, {
+        uploadStatus: 'uploaded',
+        uploadedBytes: pending.size,
+        progress: 1,
+        speedBps: 0,
+        etaSeconds: 0,
+        abortHandle: null,
+        error: '',
+      });
+      return upload.upload_id;
+    }
+
+    let resumeOffset = offset;
+    let startedAt = performance.now();
+
+    while (offset < pending.size) {
+      const liveFile = findPendingFile(filesRef, fileId);
+      if (!liveFile) return null;
+
+      const chunkSize = Math.min(upload.chunk_size_bytes || liveFile.size, liveFile.size - offset);
+      const chunk = liveFile.file.slice(offset, offset + chunkSize);
+
+      try {
+        upload = await uploadChatChunk(chatIdValue, upload.upload_id, offset, chunk, {
+          onAbortHandle: (abortHandle) => {
+            updatePendingFile(filesRef, fileId, { abortHandle });
+          },
+          onProgress: (loadedBytes) => {
+            const currentFile = findPendingFile(filesRef, fileId);
+            if (!currentFile) return;
+
+            const totalUploaded = Math.min(offset + loadedBytes, currentFile.size);
+            const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
+            const transferredBytes = Math.max(totalUploaded - resumeOffset, 0);
+            const speedBps = transferredBytes / elapsedSeconds;
+            const remainingBytes = Math.max(currentFile.size - totalUploaded, 0);
+
+            updatePendingFile(filesRef, fileId, {
+              uploadId: upload.upload_id,
+              uploadStatus: 'uploading',
+              uploadedBytes: totalUploaded,
+              progress: currentFile.size > 0 ? totalUploaded / currentFile.size : 1,
+              speedBps,
+              etaSeconds: speedBps > 0 ? remainingBytes / speedBps : null,
+              error: '',
+            });
+          },
+        });
+
+        const currentFile = findPendingFile(filesRef, fileId);
+        if (!currentFile) return null;
+
+        offset = Math.min(upload.uploaded_bytes || 0, currentFile.size);
+        syncPendingFileWithUpload(filesRef, fileId, upload, {
+          error: '',
+          speedBps: offset >= currentFile.size ? 0 : currentFile.speedBps,
+          etaSeconds: offset >= currentFile.size ? 0 : currentFile.etaSeconds,
+          abortHandle: null,
+        });
+      } catch (error) {
+        if (error instanceof UploadAbortedError) {
+          const stillPresent = findPendingFile(filesRef, fileId);
+          if (!stillPresent) return null;
+
+          updatePendingFile(filesRef, fileId, {
+            uploadStatus: 'error',
+            abortHandle: null,
+            speedBps: 0,
+            etaSeconds: null,
+            error: 'Upload aborted.',
+          });
+
+          throw error;
+        }
+
+        if (isHttpError(error) && error.status === 409) {
+          const nextOffset = Number((error.bodyJson as { next_offset?: unknown } | null)?.next_offset);
+
+          if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+            const currentFile = findPendingFile(filesRef, fileId);
+            if (!currentFile) return null;
+
+            offset = Math.min(nextOffset, currentFile.size);
+            resumeOffset = offset;
+            startedAt = performance.now();
+            upload = await getChatUploadSession(chatIdValue, upload.upload_id);
+            syncPendingFileWithUpload(filesRef, fileId, upload, {
+              error: '',
+              speedBps: 0,
+              etaSeconds: null,
+              abortHandle: null,
+            });
+            continue;
+          }
+        }
+
+        updatePendingFile(filesRef, fileId, {
+          uploadStatus: 'error',
+          abortHandle: null,
+          speedBps: 0,
+          etaSeconds: null,
+          error: errorMessage(error, 'Failed to upload attachment.'),
+        });
+
+        throw error;
+      }
+    }
+
+    const finalFile = findPendingFile(filesRef, fileId);
+    if (!finalFile) return null;
+
+    updatePendingFile(filesRef, fileId, {
+      uploadId: upload.upload_id,
+      uploadStatus: 'uploaded',
+      uploadedBytes: finalFile.size,
+      progress: 1,
+      speedBps: 0,
+      etaSeconds: 0,
+      abortHandle: null,
+      error: '',
+    });
+
+    return upload.upload_id;
+  };
+
+  const ensurePendingFilesUploaded = async (filesRef: Ref<PendingChatFile[]>) => {
+    if (!chatId.value) return [];
+
+    let index = 0;
+
+    while (index < filesRef.value.length) {
+      const item = filesRef.value[index];
+      if (!item) break;
+
+      if (item.uploadStatus === 'uploaded' && item.uploadId) {
+        index += 1;
+        continue;
+      }
+
+      try {
+        await uploadPendingFile(filesRef, item.id, chatId.value);
+      } catch (error) {
+        if (error instanceof UploadAbortedError && !findPendingFile(filesRef, item.id)) {
+          continue;
+        }
+
+        throw error;
+      }
+
+      const updated = findPendingFile(filesRef, item.id);
+      if (!updated) continue;
+      if (updated.uploadStatus === 'uploaded' && updated.uploadId) {
+        index += 1;
+        continue;
+      }
+
+      throw new Error(updated.error || 'Failed to upload attachment.');
+    }
+
+    return filesRef.value
+      .map((item) => item.uploadId)
+      .filter((value): value is string => typeof value === 'string' && value.trim() !== '');
+  };
+
+  const removePendingFileFromCollection = async (filesRef: Ref<PendingChatFile[]>, id: string) => {
+    const current = findPendingFile(filesRef, id);
+    if (!current) return;
+
+    current.abortHandle?.();
+    filesRef.value = filesRef.value.filter((item) => item.id !== id);
+
+    if (!chatId.value || !current.uploadId) return;
+
+    try {
+      await abortChatUploadSession(chatId.value, current.uploadId);
+    } catch (error) {
+      if (!isHttpError(error) || error.status !== 404) {
+        console.warn('Failed to abort chat upload session', error);
+      }
+    }
+  };
+
+  const clearPendingFilesCollection = async (filesRef: Ref<PendingChatFile[]>) => {
+    const snapshot = [...filesRef.value];
+    filesRef.value = [];
+
+    for (const item of snapshot) {
+      item.abortHandle?.();
+
+      if (!chatId.value || !item.uploadId) continue;
+
+      try {
+        await abortChatUploadSession(chatId.value, item.uploadId);
+      } catch (error) {
+        if (!isHttpError(error) || error.status !== 404) {
+          console.warn('Failed to abort chat upload session', error);
+        }
+      }
+    }
+  };
 
   const leftOpen = ui.leftOpen;
   const rightOpen = ui.rightOpen;
@@ -744,6 +1039,22 @@ export function useChatViewModel() {
 
   const draft = ref('');
   const sending = ref(false);
+  const sendButtonLabel = computed(() => {
+    if (activeGenerationId.value) {
+      return cancelingGenerationId.value === activeGenerationId.value ? 'Cancelling…' : 'Cancel';
+    }
+
+    if (sending.value) {
+      const uploadProgress = overallPendingUploadProgress(pendingFiles.value);
+      if (uploadProgress.active) {
+        return `Uploading… ${Math.max(1, Math.round(uploadProgress.progress * 100))}%`;
+      }
+
+      return 'Sending…';
+    }
+
+    return 'Send';
+  });
 
   let pollTimer: number | null = null;
   let pollingToken = 0;
@@ -957,19 +1268,15 @@ export function useChatViewModel() {
     try {
       const content = draft.value;
       const hasUserText = content !== '';
-      const hasPendingFiles = pendingFiles.value.length > 0;
+      const uploadIds = pendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(pendingFiles) : [];
+      const hasPendingFiles = uploadIds.length > 0;
 
       const payload =
         hasUserText || hasPendingFiles
-          ? hasPendingFiles
-            ? await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-                `/api/bff/chats/${chatId.value}/send`,
-                await buildSendFormData(content, pendingFiles.value)
-              )
-            : await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-                `/api/bff/chats/${chatId.value}/send`,
-                { content }
-              )
+          ? await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+              `/api/bff/chats/${chatId.value}/send`,
+              buildSendPayload(content, uploadIds)
+            )
           : await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
               `/api/bff/chats/${chatId.value}/generate`,
               {}
@@ -1031,7 +1338,7 @@ export function useChatViewModel() {
   };
 
   const removePendingFile = (id: string) => {
-    pendingFiles.value = pendingFiles.value.filter((item) => item.id !== id);
+    void removePendingFileFromCollection(pendingFiles, id);
   };
 
   const retryLastStep = async (msg: ChatBranchMessage) => {
@@ -1097,6 +1404,16 @@ export function useChatViewModel() {
   const editPendingFiles = ref<PendingChatFile[]>([]);
   const editError = ref('');
   const savingEdit = ref(false);
+  const editSaveLabel = computed(() => {
+    if (!savingEdit.value) return modalMode.value === 'branch' ? 'Branch' : 'Save';
+
+    const uploadProgress = overallPendingUploadProgress(editPendingFiles.value);
+    if (uploadProgress.active) {
+      return `Uploading… ${Math.max(1, Math.round(uploadProgress.progress * 100))}%`;
+    }
+
+    return modalMode.value === 'branch' ? 'Branching…' : 'Saving…';
+  });
 
   const extractEditableTextContents = (msg: ChatBranchMessage) => {
     const wantedType = msg.role === 'user' ? 'input' : 'answer';
@@ -1149,6 +1466,7 @@ export function useChatViewModel() {
 
   const startEdit = (msg: ChatBranchMessage) => {
     if (!msg.id) return;
+    void clearPendingFilesCollection(editPendingFiles);
     const targets = extractEditableTextContents(msg);
     const attachments = extractEditableMediaContents(msg);
 
@@ -1203,6 +1521,7 @@ export function useChatViewModel() {
   const startBranch = (msg: ChatBranchMessage) => {
     if (!msg.id) return;
     if (msg.role === 'user') {
+      void clearPendingFilesCollection(editPendingFiles);
       const attachments = extractEditableMediaContents(msg);
       editingMessage.value = msg;
       modalMode.value = 'branch';
@@ -1218,7 +1537,7 @@ export function useChatViewModel() {
     void branchFromAssistant(msg);
   };
 
-  const cancelEdit = () => {
+  const resetEditState = () => {
     editingMessage.value = null;
     editContentIds.value = [];
     editContents.value = [];
@@ -1226,6 +1545,11 @@ export function useChatViewModel() {
     editRemovedAttachmentIds.value = [];
     editPendingFiles.value = [];
     editError.value = '';
+  };
+
+  const cancelEdit = () => {
+    void clearPendingFilesCollection(editPendingFiles);
+    resetEditState();
   };
 
   const removeEditExistingAttachment = (contentId: number) => {
@@ -1245,7 +1569,7 @@ export function useChatViewModel() {
   };
 
   const removeEditPendingFile = (id: string) => {
-    editPendingFiles.value = editPendingFiles.value.filter((item) => item.id !== id);
+    void removePendingFileFromCollection(editPendingFiles, id);
   };
 
   const saveEdit = async () => {
@@ -1260,47 +1584,43 @@ export function useChatViewModel() {
         }));
 
         const hasTextUpdates = updates.length > 0;
-        const updatePayload =
-          editPendingFiles.value.length > 0
-            ? buildMessageUpdateFormData(
-                hasTextUpdates ? updates : null,
-                editRemovedAttachmentIds.value,
-                editPendingFiles.value
-              )
-            : {
-                ...(hasTextUpdates ? { contents: updates } : {}),
-                ...(editRemovedAttachmentIds.value.length > 0
-                  ? { remove_content_ids: editRemovedAttachmentIds.value }
-                  : {}),
-              };
+        const uploadIds =
+          editPendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(editPendingFiles) : [];
+
+        const updatePayload = buildMessageUpdatePayload(
+          hasTextUpdates ? updates : null,
+          editRemovedAttachmentIds.value,
+          uploadIds
+        );
 
         const payload = await api.patch<{ branch: ChatBranchMessage[] }>(
           `/api/bff/chat-messages/${editingMessage.value.id}`,
           updatePayload
         );
         branch.value = payload.branch || [];
-        cancelEdit();
+        resetEditState();
       } else {
         if (isConfigSyncPending.value) {
           alert('Configuration change is still syncing. Please wait before starting a new generation.');
           return;
         }
         const parentId = editingMessage.value.parent_id ?? null;
-        const hasBranchFiles =
-          editExistingAttachments.value.length > 0 || editPendingFiles.value.length > 0;
+        const uploadIds =
+          editPendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(editPendingFiles) : [];
+        const hasBranchFiles = editExistingAttachments.value.length > 0 || uploadIds.length > 0;
         const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
           `/api/bff/chats/${chatId.value}/send`,
           hasBranchFiles
-            ? await buildSendFormData(
+            ? buildSendPayload(
                 editContents.value[0] ?? '',
-                editPendingFiles.value,
+                uploadIds,
                 editExistingAttachments.value,
                 parentId
               )
             : { content: editContents.value[0] ?? '', parent_id: parentId }
         );
         branch.value = payload.branch || [];
-        cancelEdit();
+        resetEditState();
 
         const messageId = payload.generation?.message_id;
         if (messageId) {
@@ -2218,6 +2538,8 @@ export function useChatViewModel() {
   });
 
   onBeforeUnmount(() => {
+    void clearPendingFilesCollection(pendingFiles);
+    void clearPendingFilesCollection(editPendingFiles);
     stopPolling();
     clearBranchSearchTimer();
     document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -2321,6 +2643,7 @@ export function useChatViewModel() {
     onPendingFilesSelected,
     removePendingFile,
     sending,
+    sendButtonLabel,
     activeGenerationId,
     cancelingGenerationId,
     handleCancelPointerDown,
@@ -2334,6 +2657,7 @@ export function useChatViewModel() {
     editError,
     editAttachmentHelp: fileAttachTitle,
     savingEdit,
+    editSaveLabel,
     cancelEdit,
     addEditPendingFiles,
     removeEditPendingFile,
@@ -2433,59 +2757,26 @@ export function useChatViewModel() {
   };
 }
 
-const buildSendFormData = async (
+const buildSendPayload = (
   content: string,
-  files: PendingChatFile[],
+  uploadIds: string[],
   existingAttachments: ExistingChatAttachment[] = [],
   parentId?: number | null
-) => {
-  const form = new FormData();
-  form.append('content', content);
-  if (parentId === null) {
-    form.append('parent_id', '');
-  } else if (typeof parentId === 'number') {
-    form.append('parent_id', String(parentId));
-  }
+) => ({
+  content,
+  ...(parentId === null ? { parent_id: '' } : typeof parentId === 'number' ? { parent_id: parentId } : {}),
+  ...(uploadIds.length > 0 ? { upload_ids: uploadIds } : {}),
+  ...(existingAttachments.length > 0
+    ? { copy_content_ids: existingAttachments.map((attachment) => attachment.id) }
+    : {}),
+});
 
-  const existingFiles = await Promise.all(existingAttachments.map(cloneExistingAttachmentFile));
-  for (const file of existingFiles) {
-    form.append('files', file, file.name);
-  }
-
-  for (const item of files) {
-    form.append('files', item.file, item.name);
-  }
-  return form;
-};
-
-const buildMessageUpdateFormData = (
+const buildMessageUpdatePayload = (
   contents: Array<{ id: number; content_text: string }> | null,
   removeContentIds: number[],
-  files: PendingChatFile[]
-) => {
-  const form = new FormData();
-  if (contents && contents.length > 0) {
-    form.append('contents_json', JSON.stringify(contents));
-  }
-
-  if (removeContentIds.length > 0) {
-    form.append('remove_content_ids_json', JSON.stringify(removeContentIds));
-  }
-
-  for (const item of files) {
-    form.append('files', item.file, item.name);
-  }
-
-  return form;
-};
-
-const cloneExistingAttachmentFile = async (attachment: ExistingChatAttachment) => {
-  const response = await fetch(buildMessageContentFileUrl(attachment.messageId, attachment.id));
-  if (!response.ok) {
-    throw new Error(`Failed to load attachment ${JSON.stringify(attachment.name)}.`);
-  }
-
-  const blob = await response.blob();
-  const type = blob.type || attachment.mimeType || 'application/octet-stream';
-  return new File([blob], attachment.name, { type });
-};
+  uploadIds: string[]
+) => ({
+  ...(contents && contents.length > 0 ? { contents } : {}),
+  ...(removeContentIds.length > 0 ? { remove_content_ids: removeContentIds } : {}),
+  ...(uploadIds.length > 0 ? { upload_ids: uploadIds } : {}),
+});

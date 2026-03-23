@@ -140,8 +140,17 @@
                 :title="`${item.name}  (${formatPendingFileSize(item.size)})`"
               >
                 <span class="pending-file__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
-                <span class="pending-file__name">{{ item.name }}</span>
-                <span class="pending-file__size">{{ formatPendingFileSize(item.size) }}</span>
+                <div class="pending-file__meta">
+                  <span class="pending-file__name">{{ item.name }}</span>
+                  <span class="pending-file__status">{{ describePendingFileStatus(item) }}</span>
+                  <div
+                    v-if="item.uploadStatus !== 'idle' || item.progress > 0"
+                    class="pending-file__progress"
+                    aria-hidden="true"
+                  >
+                    <span class="pending-file__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
+                  </div>
+                </div>
                 <button class="pending-file__remove" type="button" aria-label="Remove attachment" @click="vm.removePendingFile(item.id)">✕</button>
               </div>
             </div>
@@ -176,15 +185,7 @@
                   :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
                   @pointerdown="vm.activeGenerationId ? vm.handleCancelPointerDown : null"
                 >
-                  {{
-                    vm.activeGenerationId
-                      ? vm.cancelingGenerationId === vm.activeGenerationId
-                        ? 'Cancelling…'
-                        : 'Cancel'
-                      : vm.sending
-                        ? 'Sending…'
-                        : 'Send'
-                  }}
+                  {{ vm.sendButtonLabel }}
                 </button>
                 <input
                   ref="attachInputRef"
@@ -275,6 +276,7 @@
         :attachment-accept="vm.fileInputAccept"
         :attachment-help="vm.editAttachmentHelp"
         :saving="vm.savingEdit"
+        :save-label="vm.editSaveLabel"
         @cancel="vm.cancelEdit"
         @add-files="vm.addEditPendingFiles"
         @remove-pending-file="vm.removeEditPendingFile"
@@ -388,9 +390,11 @@ import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vu
 import ChatLibrarySidebar from '@/features/chat/components/ChatLibrarySidebar.vue';
 import {
   clipboardHasStringContent,
+  describePendingFileUploadStatus,
   extractClipboardImageFiles,
   fileIconByMime,
   formatFileBytes,
+  pendingFileProgressPercent,
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 
@@ -425,6 +429,8 @@ const handleAttachInputChange = (event: Event) => {
 };
 
 const formatPendingFileSize = (size: number) => formatFileBytes(size);
+const describePendingFileStatus = describePendingFileUploadStatus;
+const pendingFileProgress = pendingFileProgressPercent;
 
 const handleDragEnter = () => {
   if (!vm.canAttachFiles) return;
@@ -622,9 +628,9 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 .pending-file {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   border-radius: 6px;
   min-width: 0;
   transition: background-color 0.12s ease;
@@ -641,8 +647,6 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .pending-file__name {
-  flex: 1 1 auto;
-  min-width: 0;
   font-size: 0.85rem;
   font-weight: 500;
   line-height: 1.3;
@@ -652,11 +656,35 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   color: #1a1a1a;
 }
 
-.pending-file__size {
-  flex: 0 0 auto;
-  font-size: 0.75rem;
-  color: #888;
-  white-space: nowrap;
+.pending-file__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pending-file__status {
+  font-size: 0.73rem;
+  color: #667085;
+  line-height: 1.25;
+}
+
+.pending-file__progress {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.25);
+  overflow: hidden;
+}
+
+.pending-file__progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e, #22c55e);
 }
 
 .pending-file__remove {

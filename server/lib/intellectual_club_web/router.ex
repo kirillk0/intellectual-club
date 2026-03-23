@@ -113,6 +113,10 @@ defmodule IntellectualClubWeb.Router do
     get "/chats/:id/search", ChatsController, :search_messages
     patch "/chats/:id", ChatsController, :update
     delete "/chats/:id", ChatsController, :delete
+    post "/chats/:chat_id/uploads", ChatUploadsController, :create
+    get "/chats/:chat_id/uploads/:upload_id", ChatUploadsController, :show
+    put "/chats/:chat_id/uploads/:upload_id/chunk", ChatUploadsController, :append_chunk
+    delete "/chats/:chat_id/uploads/:upload_id", ChatUploadsController, :delete
 
     post "/chats/:id/send", ChatsController, :send
     post "/chats/:id/generate", ChatsController, :generate

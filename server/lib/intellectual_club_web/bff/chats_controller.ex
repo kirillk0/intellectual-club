@@ -17,7 +17,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Files
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
@@ -26,6 +25,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Loads
@@ -473,8 +473,17 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       parent_id = Helpers.parse_optional_integer(Map.get(params, "parent_id"))
       upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor)
 
-      with {:ok, contents} <- build_user_message_contents(content, params, upload_policy),
-           :ok <- maybe_create_user_message(chat_id, contents, parent_id, explicit_parent?, actor),
+      with {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
+           {:ok, :ok} <-
+             create_user_message_with_prepared_attachments(
+               chat_id,
+               actor,
+               upload_policy,
+               prepared_uploads,
+               content,
+               parent_id,
+               explicit_parent?
+             ),
            {:ok, context} <- GenerationSupervisor.start_generation(chat_id, actor: actor) do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
@@ -499,6 +508,37 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           |> json(%{error: "Failed to start generation: #{inspect(other)}"})
       end
     end
+  end
+
+  defp create_user_message_with_prepared_attachments(
+         chat_id,
+         actor,
+         upload_policy,
+         prepared_uploads,
+         content,
+         parent_id,
+         explicit_parent?
+       ) do
+    ChatAttachments.with_prepared_file_ids(
+      chat_id,
+      actor,
+      upload_policy,
+      prepared_uploads,
+      fn file_ids ->
+        text_contents =
+          case to_string(content || "") do
+            "" -> []
+            text -> [%{kind: :text, content_text: text}]
+          end
+
+        media_contents = Enum.map(file_ids, &%{kind: :media, file_id: &1})
+        maybe_create_user_message(chat_id, text_contents ++ media_contents, parent_id, explicit_parent?, actor)
+        |> case do
+          :ok -> {:ok, :ok}
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    )
   end
 
   defp maybe_create_user_message(chat_id, contents, parent_id, explicit_parent?, actor) do
@@ -526,44 +566,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           {:error, {:user_message, error}}
       end
     end
-  end
-
-  defp build_user_message_contents(content, params, upload_policy) do
-    uploads =
-      params
-      |> Map.get("files", [])
-      |> List.wrap()
-
-    text_contents =
-      case to_string(content || "") do
-        "" -> []
-        text -> [%{kind: :text, content_text: text}]
-      end
-
-    with {:ok, upload_contents} <- persist_uploaded_files(uploads, upload_policy) do
-      {:ok, text_contents ++ upload_contents}
-    end
-  end
-
-  defp persist_uploaded_files(uploads, upload_policy) when is_list(uploads) do
-    Enum.reduce_while(uploads, {:ok, []}, fn
-      %Plug.Upload{} = upload, {:ok, acc} ->
-        with :ok <- ChatUploadPolicy.validate_upload(upload, upload_policy),
-             {:ok, payload} <- File.read(upload.path),
-             {:ok, file} <-
-               Files.create_from_upload(%{
-                 filename: upload.filename,
-                 mime_type: upload.content_type,
-                 payload: payload
-               }) do
-          {:cont, {:ok, acc ++ [%{kind: :media, file_id: file.id}]}}
-        else
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-
-      _other, _acc ->
-        {:halt, {:error, "Invalid file upload."}}
-    end)
   end
 
   def generate(conn, %{"id" => id} = params) do

@@ -1,7 +1,5 @@
 # Intellectual Club
 
-V2 is now split into a standalone repository with a Phoenix/Ash backend and a Vue SPA frontend.
-
 ## Repository layout
 
 - `server/` — Phoenix/Ash application
