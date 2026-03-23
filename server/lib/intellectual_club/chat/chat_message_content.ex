@@ -12,6 +12,7 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.MessageContentFts
+  alias IntellectualClub.Files.Changes.DeleteAssociatedFile
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
   sqlite do
@@ -85,7 +86,7 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   end
 
   actions do
-    defaults([:read, :destroy])
+    defaults([:read])
 
     read :fts_search do
       argument :fts_match, :string do
@@ -93,6 +94,12 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
       end
 
       modify_query({MessageContentFts, :modify_content_query, []})
+    end
+
+    destroy :destroy do
+      primary?(true)
+      require_atomic?(false)
+      change({DeleteAssociatedFile, field: :file_id})
     end
 
     create :create do

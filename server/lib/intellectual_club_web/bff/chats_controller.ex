@@ -376,15 +376,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat_id = String.to_integer(id)
       chat = Ash.get!(Chat, chat_id, actor: actor)
 
-      chat =
-        if is_integer(chat.last_message_id) do
-          chat
-          |> Ash.Changeset.for_update(:set_last_message, %{last_message_id: nil}, actor: actor)
-          |> Ash.update!()
-        else
-          chat
-        end
-
       case Ash.destroy(chat, actor: actor) do
         :ok ->
           json(conn, %{status: "ok"})
@@ -532,7 +523,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           end
 
         media_contents = Enum.map(file_ids, &%{kind: :media, file_id: &1})
-        maybe_create_user_message(chat_id, text_contents ++ media_contents, parent_id, explicit_parent?, actor)
+
+        maybe_create_user_message(
+          chat_id,
+          text_contents ++ media_contents,
+          parent_id,
+          explicit_parent?,
+          actor
+        )
         |> case do
           :ok -> {:ok, :ok}
           {:error, reason} -> {:error, reason}

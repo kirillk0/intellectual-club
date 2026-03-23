@@ -8,11 +8,19 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Db
+  alias IntellectualClub.Files
+  alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Files.FilePayload
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
 
+  import Ecto.Query
   require Ash.Query
 
   test "DELETE /api/bff/chats/:id deletes chat with dependent records", %{conn: conn} do
@@ -98,5 +106,72 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       |> Ash.read!(actor: actor)
 
     assert tool_bindings == []
+  end
+
+  test "DELETE /api/bff/chats/:id removes attachment files and payloads via Ash cascades", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Delete attachments", note: "", variables: %{}}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    file = create_file!("delete.txt", "text/plain", "delete payload")
+
+    {:ok, message} =
+      Threads.add_message_to_end(chat, :user, "",
+        actor: actor,
+        contents: [
+          %{kind: :text, content_text: "Delete with attachment"},
+          %{kind: :media, file_id: file.id}
+        ]
+      )
+
+    loaded =
+      Ash.get!(ChatMessage, message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [step] = Enum.sort_by(loaded.steps || [], & &1.sequence)
+    [item] = Enum.sort_by(step.items || [], & &1.sequence)
+    media_content = Enum.find(item.contents || [], &(&1.kind == :media))
+
+    conn = delete(conn, ~p"/api/bff/chats/#{chat.id}")
+    assert %{"status" => "ok"} = json_response(conn, 200)
+
+    assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
+             Ash.get(Chat, chat.id, actor: actor)
+
+    assert {:error, _} = Ash.get(ChatMessage, message.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageStep, step.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
+    assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert payload_count(file.sha256) == 0
+  end
+
+  defp create_file!(filename, mime_type, payload) do
+    {:ok, file} =
+      Files.create_from_upload(%{
+        filename: filename,
+        mime_type: mime_type,
+        payload: payload
+      })
+
+    file
+  end
+
+  defp payload_count(sha256) do
+    Db.repo().aggregate(
+      from(payload in FilePayload, where: payload.sha256 == ^sha256),
+      :count,
+      :sha256
+    )
   end
 end

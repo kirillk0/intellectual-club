@@ -308,7 +308,6 @@ defmodule IntellectualClub.Chat.Threads do
             |> Ash.update!(actor: actor)
         end)
 
-        destroy_generation_trace!(message.id, actor)
         _ = Ash.destroy!(message, actor: actor)
 
         {:ok, get_branch_with_meta(chat.id, actor)}
@@ -348,26 +347,6 @@ defmodule IntellectualClub.Chat.Threads do
     chat
     |> Ash.Changeset.for_update(:set_last_message, %{last_message_id: last_message_id})
     |> Ash.update!(actor: actor)
-  end
-
-  defp destroy_generation_trace!(message_id, actor) do
-    steps =
-      ChatMessageStep
-      |> Ash.Query.filter(chat_message_id == ^message_id)
-      |> Ash.Query.load(items: [:contents])
-      |> Ash.read!(actor: actor)
-
-    Enum.each(steps, fn step ->
-      Enum.each(step.items || [], fn item ->
-        Enum.each(item.contents || [], fn content ->
-          _ = Ash.destroy!(content, actor: actor)
-        end)
-
-        _ = Ash.destroy!(item, actor: actor)
-      end)
-
-      _ = Ash.destroy!(step, actor: actor)
-    end)
   end
 
   defp fetch_message_from_chat(by_id, message_id) do

@@ -13,6 +13,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
   alias IntellectualClub.Chat.Changes.SetDefaultParentFromChatLastMessage
   alias IntellectualClub.Chat.Changes.ValidateParentMessage
+  alias IntellectualClub.Chat.Validations.PreventDestroyWithChildren
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
   sqlite do
@@ -81,6 +82,10 @@ defmodule IntellectualClub.Chat.ChatMessage do
     has_many :steps, IntellectualClub.Chat.ChatMessageStep do
       destination_attribute(:chat_message_id)
     end
+
+    has_many :children, __MODULE__ do
+      destination_attribute(:parent_id)
+    end
   end
 
   json_api do
@@ -100,6 +105,14 @@ defmodule IntellectualClub.Chat.ChatMessage do
 
     destroy :destroy do
       primary?(true)
+      require_atomic?(false)
+      validate(PreventDestroyWithChildren)
+      change(cascade_destroy(:steps, after_action?: false))
+    end
+
+    destroy :destroy_with_children do
+      require_atomic?(false)
+      change(cascade_destroy(:children, action: :destroy_with_children, after_action?: false))
       change(cascade_destroy(:steps, after_action?: false))
     end
 

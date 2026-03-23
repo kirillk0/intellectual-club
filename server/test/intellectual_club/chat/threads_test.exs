@@ -7,6 +7,12 @@ defmodule IntellectualClub.Chat.ThreadsTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Db
+  alias IntellectualClub.Files
+  alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Files.FilePayload
+
+  import Ecto.Query
 
   test "branch metadata and switching to rightmost leaf" do
     %{user: actor} = user_fixture()
@@ -136,6 +142,132 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert chat.last_message_id == b1.id
   end
 
+  test "delete_message_keep_children removes attached files through message destroy cascade" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Delete trace file", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, root} = Threads.add_message(chat, :user, "root", actor: actor, parent_id: nil)
+
+    file = create_file!("trace.txt", "text/plain", "trace payload")
+
+    {:ok, a1} =
+      Threads.add_message(chat, :assistant, "",
+        actor: actor,
+        parent_id: root.id,
+        contents: [
+          %{kind: :text, content_text: "A"},
+          %{kind: :media, file_id: file.id}
+        ]
+      )
+
+    {:ok, kept_child} =
+      Threads.add_message(chat, :user, "kept child", actor: actor, parent_id: a1.id)
+
+    a1_loaded =
+      Ash.get!(ChatMessage, a1.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [step] = Enum.sort_by(a1_loaded.steps || [], & &1.sequence)
+    [item] = Enum.sort_by(step.items || [], & &1.sequence)
+    media_content = Enum.find(item.contents || [], &(&1.kind == :media))
+
+    {:ok, _branch} = Threads.activate_branch(chat.id, a1.id, actor)
+    assert {:ok, _updated_branch} = Threads.delete_message_keep_children(chat.id, a1.id, actor)
+
+    assert {:error, _} = Ash.get(ChatMessage, a1.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageStep, step.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
+    assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert payload_count(file.sha256) == 0
+
+    kept_child = Ash.get!(ChatMessage, kept_child.id, actor: actor)
+    assert kept_child.parent_id == root.id
+
+    chat = Ash.get!(Chat, chat.id, actor: actor)
+    assert chat.last_message_id == kept_child.id
+  end
+
+  test "ChatMessage.destroy rejects non-leaf messages with child messages" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Destroy validation", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, root} = Threads.add_message(chat, :user, "root", actor: actor, parent_id: nil)
+
+    {:ok, _child} =
+      Threads.add_message(chat, :assistant, "child", actor: actor, parent_id: root.id)
+
+    assert {:error, %Ash.Error.Invalid{} = error} = Ash.destroy(root, actor: actor)
+    assert Exception.message(error) =~ "cannot delete a message that has child messages"
+  end
+
+  test "ChatMessage.destroy removes a leaf trace and attached file payload" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Leaf destroy", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, root} = Threads.add_message(chat, :user, "root", actor: actor, parent_id: nil)
+    file = create_file!("leaf.txt", "text/plain", "leaf payload")
+
+    {:ok, message} =
+      Threads.add_message(chat, :assistant, "",
+        actor: actor,
+        parent_id: root.id,
+        contents: [
+          %{kind: :text, content_text: "leaf"},
+          %{kind: :media, file_id: file.id}
+        ]
+      )
+
+    {:ok, _other_leaf} =
+      Threads.add_message(chat, :assistant, "other", actor: actor, parent_id: root.id)
+
+    loaded =
+      Ash.get!(ChatMessage, message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [step] = Enum.sort_by(loaded.steps || [], & &1.sequence)
+    [item] = Enum.sort_by(step.items || [], & &1.sequence)
+    media_content = Enum.find(item.contents || [], &(&1.kind == :media))
+
+    destroy_result = Ash.destroy(message, actor: actor)
+    assert destroy_result == :ok or match?({:ok, %ChatMessage{}}, destroy_result)
+
+    assert {:error, _} = Ash.get(ChatMessage, message.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageStep, step.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
+    assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
+    assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert payload_count(file.sha256) == 0
+  end
+
   test "adding a message stores token_count estimate" do
     %{user: actor} = user_fixture()
 
@@ -210,5 +342,24 @@ defmodule IntellectualClub.Chat.ThreadsTest do
 
     assert first.parent_id == nil
     assert second.parent_id == first.id
+  end
+
+  defp create_file!(filename, mime_type, payload) do
+    {:ok, file} =
+      Files.create_from_upload(%{
+        filename: filename,
+        mime_type: mime_type,
+        payload: payload
+      })
+
+    file
+  end
+
+  defp payload_count(sha256) do
+    Db.repo().aggregate(
+      from(payload in FilePayload, where: payload.sha256 == ^sha256),
+      :count,
+      :sha256
+    )
   end
 end

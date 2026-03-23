@@ -14,7 +14,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Files
   alias IntellectualClub.Generation.Persistence, as: GenerationPersistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
@@ -560,7 +559,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
            end) do
       removals = Enum.map(remove_ids, &Map.fetch!(editable_by_id, &1))
       {:ok, removals, prepared_uploads}
-
     else
       unknown when is_list(unknown) and unknown != [] ->
         {:error, "Some attachments cannot be edited."}
@@ -673,13 +671,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     |> Kernel.+(1)
   end
 
-  defp maybe_delete_content_file(%ChatMessageContent{file_id: file_id})
-       when is_integer(file_id) do
-    :ok = Files.delete_file_and_maybe_payload(file_id)
-  end
-
-  defp maybe_delete_content_file(_content), do: :ok
-
   defp apply_message_update(
          message_id,
          %ChatMessage{} = message,
@@ -696,7 +687,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
     Enum.each(media_removals, fn content ->
       Ash.destroy!(content, actor: actor)
-      maybe_delete_content_file(content)
     end)
 
     if media_additions != [] do
@@ -734,9 +724,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
     _message =
       message
-      |> Ash.Changeset.for_update(:update_token_count, %{token_count: token_count},
-        actor: actor
-      )
+      |> Ash.Changeset.for_update(:update_token_count, %{token_count: token_count}, actor: actor)
       |> Ash.update!(actor: actor)
 
     {:ok, :updated}

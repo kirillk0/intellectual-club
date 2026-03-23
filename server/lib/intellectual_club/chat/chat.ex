@@ -8,8 +8,8 @@ defmodule IntellectualClub.Chat.Chat do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
+  alias IntellectualClub.Chat.Changes.ClearLastMessageReference
   alias IntellectualClub.Chat.Changes.CreateFirstMessages
-  alias IntellectualClub.Chat.Changes.DeleteChatDependents
   alias IntellectualClub.Chat.Changes.NormalizeChatFields
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
@@ -112,6 +112,11 @@ defmodule IntellectualClub.Chat.Chat do
 
     has_many :messages, IntellectualClub.Chat.ChatMessage
 
+    has_many :root_messages, IntellectualClub.Chat.ChatMessage do
+      destination_attribute(:chat_id)
+      filter expr(is_nil(parent_id))
+    end
+
     has_many :knowledge_block_bindings, IntellectualClub.Chat.ChatKnowledgeBlock do
       destination_attribute(:chat_id)
     end
@@ -144,7 +149,13 @@ defmodule IntellectualClub.Chat.Chat do
     destroy :destroy do
       primary?(true)
       require_atomic?(false)
-      change({DeleteChatDependents, []})
+      change({ClearLastMessageReference, []})
+      change(cascade_destroy(:knowledge_block_bindings, after_action?: false))
+      change(cascade_destroy(:tool_bindings, after_action?: false))
+
+      change(
+        cascade_destroy(:root_messages, action: :destroy_with_children, after_action?: false)
+      )
     end
 
     create :create do
