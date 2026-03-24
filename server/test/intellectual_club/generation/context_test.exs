@@ -212,6 +212,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert %{} = context.tool_instances_by_alias
     assert context.tool_instances_by_alias["web"].id == tool_instance.id
+    assert context.tool_instances_by_alias["web"].secrets == %{"bearer_token" => "token-value"}
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"
