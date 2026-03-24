@@ -43,6 +43,9 @@ _TIMEOUT_DRAIN_SECONDS = 5.0
 _MAX_STREAM_CHARS_DEFAULT = 200_000
 _MAX_SUMMARY_CHARS_DEFAULT = 50_000
 _JPEG_MAGIC_PREFIXES = (b"\xff\xd8\xff",)
+_UTF8_ENCODING = "utf-8"
+_WINDOWS_UTF8_BOOTSTRAP_MODE = "windows-force-utf8"
+_WINDOWS_FORCE_UTF8_ENV = "SHELL_OUTLET_WINDOWS_FORCE_UTF8"
 
 
 def _sniff_image_mime(data: bytes) -> str | None:
@@ -84,6 +87,22 @@ def _load_env_int(key: str, default: int) -> int:
         return int(str(raw).strip())
     except ValueError:
         return int(default)
+
+
+def _load_env_bool_from_mapping(env: dict[str, str] | None, key: str, default: bool) -> bool:
+    if env is None:
+        return bool(default)
+
+    raw = env.get(key)
+    if raw is None:
+        return bool(default)
+
+    raw = str(raw).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
 
 
 def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
@@ -177,6 +196,36 @@ def _subprocess_isolation_kwargs() -> dict[str, Any]:
             return {"creationflags": create_new_group}
         return {}
     return {"start_new_session": True}
+
+
+def _should_bootstrap_windows_powershell(*, shell_kind: str, env: dict[str, str]) -> bool:
+    return (
+        os.name == "nt"
+        and shell_kind in {"pwsh", "powershell"}
+        and _load_env_bool_from_mapping(env, _WINDOWS_FORCE_UTF8_ENV, True)
+    )
+
+
+def _wrap_windows_powershell_command(command: str) -> tuple[str, str]:
+    wrapped = (
+        "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); "
+        "[Console]::InputEncoding = $utf8NoBom; "
+        "[Console]::OutputEncoding = $utf8NoBom; "
+        "$OutputEncoding = $utf8NoBom; "
+        "try { chcp.com 65001 > $null } catch {}; "
+        f"& {{ {command} }}"
+    )
+    return wrapped, _WINDOWS_UTF8_BOOTSTRAP_MODE
+
+
+def _decode_utf8_output(payload: bytes) -> tuple[str, bool]:
+    if not payload:
+        return "", False
+
+    try:
+        return payload.decode(_UTF8_ENCODING, errors="strict"), False
+    except UnicodeDecodeError:
+        return payload.decode(_UTF8_ENCODING, errors="replace"), True
 
 
 async def _terminate_process_tree(proc: asyncio.subprocess.Process, *, grace_seconds: float) -> None:
@@ -302,6 +351,7 @@ class ShellOutlet:
         if env:
             merged_env.update({str(k): str(v) for k, v in env.items()})
         isolation_kwargs = _subprocess_isolation_kwargs()
+        shell_encoding_bootstrap = ""
 
         if argv:
             proc = await asyncio.create_subprocess_exec(
@@ -314,7 +364,11 @@ class ShellOutlet:
                 **isolation_kwargs,
             )
         else:
-            executor_argv = [*_SHELL_ARGV_PREFIX, str(command or "")]
+            shell_command = str(command or "")
+            if _should_bootstrap_windows_powershell(shell_kind=_SHELL_KIND, env=merged_env):
+                shell_command, shell_encoding_bootstrap = _wrap_windows_powershell_command(shell_command)
+
+            executor_argv = [*_SHELL_ARGV_PREFIX, shell_command]
             proc = await asyncio.create_subprocess_exec(
                 *executor_argv,
                 cwd=cwd or None,
@@ -343,8 +397,8 @@ class ShellOutlet:
         exit_code = proc.returncode
         if timed_out and exit_code is None:
             exit_code = -9
-        stdout_text = stdout.decode("utf-8", errors="replace") if stdout else ""
-        stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
+        stdout_text, stdout_decode_error = _decode_utf8_output(stdout)
+        stderr_text, stderr_decode_error = _decode_utf8_output(stderr)
 
         max_stream_chars = _load_env_int("SHELL_OUTLET_MAX_STREAM_CHARS", _MAX_STREAM_CHARS_DEFAULT)
         max_summary_chars = _load_env_int("SHELL_OUTLET_MAX_SUMMARY_CHARS", _MAX_SUMMARY_CHARS_DEFAULT)
@@ -363,9 +417,14 @@ class ShellOutlet:
             "shell_kind": _SHELL_KIND if not argv else "",
             "shell_executor": _SHELL_ARGV_PREFIX[0] if (not argv and _SHELL_ARGV_PREFIX) else "",
             "shell_argv_prefix": _SHELL_ARGV_PREFIX if not argv else [],
+            "shell_encoding_bootstrap": shell_encoding_bootstrap,
             "exit_code": exit_code,
             "stdout": stdout_text,
             "stderr": stderr_text,
+            "stdout_encoding": _UTF8_ENCODING,
+            "stderr_encoding": _UTF8_ENCODING,
+            "stdout_decode_error": stdout_decode_error,
+            "stderr_decode_error": stderr_decode_error,
             "timed_out": timed_out,
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,

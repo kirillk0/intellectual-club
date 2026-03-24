@@ -13,6 +13,7 @@ This directory contains standalone outlet runners that connect to the server ove
 - `OUTLET_MAX_CONCURRENCY` (optional): max parallel calls, default `20`
 - `OUTLET_POLL_MAX_WAIT_SECONDS` (optional): long-poll max wait, default `25`
 - `OUTLET_POLL_CHECK_INTERVAL_SECONDS` (optional): server-side poll interval, default `1`
+- `SHELL_OUTLET_WINDOWS_FORCE_UTF8` (optional): for the shell outlet on Windows, force UTF-8 PowerShell I/O bootstrap by default; set to `0`/`false` to disable
 
 ## Shell outlet
 
