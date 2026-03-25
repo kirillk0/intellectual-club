@@ -227,42 +227,58 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     if Map.has_key?(params, "llm_configuration_id") do
       chat_params
     else
-      case latest_bot_llm_configuration_id(actor, Map.get(chat_params, :bot_id)) do
+      case default_llm_configuration_id(actor, Map.get(chat_params, :bot_id)) do
         nil -> chat_params
         llm_configuration_id -> Map.put(chat_params, :llm_configuration_id, llm_configuration_id)
       end
     end
   end
 
-  defp latest_bot_llm_configuration_id(_actor, bot_id) when not is_integer(bot_id), do: nil
+  defp default_llm_configuration_id(actor, bot_id) do
+    available_configurations = available_llm_configurations_for_bot(actor, bot_id)
 
-  defp latest_bot_llm_configuration_id(actor, bot_id) do
-    case compatible_llm_configuration_ids_for_bot(actor, bot_id) do
-      [] ->
+    case {
+      latest_chat_llm_configuration_id(
+        actor,
+        bot_id,
+        Enum.map(available_configurations, & &1.id)
+      ),
+      available_configurations
+    } do
+      {llm_configuration_id, _available_configurations} when is_integer(llm_configuration_id) ->
+        llm_configuration_id
+
+      {nil, [%LlmConfiguration{id: llm_configuration_id} | _rest]} ->
+        llm_configuration_id
+
+      _ ->
         nil
-
-      :all ->
-        latest_chat_llm_configuration_id(actor, bot_id)
-
-      compatible_ids ->
-        Chat
-        |> Ash.Query.filter(
-          bot_id == ^bot_id and not is_nil(llm_configuration_id) and
-            llm_configuration_id in ^compatible_ids
-        )
-        |> Ash.Query.sort(updated_at: :desc, id: :desc)
-        |> Ash.Query.limit(1)
-        |> Ash.read!(actor: actor)
-        |> case do
-          [%Chat{llm_configuration_id: llm_configuration_id}] -> llm_configuration_id
-          _ -> nil
-        end
     end
   end
 
-  defp latest_chat_llm_configuration_id(actor, bot_id) do
+  defp available_llm_configurations_for_bot(actor, bot_id) do
+    enabled_configurations =
+      actor
+      |> load_llm_configurations()
+      |> Enum.filter(&(&1.enabled == true))
+
+    case compatible_llm_configuration_ids_for_bot(actor, bot_id) do
+      :all ->
+        enabled_configurations
+
+      compatible_ids ->
+        Enum.filter(enabled_configurations, &(&1.id in compatible_ids))
+    end
+  end
+
+  defp latest_chat_llm_configuration_id(_actor, _bot_id, []), do: nil
+
+  defp latest_chat_llm_configuration_id(actor, bot_id, available_ids) do
     Chat
-    |> Ash.Query.filter(bot_id == ^bot_id and not is_nil(llm_configuration_id))
+    |> maybe_apply_default_llm_configuration_chat_filter(bot_id)
+    |> Ash.Query.filter(
+      not is_nil(llm_configuration_id) and llm_configuration_id in ^available_ids
+    )
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(1)
     |> Ash.read!(actor: actor)
@@ -299,10 +315,20 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         Map.put(
           patch,
           :llm_configuration_id,
-          latest_bot_llm_configuration_id(actor, Map.get(patch, :bot_id))
+          default_llm_configuration_id(actor, Map.get(patch, :bot_id))
         )
     end
   end
+
+  defp maybe_apply_default_llm_configuration_chat_filter(query, bot_id) when is_integer(bot_id) do
+    Ash.Query.filter(query, bot_id == ^bot_id)
+  end
+
+  defp maybe_apply_default_llm_configuration_chat_filter(query, nil) do
+    Ash.Query.filter(query, is_nil(bot_id))
+  end
+
+  defp maybe_apply_default_llm_configuration_chat_filter(query, _other), do: query
 
   defp configuration_compatible_with_bot?(_actor, bot_id, _llm_configuration_id)
        when not is_integer(bot_id) do

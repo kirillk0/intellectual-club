@@ -137,6 +137,66 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     assert payload["chat"]["llm_configuration_id"] == config_a.id
   end
 
+  test "POST /api/bff/chats defaults configuration from latest no bot chat", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "Provider A")
+    config_old = create_configuration!(actor, provider, "model-old")
+    config_new = create_configuration!(actor, provider, "model-new")
+
+    _old_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Old no bot chat",
+          note: "",
+          llm_configuration_id: config_old.id,
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _new_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "New no bot chat",
+          note: "",
+          llm_configuration_id: config_new.id,
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    conn = post(conn, ~p"/api/bff/chats", %{})
+    payload = json_response(conn, 200)
+
+    assert payload["chat"]["bot_id"] == nil
+    assert payload["chat"]["llm_configuration_id"] == config_new.id
+  end
+
+  test "POST /api/bff/chats defaults to the first available configuration when chats do not exist yet",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "Provider A")
+    config_b = create_configuration!(actor, provider, "model-b")
+    config_a = create_configuration!(actor, provider, "model-a")
+
+    conn = post(conn, ~p"/api/bff/chats", %{})
+    payload = json_response(conn, 200)
+
+    assert payload["chat"]["bot_id"] == nil
+    assert payload["chat"]["llm_configuration_id"] == config_a.id
+    refute payload["chat"]["llm_configuration_id"] == config_b.id
+  end
+
   test "POST /api/bff/chats defaults to the latest compatible configuration for the selected bot",
        %{
          conn: conn
@@ -203,6 +263,96 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
+  end
+
+  test "POST /api/bff/chats falls back to the first compatible configuration when latest bot chat is no longer compatible",
+       %{
+         conn: conn
+       } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    compatible_tag = create_configuration_tag!(actor, "Compatible")
+    other_tag = create_configuration_tag!(actor, "Other")
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Compatible bot",
+          compatible_configuration_tag_bindings: [%{llm_configuration_tag_id: compatible_tag.id}]
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    provider = create_provider!(actor, "Provider A")
+
+    compatible_config =
+      create_configuration!(actor, provider, "model-compatible", compatible_tag.id)
+
+    incompatible_config =
+      create_configuration!(actor, provider, "model-incompatible", other_tag.id)
+
+    _incompatible_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Incompatible chat",
+          note: "",
+          bot_id: bot.id,
+          llm_configuration_id: incompatible_config.id,
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> json_response(200)
+
+    assert payload["chat"]["llm_configuration_id"] == compatible_config.id
+  end
+
+  test "POST /api/bff/chats falls back to the first available configuration when latest no bot configuration is disabled",
+       %{
+         conn: conn
+       } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "Provider A")
+    fallback_config = create_configuration!(actor, provider, "model-a")
+    disabled_config = create_configuration!(actor, provider, "model-b")
+
+    _chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Latest no bot chat",
+          note: "",
+          llm_configuration_id: disabled_config.id,
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    disabled_config
+    |> Ash.Changeset.for_update(:update, %{enabled: false}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{})
+      |> json_response(200)
+
+    assert payload["chat"]["llm_configuration_id"] == fallback_config.id
   end
 
   defp create_bot!(actor, name) do
