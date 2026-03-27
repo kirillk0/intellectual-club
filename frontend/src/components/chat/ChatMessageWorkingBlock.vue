@@ -171,7 +171,16 @@ const emit = defineEmits<{
   (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent }): void;
 }>();
 
-const steps = computed(() => props.steps || []);
+const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => {
+  const aSeq = typeof a.sequence === 'number' && Number.isFinite(a.sequence) ? a.sequence : 0;
+  const bSeq = typeof b.sequence === 'number' && Number.isFinite(b.sequence) ? b.sequence : 0;
+  return aSeq - bSeq;
+};
+
+const orderedItems = (step: ChatMessageStep | null | undefined): ChatMessageItem[] =>
+  ((step?.items || []).slice().sort(sortBySequence) as ChatMessageItem[]);
+
+const steps = computed(() => (props.steps || []).slice().sort(sortBySequence));
 const open = computed(() => Boolean(props.open));
 const currentStepIndex = ref(0);
 
@@ -311,7 +320,7 @@ const renderHtml = (text: string) => {
 };
 
 const providerItems = (step: ChatMessageStep) => {
-  const list = step.items || [];
+  const list = orderedItems(step);
   return list.filter(
     (item) =>
       item.type !== 'tool_result' &&
@@ -322,12 +331,12 @@ const providerItems = (step: ChatMessageStep) => {
 };
 
 const toolResultItems = (step: ChatMessageStep) => {
-  const list = step.items || [];
+  const list = orderedItems(step);
   return list.filter((item) => item.type === 'tool_result');
 };
 
 const artifactItems = (step: ChatMessageStep) => {
-  const list = step.items || [];
+  const list = orderedItems(step);
   return list.filter((item) => item.type === 'artifact');
 };
 
@@ -335,12 +344,12 @@ const itemText = (item: Pick<ChatMessageItem, 'type' | 'contents'>) =>
   joinItemTextContents(item.type, item.contents);
 
 const toolItemMedia = (item: Pick<ChatMessageItem, 'contents'>) =>
-  (item.contents || []).filter((content) => content.kind === 'media' && content.media);
-
-const sortBySeq = <T extends { sequence: number }>(a: T, b: T) => a.sequence - b.sequence;
+  ((item.contents || []).slice().sort(sortBySequence) as ChatMessageContent[]).filter(
+    (content) => content.kind === 'media' && content.media
+  );
 
 const firstTruncatedTextContentId = (item: ChatMessageItem): number | null => {
-  const contents = (item.contents || []).slice().sort(sortBySeq);
+  const contents = (item.contents || []).slice().sort(sortBySequence);
   for (const content of contents) {
     if (content.kind !== 'text') continue;
     if (!content.content_text_truncated) continue;

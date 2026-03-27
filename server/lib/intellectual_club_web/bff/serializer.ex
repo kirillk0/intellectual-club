@@ -262,6 +262,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   def branch_message(%ChatMessage{} = message, branch_meta_by_id \\ %{}) do
     meta = Map.get(branch_meta_by_id, message.id, %{})
+    steps = ordered_by_sequence(message.steps)
 
     %{
       id: message.id,
@@ -273,7 +274,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       created_at: datetime_iso(message.created_at),
       finished_at: datetime_iso(Map.get(message, :finished_at)),
       llm_configuration_id: message.llm_configuration_id,
-      steps: Enum.map(message.steps || [], &step/1),
+      steps: Enum.map(steps, &step/1),
       prev_sibling_id: Map.get(meta, :prev_sibling),
       next_sibling_id: Map.get(meta, :next_sibling),
       siblings:
@@ -288,6 +289,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   def step(%ChatMessageStep{} = step) do
+    items = ordered_by_sequence(step.items)
+
     %{
       id: step.id,
       sequence: step.sequence,
@@ -300,13 +303,13 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       cached_input_tokens: step.cached_input_tokens,
       reasoning_tokens: step.reasoning_tokens,
       cost: step.cost,
-      items: Enum.map(step.items || [], &item/1)
+      items: Enum.map(items, &item/1)
     }
   end
 
   def item(%ChatMessageItem{} = item) do
     type = atom_to_string(item.type)
-    contents = item.contents || []
+    contents = ordered_by_sequence(item.contents)
 
     %{
       id: item.id,
@@ -339,7 +342,12 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   def normalize_runtime_step_for_client(step) when is_map(step) do
-    items = map_get(step, :items, "items", []) |> List.wrap()
+    items =
+      step
+      |> map_get(:items, "items", [])
+      |> List.wrap()
+      |> ordered_by_sequence()
+
     normalized_items = Enum.map(items, &normalize_runtime_item/1)
     put_key(step, :items, "items", normalized_items)
   end
@@ -401,6 +409,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       item
       |> map_get(:contents, "contents", [])
       |> List.wrap()
+      |> ordered_by_sequence()
       |> Enum.filter(&content_visible_in_bff?(&1, type))
       |> Enum.map(&normalize_runtime_content(&1, type))
 
@@ -535,6 +544,16 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       true -> Map.put(map, atom_key, value)
     end
   end
+
+  defp ordered_by_sequence(values) when is_list(values) do
+    Enum.sort_by(values, &sort_seq/1)
+  end
+
+  defp ordered_by_sequence(_other), do: []
+
+  defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
+  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
+  defp sort_seq(_other), do: 0
 
   defp atom_to_string(nil), do: nil
   defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
