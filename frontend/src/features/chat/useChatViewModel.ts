@@ -979,6 +979,35 @@ export function useChatViewModel() {
   const confirm = (message: string) => window.confirm(message);
   const alert = (message: string) => window.alert(message);
 
+  const branchMessageById = (messageId: number | null | undefined) => {
+    if (!messageId) return null;
+    return branch.value.find((item) => item.id === messageId) || null;
+  };
+
+  const currentRetryConfigurationId = () => {
+    const configId = selectedConfig.value || chat.value?.llm_configuration_id || null;
+    return typeof configId === 'number' && Number.isFinite(configId) && configId > 0 ? configId : null;
+  };
+
+  const retryConfigurationWarning = (message: ChatBranchMessage | null | undefined) => {
+    if (!message || message.role !== 'assistant') return '';
+
+    const messageConfigId =
+      typeof message.llm_configuration_id === 'number' &&
+      Number.isFinite(message.llm_configuration_id) &&
+      message.llm_configuration_id > 0
+        ? message.llm_configuration_id
+        : null;
+    const currentConfigId = currentRetryConfigurationId();
+
+    if (!messageConfigId || !currentConfigId || messageConfigId === currentConfigId) return '';
+
+    const originalLabel = messageConfigLabel(messageConfigId);
+    const selectedLabel = messageConfigLabel(currentConfigId);
+
+    return `Warning: this retry will use the original message configuration (${originalLabel}), not the currently selected chat configuration (${selectedLabel}).`;
+  };
+
   const deletingMessageId = ref<number | null>(null);
 
   const canDeleteMessage = (msg: ChatBranchMessage, _idx: number) => {
@@ -1345,6 +1374,9 @@ export function useChatViewModel() {
     const messageId = msg.id;
     if (!chatId.value || !messageId) return;
     if (retryingMessageId.value === messageId) return;
+
+    const retryWarning = retryConfigurationWarning(msg);
+    if (retryWarning && !confirm(`${retryWarning}\n\nRetry anyway?`)) return;
 
     retryingMessageId.value = messageId;
     loadError.value = '';
@@ -1842,9 +1874,15 @@ export function useChatViewModel() {
         ? step.sequence
         : '—';
 
-    const ok = confirm(
-      `Retry from step ${stepNumber}? This will delete this step and all following steps for this message.`
-    );
+    const retryWarning = retryConfigurationWarning(branchMessageById(messageId));
+    const confirmText = [
+      `Retry from step ${stepNumber}? This will delete this step and all following steps for this message.`,
+      retryWarning,
+    ]
+      .filter((line) => line)
+      .join('\n\n');
+
+    const ok = confirm(confirmText);
 
     if (!ok) return;
 
