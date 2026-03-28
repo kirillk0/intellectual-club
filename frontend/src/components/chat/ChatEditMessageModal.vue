@@ -85,6 +85,12 @@
                 :key="`existing-${attachment.id}`"
                 class="attachment-row"
                 :title="`${attachment.name}  (${formatFileBytes(attachment.size)})`"
+                role="button"
+                tabindex="0"
+                :aria-label="`Preview attachment ${attachment.name}`"
+                @click="emit('preview-existing-attachment', attachment)"
+                @keydown.enter.prevent="emit('preview-existing-attachment', attachment)"
+                @keydown.space.prevent="emit('preview-existing-attachment', attachment)"
               >
                 <span class="attachment-row__icon" aria-hidden="true">{{ fileIconByMime(attachment.mimeType, attachment.name) }}</span>
                 <span class="attachment-row__name">{{ attachment.name }}</span>
@@ -93,7 +99,7 @@
                   class="attachment-row__remove"
                   type="button"
                   aria-label="Remove attachment"
-                  @click="emit('remove-existing-attachment', attachment.id)"
+                  @click.stop="emit('remove-existing-attachment', attachment.id)"
                 >✕</button>
               </div>
 
@@ -102,6 +108,12 @@
                 :key="`pending-${item.id}`"
                 class="attachment-row"
                 :title="`${item.name}  (${formatFileBytes(item.size)})`"
+                role="button"
+                tabindex="0"
+                :aria-label="`Preview attachment ${item.name}`"
+                @click="emit('preview-pending-file', item.id)"
+                @keydown.enter.prevent="emit('preview-pending-file', item.id)"
+                @keydown.space.prevent="emit('preview-pending-file', item.id)"
               >
                 <span class="attachment-row__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
                 <div class="attachment-row__meta">
@@ -119,7 +131,7 @@
                   class="attachment-row__remove"
                   type="button"
                   aria-label="Remove pending attachment"
-                  @click="emit('remove-pending-file', item.id)"
+                  @click.stop="emit('remove-pending-file', item.id)"
                 >✕</button>
               </div>
             </div>
@@ -188,6 +200,8 @@ const emit = defineEmits<{
   (e: 'add-files', files: File[]): void;
   (e: 'remove-pending-file', id: string): void;
   (e: 'remove-existing-attachment', id: number): void;
+  (e: 'preview-existing-attachment', attachment: ExistingChatAttachment): void;
+  (e: 'preview-pending-file', id: string): void;
 }>();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
@@ -623,11 +637,18 @@ const handleDrop = (event: DragEvent) => {
   min-width: 0;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(248, 250, 252, 0.9);
+  cursor: pointer;
+  outline: none;
   transition: background-color 0.12s ease;
 }
 
 .attachment-row:hover {
   background: rgba(241, 245, 249, 1);
+}
+
+.attachment-row:focus-visible {
+  background: rgba(219, 234, 254, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
 }
 
 .attachment-row__icon {

@@ -138,6 +138,12 @@
                 :key="item.id"
                 class="pending-file"
                 :title="`${item.name}  (${formatPendingFileSize(item.size)})`"
+                role="button"
+                tabindex="0"
+                :aria-label="`Preview attachment ${item.name}`"
+                @click="vm.openPendingAttachmentPreview(item.id)"
+                @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id)"
+                @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id)"
               >
                 <span class="pending-file__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
                 <div class="pending-file__meta">
@@ -151,7 +157,12 @@
                     <span class="pending-file__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
                   </div>
                 </div>
-                <button class="pending-file__remove" type="button" aria-label="Remove attachment" @click="vm.removePendingFile(item.id)">✕</button>
+                <button
+                  class="pending-file__remove"
+                  type="button"
+                  aria-label="Remove attachment"
+                  @click.stop="vm.removePendingFile(item.id)"
+                >✕</button>
               </div>
             </div>
             <div class="chat-composer">
@@ -281,6 +292,8 @@
         @add-files="vm.addEditPendingFiles"
         @remove-pending-file="vm.removeEditPendingFile"
         @remove-existing-attachment="vm.removeEditExistingAttachment"
+        @preview-existing-attachment="vm.openExistingAttachmentPreview"
+        @preview-pending-file="vm.openPendingAttachmentPreview"
         @save="vm.saveEdit"
       />
     </Teleport>
@@ -633,11 +646,18 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   padding: 6px 8px;
   border-radius: 6px;
   min-width: 0;
+  cursor: pointer;
+  outline: none;
   transition: background-color 0.12s ease;
 }
 
 .pending-file:hover {
   background: rgba(0, 0, 0, 0.04);
+}
+
+.pending-file:focus-visible {
+  background: rgba(219, 234, 254, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
 }
 
 .pending-file__icon {

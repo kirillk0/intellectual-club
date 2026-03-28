@@ -1937,6 +1937,13 @@ export function useChatViewModel() {
   const attachmentPreviewError = ref('');
   const attachmentPreviewText = ref('');
   const attachmentPreviewRequestToken = ref(0);
+  let attachmentPreviewObjectUrl: string | null = null;
+
+  const revokeAttachmentPreviewObjectUrl = () => {
+    if (!attachmentPreviewObjectUrl) return;
+    URL.revokeObjectURL(attachmentPreviewObjectUrl);
+    attachmentPreviewObjectUrl = null;
+  };
 
   const openAttachmentPreview = async (payload: {
     messageId: number;
@@ -1950,6 +1957,7 @@ export function useChatViewModel() {
 
     if (!messageId || !contentId) return;
 
+    revokeAttachmentPreviewObjectUrl();
     attachmentPreviewOpen.value = true;
     attachmentPreviewTitle.value = name;
     attachmentPreviewUrl.value = buildMessageContentFileUrl(messageId, contentId);
@@ -1982,7 +1990,54 @@ export function useChatViewModel() {
     }
   };
 
+  const openPendingAttachmentPreview = async (fileId: string) => {
+    const pending = findPendingFile(pendingFiles, fileId) || findPendingFile(editPendingFiles, fileId);
+    if (!pending) return;
+
+    const isImage = pending.mimeType.trim().toLowerCase().startsWith('image/');
+    const kind = getAttachmentPreviewKind(pending.name, pending.mimeType, isImage);
+    const objectUrl = URL.createObjectURL(pending.file);
+    const token = attachmentPreviewRequestToken.value + 1;
+
+    attachmentPreviewRequestToken.value = token;
+    revokeAttachmentPreviewObjectUrl();
+    attachmentPreviewObjectUrl = objectUrl;
+    attachmentPreviewOpen.value = true;
+    attachmentPreviewTitle.value = pending.name;
+    attachmentPreviewUrl.value = objectUrl;
+    attachmentPreviewKind.value = kind;
+    attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
+    attachmentPreviewError.value = '';
+    attachmentPreviewText.value = '';
+
+    if (kind === 'image' || kind === 'binary') {
+      attachmentPreviewLoading.value = false;
+      return;
+    }
+
+    try {
+      const text = await pending.file.text();
+      if (attachmentPreviewRequestToken.value !== token) return;
+      attachmentPreviewText.value = text;
+    } catch (error) {
+      if (attachmentPreviewRequestToken.value !== token) return;
+      attachmentPreviewError.value = error instanceof Error ? error.message : 'Failed to load attachment';
+    } finally {
+      if (attachmentPreviewRequestToken.value === token) {
+        attachmentPreviewLoading.value = false;
+      }
+    }
+  };
+
+  const openExistingAttachmentPreview = async (attachment: ExistingChatAttachment) => {
+    await openAttachmentPreview({
+      messageId: attachment.messageId,
+      content: attachment.content,
+    });
+  };
+
   const closeAttachmentPreview = () => {
+    revokeAttachmentPreviewObjectUrl();
     attachmentPreviewOpen.value = false;
     attachmentPreviewTitle.value = 'Attachment';
     attachmentPreviewUrl.value = '';
@@ -2706,6 +2761,8 @@ export function useChatViewModel() {
     attachmentPreviewError,
     attachmentPreviewText,
     openAttachmentPreview,
+    openPendingAttachmentPreview,
+    openExistingAttachmentPreview,
     closeAttachmentPreview,
     botModalOpen,
     botModalValue,
