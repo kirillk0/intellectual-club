@@ -16,7 +16,7 @@ defmodule IntellectualClub.Chat.MediaTest do
                provider_type: :openrouter_chat_completion
              )
 
-    assert String.contains?(placeholder, "content_id=")
+    assert String.contains?(placeholder, "file_id=")
     assert String.starts_with?(data_url, "data:image/png;base64,")
   end
 
@@ -50,7 +50,7 @@ defmodule IntellectualClub.Chat.MediaTest do
                provider_type: :responses
              )
 
-    assert String.contains?(placeholder, "content_id=")
+    assert String.contains?(placeholder, "file_id=")
     assert String.starts_with?(data_url, "data:image/png;base64,")
   end
 

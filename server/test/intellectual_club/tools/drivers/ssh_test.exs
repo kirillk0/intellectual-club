@@ -20,6 +20,32 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     assert Enum.any?(functions, fn spec -> Map.get(spec, "name") == "run_command" end)
   end
 
+  test "download_file advertises file_id as the preferred reference" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        type: "ssh",
+        config: %{"host" => "example.com", "username" => "root"},
+        secrets: %{"password" => "secret"}
+      })
+
+    download_file_spec =
+      Enum.find(Ssh.fixed_functions(tool_instance), fn spec ->
+        Map.get(spec, "name") == "download_file"
+      end)
+
+    assert is_map(download_file_spec)
+    assert String.contains?(Map.get(download_file_spec, "description", ""), "`file_id`")
+
+    schema = Map.fetch!(download_file_spec, "schema")
+    properties = Map.fetch!(schema, "properties")
+
+    assert Map.has_key?(properties, "file_id")
+    refute Map.has_key?(properties, "content_id")
+    assert schema["required"] == ["file_id", "local_path"]
+  end
+
   test "execute validates required host" do
     %{user: actor} = user_fixture()
 

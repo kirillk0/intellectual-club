@@ -7,6 +7,7 @@ defmodule IntellectualClub.Chat.Media do
 
   @type media_descriptor :: %{
           required(:external_id) => String.t(),
+          required(:file_external_id) => String.t(),
           required(:filename) => String.t(),
           required(:mime_type) => String.t(),
           required(:size_bytes) => non_neg_integer(),
@@ -20,6 +21,7 @@ defmodule IntellectualClub.Chat.Media do
     if media_content?(content) do
       file = file_for_content(content)
       external_id = map_get(content, :external_id, "external_id")
+      file_external_id = map_get(file, :external_id, "external_id")
       filename = map_get(file, :filename, "filename") || map_get(content, :filename, "filename")
 
       mime_type =
@@ -32,11 +34,13 @@ defmodule IntellectualClub.Chat.Media do
 
       file_id = map_get(content, :file_id, "file_id") || map_get(file, :id, "id")
 
-      if blank?(external_id) or blank?(filename) or blank?(mime_type) or blank?(sha256) do
+      if blank?(external_id) or blank?(file_external_id) or blank?(filename) or
+           blank?(mime_type) or blank?(sha256) do
         nil
       else
         %{
           external_id: to_string(external_id),
+          file_external_id: to_string(file_external_id),
           filename: to_string(filename),
           mime_type: to_string(mime_type),
           size_bytes: normalize_size_bytes(size_bytes),
@@ -58,7 +62,7 @@ defmodule IntellectualClub.Chat.Media do
       %{} = media ->
         [
           "[Attached file",
-          "content_id=#{media.external_id}",
+          "file_id=#{media.file_external_id}",
           "filename=#{inspect(media.filename)}",
           "mime_type=#{inspect(media.mime_type)}",
           "size_bytes=#{media.size_bytes}]"

@@ -3,15 +3,15 @@ defmodule IntellectualClub.Chat.ContentFiles do
   Helpers for loading file payloads referenced by chat message contents.
   """
 
-  import Ecto.Query, only: [from: 2]
-
   alias IntellectualClub.Chat.ChatMessageContent
-  alias IntellectualClub.Db
   alias IntellectualClub.Files
+  alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Tools.ExecutionContext
 
+  require Ash.Query
+
   @spec load_payload_for_content(ChatMessageContent.t()) ::
-          {:ok, {ChatMessageContent.t(), map(), binary()}} | {:error, term()}
+          {:ok, {ChatMessageContent.t(), StoredFile.t(), binary()}} | {:error, term()}
   def load_payload_for_content(%ChatMessageContent{} = content) do
     if is_integer(content.file_id) do
       with {:ok, {file, payload}} <- Files.load_payload(content.file_id) do
@@ -23,68 +23,49 @@ defmodule IntellectualClub.Chat.ContentFiles do
   end
 
   @spec load_payload_for_execution(String.t(), ExecutionContext.t()) ::
-          {:ok, {map(), map(), binary()}} | {:error, term()}
-  def load_payload_for_execution(content_external_id, %ExecutionContext{} = context)
-      when is_binary(content_external_id) do
-    with {:ok, normalized_external_id} <- normalize_external_id(content_external_id) do
-      repo = Db.repo()
-
-      content =
-        repo.one(
-          from(c in "chat_message_contents",
-            join: i in "chat_message_items",
-            on: i.id == c.chat_message_item_id,
-            join: s in "chat_message_steps",
-            on: s.id == i.chat_message_step_id,
-            join: m in "chat_messages",
-            on: m.id == s.chat_message_id,
-            join: f in "files",
-            on: f.id == c.file_id,
-            where:
-              c.external_id == ^normalized_external_id and c.kind == "media" and
-                c.owner_id == ^context.owner_id and m.owner_id == ^context.owner_id and
-                m.chat_id == ^context.chat_id,
-            select: %{
-              content: %{
-                id: c.id,
-                external_id: c.external_id,
-                file_id: c.file_id,
-                sequence: c.sequence,
-                kind: c.kind
-              },
-              file: %{
-                id: f.id,
-                external_id: f.external_id,
-                filename: f.filename,
-                mime_type: f.mime_type,
-                size_bytes: f.size_bytes,
-                sha256: f.sha256
-              }
-            }
-          )
-        )
-
-      with %{content: content, file: file} <- content,
-           {:ok, {_stored_file, payload}} <- Files.load_payload(file.id) do
-        {:ok, {content, file, payload}}
-      else
-        nil -> {:error, :not_found}
-        {:error, error} -> {:error, error}
-      end
+          {:ok, {ChatMessageContent.t(), StoredFile.t(), binary()}} | {:error, term()}
+  def load_payload_for_execution(file_external_id, %ExecutionContext{} = context)
+      when is_binary(file_external_id) do
+    with {:ok, normalized_external_id} <- normalize_external_id(file_external_id),
+         {:ok, %ChatMessageContent{} = content} <-
+           find_content_for_file(normalized_external_id, context),
+         %StoredFile{} = file <- Map.get(content, :file),
+         {:ok, {_stored_file, payload}} <- Files.load_payload(file.id) do
+      {:ok, {content, file, payload}}
+    else
+      nil -> {:error, :file_not_found}
+      {:error, error} -> {:error, error}
     end
   end
 
-  def load_payload_for_execution(_content_external_id, _context), do: {:error, :invalid_request}
+  def load_payload_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
+
+  defp find_content_for_file(normalized_external_id, %ExecutionContext{} = context)
+       when is_binary(normalized_external_id) do
+    ChatMessageContent
+    |> Ash.Query.filter(
+      kind == :media and owner_id == ^context.owner_id and
+        exists(file, external_id == ^normalized_external_id) and
+        exists(
+          chat_message_item.chat_message_step.chat_message,
+          owner_id == ^context.owner_id and chat_id == ^context.chat_id
+        )
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(authorize?: false, load: [:file])
+    |> case do
+      {:ok, %ChatMessageContent{} = content} -> {:ok, content}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, error} -> {:error, error}
+    end
+  end
 
   defp normalize_external_id(value) when is_binary(value) do
     value = String.trim(value)
 
-    with {:ok, canonical_uuid} <- Ecto.UUID.cast(value) do
-      case Db.adapter() do
-        :sqlite -> {:ok, canonical_uuid}
-        :postgres -> Ecto.UUID.dump(canonical_uuid)
-      end
-    else
+    case Ecto.UUID.cast(value) do
+      {:ok, canonical_uuid} -> {:ok, canonical_uuid}
       :error -> {:error, :invalid_request}
     end
   end

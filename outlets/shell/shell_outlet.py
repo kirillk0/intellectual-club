@@ -475,32 +475,32 @@ class ShellOutlet:
         }
 
     @outlet_tool(
-        description="Download a chat file referenced by content_id into the runner filesystem.",
+        description="Download a chat file referenced by file_id into the runner filesystem.",
         input_schema={
             "type": "object",
             "properties": {
-                "content_id": {
+                "file_id": {
                     "type": "string",
-                    "description": "Chat message content external UUID.",
+                    "description": "File external UUID.",
                 },
                 "local_path": {
                     "type": "string",
                     "description": "Destination path on the runner filesystem.",
                 },
             },
-            "required": ["content_id", "local_path"],
+            "required": ["file_id", "local_path"],
             "additionalProperties": False,
         },
     )
-    async def download_file(self, content_id: str, local_path: str) -> tuple[str, dict[str, Any]]:
+    async def download_file(self, file_id: str, local_path: str) -> tuple[str, dict[str, Any]]:
         target_path = os.path.expanduser(str(local_path or "").strip())
         if not target_path:
             raise ValueError("local_path is required")
-        content_id = str(content_id or "").strip()
-        if not content_id:
-            raise ValueError("content_id is required")
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            raise ValueError("file_id is required")
 
-        payload, meta = await download_call_file(content_id=content_id)
+        payload, meta = await download_call_file(file_id=file_id)
         parent = os.path.dirname(target_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -508,9 +508,9 @@ class ShellOutlet:
             f.write(payload)
 
         return (
-            f"File {content_id} downloaded to {target_path}",
+            f"File {file_id} downloaded to {target_path}",
             {
-                "content_id": content_id,
+                "file_id": file_id,
                 "path": target_path,
                 "size_bytes": len(payload),
                 "content_type": meta.get("content_type", "application/octet-stream"),

@@ -359,9 +359,9 @@ async def upload_call_file(*, filename: str, mime_type: str, payload: bytes) -> 
         return file_data
 
 
-async def download_call_file(*, content_id: str) -> tuple[bytes, dict[str, Any]]:
+async def download_call_file(*, file_id: str) -> tuple[bytes, dict[str, Any]]:
     context = require_call_context()
-    url = _join_url(context.server_url, f"/api/outlet/calls/{context.call_id}/contents/{content_id}/file")
+    url = _join_url(context.server_url, f"/api/outlet/calls/{context.call_id}/files/{file_id}")
     headers = {"Authorization": f"Bearer {context.token}"}
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         response = await client.get(url, headers=headers)

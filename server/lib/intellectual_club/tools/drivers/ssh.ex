@@ -184,18 +184,18 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
       },
       %{
         "name" => "download_file",
-        "description" =>
-          "Download a chat file referenced by `content_id` into the remote filesystem.",
+        "description" => "Download a chat file into the remote filesystem using `file_id`.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
-            "content_id" => %{
+            "file_id" => %{
               "type" => "string",
-              "description" => "Chat message content external UUID."
+              "description" =>
+                "File external UUID returned by `upload_file` or artifact metadata."
             },
             "local_path" => %{"type" => "string", "description" => "Remote destination path."}
           },
-          "required" => ["content_id", "local_path"],
+          "required" => ["file_id", "local_path"],
           "additionalProperties" => false
         },
         "enabled" => true
@@ -282,17 +282,17 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
        when is_map(args) do
     with {:ok, cfg} <- read_config(tool_instance),
          {:ok, auth} <- read_auth(tool_instance),
-         {:ok, content_id} <- read_required_string_arg(args, "content_id"),
+         {:ok, file_external_id} <- read_required_string_arg(args, "file_id"),
          {:ok, remote_path} <- read_required_path_arg(args, "local_path"),
          :ok <- ensure_ssh_started(),
          {:ok, {_content, file, payload}} <-
-           ContentFiles.load_payload_for_execution(content_id, execution_context),
+           ContentFiles.load_payload_for_execution(file_external_id, execution_context),
          :ok <- write_remote_file(cfg, auth, remote_path, payload) do
       {:ok,
        %ExecutionResult{
-         text: "File #{content_id} downloaded to #{remote_path}",
+         text: "File #{file.external_id} downloaded to #{remote_path}",
          raw: %{
-           "content_id" => content_id,
+           "file_id" => file.external_id,
            "path" => remote_path,
            "filename" => file.filename,
            "mime_type" => file.mime_type

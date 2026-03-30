@@ -70,7 +70,7 @@ defmodule IntellectualClubWeb.Router do
     post "/poll/", OutletController, :poll
     post "/complete/", OutletController, :complete
     post "/calls/:call_id/files", OutletController, :upload_file
-    get "/calls/:call_id/contents/:content_id/file", OutletController, :download_file
+    get "/calls/:call_id/files/:file_id", OutletController, :download_file
 
     post "/pair/start/", OutletController, :pair_start
     post "/pair/poll/", OutletController, :pair_poll

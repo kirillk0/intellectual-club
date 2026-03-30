@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from outlets.outlet_base import OutletRunner, current_call_context, outlet_tool
+import outlets.outlet_base as outlet_base
+from outlets.outlet_base import OutletCallContext, OutletRunner, current_call_context, download_call_file, outlet_tool
 
 
 class OutletRunnerCompleteRetryTest(unittest.IsolatedAsyncioTestCase):
@@ -135,3 +136,43 @@ class OutletRunnerCallContextTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["result_raw"], {"call_id": "call-ctx"})
         self.assertEqual(kwargs["result_media"], [{"file_id": 1, "filename": "image.png"}])
         self.assertEqual(kwargs["result_artifacts"], [{"file_id": 2, "filename": "artifact.txt"}])
+
+
+class OutletFileHelpersTest(unittest.IsolatedAsyncioTestCase):
+    async def test_download_call_file_uses_file_route(self):
+        response = mock.Mock()
+        response.content = b"payload"
+        response.headers = {
+            "content-type": "application/octet-stream",
+            "content-disposition": 'attachment; filename="artifact.txt"',
+        }
+        response.raise_for_status = mock.Mock()
+
+        client = mock.AsyncMock()
+        client.get = mock.AsyncMock(return_value=response)
+
+        client_manager = mock.AsyncMock()
+        client_manager.__aenter__.return_value = client
+        client_manager.__aexit__.return_value = False
+
+        token = outlet_base._CALL_CONTEXT.set(
+            OutletCallContext(
+                call_id="call-123",
+                server_url="http://localhost:8002",
+                token="runner-token",
+            )
+        )
+
+        try:
+            with mock.patch("outlets.outlet_base.httpx.AsyncClient", return_value=client_manager):
+                payload, meta = await download_call_file(file_id="file-123")
+        finally:
+            outlet_base._CALL_CONTEXT.reset(token)
+
+        client.get.assert_awaited_once_with(
+            "http://localhost:8002/api/outlet/calls/call-123/files/file-123",
+            headers={"Authorization": "Bearer runner-token"},
+        )
+        self.assertEqual(payload, b"payload")
+        self.assertEqual(meta["content_type"], "application/octet-stream")
+        self.assertEqual(meta["content_disposition"], 'attachment; filename="artifact.txt"')

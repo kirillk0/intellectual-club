@@ -216,7 +216,7 @@ defmodule IntellectualClubWeb.OutletController do
     end
   end
 
-  def download_file(conn, %{"call_id" => call_id, "content_id" => content_id} = params) do
+  def download_file(conn, %{"call_id" => call_id, "file_id" => file_external_id} = params) do
     payload = params || %{}
     token = extract_token(conn, payload)
     tool_instance = Auth.tool_instance_for_token(token)
@@ -228,7 +228,7 @@ defmodule IntellectualClubWeb.OutletController do
     else
       case with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end) do
         {:ok, {:ok, %{execution_context: execution_context}}} ->
-          case ContentFiles.load_payload_for_execution(content_id, execution_context) do
+          case ContentFiles.load_payload_for_execution(file_external_id, execution_context) do
             {:ok, {_content, file, payload}} ->
               disposition =
                 if Media.image_mime_type?(file.mime_type), do: :inline, else: :attachment
@@ -240,7 +240,7 @@ defmodule IntellectualClubWeb.OutletController do
             {:error, _reason} ->
               conn
               |> put_status(:not_found)
-              |> json(%{error: "Content not found."})
+              |> json(%{error: "File not found."})
           end
 
         {:ok, {:error, :not_found}} ->
@@ -545,9 +545,14 @@ defmodule IntellectualClubWeb.OutletController do
 
   defp positive_poll_capacity?(payload) when is_map(payload) do
     case Map.get(payload, "capacity", Map.get(payload, :capacity)) do
-      nil -> true
-      value when is_integer(value) -> value > 0
-      value when is_float(value) -> value > 0
+      nil ->
+        true
+
+      value when is_integer(value) ->
+        value > 0
+
+      value when is_float(value) ->
+        value > 0
 
       value when is_binary(value) ->
         case Integer.parse(String.trim(value)) do

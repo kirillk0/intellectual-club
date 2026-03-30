@@ -132,9 +132,10 @@ class ShellOutletFileTest(unittest.IsolatedAsyncioTestCase):
                 "outlets.shell.shell_outlet.download_call_file",
                 new=mock.AsyncMock(return_value=(b"payload", {"content_type": "application/octet-stream"})),
             ):
-                text, raw = await outlet.download_file("content-123", target_path)
+                text, raw = await outlet.download_file("file-123", target_path)
 
-            self.assertEqual(text, f"File content-123 downloaded to {target_path}")
+            self.assertEqual(text, f"File file-123 downloaded to {target_path}")
+            self.assertEqual(raw["file_id"], "file-123")
             self.assertEqual(raw["size_bytes"], 7)
             with open(target_path, "rb") as handle:
                 self.assertEqual(handle.read(), b"payload")
