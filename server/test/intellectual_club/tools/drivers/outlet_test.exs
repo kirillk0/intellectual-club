@@ -23,7 +23,33 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
       "max_wait_seconds" => 0
     }
 
-    assert {:ok, %{status: "idle", tasks: []}} = Runtime.poll(tool_instance, runner_payload)
+    assert {:ok, %{status: "ok", tasks: [initial_task]}} =
+             Runtime.poll(tool_instance, runner_payload)
+
+    assert initial_task.function == "outlet.list_tools"
+
+    assert :ok =
+             Runtime.complete(tool_instance, %{
+               "call_id" => initial_task.call_id,
+               "runner_id" => "runner-discovery",
+               "runner_session_id" => "runner-discovery",
+               "status" => "done",
+               "result_text" => "{\"tools\":[]}",
+               "result_raw" => %{
+                 "tools" => [
+                   %{
+                     "name" => "bootstrap_tool",
+                     "description" => "Bootstrap tool.",
+                     "input_schema" => %{
+                       "type" => "object",
+                       "properties" => %{}
+                     }
+                   }
+                 ]
+               },
+               "result_media" => [],
+               "result_artifacts" => []
+             })
 
     discover_task = Task.async(fn -> Outlet.discover(tool_instance) end)
 

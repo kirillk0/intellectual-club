@@ -28,6 +28,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
           tool_instance_id: tool_instance_id,
           created: stats.created,
           updated: stats.updated,
+          deleted: stats.deleted,
           total: stats.total,
           functions: Enum.map(functions, &serialize_function/1)
         })

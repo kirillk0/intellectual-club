@@ -21,6 +21,7 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   @runner_disconnected_error "Runner disconnected."
   @runner_session_replaced_error "Runner session replaced before completion."
+  @auto_discovery_function "outlet.list_tools"
 
   @type tool_instance :: %{id: integer(), config: map()} | map()
 
@@ -143,6 +144,8 @@ defmodule IntellectualClub.Outlets.Runtime do
         {capacity, max_wait_ms} =
           normalize_poll_params(instance, payload, cfg, runner_id, runner_session_id)
 
+        instance = maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
+
         {claimed, instance} =
           claim_tasks(instance, capacity, runner_id, runner_session_id, now_ms)
 
@@ -191,17 +194,9 @@ defmodule IntellectualClub.Outlets.Runtime do
     instance = get_instance(state, tool_instance_id, cfg)
 
     if runner_online?(instance, now_ms) do
-      call_id = Ecto.UUID.generate()
+      call = new_call(function_name, args, execution_context, now_ms)
 
-      call = %{
-        call_id: call_id,
-        function_name: function_name,
-        arguments: args || %{},
-        execution_context: execution_context,
-        status: :queued,
-        enqueued_at_ms: now_ms
-      }
-
+      call_id = call.call_id
       {instance, state} = register_call_waiter(instance, state, tool_instance_id, call_id, from)
       instance = %{instance | pending: instance.pending ++ [call]}
       {instance, state} = maybe_deliver_tasks(instance, state, tool_instance_id, now_ms)
@@ -229,14 +224,7 @@ defmodule IntellectualClub.Outlets.Runtime do
       state = put_instance(state, tool_instance_id, instance)
       {:reply, :already_present, state}
     else
-      call = %{
-        call_id: Ecto.UUID.generate(),
-        function_name: function_name,
-        arguments: args || %{},
-        execution_context: execution_context,
-        status: :queued,
-        enqueued_at_ms: now_ms
-      }
+      call = new_call(function_name, args, execution_context, now_ms)
 
       instance = %{instance | pending: instance.pending ++ [call]}
       {instance, state} = maybe_deliver_tasks(instance, state, tool_instance_id, now_ms)
@@ -509,10 +497,24 @@ defmodule IntellectualClub.Outlets.Runtime do
     %{
       config: cfg,
       runner: nil,
+      auto_discovery_session_id: nil,
       pending: [],
       running: %{},
       call_waiters: %{},
       poll_waiter: nil
+    }
+  end
+
+  defp new_call(function_name, args, execution_context, now_ms, opts \\ [])
+       when is_binary(function_name) and is_map(args) and is_list(opts) do
+    %{
+      call_id: Ecto.UUID.generate(),
+      function_name: function_name,
+      arguments: args || %{},
+      execution_context: execution_context,
+      status: :queued,
+      enqueued_at_ms: now_ms,
+      auto_discovery: Keyword.get(opts, :auto_discovery, false)
     }
   end
 
@@ -645,6 +647,29 @@ defmodule IntellectualClub.Outlets.Runtime do
     {capacity, seconds_to_ms(max_wait_seconds)}
   end
 
+  defp maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
+       when is_map(instance) and is_binary(runner_session_id) and is_integer(capacity) do
+    cond do
+      capacity <= 0 ->
+        instance
+
+      to_string(Map.get(instance, :auto_discovery_session_id, "")) == runner_session_id ->
+        instance
+
+      call_present?(instance, @auto_discovery_function) ->
+        %{instance | auto_discovery_session_id: runner_session_id}
+
+      true ->
+        call = new_call(@auto_discovery_function, %{}, nil, now_ms, auto_discovery: true)
+
+        %{
+          instance
+          | pending: instance.pending ++ [call],
+            auto_discovery_session_id: runner_session_id
+        }
+    end
+  end
+
   defp claim_tasks(instance, capacity, runner_id, runner_session_id, now_ms)
        when is_integer(capacity) and capacity >= 0 do
     if capacity <= 0 or instance.pending == [] do
@@ -679,7 +704,8 @@ defmodule IntellectualClub.Outlets.Runtime do
     }
   end
 
-  defp call_present?(instance, function_name) when is_map(instance) and is_binary(function_name) do
+  defp call_present?(instance, function_name)
+       when is_map(instance) and is_binary(function_name) do
     Enum.any?(instance.pending, &(&1.function_name == function_name)) or
       Enum.any?(instance.running, fn {_call_id, call} -> call.function_name == function_name end)
   end

@@ -862,12 +862,12 @@ function syncDefaultsForFormAndBase() {
 }
 
 const discovering = ref(false);
-const discoverStats = ref<{ created: number; updated: number; total: number } | null>(null);
+const discoverStats = ref<{ created: number; updated: number; deleted: number; total: number } | null>(null);
 
 const discoverStatsText = computed(() => {
   const stats = discoverStats.value;
   if (!stats) return '';
-  return `Discovery sync: total=${stats.total}, created=${stats.created}, updated=${stats.updated}.`;
+  return `Discovery sync: total=${stats.total}, created=${stats.created}, updated=${stats.updated}, deleted=${stats.deleted}.`;
 });
 
 function formatJson(value: unknown): string {
@@ -995,6 +995,7 @@ async function runDiscover() {
       tool_instance_id: number;
       created: number;
       updated: number;
+      deleted: number;
       total: number;
       functions: Array<{ id: number }>;
     }>(`/api/bff/tools/${toolId}/discover`, {});
@@ -1002,6 +1003,7 @@ async function runDiscover() {
     discoverStats.value = {
       created: Number(payload.created || 0),
       updated: Number(payload.updated || 0),
+      deleted: Number(payload.deleted || 0),
       total: Number(payload.total || 0),
     };
 

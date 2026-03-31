@@ -11,14 +11,13 @@ defmodule IntellectualClubWeb.OutletController do
   use IntellectualClubWeb, :controller
 
   require Logger
-  require Ash.Query
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Files
   alias IntellectualClub.Outlets.{Auth, Pairing, Runtime}
-  alias IntellectualClub.Tools.{Discovery, ToolFunction}
+  alias IntellectualClub.Tools.Discovery
   alias IntellectualClub.Tools.Drivers.Outlet, as: OutletDriver
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
@@ -33,8 +32,6 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
-      _ = maybe_enqueue_auto_discovery(tool_instance, payload)
-
       case with_runtime(fn -> Runtime.poll(tool_instance, payload) end) do
         {:ok, {:ok, %{} = response}} ->
           json(conn, response)
@@ -456,36 +453,9 @@ defmodule IntellectualClubWeb.OutletController do
     )
   end
 
-  defp maybe_enqueue_auto_discovery(tool_instance, payload)
-       when is_map(tool_instance) and is_map(payload) do
-    if auto_discovery_enabled?(tool_instance, payload) and no_tool_functions?(tool_instance) do
-      case with_runtime(fn ->
-             Runtime.enqueue_if_absent(tool_instance, "outlet.list_tools", %{})
-           end) do
-        {:ok, :ok} ->
-          :ok
-
-        {:ok, :already_present} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "Failed to enqueue outlet auto-discovery tool_instance_id=#{inspect(tool_instance.id)} " <>
-              "reason=#{inspect(reason)}"
-          )
-
-          :ok
-      end
-    else
-      :ok
-    end
-  end
-
-  defp maybe_enqueue_auto_discovery(_tool_instance, _payload), do: :ok
-
   defp maybe_sync_auto_discovery(
          %{owner_id: owner_id, id: tool_instance_id} = tool_instance,
-         %{function_name: "outlet.list_tools"},
+         %{function_name: "outlet.list_tools", auto_discovery: true},
          payload
        )
        when is_integer(owner_id) and is_map(payload) do
@@ -528,42 +498,6 @@ defmodule IntellectualClubWeb.OutletController do
   end
 
   defp maybe_sync_auto_discovery(_tool_instance, _running_call, _payload), do: :ok
-
-  defp auto_discovery_enabled?(tool_instance, payload)
-       when is_map(tool_instance) and is_map(payload) do
-    to_string(Map.get(tool_instance, :type, "")) == "outlet" and
-      positive_poll_capacity?(payload)
-  end
-
-  defp no_tool_functions?(%{id: tool_instance_id}) when is_integer(tool_instance_id) do
-    ToolFunction
-    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id)
-    |> Ash.Query.limit(1)
-    |> Ash.read!(authorize?: false)
-    |> Enum.empty?()
-  end
-
-  defp positive_poll_capacity?(payload) when is_map(payload) do
-    case Map.get(payload, "capacity", Map.get(payload, :capacity)) do
-      nil ->
-        true
-
-      value when is_integer(value) ->
-        value > 0
-
-      value when is_float(value) ->
-        value > 0
-
-      value when is_binary(value) ->
-        case Integer.parse(String.trim(value)) do
-          {parsed, ""} -> parsed > 0
-          _ -> true
-        end
-
-      _other ->
-        true
-    end
-  end
 
   defp normalize_outlet_status(payload) when is_map(payload) do
     payload

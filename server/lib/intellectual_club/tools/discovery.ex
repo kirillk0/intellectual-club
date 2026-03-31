@@ -14,6 +14,7 @@ defmodule IntellectualClub.Tools.Discovery do
   @type discover_result :: %{
           created: non_neg_integer(),
           updated: non_neg_integer(),
+          deleted: non_neg_integer(),
           total: non_neg_integer()
         }
 
@@ -81,57 +82,71 @@ defmodule IntellectualClub.Tools.Discovery do
       |> Ash.read!(actor: actor)
       |> Map.new(fn fn_record -> {fn_record.name, fn_record} end)
 
+    discovered =
+      discovered
+      |> normalize_discovered_specs()
+      |> Enum.sort_by(fn {name, _spec} -> name end)
+
     {created, updated} =
-      Enum.reduce(discovered, {0, 0}, fn raw_spec, {created, updated} ->
-        spec = normalize_discovered_spec(raw_spec)
+      Enum.reduce(discovered, {0, 0}, fn {_name, spec}, {created, updated} ->
+        case Map.get(existing, spec.name) do
+          nil ->
+            _ =
+              ToolFunction
+              |> Ash.Changeset.for_create(
+                :create,
+                %{
+                  tool_instance_id: tool_instance.id,
+                  name: spec.name,
+                  description: spec.description,
+                  parameters_schema: spec.schema,
+                  enabled: true,
+                  discovered_at: now
+                },
+                actor: actor
+              )
+              |> Ash.create!()
 
-        if spec == nil do
-          {created, updated}
-        else
-          case Map.get(existing, spec.name) do
-            nil ->
+            {created + 1, updated}
+
+          %ToolFunction{} = record ->
+            updates = %{
+              description: spec.description,
+              parameters_schema: spec.schema
+            }
+
+            if record.description != spec.description or record.parameters_schema != spec.schema do
               _ =
-                ToolFunction
-                |> Ash.Changeset.for_create(
-                  :create,
-                  %{
-                    tool_instance_id: tool_instance.id,
-                    name: spec.name,
-                    description: spec.description,
-                    parameters_schema: spec.schema,
-                    enabled: true,
-                    discovered_at: now
-                  },
-                  actor: actor
-                )
-                |> Ash.create!()
+                record
+                |> Ash.Changeset.for_update(:update, updates, actor: actor)
+                |> Ash.update!()
 
-              {created + 1, updated}
-
-            %ToolFunction{} = record ->
-              updates = %{
-                description: spec.description,
-                parameters_schema: spec.schema
-              }
-
-              if record.description != spec.description or record.parameters_schema != spec.schema do
-                _ =
-                  record
-                  |> Ash.Changeset.for_update(:update, updates, actor: actor)
-                  |> Ash.update!()
-
-                {created, updated + 1}
-              else
-                {created, updated}
-              end
-          end
+              {created, updated + 1}
+            else
+              {created, updated}
+            end
         end
+      end)
+
+    desired_names =
+      discovered
+      |> Enum.map(fn {name, _spec} -> name end)
+      |> MapSet.new()
+
+    deleted =
+      existing
+      |> Enum.reject(fn {name, _record} -> MapSet.member?(desired_names, name) end)
+      |> Enum.sort_by(fn {name, _record} -> name end)
+      |> Enum.reduce(0, fn {_name, record}, deleted ->
+        _ = Ash.destroy!(record, actor: actor)
+        deleted + 1
       end)
 
     %{
       created: created,
       updated: updated,
-      total: length(discovered)
+      deleted: deleted,
+      total: map_size(Map.new(discovered))
     }
   end
 
@@ -164,4 +179,13 @@ defmodule IntellectualClub.Tools.Discovery do
   end
 
   defp normalize_discovered_spec(_other), do: nil
+
+  defp normalize_discovered_specs(discovered) when is_list(discovered) do
+    Enum.reduce(discovered, %{}, fn raw_spec, acc ->
+      case normalize_discovered_spec(raw_spec) do
+        nil -> acc
+        spec -> Map.put(acc, spec.name, spec)
+      end
+    end)
+  end
 end
