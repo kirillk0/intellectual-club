@@ -4,18 +4,18 @@
       <div class="modal attachment-preview-modal" role="dialog" aria-modal="true" :aria-label="title">
         <div class="attachment-preview-header">
           <div class="attachment-preview-title-wrap">
-            <h3 class="attachment-preview-title">{{ title }}</h3>
+            <h3 class="attachment-preview-title">
+              <a
+                v-if="url"
+                class="attachment-preview-title-link"
+                :href="url"
+                :download="title"
+              >
+                {{ title }}
+              </a>
+              <span v-else>{{ title }}</span>
+            </h3>
           </div>
-          <a
-            v-if="url"
-            class="secondary attachment-preview-download"
-            :href="url"
-            target="_blank"
-            rel="noreferrer"
-            :download="title"
-          >
-            Download
-          </a>
         </div>
 
         <div v-if="loading" class="muted attachment-preview-state">Loading attachment…</div>
@@ -87,8 +87,14 @@ const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { hig
   white-space: nowrap;
 }
 
-.attachment-preview-download {
-  white-space: nowrap;
+.attachment-preview-title-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.attachment-preview-title-link:hover {
+  text-decoration-thickness: 2px;
 }
 
 .attachment-preview-state {
