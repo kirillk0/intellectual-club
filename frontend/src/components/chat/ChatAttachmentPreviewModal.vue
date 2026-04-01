@@ -23,11 +23,13 @@
         <div v-else-if="kind === 'image'" class="attachment-preview-image-wrap">
           <img class="attachment-preview-image" :src="url" :alt="title" />
         </div>
-        <div
-          v-else-if="kind === 'markdown'"
-          class="attachment-preview-markdown prose"
-          v-html="markdownHtml"
-        ></div>
+        <div v-else-if="kind === 'markdown'" class="attachment-preview-markdown">
+          <div class="message assistant attachment-preview-message">
+            <div class="bubble">
+              <div class="message-content chat-markdown" v-html="markdownHtml"></div>
+            </div>
+          </div>
+        </div>
         <pre v-else-if="kind === 'text'" class="attachment-preview-text">{{ textValue || '—' }}</pre>
         <div v-else class="attachment-preview-state muted">Preview is not available for this file type.</div>
 
@@ -135,9 +137,14 @@ const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { hig
 .attachment-preview-markdown {
   max-height: 70vh;
   overflow: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 14px 16px;
-  background: #fff;
+  padding: 2px;
+}
+
+.attachment-preview-message {
+  margin-bottom: 0;
+}
+
+.attachment-preview-message .bubble {
+  margin-top: 0;
 }
 </style>
