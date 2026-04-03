@@ -47,7 +47,7 @@ export function useChatHeaderControls(params: Params) {
   });
 
   const configLabel = (cfg: LlmConfiguration) => {
-    const prefix = cfg.shared_incoming ? '📥 ' : cfg.shared_outgoing ? '📤 ' : '';
+    const prefix = cfg.shared_incoming ? '⇣ ' : cfg.shared_outgoing ? '⇡ ' : '';
     return `${prefix}${cfg.label || `Config #${cfg.id}`}`;
   };
 

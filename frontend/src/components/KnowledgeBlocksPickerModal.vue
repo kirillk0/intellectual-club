@@ -115,7 +115,7 @@
                     Clear
                   </button>
                   <button class="panel-toggle" type="button" @click="closeTagsOverlay" aria-label="Hide tags filter">
-                    ◀
+                    <SvgIcon name="chevron-left" />
                   </button>
                 </div>
               </div>
@@ -170,6 +170,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Teleport } from 'vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import type { KnowledgeBlock } from '@/types/api';
 

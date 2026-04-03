@@ -8,7 +8,7 @@
         @click="emit('update:leftOpen', false)"
         aria-label="Hide context"
       >
-        ◀
+        <SvgIcon name="chevron-left" />
       </button>
     </div>
 
@@ -241,6 +241,7 @@
 
 <script setup lang="ts">
 import type { ChatBranchMessage } from '@/types/api';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type {
   ActiveToolInstance,
   BranchSearchResults,

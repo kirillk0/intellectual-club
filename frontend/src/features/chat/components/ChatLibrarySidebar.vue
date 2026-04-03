@@ -8,7 +8,7 @@
         @click="emit('update:rightOpen', false)"
         aria-label="Hide library"
       >
-        ▶
+        <SvgIcon name="chevron-right" />
       </button>
     </div>
 
@@ -140,6 +140,7 @@
 
 <script setup lang="ts">
 import VariablesTable from '@/components/VariablesTable.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import type { ChatVariable, ImageAsset, ToolInstanceOption } from '@/types/api';

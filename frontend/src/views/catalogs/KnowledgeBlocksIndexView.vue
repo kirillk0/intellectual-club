@@ -50,8 +50,8 @@
                 <div class="catalog-row__main">
                 <div class="catalog-row__title">
                   {{ b.name }}
-                  <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you">📥</span>
-                  <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups">📤</span>
+                  <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+                  <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
                 </div>
                   <div class="catalog-row__subtitle">
                     {{ b.typeLabel }}<span v-if="formatVersion(b.version)"> · {{ formatVersion(b.version) }}</span>
@@ -88,7 +88,7 @@
         >
           <template #header-extra>
             <button class="panel-toggle" type="button" @click="closeTagsOverlay" aria-label="Hide tags filter">
-              ◀
+              <SvgIcon name="chevron-left" />
             </button>
           </template>
         </KnowledgeTagsManagerPanel>
@@ -117,6 +117,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
 
 type KnowledgeBlockRow = {

@@ -33,8 +33,8 @@
           <div class="catalog-row__main">
             <div class="catalog-row__title">
               {{ t.name || 'Untitled tool' }}
-              <span v-if="t.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you">📥</span>
-              <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups">📤</span>
+              <span v-if="t.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+              <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
             </div>
             <div class="catalog-row__subtitle">
               {{ t.typeLabel }}
@@ -71,6 +71,7 @@ import { useRoute, useRouter } from 'vue-router';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { formatRelativeDateTime } from '@/utils/dates';
 
 type ToolInstanceRow = {

@@ -55,7 +55,7 @@
                       title="Shared with you"
                       aria-label="Shared with you"
                     >
-                      📥
+                      <SvgIcon name="share-incoming" />
                     </span>
                     <span
                       v-else-if="c.shared_outgoing"
@@ -63,7 +63,7 @@
                       title="Shared with groups"
                       aria-label="Shared with groups"
                     >
-                      📤
+                      <SvgIcon name="share-outgoing" />
                     </span>
                     <span class="catalog-row__title-meta">{{ providerName(c.provider_id) }}</span>
                   </div>
@@ -102,7 +102,7 @@
         >
           <template #header-extra>
             <button class="panel-toggle" type="button" @click="closeTagsOverlay" aria-label="Hide tags filter">
-              ◀
+              <SvgIcon name="chevron-left" />
             </button>
           </template>
         </LlmConfigurationTagsManagerPanel>
@@ -129,6 +129,7 @@ import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsM
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type ConfigRow = {
   id: number;

@@ -25,7 +25,7 @@
               :title="botSortToggleLabel"
               @click="toggleBotSortMode"
             >
-              <span aria-hidden="true">{{ botSortModeValue === 'recent_activity' ? '🕒' : 'A↕' }}</span>
+              <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
             </button>
           </div>
         </label>
@@ -47,8 +47,8 @@
           <div class="catalog-row__main">
             <div class="catalog-row__title">
               {{ b.name }}
-              <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you">📥</span>
-              <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups">📤</span>
+              <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+              <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
             </div>
             <div class="catalog-row__subtitle">{{ blocksLabel(b.blocks_count) }}</div>
           </div>
@@ -72,6 +72,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import type { ImageAsset } from '@/types/api';
 

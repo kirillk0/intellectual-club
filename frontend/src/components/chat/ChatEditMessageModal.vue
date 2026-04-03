@@ -92,7 +92,7 @@
                 @keydown.enter.prevent="emit('preview-existing-attachment', attachment)"
                 @keydown.space.prevent="emit('preview-existing-attachment', attachment)"
               >
-                <span class="attachment-row__icon" aria-hidden="true">{{ fileIconByMime(attachment.mimeType, attachment.name) }}</span>
+                <span class="attachment-row__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(attachment.mimeType, attachment.name)" /></span>
                 <span class="attachment-row__name">{{ attachment.name }}</span>
                 <span class="attachment-row__size">{{ formatFileBytes(attachment.size) }}</span>
                 <button
@@ -115,7 +115,7 @@
                 @keydown.enter.prevent="emit('preview-pending-file', item.id)"
                 @keydown.space.prevent="emit('preview-pending-file', item.id)"
               >
-                <span class="attachment-row__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
+                <span class="attachment-row__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(item.mimeType, item.name)" /></span>
                 <div class="attachment-row__meta">
                   <span class="attachment-row__name">{{ item.name }}</span>
                   <span class="attachment-row__status">{{ describePendingFileStatus(item) }}</span>
@@ -170,6 +170,7 @@ import {
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 interface Props {
   open: boolean;

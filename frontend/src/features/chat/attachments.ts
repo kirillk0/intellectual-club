@@ -278,20 +278,20 @@ export const mapContentToExistingAttachment = (
   };
 };
 
-/** Return a small emoji icon for a file based on its mime type and name. */
+/** Return an icon name for a file based on its mime type and name. */
 export const fileIconByMime = (mime: string, filename: string): string => {
   const m = (mime || '').toLowerCase();
   const n = (filename || '').toLowerCase();
-  if (m.startsWith('image/')) return '🖼';
-  if (m.startsWith('audio/')) return '🎵';
-  if (m.startsWith('video/')) return '🎬';
-  if (m === 'application/pdf') return '📕';
-  if (m.includes('spreadsheet') || m.includes('excel') || m === 'text/csv') return '📊';
-  if (m.includes('presentation') || m.includes('powerpoint')) return '📙';
-  if (m.includes('word') || m.includes('document')) return '📘';
-  if (n.endsWith('.md') || m === 'text/markdown' || m === 'text/x-markdown') return '📑';
-  if (m.startsWith('text/')) return '📝';
-  if (m.includes('json') || n.endsWith('.json')) return '📋';
-  if (m.includes('zip') || m.includes('tar') || m.includes('compress')) return '📦';
-  return '📄';
+  if (m.startsWith('image/')) return 'file-image';
+  if (m.startsWith('audio/')) return 'file-audio';
+  if (m.startsWith('video/')) return 'file-video';
+  if (m === 'application/pdf') return 'file-pdf';
+  if (m.includes('spreadsheet') || m.includes('excel') || m === 'text/csv') return 'file-spreadsheet';
+  if (m.includes('presentation') || m.includes('powerpoint')) return 'file-presentation';
+  if (m.includes('word') || m.includes('document')) return 'file-doc';
+  if (n.endsWith('.md') || m === 'text/markdown' || m === 'text/x-markdown') return 'file-markdown';
+  if (m.startsWith('text/')) return 'file-text';
+  if (m.includes('json') || n.endsWith('.json')) return 'file-code';
+  if (m.includes('zip') || m.includes('tar') || m.includes('compress')) return 'file-archive';
+  return 'file-generic';
 };

@@ -145,7 +145,7 @@
                 @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id)"
                 @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id)"
               >
-                <span class="pending-file__icon" aria-hidden="true">{{ fileIconByMime(item.mimeType, item.name) }}</span>
+                <span class="pending-file__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(item.mimeType, item.name)" /></span>
                 <div class="pending-file__meta">
                   <span class="pending-file__name">{{ item.name }}</span>
                   <span class="pending-file__status">{{ describePendingFileStatus(item) }}</span>
@@ -262,7 +262,7 @@
         @click="vm.leftOpen = true"
         aria-label="Show context"
       >
-        ▶
+        <SvgIcon name="chevron-right" />
       </button>
       <button
         v-if="!vm.rightOpen"
@@ -271,7 +271,7 @@
         @click="vm.rightOpen = true"
         aria-label="Show library"
       >
-        ◀
+        <SvgIcon name="chevron-left" />
       </button>
     </div>
 
@@ -389,6 +389,7 @@
 import { reactive, ref, Teleport } from 'vue';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import ChatAttachmentPreviewModal from '@/components/chat/ChatAttachmentPreviewModal.vue';
 import ChatEditMessageModal from '@/components/chat/ChatEditMessageModal.vue';

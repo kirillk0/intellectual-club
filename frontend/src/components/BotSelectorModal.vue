@@ -12,7 +12,7 @@
             :title="botSortToggleLabel"
             @click="toggleBotSortMode"
           >
-            <span aria-hidden="true">{{ botSortModeValue === 'recent_activity' ? '🕒' : 'A↕' }}</span>
+            <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
           </button>
         </div>
         <div class="stack" style="max-height: 60vh; overflow: auto">
@@ -28,14 +28,14 @@
               class="muted"
               title="Shared with you"
               aria-label="Shared with you"
-              >📥</span
+              ><SvgIcon name="share-incoming" /></span
             >
             <span
               v-else-if="opt.shared_outgoing"
               class="muted"
               title="Shared with groups"
               aria-label="Shared with groups"
-              >📤</span
+              ><SvgIcon name="share-outgoing" /></span
             >
             <span style="flex: 1">{{ opt.name }}</span>
             <ImageThumbnail :image="opt.image" :label="opt.name" :size="36" :hideWithoutImage="true" />
@@ -56,6 +56,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import {
   sortBotsByPreference,
   useBotSortPreference,

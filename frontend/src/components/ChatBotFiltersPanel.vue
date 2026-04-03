@@ -25,7 +25,7 @@
         :title="sortToggleLabel"
         @click="emit('toggle-sort')"
       >
-        <span aria-hidden="true">{{ sortMode === 'recent_activity' ? '🕒' : 'A↕' }}</span>
+        <SvgIcon :name="sortMode === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
       </button>
       <button v-if="searchTerm" type="button" @click="emit('update:searchTerm', '')">Clear</button>
     </div>
@@ -75,6 +75,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
 
 type ChatBotFilterOption = {

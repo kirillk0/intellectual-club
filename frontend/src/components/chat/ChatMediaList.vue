@@ -8,7 +8,7 @@
       :title="`${getAttachmentName(content)}  (${formatFileBytes(getAttachmentSize(content))})`"
       @click="emit('preview', { messageId: Number(props.messageId || 0), content })"
     >
-      <span class="chat-media-item__icon" aria-hidden="true">{{ fileIcon(content) }}</span>
+      <span class="chat-media-item__icon" aria-hidden="true"><SvgIcon :name="fileIcon(content)" /></span>
       <span class="chat-media-item__name" :title="getAttachmentName(content)">{{
         getAttachmentName(content)
       }}</span>
@@ -27,6 +27,7 @@ import {
   getAttachmentSize,
 } from '@/features/chat/attachments';
 import type { ChatMessageContent } from '@/types/api';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 interface Props {
   messageId: number | null;

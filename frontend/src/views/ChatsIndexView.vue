@@ -138,7 +138,7 @@
         >
           <template #header-extra>
             <button class="panel-toggle" type="button" @click="closeFilter" aria-label="Hide bots filter">
-              ◀
+              <SvgIcon name="chevron-left" />
             </button>
           </template>
         </ChatBotFiltersPanel>
@@ -152,7 +152,7 @@
         @click="openFilter"
         aria-label="Show bots filter"
       >
-        🤖
+        <SvgIcon name="bot" />
       </button>
     </div>
 
@@ -184,6 +184,7 @@ import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/mode
 import { parseImageAsset } from '@/features/media/image';
 import type { Bot, ImageAsset } from '@/types/api';
 import { formatRelativeDateTime } from '@/utils/dates';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type ChatSummary = {
   id: number;

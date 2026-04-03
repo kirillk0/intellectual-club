@@ -71,10 +71,10 @@
             aria-label="Switch to previous branch"
             title="Previous branch"
           >
-            ◀
+            <SvgIcon name="chevron-left" />
           </button>
           <button class="icon-button message-action" type="button" @click="emit('copy')" :aria-label="`Copy message ${index + 1}`" title="Copy">
-            📋
+            <SvgIcon name="copy" />
           </button>
           <button
             class="icon-button message-action"
@@ -84,7 +84,7 @@
             :aria-label="`Edit message ${index + 1}`"
             title="Edit"
           >
-            ✏️
+            <SvgIcon name="edit" />
           </button>
           <button
             class="icon-button message-action"
@@ -94,7 +94,7 @@
             :aria-label="`Branch from message ${index + 1}`"
             title="Branch"
           >
-            🌿
+            <SvgIcon name="branch" />
           </button>
           <button
             class="icon-button message-action"
@@ -104,7 +104,7 @@
             :aria-label="`Delete message ${index + 1}`"
             :title="deleteTitle"
           >
-            🗑️
+            <SvgIcon name="delete" />
           </button>
           <button
             v-if="msg.next_sibling_id"
@@ -114,7 +114,7 @@
             aria-label="Switch to next branch"
             title="Next branch"
           >
-            ▶
+            <SvgIcon name="chevron-right" />
           </button>
         </div>
       </div>
@@ -135,6 +135,7 @@ import type {
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 interface Props {
   message: ChatBranchMessage;

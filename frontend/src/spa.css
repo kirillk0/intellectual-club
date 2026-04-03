@@ -1168,6 +1168,10 @@ select.full {
   font-size: 16px;
 }
 
+.message-actions .message-action .svg-icon {
+  stroke-width: 1.2;
+}
+
 .copy-hint {
   font-size: 0.85rem;
   color: #1b9e5a;
