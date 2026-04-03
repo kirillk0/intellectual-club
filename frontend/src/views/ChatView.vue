@@ -763,6 +763,8 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   justify-content: flex-end;
   gap: 6px;
   padding: 6px 10px;
+  border-top: 1px solid #e5e7eb;
+  border-radius: 0 0 12px 12px;
 }
 
 .chat-composer__send {
