@@ -43,6 +43,7 @@ export function useChatMessageActions(params: Params) {
   const retryingMessageId = ref<number | null>(null);
   const branchingAssistantId = ref<number | null>(null);
   const deletingMessageId = ref<number | null>(null);
+  const bookmarkingMessageIds = ref<Set<number>>(new Set());
   const workingOpenById = ref<Set<number>>(new Set());
 
   const editingMessage = ref<ChatBranchMessage | null>(null);
@@ -101,6 +102,42 @@ export function useChatMessageActions(params: Params) {
       }, 1200);
     } catch (error) {
       console.warn(error);
+    }
+  };
+
+  const updateBranchMessage = (messageId: number, patch: Partial<ChatBranchMessage>) => {
+    const idx = params.branch.value.findIndex((item) => item.id === messageId);
+    if (idx === -1) return;
+    params.branch.value[idx] = { ...params.branch.value[idx], ...patch };
+  };
+
+  const isBookmarkingMessage = (messageId: number | null | undefined) => {
+    if (!messageId) return false;
+    return bookmarkingMessageIds.value.has(messageId);
+  };
+
+  const toggleBookmark = async (msg: ChatBranchMessage) => {
+    const messageId = msg.id;
+    if (!messageId) return;
+    if (isBookmarkingMessage(messageId)) return;
+
+    const nextPending = new Set(bookmarkingMessageIds.value);
+    nextPending.add(messageId);
+    bookmarkingMessageIds.value = nextPending;
+
+    try {
+      const payload = await api.post<{ message_id: number; bookmarked: boolean }>(
+        `/api/bff/chat-messages/${messageId}/bookmark`,
+        {}
+      );
+      updateBranchMessage(messageId, { bookmarked: Boolean(payload.bookmarked) });
+    } catch (error) {
+      console.error(error);
+      alert(errorMessage(error, 'Failed to toggle bookmark.'));
+    } finally {
+      const next = new Set(bookmarkingMessageIds.value);
+      next.delete(messageId);
+      bookmarkingMessageIds.value = next;
     }
   };
 
@@ -473,6 +510,7 @@ export function useChatMessageActions(params: Params) {
     copiedMessageId,
     retryingMessageId,
     branchingAssistantId,
+    isBookmarkingMessage,
     editingMessage,
     modalMode,
     editContents,
@@ -483,6 +521,7 @@ export function useChatMessageActions(params: Params) {
     editSaveLabel,
     messagePrimaryText,
     copyMessage,
+    toggleBookmark,
     branchMessageById,
     retryConfigurationWarning,
     canDeleteMessage,

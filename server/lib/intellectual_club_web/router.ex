@@ -55,6 +55,7 @@ defmodule IntellectualClubWeb.Router do
 
     get "/login", SpaController, :index
     get "/", SpaController, :index
+    get "/bookmarks", SpaController, :index
     get "/settings", SpaController, :index
     get "/settings/*path", SpaController, :index
     get "/administration", SpaController, :index
@@ -92,6 +93,7 @@ defmodule IntellectualClubWeb.Router do
     get "/me", MeController, :show
     get "/me/groups", MeController, :groups
     post "/me/change-password", MeController, :change_password
+    get "/bookmarks", BookmarksController, :index
 
     get "/admin/users", AdminUsersController, :index
     get "/admin/users/:id", AdminUsersController, :show
@@ -131,6 +133,7 @@ defmodule IntellectualClubWeb.Router do
          :retry_from_step
 
     post "/chat-messages/:id/delete", ChatMessagesController, :delete
+    post "/chat-messages/:id/bookmark", BookmarksController, :toggle_message
     patch "/chat-messages/:id", ChatMessagesController, :update
     get "/chat-messages/:id/poll", ChatMessagesController, :poll
 

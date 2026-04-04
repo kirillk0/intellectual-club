@@ -9,11 +9,13 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
   alias IntellectualClub.Bots.BotKnowledgeBlock
+  alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Metrics, as: ChatMetrics
+  alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -457,7 +459,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
       json(conn, %{
         chat: Serializer.chat_detail(chat),
-        branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
+        branch: serialize_branch(messages, branch_meta_by_id, actor),
         chat_blocks: Enum.map(chat_blocks, &Serializer.chat_block_binding/1),
         chat_tool_bindings: Enum.map(chat_tool_bindings, &Serializer.chat_tool_binding/1),
         prompt_sources: %{
@@ -505,7 +507,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
         json(conn, %{
-          branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
+          branch: serialize_branch(messages, branch_meta_by_id, actor),
           generation: %{message_id: context.message_id}
         })
       else
@@ -603,7 +605,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
           json(conn, %{
-            branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
+            branch: serialize_branch(messages, branch_meta_by_id, actor),
             generation: %{message_id: context.message_id}
           })
 
@@ -640,7 +642,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
         json(conn, %{
-          branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id))
+          branch: serialize_branch(messages, branch_meta_by_id, actor)
         })
       else
         nil ->
@@ -666,7 +668,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
         json(conn, %{
-          branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id))
+          branch: serialize_branch(messages, branch_meta_by_id, actor)
         })
       else
         nil ->
@@ -868,80 +870,9 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           acc
 
         message ->
-          Map.put(acc, chat_id, first_message_preview_from_message(message, preview_len))
+          Map.put(acc, chat_id, Previews.message_preview(message, preview_len))
       end
     end)
-  end
-
-  defp first_message_preview_from_message(message, limit) do
-    content = message_preview_text(message)
-
-    {
-      format_preview(content, limit),
-      case Map.get(message, :role) do
-        :user -> "user"
-        :assistant -> "assistant"
-        _ -> nil
-      end
-    }
-  end
-
-  defp message_preview_text(message) do
-    wanted_type =
-      case Map.get(message, :role) do
-        :user -> :input
-        "user" -> :input
-        :assistant -> :answer
-        "assistant" -> :answer
-        _ -> nil
-      end
-
-    steps = Map.get(message, :steps) || []
-
-    steps
-    |> Enum.sort_by(&sort_seq/1)
-    |> Enum.flat_map(fn step ->
-      items = Map.get(step, :items) || []
-      items |> Enum.sort_by(&sort_seq/1)
-    end)
-    |> Enum.filter(fn item -> wanted_type != nil and Map.get(item, :type) == wanted_type end)
-    |> Enum.map(&item_text/1)
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> Enum.join("\n\n")
-  end
-
-  defp item_text(item) do
-    contents = Map.get(item, :contents) || []
-
-    contents
-    |> Enum.filter(fn content -> Map.get(content, :kind) in [:text, "text"] end)
-    |> Enum.sort_by(&sort_seq/1)
-    |> Enum.map(fn content -> to_string(Map.get(content, :content_text) || "") end)
-    |> Enum.join("")
-  end
-
-  defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(_other), do: 0
-
-  defp format_preview(content, limit) when is_integer(limit) do
-    preview =
-      content
-      |> to_string()
-      |> String.replace("\r", " ")
-      |> String.replace("\n", " ")
-      |> String.trim()
-
-    cond do
-      preview == "" ->
-        nil
-
-      String.length(preview) <= limit ->
-        preview
-
-      true ->
-        String.slice(preview, 0, limit) <> "..."
-    end
   end
 
   defp load_branch(chat_or_id, actor) do
@@ -953,6 +884,15 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
     branch_meta_by_id = Map.new(branch_meta, fn node -> {node.id, node} end)
     {messages, branch_meta_by_id}
+  end
+
+  defp serialize_branch(messages, branch_meta_by_id, actor) do
+    bookmarked_message_ids =
+      messages
+      |> Enum.map(& &1.id)
+      |> Bookmarking.bookmarked_message_id_set(actor)
+
+    Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id, bookmarked_message_ids))
   end
 
   defp load_chat_blocks(chat_id, actor) do

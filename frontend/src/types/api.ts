@@ -182,6 +182,7 @@ export type ChatBranchMessage = {
   parent_id?: number | null;
   role: 'user' | 'assistant';
   status: 'generating' | 'done' | 'canceled' | 'error' | string;
+  bookmarked?: boolean;
   error_detail?: string | null;
   token_count?: number | null;
   created_at?: string | null;

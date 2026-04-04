@@ -260,7 +260,11 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
-  def branch_message(%ChatMessage{} = message, branch_meta_by_id \\ %{}) do
+  def branch_message(
+        %ChatMessage{} = message,
+        branch_meta_by_id \\ %{},
+        bookmarked_message_ids \\ MapSet.new()
+      ) do
     meta = Map.get(branch_meta_by_id, message.id, %{})
     steps = ordered_by_sequence(message.steps)
 
@@ -274,6 +278,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       created_at: datetime_iso(message.created_at),
       finished_at: datetime_iso(Map.get(message, :finished_at)),
       llm_configuration_id: message.llm_configuration_id,
+      bookmarked: MapSet.member?(bookmarked_message_ids, message.id),
       steps: Enum.map(steps, &step/1),
       prev_sibling_id: Map.get(meta, :prev_sibling),
       next_sibling_id: Map.get(meta, :next_sibling),

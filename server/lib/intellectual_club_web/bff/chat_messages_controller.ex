@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   require Logger
 
+  alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
@@ -190,7 +191,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
 
           json(conn, %{
-            branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id))
+            branch: serialize_branch(messages, branch_meta_by_id, actor)
           })
 
         {:error, reason} ->
@@ -247,7 +248,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
 
           json(conn, %{
-            branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id))
+            branch: serialize_branch(messages, branch_meta_by_id, actor)
           })
         else
           {:error, error_message} ->
@@ -372,9 +373,18 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     {messages, branch_meta_by_id} = load_branch(context.chat_id, actor)
 
     json(conn, %{
-      branch: Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id)),
+      branch: serialize_branch(messages, branch_meta_by_id, actor),
       generation: %{message_id: context.message_id}
     })
+  end
+
+  defp serialize_branch(messages, branch_meta_by_id, actor) do
+    bookmarked_message_ids =
+      messages
+      |> Enum.map(& &1.id)
+      |> Bookmarking.bookmarked_message_id_set(actor)
+
+    Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id, bookmarked_message_ids))
   end
 
   defp wanted_item_type(:user), do: :input

@@ -52,53 +52,25 @@
             <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
             <div class="list">
-              <RouterLink
+              <ChatListRow
                 v-for="c in visibleChats"
                 :key="c.id"
-                class="row"
-                :class="chatResultClass(c)"
                 :to="chatResultLink(c)"
+                :title="chatLabel(c)"
+                :config-label="c.llm_configuration_label || null"
+                :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
+                :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
+                :preview-role="!hasChatSearch ? c.first_message_role : null"
+                :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
+                :generating="Boolean(c.active_generation_message_id)"
+                :row-role="chatResultRole(c)"
               >
-                <div class="chat-result-main">
-                  <div class="chat-result-title">
-                    <span class="chat-result-name">{{ chatLabel(c) }}</span>
-                    <span v-if="c.llm_configuration_label" class="chat-result-config">
-                      ({{ c.llm_configuration_label }})
-                    </span>
-                  </div>
-                  <div class="chat-result-meta">
-                    <div class="muted">
-                      {{ niceDate(c.last_activity_at || c.created_at) }} ·
-                      {{ c.message_count ?? 0 }} msgs
-                    </div>
-                    <span
-                      v-if="c.active_generation_message_id"
-                      class="chat-result-generating"
-                      aria-label="Generating"
-                      title="Generating"
-                    >
-                      <span class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></span>
-                    </span>
-                  </div>
-                  <div v-if="!hasChatSearch && c.first_message_preview" class="chat-first-preview">
-                    <div class="chat-first-preview-bubble" :class="previewBubbleClass(c.first_message_role)">
-                      {{ formatPreview(c.first_message_preview) }}
-                    </div>
-                  </div>
-                  <div
-                    v-if="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' && c.snippet"
-                    class="chat-search-snippet"
-                  >
-                    {{ c.snippet }}
-                  </div>
-                </div>
-
-                <div class="chat-result-badges">
+                <template #badges>
                   <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
                     {{ matchBadgeLabel(c.match_type) }}
                   </span>
-                </div>
-              </RouterLink>
+                </template>
+              </ChatListRow>
             </div>
 
             <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
@@ -174,10 +146,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
+import ChatListRow from '@/components/ChatListRow.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
@@ -391,13 +364,6 @@ function chatLabel(chat: ChatSummary) {
   return note ? `${bot} (${note})` : bot;
 }
 
-function previewBubbleClass(role?: ChatSummary['first_message_role']) {
-  return {
-    'chat-preview--user': role === 'user',
-    'chat-preview--assistant': role === 'assistant',
-  };
-}
-
 function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {
   return hasChatSearch.value && typeof (chat as ChatSearchResult).match_type === 'string';
 }
@@ -422,13 +388,10 @@ function matchBadgeClass(matchType: ChatSearchResult['match_type']) {
   };
 }
 
-function chatResultClass(chat: ChatSummary | ChatSearchResult) {
-  if (!isSearchResult(chat)) return {};
-  if (chat.match_type === 'meta' || !chat.message_role) return {};
-  return {
-    'chat-result--user': chat.message_role === 'user',
-    'chat-result--assistant': chat.message_role === 'assistant',
-  };
+function chatResultRole(chat: ChatSummary | ChatSearchResult) {
+  if (!isSearchResult(chat)) return null;
+  if (chat.match_type === 'meta' || !chat.message_role) return null;
+  return chat.message_role;
 }
 
 function chatResultLink(chat: ChatSummary | ChatSearchResult) {
@@ -702,83 +665,6 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.chat-search-snippet {
-  margin-top: 4px;
-  color: #1f2933;
-  font-size: 0.9rem;
-  line-height: 1.35;
-}
-
-.chat-first-preview {
-  margin-top: 6px;
-}
-
-.chat-first-preview-bubble {
-  display: inline-block;
-  max-width: 100%;
-  padding: 6px 10px;
-  border-radius: 12px;
-  background: #eef2f7;
-  color: #1f2933;
-  font-size: 0.9rem;
-  line-height: 1.35;
-  text-decoration: none;
-}
-
-.chat-first-preview-bubble.chat-preview--user {
-  background: linear-gradient(135deg, #e7f1ff, #f5f9ff);
-}
-
-.chat-first-preview-bubble.chat-preview--assistant {
-  background: #f9f9fb;
-}
-
-.row:hover .chat-first-preview-bubble {
-  text-decoration: none;
-}
-
-.chat-result-title {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.chat-result-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.chat-result-generating {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-}
-
-.chat-result-name {
-  font-weight: 600;
-}
-
-.chat-result-badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.chat-result--user {
-  background: linear-gradient(135deg, #e7f1ff, #f5f9ff);
-  border-color: #d7e6ff;
-}
-
-.chat-result--assistant {
-  background: #f9f9fb;
-  border-color: #ececf3;
-}
-
 .badge-muted {
   border-color: #f1c1c1;
   color: #9a3f3f;
@@ -791,8 +677,4 @@ onBeforeUnmount(() => {
   color: #2563eb;
 }
 
-.chat-result-config {
-  color: #6b7280;
-  font-size: 0.85rem;
-}
 </style>

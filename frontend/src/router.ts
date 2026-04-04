@@ -19,6 +19,7 @@ export const router = createRouter({
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
     { path: '/', name: 'chats', component: () => import('./views/ChatsIndexView.vue') },
+    { path: '/bookmarks', name: 'bookmarks', component: () => import('./views/BookmarksIndexView.vue') },
     { path: '/settings', name: 'settings', component: () => import('./views/UserSettingsView.vue') },
     { path: '/administration', redirect: '/administration/users' },
     {

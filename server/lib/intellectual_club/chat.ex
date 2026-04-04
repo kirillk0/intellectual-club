@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat do
     resource(IntellectualClub.Chat.Chat)
     resource(IntellectualClub.Chat.ChatUploadSession)
     resource(IntellectualClub.Chat.ChatMessage)
+    resource(IntellectualClub.Chat.MessageBookmark)
     resource(IntellectualClub.Chat.ChatKnowledgeBlock)
     resource(IntellectualClub.Chat.ChatMessageStep)
     resource(IntellectualClub.Chat.ChatMessageItem)

@@ -78,6 +78,18 @@
           </button>
           <button
             class="icon-button message-action"
+            :class="{ active: Boolean(msg.bookmarked) }"
+            type="button"
+            :disabled="!messageId || bookmarking"
+            :aria-label="bookmarkLabel"
+            :aria-pressed="bookmarkPressed"
+            :title="bookmarkTitle"
+            @click="emit('toggle-bookmark')"
+          >
+            <SvgIcon name="bookmark" />
+          </button>
+          <button
+            class="icon-button message-action"
             type="button"
             :disabled="!messageId || msg.status === 'generating'"
             @click="emit('edit')"
@@ -143,6 +155,7 @@ interface Props {
   metaLabel?: string;
   copied?: boolean;
   retrying?: boolean;
+  bookmarking?: boolean;
   branchingAssistantId?: number | null;
   workingOpen?: boolean;
   canDelete?: boolean;
@@ -154,6 +167,7 @@ const props = withDefaults(defineProps<Props>(), {
   metaLabel: '—',
   copied: false,
   retrying: false,
+  bookmarking: false,
   branchingAssistantId: null,
   workingOpen: false,
   canDelete: false,
@@ -163,6 +177,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'toggle-working'): void;
   (e: 'copy'): void;
+  (e: 'toggle-bookmark'): void;
   (e: 'edit'): void;
   (e: 'branch'): void;
   (e: 'retry'): void;
@@ -175,6 +190,11 @@ const emit = defineEmits<{
 
 const msg = computed(() => props.message);
 const messageId = computed(() => msg.value.id ?? null);
+const bookmarkPressed = computed(() => String(Boolean(msg.value.bookmarked)));
+const bookmarkTitle = computed(() => (msg.value.bookmarked ? 'Remove bookmark' : 'Add bookmark'));
+const bookmarkLabel = computed(() =>
+  msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
+);
 
 const canRetry = computed(() => Boolean(messageId.value) && (msg.value.steps || []).length > 0);
 

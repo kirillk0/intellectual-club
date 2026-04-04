@@ -1172,6 +1172,16 @@ select.full {
   stroke-width: 1.2;
 }
 
+.message-actions .message-action.active {
+  background: #111;
+  border-color: #111;
+  color: #fff;
+}
+
+.message-actions .message-action.active:hover {
+  background: #1f2937;
+}
+
 .copy-hint {
   font-size: 0.85rem;
   color: #1b9e5a;
