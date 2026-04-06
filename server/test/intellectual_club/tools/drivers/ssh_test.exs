@@ -112,6 +112,11 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
              Ssh.detect_image_mime("<html><body>404 Not Found</body></html>")
   end
 
+  test "sftp_channel_options wraps timeout in a keyword list" do
+    assert [timeout: 10_000] = Ssh.sftp_channel_options(10_000)
+    assert [timeout: :infinity] = Ssh.sftp_channel_options(:infinity)
+  end
+
   defp create_tool_instance!(actor, attrs) when is_map(attrs) do
     ToolInstance
     |> Ash.Changeset.for_create(

@@ -586,11 +586,16 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp start_sftp(connection, timeout_ms) do
-    case :ssh_sftp.start_channel(connection, timeout_ms) do
+    case :ssh_sftp.start_channel(connection, sftp_channel_options(timeout_ms)) do
       {:ok, channel} -> {:ok, channel}
       {:error, reason} -> {:error, "SSH SFTP start failed: #{format_reason(reason)}"}
     end
   end
+
+  @doc false
+  @spec sftp_channel_options(non_neg_integer() | :infinity) :: keyword()
+  def sftp_channel_options(:infinity), do: [timeout: :infinity]
+  def sftp_channel_options(timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0, do: [timeout: timeout_ms]
 
   defp sftp_read_file(channel, remote_path) do
     try do
