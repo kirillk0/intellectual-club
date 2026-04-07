@@ -8,6 +8,8 @@ import {
 import { normalizeIdList } from '@/features/chat/model/chatViewModel.shared';
 import type { Bot, Chat, LlmConfiguration } from '@/types/api';
 
+const CONFIG_SYNC_GRACE_PERIOD_MS = 2500;
+
 type Params = {
   chatId: ComputedRef<number>;
   routeFullPath: () => string;
@@ -33,6 +35,8 @@ export function useChatHeaderControls(params: Params) {
   const configSyncStatus = ref<'synced' | 'pending' | 'error'>('synced');
   const configSyncError = ref('');
   let configSyncToken = 0;
+  let resolveConfigSync: (() => void) | null = null;
+  let configSyncPromise: Promise<void> = Promise.resolve();
 
   const showMissingToolsBanner = ref(false);
   const missingRequiredPerUserToolAliases = ref<string[]>([]);
@@ -105,6 +109,38 @@ export function useChatHeaderControls(params: Params) {
     fileUploadPolicy.value.imagesOnly ? 'Drop images here to attach them' : 'Drop files here to attach them'
   );
 
+  const beginConfigSync = () => {
+    configSyncPromise = new Promise<void>((resolve) => {
+      resolveConfigSync = resolve;
+    });
+  };
+
+  const finishConfigSync = () => {
+    resolveConfigSync?.();
+    resolveConfigSync = null;
+  };
+
+  const waitForConfigSync = async (timeoutMs = CONFIG_SYNC_GRACE_PERIOD_MS) => {
+    if (!isConfigSyncPending.value) return true;
+
+    let timeoutHandle = 0;
+
+    try {
+      const timeoutPromise = new Promise<boolean>((resolve) => {
+        timeoutHandle = window.setTimeout(() => {
+          resolve(!isConfigSyncPending.value);
+        }, timeoutMs);
+      });
+
+      return await Promise.race([
+        configSyncPromise.then(() => true),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timeoutHandle) window.clearTimeout(timeoutHandle);
+    }
+  };
+
   const hydrate = (payload: {
     selectedConfig: number | '';
     missingRequiredPerUserToolAliases: string[];
@@ -112,6 +148,7 @@ export function useChatHeaderControls(params: Params) {
     selectedConfig.value = payload.selectedConfig;
     configSyncStatus.value = 'synced';
     configSyncError.value = '';
+    finishConfigSync();
     missingRequiredPerUserToolAliases.value = payload.missingRequiredPerUserToolAliases || [];
     showMissingToolsBanner.value = missingRequiredPerUserToolAliases.value.length > 0;
   };
@@ -186,6 +223,7 @@ export function useChatHeaderControls(params: Params) {
     const token = (configSyncToken += 1);
     configSyncStatus.value = 'pending';
     configSyncError.value = '';
+    beginConfigSync();
 
     const cfgId = selectedConfig.value === '' ? null : Number(selectedConfig.value);
 
@@ -205,6 +243,8 @@ export function useChatHeaderControls(params: Params) {
       selectedConfig.value = appliedConfig.value;
       configSyncStatus.value = 'error';
       configSyncError.value = 'Failed to switch configuration. Check your connection and try again.';
+    } finally {
+      if (configSyncToken === token) finishConfigSync();
     }
   };
 
@@ -270,6 +310,7 @@ export function useChatHeaderControls(params: Params) {
     configSyncError,
     appliedConfig,
     isConfigSyncPending,
+    waitForConfigSync,
     currentConfig,
     configLabel,
     messageConfigLabel,

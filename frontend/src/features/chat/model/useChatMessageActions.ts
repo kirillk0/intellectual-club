@@ -28,7 +28,7 @@ type Params = {
   branch: Ref<ChatBranchMessage[]>;
   selectedConfig: Ref<number | ''>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
-  isConfigSyncPending: ComputedRef<boolean>;
+  waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   messageConfigLabel: (configId?: number | null) => string;
   startPolling: (messageId: number) => Promise<void>;
   scrollToLastMessage: ScrollToLastMessage;
@@ -348,18 +348,22 @@ export function useChatMessageActions(params: Params) {
   const branchFromAssistant = async (msg: ChatBranchMessage) => {
     if (!msg.id || !params.chatId.value) return;
     if (branchingAssistantId.value === msg.id) return;
-    if (params.isConfigSyncPending.value) {
+    branchingAssistantId.value = msg.id;
+
+    const configReady = await params.waitForConfigSync();
+    if (!configReady) {
+      branchingAssistantId.value = null;
       alert('Configuration change is still syncing. Please wait before starting a new generation.');
       return;
     }
 
     const parentId = msg.parent_id ?? null;
     if (!parentId) {
+      branchingAssistantId.value = null;
       alert('Cannot branch: missing parent message.');
       return;
     }
 
-    branchingAssistantId.value = msg.id;
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
         `/api/bff/chats/${params.chatId.value}/generate`,
@@ -461,7 +465,8 @@ export function useChatMessageActions(params: Params) {
         params.branch.value = payload.branch || [];
         resetEditState();
       } else {
-        if (params.isConfigSyncPending.value) {
+        const configReady = await params.waitForConfigSync();
+        if (!configReady) {
           alert('Configuration change is still syncing. Please wait before starting a new generation.');
           return;
         }

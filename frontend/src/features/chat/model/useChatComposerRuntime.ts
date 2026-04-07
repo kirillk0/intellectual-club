@@ -32,7 +32,7 @@ type Params = {
   branch: Ref<ChatBranchMessage[]>;
   loadError: Ref<string>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
-  isConfigSyncPending: ComputedRef<boolean>;
+  waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
   scrollToLastMessage: ScrollToLastMessage;
@@ -534,15 +534,17 @@ export function useChatComposerRuntime(params: Params) {
   const send = async () => {
     if (!params.chatId.value || sending.value) return;
     if (params.activeGenerationId.value) return;
-    if (params.isConfigSyncPending.value) {
-      params.loadError.value = 'Configuration change is still syncing. Please wait.';
-      return;
-    }
 
     sending.value = true;
     params.loadError.value = '';
 
     try {
+      const configReady = await params.waitForConfigSync();
+      if (!configReady) {
+        params.loadError.value = 'Configuration change is still syncing. Please wait.';
+        return;
+      }
+
       const content = draft.value;
       const hasUserText = content !== '';
       const uploadIds = pendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(pendingFiles) : [];
