@@ -40,6 +40,8 @@ defmodule IntellectualClub.Bots do
             :variables,
             :max_tool_rounds,
             :context_soft_limit_percent,
+            :supports_file_processing,
+            :max_file_size_bytes,
             :history_mode,
             :created_at,
             :updated_at,

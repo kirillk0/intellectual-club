@@ -78,7 +78,11 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
     shared_tool = create_tool!(owner, "Shared tool", "https://example.com/shared")
     recipient_tool = create_tool!(recipient, "Recipient tool", "https://example.com/recipient")
 
-    bot = create_bot!(owner, "Shared bot")
+    bot =
+      create_bot!(owner, "Shared bot",
+        supports_file_processing: true,
+        max_file_size_bytes: 42 * 1024 * 1024
+      )
 
     block_binding =
       BotKnowledgeBlock
@@ -173,6 +177,8 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
     assert relationship_ids(response, "knowledge_block_bindings") == [block_binding.id]
     assert relationship_ids(response, "compatible_configuration_tag_bindings") == [tag_binding.id]
+    assert get_in(response, ["data", "attributes", "supports_file_processing"]) == true
+    assert get_in(response, ["data", "attributes", "max_file_size_bytes"]) == 42 * 1024 * 1024
 
     assert relationship_ids(response, "tool_bindings") ==
              Enum.sort([shared_binding.id, per_user_binding.id])
@@ -329,7 +335,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
     assert ids_from_included(resp2, "knowledge-blocks") == [block1.id]
   end
 
-  defp create_bot!(actor, name) do
+  defp create_bot!(actor, name, attrs) do
     Bot
     |> Ash.Changeset.for_create(
       :create,
@@ -339,8 +345,11 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
+        supports_file_processing: false,
+        max_file_size_bytes: 500 * 1024 * 1024,
         history_mode: :chat
-      },
+      }
+      |> Map.merge(Enum.into(attrs, %{})),
       actor: actor
     )
     |> Ash.create!(actor: actor)
