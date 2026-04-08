@@ -209,4 +209,78 @@ defmodule IntellectualClub.Generation.HistoryResponsesPhaseTest do
              }
            ]
   end
+
+  test "drops orphaned responses tool calls without matching tool outputs" do
+    history = [
+      %{
+        role: :assistant,
+        steps: [
+          %{
+            sequence: 1,
+            items: [
+              %{
+                sequence: 1,
+                type: :answer,
+                contents: [
+                  %{sequence: 1, kind: :text, content_text: "Checking."},
+                  %{
+                    sequence: 2,
+                    kind: :opaque,
+                    content_json: %{
+                      "responses_item" => %{
+                        "type" => "message",
+                        "role" => "assistant",
+                        "status" => "completed",
+                        "phase" => "commentary",
+                        "content" => [
+                          %{
+                            "type" => "output_text",
+                            "text" => "Checking.",
+                            "annotations" => []
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              %{
+                sequence: 2,
+                type: :tool_call,
+                contents: [
+                  %{
+                    sequence: 1,
+                    kind: :opaque,
+                    content_json: %{
+                      "type" => "function_call",
+                      "id" => "fc_orphan",
+                      "call_id" => "call_orphan",
+                      "name" => "web__read_url",
+                      "arguments" => ~s({"url":"https://example.com"})
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+
+    assert History.build_responses_input_items(history) == [
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "phase" => "commentary",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "Checking.",
+                   "annotations" => []
+                 }
+               ]
+             }
+           ]
+  end
 end

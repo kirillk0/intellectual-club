@@ -196,6 +196,7 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
       buffer: "",
       current_event: nil,
       data_lines: [],
+      output_items: %{},
       tool_calls: %{},
       done?: false
     }
@@ -344,7 +345,13 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
   end
 
   defp handle_stream_event(state, %{"type" => "response.completed"} = obj, raw_request, emit) do
-    response = Map.get(obj, "response") || %{}
+    response =
+      obj
+      |> Map.get("response")
+      |> case do
+        %{} = response -> hydrate_response_output(response, state)
+        _other -> %{}
+      end
 
     _ = emit_step_snapshot_from_response(response, emit)
 
@@ -384,12 +391,9 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         emit.({:trace, {:ensure_item, item_id, item_type, idx + 1}})
 
         state =
-          if item_type == :tool_call do
-            tool_call = tool_call_state_from_item(item_map)
-            %{state | tool_calls: Map.put(state.tool_calls, item_id, tool_call)}
-          else
-            state
-          end
+          state
+          |> put_output_item(idx, item_map)
+          |> maybe_store_tool_call_state(item_type, item_id, item_map)
 
         if item_type in [:tool_call, :tool_result, :reasoning] do
           emit.({:trace, {:set_opaque, item_id, item_type, @opaque_sequence, item_map}})
@@ -420,6 +424,8 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         emit.({:trace, {:set_opaque, item_id, item_type, @opaque_sequence, item_map}})
 
         state
+        |> put_output_item(idx, item_map)
+        |> maybe_store_tool_call_state(item_type, item_id, item_map)
 
       _ ->
         state
@@ -441,9 +447,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(delta) do
       emit.({:trace, {:ensure_item, item_id, :answer, output_index + 1}})
       emit.({:trace, {:append_text, item_id, :answer, content_index + 1, delta}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "output_text",
+          "text",
+          delta,
+          :append
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -461,9 +482,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(text) do
       emit.({:trace, {:ensure_item, item_id, :answer, output_index + 1}})
       emit.({:trace, {:set_text, item_id, :answer, content_index + 1, text}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "output_text",
+          "text",
+          text,
+          :replace
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(state, %{"type" => "response.refusal.delta"} = obj, _raw_request, emit) do
@@ -476,9 +512,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(delta) do
       emit.({:trace, {:ensure_item, item_id, :answer, output_index + 1}})
       emit.({:trace, {:append_text, item_id, :answer, content_index + 1, delta}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "refusal",
+          "refusal",
+          delta,
+          :append
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(state, %{"type" => "response.refusal.done"} = obj, _raw_request, emit) do
@@ -491,9 +542,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(refusal) do
       emit.({:trace, {:ensure_item, item_id, :answer, output_index + 1}})
       emit.({:trace, {:set_text, item_id, :answer, content_index + 1, refusal}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "refusal",
+          "refusal",
+          refusal,
+          :replace
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -511,9 +577,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(delta) do
       emit.({:trace, {:ensure_item, item_id, :reasoning, output_index + 1}})
       emit.({:trace, {:append_text, item_id, :reasoning, summary_index + 1, delta}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "summary",
+          summary_index,
+          "summary_text",
+          "text",
+          delta,
+          :append
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -531,9 +612,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
          is_binary(text) do
       emit.({:trace, {:ensure_item, item_id, :reasoning, output_index + 1}})
       emit.({:trace, {:set_text, item_id, :reasoning, summary_index + 1, text}})
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "summary",
+          summary_index,
+          "summary_text",
+          "text",
+          text,
+          :replace
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -555,9 +651,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         {:trace,
          {:append_text, item_id, :reasoning, @raw_reasoning_offset + content_index + 1, delta}}
       )
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "reasoning_text",
+          "text",
+          delta,
+          :append
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -579,9 +690,24 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         {:trace,
          {:set_text, item_id, :reasoning, @raw_reasoning_offset + content_index + 1, text}}
       )
-    end
 
-    state
+      state =
+        update_output_item_text_part(
+          state,
+          output_index,
+          item_id,
+          "content",
+          content_index,
+          "reasoning_text",
+          "text",
+          text,
+          :replace
+        )
+
+      state
+    else
+      state
+    end
   end
 
   defp handle_stream_event(
@@ -603,7 +729,18 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         |> Map.get(item_id, %{})
         |> Map.update(:arguments, delta, fn existing -> to_string(existing || "") <> delta end)
 
-      state = %{state | tool_calls: Map.put(state.tool_calls, item_id, tool_call)}
+      state =
+        state
+        |> Map.put(:tool_calls, Map.put(state.tool_calls, item_id, tool_call))
+        |> update_output_item(output_index, item_id, fn item ->
+          item
+          |> Map.put("type", "function_call")
+          |> Map.put("id", item_id)
+          |> maybe_put_non_empty("call_id", tool_call.call_id)
+          |> maybe_put_non_empty("name", tool_call.name)
+          |> Map.put("arguments", to_string(tool_call.arguments || ""))
+        end)
+
       emit.({:trace, {:set_opaque, item_id, :tool_call, @opaque_sequence, tool_call}})
       state
     else
@@ -630,7 +767,18 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
         |> Map.get(item_id, %{})
         |> Map.put(:arguments, arguments)
 
-      state = %{state | tool_calls: Map.put(state.tool_calls, item_id, tool_call)}
+      state =
+        state
+        |> Map.put(:tool_calls, Map.put(state.tool_calls, item_id, tool_call))
+        |> update_output_item(output_index, item_id, fn item ->
+          item
+          |> Map.put("type", "function_call")
+          |> Map.put("id", item_id)
+          |> maybe_put_non_empty("call_id", tool_call.call_id)
+          |> maybe_put_non_empty("name", tool_call.name)
+          |> Map.put("arguments", arguments)
+        end)
+
       emit.({:trace, {:set_opaque, item_id, :tool_call, @opaque_sequence, tool_call}})
       state
     else
@@ -745,6 +893,168 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
       arguments: Map.get(item_map, "arguments") || ""
     }
   end
+
+  defp hydrate_response_output(response, state) when is_map(response) and is_map(state) do
+    assembled_output = assembled_output_items(state)
+    existing_output = Map.get(response, "output")
+
+    cond do
+      assembled_output == [] ->
+        response
+
+      is_list(existing_output) and existing_output != [] ->
+        response
+
+      true ->
+        Map.put(response, "output", assembled_output)
+    end
+  end
+
+  defp hydrate_response_output(response, _state), do: response
+
+  defp assembled_output_items(state) when is_map(state) do
+    tool_calls = Map.get(state, :tool_calls, %{})
+
+    state
+    |> Map.get(:output_items, %{})
+    |> Enum.sort_by(fn {index, _item} -> index end)
+    |> Enum.map(fn {_index, item} -> finalize_output_item(item, tool_calls) end)
+    |> Enum.filter(&(is_map(&1) and map_size(&1) > 0))
+  end
+
+  defp assembled_output_items(_state), do: []
+
+  defp finalize_output_item(%{} = item, tool_calls) when is_map(tool_calls) do
+    case {Map.get(item, "type"), Map.get(item, "id")} do
+      {"function_call", item_id} when is_binary(item_id) ->
+        tool_call = Map.get(tool_calls, item_id, %{})
+
+        item
+        |> maybe_put_non_empty("call_id", Map.get(tool_call, :call_id))
+        |> maybe_put_non_empty("name", Map.get(tool_call, :name))
+        |> maybe_put_non_empty("arguments", Map.get(tool_call, :arguments))
+
+      _other ->
+        item
+    end
+  end
+
+  defp finalize_output_item(item, _tool_calls), do: item
+
+  defp maybe_store_tool_call_state(state, :tool_call, item_id, item_map)
+       when is_map(state) and is_binary(item_id) and is_map(item_map) do
+    tool_call = tool_call_state_from_item(item_map)
+    %{state | tool_calls: Map.put(state.tool_calls, item_id, tool_call)}
+  end
+
+  defp maybe_store_tool_call_state(state, _item_type, _item_id, _item_map), do: state
+
+  defp put_output_item(state, output_index, item_map)
+       when is_map(state) and is_integer(output_index) and is_map(item_map) do
+    %{state | output_items: Map.put(state.output_items, output_index, Map.new(item_map))}
+  end
+
+  defp put_output_item(state, _output_index, _item_map), do: state
+
+  defp update_output_item(state, output_index, item_id, fun)
+       when is_map(state) and is_integer(output_index) and is_function(fun, 1) do
+    current =
+      state.output_items
+      |> Map.get(output_index, %{})
+      |> Map.put_new("id", item_id)
+
+    %{state | output_items: Map.put(state.output_items, output_index, fun.(current))}
+  end
+
+  defp update_output_item(state, _output_index, _item_id, _fun), do: state
+
+  defp update_output_item_text_part(
+         state,
+         output_index,
+         item_id,
+         container_key,
+         content_index,
+         part_type,
+         text_key,
+         text,
+         mode
+       )
+       when is_map(state) and is_integer(output_index) and is_binary(item_id) and
+              is_binary(container_key) and is_integer(content_index) and content_index >= 0 and
+              is_binary(part_type) and is_binary(text_key) and is_binary(text) do
+    update_output_item(state, output_index, item_id, fn item ->
+      item
+      |> Map.put_new("id", item_id)
+      |> maybe_put_default_container_type(container_key)
+      |> Map.update(container_key, [text_part(part_type, text_key, text)], fn parts ->
+        part =
+          parts
+          |> Enum.at(content_index, %{})
+          |> Map.new()
+          |> Map.put("type", part_type)
+          |> Map.update(text_key, text, fn existing ->
+            existing = to_string(existing || "")
+
+            case mode do
+              :append -> existing <> text
+              _other -> text
+            end
+          end)
+
+        list_put(parts, content_index, part)
+      end)
+    end)
+  end
+
+  defp update_output_item_text_part(
+         state,
+         _output_index,
+         _item_id,
+         _container_key,
+         _content_index,
+         _part_type,
+         _text_key,
+         _text,
+         _mode
+       ),
+       do: state
+
+  defp maybe_put_default_container_type(item, "content"), do: Map.put_new(item, "type", "message")
+
+  defp maybe_put_default_container_type(item, "summary"),
+    do: Map.put_new(item, "type", "reasoning")
+
+  defp maybe_put_default_container_type(item, _container_key), do: item
+
+  defp text_part(part_type, text_key, text) do
+    %{"type" => part_type, text_key => text}
+  end
+
+  defp list_put(list, index, value) when is_list(list) and is_integer(index) and index >= 0 do
+    if index < length(list) do
+      List.replace_at(list, index, value)
+    else
+      list ++ List.duplicate(%{}, index - length(list)) ++ [value]
+    end
+  end
+
+  defp maybe_put_non_empty(map, _key, nil), do: map
+
+  defp maybe_put_non_empty(map, key, value) when is_binary(value) do
+    if String.trim(value) == "" do
+      map
+    else
+      existing = Map.get(map, key)
+
+      if is_binary(existing) and String.trim(existing) != "" do
+        map
+      else
+        Map.put(map, key, value)
+      end
+    end
+  end
+
+  defp maybe_put_non_empty(map, key, value), do: Map.put_new(map, key, value)
 
   defp function_call_text(item_map) do
     name = Map.get(item_map, "name") |> to_string()

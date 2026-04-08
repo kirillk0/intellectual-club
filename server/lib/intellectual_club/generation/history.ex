@@ -464,6 +464,7 @@ defmodule IntellectualClub.Generation.History do
               |> Enum.sort_by(&sort_seq/1)
             end)
 
+          valid_tool_call_ids = valid_responses_tool_call_ids(items)
           indexed_items = Enum.with_index(items)
           last_answer_index = last_answer_item_index(indexed_items)
 
@@ -495,8 +496,15 @@ defmodule IntellectualClub.Generation.History do
 
                 :tool_call ->
                   case responses_item_for_tool_call(item) do
-                    nil -> []
-                    %{} = map -> [map]
+                    nil ->
+                      []
+
+                    %{} = map ->
+                      if orphaned_responses_tool_call?(map, valid_tool_call_ids) do
+                        []
+                      else
+                        [map]
+                      end
                   end
 
                 :tool_result ->
@@ -879,6 +887,44 @@ defmodule IntellectualClub.Generation.History do
   end
 
   defp normalize_arguments_json(other), do: to_string(other)
+
+  defp valid_responses_tool_call_ids(items) when is_list(items) do
+    Enum.reduce(items, MapSet.new(), fn item, acc ->
+      case normalize_item_type(Map.get(item, :type, Map.get(item, "type"))) do
+        :tool_result ->
+          case responses_item_for_tool_result(item) do
+            %{} = map ->
+              call_id =
+                map
+                |> Map.get("call_id", "")
+                |> to_string()
+                |> String.trim()
+
+              if call_id == "", do: acc, else: MapSet.put(acc, call_id)
+
+            _other ->
+              acc
+          end
+
+        _other ->
+          acc
+      end
+    end)
+  end
+
+  defp valid_responses_tool_call_ids(_items), do: MapSet.new()
+
+  defp orphaned_responses_tool_call?(%{} = map, valid_tool_call_ids) do
+    call_id =
+      map
+      |> Map.get("call_id", "")
+      |> to_string()
+      |> String.trim()
+
+    call_id != "" and not MapSet.member?(valid_tool_call_ids, call_id)
+  end
+
+  defp orphaned_responses_tool_call?(_map, _valid_tool_call_ids), do: false
 
   defp last_answer_item_index(indexed_items) when is_list(indexed_items) do
     Enum.reduce(indexed_items, nil, fn {item, index}, acc ->
