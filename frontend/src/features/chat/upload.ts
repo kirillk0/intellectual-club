@@ -1,4 +1,4 @@
-import { api, getCsrfToken, HttpError } from '@/api/client';
+import { api, getCsrfToken, HttpError, isHttpError } from '@/api/client';
 
 export type ChatUploadStatus = 'uploading' | 'uploaded' | 'aborted' | 'expired' | string;
 
@@ -23,6 +23,23 @@ export class UploadAbortedError extends Error {
     this.name = 'UploadAbortedError';
   }
 }
+
+export class UploadNetworkError extends Error {
+  constructor(message = 'Upload request failed.') {
+    super(message);
+    this.name = 'UploadNetworkError';
+  }
+}
+
+const RETRYABLE_UPLOAD_HTTP_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export const isRetryableUploadChunkError = (error: unknown) => {
+  if (error instanceof UploadNetworkError) {
+    return true;
+  }
+
+  return isHttpError(error) && RETRYABLE_UPLOAD_HTTP_STATUS_CODES.has(error.status);
+};
 
 export const createChatUploadSession = async (chatId: number, file: File) => {
   const payload = await api.post<ChatUploadResponse>(`/api/bff/chats/${chatId}/uploads`, {
@@ -100,7 +117,7 @@ export const uploadChatChunk = (
 
     xhr.onerror = () => {
       options.onAbortHandle?.(null);
-      reject(new Error('Upload request failed.'));
+      reject(new UploadNetworkError());
     };
 
     xhr.onabort = () => {

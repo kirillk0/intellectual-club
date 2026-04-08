@@ -12,6 +12,7 @@ import {
   abortChatUploadSession,
   createChatUploadSession,
   getChatUploadSession,
+  isRetryableUploadChunkError,
   uploadChatChunk,
   UploadAbortedError,
   type ChatUploadInfo,
@@ -39,6 +40,7 @@ type Params = {
 };
 
 export function useChatComposerRuntime(params: Params) {
+  const uploadChunkRetryDelaysMs = [500, 1_500];
   const pendingFiles = ref<PendingChatFile[]>([]);
   const draft = ref('');
   const sending = ref(false);
@@ -124,6 +126,23 @@ export function useChatComposerRuntime(params: Params) {
     return createChatUploadSession(chatIdValue, file.file);
   };
 
+  const resolveWritableChatUpload = async (chatIdValue: number, file: PendingChatFile) => {
+    let upload = await resolveChatUpload(chatIdValue, file);
+    let offset = Math.min(upload.uploaded_bytes || 0, file.size);
+
+    if (upload.status !== 'uploading' && upload.status !== 'uploaded') {
+      upload = await createChatUploadSession(chatIdValue, file.file);
+      offset = 0;
+    }
+
+    return { upload, offset };
+  };
+
+  const waitForUploadRetry = (delayMs: number) =>
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, delayMs);
+    });
+
   const uploadPendingFile = async (
     filesRef: Ref<PendingChatFile[]>,
     fileId: string,
@@ -132,13 +151,7 @@ export function useChatComposerRuntime(params: Params) {
     const pending = findPendingFile(filesRef, fileId);
     if (!pending) return null;
 
-    let upload = await resolveChatUpload(chatIdValue, pending);
-    let offset = Math.min(upload.uploaded_bytes || 0, pending.size);
-
-    if (upload.status !== 'uploading' && upload.status !== 'uploaded') {
-      upload = await createChatUploadSession(chatIdValue, pending.file);
-      offset = 0;
-    }
+    let { upload, offset } = await resolveWritableChatUpload(chatIdValue, pending);
 
     syncPendingFileWithUpload(filesRef, fileId, upload, {
       error: '',
@@ -161,6 +174,7 @@ export function useChatComposerRuntime(params: Params) {
 
     let resumeOffset = offset;
     let startedAt = performance.now();
+    let retryAttempt = 0;
 
     while (offset < pending.size) {
       const liveFile = findPendingFile(filesRef, fileId);
@@ -200,6 +214,7 @@ export function useChatComposerRuntime(params: Params) {
         if (!currentFile) return null;
 
         offset = Math.min(upload.uploaded_bytes || 0, currentFile.size);
+        retryAttempt = 0;
         syncPendingFileWithUpload(filesRef, fileId, upload, {
           error: '',
           speedBps: offset >= currentFile.size ? 0 : currentFile.speedBps,
@@ -232,6 +247,7 @@ export function useChatComposerRuntime(params: Params) {
             offset = Math.min(nextOffset, currentFile.size);
             resumeOffset = offset;
             startedAt = performance.now();
+            retryAttempt = 0;
             upload = await getChatUploadSession(chatIdValue, upload.upload_id);
             syncPendingFileWithUpload(filesRef, fileId, upload, {
               error: '',
@@ -241,6 +257,48 @@ export function useChatComposerRuntime(params: Params) {
             });
             continue;
           }
+        }
+
+        if (isRetryableUploadChunkError(error) && retryAttempt < uploadChunkRetryDelaysMs.length) {
+          const delayMs = uploadChunkRetryDelaysMs[retryAttempt];
+          retryAttempt += 1;
+
+          updatePendingFile(filesRef, fileId, {
+            uploadStatus: 'uploading',
+            abortHandle: null,
+            speedBps: 0,
+            etaSeconds: null,
+            error: '',
+          });
+
+          await waitForUploadRetry(delayMs);
+
+          const currentFile = findPendingFile(filesRef, fileId);
+          if (!currentFile) return null;
+
+          try {
+            ({ upload, offset } = await resolveWritableChatUpload(chatIdValue, currentFile));
+          } catch (syncError) {
+            updatePendingFile(filesRef, fileId, {
+              uploadStatus: 'error',
+              abortHandle: null,
+              speedBps: 0,
+              etaSeconds: null,
+              error: errorMessage(syncError, 'Failed to resume attachment upload.'),
+            });
+
+            throw syncError;
+          }
+
+          resumeOffset = offset;
+          startedAt = performance.now();
+          syncPendingFileWithUpload(filesRef, fileId, upload, {
+            error: '',
+            speedBps: 0,
+            etaSeconds: offset >= currentFile.size ? 0 : null,
+            abortHandle: null,
+          });
+          continue;
         }
 
         updatePendingFile(filesRef, fileId, {
