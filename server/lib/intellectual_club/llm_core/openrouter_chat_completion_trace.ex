@@ -26,6 +26,9 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTrace do
         emit.({:trace, {:ensure_item, "answer", :answer, 2}})
         emit.({:trace, {:append_text, "reasoning", :reasoning, 1, to_string(delta || "")}})
 
+      {:tool_call_delta, tool_call, _raw} ->
+        emit_tool_call_trace(emit, tool_call)
+
       {:raw_chunk, _obj} ->
         :ok
 
@@ -57,4 +60,55 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTrace do
 
     OpenRouterChatCompletion.stream_generate(opts, emit_old)
   end
+
+  defp emit_tool_call_trace(emit, %{call_id: call_id, name: name} = tool_call)
+       when is_function(emit, 1) and is_binary(call_id) and call_id != "" and is_binary(name) and
+              name != "" do
+    arguments =
+      case Map.get(tool_call, :arguments) do
+        value when is_binary(value) -> value
+        value when is_nil(value) -> ""
+        value -> to_string(value)
+      end
+
+    item_key = "tc:" <> call_id
+
+    text =
+      ["Tool call: #{name}", "Call ID: #{call_id}", "Arguments:", arguments]
+      |> Enum.join("\n")
+      |> String.trim()
+
+    opaque = %{
+      "tool_call_id" => call_id,
+      "name" => name,
+      "arguments" => normalize_tool_call_arguments(arguments),
+      "raw" => Map.get(tool_call, :raw)
+    }
+
+    emit.({:trace, {:ensure_item, item_key, :tool_call, nil}})
+    emit.({:trace, {:set_text, item_key, :tool_call, 1, text}})
+    emit.({:trace, {:set_opaque, item_key, :tool_call, 10_000, opaque}})
+  end
+
+  defp emit_tool_call_trace(_emit, _tool_call), do: :ok
+
+  defp normalize_tool_call_arguments(value) when is_binary(value) do
+    text = String.trim(value)
+
+    cond do
+      text == "" ->
+        %{}
+
+      true ->
+        case Jason.decode(text) do
+          {:ok, decoded} -> decoded
+          _ -> value
+        end
+    end
+  end
+
+  defp normalize_tool_call_arguments(%{} = value), do: value
+  defp normalize_tool_call_arguments(list) when is_list(list), do: list
+  defp normalize_tool_call_arguments(nil), do: %{}
+  defp normalize_tool_call_arguments(value), do: value
 end

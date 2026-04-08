@@ -195,7 +195,7 @@ defmodule IntellectualClub.Generation.Worker do
           finalize_error(state, error_text, error_meta)
       end
     else
-      tool_calls = extract_tool_calls(state.context.provider_type, raw_response)
+      tool_calls = tool_calls_from_runtime_step(runtime_step)
 
       if tool_calls == [] do
         finalize_done(state)
@@ -207,8 +207,6 @@ defmodule IntellectualClub.Generation.Worker do
 
         cond do
           can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
-            state = state |> maybe_apply_tool_calls_to_trace(tool_calls)
-
             runtime_step = %{state.runtime_step | status: :waiting_tools}
             state = %{state | runtime_step: runtime_step}
 
@@ -713,7 +711,6 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp soft_refuse_tool_calls(state, tool_calls, refusal)
        when is_list(tool_calls) and is_map(refusal) do
-    state = maybe_apply_tool_calls_to_trace(state, tool_calls)
     results = build_refusal_results(tool_calls, refusal)
 
     handle_tool_results(state, results,
@@ -732,101 +729,64 @@ defmodule IntellectualClub.Generation.Worker do
     finalize_error(state, error_text, %{})
   end
 
-  defp extract_tool_calls(:openrouter_chat_completion, raw_response),
-    do: extract_chat_tool_calls(raw_response)
-
-  defp extract_tool_calls(:openai_compatible, raw_response),
-    do: extract_chat_tool_calls(raw_response)
-
-  defp extract_tool_calls(:responses, raw_response),
-    do: extract_responses_tool_calls(raw_response)
-
-  defp extract_tool_calls(_other, _raw_response), do: []
-
-  defp extract_chat_tool_calls(raw_response) when is_map(raw_response) do
-    tool_calls =
-      raw_response
-      |> Map.get("choices", [])
-      |> case do
-        [first | _] when is_map(first) -> Map.get(first, "message", %{}) |> Map.get("tool_calls")
-        _ -> nil
-      end
-
-    tool_calls =
-      if is_list(tool_calls) do
-        tool_calls
-        |> Enum.filter(&is_map/1)
-      else
-        []
-      end
-
-    tool_calls
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {tool_call, idx} ->
-      call_id =
-        tool_call
-        |> Map.get("id", "")
-        |> to_string()
-        |> String.trim()
-
-      call_id =
-        if call_id == "" do
-          "call_" <> Integer.to_string(idx + 1)
-        else
-          call_id
-        end
-
-      fn_spec = Map.get(tool_call, "function")
-      fn_spec = if is_map(fn_spec), do: fn_spec, else: %{}
-
-      name =
-        fn_spec
-        |> Map.get("name", "")
-        |> to_string()
-        |> String.trim()
-
-      args_value = Map.get(fn_spec, "arguments")
-      args = parse_tool_args(args_value)
-
-      if name == "" do
-        []
-      else
-        raw = Map.put(tool_call, "id", call_id)
-        [%{call_id: call_id, name: name, args: args, raw: raw}]
-      end
-    end)
+  defp tool_calls_from_runtime_step(%RuntimeTrace.Step{} = runtime_step) do
+    runtime_step.items_by_key
+    |> Map.values()
+    |> Enum.filter(&match?(%RuntimeTrace.Item{type: :tool_call}, &1))
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.flat_map(&tool_call_from_runtime_item/1)
   end
 
-  defp extract_chat_tool_calls(_other), do: []
+  defp tool_calls_from_runtime_step(_other), do: []
 
-  defp extract_responses_tool_calls(raw_response) when is_map(raw_response) do
-    outputs = Map.get(raw_response, "output") || []
-    outputs = if is_list(outputs), do: outputs, else: []
+  defp tool_call_from_runtime_item(%RuntimeTrace.Item{} = item) do
+    opaque = latest_opaque_content(item)
+    raw = tool_call_raw_from_opaque(opaque)
 
-    outputs
-    |> Enum.filter(&is_map/1)
-    |> Enum.flat_map(fn item ->
-      if Map.get(item, "type") == "function_call" do
-        call_id =
-          (Map.get(item, "call_id") || Map.get(item, "id") || "")
-          |> to_string()
-          |> String.trim()
+    call_id =
+      [
+        Map.get(opaque, "tool_call_id"),
+        Map.get(opaque, "call_id"),
+        Map.get(raw, "call_id"),
+        Map.get(raw, "id"),
+        tool_call_id_from_item_key(item.key)
+      ]
+      |> Enum.find("", &present_string?/1)
+      |> to_string()
+      |> String.trim()
 
-        name = Map.get(item, "name") |> to_string() |> String.trim()
-        args = parse_tool_args(Map.get(item, "arguments"))
+    name =
+      [
+        Map.get(opaque, "name"),
+        Map.get(raw, "name"),
+        get_in(raw, ["function", "name"])
+      ]
+      |> Enum.find("", &present_string?/1)
+      |> to_string()
+      |> String.trim()
 
-        if call_id != "" and name != "" do
-          [%{call_id: call_id, name: name, args: args, raw: Map.new(item)}]
-        else
-          []
-        end
-      else
-        []
-      end
-    end)
+    args_value =
+      Map.get(raw, "arguments") ||
+        get_in(raw, ["function", "arguments"]) ||
+        Map.get(opaque, "arguments")
+
+    args = parse_tool_args(args_value)
+
+    if call_id != "" and name != "" do
+      [
+        %{
+          call_id: call_id,
+          name: name,
+          args: args,
+          raw: ensure_tool_call_raw(raw, call_id, name, args_value, args)
+        }
+      ]
+    else
+      []
+    end
   end
 
-  defp extract_responses_tool_calls(_other), do: []
+  defp tool_call_from_runtime_item(_other), do: []
 
   defp parse_tool_args(%{} = args), do: args
 
@@ -845,49 +805,152 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp parse_tool_args(_other), do: %{}
 
-  defp maybe_apply_tool_calls_to_trace(state, tool_calls) do
-    case state.context.provider_type do
-      type when type in [:openrouter_chat_completion, :openai_compatible] ->
-        runtime_step = apply_chat_tool_calls_to_trace(state.runtime_step, tool_calls)
-        %{state | runtime_step: runtime_step}
+  defp latest_opaque_content(%RuntimeTrace.Item{} = item) do
+    item.contents_by_sequence
+    |> Map.values()
+    |> Enum.sort_by(& &1.sequence, :desc)
+    |> Enum.find_value(%{}, fn
+      %{kind: :opaque, content_json: %{} = json} -> normalize_tool_call_map(json)
+      _other -> nil
+    end)
+  end
+
+  defp latest_opaque_content(_other), do: %{}
+
+  defp tool_call_raw_from_opaque(%{} = opaque) do
+    opaque
+    |> Map.get("raw")
+    |> case do
+      %{} = raw ->
+        normalize_tool_call_map(raw)
 
       _other ->
-        state
+        opaque
+        |> Map.get("responses_item")
+        |> case do
+          %{} = raw -> normalize_tool_call_map(raw)
+          _ -> normalize_tool_call_map(opaque)
+        end
     end
   end
 
-  defp apply_chat_tool_calls_to_trace(%RuntimeTrace.Step{} = runtime_step, tool_calls)
-       when is_list(tool_calls) do
-    Enum.reduce(tool_calls, runtime_step, fn call, step ->
-      key = "tc:" <> to_string(call.call_id)
+  defp tool_call_raw_from_opaque(_other), do: %{}
 
-      args_text =
-        case call.args do
-          %{} = args when map_size(args) > 0 ->
-            Jason.encode!(args)
+  defp tool_call_id_from_item_key("tc:" <> call_id), do: call_id
+  defp tool_call_id_from_item_key(_other), do: ""
 
-          _ ->
-            "{}"
-        end
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_other), do: false
 
-      text =
-        ["Tool call: #{call.name}", "Call ID: #{call.call_id}", "Arguments:", args_text]
-        |> Enum.join("\n")
-        |> String.trim()
+  defp ensure_tool_call_raw(raw, call_id, name, args_value, args)
+       when is_binary(call_id) and is_binary(name) do
+    raw = normalize_tool_call_map(raw)
+    arguments = tool_call_arguments_text(args_value, args)
 
-      opaque = %{
-        "tool_call_id" => call.call_id,
-        "name" => call.name,
-        "arguments" => call.args,
-        "raw" => call.raw
+    cond do
+      is_map(Map.get(raw, "function")) or Map.get(raw, "type") == "function" ->
+        function =
+          raw
+          |> Map.get("function", %{})
+          |> normalize_tool_call_map()
+          |> Map.put("name", name)
+          |> Map.put("arguments", arguments)
+
+        raw
+        |> Map.put("id", call_id)
+        |> Map.put("type", "function")
+        |> Map.put("function", function)
+
+      present_string?(Map.get(raw, "call_id")) or present_string?(Map.get(raw, "name")) or
+          Map.get(raw, "type") == "function_call" ->
+        raw
+        |> Map.put("id", Map.get(raw, "id") || call_id)
+        |> Map.put("type", "function_call")
+        |> Map.put("call_id", call_id)
+        |> Map.put("name", name)
+        |> Map.put("arguments", arguments)
+
+      true ->
+        %{
+          "id" => call_id,
+          "type" => "function_call",
+          "call_id" => call_id,
+          "name" => name,
+          "arguments" => arguments
+        }
+    end
+  end
+
+  defp ensure_tool_call_raw(_raw, call_id, name, args_value, args) do
+    ensure_tool_call_raw(%{}, call_id, name, args_value, args)
+  end
+
+  defp tool_call_arguments_text(value, %{} = args) do
+    cond do
+      is_binary(value) and String.trim(value) != "" ->
+        value
+
+      is_map(value) and map_size(value) > 0 ->
+        Jason.encode!(value)
+
+      map_size(args) > 0 ->
+        Jason.encode!(args)
+
+      true ->
+        "{}"
+    end
+  end
+
+  defp tool_call_arguments_text(value, _args) when is_binary(value) do
+    if String.trim(value) != "" do
+      value
+    else
+      "{}"
+    end
+  end
+
+  defp tool_call_arguments_text(%{} = value, _args), do: Jason.encode!(value)
+  defp tool_call_arguments_text(_value, _args), do: "{}"
+
+  defp chat_tool_call_raw(%{call_id: call_id, name: name} = tool_call)
+       when is_binary(call_id) and call_id != "" and is_binary(name) and name != "" do
+    raw = normalize_tool_call_map(Map.get(tool_call, :raw, %{}))
+
+    arguments =
+      tool_call_arguments_text(chat_tool_call_arguments(raw), Map.get(tool_call, :args, %{}))
+
+    %{
+      "id" => call_id,
+      "type" => "function",
+      "function" => %{
+        "name" => name,
+        "arguments" => arguments
       }
+    }
+  end
 
-      step
-      |> RuntimeTrace.apply_event({:ensure_item, key, :tool_call, nil})
-      |> RuntimeTrace.apply_event({:set_text, key, :tool_call, 1, text})
-      |> RuntimeTrace.apply_event({:set_opaque, key, :tool_call, @opaque_sequence, opaque})
+  defp chat_tool_call_raw(_other), do: nil
+
+  defp chat_tool_call_arguments(%{} = raw) do
+    get_in(raw, ["function", "arguments"]) || Map.get(raw, "arguments")
+  end
+
+  defp chat_tool_call_arguments(_other), do: nil
+
+  defp normalize_tool_call_map(%{} = value) do
+    Map.new(value, fn {key, nested} ->
+      {to_string(key), normalize_tool_call_value(nested)}
     end)
   end
+
+  defp normalize_tool_call_map(_other), do: %{}
+
+  defp normalize_tool_call_value(%{} = value), do: normalize_tool_call_map(value)
+
+  defp normalize_tool_call_value(list) when is_list(list),
+    do: Enum.map(list, &normalize_tool_call_value/1)
+
+  defp normalize_tool_call_value(value), do: value
 
   defp start_tool_task(state, tool_calls) when is_list(tool_calls) do
     tool_instances_by_alias = state.context.tool_instances_by_alias || %{}
@@ -1248,12 +1311,18 @@ defmodule IntellectualClub.Generation.Worker do
       end
 
     tool_calls =
-      case Map.get(assistant_raw, "tool_calls") do
-        list when is_list(list) and list != [] ->
+      runtime_step
+      |> tool_calls_from_runtime_step()
+      |> Enum.map(&chat_tool_call_raw/1)
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [_ | _] = list ->
           list
 
         _other ->
-          Enum.map(results, & &1.raw)
+          results
+          |> Enum.map(&chat_tool_call_raw/1)
+          |> Enum.reject(&is_nil/1)
       end
 
     message = %{

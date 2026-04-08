@@ -19,6 +19,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
   @type event ::
           {:reasoning_delta, String.t(), map() | nil}
           | {:content_delta, String.t(), map() | nil}
+          | {:tool_call_delta, map(), map() | nil}
           | {:raw_chunk, map()}
           | {:response_complete, map()}
           | {:response_error, map()}
@@ -310,6 +311,8 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
     choices = Map.get(obj, "choices") || []
     first_choice = if is_list(choices), do: List.first(choices), else: nil
     first_choice = if is_map(first_choice), do: first_choice, else: %{}
+    choice_index = Map.get(first_choice, "index", 0)
+    choice_index = if is_integer(choice_index) and choice_index >= 0, do: choice_index, else: 0
 
     delta =
       case Map.get(first_choice, "delta") do
@@ -333,6 +336,18 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
 
         true ->
           {nil, nil}
+      end
+
+    tool_calls_source =
+      cond do
+        delta != %{} ->
+          Map.get(delta, "tool_calls")
+
+        message != %{} ->
+          Map.get(message, "tool_calls")
+
+        true ->
+          nil
       end
 
     finish_reason = Map.get(first_choice, "finish_reason")
@@ -369,6 +384,8 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
       emit.({:content_delta, content_piece, obj})
     end
 
+    emit_tool_call_deltas(tool_calls_source, choice_index, state, obj, emit)
+
     if not has_reasoning and not has_content and not is_nil(finish_reason) do
       emit.({:raw_chunk, obj})
     end
@@ -382,6 +399,89 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
       _ -> nil
     end
   end
+
+  defp emit_tool_call_deltas(tool_calls_source, choice_index, state, raw_chunk, emit)
+       when is_list(tool_calls_source) and is_integer(choice_index) and choice_index >= 0 and
+              is_function(emit, 1) do
+    merged_tool_calls =
+      state.accumulator
+      |> Map.get(:choices, %{})
+      |> Map.get(choice_index, %{})
+      |> Map.get("tool_calls")
+      |> case do
+        list when is_list(list) -> list
+        _other -> []
+      end
+
+    tool_calls_source
+    |> Enum.with_index()
+    |> Enum.each(fn {tool_call_delta, fallback_index} ->
+      if is_map(tool_call_delta) do
+        tool_call_index =
+          case Map.get(tool_call_delta, "index") do
+            value when is_integer(value) and value >= 0 -> value
+            _other -> fallback_index
+          end
+
+        merged_tool_call =
+          case Enum.at(merged_tool_calls, tool_call_index) do
+            %{} = call -> call
+            _other -> tool_call_delta
+          end
+
+        case normalize_stream_tool_call(merged_tool_call, tool_call_index) do
+          %{} = tool_call ->
+            emit.({:tool_call_delta, tool_call, raw_chunk})
+
+          _other ->
+            :ok
+        end
+      end
+    end)
+  end
+
+  defp emit_tool_call_deltas(_tool_calls_source, _choice_index, _state, _raw_chunk, _emit),
+    do: :ok
+
+  defp normalize_stream_tool_call(tool_call, index)
+       when is_map(tool_call) and is_integer(index) and index >= 0 do
+    call_id =
+      tool_call
+      |> Map.get("id")
+      |> to_string()
+      |> String.trim()
+
+    function = Map.get(tool_call, "function")
+    function = if is_map(function), do: function, else: %{}
+
+    name =
+      function
+      |> Map.get("name")
+      |> to_string()
+      |> String.trim()
+
+    arguments =
+      case Map.get(function, "arguments") do
+        value when is_binary(value) -> value
+        %{} = value -> Jason.encode!(value)
+        value when is_nil(value) -> ""
+        value -> to_string(value)
+      end
+
+    if call_id != "" and name != "" do
+      %{
+        call_id: call_id,
+        name: name,
+        arguments: arguments,
+        index: index,
+        raw: Map.new(tool_call)
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_stream_tool_call(_tool_call, _index), do: nil
 
   defp normalize_raw_response(value, fallback_text) do
     cond do

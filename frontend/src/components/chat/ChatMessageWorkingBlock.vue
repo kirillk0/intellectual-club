@@ -394,10 +394,32 @@ const toolCallInfo = (item: Pick<ChatMessageItem, 'contents'>) => {
   const raw = firstOpaqueJson(item.contents);
   const rec = asRecord(raw);
   if (!rec) return { name: '', arguments: null as unknown, raw: raw ?? null };
-  const name = typeof rec.name === 'string' ? rec.name : '';
-  const args = rec.arguments ?? null;
-  const rawTool = rec.raw ?? null;
-  return { name, arguments: args, raw: rawTool };
+  const rawTool = asRecord(rec.raw);
+  const rawFunction = asRecord(rawTool?.function);
+  const name =
+    typeof rec.name === 'string'
+      ? rec.name
+      : typeof rawFunction?.name === 'string'
+        ? rawFunction.name
+        : typeof rawTool?.name === 'string'
+          ? rawTool.name
+          : '';
+  const argsSource = rec.arguments ?? rawFunction?.arguments ?? rawTool?.arguments ?? null;
+  return { name, arguments: normalizeToolCallArguments(argsSource), raw: rawTool ?? raw };
+};
+
+const normalizeToolCallArguments = (value: unknown): unknown | null => {
+  if (value == null) return null;
+  if (typeof value !== 'string') return value;
+
+  const text = value.trim();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return value;
+  }
 };
 </script>
 
