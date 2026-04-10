@@ -11,11 +11,8 @@ defmodule IntellectualClub.Generation.Worker do
 
   require Logger
 
-  alias IntellectualClub.Chat.Media
-  alias IntellectualClub.Generation.CacheControl
-  alias IntellectualClub.Generation.ProviderStream
   alias IntellectualClub.Generation.Persistence
-  alias IntellectualClub.Generation.RequestBuilder
+  alias IntellectualClub.Generation.ProviderAdapterResolver
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ExecutionContext
@@ -29,6 +26,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   defstruct [
     :context,
+    :adapter,
     :status,
     :runtime_step,
     :stream_task,
@@ -38,10 +36,7 @@ defmodule IntellectualClub.Generation.Worker do
     :step_sequence,
     :tool_round,
     :refusal_round,
-    :tools_disabled,
-    :messages_for_model,
-    :responses_input_items,
-    :current_run_cache_marker_index
+    :tools_disabled
   ]
 
   def start_link(opts) do
@@ -72,7 +67,9 @@ defmodule IntellectualClub.Generation.Worker do
 
     started_at = DateTime.utc_now()
 
-    {messages_for_model, responses_input_items} = initial_provider_state(context)
+    adapter =
+      Map.get(context, :adapter_module) ||
+        ProviderAdapterResolver.for_provider_type(Map.get(context, :provider_type))
 
     initial_step_sequence =
       case Map.get(context, :initial_step_sequence) do
@@ -82,15 +79,13 @@ defmodule IntellectualClub.Generation.Worker do
 
     state = %__MODULE__{
       context: context,
+      adapter: adapter,
       status: :generating,
       step_attempt: 1,
       step_sequence: initial_step_sequence,
       tool_round: 0,
       refusal_round: 0,
       tools_disabled: false,
-      messages_for_model: messages_for_model,
-      responses_input_items: responses_input_items,
-      current_run_cache_marker_index: nil,
       runtime_step:
         RuntimeTrace.new_step(
           id: context.step_id,
@@ -119,19 +114,10 @@ defmodule IntellectualClub.Generation.Worker do
       Task.async(fn ->
         emit = fn event -> send(me, {:provider_event, event}) end
 
-        ProviderStream.stream_generate(
+        state.adapter.stream_generate(
           %{
-            provider_id: state.context.provider_id,
-            provider_type: state.context.provider_type,
-            provider_base_url: state.context.provider_base_url,
-            provider_api_key: state.context.provider_api_key,
-            provider_auth_method: state.context.provider_auth_method,
-            provider_oauth_refresh_token: state.context.provider_oauth_refresh_token,
-            model_name: state.context.model_name,
-            parameters: state.context.parameters || %{},
-            messages: provider_messages(state),
+            context: state.context,
             request_payload: state.runtime_step.raw_request,
-            tools: current_tools_payload(state),
             timeout_ms: state.context.timeout_ms || 300_000,
             chunk_delay_ms: state.context.chunk_delay_ms
           },
@@ -577,41 +563,6 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp maybe_broadcast_text_delta(_state, _event), do: :ok
 
-  @opaque_sequence 10_000
-  @responses_include ["reasoning.encrypted_content"]
-
-  defp initial_provider_state(context) do
-    case Map.get(context, :provider_type) do
-      :responses ->
-        input =
-          case Map.get(context, :request_payload) do
-            %{} = payload ->
-              input = Map.get(payload, "input") || Map.get(payload, :input)
-              if is_list(input), do: input, else: []
-
-            _ ->
-              []
-          end
-
-        {[], input}
-
-      _other ->
-        messages = Map.get(context, :messages) || []
-        messages = if is_list(messages), do: messages, else: []
-        {messages, []}
-    end
-  end
-
-  defp provider_messages(state) do
-    messages =
-      case state.context.provider_type do
-        :responses -> Map.get(state.context, :messages) || []
-        _other -> state.messages_for_model || Map.get(state.context, :messages) || []
-      end
-
-    if is_list(messages), do: messages, else: []
-  end
-
   defp current_tools_payload(state) do
     if state.tools_disabled do
       []
@@ -912,31 +863,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp tool_call_arguments_text(%{} = value, _args), do: Jason.encode!(value)
   defp tool_call_arguments_text(_value, _args), do: "{}"
 
-  defp chat_tool_call_raw(%{call_id: call_id, name: name} = tool_call)
-       when is_binary(call_id) and call_id != "" and is_binary(name) and name != "" do
-    raw = normalize_tool_call_map(Map.get(tool_call, :raw, %{}))
-
-    arguments =
-      tool_call_arguments_text(chat_tool_call_arguments(raw), Map.get(tool_call, :args, %{}))
-
-    %{
-      "id" => call_id,
-      "type" => "function",
-      "function" => %{
-        "name" => name,
-        "arguments" => arguments
-      }
-    }
-  end
-
-  defp chat_tool_call_raw(_other), do: nil
-
-  defp chat_tool_call_arguments(%{} = raw) do
-    get_in(raw, ["function", "arguments"]) || Map.get(raw, "arguments")
-  end
-
-  defp chat_tool_call_arguments(_other), do: nil
-
   defp normalize_tool_call_map(%{} = value) do
     Map.new(value, fn {key, nested} ->
       {to_string(key), normalize_tool_call_value(nested)}
@@ -982,56 +908,24 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
-    case state.context.provider_type do
-      :responses ->
-        handle_tool_results_responses(state, results, opts)
+    tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
+    next_state = %{state | tools_disabled: tools_disabled}
 
-      _other ->
-        handle_tool_results_chat(state, results, opts)
-    end
-  end
+    followup =
+      state.adapter.build_followup_request(%{
+        context: next_state.context,
+        runtime_step: state.runtime_step,
+        results: results,
+        tools: current_tools_payload(next_state)
+      })
 
-  defp handle_tool_results_chat(state, results, opts) when is_list(opts) do
-    runtime_step = apply_chat_tool_results_to_trace(state.runtime_step, results)
+    runtime_step = followup.runtime_step
 
     case safe_persist(state.context.message_id, :step_done, fn ->
            Persistence.persist_step_trace_only!(state.context.message_id, runtime_step)
          end) do
       :ok ->
-        tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
-        assistant_tool_message = assistant_tool_message_for_chat(runtime_step, results)
-
-        tool_messages =
-          results
-          |> Enum.flat_map(fn result ->
-            base_message = %{
-              "role" => "tool",
-              "tool_call_id" => result.call_id,
-              "content" => result.text
-            }
-
-            [
-              base_message
-              | Media.media_followup_messages(result.media_contents, media_projection_opts(state))
-            ]
-          end)
-
-        next_messages =
-          (state.messages_for_model || [])
-          |> List.wrap()
-          |> Kernel.++([assistant_tool_message])
-          |> Kernel.++(tool_messages)
-
-        {next_messages, marker_index} =
-          maybe_update_chat_run_cache_marker(state, next_messages)
-
-        next_state = %{state | tools_disabled: tools_disabled}
-
-        {raw_request, step_id} =
-          start_next_step_metadata(next_state,
-            next_messages: next_messages,
-            next_input_items: nil
-          )
+        {raw_request, step_id} = start_next_step_metadata(next_state, followup.raw_request)
 
         runtime_step =
           RuntimeTrace.new_step(
@@ -1053,8 +947,6 @@ defmodule IntellectualClub.Generation.Worker do
             state.refusal_round + Keyword.get(opts, :refusal_round_delta, 0)
           )
           |> Map.put(:tools_disabled, tools_disabled)
-          |> Map.put(:messages_for_model, next_messages)
-          |> Map.put(:current_run_cache_marker_index, marker_index)
           |> Map.put(:retry_timer_ref, nil)
           |> Map.put(:stream_task, nil)
 
@@ -1066,198 +958,10 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp apply_chat_tool_results_to_trace(%RuntimeTrace.Step{} = runtime_step, results)
-       when is_list(results) do
-    Enum.reduce(results, runtime_step, fn result, step ->
-      key = "tr:" <> to_string(result.call_id)
-
-      opaque = %{
-        "tool_call_id" => result.call_id,
-        "name" => result.name,
-        "raw" => result.result_raw
-      }
-
-      step
-      |> RuntimeTrace.apply_event({:ensure_item, key, :tool_result, nil})
-      |> RuntimeTrace.apply_event({:set_text, key, :tool_result, 1, to_string(result.text || "")})
-      |> RuntimeTrace.apply_event({:set_opaque, key, :tool_result, @opaque_sequence, opaque})
-      |> apply_media_contents_to_trace(key, :tool_result, result.media_contents)
-      |> apply_artifacts_to_trace(result)
-    end)
-  end
-
-  defp handle_tool_results_responses(state, results, opts) when is_list(opts) do
-    output_items =
-      case state.runtime_step.raw_response do
-        %{} = raw -> Map.get(raw, "output") || []
-        _ -> []
-      end
-
-    sanitized_output_items =
-      sanitize_responses_output_items(output_items,
-        provider_base_url: state.context.provider_base_url
-      )
-
-    {fco_items, runtime_step} = apply_responses_tool_results_to_trace(state, results)
-
-    case safe_persist(state.context.message_id, :step_done, fn ->
-           Persistence.persist_step_trace_only!(state.context.message_id, runtime_step)
-         end) do
-      :ok ->
-        tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
-
-        media_input_items =
-          Enum.flat_map(results, fn result ->
-            Media.media_followup_input_items(result.media_contents, media_projection_opts(state))
-          end)
-
-        next_input_items =
-          (state.responses_input_items || [])
-          |> List.wrap()
-          |> Kernel.++(sanitized_output_items)
-          |> Kernel.++(fco_items)
-          |> Kernel.++(media_input_items)
-
-        next_state = %{state | tools_disabled: tools_disabled}
-
-        {raw_request, step_id} =
-          start_next_step_metadata(next_state,
-            next_messages: nil,
-            next_input_items: next_input_items
-          )
-
-        runtime_step =
-          RuntimeTrace.new_step(
-            id: step_id,
-            sequence: state.step_sequence + 1,
-            started_at: DateTime.utc_now(),
-            status: :waiting_provider,
-            raw_request: raw_request
-          )
-
-        state =
-          state
-          |> Map.put(:runtime_step, runtime_step)
-          |> Map.put(:step_sequence, state.step_sequence + 1)
-          |> Map.put(:step_attempt, 1)
-          |> Map.put(:tool_round, state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
-          |> Map.put(
-            :refusal_round,
-            state.refusal_round + Keyword.get(opts, :refusal_round_delta, 0)
-          )
-          |> Map.put(:tools_disabled, tools_disabled)
-          |> Map.put(:responses_input_items, next_input_items)
-          |> Map.put(:retry_timer_ref, nil)
-          |> Map.put(:stream_task, nil)
-
-        state = start_stream_task(state)
-        {:noreply, state}
-
-      {:error, reason} ->
-        finalize_error(state, "Failed to persist tool step: #{inspect(reason)}", %{})
-    end
-  end
-
-  defp sanitize_responses_output_items(output_items, opts)
-       when is_list(output_items) and is_list(opts) do
-    base_url =
-      opts
-      |> Keyword.get(:provider_base_url)
-      |> to_string()
-      |> String.downcase()
-      |> String.trim()
-
-    # OpenRouter may return reasoning items with ids like `rs_...`. Passing those ids back can
-    # trigger provider errors when responses are not stored. OpenAI's Responses API, however,
-    # expects those ids to remain stable because function_call items are linked to reasoning items.
-    drop_reasoning_ids? = base_url != "" and String.contains?(base_url, "openrouter.ai")
-
-    output_items
-    |> Enum.filter(&is_map/1)
-    |> Enum.map(fn item ->
-      item = Map.new(item)
-
-      case {drop_reasoning_ids?, Map.get(item, "type"), Map.get(item, "id")} do
-        {true, "reasoning", id} when is_binary(id) ->
-          if String.starts_with?(id, "rs_") do
-            Map.delete(item, "id")
-          else
-            item
-          end
-
-        _ ->
-          item
-      end
-    end)
-  end
-
-  defp sanitize_responses_output_items(_other, _opts), do: []
-
-  defp apply_responses_tool_results_to_trace(state, results) when is_list(results) do
-    runtime_step = state.runtime_step
-
-    fco_items =
-      Enum.map(results, fn result ->
-        %{
-          "type" => "function_call_output",
-          "id" => "fco_" <> Ash.UUID.generate(),
-          "call_id" => result.call_id,
-          "output" => result.text
-        }
-      end)
-
-    runtime_step =
-      Enum.zip(fco_items, results)
-      |> Enum.reduce(runtime_step, fn {fco_item, result}, step ->
-        item_id = Map.get(fco_item, "id") |> to_string()
-        output_text = Map.get(fco_item, "output") |> to_string()
-
-        opaque = %{
-          "responses_item" => fco_item,
-          "raw" => result.result_raw
-        }
-
-        step
-        |> RuntimeTrace.apply_event({:ensure_item, item_id, :tool_result, nil})
-        |> RuntimeTrace.apply_event({:set_text, item_id, :tool_result, 1, output_text})
-        |> RuntimeTrace.apply_event(
-          {:set_opaque, item_id, :tool_result, @opaque_sequence, opaque}
-        )
-        |> apply_media_contents_to_trace(item_id, :tool_result, result.media_contents)
-        |> apply_artifacts_to_trace(result)
-      end)
-
-    {fco_items, runtime_step}
-  end
-
-  defp start_next_step_metadata(state, opts) when is_map(state) and is_list(opts) do
+  defp start_next_step_metadata(state, raw_request)
+       when is_map(state) and is_map(raw_request) do
     next_sequence = state.step_sequence + 1
     now = DateTime.utc_now()
-
-    raw_request =
-      case state.context.provider_type do
-        :responses ->
-          input_items = Keyword.fetch!(opts, :next_input_items) |> List.wrap()
-
-          RequestBuilder.build_responses_payload_from_input_items(
-            state.context.model_name,
-            state.context.parameters || %{},
-            input_items,
-            include: @responses_include,
-            instructions: state.context.system_prompt,
-            tools: current_tools_payload(state)
-          )
-
-        _other ->
-          messages = Keyword.fetch!(opts, :next_messages) |> List.wrap()
-
-          RequestBuilder.build_chat_completions_payload(
-            state.context.model_name,
-            state.context.parameters || %{},
-            messages,
-            tools: current_tools_payload(state)
-          )
-      end
 
     step_id =
       Persistence.ensure_step_started!(state.context.message_id, next_sequence, raw_request,
@@ -1267,116 +971,6 @@ defmodule IntellectualClub.Generation.Worker do
     {raw_request, step_id}
   end
 
-  defp maybe_update_chat_run_cache_marker(state, messages) when is_list(messages) do
-    cache_control_enabled = Map.get(state.context, :cache_control_enabled)
-    history_length = Map.get(state.context, :history_length)
-
-    if cache_control_enabled == true and is_integer(history_length) and history_length >= 0 do
-      CacheControl.update_current_run_marker(messages,
-        history_length: history_length,
-        previous_marker_index: state.current_run_cache_marker_index
-      )
-    else
-      {messages, nil}
-    end
-  end
-
-  defp maybe_update_chat_run_cache_marker(_state, messages) do
-    normalized = if is_list(messages), do: messages, else: []
-    {normalized, nil}
-  end
-
-  defp assistant_tool_message_for_chat(%RuntimeTrace.Step{} = runtime_step, results)
-       when is_list(results) do
-    raw_response = runtime_step.raw_response
-    assistant_raw = extract_assistant_chat_message(raw_response)
-
-    assistant_content =
-      assistant_raw
-      |> Map.get("content")
-      |> case do
-        content when is_binary(content) ->
-          content
-
-        content when is_list(content) ->
-          content
-          |> Enum.map(fn
-            %{} = part -> part["text"] || part["content"] || ""
-            other -> to_string(other)
-          end)
-          |> Enum.join("")
-
-        _other ->
-          RuntimeTrace.text_for_item_type(runtime_step, :answer)
-      end
-
-    tool_calls =
-      runtime_step
-      |> tool_calls_from_runtime_step()
-      |> Enum.map(&chat_tool_call_raw/1)
-      |> Enum.reject(&is_nil/1)
-      |> case do
-        [_ | _] = list ->
-          list
-
-        _other ->
-          results
-          |> Enum.map(&chat_tool_call_raw/1)
-          |> Enum.reject(&is_nil/1)
-      end
-
-    message = %{
-      "role" => "assistant",
-      "content" => to_string(assistant_content || ""),
-      "tool_calls" => tool_calls
-    }
-
-    reasoning_details = Map.get(assistant_raw, "reasoning_details")
-
-    message =
-      cond do
-        is_list(reasoning_details) and reasoning_details != [] ->
-          Map.put(message, "reasoning_details", sanitize_reasoning_details(reasoning_details))
-
-        true ->
-          reasoning_text =
-            assistant_raw
-            |> Map.get("reasoning", Map.get(assistant_raw, "reasoning_content"))
-            |> case do
-              value when is_binary(value) ->
-                String.trim(value)
-
-              _other ->
-                RuntimeTrace.text_for_item_type(runtime_step, :reasoning) |> String.trim()
-            end
-
-          if reasoning_text == "" do
-            message
-          else
-            Map.put(message, "reasoning", reasoning_text)
-          end
-      end
-
-    message
-  end
-
-  defp extract_assistant_chat_message(%{} = raw_response) do
-    raw_response
-    |> Map.get("choices", [])
-    |> case do
-      [first | _] when is_map(first) ->
-        case Map.get(first, "message") do
-          %{} = message -> Map.new(message)
-          _other -> %{}
-        end
-
-      _other ->
-        %{}
-    end
-  end
-
-  defp extract_assistant_chat_message(_other), do: %{}
-
   defp tool_execution_context(state) do
     %ExecutionContext{
       owner_id: Map.get(state.context, :owner_id),
@@ -1385,13 +979,6 @@ defmodule IntellectualClub.Generation.Worker do
       assistant_message_id: Map.get(state.context, :message_id),
       provider_type: Map.get(state.context, :provider_type)
     }
-  end
-
-  defp media_projection_opts(state) do
-    [
-      supports_image_input: Map.get(state.context, :supports_image_input, false),
-      provider_type: Map.get(state.context, :provider_type)
-    ]
   end
 
   defp decorate_tool_result(call, %ExecutionResult{} = result) do
@@ -1454,57 +1041,12 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp normalize_media_content(_media, _sequence), do: nil
 
-  defp apply_media_contents_to_trace(runtime_step, _item_key, _item_type, []), do: runtime_step
-
-  defp apply_media_contents_to_trace(runtime_step, item_key, item_type, media_contents)
-       when is_list(media_contents) do
-    Enum.reduce(media_contents, runtime_step, fn content, step ->
-      RuntimeTrace.apply_event(
-        step,
-        {:set_media, item_key, item_type, Map.get(content, :sequence, 1), content}
-      )
-    end)
-  end
-
-  defp apply_artifacts_to_trace(runtime_step, %{artifact_contents: []}), do: runtime_step
-
-  defp apply_artifacts_to_trace(runtime_step, %{
-         call_id: call_id,
-         artifact_contents: artifact_contents
-       }) do
-    Enum.reduce(Enum.with_index(artifact_contents, 1), runtime_step, fn {content, idx}, step ->
-      key = "artifact:" <> to_string(call_id) <> ":" <> Integer.to_string(idx)
-
-      step
-      |> RuntimeTrace.apply_event({:ensure_item, key, :artifact, nil})
-      |> RuntimeTrace.apply_event({:set_media, key, :artifact, 1, Map.put(content, :sequence, 1)})
-    end)
-  end
-
   defp provider_error_value?(nil), do: false
   defp provider_error_value?(false), do: false
   defp provider_error_value?(""), do: false
   defp provider_error_value?(%{}), do: true
   defp provider_error_value?(value) when is_binary(value), do: String.trim(value) != ""
   defp provider_error_value?(_other), do: true
-
-  defp sanitize_reasoning_details(value) when not is_list(value), do: value
-
-  defp sanitize_reasoning_details(value) when is_list(value) do
-    Enum.map(value, fn
-      %{} = item ->
-        id = Map.get(item, "id") || Map.get(item, :id)
-
-        if is_binary(id) and String.starts_with?(id, "rs_") do
-          Map.delete(Map.new(item), "id")
-        else
-          Map.new(item)
-        end
-
-      other ->
-        other
-    end)
-  end
 
   defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, meta) when is_map(meta) do
     runtime_step

@@ -27,7 +27,12 @@ defmodule IntellectualClub.Generation.DemoStreamTrace do
     emit.({:trace, {:set_step_raw_request, raw_request}})
 
     chunk_delay_ms = Map.get(opts, :chunk_delay_ms, 40)
-    messages = Map.get(opts, :messages, [])
+
+    messages =
+      case Map.get(raw_request, "messages") || Map.get(raw_request, :messages) do
+        list when is_list(list) -> list
+        _other -> Map.get(opts, :messages, [])
+      end
 
     emit_old = fn
       {:content_delta, delta} ->

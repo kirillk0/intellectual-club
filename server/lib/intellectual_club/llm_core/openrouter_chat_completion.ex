@@ -7,11 +7,8 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
   - Some Anthropic backends reject non-conforming tool_call ids
   """
 
-  alias IntellectualClub.Generation.RequestBuilder
   alias Req.Response
 
-  @anthropic_tool_call_id_pattern ~r/^[a-zA-Z0-9_-]+$/
-  @anthropic_tool_call_id_rewrite ~r/[^a-zA-Z0-9_-]+/
   @retryable_http_status_codes MapSet.new([429, 502])
 
   @non_append_string_keys ~w(format role name id type tool_call_id)
@@ -28,10 +25,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
           %{
             required(:base_url) => String.t(),
             required(:api_key) => String.t(),
-            required(:model_name) => String.t(),
-            required(:parameters) => map(),
-            required(:messages) => list(map()),
-            optional(:tools) => list(map()),
+            required(:request_payload) => map(),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -40,23 +34,12 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     base_url = Map.fetch!(opts, :base_url)
     api_key = Map.fetch!(opts, :api_key)
-    model_name = Map.fetch!(opts, :model_name)
-    parameters = Map.get(opts, :parameters, %{})
-    messages = Map.get(opts, :messages, [])
+    payload = Map.get(opts, :request_payload, %{}) || %{}
 
     timeout_ms = Map.get(opts, :timeout_ms, 300_000)
     connect_timeout_ms = Map.get(opts, :connect_timeout_ms, 10_000)
 
     url = String.trim_trailing(base_url, "/") <> "/chat/completions"
-
-    safe_messages = sanitize_messages_for_model(messages, model_name: model_name)
-
-    tools = Map.get(opts, :tools, []) || []
-
-    payload =
-      RequestBuilder.build_chat_completions_payload(model_name, parameters, safe_messages,
-        tools: tools
-      )
 
     headers = [
       {"authorization", "Bearer " <> api_key},
@@ -746,131 +729,6 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
   defp flatten_reasoning(value) do
     text = to_string(value)
     if text == "", do: nil, else: text
-  end
-
-  defp sanitize_messages_for_model(messages, model_name: model_name) when is_list(messages) do
-    if model_requires_strict_tool_call_ids?(model_name) do
-      sanitize_messages_for_anthropic(messages)
-    else
-      messages
-    end
-  end
-
-  defp sanitize_messages_for_model(messages, _opts), do: messages
-
-  defp model_requires_strict_tool_call_ids?(model_name) do
-    model_name
-    |> to_string()
-    |> String.downcase()
-    |> String.starts_with?("anthropic/")
-  end
-
-  defp sanitize_messages_for_anthropic(messages) do
-    {id_map, _used} =
-      Enum.reduce(messages, {%{}, MapSet.new()}, fn msg, {id_map, used} ->
-        if is_map(msg) and Map.get(msg, "role") == "assistant" and
-             is_list(Map.get(msg, "tool_calls")) do
-          Enum.reduce(msg["tool_calls"], {id_map, used}, fn tool_call, {id_map, used} ->
-            original = if is_map(tool_call), do: Map.get(tool_call, "id"), else: nil
-
-            if is_binary(original) and original != "" and not Map.has_key?(id_map, original) do
-              candidate = sanitize_tool_call_id_for_anthropic(original)
-              {candidate, used} = ensure_unique_id(candidate, used)
-              {Map.put(id_map, original, candidate), used}
-            else
-              {id_map, used}
-            end
-          end)
-        else
-          {id_map, used}
-        end
-      end)
-
-    if map_size(id_map) == 0 do
-      messages
-    else
-      Enum.map(messages, fn msg ->
-        if is_map(msg) do
-          rewrite_message_tool_call_ids(msg, id_map)
-        else
-          msg
-        end
-      end)
-    end
-  end
-
-  defp sanitize_tool_call_id_for_anthropic(nil), do: "call"
-  defp sanitize_tool_call_id_for_anthropic(""), do: "call"
-
-  defp sanitize_tool_call_id_for_anthropic(value) when is_binary(value) do
-    if Regex.match?(@anthropic_tool_call_id_pattern, value) do
-      value
-    else
-      cleaned =
-        value
-        |> Regex.replace(@anthropic_tool_call_id_rewrite, "_")
-        |> String.trim("_")
-
-      if cleaned == "", do: "call", else: cleaned
-    end
-  end
-
-  defp ensure_unique_id(candidate, used) do
-    if MapSet.member?(used, candidate) do
-      ensure_unique_id(candidate, used, 1)
-    else
-      {candidate, MapSet.put(used, candidate)}
-    end
-  end
-
-  defp ensure_unique_id(base, used, suffix) do
-    candidate = "#{base}_#{suffix}"
-
-    if MapSet.member?(used, candidate) do
-      ensure_unique_id(base, used, suffix + 1)
-    else
-      {candidate, MapSet.put(used, candidate)}
-    end
-  end
-
-  defp rewrite_message_tool_call_ids(msg, id_map) do
-    case Map.get(msg, "role") do
-      "assistant" ->
-        tool_calls = Map.get(msg, "tool_calls")
-
-        if is_list(tool_calls) do
-          new_tool_calls =
-            Enum.map(tool_calls, fn tool_call ->
-              if is_map(tool_call) do
-                tc_id = Map.get(tool_call, "id")
-
-                if is_binary(tc_id) and Map.has_key?(id_map, tc_id) do
-                  Map.put(tool_call, "id", id_map[tc_id])
-                else
-                  tool_call
-                end
-              else
-                tool_call
-              end
-            end)
-
-          Map.put(msg, "tool_calls", new_tool_calls)
-        else
-          msg
-        end
-
-      "tool" ->
-        tc_id = Map.get(msg, "tool_call_id")
-
-        if is_binary(tc_id) and Map.has_key?(id_map, tc_id) do
-          Map.put(msg, "tool_call_id", id_map[tc_id])
-        else
-          msg
-        end
-
-      _ ->
-        msg
-    end
   end
 
   defp new_accumulator do

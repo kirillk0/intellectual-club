@@ -66,7 +66,8 @@ defmodule IntellectualClub.Generation.HistoryMediaTest do
 
     assert Enum.any?(messages, fn message ->
              message["role"] == "user" and
-               String.contains?(to_string(message["content"]), "content-123")
+               String.contains?(to_string(message["content"]), "[Attached file") and
+               String.contains?(to_string(message["content"]), "result.png")
            end)
 
     refute Enum.any?(messages, fn message ->

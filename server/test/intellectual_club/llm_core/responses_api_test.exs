@@ -13,32 +13,30 @@ defmodule IntellectualClub.LlmCore.ResponsesApiTest do
     connect_timeout_ms: 200
   }
 
-  test "forces store=false and adds empty instructions when missing" do
-    error =
-      run_and_capture_error!(
-        Map.put(@base_opts, :request_payload, %{
-          "model" => "gpt-4.1",
-          "input" => []
-        })
-      )
+  test "passes request payload through unchanged" do
+    payload = %{
+      "model" => "gpt-4.1",
+      "input" => []
+    }
 
-    assert error.raw_request["store"] == false
-    assert error.raw_request["instructions"] == ""
+    error =
+      run_and_capture_error!(Map.put(@base_opts, :request_payload, payload))
+
+    assert error.raw_request == payload
   end
 
-  test "preserves provided instructions while forcing store=false" do
-    error =
-      run_and_capture_error!(
-        Map.put(@base_opts, :request_payload, %{
-          "model" => "gpt-4.1",
-          "input" => [],
-          "instructions" => "You are a careful assistant.",
-          "store" => true
-        })
-      )
+  test "preserves provided request payload values" do
+    payload = %{
+      "model" => "gpt-4.1",
+      "input" => [],
+      "instructions" => "You are a careful assistant.",
+      "store" => true
+    }
 
-    assert error.raw_request["store"] == false
-    assert error.raw_request["instructions"] == "You are a careful assistant."
+    error =
+      run_and_capture_error!(Map.put(@base_opts, :request_payload, payload))
+
+    assert error.raw_request == payload
   end
 
   test "hydrates completed response output from stream items when terminal response omits it" do

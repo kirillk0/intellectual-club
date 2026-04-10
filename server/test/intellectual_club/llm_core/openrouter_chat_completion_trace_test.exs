@@ -3,6 +3,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTraceTest do
 
   import Plug.Conn
 
+  alias IntellectualClub.Generation.RequestBuilder
   alias IntellectualClub.LlmCore.OpenRouterChatCompletionTrace
 
   test "emits canonical tool call trace from streamed chat completion deltas" do
@@ -151,30 +152,35 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTraceTest do
     {base_url, _agent} = start_scripted_server!(scripts)
     parent = self()
 
+    request_payload =
+      RequestBuilder.build_chat_completions_payload(
+        "openai/gpt-5-mini",
+        %{},
+        [%{"role" => "user", "content" => "Search for OpenAI"}],
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "web__search_web",
+              "description" => "Search the web",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{
+                  "query" => %{"type" => "string"}
+                },
+                "required" => ["query"]
+              }
+            }
+          }
+        ]
+      )
+
     :ok =
       OpenRouterChatCompletionTrace.stream_generate(
         %{
           base_url: base_url,
           api_key: "test-key",
-          model_name: "openai/gpt-5-mini",
-          parameters: %{},
-          messages: [%{"role" => "user", "content" => "Search for OpenAI"}],
-          tools: [
-            %{
-              "type" => "function",
-              "function" => %{
-                "name" => "web__search_web",
-                "description" => "Search the web",
-                "parameters" => %{
-                  "type" => "object",
-                  "properties" => %{
-                    "query" => %{"type" => "string"}
-                  },
-                  "required" => ["query"]
-                }
-              }
-            }
-          ],
+          request_payload: request_payload,
           timeout_ms: 1_000,
           connect_timeout_ms: 1_000
         },

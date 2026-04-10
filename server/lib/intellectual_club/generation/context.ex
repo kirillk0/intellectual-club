@@ -12,9 +12,8 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Generation.CacheControl
-  alias IntellectualClub.Generation.History
-  alias IntellectualClub.Generation.RequestBuilder
+  alias IntellectualClub.Generation.ProviderAdapterResolver
+  alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
@@ -38,6 +37,7 @@ defmodule IntellectualClub.Generation.Context do
     :provider_api_key,
     :provider_auth_method,
     :provider_oauth_refresh_token,
+    :adapter_module,
     :model_name,
     :parameters,
     :timeout_ms,
@@ -112,6 +112,15 @@ defmodule IntellectualClub.Generation.Context do
           _other -> nil
         end
 
+      provider_type = provider_type_for_configuration(llm_configuration)
+      adapter_module = ProviderAdapterResolver.for_provider_type(provider_type)
+      request_snapshot = adapter_module.request_snapshot(request_payload)
+
+      cache_control_enabled =
+        adapter_module.supports_cache_control?() and
+          bool_true?(llm_configuration && llm_configuration.supports_cache_control) and
+          is_integer(Map.get(request_snapshot, :history_length))
+
       context = %__MODULE__{
         owner_id: actor && actor.id,
         chat_id: chat.id,
@@ -120,27 +129,28 @@ defmodule IntellectualClub.Generation.Context do
         llm_configuration_id: llm_configuration && llm_configuration.id,
         history_mode: :agent,
         history: [],
-        system_prompt: payload_instructions(request_payload),
+        system_prompt: request_snapshot.system_prompt,
         provider_id: provider_id,
-        provider_type: provider_type_for_configuration(llm_configuration),
+        provider_type: provider_type,
         provider_base_url: provider_base_url,
         provider_api_key: provider_api_key,
         provider_auth_method: provider_auth_method,
         provider_oauth_refresh_token: provider_oauth_refresh_token,
+        adapter_module: adapter_module,
         model_name: payload_model_name(request_payload, llm_configuration),
         parameters: payload_parameters(request_payload, llm_configuration),
         timeout_ms: configuration_timeout_ms(llm_configuration),
         context_length: configuration_context_length(llm_configuration),
         supports_image_input:
           bool_true?(llm_configuration && llm_configuration.supports_image_input),
-        messages: payload_messages(request_payload),
+        messages: request_snapshot.model_input,
         request_payload: request_payload,
         tools_payload: tools_payload,
         tool_instances_by_alias: tool_instances_by_alias,
         max_tool_rounds: max_tool_rounds_for_chat(chat),
         context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
-        cache_control_enabled: false,
-        history_length: nil,
+        cache_control_enabled: cache_control_enabled,
+        history_length: Map.get(request_snapshot, :history_length),
         initial_step_sequence: retry_step.sequence,
         chunk_delay_ms:
           Keyword.get(
@@ -217,38 +227,10 @@ defmodule IntellectualClub.Generation.Context do
       )
 
     provider_type = provider_type_for_chat(chat)
+    adapter_module = ProviderAdapterResolver.for_provider_type(provider_type)
 
     supports_image_input =
       bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
-
-    history_messages =
-      case provider_type do
-        :responses ->
-          # Responses providers use `instructions`, not `role=system` items.
-          History.build_responses_input_items(history,
-            supports_image_input: supports_image_input,
-            provider_type: provider_type
-          )
-
-        _other ->
-          History.build_chat_completions_history_messages(history,
-            supports_image_input: supports_image_input,
-            provider_type: provider_type
-          )
-      end
-
-    messages_with_system =
-      case provider_type do
-        :responses ->
-          history_messages
-
-        _other ->
-          if String.trim(system_prompt) == "" do
-            history_messages
-          else
-            [%{"role" => "system", "content" => system_prompt} | history_messages]
-          end
-      end
 
     tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
     tools_payload = tool_resolution.tools_payload
@@ -259,7 +241,20 @@ defmodule IntellectualClub.Generation.Context do
      cache_control_enabled, history_length} =
       case chat.llm_configuration do
         nil ->
-          {nil, :demo, nil, nil, nil, nil, nil, %{}, nil, nil, messages_with_system, false, nil}
+          initial_request =
+            adapter_module.build_initial_request(%{
+              history: history,
+              system_prompt: system_prompt,
+              model_name: nil,
+              parameters: %{},
+              tools: tools_payload,
+              supports_image_input: supports_image_input,
+              provider_type: :demo,
+              cache_control_enabled: false
+            })
+
+          {nil, :demo, nil, nil, nil, nil, nil, %{}, nil, initial_request.raw_request,
+           initial_request.request_snapshot.model_input, false, nil}
 
         configuration ->
           provider = configuration.provider
@@ -275,43 +270,30 @@ defmodule IntellectualClub.Generation.Context do
           timeout_ms = max(1, configuration.timeout_seconds || 300) * 1000
 
           cache_control_enabled =
-            provider_type != :responses and
+            adapter_module.supports_cache_control?() and
               bool_true?(Map.get(configuration, :supports_cache_control))
 
-          messages =
-            if cache_control_enabled do
-              history_length = length(messages_with_system)
+          initial_request =
+            adapter_module.build_initial_request(%{
+              history: history,
+              system_prompt: system_prompt,
+              model_name: model_name,
+              parameters: parameters,
+              tools: tools_payload,
+              supports_image_input: supports_image_input,
+              provider_type: provider_type,
+              cache_control_enabled: cache_control_enabled
+            })
 
-              messages_with_system
-              |> CacheControl.apply_system_prompt_marker()
-              |> CacheControl.apply_history_end_marker(history_length: history_length)
-            else
-              messages_with_system
-            end
+          request_payload = initial_request.raw_request
+          request_snapshot = initial_request.request_snapshot
+          messages = request_snapshot.model_input
 
           history_length =
             if cache_control_enabled do
-              length(messages_with_system)
+              length(messages)
             else
               nil
-            end
-
-          request_payload =
-            case provider_type do
-              :responses ->
-                RequestBuilder.build_responses_payload_from_input_items(
-                  model_name,
-                  parameters,
-                  messages,
-                  include: ["reasoning.encrypted_content"],
-                  instructions: system_prompt,
-                  tools: tools_payload
-                )
-
-              _other ->
-                RequestBuilder.build_chat_completions_payload(model_name, parameters, messages,
-                  tools: tools_payload
-                )
             end
 
           {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
@@ -348,6 +330,7 @@ defmodule IntellectualClub.Generation.Context do
       provider_api_key: provider_api_key,
       provider_auth_method: provider_auth_method,
       provider_oauth_refresh_token: provider_oauth_refresh_token,
+      adapter_module: adapter_module,
       model_name: model_name,
       parameters: parameters,
       timeout_ms: timeout_ms,
@@ -514,7 +497,7 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp normalize_retry_request_payload(%{} = raw_request) do
-    payload = stringify_keys(raw_request)
+    payload = RequestPayload.stringify_keys(raw_request)
 
     if map_size(payload) > 0 do
       {:ok, payload}
@@ -531,15 +514,6 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp normalize_retry_request_payload(_other), do: {:error, :invalid_step_request}
-
-  defp stringify_keys(%{} = value) do
-    Map.new(value, fn {key, nested_value} ->
-      {to_string(key), stringify_keys(nested_value)}
-    end)
-  end
-
-  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
-  defp stringify_keys(value), do: value
 
   defp load_retry_chat(message) when is_map(message) do
     case Map.get(message, :chat) do
@@ -580,34 +554,15 @@ defmodule IntellectualClub.Generation.Context do
     end
   end
 
-  @payload_reserved_keys [
-    "model",
-    "messages",
-    "input",
-    "stream",
-    "store",
-    "instructions",
-    "tools",
-    "include",
-    "tool_choice"
-  ]
-
   defp payload_model_name(payload, llm_configuration)
        when is_map(payload) do
-    from_payload =
-      payload
-      |> Map.get("model")
-      |> to_string()
-      |> String.trim()
-
-    if from_payload != "" do
-      from_payload
-    else
+    fallback_model_name =
       case llm_configuration do
         %{} = cfg -> Map.get(cfg, :model_name)
         _other -> nil
       end
-    end
+
+    RequestPayload.model_name(payload, fallback_model_name)
   end
 
   defp payload_model_name(_payload, llm_configuration) do
@@ -619,46 +574,23 @@ defmodule IntellectualClub.Generation.Context do
 
   defp payload_parameters(payload, llm_configuration)
        when is_map(payload) do
-    parameters =
-      payload
-      |> Map.drop(@payload_reserved_keys)
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
-
-    cond do
-      map_size(parameters) > 0 ->
-        parameters
-
-      is_map(llm_configuration) and is_map(Map.get(llm_configuration, :parameters)) ->
-        stringify_keys(Map.get(llm_configuration, :parameters))
-
-      true ->
+    fallback_parameters =
+      if is_map(llm_configuration) and is_map(Map.get(llm_configuration, :parameters)) do
+        RequestPayload.stringify_keys(Map.get(llm_configuration, :parameters))
+      else
         %{}
-    end
+      end
+
+    RequestPayload.parameters(payload, fallback_parameters)
   end
 
   defp payload_parameters(_payload, llm_configuration) do
     if is_map(llm_configuration) and is_map(Map.get(llm_configuration, :parameters)) do
-      stringify_keys(Map.get(llm_configuration, :parameters))
+      RequestPayload.stringify_keys(Map.get(llm_configuration, :parameters))
     else
       %{}
     end
   end
-
-  defp payload_messages(payload) when is_map(payload) do
-    messages = Map.get(payload, "messages")
-    if is_list(messages), do: messages, else: []
-  end
-
-  defp payload_messages(_payload), do: []
-
-  defp payload_instructions(payload) when is_map(payload) do
-    payload
-    |> Map.get("instructions")
-    |> to_string()
-  end
-
-  defp payload_instructions(_payload), do: ""
 
   defp configuration_timeout_ms(%{} = llm_configuration) do
     timeout_seconds =
@@ -683,8 +615,9 @@ defmodule IntellectualClub.Generation.Context do
 
   defp maybe_disable_tools_for_retry(request_payload, tools_payload)
        when is_map(request_payload) and is_list(tools_payload) do
-    tools = Map.get(request_payload, "tools")
-    tool_choice = Map.get(request_payload, "tool_choice")
+    payload = RequestPayload.stringify_keys(request_payload)
+    tools = RequestPayload.tools(payload)
+    tool_choice = RequestPayload.tool_choice(payload)
 
     has_tools? = is_list(tools) and tools != []
     has_tool_choice? = not is_nil(tool_choice)

@@ -6,7 +6,6 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
   https://www.openresponses.org
   """
 
-  alias IntellectualClub.Generation.RequestBuilder
   alias Req.Response
 
   @opaque_sequence 10_000
@@ -24,10 +23,7 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
           %{
             optional(:base_url) => String.t() | nil,
             required(:api_key) => String.t(),
-            optional(:model_name) => String.t() | nil,
-            optional(:parameters) => map(),
-            optional(:messages) => list(map()),
-            optional(:request_payload) => map() | nil,
+            required(:request_payload) => map(),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -45,7 +41,7 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
 
     url = String.trim_trailing(base_url, "/") <> "/responses"
 
-    payload = build_payload(opts)
+    payload = Map.get(opts, :request_payload, %{}) || %{}
 
     headers = [
       {"authorization", "Bearer " <> api_key},
@@ -133,63 +129,6 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
   defp default_base_url(nil), do: "https://api.openai.com/v1"
   defp default_base_url(""), do: "https://api.openai.com/v1"
   defp default_base_url(value), do: to_string(value)
-
-  defp build_payload(opts) do
-    payload =
-      case Map.get(opts, :request_payload) do
-        payload when is_map(payload) and map_size(payload) > 0 ->
-          payload
-
-        _ ->
-          model_name = Map.get(opts, :model_name) || "gpt-4.1-mini"
-          parameters = Map.get(opts, :parameters, %{})
-          messages = Map.get(opts, :messages, [])
-
-          RequestBuilder.build_responses_payload(model_name, parameters, messages,
-            include: ["reasoning.encrypted_content"]
-          )
-      end
-
-    payload
-    |> ensure_store_disabled()
-    |> ensure_instructions_present()
-  end
-
-  defp ensure_store_disabled(payload) when is_map(payload) do
-    payload
-    |> Map.delete(:store)
-    |> Map.put("store", false)
-  end
-
-  defp ensure_store_disabled(payload), do: payload
-
-  defp ensure_instructions_present(payload) when is_map(payload) do
-    instructions =
-      cond do
-        Map.has_key?(payload, "instructions") ->
-          normalize_instructions_value(Map.get(payload, "instructions"))
-
-        Map.has_key?(payload, :instructions) ->
-          normalize_instructions_value(Map.get(payload, :instructions))
-
-        true ->
-          ""
-      end
-
-    payload
-    |> Map.delete(:instructions)
-    |> Map.put("instructions", instructions)
-  end
-
-  defp ensure_instructions_present(payload), do: payload
-
-  defp normalize_instructions_value(nil), do: ""
-  defp normalize_instructions_value(value) when is_binary(value), do: value
-
-  defp normalize_instructions_value(value) when is_atom(value) or is_number(value),
-    do: to_string(value)
-
-  defp normalize_instructions_value(_value), do: ""
 
   defp stream_responses(%Response{} = response, raw_request, emit) do
     state = %{
