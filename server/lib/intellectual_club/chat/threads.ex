@@ -330,6 +330,53 @@ defmodule IntellectualClub.Chat.Threads do
     |> MapSet.new()
   end
 
+  @doc """
+  Returns active branch message ids grouped by chat id.
+  """
+  def active_branch_ids_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    chat_ids =
+      chat_ids
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+
+    if chat_ids == [] do
+      %{}
+    else
+      chats =
+        Chat
+        |> Ash.Query.filter(id in ^chat_ids)
+        |> Ash.Query.select([:id, :last_message_id])
+        |> Ash.read!(actor: actor)
+
+      messages =
+        ChatMessage
+        |> Ash.Query.filter(chat_id in ^chat_ids)
+        |> Ash.Query.select([:id, :chat_id, :parent_id])
+        |> Ash.read!(actor: actor)
+
+      parents_by_chat =
+        Enum.reduce(messages, %{}, fn msg, acc ->
+          Map.update(acc, msg.chat_id, %{msg.id => msg.parent_id}, fn parents ->
+            Map.put(parents, msg.id, msg.parent_id)
+          end)
+        end)
+
+      Enum.reduce(chats, %{}, fn chat, acc ->
+        active_ids = chain_ids(chat.last_message_id, Map.get(parents_by_chat, chat.id, %{}))
+        Map.put(acc, chat.id, MapSet.new(active_ids))
+      end)
+    end
+  end
+
+  @doc """
+  Returns active branch message counts grouped by chat id.
+  """
+  def active_branch_counts_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    chat_ids
+    |> active_branch_ids_by_chat(actor)
+    |> Map.new(fn {chat_id, active_ids} -> {chat_id, MapSet.size(active_ids)} end)
+  end
+
   defp fetch_chat!(%Chat{} = chat, _actor), do: chat
 
   defp fetch_chat!(chat_id, actor) when is_integer(chat_id) do
@@ -419,6 +466,23 @@ defmodule IntellectualClub.Chat.Threads do
     case Map.get(by_id, node_id) do
       nil -> acc
       node -> do_chain_from_leaf(node.parent_id, by_id, [node.id | acc])
+    end
+  end
+
+  defp chain_ids(nil, _parents), do: []
+
+  defp chain_ids(leaf_id, parents) when is_integer(leaf_id) and is_map(parents) do
+    do_chain_ids(leaf_id, parents, MapSet.new(), [])
+  end
+
+  defp do_chain_ids(nil, _parents, _seen, acc), do: acc
+
+  defp do_chain_ids(node_id, parents, seen, acc) do
+    if MapSet.member?(seen, node_id) do
+      acc
+    else
+      next_seen = MapSet.put(seen, node_id)
+      do_chain_ids(Map.get(parents, node_id), parents, next_seen, [node_id | acc])
     end
   end
 

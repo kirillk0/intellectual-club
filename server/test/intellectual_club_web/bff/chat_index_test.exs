@@ -73,7 +73,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert is_map(chat_payload)
     assert chat_payload["first_message_preview"] == "Active branch root"
     assert chat_payload["first_message_role"] == "assistant"
-    assert chat_payload["message_count"] == 2
+    assert chat_payload["message_count"] == 1
   end
 
   test "GET /api/bff/chats returns active_generation_message_id for generating chats", %{

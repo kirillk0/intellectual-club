@@ -48,7 +48,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         |> Ash.Query.load([
           :bot,
           :last_message,
-          :message_count,
           :active_root_message_id,
           llm_configuration: [:provider]
         ])
@@ -60,6 +59,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         |> Ash.read!(actor: actor)
 
       chats = Map.get(page, :results, [])
+
+      message_count_by_chat =
+        Threads.active_branch_counts_by_chat(Enum.map(chats, & &1.id), actor)
+
       first_message_previews = load_active_root_message_previews(chats, preview_len, actor)
       sidebar_stats = ListingStats.sidebar(actor)
 
@@ -71,7 +74,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
             Map.get(first_message_previews, chat.id, {nil, nil})
 
           Serializer.chat_summary(chat, activity_at: activity_at)
-          |> Map.put(:message_count, chat_message_count(chat))
+          |> Map.put(:message_count, Map.get(message_count_by_chat, chat.id, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
         end)
@@ -827,13 +830,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         else
           _ -> default
         end
-    end
-  end
-
-  defp chat_message_count(chat) do
-    case Map.get(chat, :message_count) do
-      count when is_integer(count) and count >= 0 -> count
-      _ -> 0
     end
   end
 

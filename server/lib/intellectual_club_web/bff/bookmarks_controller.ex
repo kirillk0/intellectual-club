@@ -6,10 +6,9 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
   use IntellectualClubWeb, :controller
 
   alias IntellectualClub.Chat.Bookmarking
-  alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.MessageBookmark
   alias IntellectualClub.Chat.Previews
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Loads
   alias IntellectualClubWeb.Bff.Serializer
@@ -26,11 +25,13 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
         |> Ash.Query.load(bookmark_load(), strict?: true)
         |> Ash.read!(actor: actor)
 
-      active_ids_by_chat = active_ids_by_chat(bookmarks, actor)
+      chat_ids = bookmarked_chat_ids(bookmarks)
+      active_ids_by_chat = Threads.active_branch_ids_by_chat(chat_ids, actor)
+      message_count_by_chat = Threads.active_branch_counts_by_chat(chat_ids, actor)
 
       payload =
         bookmarks
-        |> Enum.map(&bookmark_entry(&1, active_ids_by_chat))
+        |> Enum.map(&bookmark_entry(&1, active_ids_by_chat, message_count_by_chat))
         |> Enum.reject(&is_nil/1)
 
       json(conn, %{bookmarks: payload})
@@ -80,7 +81,6 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
           :note,
           :created_at,
           :updated_at,
-          :message_count,
           bot: [:id, :name],
           last_message: [:id, :status, :created_at],
           llm_configuration: [:id, :model_name, :note]
@@ -89,7 +89,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
     ]
   end
 
-  defp bookmark_entry(bookmark, active_ids_by_chat) do
+  defp bookmark_entry(bookmark, active_ids_by_chat, message_count_by_chat) do
     message = Map.get(bookmark, :chat_message)
     chat = if(is_map(message), do: Map.get(message, :chat), else: nil)
 
@@ -99,7 +99,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
       summary =
         chat
         |> Serializer.chat_summary(activity_at: chat_activity_at(chat))
-        |> Map.put(:message_count, chat_message_count(chat))
+        |> Map.put(:message_count, Map.get(message_count_by_chat, chat.id, 0))
 
       active_ids = Map.get(active_ids_by_chat, chat.id, MapSet.new())
       {preview, preview_role} = Previews.message_preview(message, @preview_length)
@@ -130,70 +130,17 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
     end
   end
 
-  defp chat_message_count(chat) do
-    case Map.get(chat, :message_count) do
-      count when is_integer(count) and count >= 0 -> count
-      _ -> 0
-    end
-  end
-
-  defp active_ids_by_chat(bookmarks, actor) when is_list(bookmarks) do
-    chat_ids =
-      bookmarks
-      |> Enum.map(fn bookmark ->
-        bookmark
-        |> Map.get(:chat_message)
-        |> case do
-          %{chat: %{id: chat_id}} when is_integer(chat_id) -> chat_id
-          _ -> nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
-
-    if chat_ids == [] do
-      %{}
-    else
-      chats =
-        Chat
-        |> Ash.Query.filter(id in ^chat_ids)
-        |> Ash.Query.select([:id, :last_message_id])
-        |> Ash.read!(actor: actor)
-
-      messages =
-        ChatMessage
-        |> Ash.Query.filter(chat_id in ^chat_ids)
-        |> Ash.Query.select([:id, :chat_id, :parent_id])
-        |> Ash.read!(actor: actor)
-
-      parents_by_chat =
-        Enum.reduce(messages, %{}, fn msg, acc ->
-          Map.update(acc, msg.chat_id, %{msg.id => msg.parent_id}, fn parents ->
-            Map.put(parents, msg.id, msg.parent_id)
-          end)
-        end)
-
-      Enum.reduce(chats, %{}, fn chat, acc ->
-        active_ids = chain_ids(chat.last_message_id, Map.get(parents_by_chat, chat.id, %{}))
-        Map.put(acc, chat.id, MapSet.new(active_ids))
-      end)
-    end
-  end
-
-  defp chain_ids(nil, _parents), do: []
-
-  defp chain_ids(leaf_id, parents) when is_integer(leaf_id) and is_map(parents) do
-    do_chain_ids(leaf_id, parents, MapSet.new(), [])
-  end
-
-  defp do_chain_ids(nil, _parents, _seen, acc), do: acc
-
-  defp do_chain_ids(node_id, parents, seen, acc) do
-    if MapSet.member?(seen, node_id) do
-      acc
-    else
-      next_seen = MapSet.put(seen, node_id)
-      do_chain_ids(Map.get(parents, node_id), parents, next_seen, [node_id | acc])
-    end
+  defp bookmarked_chat_ids(bookmarks) when is_list(bookmarks) do
+    bookmarks
+    |> Enum.map(fn bookmark ->
+      bookmark
+      |> Map.get(:chat_message)
+      |> case do
+        %{chat: %{id: chat_id}} when is_integer(chat_id) -> chat_id
+        _ -> nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 end

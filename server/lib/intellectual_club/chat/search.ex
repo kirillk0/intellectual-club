@@ -115,6 +115,9 @@ defmodule IntellectualClub.Chat.Search do
       meta_chats = search_meta_chats(term, bot_filter, chat_limit, actor)
       meta_ids = MapSet.new(Enum.map(meta_chats, & &1.id))
 
+      meta_message_count_by_chat =
+        Threads.active_branch_counts_by_chat(Enum.map(meta_chats, & &1.id), actor)
+
       meta_entries =
         Enum.map(meta_chats, fn chat ->
           %{
@@ -123,7 +126,7 @@ defmodule IntellectualClub.Chat.Search do
             snippet: nil,
             message_id: nil,
             message_role: nil,
-            message_count: chat_message_count(chat)
+            message_count: Map.get(meta_message_count_by_chat, chat.id, 0)
           }
         end)
 
@@ -143,7 +146,7 @@ defmodule IntellectualClub.Chat.Search do
 
         chat_ids = message_candidates |> Enum.map(& &1.chat_id) |> Enum.uniq()
 
-        active_ids_by_chat = active_ids_by_chat(chat_ids, actor)
+        active_ids_by_chat = Threads.active_branch_ids_by_chat(chat_ids, actor)
 
         {active_match, inactive_match} =
           Enum.reduce(message_candidates, {%{}, %{}}, fn message, {active_acc, inactive_acc} ->
@@ -183,6 +186,12 @@ defmodule IntellectualClub.Chat.Search do
         inactive_chat_ids = Map.keys(inactive_match)
         inactive_chats = load_chats_by_ids(inactive_chat_ids, remaining_limit, actor)
 
+        message_count_by_chat =
+          Threads.active_branch_counts_by_chat(
+            Enum.map(active_chats ++ inactive_chats, & &1.id),
+            actor
+          )
+
         selected_messages =
           active_match
           |> Map.take(MapSet.to_list(active_chat_id_set))
@@ -215,7 +224,7 @@ defmodule IntellectualClub.Chat.Search do
               snippet: Map.get(match, :snippet),
               message_id: Map.get(match, :message_id),
               message_role: Map.get(match, :message_role),
-              message_count: chat_message_count(chat)
+              message_count: Map.get(message_count_by_chat, chat.id, 0)
             }
           end)
 
@@ -229,7 +238,7 @@ defmodule IntellectualClub.Chat.Search do
               snippet: Map.get(match, :snippet),
               message_id: Map.get(match, :message_id),
               message_role: Map.get(match, :message_role),
-              message_count: chat_message_count(chat)
+              message_count: Map.get(message_count_by_chat, chat.id, 0)
             }
           end)
 
@@ -618,7 +627,7 @@ defmodule IntellectualClub.Chat.Search do
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
-    |> Ash.Query.load([:bot, :last_message, :message_count, llm_configuration: [:provider]])
+    |> Ash.Query.load([:bot, :last_message, llm_configuration: [:provider]])
     |> Ash.read!(actor: actor)
   end
 
@@ -670,15 +679,8 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.Query.filter(id in ^chat_ids)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
-    |> Ash.Query.load([:bot, :last_message, :message_count, llm_configuration: [:provider]])
+    |> Ash.Query.load([:bot, :last_message, llm_configuration: [:provider]])
     |> Ash.read!(actor: actor)
-  end
-
-  defp chat_message_count(chat) do
-    case Map.get(chat, :message_count) do
-      count when is_integer(count) and count >= 0 -> count
-      _ -> 0
-    end
   end
 
   defp contains_query_term(term) when is_binary(term) do
@@ -686,58 +688,6 @@ defmodule IntellectualClub.Chat.Search do
       CiString.new(term)
     else
       term
-    end
-  end
-
-  defp active_ids_by_chat([], _actor), do: %{}
-
-  defp active_ids_by_chat(chat_ids, actor) when is_list(chat_ids) do
-    chat_ids = Enum.uniq(Enum.filter(chat_ids, &is_integer/1))
-
-    if chat_ids == [] do
-      %{}
-    else
-      chats =
-        Chat
-        |> Ash.Query.filter(id in ^chat_ids)
-        |> Ash.read!(actor: actor)
-
-      messages =
-        ChatMessage
-        |> Ash.Query.filter(chat_id in ^chat_ids)
-        |> Ash.Query.select([:id, :chat_id, :parent_id])
-        |> Ash.read!(actor: actor)
-
-      parents_by_chat =
-        Enum.reduce(messages, %{}, fn msg, acc ->
-          Map.update(acc, msg.chat_id, %{msg.id => msg.parent_id}, fn map ->
-            Map.put(map, msg.id, msg.parent_id)
-          end)
-        end)
-
-      Enum.reduce(chats, %{}, fn chat, acc ->
-        parents = Map.get(parents_by_chat, chat.id, %{})
-        active_ids = chain_ids(chat.last_message_id, parents)
-        Map.put(acc, chat.id, MapSet.new(active_ids))
-      end)
-    end
-  end
-
-  defp chain_ids(nil, _parents), do: []
-
-  defp chain_ids(leaf_id, parents) when is_integer(leaf_id) and is_map(parents) do
-    do_chain_ids(leaf_id, parents, MapSet.new(), [])
-  end
-
-  defp do_chain_ids(nil, _parents, _seen, acc), do: acc
-
-  defp do_chain_ids(node_id, parents, seen, acc) do
-    if MapSet.member?(seen, node_id) do
-      acc
-    else
-      next_seen = MapSet.put(seen, node_id)
-      parent_id = Map.get(parents, node_id)
-      do_chain_ids(parent_id, parents, next_seen, [node_id | acc])
     end
   end
 end

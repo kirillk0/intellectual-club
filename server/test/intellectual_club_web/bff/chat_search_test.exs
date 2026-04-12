@@ -227,7 +227,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     assert Enum.at(results, 2)["id"] == chat_inactive.id
     assert Enum.at(results, 2)["message_id"] == inactive_msg.id
-    assert Enum.at(results, 2)["message_count"] == 3
+    assert Enum.at(results, 2)["message_count"] == 2
   end
 
   test "GET /api/bff/chats/search uses case-insensitive matching for message hits", %{conn: conn} do

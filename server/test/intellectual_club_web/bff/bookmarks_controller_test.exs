@@ -84,6 +84,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     assert entry["inactive"] == true
     assert entry["preview"] == "Alpha reply"
     assert get_in(entry, ["chat", "id"]) == chat.id
+    assert get_in(entry, ["chat", "message_count"]) == 3
   end
 
   defp create_chat!(actor, title) do
