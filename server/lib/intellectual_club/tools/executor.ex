@@ -204,7 +204,9 @@ defmodule IntellectualClub.Tools.Executor do
   end
 
   defp sanitize_term(value) when is_binary(value) do
-    :binary.replace(value, @null_byte, "", [:global])
+    value
+    |> :binary.replace(@null_byte, "", [:global])
+    |> ensure_valid_utf8()
   end
 
   defp sanitize_term(value) when is_list(value) do
@@ -225,4 +227,12 @@ defmodule IntellectualClub.Tools.Executor do
   end
 
   defp sanitize_term(value), do: value
+
+  defp ensure_valid_utf8(value) when is_binary(value) do
+    if String.valid?(value) do
+      value
+    else
+      :unicode.characters_to_binary(value, :latin1, :utf8)
+    end
+  end
 end

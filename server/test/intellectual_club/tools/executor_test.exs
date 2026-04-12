@@ -28,6 +28,31 @@ defmodule IntellectualClub.Tools.ExecutorTest do
     refute contains_null_byte?(sanitized)
   end
 
+  test "sanitize_execution_result converts invalid utf-8 recursively" do
+    invalid = <<208, 194, 189>>
+
+    result = %ExecutionResult{
+      text: "head " <> invalid <> " tail",
+      raw: %{
+        "stdout" => invalid,
+        invalid => %{"nested" => "value " <> invalid},
+        "list" => [invalid, {"tuple", invalid}]
+      },
+      media: [%{"filename" => "image-" <> invalid <> ".png"}],
+      artifacts: [%{"path" => "/tmp/" <> invalid <> ".bin"}]
+    }
+
+    sanitized = Executor.sanitize_execution_result(result)
+
+    assert sanitized.text == "head ÐÂ½ tail"
+    assert sanitized.raw["stdout"] == "ÐÂ½"
+    assert sanitized.raw["ÐÂ½"] == %{"nested" => "value ÐÂ½"}
+    assert sanitized.raw["list"] == ["ÐÂ½", {"tuple", "ÐÂ½"}]
+    assert sanitized.media == [%{"filename" => "image-ÐÂ½.png"}]
+    assert sanitized.artifacts == [%{"path" => "/tmp/ÐÂ½.bin"}]
+    assert utf8_valid?(sanitized)
+  end
+
   defp contains_null_byte?(value) when is_binary(value) do
     :binary.match(value, <<0>>) != :nomatch
   end
@@ -55,4 +80,30 @@ defmodule IntellectualClub.Tools.ExecutorTest do
   end
 
   defp contains_null_byte?(_value), do: false
+
+  defp utf8_valid?(value) when is_binary(value), do: String.valid?(value)
+
+  defp utf8_valid?(%ExecutionResult{} = value) do
+    value
+    |> Map.from_struct()
+    |> utf8_valid?()
+  end
+
+  defp utf8_valid?(value) when is_list(value) do
+    Enum.all?(value, &utf8_valid?/1)
+  end
+
+  defp utf8_valid?(value) when is_map(value) do
+    Enum.all?(value, fn {key, nested_value} ->
+      utf8_valid?(key) and utf8_valid?(nested_value)
+    end)
+  end
+
+  defp utf8_valid?(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.all?(&utf8_valid?/1)
+  end
+
+  defp utf8_valid?(_value), do: true
 end

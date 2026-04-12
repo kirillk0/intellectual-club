@@ -1050,7 +1050,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
   defp normalize_text(text) when is_binary(text) do
     text
-    |> String.replace("\x00", "")
+    |> sanitize_binary_text()
     |> String.replace("\r\n", "\n")
     |> String.replace("\r", "\n")
     |> then(&Regex.replace(~r/\n{3,}/u, &1, "\n\n"))
@@ -1197,7 +1197,25 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   defp body_to_binary(body) when is_map(body), do: Jason.encode!(body)
   defp body_to_binary(body), do: to_string(body)
 
-  defp body_to_string(body), do: body_to_binary(body)
+  defp body_to_string(body) do
+    body
+    |> body_to_binary()
+    |> sanitize_binary_text()
+  end
+
+  defp sanitize_binary_text(text) when is_binary(text) do
+    text
+    |> :binary.replace("\x00", "", [:global])
+    |> ensure_valid_utf8()
+  end
+
+  defp ensure_valid_utf8(text) when is_binary(text) do
+    if String.valid?(text) do
+      text
+    else
+      :unicode.characters_to_binary(text, :latin1, :utf8)
+    end
+  end
 
   defp pad_page_index(page) when is_integer(page),
     do: page |> Integer.to_string() |> String.pad_leading(4, "0")
