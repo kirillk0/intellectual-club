@@ -20,8 +20,6 @@
             :selectedFilter="botFilter"
             :hasActiveFilter="hasActiveBotFilter"
             :allBotsCount="allBotsCount"
-            :showNoBotOption="showNoBotOption"
-            :noBotChatCount="noBotChatCount"
             :options="visibleBotFilterOptions"
             :emptyState="botFilterEmptyState"
             @toggle-sort="toggleBotSortMode"
@@ -100,8 +98,6 @@
           :selectedFilter="botFilter"
           :hasActiveFilter="hasActiveBotFilter"
           :allBotsCount="allBotsCount"
-          :showNoBotOption="showNoBotOption"
-          :noBotChatCount="noBotChatCount"
           :options="visibleBotFilterOptions"
           :emptyState="botFilterEmptyState"
           @toggle-sort="toggleBotSortMode"
@@ -132,7 +128,7 @@
       <BotSelectorModal
         v-if="botModalOpen"
         v-model="botModalValue"
-        :bots="bots"
+        :options="createChatBotOptionsBase"
         :saving="creating"
         title="Select bot for new chat"
         confirm-label="Create chat"
@@ -181,6 +177,7 @@ type ChatSearchResult = ChatSummary & {
 };
 
 type BotFilterOption = {
+  id: number | '';
   value: string;
   name: string;
   label: string;
@@ -189,6 +186,17 @@ type BotFilterOption = {
   sort_activity_at?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+};
+
+type BotSelectorOption = {
+  id: number | '';
+  name: string;
+  image?: ImageAsset | null;
+  shared_incoming?: boolean;
+  shared_outgoing?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  sort_activity_at?: string | null;
 };
 
 type ChatListBotStat = {
@@ -200,6 +208,7 @@ type ChatListBotStat = {
 type ChatListStats = {
   total_chats: number;
   no_bot_chat_count: number;
+  no_bot_last_activity_at: string | null;
   bots: ChatListBotStat[];
 };
 
@@ -226,6 +235,7 @@ const bots = ref<Bot[]>([]);
 const chatListStats = ref<ChatListStats>({
   total_chats: 0,
   no_bot_chat_count: 0,
+  no_bot_last_activity_at: null,
   bots: [],
 });
 const botModalOpen = ref(false);
@@ -271,6 +281,23 @@ const noBotChatCount = computed(() => {
   return Number.isInteger(count) && count > 0 ? count : 0;
 });
 const showNoBotOption = computed(() => noBotChatCount.value > 0 || botFilter.value === 'none');
+const noBotSortActivityAt = computed(() => chatListStats.value.no_bot_last_activity_at);
+
+const noBotFilterOption = computed<BotFilterOption | null>(() => {
+  if (!showNoBotOption.value) return null;
+
+  return {
+    id: '',
+    value: 'none',
+    name: 'No bot',
+    label: 'No bot',
+    image: null,
+    count: noBotChatCount.value,
+    sort_activity_at: noBotSortActivityAt.value,
+    updated_at: noBotSortActivityAt.value,
+    created_at: noBotSortActivityAt.value,
+  };
+});
 
 const botFilterOptions = computed<BotFilterOption[]>(() => {
   const botMapById = new Map<number, Bot>();
@@ -287,6 +314,7 @@ const botFilterOptions = computed<BotFilterOption[]>(() => {
       const fallbackName = String(stat.bot_name || '').trim() || `Bot #${stat.bot_id}`;
       const optionName = String(bot?.name || fallbackName).trim() || fallbackName;
       return {
+        id: stat.bot_id,
         value: String(stat.bot_id),
         name: optionName,
         label: optionName,
@@ -297,6 +325,8 @@ const botFilterOptions = computed<BotFilterOption[]>(() => {
         created_at: bot?.created_at ?? null,
       } satisfies BotFilterOption;
     });
+
+  if (noBotFilterOption.value) options.unshift(noBotFilterOption.value);
 
   return sortBotsByPreference(options, botSortMode.value);
 });
@@ -311,6 +341,32 @@ const botFilterEmptyState = computed(() => {
   if (visibleBotFilterOptions.value.length) return '';
   if (botSearchTerm.value.trim()) return 'No matches found.';
   return 'No bots yet.';
+});
+
+const createChatBotOptionsBase = computed<BotSelectorOption[]>(() => {
+  return [
+    {
+      id: '',
+      name: 'No bot',
+      sort_activity_at: noBotSortActivityAt.value,
+      updated_at: noBotSortActivityAt.value,
+      created_at: noBotSortActivityAt.value,
+    },
+    ...(bots.value ?? []).map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      image: bot.image ?? null,
+      shared_incoming: bot.shared_incoming,
+      shared_outgoing: bot.shared_outgoing,
+      created_at: bot.created_at ?? null,
+      updated_at: bot.updated_at ?? null,
+      sort_activity_at: bot.sort_activity_at ?? null,
+    })),
+  ];
+});
+
+const createChatBotOptions = computed<BotSelectorOption[]>(() => {
+  return sortBotsByPreference(createChatBotOptionsBase.value, botSortMode.value);
 });
 
 function matchesBotFilter(chat: Pick<ChatSummary, 'bot_id'>) {
@@ -445,6 +501,8 @@ function normalizeChatListStats(value: unknown): ChatListStats {
       raw.no_bot_chat_count >= 0
         ? raw.no_bot_chat_count
         : 0,
+    no_bot_last_activity_at:
+      typeof raw.no_bot_last_activity_at === 'string' ? raw.no_bot_last_activity_at : null,
     bots: rawBots
       .map((entry) => {
         const item = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
@@ -603,9 +661,13 @@ watch(
 async function openCreateChatModal() {
   if (creating.value) return;
   error.value = null;
-  botModalValue.value = '';
+  const initialSelection = botSortMode.value === 'recent_activity' ? createChatBotOptions.value[0]?.id ?? '' : '';
+  botModalValue.value = initialSelection;
   botModalOpen.value = true;
   await loadBots({ showError: true });
+
+  if (!botModalOpen.value || botModalValue.value !== initialSelection) return;
+  botModalValue.value = botSortMode.value === 'recent_activity' ? createChatBotOptions.value[0]?.id ?? '' : '';
 }
 
 function closeCreateChatModal() {

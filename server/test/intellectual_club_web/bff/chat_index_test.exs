@@ -230,6 +230,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     assert payload["stats"]["total_chats"] == 4
     assert payload["stats"]["no_bot_chat_count"] == 1
+    assert is_binary(payload["stats"]["no_bot_last_activity_at"])
 
     assert Enum.sort_by(payload["stats"]["bots"], & &1["bot_id"]) == [
              %{"bot_id" => bot_a.id, "bot_name" => "Bot A", "chat_count" => 1},

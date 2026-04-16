@@ -3,6 +3,7 @@ import { effectScope, ref, watch } from 'vue';
 export type BotSortMode = 'name' | 'recent_activity';
 
 type BotSortRecord = {
+  id?: number | '' | null;
   name?: string | null;
   sort_activity_at?: string | null;
   updated_at?: string | null;
@@ -58,6 +59,7 @@ export const botSortTimestamp = (record: BotSortRecord): number => {
 };
 
 const botSortName = (record: BotSortRecord): string => String(record.name || '').trim();
+const isNoBotRecord = (record: BotSortRecord): boolean => record.id === '';
 
 export const compareBotsForSortMode = (
   left: BotSortRecord,
@@ -78,7 +80,18 @@ export const compareBotsForSortMode = (
 };
 
 export const sortBotsByPreference = <T extends BotSortRecord>(list: T[], mode: BotSortMode): T[] => {
-  return [...(list || [])].sort((left, right) => compareBotsForSortMode(left, right, mode));
+  const records = [...(list || [])];
+
+  if (mode !== 'name') {
+    return records.sort((left, right) => compareBotsForSortMode(left, right, mode));
+  }
+
+  const noBotOptions = records.filter((record) => isNoBotRecord(record));
+  const regularOptions = records
+    .filter((record) => !isNoBotRecord(record))
+    .sort((left, right) => compareBotsForSortMode(left, right, mode));
+
+  return [...noBotOptions, ...regularOptions];
 };
 
 const ensureInitialized = () => {

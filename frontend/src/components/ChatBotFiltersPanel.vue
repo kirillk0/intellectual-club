@@ -43,18 +43,6 @@
       </button>
 
       <button
-        v-if="showNoBotOption"
-        type="button"
-        class="row chat-bot-filters-panel__item"
-        :class="{ active: selectedFilter === 'none' }"
-        @click="emit('select-filter', 'none')"
-      >
-        <span class="chat-bot-filters-panel__name">No bot</span>
-        <ImageThumbnail :label="'No bot'" :size="36" :hideWithoutImage="true" />
-        <span class="muted chat-bot-filters-panel__count">{{ noBotChatCount }}</span>
-      </button>
-
-      <button
         v-for="opt in options"
         :key="opt.value"
         type="button"
@@ -91,8 +79,6 @@ const props = defineProps<{
   selectedFilter: string;
   hasActiveFilter: boolean;
   allBotsCount: number;
-  showNoBotOption: boolean;
-  noBotChatCount: number;
   options: ChatBotFilterOption[];
   emptyState: string;
 }>();

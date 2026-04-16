@@ -5,7 +5,10 @@ defmodule IntellectualClub.Chat.ListingStats do
 
   import Ecto.Query, only: [from: 2]
 
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Db
+
+  require Ash.Query
 
   @type bot_stat :: %{
           bot_id: integer(),
@@ -16,11 +19,12 @@ defmodule IntellectualClub.Chat.ListingStats do
   @type sidebar_stats :: %{
           total_chat_count: non_neg_integer(),
           no_bot_chat_count: non_neg_integer(),
+          no_bot_last_activity_at: DateTime.t() | NaiveDateTime.t() | nil,
           bot_stats: [bot_stat()]
         }
 
   @spec sidebar(any()) :: sidebar_stats()
-  def sidebar(%{id: owner_id}) when is_integer(owner_id) do
+  def sidebar(%{id: owner_id} = actor) when is_integer(owner_id) do
     rows =
       Db.repo().all(
         from(c in "chats",
@@ -62,6 +66,7 @@ defmodule IntellectualClub.Chat.ListingStats do
         }
       end)
     end)
+    |> Map.put(:no_bot_last_activity_at, latest_no_bot_chat_activity_at(actor))
   end
 
   def sidebar(_actor), do: empty_sidebar_stats()
@@ -70,8 +75,21 @@ defmodule IntellectualClub.Chat.ListingStats do
     %{
       total_chat_count: 0,
       no_bot_chat_count: 0,
+      no_bot_last_activity_at: nil,
       bot_stats: []
     }
+  end
+
+  defp latest_no_bot_chat_activity_at(actor) do
+    Chat
+    |> Ash.Query.filter(is_nil(bot_id))
+    |> Ash.Query.sort(updated_at: :desc, id: :desc)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(actor: actor)
+    |> case do
+      [%Chat{} = chat] -> chat.updated_at || chat.created_at
+      _ -> nil
+    end
   end
 
   defp normalize_count(value) when is_integer(value) and value >= 0, do: value

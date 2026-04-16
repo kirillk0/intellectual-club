@@ -138,10 +138,7 @@ const choices = computed<BotSelectorOption[]>(() => {
         })),
       ];
 
-  const noBot = base.filter((option) => option.id === '');
-  const bots = base.filter((option) => option.id !== '');
-  const sortedBots = sortBotsByPreference(bots, botSortMode.value);
-  return [...noBot, ...sortedBots];
+  return sortBotsByPreference(base, botSortMode.value);
 });
 
 const title = computed(() => props.title ?? 'Select bot');

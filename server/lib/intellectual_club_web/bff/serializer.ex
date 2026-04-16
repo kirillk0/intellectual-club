@@ -193,11 +193,13 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def chat_list_stats(%{
         total_chat_count: total,
         no_bot_chat_count: no_bot_count,
+        no_bot_last_activity_at: no_bot_last_activity_at,
         bot_stats: stats
       }) do
     %{
       total_chats: total,
       no_bot_chat_count: no_bot_count,
+      no_bot_last_activity_at: datetime_iso(no_bot_last_activity_at),
       bots: Enum.map(stats || [], &chat_list_bot_stat/1)
     }
   end
