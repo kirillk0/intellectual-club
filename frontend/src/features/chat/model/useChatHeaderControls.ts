@@ -20,8 +20,6 @@ type Params = {
   activeGenerationId: Ref<number | null>;
   menuOpen: Ref<boolean>;
   deleting: Ref<boolean>;
-  exporting: Ref<boolean>;
-  duplicating: Ref<boolean>;
   toggleMenu: () => void;
   closeMenu: () => void;
   stackOpen: (payload: { path: string; query?: Record<string, string> }) => void;
@@ -275,18 +273,6 @@ export function useChatHeaderControls(params: Params) {
     showMissingToolsBanner.value = false;
   };
 
-  const duplicateActiveBranch = async () => {
-    window.alert('Not implemented yet.');
-  };
-
-  const exportMarkdown = async () => {
-    window.alert('Not implemented yet.');
-  };
-
-  const exportYaml = async () => {
-    window.alert('Not implemented yet.');
-  };
-
   const removeChat = async () => {
     if (!params.chatId.value || params.deleting.value) return;
     const ok = window.confirm('Delete this chat? All messages will be removed.');
@@ -346,9 +332,6 @@ export function useChatHeaderControls(params: Params) {
     openBotEditor,
     openBotTools,
     dismissMissingToolsBanner,
-    duplicateActiveBranch,
-    exportMarkdown,
-    exportYaml,
     removeChat,
   };
 }

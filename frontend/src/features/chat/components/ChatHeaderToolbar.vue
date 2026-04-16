@@ -113,15 +113,6 @@
                 <button type="button" class="link" @click="emit('open-note-modal')" style="padding: 0">edit</button>
               </div>
             </div>
-            <button class="menu-item" type="button" @click="emit('duplicate-active-branch')" :disabled="duplicating">
-              {{ duplicating ? 'Duplicating…' : 'Duplicate active branch' }}
-            </button>
-            <button class="menu-item" type="button" @click="emit('export-markdown')" :disabled="exporting">
-              {{ exporting ? 'Exporting…' : 'Export Markdown' }}
-            </button>
-            <button class="menu-item" type="button" @click="emit('export-yaml')" :disabled="exporting">
-              {{ exporting ? 'Exporting…' : 'Export YAML' }}
-            </button>
             <button class="menu-item danger" type="button" @click="emit('delete-chat')" :disabled="deleting">
               {{ deleting ? 'Deleting…' : 'Delete chat' }}
             </button>
@@ -171,8 +162,6 @@ interface Props {
   currentBotId: number | null;
   currentBotName: string;
   chatNote: string;
-  duplicating: boolean;
-  exporting: boolean;
   deleting: boolean;
   showMissingToolsBanner: boolean;
   missingRequiredPerUserToolAliases: string[];
@@ -196,9 +185,6 @@ const emit = defineEmits<{
   (e: 'open-bot-editor'): void;
   (e: 'open-bot-modal'): void;
   (e: 'open-note-modal'): void;
-  (e: 'duplicate-active-branch'): void;
-  (e: 'export-markdown'): void;
-  (e: 'export-yaml'): void;
   (e: 'delete-chat'): void;
   (e: 'open-bot-tools'): void;
   (e: 'dismiss-missing-tools-banner'): void;

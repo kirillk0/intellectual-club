@@ -9,8 +9,6 @@ export function useChatUiChrome() {
 
   const menuOpen = ref(false);
   const deleting = ref(false);
-  const exporting = ref(false);
-  const duplicating = ref(false);
 
   const menuRef = ref<HTMLElement | null>(null);
   const menuAnchorRef = ref<HTMLElement | null>(null);
@@ -160,8 +158,6 @@ export function useChatUiChrome() {
     isMobile,
     menuOpen,
     deleting,
-    exporting,
-    duplicating,
     menuRef,
     menuAnchorRef,
     menuButtonRef,
@@ -179,4 +175,3 @@ export function useChatUiChrome() {
     unmountListeners,
   };
 }
-
