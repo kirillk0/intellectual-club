@@ -967,6 +967,157 @@ defmodule IntellectualClub.Generation.ContextTest do
     refute Map.has_key?(assistant_history, "reasoning_details")
   end
 
+  test "keeps completed prefix of canceled assistant messages in chat provider history" do
+    %{user: actor} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "OpenRouter",
+          type: :openrouter_chat_completion,
+          base_url: "https://openrouter.ai/api/v1",
+          api_key: "k"
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "openai/gpt-5-nano",
+          note: nil,
+          parameters: %{},
+          enabled: true,
+          timeout_seconds: 30,
+          context_length: 8192,
+          supports_cache_control: false,
+          supports_image_input: false
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Canceled chat history reconstruction",
+          llm_configuration_id: configuration.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
+
+    assistant =
+      create_assistant_message!(chat, user_1, actor,
+        llm_configuration_id: configuration.id,
+        status: :canceled
+      )
+
+    completed_step = create_step!(assistant.id, 1, actor, %{status: :done})
+
+    _ =
+      create_item_with_text_and_opaque!(
+        completed_step.id,
+        1,
+        :tool_call,
+        "Tool call: weather__get",
+        %{
+          "tool_call_id" => "call_weather",
+          "name" => "weather__get",
+          "arguments" => %{"city" => "Paris"},
+          "raw" => %{
+            "id" => "call_weather",
+            "type" => "function",
+            "function" => %{"name" => "weather__get", "arguments" => ~s({"city":"Paris"})}
+          }
+        },
+        actor
+      )
+
+    _ =
+      create_item_with_text_and_opaque!(
+        completed_step.id,
+        2,
+        :tool_result,
+        ~s({"temperature":18.5}),
+        %{
+          "tool_call_id" => "call_weather",
+          "name" => "weather__get",
+          "raw" => %{"temperature" => 18.5}
+        },
+        actor
+      )
+
+    _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
+
+    canceled_step = create_step!(assistant.id, 2, actor, %{status: :canceled})
+    _ = create_item_with_text!(canceled_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        canceled_step.id,
+        2,
+        :tool_call,
+        "Tool call: weather__get",
+        %{
+          "tool_call_id" => "call_tomorrow",
+          "name" => "weather__get",
+          "arguments" => %{"city" => "Paris", "day" => "tomorrow"},
+          "raw" => %{
+            "id" => "call_tomorrow",
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "arguments" => ~s({"city":"Paris","day":"tomorrow"})
+            }
+          }
+        },
+        actor
+      )
+
+    {:ok, _user_2} = Threads.add_message_to_end(chat, :user, "And tomorrow?", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.messages == [
+             %{"role" => "user", "content" => "What's the weather?"},
+             %{
+               "role" => "assistant",
+               "content" => "It is 18.5°C in Paris.",
+               "tool_calls" => [
+                 %{
+                   "id" => "call_weather",
+                   "type" => "function",
+                   "function" => %{"name" => "weather__get", "arguments" => ~s({"city":"Paris"})}
+                 }
+               ]
+             },
+             %{
+               "role" => "tool",
+               "tool_call_id" => "call_weather",
+               "content" => ~s({"temperature":18.5})
+             },
+             %{"role" => "user", "content" => "And tomorrow?"}
+           ]
+
+    refute Enum.any?(context.messages, fn message ->
+             message["role"] == "assistant" and
+               String.contains?(message["content"] || "", "Checking tomorrow.")
+           end)
+  end
+
   test "includes placeholder tool result when tool output is empty" do
     %{user: actor} = user_fixture()
 
@@ -1247,6 +1398,166 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert Map.get(context.request_payload, "store") == false
   end
 
+  test "keeps completed prefix of canceled assistant messages in responses history" do
+    %{user: actor} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Responses",
+          type: :responses,
+          base_url: "https://api.openai.com/v1",
+          api_key: "k"
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "gpt-5-nano",
+          note: nil,
+          parameters: %{},
+          enabled: true,
+          timeout_seconds: 30,
+          context_length: 8192,
+          supports_cache_control: false,
+          supports_image_input: false
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Canceled responses history reconstruction",
+          llm_configuration_id: configuration.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
+
+    assistant =
+      create_assistant_message!(chat, user_1, actor,
+        llm_configuration_id: configuration.id,
+        status: :canceled
+      )
+
+    completed_step = create_step!(assistant.id, 1, actor, %{status: :done})
+
+    _ =
+      create_item_with_text_and_opaque!(
+        completed_step.id,
+        1,
+        :tool_call,
+        "Tool call: weather__get",
+        %{
+          "type" => "function_call",
+          "id" => "fc_call_weather",
+          "call_id" => "call_weather",
+          "name" => "weather__get",
+          "arguments" => ~s({"city":"Paris"})
+        },
+        actor
+      )
+
+    _ =
+      create_item_with_text_and_opaque!(
+        completed_step.id,
+        2,
+        :tool_result,
+        ~s({"temperature":18.5}),
+        %{
+          "type" => "function_call_output",
+          "id" => "fco_call_weather",
+          "call_id" => "call_weather",
+          "output" => ~s({"temperature":18.5})
+        },
+        actor
+      )
+
+    _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
+
+    canceled_step = create_step!(assistant.id, 2, actor, %{status: :canceled})
+    _ = create_item_with_text!(canceled_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        canceled_step.id,
+        2,
+        :tool_call,
+        "Tool call: weather__get",
+        %{
+          "type" => "function_call",
+          "id" => "fc_call_tomorrow",
+          "call_id" => "call_tomorrow",
+          "name" => "weather__get",
+          "arguments" => ~s({"city":"Paris","day":"tomorrow"})
+        },
+        actor
+      )
+
+    {:ok, _user_2} = Threads.add_message_to_end(chat, :user, "And tomorrow?", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.messages == [
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => "What's the weather?"}]
+             },
+             %{
+               "type" => "function_call",
+               "id" => "fc_call_weather",
+               "call_id" => "call_weather",
+               "name" => "weather__get",
+               "arguments" => ~s({"city":"Paris"})
+             },
+             %{
+               "type" => "function_call_output",
+               "id" => "fco_call_weather",
+               "call_id" => "call_weather",
+               "output" => ~s({"temperature":18.5})
+             },
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "phase" => "final_answer",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "It is 18.5°C in Paris.",
+                   "annotations" => []
+                 }
+               ]
+             },
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => "And tomorrow?"}]
+             }
+           ]
+
+    refute Enum.any?(context.messages, fn item ->
+             item["type"] == "function_call" and item["call_id"] == "call_tomorrow"
+           end)
+  end
+
   test "applies cache control markers for supported chat configurations" do
     %{user: actor} = user_fixture()
 
@@ -1354,14 +1665,34 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert payload_messages == context.messages
   end
 
-  defp create_step!(message_id, sequence, actor) do
+  defp create_step!(message_id, sequence, actor, attrs \\ %{}) do
     ChatMessageStep
     |> Ash.Changeset.for_create(
       :create,
-      %{chat_message_id: message_id, sequence: sequence},
+      Map.merge(%{chat_message_id: message_id, sequence: sequence}, attrs),
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp create_assistant_message!(chat, parent, actor, attrs) do
+    attrs = Enum.into(attrs, %{})
+
+    ChatMessage
+    |> Ash.Changeset.for_create(
+      :add_message,
+      Map.merge(
+        %{
+          chat_id: chat.id,
+          role: :assistant,
+          parent_id: parent.id,
+          token_count: 0
+        },
+        attrs
+      ),
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 
   defp create_item_with_text!(step_id, sequence, item_type, text, actor) do

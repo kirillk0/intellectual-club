@@ -197,7 +197,7 @@ defmodule IntellectualClub.Generation.Context do
         []
       end
 
-    history = Enum.filter(source_branch, &(&1.status == :done))
+    history = history_branch_for_generation(source_branch)
 
     history_mode = :agent
 
@@ -630,6 +630,50 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp maybe_disable_tools_for_retry(_request_payload, _tools_payload), do: []
+
+  defp history_branch_for_generation(branch) when is_list(branch) do
+    branch
+    |> Enum.map(&history_message_for_generation/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp history_branch_for_generation(_other), do: []
+
+  defp history_message_for_generation(%{} = message) do
+    case Map.get(message, :role) do
+      :user ->
+        if done_status?(Map.get(message, :status)), do: message, else: nil
+
+      :assistant ->
+        assistant_message_for_generation(message)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp history_message_for_generation(_other), do: nil
+
+  defp assistant_message_for_generation(%{} = message) do
+    if done_status?(Map.get(message, :status)) do
+      message
+    else
+      done_steps =
+        message
+        |> Map.get(:steps, [])
+        |> Enum.filter(&done_status?(Map.get(&1, :status)))
+
+      if done_steps == [] do
+        nil
+      else
+        %{message | steps: done_steps}
+      end
+    end
+  end
+
+  defp done_status?(:done), do: true
+  defp done_status?("done"), do: true
+  defp done_status?(_other), do: false
 
   defp provider_type_for_configuration(%{provider: %{type: type}})
        when type in [:responses, :openrouter_chat_completion, :openai_compatible, :demo],
