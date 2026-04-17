@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
         :output_tokens,
         :cached_input_tokens,
         :reasoning_tokens,
+        :first_token_at,
         :cost,
         items: [
           :id,

@@ -167,6 +167,8 @@ export type ChatMessageStep = {
   sequence: number;
   created_at?: string | null;
   finished_at?: string | null;
+  time_to_first_token_ms?: number | null;
+  tokens_per_second?: number | null;
   status?: string | null;
   response_final?: boolean | null;
   input_tokens?: number | null;

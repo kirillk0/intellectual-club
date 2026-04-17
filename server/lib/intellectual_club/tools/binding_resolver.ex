@@ -245,7 +245,17 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
-      [tool_instance: [:name, :type, :config, :secrets, :max_output_tokens, :outlet_online, :can_edit]],
+      [
+        tool_instance: [
+          :name,
+          :type,
+          :config,
+          :secrets,
+          :max_output_tokens,
+          :outlet_online,
+          :can_edit
+        ]
+      ],
       strict?: true
     )
     |> Ash.read!(actor: actor)
@@ -258,7 +268,17 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
-      [tool_instance: [:name, :type, :config, :secrets, :max_output_tokens, :outlet_online, :can_edit]],
+      [
+        tool_instance: [
+          :name,
+          :type,
+          :config,
+          :secrets,
+          :max_output_tokens,
+          :outlet_online,
+          :can_edit
+        ]
+      ],
       strict?: true
     )
     |> Ash.read!(actor: actor)
@@ -271,7 +291,17 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.filter(chat_id == ^chat_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
-      [tool_instance: [:name, :type, :config, :secrets, :max_output_tokens, :outlet_online, :can_edit]],
+      [
+        tool_instance: [
+          :name,
+          :type,
+          :config,
+          :secrets,
+          :max_output_tokens,
+          :outlet_online,
+          :can_edit
+        ]
+      ],
       strict?: true
     )
     |> Ash.read!(actor: actor)

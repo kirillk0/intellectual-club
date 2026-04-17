@@ -15,11 +15,19 @@ defmodule IntellectualClub.Repo.Migrations.AddChatUploadSessions do
       add :external_id, :uuid, null: false
 
       add :chat_id,
-          references(:chats, column: :id, name: "chat_upload_sessions_chat_id_fkey", type: :bigint),
+          references(:chats,
+            column: :id,
+            name: "chat_upload_sessions_chat_id_fkey",
+            type: :bigint
+          ),
           null: false
 
       add :owner_id,
-          references(:users, column: :id, name: "chat_upload_sessions_owner_id_fkey", type: :bigint),
+          references(:users,
+            column: :id,
+            name: "chat_upload_sessions_owner_id_fkey",
+            type: :bigint
+          ),
           null: false
 
       add :id, :bigserial, null: false, primary_key: true
@@ -32,6 +40,9 @@ defmodule IntellectualClub.Repo.Migrations.AddChatUploadSessions do
     create index(:chat_upload_sessions, [:chat_id], name: "chat_upload_sessions_chat_id_index")
     create index(:chat_upload_sessions, [:owner_id], name: "chat_upload_sessions_owner_id_index")
     create index(:chat_upload_sessions, [:status], name: "chat_upload_sessions_status_index")
-    create index(:chat_upload_sessions, [:expires_at], name: "chat_upload_sessions_expires_at_index")
+
+    create index(:chat_upload_sessions, [:expires_at],
+             name: "chat_upload_sessions_expires_at_index"
+           )
   end
 end

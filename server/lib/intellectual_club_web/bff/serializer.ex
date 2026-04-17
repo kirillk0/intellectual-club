@@ -14,6 +14,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.StepMetrics
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -302,6 +303,14 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       id: step.id,
       sequence: step.sequence,
       created_at: datetime_iso(step.created_at),
+      time_to_first_token_ms:
+        StepMetrics.time_to_first_token_ms(step.created_at, Map.get(step, :first_token_at)),
+      tokens_per_second:
+        StepMetrics.tokens_per_second(
+          step.output_tokens,
+          Map.get(step, :first_token_at),
+          Map.get(step, :finished_at)
+        ),
       finished_at: datetime_iso(Map.get(step, :finished_at)),
       status: atom_to_string(step.status),
       response_final: step.response_final,

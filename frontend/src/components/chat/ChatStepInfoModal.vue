@@ -21,6 +21,14 @@
             <span>{{ formatMetric(step?.reasoning_tokens) }}</span>
           </div>
           <div class="step-info-row">
+            <span class="step-info-label">Time to first token</span>
+            <span>{{ formatDurationMs(step?.time_to_first_token_ms) }}</span>
+          </div>
+          <div class="step-info-row">
+            <span class="step-info-label">Output speed (TPS)</span>
+            <span>{{ formatTokensPerSecond(step?.tokens_per_second) }}</span>
+          </div>
+          <div class="step-info-row">
             <span class="step-info-label">Cost (USD)</span>
             <span>{{ formatCost(step?.cost) }}</span>
           </div>
@@ -36,6 +44,12 @@
 
 <script setup lang="ts">
 import type { ChatMessageStep } from '@/types/api';
+import {
+  formatStepCost as formatCost,
+  formatStepDurationMs as formatDurationMs,
+  formatStepMetric as formatMetric,
+  formatTokensPerSecond,
+} from '@/utils/stepStats';
 
 interface Props {
   open: boolean;
@@ -45,18 +59,6 @@ interface Props {
 defineProps<Props>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-const formatMetric = (value: unknown) => {
-  if (value == null || value === '') return '—';
-  return String(value);
-};
-
-const formatCost = (value: unknown) => {
-  if (value == null || value === '') return '—';
-  const num = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(num)) return String(value);
-  const digits = Math.abs(num) > 0 && Math.abs(num) < 0.01 ? 8 : 6;
-  return num.toFixed(digits);
-};
 </script>
 
 <style scoped>

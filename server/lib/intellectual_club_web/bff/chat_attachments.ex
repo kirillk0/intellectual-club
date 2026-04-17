@@ -47,7 +47,8 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
         {:ok, copied_file_ids} ->
           case persist_legacy_uploads(legacy_uploads, upload_policy) do
             {:ok, legacy_file_ids} ->
-              file_ids = copied_file_ids ++ Enum.map(materialized.files, & &1.id) ++ legacy_file_ids
+              file_ids =
+                copied_file_ids ++ Enum.map(materialized.files, & &1.id) ++ legacy_file_ids
 
               case execute_callback(fun, file_ids) do
                 {:ok, result} ->
@@ -147,7 +148,8 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
 
   defp persist_legacy_uploads([], _upload_policy), do: {:ok, []}
 
-  defp persist_legacy_uploads(uploads, upload_policy) when is_list(uploads) and is_map(upload_policy) do
+  defp persist_legacy_uploads(uploads, upload_policy)
+       when is_list(uploads) and is_map(upload_policy) do
     Enum.reduce_while(uploads, {:ok, []}, fn
       %Plug.Upload{} = upload, {:ok, acc} ->
         with :ok <- ChatUploadPolicy.validate_upload(upload, upload_policy),

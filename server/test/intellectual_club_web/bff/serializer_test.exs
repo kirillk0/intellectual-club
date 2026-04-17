@@ -73,4 +73,25 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert Enum.map(second_item.contents, & &1.sequence) == [1, 2]
     assert Enum.map(second_item.contents, & &1.content_text) == ["alpha", "beta"]
   end
+
+  test "step serializes time to first token and tps" do
+    started_at = ~U[2026-04-16 10:00:00.000000Z]
+    first_token_at = ~U[2026-04-16 10:00:00.250000Z]
+    finished_at = ~U[2026-04-16 10:00:02.250000Z]
+
+    serialized =
+      Serializer.step(%ChatMessageStep{
+        id: 101,
+        sequence: 1,
+        created_at: started_at,
+        first_token_at: first_token_at,
+        finished_at: finished_at,
+        status: :done,
+        output_tokens: 20,
+        items: []
+      })
+
+    assert serialized.time_to_first_token_ms == 250
+    assert_in_delta serialized.tokens_per_second, 10.0, 0.0001
+  end
 end

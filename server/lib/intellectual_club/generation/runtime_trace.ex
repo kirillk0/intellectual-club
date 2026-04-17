@@ -7,6 +7,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   the full step snapshot to the database in one batch.
   """
 
+  alias IntellectualClub.Chat.StepMetrics
+
   defmodule Step do
     @moduledoc false
 
@@ -23,6 +25,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       :cached_input_tokens,
       :reasoning_tokens,
       :cost,
+      :first_token_at,
       items_by_key: %{}
     ]
   end
@@ -83,6 +86,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       cached_input_tokens: Keyword.get(opts, :cached_input_tokens, nil),
       reasoning_tokens: Keyword.get(opts, :reasoning_tokens, nil),
       cost: Keyword.get(opts, :cost, nil),
+      first_token_at: Keyword.get(opts, :first_token_at, nil),
       items_by_key: %{}
     }
   end
@@ -94,6 +98,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
   def apply_event(%Step{} = step, {:append_text, item_key, item_type, content_sequence, delta}) do
     step
+    |> maybe_mark_first_token(item_type, delta)
     |> ensure_item(item_key, item_type, nil)
     |> update_item(item_key, fn item ->
       content =
@@ -106,6 +111,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
   def apply_event(%Step{} = step, {:set_text, item_key, item_type, content_sequence, text}) do
     step
+    |> maybe_mark_first_token(item_type, text)
     |> ensure_item(item_key, item_type, nil)
     |> update_item(item_key, fn item ->
       content =
@@ -189,6 +195,10 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       id: step.id || -1,
       sequence: step.sequence || 1,
       created_at: created_at,
+      time_to_first_token_ms:
+        StepMetrics.time_to_first_token_ms(step.started_at, step.first_token_at),
+      tokens_per_second:
+        StepMetrics.tokens_per_second(step.output_tokens, step.first_token_at, nil),
       finished_at: nil,
       status: status_string(step.status),
       response_final: step.response_final || false,
@@ -219,6 +229,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       cached_input_tokens: step.cached_input_tokens,
       reasoning_tokens: step.reasoning_tokens,
       cost: step.cost,
+      first_token_at: step.first_token_at,
       items:
         step.items_by_key
         |> Map.values()
@@ -244,6 +255,19 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   defp status_string(value) when is_atom(value), do: Atom.to_string(value)
   defp status_string(value) when is_binary(value), do: value
   defp status_string(value), do: to_string(value)
+
+  defp maybe_mark_first_token(%Step{first_token_at: %DateTime{}} = step, _item_type, _text),
+    do: step
+
+  defp maybe_mark_first_token(%Step{} = step, :answer, text) do
+    if to_string(text || "") == "" do
+      step
+    else
+      %{step | first_token_at: DateTime.utc_now()}
+    end
+  end
+
+  defp maybe_mark_first_token(%Step{} = step, _item_type, _text), do: step
 
   defp get_nested_usage_value(usage, [outer_key, inner_key]) when is_map(usage) do
     usage

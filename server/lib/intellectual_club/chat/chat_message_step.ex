@@ -85,6 +85,10 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       constraints(min: 0.0)
     end
 
+    attribute :first_token_at, :utc_datetime_usec do
+      allow_nil?(true)
+    end
+
     attribute :finished_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -136,7 +140,8 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :output_tokens,
         :cached_input_tokens,
         :reasoning_tokens,
-        :cost
+        :cost,
+        :first_token_at
       ])
 
       change(relate_actor(:owner))
@@ -155,7 +160,8 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :output_tokens,
         :cached_input_tokens,
         :reasoning_tokens,
-        :cost
+        :cost,
+        :first_token_at
       ])
 
       require_atomic?(false)

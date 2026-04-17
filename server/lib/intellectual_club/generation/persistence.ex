@@ -39,6 +39,7 @@ defmodule IntellectualClub.Generation.Persistence do
           cached_input_tokens: nil,
           reasoning_tokens: nil,
           cost: nil,
+          first_token_at: nil,
           finished_at: nil,
           created_at: started_at,
           updated_at: now
@@ -383,6 +384,7 @@ defmodule IntellectualClub.Generation.Persistence do
       cached_input_tokens: Map.get(persistable, :cached_input_tokens),
       reasoning_tokens: Map.get(persistable, :reasoning_tokens),
       cost: Map.get(persistable, :cost),
+      first_token_at: Map.get(persistable, :first_token_at),
       finished_at: finished_at,
       created_at: created_at,
       updated_at: now
@@ -402,6 +404,7 @@ defmodule IntellectualClub.Generation.Persistence do
              :cached_input_tokens,
              :reasoning_tokens,
              :cost,
+             :first_token_at,
              :finished_at,
              :updated_at
            ]},

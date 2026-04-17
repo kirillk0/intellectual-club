@@ -118,7 +118,9 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete attachments", note: "", variables: %{}}, actor: actor)
+        %{title: "Delete attachments", note: "", variables: %{}},
+        actor: actor
+      )
       |> Ash.create!(actor: actor)
 
     file = create_file!("delete.txt", "text/plain", "delete payload")

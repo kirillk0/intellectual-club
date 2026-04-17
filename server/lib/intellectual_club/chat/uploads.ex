@@ -138,7 +138,8 @@ defmodule IntellectualClub.Chat.Uploads do
   def materialize_uploads(chat_id, upload_ids, actor)
       when is_integer(chat_id) and is_list(upload_ids) do
     with {:ok, sessions} <- fetch_uploaded_sessions(chat_id, upload_ids, actor) do
-      Enum.reduce_while(sessions, {:ok, %{sessions: sessions, files: []}}, fn upload, {:ok, acc} ->
+      Enum.reduce_while(sessions, {:ok, %{sessions: sessions, files: []}}, fn upload,
+                                                                              {:ok, acc} ->
         with {:ok, payload} <- File.read(upload_path(upload.external_id)),
              {:ok, file} <-
                Files.create_from_upload(%{
@@ -227,9 +228,15 @@ defmodule IntellectualClub.Chat.Uploads do
   end
 
   defp ensure_uploading(%ChatUploadSession{status: :uploading}), do: :ok
-  defp ensure_uploading(%ChatUploadSession{status: :uploaded}), do: {:error, "Upload is already complete."}
+
+  defp ensure_uploading(%ChatUploadSession{status: :uploaded}),
+    do: {:error, "Upload is already complete."}
+
   defp ensure_uploading(%ChatUploadSession{status: :aborted}), do: {:error, "Upload was aborted."}
-  defp ensure_uploading(%ChatUploadSession{status: :expired}), do: {:error, "Upload session expired."}
+
+  defp ensure_uploading(%ChatUploadSession{status: :expired}),
+    do: {:error, "Upload session expired."}
+
   defp ensure_uploading(_upload), do: {:error, "Upload session is not writable."}
 
   defp ensure_expected_offset(%ChatUploadSession{uploaded_bytes: expected}, offset)

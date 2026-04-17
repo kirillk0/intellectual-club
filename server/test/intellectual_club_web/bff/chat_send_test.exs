@@ -98,7 +98,16 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     bot = create_bot!(actor, "Chunk send bot", supports_file_processing: true)
     chat = create_chat!(actor, "Chunk send chat", %{bot_id: bot.id})
-    upload = upload_text_attachment!(conn, actor.username, password, chat.id, "attached.txt", "chunk upload")
+
+    upload =
+      upload_text_attachment!(
+        conn,
+        actor.username,
+        password,
+        chat.id,
+        "attached.txt",
+        "chunk upload"
+      )
 
     conn =
       post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{
@@ -220,7 +229,9 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send can copy existing attachments without reupload", %{conn: conn} do
+  test "POST /api/bff/chats/:id/send can copy existing attachments without reupload", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -251,7 +262,8 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
         if content.kind == :media, do: content.id, else: nil
       end)
 
-    {:ok, assistant} = Threads.add_message(chat, :assistant, "Answer", actor: actor, parent_id: root.id)
+    {:ok, assistant} =
+      Threads.add_message(chat, :assistant, "Answer", actor: actor, parent_id: root.id)
 
     conn =
       post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{
