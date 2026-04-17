@@ -23,41 +23,44 @@ defmodule IntellectualClub.Generation.Persistence do
     started_at = Keyword.get(opts, :started_at, now)
 
     {:ok, step_id} =
-      repo.transaction(fn ->
-        owner_id = load_message_owner_id!(repo, message_id)
+      repo.transaction(
+        fn ->
+          owner_id = load_message_owner_id!(repo, message_id)
 
-        step_row = %{
-          chat_message_id: message_id,
-          owner_id: owner_id,
-          sequence: sequence,
-          status: "waiting_provider",
-          raw_request: dump_json(raw_request || %{}),
-          raw_response: dump_json(nil),
-          response_final: dump_boolean(false),
-          input_tokens: nil,
-          output_tokens: nil,
-          cached_input_tokens: nil,
-          reasoning_tokens: nil,
-          cost: nil,
-          first_token_at: nil,
-          finished_at: nil,
-          created_at: started_at,
-          updated_at: now
-        }
+          step_row = %{
+            chat_message_id: message_id,
+            owner_id: owner_id,
+            sequence: sequence,
+            status: "waiting_provider",
+            raw_request: dump_json(raw_request || %{}),
+            raw_response: dump_json(nil),
+            response_final: dump_boolean(false),
+            input_tokens: nil,
+            output_tokens: nil,
+            cached_input_tokens: nil,
+            reasoning_tokens: nil,
+            cost: nil,
+            first_token_at: nil,
+            finished_at: nil,
+            created_at: started_at,
+            updated_at: now
+          }
 
-        _ =
-          repo.insert_all("chat_message_steps", [step_row],
-            on_conflict: {:replace, [:raw_request, :updated_at, :status, :finished_at]},
-            conflict_target: [:chat_message_id, :sequence]
+          _ =
+            repo.insert_all("chat_message_steps", [step_row],
+              on_conflict: {:replace, [:raw_request, :updated_at, :status, :finished_at]},
+              conflict_target: [:chat_message_id, :sequence]
+            )
+
+          repo.one!(
+            from(s in "chat_message_steps",
+              where: s.chat_message_id == ^message_id and s.sequence == ^sequence,
+              select: s.id
+            )
           )
-
-        repo.one!(
-          from(s in "chat_message_steps",
-            where: s.chat_message_id == ^message_id and s.sequence == ^sequence,
-            select: s.id
-          )
-        )
-      end)
+        end,
+        transaction_opts()
+      )
 
     step_id
   end
@@ -67,20 +70,23 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      owner_id = load_message_owner_id!(repo, message_id)
+    repo.transaction(
+      fn ->
+        owner_id = load_message_owner_id!(repo, message_id)
 
-      persist_step_trace!(
-        repo,
-        %{
-          message_id: message_id,
-          owner_id: owner_id,
-          runtime_step: runtime_step,
-          step_status: "done",
-          now: now
-        }
-      )
-    end)
+        persist_step_trace!(
+          repo,
+          %{
+            message_id: message_id,
+            owner_id: owner_id,
+            runtime_step: runtime_step,
+            step_status: "done",
+            now: now
+          }
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -90,20 +96,23 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      owner_id = load_message_owner_id!(repo, message_id)
+    repo.transaction(
+      fn ->
+        owner_id = load_message_owner_id!(repo, message_id)
 
-      persist_step_trace!(
-        repo,
-        %{
-          message_id: message_id,
-          owner_id: owner_id,
-          runtime_step: runtime_step,
-          step_status: "waiting_tools",
-          now: now
-        }
-      )
-    end)
+        persist_step_trace!(
+          repo,
+          %{
+            message_id: message_id,
+            owner_id: owner_id,
+            runtime_step: runtime_step,
+            step_status: "waiting_tools",
+            now: now
+          }
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -178,32 +187,35 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      owner_id = load_message_owner_id!(repo, message_id)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+    repo.transaction(
+      fn ->
+        owner_id = load_message_owner_id!(repo, message_id)
+        answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
 
-      from(m in "chat_messages", where: m.id == ^message_id)
-      |> repo.update_all(
-        set: [
-          status: "done",
-          error_detail: nil,
-          token_count: TokenCounter.estimate(answer_text),
-          finished_at: now,
-          updated_at: now
-        ]
-      )
+        from(m in "chat_messages", where: m.id == ^message_id)
+        |> repo.update_all(
+          set: [
+            status: "done",
+            error_detail: nil,
+            token_count: TokenCounter.estimate(answer_text),
+            finished_at: now,
+            updated_at: now
+          ]
+        )
 
-      persist_step_trace!(
-        repo,
-        %{
-          message_id: message_id,
-          owner_id: owner_id,
-          runtime_step: runtime_step,
-          step_status: "done",
-          now: now
-        }
-      )
-    end)
+        persist_step_trace!(
+          repo,
+          %{
+            message_id: message_id,
+            owner_id: owner_id,
+            runtime_step: runtime_step,
+            step_status: "done",
+            now: now
+          }
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -212,31 +224,34 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      owner_id = load_message_owner_id!(repo, message_id)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+    repo.transaction(
+      fn ->
+        owner_id = load_message_owner_id!(repo, message_id)
+        answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
 
-      from(m in "chat_messages", where: m.id == ^message_id)
-      |> repo.update_all(
-        set: [
-          status: "canceled",
-          token_count: TokenCounter.estimate(answer_text),
-          finished_at: now,
-          updated_at: now
-        ]
-      )
+        from(m in "chat_messages", where: m.id == ^message_id)
+        |> repo.update_all(
+          set: [
+            status: "canceled",
+            token_count: TokenCounter.estimate(answer_text),
+            finished_at: now,
+            updated_at: now
+          ]
+        )
 
-      persist_step_trace!(
-        repo,
-        %{
-          message_id: message_id,
-          owner_id: owner_id,
-          runtime_step: runtime_step,
-          step_status: "canceled",
-          now: now
-        }
-      )
-    end)
+        persist_step_trace!(
+          repo,
+          %{
+            message_id: message_id,
+            owner_id: owner_id,
+            runtime_step: runtime_step,
+            step_status: "canceled",
+            now: now
+          }
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -245,32 +260,35 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      owner_id = load_message_owner_id!(repo, message_id)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+    repo.transaction(
+      fn ->
+        owner_id = load_message_owner_id!(repo, message_id)
+        answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
 
-      from(m in "chat_messages", where: m.id == ^message_id)
-      |> repo.update_all(
-        set: [
-          status: "error",
-          error_detail: error_text,
-          token_count: TokenCounter.estimate(answer_text),
-          finished_at: now,
-          updated_at: now
-        ]
-      )
+        from(m in "chat_messages", where: m.id == ^message_id)
+        |> repo.update_all(
+          set: [
+            status: "error",
+            error_detail: error_text,
+            token_count: TokenCounter.estimate(answer_text),
+            finished_at: now,
+            updated_at: now
+          ]
+        )
 
-      persist_step_trace!(
-        repo,
-        %{
-          message_id: message_id,
-          owner_id: owner_id,
-          runtime_step: runtime_step,
-          step_status: "error",
-          now: now
-        }
-      )
-    end)
+        persist_step_trace!(
+          repo,
+          %{
+            message_id: message_id,
+            owner_id: owner_id,
+            runtime_step: runtime_step,
+            step_status: "error",
+            now: now
+          }
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -285,49 +303,52 @@ defmodule IntellectualClub.Generation.Persistence do
     now = DateTime.utc_now()
     repo = Db.repo()
 
-    repo.transaction(fn ->
-      step_ids =
-        repo.all(
-          from(s in "chat_message_steps",
-            where: s.chat_message_id == ^message_id and s.sequence >= ^from_sequence,
-            select: s.id
+    repo.transaction(
+      fn ->
+        step_ids =
+          repo.all(
+            from(s in "chat_message_steps",
+              where: s.chat_message_id == ^message_id and s.sequence >= ^from_sequence,
+              select: s.id
+            )
           )
-        )
 
-      if step_ids == [] do
-        raise ArgumentError, "Retry step not found"
-      end
+        if step_ids == [] do
+          raise ArgumentError, "Retry step not found"
+        end
 
-      item_ids =
-        repo.all(
-          from(i in "chat_message_items",
-            where: i.chat_message_step_id in ^step_ids,
-            select: i.id
+        item_ids =
+          repo.all(
+            from(i in "chat_message_items",
+              where: i.chat_message_step_id in ^step_ids,
+              select: i.id
+            )
           )
-        )
 
-      if item_ids != [] do
-        from(c in "chat_message_contents", where: c.chat_message_item_id in ^item_ids)
+        if item_ids != [] do
+          from(c in "chat_message_contents", where: c.chat_message_item_id in ^item_ids)
+          |> repo.delete_all()
+        end
+
+        from(i in "chat_message_items", where: i.chat_message_step_id in ^step_ids)
         |> repo.delete_all()
-      end
 
-      from(i in "chat_message_items", where: i.chat_message_step_id in ^step_ids)
-      |> repo.delete_all()
+        from(s in "chat_message_steps", where: s.id in ^step_ids)
+        |> repo.delete_all()
 
-      from(s in "chat_message_steps", where: s.id in ^step_ids)
-      |> repo.delete_all()
-
-      from(m in "chat_messages", where: m.id == ^message_id)
-      |> repo.update_all(
-        set: [
-          status: "generating",
-          error_detail: nil,
-          token_count: 0,
-          finished_at: nil,
-          updated_at: now
-        ]
-      )
-    end)
+        from(m in "chat_messages", where: m.id == ^message_id)
+        |> repo.update_all(
+          set: [
+            status: "generating",
+            error_detail: nil,
+            token_count: 0,
+            finished_at: nil,
+            updated_at: now
+          ]
+        )
+      end,
+      transaction_opts()
+    )
 
     :ok
   end
@@ -552,6 +573,13 @@ defmodule IntellectualClub.Generation.Persistence do
     case Db.adapter() do
       :sqlite -> if(value, do: 1, else: 0)
       :postgres -> value
+    end
+  end
+
+  defp transaction_opts do
+    case Db.adapter() do
+      :sqlite -> [mode: :immediate]
+      :postgres -> []
     end
   end
 end
