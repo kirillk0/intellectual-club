@@ -442,12 +442,13 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
       chat_blocks = load_chat_blocks(chat_id, actor)
       chat_tool_bindings = load_chat_tool_bindings(chat_id, actor)
-      prompt_sources = load_prompt_sources(chat, chat_blocks, actor)
-      compiled_prompt_text = compiled_prompt_text(chat, prompt_sources)
       tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
 
-      counters =
-        ChatMetrics.counters_from_history(chat, messages, actor, prompt_sources: prompt_sources)
+      prompt_context =
+        build_prompt_context_payload(chat, actor,
+          history: messages,
+          chat_blocks: chat_blocks
+        )
 
       bots = load_bots(actor)
       llm_configurations = load_llm_configurations(actor)
@@ -465,14 +466,9 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         branch: serialize_branch(messages, branch_meta_by_id, actor),
         chat_blocks: Enum.map(chat_blocks, &Serializer.chat_block_binding/1),
         chat_tool_bindings: Enum.map(chat_tool_bindings, &Serializer.chat_tool_binding/1),
-        prompt_sources: %{
-          bot: Enum.map(prompt_sources.bot, &prompt_binding/1),
-          chat: Enum.map(prompt_sources.chat, &prompt_binding/1),
-          configuration: Enum.map(prompt_sources.configuration, &prompt_binding/1),
-          user: Enum.map(prompt_sources.user, &prompt_binding/1)
-        },
-        compiled_prompt_text: compiled_prompt_text,
-        counters: counters,
+        prompt_sources: prompt_context.prompt_sources,
+        compiled_prompt_text: prompt_context.compiled_prompt_text,
+        counters: prompt_context.counters,
         active_tool_instances:
           Enum.map(tool_resolution.active_tool_instances, &Serializer.tool_instance_option/1),
         missing_required_per_user_tool_aliases: tool_resolution.missing_aliases,
@@ -484,6 +480,16 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         },
         active_generation_message_id: generating_message_id
       })
+    end
+  end
+
+  def prompt_context(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
+      chat_id = String.to_integer(id)
+      chat = Ash.get!(Chat, chat_id, actor: actor)
+      history = Threads.active_branch(chat, actor)
+
+      json(conn, build_prompt_context_payload(chat, actor, history: history))
     end
   end
 
@@ -914,6 +920,39 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat: Enum.filter(chat_blocks, &(&1.enabled == true)),
       configuration: load_configuration_prompt_blocks(chat.llm_configuration_id, actor),
       user: load_user_prompt_blocks(actor)
+    }
+  end
+
+  defp build_prompt_context_payload(chat, actor, opts) do
+    history =
+      Keyword.get_lazy(opts, :history, fn ->
+        Threads.active_branch(chat, actor)
+      end)
+
+    chat_blocks =
+      Keyword.get_lazy(opts, :chat_blocks, fn ->
+        load_chat_blocks(chat.id, actor)
+      end)
+
+    prompt_sources =
+      Keyword.get_lazy(opts, :prompt_sources, fn ->
+        load_prompt_sources(chat, chat_blocks, actor)
+      end)
+
+    %{
+      prompt_sources: serialize_prompt_sources(prompt_sources),
+      compiled_prompt_text: compiled_prompt_text(chat, prompt_sources),
+      counters:
+        ChatMetrics.counters_from_history(chat, history, actor, prompt_sources: prompt_sources)
+    }
+  end
+
+  defp serialize_prompt_sources(prompt_sources) when is_map(prompt_sources) do
+    %{
+      bot: Enum.map(Map.get(prompt_sources, :bot, []), &prompt_binding/1),
+      chat: Enum.map(Map.get(prompt_sources, :chat, []), &prompt_binding/1),
+      configuration: Enum.map(Map.get(prompt_sources, :configuration, []), &prompt_binding/1),
+      user: Enum.map(Map.get(prompt_sources, :user, []), &prompt_binding/1)
     }
   end
 

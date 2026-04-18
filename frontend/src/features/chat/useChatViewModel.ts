@@ -12,6 +12,7 @@ import {
   useChatUiChrome,
 } from '@/features/chat/model/useChatUiChrome';
 import {
+  type ChatPromptContextPayload,
   type ChatStatePayload,
   type Counters,
 } from '@/features/chat/model/chatViewModel.shared';
@@ -79,7 +80,7 @@ export function useChatViewModel() {
 
   const refreshPromptContextFromServer = async () => {
     if (!chatId.value) return;
-    const payload = await api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`);
+    const payload = await api.get<ChatPromptContextPayload>(`/api/bff/chats/${chatId.value}/prompt-context`);
     promptSources.value = payload.prompt_sources || promptSources.value;
     compiledPromptText.value = payload.compiled_prompt_text || '';
     counters.value = payload.counters || counters.value;

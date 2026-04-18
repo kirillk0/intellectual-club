@@ -51,6 +51,11 @@ export type ChatStatePayload = {
   active_generation_message_id: number | null;
 };
 
+export type ChatPromptContextPayload = Pick<
+  ChatStatePayload,
+  'prompt_sources' | 'compiled_prompt_text' | 'counters'
+>;
+
 export type PollResponse = {
   message_id: number;
   runtime: boolean;

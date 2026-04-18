@@ -526,6 +526,76 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
            end)
   end
 
+  test "GET /api/bff/chats/:id/prompt-context returns only prompt-related payload", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Config prompt block", version: "v1", type: :rules, content: "config prompt"},
+        actor: actor
+      )
+      |> Ash.create!()
+
+    provider = create_provider!(actor, "Prompt Provider")
+    config = create_configuration!(actor, provider, "prompt-model", 4096)
+
+    _ =
+      LlmConfigurationKnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          llm_configuration_id: config.id,
+          knowledge_block_id: block.id,
+          selection: :top,
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Prompt context chat",
+          note: "",
+          llm_configuration_id: config.id,
+          variables: %{"topic" => "astronomy"}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats/#{chat.id}/prompt-context")
+      |> json_response(200)
+
+    assert get_in(payload, [
+             "prompt_sources",
+             "configuration",
+             Access.at(0),
+             "knowledge_block",
+             "id"
+           ]) ==
+             block.id
+
+    assert is_binary(payload["compiled_prompt_text"])
+    assert String.contains?(payload["compiled_prompt_text"], "config prompt")
+    assert payload["counters"]["history_message_count"] == 1
+    refute Map.has_key?(payload, "branch")
+    refute Map.has_key?(payload, "options")
+  end
+
   defp all_text_contents(message_payload) do
     (Map.get(message_payload, "steps") || [])
     |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
