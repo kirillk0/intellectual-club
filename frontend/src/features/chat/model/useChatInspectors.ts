@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue';
+import { computed, ref, type Ref } from 'vue';
 
 import { api, getApiErrorMessage } from '@/api/client';
 import {
@@ -28,8 +28,27 @@ type Params = {
   retryConfigurationWarning: (message: ChatBranchMessage | null | undefined) => string;
   startPolling: (messageId: number) => Promise<void>;
   scrollToLastMessage: ScrollToLastMessage;
-  findPendingAttachment: (fileId: string) => PendingChatFile | null;
+  composerPendingFiles: Ref<PendingChatFile[]>;
+  editPendingFiles: Ref<PendingChatFile[]>;
+  editExistingAttachments: Ref<ExistingChatAttachment[]>;
 };
+
+type AttachmentPreviewKind = 'image' | 'text' | 'markdown' | 'binary';
+type PendingAttachmentScope = 'composer' | 'edit';
+
+type AttachmentPreviewItem =
+  | {
+      key: string;
+      type: 'message';
+      messageId: number;
+      content: ChatMessageContent;
+    }
+  | {
+      key: string;
+      type: 'pending';
+      scope: PendingAttachmentScope;
+      fileId: string;
+    };
 
 export function useChatInspectors(params: Params) {
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
@@ -308,7 +327,65 @@ export function useChatInspectors(params: Params) {
   const attachmentPreviewError = ref('');
   const attachmentPreviewText = ref('');
   const attachmentPreviewRequestToken = ref(0);
+  const attachmentPreviewItems = ref<AttachmentPreviewItem[]>([]);
+  const attachmentPreviewIndex = ref(0);
+  const attachmentPreviewCanNavigate = computed(() => attachmentPreviewItems.value.length > 1);
   let attachmentPreviewObjectUrl: string | null = null;
+
+  const previewItemKey = (item: AttachmentPreviewItem) => item.key;
+  const messagePreviewKey = (messageId: number, contentId: number) => `message-${messageId}-${contentId}`;
+  const pendingPreviewKey = (scope: PendingAttachmentScope, fileId: string) => `pending-${scope}-${fileId}`;
+  const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => (a.sequence ?? 0) - (b.sequence ?? 0);
+  const normalizePreviewIndex = (index: number, length: number) => ((index % length) + length) % length;
+
+  const getPendingFilesForScope = (scope: PendingAttachmentScope) =>
+    scope === 'edit' ? params.editPendingFiles.value : params.composerPendingFiles.value;
+
+  const findPendingAttachment = (fileId: string, scope: PendingAttachmentScope) =>
+    getPendingFilesForScope(scope).find((item) => item.id === fileId) || null;
+
+  const buildMessagePreviewItems = (messageId: number, contents: ChatMessageContent[] | null | undefined) =>
+    (contents || [])
+      .slice()
+      .filter((content) => content.kind === 'media' && content.media)
+      .sort(sortBySequence)
+      .map(
+        (content): AttachmentPreviewItem => ({
+          key: messagePreviewKey(messageId, Number(content.id || 0)),
+          type: 'message',
+          messageId,
+          content,
+        })
+      );
+
+  const buildComposerPreviewItems = () =>
+    params.composerPendingFiles.value.map(
+      (file): AttachmentPreviewItem => ({
+        key: pendingPreviewKey('composer', file.id),
+        type: 'pending',
+        scope: 'composer',
+        fileId: file.id,
+      })
+    );
+
+  const buildEditPreviewItems = () => [
+    ...params.editExistingAttachments.value.map(
+      (attachment): AttachmentPreviewItem => ({
+        key: messagePreviewKey(attachment.messageId, attachment.id),
+        type: 'message',
+        messageId: attachment.messageId,
+        content: attachment.content,
+      })
+    ),
+    ...params.editPendingFiles.value.map(
+      (file): AttachmentPreviewItem => ({
+        key: pendingPreviewKey('edit', file.id),
+        type: 'pending',
+        scope: 'edit',
+        fileId: file.id,
+      })
+    ),
+  ];
 
   const revokeAttachmentPreviewObjectUrl = () => {
     if (!attachmentPreviewObjectUrl) return;
@@ -316,70 +393,88 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewObjectUrl = null;
   };
 
-  const openAttachmentPreview = async (payload: {
+  const openMessageAttachmentPreview = async (payload: {
     messageId: number;
     content: ChatMessageContent;
+    contents?: ChatMessageContent[] | null;
   }) => {
     const messageId = Number(payload.messageId || 0);
     const contentId = Number(payload.content?.id || 0);
-    const name = getAttachmentName(payload.content);
-    const mimeType = getAttachmentMimeType(payload.content);
-    const isImage = Boolean(payload.content.media?.is_image);
-
     if (!messageId || !contentId) return;
 
+    const items = buildMessagePreviewItems(messageId, payload.contents?.length ? payload.contents : [payload.content]);
+    const currentKey = messagePreviewKey(messageId, contentId);
+    const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
+    await openAttachmentPreviewItems(items, currentIndex >= 0 ? currentIndex : 0);
+  };
+
+  const showAttachmentPreviewItem = async (item: AttachmentPreviewItem) => {
     revokeAttachmentPreviewObjectUrl();
-    attachmentPreviewOpen.value = true;
-    attachmentPreviewTitle.value = name;
-    attachmentPreviewUrl.value = buildMessageContentFileUrl(messageId, contentId);
-    attachmentPreviewKind.value = getAttachmentPreviewKind(name, mimeType, isImage);
-    attachmentPreviewLoading.value = attachmentPreviewKind.value !== 'image';
-    attachmentPreviewError.value = '';
-    attachmentPreviewText.value = '';
 
     const token = attachmentPreviewRequestToken.value + 1;
     attachmentPreviewRequestToken.value = token;
+    attachmentPreviewOpen.value = true;
+    attachmentPreviewError.value = '';
+    attachmentPreviewText.value = '';
 
-    if (attachmentPreviewKind.value === 'image' || attachmentPreviewKind.value === 'binary') {
-      attachmentPreviewLoading.value = false;
+    if (item.type === 'message') {
+      const contentId = Number(item.content?.id || 0);
+      const name = getAttachmentName(item.content);
+      const mimeType = getAttachmentMimeType(item.content);
+      const isImage = Boolean(item.content.media?.is_image);
+      const kind = getAttachmentPreviewKind(name, mimeType, isImage);
+      const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
+
+      attachmentPreviewTitle.value = name;
+      attachmentPreviewUrl.value = url;
+      attachmentPreviewKind.value = kind;
+      attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
+
+      if (kind === 'image' || kind === 'binary' || !url) {
+        attachmentPreviewLoading.value = false;
+        if (!url) {
+          attachmentPreviewError.value = 'Attachment is not available.';
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to load attachment (${response.status})`);
+        const text = await response.text();
+        if (attachmentPreviewRequestToken.value !== token) return;
+        attachmentPreviewText.value = text;
+      } catch (error) {
+        if (attachmentPreviewRequestToken.value !== token) return;
+        attachmentPreviewError.value = error instanceof Error ? error.message : 'Failed to load attachment';
+      } finally {
+        if (attachmentPreviewRequestToken.value === token) {
+          attachmentPreviewLoading.value = false;
+        }
+      }
+
       return;
     }
 
-    try {
-      const response = await fetch(attachmentPreviewUrl.value);
-      if (!response.ok) throw new Error(`Failed to load attachment (${response.status})`);
-      const text = await response.text();
-      if (attachmentPreviewRequestToken.value !== token) return;
-      attachmentPreviewText.value = text;
-    } catch (error) {
-      if (attachmentPreviewRequestToken.value !== token) return;
-      attachmentPreviewError.value = error instanceof Error ? error.message : 'Failed to load attachment';
-    } finally {
-      if (attachmentPreviewRequestToken.value === token) {
-        attachmentPreviewLoading.value = false;
-      }
+    const pending = findPendingAttachment(item.fileId, item.scope);
+    if (!pending) {
+      attachmentPreviewTitle.value = 'Attachment';
+      attachmentPreviewUrl.value = '';
+      attachmentPreviewKind.value = 'binary';
+      attachmentPreviewLoading.value = false;
+      attachmentPreviewError.value = 'Attachment is no longer available.';
+      return;
     }
-  };
-
-  const openPendingAttachmentPreview = async (fileId: string) => {
-    const pending = params.findPendingAttachment(fileId);
-    if (!pending) return;
 
     const isImage = pending.mimeType.trim().toLowerCase().startsWith('image/');
     const kind = getAttachmentPreviewKind(pending.name, pending.mimeType, isImage);
     const objectUrl = URL.createObjectURL(pending.file);
-    const token = attachmentPreviewRequestToken.value + 1;
 
-    attachmentPreviewRequestToken.value = token;
-    revokeAttachmentPreviewObjectUrl();
     attachmentPreviewObjectUrl = objectUrl;
-    attachmentPreviewOpen.value = true;
     attachmentPreviewTitle.value = pending.name;
     attachmentPreviewUrl.value = objectUrl;
     attachmentPreviewKind.value = kind;
     attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
-    attachmentPreviewError.value = '';
-    attachmentPreviewText.value = '';
 
     if (kind === 'image' || kind === 'binary') {
       attachmentPreviewLoading.value = false;
@@ -400,11 +495,68 @@ export function useChatInspectors(params: Params) {
     }
   };
 
+  const openAttachmentPreviewItems = async (items: AttachmentPreviewItem[], index: number) => {
+    if (!items.length) return;
+
+    attachmentPreviewItems.value = items;
+    attachmentPreviewIndex.value = normalizePreviewIndex(index, items.length);
+    await showAttachmentPreviewItem(attachmentPreviewItems.value[attachmentPreviewIndex.value]);
+  };
+
+  const openAttachmentPreview = async (payload: {
+    messageId: number;
+    content: ChatMessageContent;
+    contents?: ChatMessageContent[] | null;
+  }) => {
+    await openMessageAttachmentPreview(payload);
+  };
+
+  const openPendingAttachmentPreview = async (
+    fileId: string,
+    scope: PendingAttachmentScope = 'composer'
+  ) => {
+    const items = scope === 'edit' ? buildEditPreviewItems() : buildComposerPreviewItems();
+    const currentKey = pendingPreviewKey(scope, fileId);
+    const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
+    if (currentIndex < 0) return;
+    await openAttachmentPreviewItems(items, currentIndex);
+  };
+
   const openExistingAttachmentPreview = async (attachment: ExistingChatAttachment) => {
-    await openAttachmentPreview({
+    const items = buildEditPreviewItems();
+    const currentKey = messagePreviewKey(attachment.messageId, attachment.id);
+    const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
+
+    if (currentIndex >= 0) {
+      await openAttachmentPreviewItems(items, currentIndex);
+      return;
+    }
+
+    await openMessageAttachmentPreview({
       messageId: attachment.messageId,
       content: attachment.content,
+      contents: [attachment.content],
     });
+  };
+
+  const showPreviousAttachmentPreview = async () => {
+    if (!attachmentPreviewItems.value.length) return;
+    const nextIndex = normalizePreviewIndex(
+      attachmentPreviewIndex.value - 1,
+      attachmentPreviewItems.value.length
+    );
+    attachmentPreviewIndex.value = nextIndex;
+    await showAttachmentPreviewItem(attachmentPreviewItems.value[nextIndex]);
+  };
+
+  const showNextAttachmentPreview = async () => {
+    if (!attachmentPreviewItems.value.length) return;
+    const nextIndex = normalizePreviewIndex(
+      attachmentPreviewIndex.value + 1,
+      attachmentPreviewItems.value.length
+    );
+    attachmentPreviewIndex.value = nextIndex;
+    await showAttachmentPreviewItem(attachmentPreviewItems.value[nextIndex]);
   };
 
   const closeAttachmentPreview = () => {
@@ -416,6 +568,8 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewLoading.value = false;
     attachmentPreviewError.value = '';
     attachmentPreviewText.value = '';
+    attachmentPreviewItems.value = [];
+    attachmentPreviewIndex.value = 0;
     attachmentPreviewRequestToken.value += 1;
   };
 
@@ -460,9 +614,12 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewLoading,
     attachmentPreviewError,
     attachmentPreviewText,
+    attachmentPreviewCanNavigate,
     openAttachmentPreview,
     openPendingAttachmentPreview,
     openExistingAttachmentPreview,
+    showPreviousAttachmentPreview,
+    showNextAttachmentPreview,
     closeAttachmentPreview,
     dispose,
   };

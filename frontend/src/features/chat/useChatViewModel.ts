@@ -156,9 +156,9 @@ export function useChatViewModel() {
     retryConfigurationWarning: messageActions.retryConfigurationWarning,
     startPolling: composerRuntime.startPolling,
     scrollToLastMessage: contextPanel.scrollToLastMessage,
-    findPendingAttachment: (fileId) =>
-      composerRuntime.findPendingFile(composerRuntime.pendingFiles, fileId) ||
-      composerRuntime.findPendingFile(messageActions.editPendingFiles, fileId),
+    composerPendingFiles: composerRuntime.pendingFiles,
+    editPendingFiles: messageActions.editPendingFiles,
+    editExistingAttachments: messageActions.editExistingAttachments,
   });
 
   const libraryDraft = useChatLibraryDraft({
@@ -449,9 +449,12 @@ export function useChatViewModel() {
     attachmentPreviewLoading: inspectors.attachmentPreviewLoading,
     attachmentPreviewError: inspectors.attachmentPreviewError,
     attachmentPreviewText: inspectors.attachmentPreviewText,
+    attachmentPreviewCanNavigate: inspectors.attachmentPreviewCanNavigate,
     openAttachmentPreview: inspectors.openAttachmentPreview,
     openPendingAttachmentPreview: inspectors.openPendingAttachmentPreview,
     openExistingAttachmentPreview: inspectors.openExistingAttachmentPreview,
+    showPreviousAttachmentPreview: inspectors.showPreviousAttachmentPreview,
+    showNextAttachmentPreview: inspectors.showNextAttachmentPreview,
     closeAttachmentPreview: inspectors.closeAttachmentPreview,
     botModalOpen: headerControls.botModalOpen,
     botModalValue: headerControls.botModalValue,

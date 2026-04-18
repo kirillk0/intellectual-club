@@ -16,12 +16,49 @@
               <span v-else>{{ title }}</span>
             </h3>
           </div>
+          <div class="attachment-preview-actions">
+            <button
+              v-if="canNavigate"
+              type="button"
+              class="attachment-preview-action"
+              aria-label="Previous attachment"
+              title="Previous attachment"
+              @click="emit('prev')"
+            >
+              <SvgIcon name="chevron-left" />
+            </button>
+            <button
+              v-if="canNavigate"
+              type="button"
+              class="attachment-preview-action"
+              aria-label="Next attachment"
+              title="Next attachment"
+              @click="emit('next')"
+            >
+              <SvgIcon name="chevron-right" />
+            </button>
+            <button
+              type="button"
+              class="attachment-preview-action attachment-preview-action--close"
+              aria-label="Close preview"
+              title="Close preview"
+              @click="emit('close')"
+            >
+              <span aria-hidden="true">&#215;</span>
+            </button>
+          </div>
         </div>
 
         <div v-if="loading" class="muted attachment-preview-state">Loading attachment…</div>
         <div v-else-if="errorText" class="error-text attachment-preview-state">{{ errorText }}</div>
         <div v-else-if="kind === 'image'" class="attachment-preview-image-wrap">
-          <img class="attachment-preview-image" :src="url" :alt="title" />
+          <img
+            class="attachment-preview-image"
+            :class="{ 'attachment-preview-image--interactive': canNavigate }"
+            :src="url"
+            :alt="title"
+            @click="handleImageClick"
+          />
         </div>
         <div v-else-if="kind === 'markdown'" class="attachment-preview-markdown">
           <div class="message assistant attachment-preview-message">
@@ -32,11 +69,6 @@
         </div>
         <pre v-else-if="kind === 'text'" class="attachment-preview-text">{{ textValue || '—' }}</pre>
         <div v-else class="attachment-preview-state muted">Preview is not available for this file type.</div>
-
-        <div class="modal-actions">
-          <div class="spacer"></div>
-          <button type="button" @click="emit('close')">Close</button>
-        </div>
       </div>
     </div>
   </transition>
@@ -45,6 +77,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { renderChatMessageHtml } from '@/utils/chatMarkdown';
 
 interface Props {
@@ -52,17 +85,27 @@ interface Props {
   title: string;
   url?: string;
   kind: 'image' | 'text' | 'markdown' | 'binary';
+  canNavigate?: boolean;
   loading?: boolean;
   error?: string;
   text?: string;
 }
 
 const props = defineProps<Props>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  (e: 'prev'): void;
+  (e: 'next'): void;
+}>();
 
 const errorText = computed(() => (props.error || '').trim());
 const textValue = computed(() => props.text ?? '');
 const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { highlightCode: true }));
+
+const handleImageClick = () => {
+  if (props.kind !== 'image' || !props.canNavigate) return;
+  emit('next');
+};
 </script>
 
 <style scoped>
@@ -80,6 +123,7 @@ const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { hig
 
 .attachment-preview-title-wrap {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .attachment-preview-title {
@@ -97,6 +141,40 @@ const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { hig
 
 .attachment-preview-title-link:hover {
   text-decoration-thickness: 2px;
+}
+
+.attachment-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.attachment-preview-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.attachment-preview-action:hover {
+  background: #f1f5f9;
+  color: #111827;
+}
+
+.attachment-preview-action--close {
+  font-size: 1.4rem;
+  line-height: 1;
 }
 
 .attachment-preview-state {
@@ -120,6 +198,10 @@ const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { hig
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
+}
+
+.attachment-preview-image--interactive {
+  cursor: pointer;
 }
 
 .attachment-preview-text {

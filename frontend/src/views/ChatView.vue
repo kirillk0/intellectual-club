@@ -138,9 +138,9 @@
                 role="button"
                 tabindex="0"
                 :aria-label="`Preview attachment ${item.name}`"
-                @click="vm.openPendingAttachmentPreview(item.id)"
-                @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id)"
-                @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id)"
+                @click="vm.openPendingAttachmentPreview(item.id, 'composer')"
+                @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
+                @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
               >
                 <span class="pending-file__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(item.mimeType, item.name)" /></span>
                 <div class="pending-file__meta">
@@ -290,7 +290,7 @@
         @remove-pending-file="vm.removeEditPendingFile"
         @remove-existing-attachment="vm.removeEditExistingAttachment"
         @preview-existing-attachment="vm.openExistingAttachmentPreview"
-        @preview-pending-file="vm.openPendingAttachmentPreview"
+        @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'edit')"
         @save="vm.saveEdit"
       />
     </Teleport>
@@ -352,9 +352,12 @@
         :title="vm.attachmentPreviewTitle"
         :url="vm.attachmentPreviewUrl"
         :kind="vm.attachmentPreviewKind"
+        :can-navigate="vm.attachmentPreviewCanNavigate"
         :loading="vm.attachmentPreviewLoading"
         :error="vm.attachmentPreviewError"
         :text="vm.attachmentPreviewText"
+        @prev="vm.showPreviousAttachmentPreview"
+        @next="vm.showNextAttachmentPreview"
         @close="vm.closeAttachmentPreview"
       />
     </Teleport>

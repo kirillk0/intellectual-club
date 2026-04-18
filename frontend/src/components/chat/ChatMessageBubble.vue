@@ -10,7 +10,7 @@
         @toggle="emit('toggle-working')"
         @step-info="(step) => emit('step-info', step)"
         @content-open="(payload) => emit('content-open', payload)"
-        @attachment-open="(payload) => emit('attachment-open', payload)"
+        @attachment-open="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
       <div class="message-content">
@@ -33,7 +33,7 @@
         v-if="messageMediaContents.length"
         :message-id="messageId"
         :contents="messageMediaContents"
-        @preview="(payload) => emit('attachment-open', payload)"
+        @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
       <div v-if="msg.status === 'generating'" class="typing-indicator" aria-label="Assistant is typing">
@@ -185,7 +185,7 @@ const emit = defineEmits<{
   (e: 'switch-branch', direction: 'prev' | 'next'): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
-  (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent }): void;
+  (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent; contents?: ChatMessageContent[] }): void;
 }>();
 
 const msg = computed(() => props.message);
@@ -279,6 +279,11 @@ const collectItemContents = (wantedTypes: string[]) => {
 const messageMediaContents = computed(() => {
   if (msg.value.role === 'user') return collectItemContents(['input']).filter((content) => content.kind === 'media');
   return collectItemContents(['artifact']).filter((content) => content.kind === 'media');
+});
+
+const previewAttachmentContents = computed(() => {
+  if (msg.value.role === 'user') return collectItemContents(['input']).filter((content) => content.kind === 'media');
+  return collectItemContents(['artifact', 'tool_result']).filter((content) => content.kind === 'media');
 });
 
 const branchDisabled = computed(() => {
