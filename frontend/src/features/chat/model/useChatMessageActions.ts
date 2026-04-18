@@ -83,11 +83,11 @@ export function useChatMessageActions(params: Params) {
     const wantedType = msg.role === 'user' ? 'input' : 'answer';
     const steps = msg.steps || [];
     const items = steps.flatMap((step) => step.items || []);
-    return items
+    const texts = items
       .filter((item) => item && item.type === wantedType)
       .map((item) => joinTextContents(item.contents))
-      .filter((text) => String(text).trim() !== '')
-      .join('\n\n');
+      .filter((text) => String(text).trim() !== '');
+    return texts.at(-1) ?? '';
   };
 
   const copyMessage = async (msg: ChatBranchMessage) => {
