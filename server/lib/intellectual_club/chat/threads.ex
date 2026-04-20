@@ -158,8 +158,14 @@ defmodule IntellectualClub.Chat.Threads do
 
       branch =
         case Keyword.get(opts, :load, nil) do
-          nil -> branch
-          load_spec -> Ash.load!(branch, load_spec, actor: actor)
+          nil ->
+            branch
+
+          load_spec ->
+            Ash.load!(branch, load_spec,
+              actor: actor,
+              strict?: Keyword.get(opts, :strict?, false)
+            )
         end
 
       {:ok, branch}

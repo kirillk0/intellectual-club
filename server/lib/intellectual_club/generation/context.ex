@@ -11,6 +11,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.ProviderAdapterResolver
   alias IntellectualClub.Generation.RequestPayload
@@ -182,13 +183,8 @@ defmodule IntellectualClub.Generation.Context do
     source_branch =
       if is_integer(target_parent_id) do
         case Threads.branch_to_message(chat, target_parent_id, actor,
-               load: [
-                 steps: [
-                   items: [
-                     contents: [:file, :content_text, :content_json, :kind, :sequence]
-                   ]
-                 ]
-               ]
+               load: generation_history_load(),
+               strict?: true
              ) do
           {:ok, branch} -> branch
           {:error, :message_not_found} -> raise ArgumentError, "Parent message not found in chat"
@@ -404,8 +400,7 @@ defmodule IntellectualClub.Generation.Context do
   defp load_retry_message(message_id, actor) when is_integer(message_id) do
     load = [
       chat: [:bot, llm_configuration: [:provider]],
-      llm_configuration: [:provider],
-      steps: [items: [:contents]]
+      llm_configuration: [:provider]
     ]
 
     case Ash.get(ChatMessage, message_id, actor: actor, load: load) do
@@ -449,51 +444,50 @@ defmodule IntellectualClub.Generation.Context do
   defp normalize_status(_other), do: nil
 
   defp load_retry_step(message, opts) when is_map(message) and is_list(opts) do
+    actor = Keyword.get(opts, :actor)
+
     case Keyword.fetch(opts, :step_id) do
-      {:ok, step_id} -> load_retry_step_by_id(message, step_id)
-      :error -> load_last_retry_step(message)
+      {:ok, step_id} -> load_retry_step_by_id(message, step_id, actor)
+      :error -> load_last_retry_step(message, actor)
     end
   end
 
-  defp load_retry_step_by_id(message, step_id)
+  defp load_retry_step_by_id(message, step_id, actor)
        when is_map(message) and is_integer(step_id) and step_id > 0 do
-    step =
-      message
-      |> Map.get(:steps, [])
-      |> Enum.find(fn
-        %{id: id, sequence: sequence}
-        when id == step_id and is_integer(sequence) and sequence > 0 ->
-          true
-
-        _other ->
-          false
-      end)
-
-    case step do
-      nil -> {:error, :step_not_found}
-      step -> {:ok, step}
+    case read_retry_step(
+           retry_step_query(message.id)
+           |> Ash.Query.filter(id == ^step_id),
+           actor
+         ) do
+      {:ok, %ChatMessageStep{} = step} -> {:ok, step}
+      {:ok, nil} -> {:error, :step_not_found}
+      {:error, error} -> {:error, error}
     end
   end
 
-  defp load_retry_step_by_id(_message, _step_id), do: {:error, :step_not_found}
+  defp load_retry_step_by_id(_message, _step_id, _actor), do: {:error, :step_not_found}
 
-  defp load_last_retry_step(message) when is_map(message) do
-    steps = Map.get(message, :steps) || []
-
-    step =
-      steps
-      |> Enum.filter(fn
-        %{sequence: sequence} when is_integer(sequence) and sequence > 0 -> true
-        _other -> false
-      end)
-      |> Enum.max_by(fn step -> {Map.get(step, :sequence, 0), Map.get(step, :id, 0)} end, fn ->
-        nil
-      end)
-
-    case step do
-      nil -> {:error, :no_steps_to_retry}
-      step -> {:ok, step}
+  defp load_last_retry_step(message, actor) when is_map(message) do
+    case read_retry_step(
+           retry_step_query(message.id)
+           |> Ash.Query.sort(sequence: :desc, id: :desc)
+           |> Ash.Query.limit(1),
+           actor
+         ) do
+      {:ok, %ChatMessageStep{} = step} -> {:ok, step}
+      {:ok, nil} -> {:error, :no_steps_to_retry}
+      {:error, error} -> {:error, error}
     end
+  end
+
+  defp retry_step_query(message_id) when is_integer(message_id) and message_id > 0 do
+    ChatMessageStep
+    |> Ash.Query.filter(chat_message_id == ^message_id)
+    |> Ash.Query.select([:id, :chat_message_id, :sequence, :raw_request])
+  end
+
+  defp read_retry_step(query, actor) do
+    Ash.read_one(query, actor: actor)
   end
 
   defp normalize_retry_request_payload(%{} = raw_request) do
@@ -630,6 +624,28 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp maybe_disable_tools_for_retry(_request_payload, _tools_payload), do: []
+
+  defp generation_history_load do
+    [
+      steps: [
+        :status,
+        :sequence,
+        items: [
+          :type,
+          :sequence,
+          contents: [
+            :external_id,
+            :sequence,
+            :kind,
+            :content_text,
+            :content_json,
+            :file_id,
+            file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
+          ]
+        ]
+      ]
+    ]
+  end
 
   defp history_branch_for_generation(branch) when is_list(branch) do
     branch
