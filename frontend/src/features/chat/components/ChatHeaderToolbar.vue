@@ -1,7 +1,29 @@
 <template>
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
-      <RouterLink to="/" class="link" aria-label="Back to chats">←</RouterLink>
+      <div class="chat-toolbar__left">
+        <RouterLink to="/" class="icon-button chat-toolbar__nav-button" aria-label="Back to chats" title="Back to chats">
+          ←
+        </RouterLink>
+        <button
+          class="icon-button chat-toolbar__nav-button"
+          type="button"
+          aria-label="New chat"
+          title="New chat"
+          @click="emit('open-new-chat')"
+          :disabled="creatingChat"
+        >
+          {{ creatingChat ? '…' : '+' }}
+        </button>
+      </div>
+
+      <div class="chat-toolbar__title-wrap">
+        <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
+          <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
+          <span v-if="currentConfigLabel" class="chat-toolbar__title-config">({{ currentConfigLabel }})</span>
+        </div>
+      </div>
+
       <div class="header-actions toolbar-actions-right">
         <label class="flex">
           <span class="config-label">
@@ -161,7 +183,11 @@ interface Props {
   menuStyle: Record<string, string>;
   currentBotId: number | null;
   currentBotName: string;
+  chatBaseTitle: string;
+  chatFullTitle: string;
+  currentConfigLabel: string;
   chatNote: string;
+  creatingChat: boolean;
   deleting: boolean;
   showMissingToolsBanner: boolean;
   missingRequiredPerUserToolAliases: string[];
@@ -181,6 +207,7 @@ const emit = defineEmits<{
   (e: 'update:selectedConfig', value: number | ''): void;
   (e: 'change-config'): void;
   (e: 'toggle-menu'): void;
+  (e: 'open-new-chat'): void;
   (e: 'open-config-editor'): void;
   (e: 'open-bot-editor'): void;
   (e: 'open-bot-modal'): void;
@@ -226,6 +253,11 @@ const setMenuButtonRef = (el: Element | null) => {
   min-width: 0;
 }
 
+.chat-toolbar {
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .config-label {
   display: inline-flex;
   align-items: center;
@@ -235,5 +267,62 @@ const setMenuButtonRef = (el: Element | null) => {
 .config-status {
   font-size: 0.85em;
   font-weight: 400;
+}
+
+.chat-toolbar__left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.chat-toolbar__nav-button {
+  color: #111827;
+  text-decoration: none;
+  font-size: 18px;
+}
+
+.chat-toolbar__nav-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chat-toolbar__title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.chat-toolbar__title {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.chat-toolbar__title-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.chat-toolbar__title-config {
+  flex: 0 0 auto;
+  color: #6b7280;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .chat-toolbar__title {
+    display: none;
+  }
 }
 </style>

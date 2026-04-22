@@ -6,7 +6,9 @@ import {
   resolveChatUploadPolicy,
 } from '@/features/chat/attachments';
 import { normalizeIdList } from '@/features/chat/model/chatViewModel.shared';
+import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import type { Bot, Chat, LlmConfiguration } from '@/types/api';
+import { formatChatBaseTitle, formatChatFullTitle } from '@/utils/chatTitle';
 
 const CONFIG_SYNC_GRACE_PERIOD_MS = 2500;
 
@@ -30,6 +32,7 @@ type Params = {
 
 export function useChatHeaderControls(params: Params) {
   const selectedConfig = ref<number | ''>('');
+  const botSortMode = useBotSortPreference();
   const configSyncStatus = ref<'synced' | 'pending' | 'error'>('synced');
   const configSyncError = ref('');
   let configSyncToken = 0;
@@ -72,6 +75,20 @@ export function useChatHeaderControls(params: Params) {
     if (!id) return '';
     return currentBotInfo.value?.name || `Bot #${id}`;
   });
+  const currentConfigLabel = computed(() => (currentConfig.value ? configLabel(currentConfig.value) : ''));
+  const chatBaseTitle = computed(() =>
+    formatChatBaseTitle({
+      botName: currentBotName.value,
+      note: params.chatNote.value,
+    })
+  );
+  const chatFullTitle = computed(() =>
+    formatChatFullTitle({
+      botName: currentBotName.value,
+      note: params.chatNote.value,
+      configLabel: currentConfigLabel.value,
+    })
+  );
   const currentBotCompatibleTagIds = computed(() =>
     normalizeIdList(currentBotInfo.value?.compatible_configuration_tag_ids || [])
   );
@@ -183,6 +200,23 @@ export function useChatHeaderControls(params: Params) {
   const botModalOpen = ref(false);
   const botModalValue = ref<number | ''>('');
   const savingBot = ref(false);
+  const creatingChat = ref(false);
+  const newChatModalOpen = ref(false);
+  const newChatBotValue = ref<number | ''>('');
+
+  const createChatBotOptions = computed(() => [
+    { id: '', name: 'No bot' },
+    ...(params.bots.value || []).map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      image: bot.image ?? null,
+      shared_incoming: bot.shared_incoming,
+      shared_outgoing: bot.shared_outgoing,
+      created_at: bot.created_at ?? null,
+      updated_at: bot.updated_at ?? null,
+      sort_activity_at: bot.sort_activity_at ?? null,
+    })),
+  ]);
 
   const openBotModal = () => {
     botModalValue.value = params.chat.value?.bot_id ?? '';
@@ -206,6 +240,34 @@ export function useChatHeaderControls(params: Params) {
       window.alert('Failed to update bot.');
     } finally {
       savingBot.value = false;
+    }
+  };
+
+  const openNewChatModal = () => {
+    if (creatingChat.value) return;
+    const sortedOptions = sortBotsByPreference(createChatBotOptions.value, botSortMode.value);
+    newChatBotValue.value = botSortMode.value === 'recent_activity' ? sortedOptions[0]?.id ?? '' : '';
+    newChatModalOpen.value = true;
+  };
+
+  const closeNewChatModal = () => {
+    if (creatingChat.value) return;
+    newChatModalOpen.value = false;
+  };
+
+  const createChat = async (selectedBotId: number | '' = newChatBotValue.value) => {
+    if (creatingChat.value) return;
+    creatingChat.value = true;
+    try {
+      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', {
+        bot_id: selectedBotId === '' ? null : Number(selectedBotId),
+      });
+      const id = payload.chat?.id;
+      if (!id) throw new Error('Missing chat id');
+      newChatModalOpen.value = false;
+      await params.pushRoute(`/chats/${id}`);
+    } finally {
+      creatingChat.value = false;
     }
   };
 
@@ -304,6 +366,9 @@ export function useChatHeaderControls(params: Params) {
     currentBotId,
     currentBotInfo,
     currentBotName,
+    chatBaseTitle,
+    chatFullTitle,
+    currentConfigLabel,
     fileUploadPolicy,
     selectableConfigs,
     selectedDisabledConfig,
@@ -327,6 +392,13 @@ export function useChatHeaderControls(params: Params) {
     openBotModal,
     closeBotModal,
     saveBotSelection,
+    creatingChat,
+    newChatModalOpen,
+    newChatBotValue,
+    createChatBotOptions,
+    openNewChatModal,
+    closeNewChatModal,
+    createChat,
     updateConfig,
     openConfigEditor,
     openBotEditor,

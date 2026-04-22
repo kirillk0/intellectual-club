@@ -152,6 +152,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { parseImageAsset } from '@/features/media/image';
 import type { Bot, ImageAsset } from '@/types/api';
+import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
@@ -415,9 +416,7 @@ function niceDate(iso: string | null) {
 }
 
 function chatLabel(chat: ChatSummary) {
-  const bot = (chat.bot_name || '').trim() || 'No bot';
-  const note = (chat.note || '').trim();
-  return note ? `${bot} (${note})` : bot;
+  return formatChatBaseTitle({ botName: chat.bot_name, note: chat.note });
 }
 
 function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {

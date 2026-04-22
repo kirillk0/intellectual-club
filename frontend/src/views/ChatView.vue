@@ -15,7 +15,11 @@
         :menu-style="vm.menuStyle"
         :current-bot-id="vm.currentBotId"
         :current-bot-name="vm.currentBotName"
+        :chat-base-title="vm.chatBaseTitle"
+        :chat-full-title="vm.chatFullTitle"
+        :current-config-label="vm.currentConfigLabel"
         :chat-note="vm.chatNote"
+        :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
         :show-missing-tools-banner="vm.showMissingToolsBanner"
         :missing-required-per-user-tool-aliases="vm.missingRequiredPerUserToolAliases"
@@ -25,6 +29,7 @@
         @update:selectedConfig="(value) => (vm.selectedConfig = value)"
         @change-config="vm.updateConfig"
         @toggle-menu="vm.toggleMenu"
+        @open-new-chat="vm.openNewChatModal"
         @open-config-editor="vm.openConfigEditor"
         @open-bot-editor="vm.openBotEditor"
         @open-bot-modal="vm.openBotModal"
@@ -312,6 +317,20 @@
         :saving="vm.savingNote"
         @cancel="vm.closeNoteModal"
         @save="vm.saveNote"
+      />
+    </Teleport>
+
+    <Teleport to="body">
+      <BotSelectorModal
+        v-if="vm.newChatModalOpen"
+        v-model="vm.newChatBotValue"
+        :options="vm.createChatBotOptions"
+        :saving="vm.creatingChat"
+        title="Select bot for new chat"
+        confirm-label="Create chat"
+        saving-label="Creating…"
+        @cancel="vm.closeNewChatModal"
+        @save="vm.createChat"
       />
     </Teleport>
 

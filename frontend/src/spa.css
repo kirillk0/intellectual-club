@@ -175,13 +175,17 @@ fieldset {
 
 :root {
   --app-header-height: 56px;
+  --app-header-control-size: 34px;
+  --app-header-padding-y: 6px;
+  --app-header-padding-x: 16px;
+  --app-header-gap: 8px;
 }
 
 .app-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: var(--app-header-gap);
+  padding: var(--app-header-padding-y) var(--app-header-padding-x);
   border-bottom: 1px solid #eee;
   position: sticky;
   top: 0;
@@ -251,15 +255,25 @@ fieldset {
   flex: 1;
 }
 
-.menu-toggle {
+.menu-toggle,
+.icon-button {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--app-header-control-size);
+  min-width: var(--app-header-control-size);
+  height: var(--app-header-control-size);
+  padding: 0;
+  line-height: 1;
   border: 1px solid #ddd;
-  background: #fff;
-  border-radius: 8px;
-  padding: 6px 8px;
+  background: #f8f8f8;
+  border-radius: 10px;
   font-size: 1.05rem;
-  height: 34px;
-  min-width: 34px;
+}
+
+.menu-toggle:hover,
+.icon-button:hover {
+  background: #efefef;
 }
 
 .mobile-only {
@@ -278,12 +292,22 @@ fieldset {
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  min-height: 32px;
+  min-height: var(--app-header-control-size);
   overflow-x: auto;
   overflow-y: visible;
   padding-left: 6px;
   position: relative;
   z-index: 300;
+}
+
+.toolbar-host > * {
+  min-width: 0;
+}
+
+.toolbar-host .toolbar {
+  margin-bottom: 0;
+  min-height: var(--app-header-control-size);
+  align-items: center;
 }
 
 @media (max-width: 720px) {
@@ -300,8 +324,8 @@ fieldset {
     position: sticky;
     top: 0;
     z-index: 260;
-    padding: 6px 10px;
-    gap: 6px;
+    --app-header-padding-x: 10px;
+    --app-header-gap: 6px;
   }
 
   .logo {
@@ -309,9 +333,6 @@ fieldset {
   }
 
   .menu-toggle {
-    height: 32px;
-    min-width: 32px;
-    padding: 4px 6px;
     font-size: 1rem;
   }
 
@@ -1590,21 +1611,8 @@ select.full {
 }
 
 .icon-button {
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
   font-size: 18px;
-  line-height: 1;
-  border-radius: 10px;
-  border: 1px solid #e6e6e6;
-  background: #f8f8f8;
-}
-
-.icon-button:hover {
-  background: #efefef;
+  border-color: #e6e6e6;
 }
 
 .dropdown {
