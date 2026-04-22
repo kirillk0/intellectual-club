@@ -37,6 +37,19 @@
       <div id="toolbar-host" class="toolbar-host"></div>
     </header>
 
+    <section
+      v-if="backendStatusBanner"
+      class="backend-status-banner"
+      role="alert"
+      aria-live="polite"
+    >
+      <div class="backend-status-copy">
+        <strong>{{ backendStatusBanner.title }}</strong>
+        <span>{{ backendStatusBanner.message }}</span>
+      </div>
+      <button type="button" @click="dismissBackendStatusBanner">Dismiss</button>
+    </section>
+
     <main class="app-main" :class="{ 'app-main--chat': isChatRoute, 'app-main--login': isLoginRoute }">
       <StackRouterView />
     </main>
@@ -52,6 +65,7 @@ import {
   signOut,
   useSessionAuth,
 } from '@/features/auth/session';
+import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import StackRouterView from '@/components/StackRouterView.vue';
 
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
@@ -62,6 +76,7 @@ const route = useRoute();
 ensureAuthInitialized();
 
 const { currentUser } = useSessionAuth();
+const { banner: backendStatusBanner, dismissBackendStatusBanner } = useBackendStatusBanner();
 const signingOut = ref(false);
 
 const isLoginRoute = computed(() => route.name === 'login');

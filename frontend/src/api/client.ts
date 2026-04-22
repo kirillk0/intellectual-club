@@ -1,3 +1,8 @@
+import {
+  clearBackendStatusBanner,
+  showBackendStatusBanner,
+} from '@/features/app/backendStatusBanner';
+
 export function getCsrfToken(): string | null {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]');
   return meta?.content || null;
@@ -87,6 +92,7 @@ function buildHttpErrorMessage(params: {
 
 export type ApiRequestOptions = RequestInit & {
   redirectOnUnauthorized?: boolean;
+  showErrorBanner?: boolean;
 };
 
 export class HttpError extends Error {
@@ -121,8 +127,61 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() !== '' ? error.message : fallback;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function genericServerBannerMessage(status: number): string {
+  if ([502, 503, 504].includes(status)) {
+    return 'The server is temporarily unavailable. Please try again.';
+  }
+
+  return 'The server returned an unexpected error. Please try again.';
+}
+
+function normalizeMessage(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function buildServerBannerMessage(error: HttpError): string {
+  const detail = normalizeMessage(getApiErrorMessage(error, genericServerBannerMessage(error.status)));
+  const statusText = normalizeMessage(error.statusText);
+
+  if (
+    detail === '' ||
+    detail === statusText ||
+    detail === `Request failed with status ${error.status}.`
+  ) {
+    return genericServerBannerMessage(error.status);
+  }
+
+  return detail;
+}
+
+function buildNetworkBannerMessage(error: unknown): string {
+  const fallback = 'The request could not reach the server. Check your connection and try again.';
+
+  if (!(error instanceof Error)) return fallback;
+
+  const message = normalizeMessage(error.message);
+
+  if (
+    message === '' ||
+    message === 'Failed to fetch' ||
+    message === 'NetworkError when attempting to fetch resource.'
+  ) {
+    return fallback;
+  }
+
+  return message;
+}
+
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-  const { redirectOnUnauthorized = true, ...requestOptions } = options;
+  const {
+    redirectOnUnauthorized = true,
+    showErrorBanner = true,
+    ...requestOptions
+  } = options;
   const headers = new Headers(requestOptions.headers || {});
   if (!headers.has('accept')) headers.set('accept', 'application/json');
 
@@ -137,12 +196,25 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     if (!headers.has('content-type') && !isFormData) headers.set('content-type', 'application/json');
   }
 
-  const response = await fetch(path, {
-    ...requestOptions,
-    method,
-    headers,
-    credentials: 'same-origin',
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(path, {
+      ...requestOptions,
+      method,
+      headers,
+      credentials: 'same-origin',
+    });
+  } catch (error) {
+    if (!isAbortError(error) && showErrorBanner) {
+      showBackendStatusBanner({
+        title: 'Connection problem',
+        message: buildNetworkBannerMessage(error),
+      });
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
     const bodyText = await response.text().catch(() => '');
@@ -159,12 +231,25 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
       window.location.assign('/login');
     }
 
-    throw new HttpError({
+    const error = new HttpError({
       status: response.status,
       statusText: response.statusText,
       bodyText,
       bodyJson,
     });
+
+    if (response.status >= 500 && showErrorBanner) {
+      showBackendStatusBanner({
+        title: 'Server error',
+        message: buildServerBannerMessage(error),
+      });
+    }
+
+    throw error;
+  }
+
+  if (showErrorBanner) {
+    clearBackendStatusBanner();
   }
 
   if (response.status === 204) return undefined as T;
