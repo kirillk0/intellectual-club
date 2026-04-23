@@ -97,7 +97,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
       :can_edit,
       :shared_incoming,
       :shared_outgoing,
-      compatible_configuration_tags: [:id]
+      compatible_configuration_tags: [:id, :name]
     ]
   end
 
@@ -113,7 +113,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
   end
 
   def llm_configuration_option_load do
-    [:can_edit, :shared_incoming, :shared_outgoing, tags: [:id]]
+    [:can_edit, :shared_incoming, :shared_outgoing, tags: [:id, :name]]
   end
 
   def knowledge_block_option_select do

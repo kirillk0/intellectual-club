@@ -23,6 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
+  alias IntellectualClub.Llm.LlmConfigurationTag
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
@@ -356,28 +357,75 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     do: :all
 
   defp compatible_llm_configuration_ids_for_bot(actor, bot_id) do
-    tag_ids = compatible_configuration_tag_ids_for_bot(actor, bot_id)
+    %{tag_ids: tag_ids, tag_names: tag_names} =
+      compatible_configuration_tag_match_for_bot(actor, bot_id)
 
-    case tag_ids do
-      [] ->
+    case {tag_ids, tag_names} do
+      {[], []} ->
         :all
 
-      _tag_ids ->
+      {_tag_ids, _tag_names} ->
+        matching_tag_ids = matching_configuration_tag_ids(actor, tag_ids, tag_names)
+
         LlmConfigurationTagBinding
-        |> Ash.Query.filter(llm_configuration_tag_id in ^tag_ids)
+        |> Ash.Query.filter(llm_configuration_tag_id in ^matching_tag_ids)
         |> Ash.read!(actor: actor)
         |> Enum.map(& &1.llm_configuration_id)
         |> Enum.uniq()
     end
   end
 
-  defp compatible_configuration_tag_ids_for_bot(actor, bot_id) do
+  defp compatible_configuration_tag_match_for_bot(actor, bot_id) do
     BotCompatibleConfigurationTag
     |> Ash.Query.filter(bot_id == ^bot_id)
+    |> Ash.Query.load([:tag_name], strict?: true)
     |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.llm_configuration_tag_id)
-    |> Enum.uniq()
+    |> Enum.reduce(%{tag_ids: [], tag_names: []}, fn binding, acc ->
+      tag_ids =
+        case binding.llm_configuration_tag_id do
+          tag_id when is_integer(tag_id) -> [tag_id | acc.tag_ids]
+          _other -> acc.tag_ids
+        end
+
+      tag_names =
+        case normalize_configuration_tag_name(Map.get(binding, :tag_name)) do
+          nil -> acc.tag_names
+          tag_name -> [tag_name | acc.tag_names]
+        end
+
+      %{tag_ids: tag_ids, tag_names: tag_names}
+    end)
+    |> then(fn %{tag_ids: tag_ids, tag_names: tag_names} ->
+      %{
+        tag_ids: tag_ids |> Enum.uniq() |> Enum.sort(),
+        tag_names: tag_names |> Enum.uniq() |> Enum.sort()
+      }
+    end)
   end
+
+  defp matching_configuration_tag_ids(actor, tag_ids, tag_names) do
+    matching_tag_ids =
+      LlmConfigurationTag
+      |> Ash.Query.select([:id, :name])
+      |> Ash.read!(actor: actor)
+      |> Enum.filter(fn tag ->
+        tag.id in tag_ids or normalize_configuration_tag_name(tag.name) in tag_names
+      end)
+      |> Enum.map(& &1.id)
+
+    (tag_ids ++ matching_tag_ids)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_configuration_tag_name(name) when is_binary(name) do
+    case name |> String.trim() |> String.downcase() do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_configuration_tag_name(_other), do: nil
 
   def update(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do

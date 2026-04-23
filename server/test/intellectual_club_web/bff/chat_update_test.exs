@@ -5,7 +5,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
-  alias IntellectualClub.Bots.Bot
+  alias IntellectualClub.Bots.{Bot, BotShare}
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
@@ -71,6 +71,61 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
         actor: actor
       )
       |> Ash.create!(actor: actor)
+
+    payload =
+      conn
+      |> patch(~p"/api/bff/chats/#{chat.id}", %{"bot_id" => bot.id})
+      |> json_response(200)
+
+    assert payload["chat"]["bot_id"] == bot.id
+    assert payload["chat"]["llm_configuration_id"] == compatible_config.id
+  end
+
+  test "PATCH /api/bff/chats/:id matches shared bot configuration tags by name", %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: recipient, password: password} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+    conn = sign_in_conn(conn, recipient.username, password)
+
+    owner_tag = create_configuration_tag!(owner, "Compatible")
+    recipient_tag = create_configuration_tag!(recipient, "compatible")
+    other_tag = create_configuration_tag!(recipient, "Other")
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Shared compatible bot",
+          compatible_configuration_tag_bindings: [%{llm_configuration_tag_id: owner_tag.id}]
+        },
+        actor: owner
+      )
+      |> Ash.create!(actor: owner)
+
+    share_bot!(owner, bot, group)
+
+    provider = create_provider!(recipient, "Recipient provider")
+
+    compatible_config =
+      create_configuration!(recipient, provider, "model-compatible", recipient_tag.id)
+
+    incompatible_config =
+      create_configuration!(recipient, provider, "model-incompatible", other_tag.id)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Bot switch shared chat",
+          note: "",
+          llm_configuration_id: incompatible_config.id,
+          variables: %{}
+        },
+        actor: recipient
+      )
+      |> Ash.create!(actor: recipient)
 
     payload =
       conn
@@ -207,6 +262,16 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
   defp create_configuration_tag!(actor, name) do
     LlmConfigurationTag
     |> Ash.Changeset.for_create(:create, %{name: name}, actor: actor)
+    |> Ash.create!(actor: actor)
+  end
+
+  defp share_bot!(actor, bot, group) do
+    BotShare
+    |> Ash.Changeset.for_create(
+      :create,
+      %{bot_id: bot.id, user_group_id: group.id},
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
   end
 end

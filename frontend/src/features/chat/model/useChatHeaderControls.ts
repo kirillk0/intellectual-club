@@ -5,7 +5,7 @@ import {
   describeChatUploadPolicy,
   resolveChatUploadPolicy,
 } from '@/features/chat/attachments';
-import { normalizeIdList } from '@/features/chat/model/chatViewModel.shared';
+import { normalizeIdList, normalizeNameList } from '@/features/chat/model/chatViewModel.shared';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import type { Bot, Chat, LlmConfiguration } from '@/types/api';
 import { formatChatBaseTitle, formatChatFullTitle } from '@/utils/chatTitle';
@@ -92,13 +92,26 @@ export function useChatHeaderControls(params: Params) {
   const currentBotCompatibleTagIds = computed(() =>
     normalizeIdList(currentBotInfo.value?.compatible_configuration_tag_ids || [])
   );
+  const currentBotCompatibleTagNames = computed(() =>
+    normalizeNameList(currentBotInfo.value?.compatible_configuration_tag_names || [])
+  );
   const selectableConfigs = computed(() => {
     const enabledConfigs = (params.llmConfigurations.value || []).filter((config) => config.enabled);
-    if (!currentBotId.value || !currentBotCompatibleTagIds.value.length) return enabledConfigs;
+    if (
+      !currentBotId.value ||
+      (!currentBotCompatibleTagIds.value.length && !currentBotCompatibleTagNames.value.length)
+    ) {
+      return enabledConfigs;
+    }
 
     return enabledConfigs.filter((cfg) => {
       const configTagIds = normalizeIdList(cfg.tag_ids || []);
-      return configTagIds.some((tagId) => currentBotCompatibleTagIds.value.includes(tagId));
+      const configTagNames = normalizeNameList(cfg.tag_names || []);
+
+      return (
+        configTagIds.some((tagId) => currentBotCompatibleTagIds.value.includes(tagId)) ||
+        configTagNames.some((tagName) => currentBotCompatibleTagNames.value.includes(tagName))
+      );
     });
   });
   const fileUploadPolicy = computed(() =>

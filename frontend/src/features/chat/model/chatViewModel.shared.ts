@@ -119,6 +119,16 @@ export const normalizeChatToolsForCompare = (bindings: ChatToolBindingLink[]) =>
 export const normalizeIdList = (ids: number[] | null | undefined) =>
   Array.from(new Set((ids || []).filter((id): id is number => typeof id === 'number' && id > 0))).sort((a, b) => a - b);
 
+export const normalizeNameList = (names: string[] | null | undefined) =>
+  Array.from(
+    new Set(
+      (names || [])
+        .filter((name): name is string => typeof name === 'string')
+        .map((name) => name.trim().toLocaleLowerCase())
+        .filter((name) => name !== '')
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
 export const buildSendPayload = (
   content: string,
   uploadIds: string[],

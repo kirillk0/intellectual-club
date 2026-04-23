@@ -123,6 +123,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       name: bot.name,
       image: loaded_value(Map.get(bot, :image)),
       compatible_configuration_tag_ids: loaded_ids(Map.get(bot, :compatible_configuration_tags)),
+      compatible_configuration_tag_names:
+        loaded_names(Map.get(bot, :compatible_configuration_tags)),
       context_soft_limit_percent: bot.context_soft_limit_percent,
       supports_file_processing: bot.supports_file_processing,
       max_file_size_bytes: bot.max_file_size_bytes,
@@ -141,6 +143,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       label: configuration_display_label(configuration),
       enabled: configuration.enabled,
       tag_ids: loaded_ids(Map.get(configuration, :tags)),
+      tag_names: loaded_names(Map.get(configuration, :tags)),
       context_length: configuration.context_length,
       supports_image_input: configuration.supports_image_input,
       can_edit: loaded_value(Map.get(configuration, :can_edit)),
@@ -404,6 +407,22 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp loaded_ids(_other), do: []
+
+  defp loaded_names(%Ash.NotLoaded{}), do: []
+
+  defp loaded_names(values) when is_list(values) do
+    values
+    |> Enum.map(fn
+      %{name: name} when is_binary(name) -> name
+      %{"name" => name} when is_binary(name) -> name
+      name when is_binary(name) -> name
+      _other -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp loaded_names(_other), do: []
 
   defp active_generation_message_id(%Chat{} = chat) do
     case Map.get(chat, :last_message) do

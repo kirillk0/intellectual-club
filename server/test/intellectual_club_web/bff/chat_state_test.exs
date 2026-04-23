@@ -129,7 +129,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert cfg_payload["context_length"] == 8192
   end
 
-  test "GET /api/bff/chats/:id/state includes configuration and bot tag ids in options", %{
+  test "GET /api/bff/chats/:id/state includes configuration and bot tag metadata in options", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -201,7 +201,9 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       ) || %{}
 
     assert bot_payload["compatible_configuration_tag_ids"] == [tag.id]
+    assert bot_payload["compatible_configuration_tag_names"] == ["Compatible"]
     assert cfg_payload["tag_ids"] == [tag.id]
+    assert cfg_payload["tag_names"] == ["Compatible"]
   end
 
   test "GET /api/bff/chats/:id/state includes user prompt sources", %{conn: conn} do

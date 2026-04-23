@@ -50,6 +50,7 @@ export type Bot = {
   name: string;
   image?: ImageAsset | null;
   compatible_configuration_tag_ids?: number[];
+  compatible_configuration_tag_names?: string[];
   context_soft_limit_percent?: number | null;
   supports_file_processing?: boolean | null;
   max_file_size_bytes?: number | null;
@@ -66,6 +67,7 @@ export type LlmConfiguration = {
   label: string;
   enabled: boolean;
   tag_ids?: number[];
+  tag_names?: string[];
   context_length?: number | null;
   supports_image_input?: boolean | null;
   can_edit?: boolean;
