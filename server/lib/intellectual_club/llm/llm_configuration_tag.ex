@@ -63,6 +63,13 @@ defmodule IntellectualClub.Llm.LlmConfigurationTag do
         public?(true)
       end
 
+      argument :editable_only, :boolean do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      filter expr(^arg(:editable_only) != true or owner_id == ^actor(:id))
+
       prepare fn query, _context ->
         maybe_filter_by_query(query)
       end

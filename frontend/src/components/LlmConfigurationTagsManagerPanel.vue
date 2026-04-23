@@ -200,6 +200,7 @@ async function loadTags() {
   try {
     const params = new URLSearchParams();
     params.set('sort', 'name');
+    params.set('editable_only', 'true');
     params.set('fields[llm-configuration-tags]', 'name');
     const payload = await jsonApiList('/api/ash/llm-configuration-tags', params);
     tags.value = (payload.data || []).map(parseTagRow).filter((tag): tag is LlmConfigurationTagListItem => Boolean(tag));

@@ -567,6 +567,7 @@ async function loadConfigurationTags() {
   try {
     const qs = new URLSearchParams();
     qs.set('sort', 'name');
+    qs.set('editable_only', 'true');
     qs.set('fields[llm-configuration-tags]', 'name');
     const payload = await jsonApiList('/api/ash/llm-configuration-tags', qs);
     mergeConfigurationTags(
