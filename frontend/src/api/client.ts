@@ -139,8 +139,44 @@ function genericServerBannerMessage(status: number): string {
   return 'The server returned an unexpected error. Please try again.';
 }
 
+function genericClientBannerMessage(status: number): string {
+  switch (status) {
+    case 400:
+      return 'The server could not process this request. Review the input and try again.';
+    case 401:
+      return 'Your session is no longer valid. Sign in and try again.';
+    case 403:
+      return 'You do not have permission to perform this action.';
+    case 404:
+      return 'The requested resource could not be found.';
+    case 409:
+      return 'This request conflicts with the current server state. Refresh and try again.';
+    case 422:
+      return 'The submitted data is invalid. Review the fields and try again.';
+    case 429:
+      return 'Too many requests were sent. Wait a moment and try again.';
+    default:
+      return 'The request could not be completed. Review the input and try again.';
+  }
+}
+
 function normalizeMessage(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function buildClientBannerMessage(error: HttpError): string {
+  const detail = normalizeMessage(getApiErrorMessage(error, genericClientBannerMessage(error.status)));
+  const statusText = normalizeMessage(error.statusText);
+
+  if (
+    detail === '' ||
+    detail === statusText ||
+    detail === `Request failed with status ${error.status}.`
+  ) {
+    return genericClientBannerMessage(error.status);
+  }
+
+  return detail;
 }
 
 function buildServerBannerMessage(error: HttpError): string {
@@ -156,6 +192,24 @@ function buildServerBannerMessage(error: HttpError): string {
   }
 
   return detail;
+}
+
+function buildHttpBanner(error: HttpError): { title: string; message: string } | null {
+  if (error.status >= 500) {
+    return {
+      title: 'Server error',
+      message: buildServerBannerMessage(error),
+    };
+  }
+
+  if (error.status >= 400) {
+    return {
+      title: 'Request error',
+      message: buildClientBannerMessage(error),
+    };
+  }
+
+  return null;
 }
 
 function buildNetworkBannerMessage(error: unknown): string {
@@ -238,11 +292,13 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
       bodyJson,
     });
 
-    if (response.status >= 500 && showErrorBanner) {
-      showBackendStatusBanner({
-        title: 'Server error',
-        message: buildServerBannerMessage(error),
-      });
+    const httpBanner =
+      showErrorBanner && !(response.status === 401 && redirectOnUnauthorized)
+        ? buildHttpBanner(error)
+        : null;
+
+    if (httpBanner) {
+      showBackendStatusBanner(httpBanner);
     }
 
     throw error;
