@@ -22,6 +22,9 @@ defmodule IntellectualClub.Generation.Context do
 
   require Ash.Query
 
+  @turn_aborted_user_interrupt_reason "The user interrupted the previous turn on purpose"
+  @turn_aborted_error_reason "The move was interrupted due to an error."
+
   defstruct [
     :owner_id,
     :chat_id,
@@ -200,8 +203,8 @@ defmodule IntellectualClub.Generation.Context do
     history_entries =
       Enum.map(history, fn message ->
         %{
-          role: message.role,
-          content: project_message_text(message)
+          role: history_message_role(message),
+          content: project_history_message_text(message)
         }
       end)
 
@@ -377,6 +380,24 @@ defmodule IntellectualClub.Generation.Context do
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
   end
+
+  defp history_message_role(message) when is_map(message) do
+    Map.get(message, :role, Map.get(message, "role"))
+  end
+
+  defp history_message_role(_other), do: nil
+
+  defp project_history_message_text(message) when is_map(message) do
+    if trace_history_message?(message) do
+      project_message_text(message)
+    else
+      message
+      |> Map.get(:content, Map.get(message, "content", ""))
+      |> to_string()
+    end
+  end
+
+  defp project_history_message_text(_other), do: ""
 
   defp item_text(item) do
     contents = Map.get(item, :contents) || []
@@ -649,11 +670,33 @@ defmodule IntellectualClub.Generation.Context do
 
   defp history_branch_for_generation(branch) when is_list(branch) do
     branch
-    |> Enum.map(&history_message_for_generation/1)
-    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce({[], nil}, fn message, {acc, previous_message} ->
+      acc = maybe_insert_turn_aborted_marker(acc, previous_message, message)
+
+      acc =
+        case history_message_for_generation(message) do
+          nil -> acc
+          history_message -> [history_message | acc]
+        end
+
+      {acc, message}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
   end
 
   defp history_branch_for_generation(_other), do: []
+
+  defp maybe_insert_turn_aborted_marker(acc, previous_message, current_message)
+       when is_list(acc) and is_map(previous_message) and is_map(current_message) do
+    if turn_aborted_marker_required?(previous_message, current_message) do
+      [turn_aborted_marker(previous_message) | acc]
+    else
+      acc
+    end
+  end
+
+  defp maybe_insert_turn_aborted_marker(acc, _previous_message, _current_message), do: acc
 
   defp history_message_for_generation(%{} = message) do
     case Map.get(message, :role) do
@@ -687,9 +730,74 @@ defmodule IntellectualClub.Generation.Context do
     end
   end
 
+  defp turn_aborted_marker_required?(previous_message, current_message)
+       when is_map(previous_message) and is_map(current_message) do
+    user_role?(Map.get(current_message, :role)) and
+      assistant_role?(Map.get(previous_message, :role)) and
+      aborted_status?(Map.get(previous_message, :status))
+  end
+
+  defp turn_aborted_marker_required?(_previous_message, _current_message), do: false
+
+  defp turn_aborted_marker(previous_message) when is_map(previous_message) do
+    %{
+      role: :user,
+      content: turn_aborted_marker_text(previous_message)
+    }
+  end
+
+  defp turn_aborted_marker_text(previous_message) when is_map(previous_message) do
+    case normalize_status(Map.get(previous_message, :status, Map.get(previous_message, "status"))) do
+      :error ->
+        previous_message
+        |> turn_aborted_error_lines()
+        |> build_turn_aborted_marker()
+
+      _other ->
+        build_turn_aborted_marker([@turn_aborted_user_interrupt_reason])
+    end
+  end
+
+  defp turn_aborted_error_lines(previous_message) when is_map(previous_message) do
+    error_detail =
+      previous_message
+      |> Map.get(:error_detail, Map.get(previous_message, "error_detail"))
+      |> case do
+        value when is_binary(value) -> String.trim(value)
+        _other -> ""
+      end
+
+    [@turn_aborted_error_reason, error_detail]
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp build_turn_aborted_marker(lines) when is_list(lines) do
+    "<turn_aborted>\n" <> Enum.join(lines, "\n") <> "\n</turn_aborted>"
+  end
+
   defp done_status?(:done), do: true
   defp done_status?("done"), do: true
   defp done_status?(_other), do: false
+
+  defp aborted_status?(:canceled), do: true
+  defp aborted_status?("canceled"), do: true
+  defp aborted_status?(:error), do: true
+  defp aborted_status?("error"), do: true
+  defp aborted_status?(_other), do: false
+
+  defp user_role?(:user), do: true
+  defp user_role?("user"), do: true
+  defp user_role?(_other), do: false
+
+  defp assistant_role?(:assistant), do: true
+  defp assistant_role?("assistant"), do: true
+  defp assistant_role?(_other), do: false
+
+  defp trace_history_message?(message) when is_map(message) do
+    is_list(Map.get(message, :steps, Map.get(message, "steps")))
+  end
+
+  defp trace_history_message?(_other), do: false
 
   defp provider_type_for_configuration(%{provider: %{type: type}})
        when type in [:responses, :openrouter_chat_completion, :openai_compatible, :demo],
