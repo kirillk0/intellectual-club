@@ -675,7 +675,6 @@ export function useChatComposerRuntime(params: Params) {
     } catch (error) {
       console.error(error);
       window.alert('Failed to cancel generation.');
-    } finally {
       if (params.cancelingGenerationId.value === messageId) params.cancelingGenerationId.value = null;
     }
   };

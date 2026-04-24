@@ -804,8 +804,13 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-composer__send:disabled {
+  background: #6b7280;
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.chat-composer__send:disabled:hover {
+  background: #6b7280;
 }
 
 .chat-composer__attach {
