@@ -66,9 +66,12 @@
               </th>
               <td v-for="user in users" :key="`${row.key}-${user.id}`">
                 <div class="usage-cell">
-                  <span>{{ cellFor(row, user.id).message_count }} msg</span>
-                  <span>{{ cellFor(row, user.id).step_count }} steps</span>
-                  <span>{{ formatCost(cellFor(row, user.id).cost) }}</span>
+                  <template v-if="hasCellUsage(cellFor(row, user.id))">
+                    <span>{{ cellFor(row, user.id).message_count }} msg</span>
+                    <span>{{ cellFor(row, user.id).step_count }} steps</span>
+                    <span>{{ formatCost(cellFor(row, user.id).cost) }}</span>
+                  </template>
+                  <span v-else class="usage-cell__empty" aria-label="No usage">-</span>
                 </div>
               </td>
             </tr>
@@ -377,6 +380,11 @@ onMounted(() => {
 .usage-cell span:last-child {
   color: #111;
   font-weight: 600;
+}
+
+.usage-cell span.usage-cell__empty {
+  color: #444;
+  font-weight: 400;
 }
 
 @media (max-width: 720px) {
