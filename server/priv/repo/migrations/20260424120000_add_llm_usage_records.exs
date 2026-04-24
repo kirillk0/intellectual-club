@@ -137,7 +137,7 @@ defmodule IntellectualClub.Repo.Migrations.AddLlmUsageRecords do
         label = configuration_label(row.model_name, row.note, row.llm_configuration_id)
 
         %{
-          external_id: Ecto.UUID.generate(),
+          external_id: dump_uuid(Ecto.UUID.generate()),
           usage_user_id: row.usage_user_id,
           usage_user_id_snapshot: row.usage_user_id,
           usage_username_snapshot: row.usage_username || "User ##{row.usage_user_id}",
@@ -145,7 +145,8 @@ defmodule IntellectualClub.Repo.Migrations.AddLlmUsageRecords do
           configuration_owner_id_snapshot: row.configuration_owner_id,
           llm_configuration_id: row.llm_configuration_id,
           llm_configuration_id_snapshot: row.llm_configuration_id,
-          llm_configuration_external_id_snapshot: row.llm_configuration_external_id,
+          llm_configuration_external_id_snapshot:
+            dump_optional_uuid(row.llm_configuration_external_id),
           llm_configuration_label_snapshot: label,
           provider_id: row.provider_id,
           provider_id_snapshot: row.provider_id,
@@ -181,6 +182,36 @@ defmodule IntellectualClub.Repo.Migrations.AddLlmUsageRecords do
       )
     end)
   end
+
+  defp dump_uuid(value) do
+    case repo().__adapter__() do
+      Ecto.Adapters.Postgres -> value |> to_string() |> Ecto.UUID.dump!()
+      _ -> to_string(value)
+    end
+  end
+
+  defp dump_optional_uuid(nil), do: nil
+
+  defp dump_optional_uuid(value) do
+    value
+    |> uuid_string()
+    |> dump_uuid()
+  end
+
+  defp uuid_string(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} ->
+        uuid
+
+      :error ->
+        case Ecto.UUID.load(value) do
+          {:ok, uuid} -> uuid
+          :error -> value
+        end
+    end
+  end
+
+  defp uuid_string(value), do: to_string(value)
 
   defp configuration_label(model_name, note, id) do
     model_name =
