@@ -25,6 +25,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       :cached_input_tokens,
       :reasoning_tokens,
       :cost,
+      :usage,
       :first_token_at,
       items_by_key: %{}
     ]
@@ -86,6 +87,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       cached_input_tokens: Keyword.get(opts, :cached_input_tokens, nil),
       reasoning_tokens: Keyword.get(opts, :reasoning_tokens, nil),
       cost: Keyword.get(opts, :cost, nil),
+      usage: Keyword.get(opts, :usage, nil),
       first_token_at: Keyword.get(opts, :first_token_at, nil),
       items_by_key: %{}
     }
@@ -175,7 +177,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
             get_nested_usage_value(usage, ["output_tokens_details", "reasoning_tokens"]) ||
             get_nested_usage_value(usage, [:completion_tokens_details, :reasoning_tokens]) ||
             get_nested_usage_value(usage, ["completion_tokens_details", "reasoning_tokens"]),
-        cost: Map.get(usage, :cost) || Map.get(usage, "cost")
+        cost: Map.get(usage, :cost) || Map.get(usage, "cost"),
+        usage: usage
     }
   end
 
@@ -229,6 +232,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       cached_input_tokens: step.cached_input_tokens,
       reasoning_tokens: step.reasoning_tokens,
       cost: step.cost,
+      usage: step.usage,
       first_token_at: step.first_token_at,
       items:
         step.items_by_key

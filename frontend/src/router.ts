@@ -9,6 +9,7 @@ import KnowledgeBlockEditView from './views/catalogs/KnowledgeBlockEditView.vue'
 import KnowledgeBlocksIndexView from './views/catalogs/KnowledgeBlocksIndexView.vue';
 import LlmConfigurationEditView from './views/catalogs/LlmConfigurationEditView.vue';
 import LlmConfigurationsIndexView from './views/catalogs/LlmConfigurationsIndexView.vue';
+import LlmConfigurationUsageView from './views/catalogs/LlmConfigurationUsageView.vue';
 import LlmProviderEditView from './views/catalogs/LlmProviderEditView.vue';
 import LlmProvidersIndexView from './views/catalogs/LlmProvidersIndexView.vue';
 import ToolInstanceEditView from './views/catalogs/ToolInstanceEditView.vue';
@@ -85,6 +86,11 @@ export const router = createRouter({
       path: '/catalogs/llm-configurations',
       name: 'llm-configurations',
       component: LlmConfigurationsIndexView,
+    },
+    {
+      path: '/catalogs/llm-configurations/usage',
+      name: 'llm-configuration-usage',
+      component: LlmConfigurationUsageView,
     },
     {
       path: '/catalogs/llm-configurations/:id(\\d+|new)',

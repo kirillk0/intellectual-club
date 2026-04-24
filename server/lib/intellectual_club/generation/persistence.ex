@@ -440,6 +440,8 @@ defmodule IntellectualClub.Generation.Persistence do
         )
       )
 
+    persist_usage_record!(repo, step_id, persistable, step_status, finished_at, now)
+
     {items, contents} = build_step_items_and_contents(step_id, owner_id, persistable, now: now)
 
     _ =
@@ -475,6 +477,177 @@ defmodule IntellectualClub.Generation.Persistence do
 
     :ok
   end
+
+  defp persist_usage_record!(repo, step_id, persistable, step_status, finished_at, now)
+       when is_integer(step_id) and is_map(persistable) do
+    if usage_present?(persistable) do
+      case load_usage_snapshot(repo, step_id) do
+        %{message_role: "assistant", llm_configuration_id: llm_configuration_id} = snapshot
+        when is_integer(llm_configuration_id) ->
+          row = build_usage_record_row(snapshot, persistable, step_status, finished_at, now)
+
+          _ =
+            repo.insert_all("llm_usage_records", [row],
+              on_conflict:
+                {:replace,
+                 [
+                   :usage_user_id,
+                   :usage_user_id_snapshot,
+                   :usage_username_snapshot,
+                   :configuration_owner_id,
+                   :configuration_owner_id_snapshot,
+                   :llm_configuration_id,
+                   :llm_configuration_id_snapshot,
+                   :llm_configuration_external_id_snapshot,
+                   :llm_configuration_label_snapshot,
+                   :provider_id,
+                   :provider_id_snapshot,
+                   :provider_name_snapshot,
+                   :provider_type_snapshot,
+                   :chat_id,
+                   :chat_id_snapshot,
+                   :chat_message_id,
+                   :chat_message_id_snapshot,
+                   :chat_message_step_id,
+                   :chat_message_step_id_snapshot,
+                   :step_sequence,
+                   :status,
+                   :response_final,
+                   :occurred_at,
+                   :input_tokens,
+                   :output_tokens,
+                   :cached_input_tokens,
+                   :reasoning_tokens,
+                   :cost,
+                   :raw_usage,
+                   :updated_at
+                 ]},
+              conflict_target: [:chat_message_step_id_snapshot]
+            )
+
+          :ok
+
+        _other ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp usage_present?(persistable) when is_map(persistable) do
+    Enum.any?(
+      [:input_tokens, :output_tokens, :cached_input_tokens, :reasoning_tokens, :cost],
+      &(not is_nil(Map.get(persistable, &1)))
+    )
+  end
+
+  defp load_usage_snapshot(repo, step_id) when is_integer(step_id) do
+    repo.one(
+      from(s in "chat_message_steps",
+        join: m in "chat_messages",
+        on: m.id == s.chat_message_id,
+        join: c in "llm_configurations",
+        on: c.id == m.llm_configuration_id,
+        left_join: p in "llm_providers",
+        on: p.id == c.provider_id,
+        left_join: u in "users",
+        on: u.id == s.owner_id,
+        where: s.id == ^step_id,
+        select: %{
+          usage_user_id: s.owner_id,
+          usage_username: u.username,
+          configuration_owner_id: c.owner_id,
+          llm_configuration_id: c.id,
+          llm_configuration_external_id: c.external_id,
+          llm_configuration_model_name: c.model_name,
+          llm_configuration_note: c.note,
+          provider_id: p.id,
+          provider_name: p.name,
+          provider_type: p.type,
+          chat_id: m.chat_id,
+          chat_message_id: m.id,
+          chat_message_step_id: s.id,
+          message_role: m.role
+        }
+      )
+    )
+  end
+
+  defp build_usage_record_row(snapshot, persistable, step_status, finished_at, now)
+       when is_map(snapshot) and is_map(persistable) do
+    usage_user_id = Map.fetch!(snapshot, :usage_user_id)
+    configuration_owner_id = Map.fetch!(snapshot, :configuration_owner_id)
+    configuration_id = Map.fetch!(snapshot, :llm_configuration_id)
+    provider_id = Map.get(snapshot, :provider_id)
+    chat_id = Map.fetch!(snapshot, :chat_id)
+    message_id = Map.fetch!(snapshot, :chat_message_id)
+    step_id = Map.fetch!(snapshot, :chat_message_step_id)
+
+    %{
+      external_id: dump_optional_uuid(Ecto.UUID.generate()),
+      usage_user_id: usage_user_id,
+      usage_user_id_snapshot: usage_user_id,
+      usage_username_snapshot: Map.get(snapshot, :usage_username) || "User ##{usage_user_id}",
+      configuration_owner_id: configuration_owner_id,
+      configuration_owner_id_snapshot: configuration_owner_id,
+      llm_configuration_id: configuration_id,
+      llm_configuration_id_snapshot: configuration_id,
+      llm_configuration_external_id_snapshot:
+        dump_optional_uuid(Map.get(snapshot, :llm_configuration_external_id)),
+      llm_configuration_label_snapshot:
+        configuration_label(
+          Map.get(snapshot, :llm_configuration_model_name),
+          Map.get(snapshot, :llm_configuration_note),
+          configuration_id
+        ),
+      provider_id: provider_id,
+      provider_id_snapshot: provider_id,
+      provider_name_snapshot: Map.get(snapshot, :provider_name),
+      provider_type_snapshot: snapshot |> Map.get(:provider_type) |> maybe_to_string(),
+      chat_id: chat_id,
+      chat_id_snapshot: chat_id,
+      chat_message_id: message_id,
+      chat_message_id_snapshot: message_id,
+      chat_message_step_id: step_id,
+      chat_message_step_id_snapshot: step_id,
+      step_sequence: Map.get(persistable, :sequence) || 1,
+      status: step_status,
+      response_final: dump_boolean(Map.get(persistable, :response_final, false)),
+      occurred_at: finished_at || now,
+      input_tokens: Map.get(persistable, :input_tokens),
+      output_tokens: Map.get(persistable, :output_tokens),
+      cached_input_tokens: Map.get(persistable, :cached_input_tokens),
+      reasoning_tokens: Map.get(persistable, :reasoning_tokens),
+      cost: Map.get(persistable, :cost),
+      raw_usage: dump_json(Map.get(persistable, :usage)),
+      created_at: now,
+      updated_at: now
+    }
+  end
+
+  defp configuration_label(model_name, note, id) do
+    model_name =
+      case model_name do
+        value when is_binary(value) and value != "" -> value
+        _ -> "Configuration ##{id}"
+      end
+
+    note =
+      case note do
+        value when is_binary(value) -> String.trim(value)
+        _ -> ""
+      end
+
+    if note == "" do
+      model_name
+    else
+      "#{model_name} (#{note})"
+    end
+  end
+
+  defp maybe_to_string(nil), do: nil
+  defp maybe_to_string(value), do: to_string(value)
 
   defp build_step_items_and_contents(step_id, owner_id, persistable, opts)
        when is_integer(step_id) and is_integer(owner_id) and is_map(persistable) and
@@ -566,6 +739,33 @@ defmodule IntellectualClub.Generation.Persistence do
     case Db.adapter() do
       :sqlite -> to_string(value)
       :postgres -> value |> to_string() |> Ecto.UUID.dump!()
+    end
+  end
+
+  defp dump_optional_uuid(nil), do: nil
+
+  defp dump_optional_uuid(value) do
+    uuid =
+      cond do
+        is_binary(value) ->
+          case Ecto.UUID.cast(value) do
+            {:ok, uuid} ->
+              uuid
+
+            :error ->
+              case Ecto.UUID.load(value) do
+                {:ok, uuid} -> uuid
+                :error -> to_string(value)
+              end
+          end
+
+        true ->
+          to_string(value)
+      end
+
+    case Db.adapter() do
+      :sqlite -> uuid
+      :postgres -> Ecto.UUID.dump!(uuid)
     end
   end
 

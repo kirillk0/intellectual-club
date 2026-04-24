@@ -9,6 +9,11 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.LlmUsageRecord
+
+  require Ash.Query
 
   test "rollback_steps_for_retry! removes the selected step range and resets the message" do
     %{user: actor} = user_fixture()
@@ -234,6 +239,131 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert %DateTime{} = step.finished_at
   end
 
+  test "persist_completed! records durable usage for assistant steps" do
+    %{user: actor} = user_fixture()
+    provider = create_provider!(actor, "Usage provider")
+    configuration = create_configuration!(actor, provider, "usage-model")
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Usage accounting",
+          llm_configuration_id: configuration.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{
+          chat_id: chat.id,
+          parent_id: user_message.id,
+          llm_configuration_id: configuration.id,
+          token_count: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "usage-model"},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: %{"model" => "usage-model"})
+      |> RuntimeTrace.apply_event(
+        {:set_step_usage, %{input_tokens: 11, output_tokens: 7, cost: 0.015}}
+      )
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Final answer"})
+
+    :ok = Persistence.persist_completed!(assistant_message.id, runtime_step)
+
+    [usage] =
+      LlmUsageRecord
+      |> Ash.Query.filter(chat_message_step_id_snapshot == ^step_id)
+      |> Ash.read!(actor: actor)
+
+    assert usage.usage_user_id_snapshot == actor.id
+    assert usage.configuration_owner_id_snapshot == actor.id
+    assert usage.llm_configuration_id_snapshot == configuration.id
+    assert usage.chat_message_id_snapshot == assistant_message.id
+    assert usage.step_sequence == 1
+    assert usage.input_tokens == 11
+    assert usage.output_tokens == 7
+    assert usage.cost == 0.015
+  end
+
+  test "persist_step_trace_only! does not create usage records for user messages" do
+    %{user: actor} = user_fixture()
+    provider = create_provider!(actor, "User usage provider")
+    configuration = create_configuration!(actor, provider, "user-usage-model")
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "User usage", llm_configuration_id: configuration.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    user_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :add_message,
+        %{
+          chat_id: chat.id,
+          role: :user,
+          status: :done,
+          llm_configuration_id: configuration.id,
+          token_count: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    step_id =
+      Persistence.ensure_step_started!(
+        user_message.id,
+        1,
+        %{"model" => "user-usage-model"},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        id: step_id,
+        sequence: 1,
+        raw_request: %{"model" => "user-usage-model"}
+      )
+      |> RuntimeTrace.apply_event(
+        {:set_step_usage, %{input_tokens: 3, output_tokens: 0, cost: 0.001}}
+      )
+
+    :ok = Persistence.persist_step_trace_only!(user_message.id, runtime_step)
+
+    usage_records =
+      LlmUsageRecord
+      |> Ash.Query.filter(chat_message_step_id_snapshot == ^step_id)
+      |> Ash.read!(actor: actor)
+
+    assert usage_records == []
+  end
+
   defp create_step!(message_id, sequence, actor) do
     ChatMessageStep
     |> Ash.Changeset.for_create(
@@ -280,5 +410,41 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> Ash.create!(actor: actor)
 
     {item, content}
+  end
+
+  defp create_provider!(actor, name) do
+    LlmProvider
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        name: name,
+        type: :demo,
+        auth_method: :api_key,
+        base_url: nil,
+        api_key: nil
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_configuration!(actor, provider, model_name) do
+    LlmConfiguration
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        provider_id: provider.id,
+        model_name: model_name,
+        note: "cfg",
+        parameters: %{},
+        enabled: true,
+        timeout_seconds: 30,
+        context_length: 2048,
+        supports_cache_control: false,
+        supports_image_input: false
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 end

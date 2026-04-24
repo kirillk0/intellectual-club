@@ -4,6 +4,9 @@
       <div class="toolbar fill">
         <strong>LLM Configurations</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
+          <button type="button" @click="openUsage" :disabled="loading">
+            Usage
+          </button>
           <button class="primary" type="button" @click="createConfig" :disabled="loading">
             New configuration
           </button>
@@ -331,6 +334,10 @@ function createConfig() {
   const query: Record<string, unknown> = { navKey, returnTo: route.fullPath };
   if (selectedTagId.value && !selectedNoTags.value) query.defaultTagId = String(selectedTagId.value);
   router.push({ path: `/catalogs/llm-configurations/new`, query });
+}
+
+function openUsage() {
+  router.push({ path: '/catalogs/llm-configurations/usage', query: { returnTo: route.fullPath } });
 }
 
 async function loadConfigs() {

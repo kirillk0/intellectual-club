@@ -11,6 +11,7 @@ defmodule IntellectualClub.Llm do
     resource(IntellectualClub.Llm.LlmConfigurationKnowledgeBlock)
     resource(IntellectualClub.Llm.LlmConfigurationTag)
     resource(IntellectualClub.Llm.LlmConfigurationTagBinding)
+    resource(IntellectualClub.Llm.LlmUsageRecord)
     resource(IntellectualClub.Llm.LlmProvider)
   end
 
