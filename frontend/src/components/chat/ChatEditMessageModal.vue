@@ -48,6 +48,8 @@
               autofocus
               :aria-label="contents.length > 1 ? `Message content ${selectedContentIndex + 1}` : 'Message content'"
               @paste="handleTextareaPaste"
+              @keydown.enter.ctrl.exact.prevent="handleTextareaSubmit"
+              @keydown.enter.meta.exact.prevent="handleTextareaSubmit"
               @input="(event) => updateAt(selectedContentIndex, (event.target as HTMLTextAreaElement).value)"
             ></textarea>
           </div>
@@ -281,6 +283,11 @@ const confirmLabel = computed(() => {
 });
 const describePendingFileStatus = describePendingFileUploadStatus;
 const pendingFileProgress = pendingFileProgressPercent;
+
+const handleTextareaSubmit = () => {
+  if (saving.value) return;
+  emit('save');
+};
 
 const handleWindowKeydown = (event: KeyboardEvent) => {
   if (!props.open || saving.value) return;
