@@ -1,4 +1,4 @@
-import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
+import { computed, nextTick, ref, watch, type ComputedRef, type Ref } from 'vue';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
@@ -63,6 +63,31 @@ export function useChatComposerRuntime(params: Params) {
   });
 
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
+
+  const waitForAnimationFrame = () =>
+    new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
+
+  const getPageScroller = () => document.scrollingElement || document.documentElement;
+
+  const getMaxPageScrollTop = () => {
+    const scroller = getPageScroller();
+    return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  };
+
+  const isPageScrolledToBottom = () => {
+    const scroller = getPageScroller();
+    return getMaxPageScrollTop() - scroller.scrollTop <= 8;
+  };
+
+  const keepPageScrolledToBottom = async () => {
+    await nextTick();
+    await waitForAnimationFrame();
+    window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
+    await waitForAnimationFrame();
+    window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
+  };
 
   const findPendingFile = (filesRef: Ref<PendingChatFile[]>, id: string) =>
     filesRef.value.find((item) => item.id === id) || null;
@@ -490,6 +515,7 @@ export function useChatComposerRuntime(params: Params) {
       if (pollingToken !== token) return false;
 
       const current = params.branch.value.find((item) => item.id === messageId) || null;
+      const shouldKeepPageAtBottom = current ? isPageScrolledToBottom() : false;
 
       if (current) {
         const patch: Partial<ChatBranchMessage> = {
@@ -508,6 +534,7 @@ export function useChatComposerRuntime(params: Params) {
         }
 
         updateBranchMessage(messageId, patch);
+        if (shouldKeepPageAtBottom) void keepPageScrolledToBottom();
       }
 
       const doneStatuses = new Set(['done', 'canceled', 'error']);
