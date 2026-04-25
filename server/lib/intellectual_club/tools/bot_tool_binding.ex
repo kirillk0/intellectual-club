@@ -93,8 +93,14 @@ defmodule IntellectualClub.Tools.BotToolBinding do
     end
 
     update :update do
-      accept([:alias, :sharing_mode, :enabled, :sequence])
+      accept([:tool_instance_id, :alias, :sharing_mode, :enabled, :sequence])
       require_atomic?(false)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:tool_instance], access: [tool_instance: :writable], required?: false}
+      )
+
       change({ValidateBotToolAlias, []})
     end
   end

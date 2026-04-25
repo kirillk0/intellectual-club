@@ -62,6 +62,28 @@ defmodule IntellectualClub.Bots.Bot do
     end
   end
 
+  defp maybe_manage_tool_bindings(changeset, _context) do
+    case Ash.Changeset.fetch_argument(changeset, :tool_bindings) do
+      {:ok, nil} ->
+        changeset
+
+      {:ok, bindings} ->
+        Ash.Changeset.manage_relationship(
+          changeset,
+          :tool_bindings,
+          bindings,
+          type: :direct_control,
+          order_is_key: :sequence,
+          on_no_match: {:create, :create},
+          on_match: {:update, :update},
+          on_missing: {:destroy, :destroy}
+        )
+
+      :error ->
+        changeset
+    end
+  end
+
   defp maybe_attach_duplicated_image(duplicated, nil, _actor), do: {:ok, duplicated}
 
   defp maybe_attach_duplicated_image(duplicated, image_file_id, actor)
@@ -286,9 +308,15 @@ defmodule IntellectualClub.Bots.Bot do
         public?(true)
       end
 
+      argument :tool_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(relate_actor(:owner))
       change(&maybe_manage_knowledge_block_bindings/2)
       change(&maybe_manage_compatible_configuration_tag_bindings/2)
+      change(&maybe_manage_tool_bindings/2)
     end
 
     create :duplicate do
@@ -487,8 +515,14 @@ defmodule IntellectualClub.Bots.Bot do
         public?(true)
       end
 
+      argument :tool_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(&maybe_manage_knowledge_block_bindings/2)
       change(&maybe_manage_compatible_configuration_tag_bindings/2)
+      change(&maybe_manage_tool_bindings/2)
     end
 
     update :set_image do

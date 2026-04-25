@@ -235,7 +235,7 @@
             toggleLabel="enabled"
             :readonly="sharedReadonly"
             :addDisabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
-            :toggleDisabled="(item) => toolBindingsSavingIds.has(item.id)"
+            :toggleDisabled="() => toolBindingsSaving"
             :actionsDisabled="() => toolBindingsSaving"
             @add="openToolBindingPicker"
             @toggle="handleToolBindingToggle"
@@ -717,6 +717,24 @@ function sortToolBindings<T extends { sequence: number; id: number }>(rows: T[])
   return [...rows].sort((a, b) => (a.sequence || 0) - (b.sequence || 0) || a.id - b.id);
 }
 
+function normalizeToolBindingSequences<T extends ToolBindingRow>(rows: T[]) {
+  return sortToolBindings(rows).map((row, idx) => ({ ...row, sequence: idx }));
+}
+
+function normalizeToolBindingsForCompare(rows: ToolBindingRow[]) {
+  return sortToolBindings(rows).map((binding) => ({
+    alias: String(binding.alias || '').trim(),
+    tool_instance_id: Number(binding.tool_instance_id) || 0,
+    sharing_mode: binding.sharing_mode || 'shared',
+    enabled: Boolean(binding.enabled),
+    sequence: Number(binding.sequence) || 0,
+  }));
+}
+
+function cloneToolBindings(rows: ToolBindingRow[]) {
+  return rows.map((row) => ({ ...row }));
+}
+
 const editor = useCrudEditor<BotForm>({
   type: 'bots',
   basePath: '/api/ash/bots',
@@ -748,6 +766,7 @@ const editor = useCrudEditor<BotForm>({
       ? {}
       : { compatible_configuration_tag_bindings: compatibleTagBindingsPayload.value }),
     ...(bindings.payload.value === undefined ? {} : { knowledge_block_bindings: bindings.payload.value }),
+    ...(toolBindingsPayload.value === undefined ? {} : { tool_bindings: toolBindingsPayload.value }),
   }),
   normalizeForDirty: (form) => ({
     name: form.name,
@@ -896,11 +915,9 @@ function applyBotDocument(payload: JsonApiSingleResponse) {
       .filter((tool): tool is ToolInstanceOption => Boolean(tool))
   );
 
-  toolBindings.value = sortToolBindings(
+  hydrateToolBindings(
     toolBindingResources.map(parseToolBindingRow).filter((binding): binding is ToolBindingRow => Boolean(binding))
   );
-  toolBindingsLoading.value = false;
-  toolBindingsError.value = null;
 
   userToolBindings.value = sortToolBindings(
     userToolBindingResources
@@ -922,7 +939,9 @@ const removeCompatibleTag = (tagId: number) => {
   draftCompatibleTagIds.value = draftCompatibleTagIds.value.filter((id) => id !== tagId);
 };
 
-const dirty = computed(() => editor.dirty.value || bindings.dirty.value || compatibleTagBindingsDirty.value);
+const dirty = computed(
+  () => editor.dirty.value || bindings.dirty.value || compatibleTagBindingsDirty.value || toolBindingsDirty.value
+);
 const saving = computed(() => editor.saving.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
@@ -950,6 +969,10 @@ const cancelChanges = () => {
   editor.reset();
   bindings.reset();
   resetCompatibleTagBindings(currentCompatibleTagBindings.value.map((binding) => ({ ...binding })));
+  toolBindings.value = cloneToolBindings(originalToolBindings.value);
+  newToolInstanceId.value = 0;
+  newToolAlias.value = '';
+  toolBindingPickerOpen.value = false;
 };
 const remove = editor.remove;
 const duplicate = editor.duplicate;
@@ -1101,6 +1124,9 @@ watch(
     pickerOpen.value = false;
     pickerSelected.value = [];
     compatibleTagsPickerOpen.value = false;
+    toolBindingPickerOpen.value = false;
+    newToolInstanceId.value = 0;
+    newToolAlias.value = '';
   }
 );
 
@@ -1230,17 +1256,45 @@ const toolBindingIsOnline = (binding: ToolBindingRow) => toolInstanceOnline(bind
 
 const toolBindingsLoading = ref(false);
 const toolBindingsError = ref<string | null>(null);
+const originalToolBindings = ref<ToolBindingRow[]>([]);
 const toolBindings = ref<ToolBindingRow[]>([]);
-const toolBindingsSaving = ref(false);
-const toolBindingsSavingIds = ref(new Set<number>());
+const toolBindingsLoaded = ref(false);
+const toolBindingsSaving = computed(() => saving.value);
 const userToolBindingsLoading = ref(false);
 const userToolBindingsError = ref<string | null>(null);
 const userToolBindings = ref<UserToolBindingRow[]>([]);
 const userToolBindingDrafts = ref<Record<string, UserToolBindingDraft>>({});
 const userToolBindingSavingAliases = ref(new Set<string>());
+let tempToolBindingId = -1;
 
 const sortedToolBindings = computed(() => sortToolBindings(toolBindings.value || []));
 const perUserBaseBindings = computed(() => sortedToolBindings.value.filter((binding) => binding.sharing_mode === 'per_user'));
+const toolBindingsDirty = computed(
+  () =>
+    JSON.stringify(normalizeToolBindingsForCompare(originalToolBindings.value)) !==
+    JSON.stringify(normalizeToolBindingsForCompare(toolBindings.value))
+);
+const toolBindingsPayload = computed(() => {
+  if (!toolBindingsLoaded.value) return undefined;
+
+  return sortedToolBindings.value.map((binding) => ({
+    ...(binding.id > 0 ? { id: binding.id } : {}),
+    tool_instance_id: binding.tool_instance_id,
+    alias: String(binding.alias || '').trim(),
+    sharing_mode: binding.sharing_mode || 'shared',
+    enabled: Boolean(binding.enabled),
+  }));
+});
+
+function hydrateToolBindings(rows: ToolBindingRow[]) {
+  const normalized = normalizeToolBindingSequences(rows || []);
+  originalToolBindings.value = cloneToolBindings(normalized);
+  toolBindings.value = cloneToolBindings(normalized);
+  tempToolBindingId = -1;
+  toolBindingsLoading.value = false;
+  toolBindingsError.value = null;
+  toolBindingsLoaded.value = true;
+}
 
 function syncUserToolBindingDrafts() {
   const existingByAlias = new Map<string, UserToolBindingRow>();
@@ -1284,9 +1338,7 @@ watch(
     bindings.hydrate([]);
     resetCompatibleTagBindings([]);
     compatibleTagBindingsLoading.value = false;
-    toolBindings.value = [];
-    toolBindingsLoading.value = false;
-    toolBindingsError.value = null;
+    hydrateToolBindings([]);
     userToolBindings.value = [];
     userToolBindingsLoading.value = false;
     userToolBindingsError.value = null;
@@ -1344,8 +1396,7 @@ function openToolBindingPicker() {
 }
 
 async function addToolBinding() {
-  const botId = editor.numericId.value;
-  if (!botId) return;
+  if (isNew.value || sharedReadonly.value) return;
 
   const toolInstanceId = Number(newToolInstanceId.value || 0);
   const alias = String(newToolAlias.value || '').trim();
@@ -1365,116 +1416,60 @@ async function addToolBinding() {
     return;
   }
 
-  toolBindingsSaving.value = true;
-  try {
-    const nextSequence = sortedToolBindings.value.reduce((max, row) => Math.max(max, row.sequence || 0), 0) + 1;
+  if (toolBindings.value.some((binding) => binding.alias === alias)) {
+    alert('Alias is already used in this bot.');
+    return;
+  }
 
-    const created = await jsonApiCreate('/api/ash/bot-tool-bindings', 'bot-tool-bindings', {
-      bot_id: botId,
-      tool_instance_id: toolInstanceId,
+  const next = normalizeToolBindingSequences(toolBindings.value);
+  toolBindings.value = normalizeToolBindingSequences([
+    ...next,
+    {
+      id: tempToolBindingId--,
       alias,
+      tool_instance_id: toolInstanceId,
       sharing_mode: 'shared',
       enabled: true,
-      sequence: nextSequence,
-    });
-    const createdId = toIntId(created.data.id);
+      sequence: next.length,
+    },
+  ]);
 
-    newToolInstanceId.value = 0;
-    newToolAlias.value = '';
-    toolBindingPickerOpen.value = false;
-
-    if (createdId) {
-      toolBindings.value = sortToolBindings([
-        ...toolBindings.value,
-        {
-          id: createdId,
-          alias,
-          tool_instance_id: toolInstanceId,
-          sharing_mode: 'shared',
-          enabled: true,
-          sequence: nextSequence,
-        },
-      ]);
-    }
-  } catch (e) {
-    console.error(e);
-    alert('Failed to add tool binding.');
-  } finally {
-    toolBindingsSaving.value = false;
-  }
+  newToolInstanceId.value = 0;
+  newToolAlias.value = '';
+  toolBindingPickerOpen.value = false;
 }
 
-async function removeToolBinding(binding: ToolBindingRow) {
-  if (!window.confirm('Delete this tool binding?')) return;
-  toolBindingsSaving.value = true;
-  try {
-    await jsonApiDelete('/api/ash/bot-tool-bindings', binding.id);
-    toolBindings.value = toolBindings.value.filter((row) => row.id !== binding.id);
-    userToolBindings.value = userToolBindings.value.filter((row) => row.alias !== binding.alias);
-  } catch (e) {
-    console.error(e);
-    alert('Failed to delete tool binding.');
-  } finally {
-    toolBindingsSaving.value = false;
-  }
+function removeToolBinding(binding: ToolBindingRow) {
+  toolBindings.value = normalizeToolBindingSequences(toolBindings.value.filter((row) => row.id !== binding.id));
+  userToolBindings.value = userToolBindings.value.filter((row) => row.alias !== binding.alias);
 }
 
-async function toggleToolBinding(binding: ToolBindingRow, nextEnabled: boolean) {
-  if (toolBindingsSavingIds.value.has(binding.id)) return;
-  toolBindingsSavingIds.value = new Set([...toolBindingsSavingIds.value, binding.id]);
-
-  try {
-    await jsonApiUpdate('/api/ash/bot-tool-bindings', 'bot-tool-bindings', binding.id, {
-      enabled: nextEnabled,
-    });
-    toolBindings.value = toolBindings.value.map((row) => (row.id === binding.id ? { ...row, enabled: nextEnabled } : row));
-  } catch (e) {
-    console.error(e);
-    alert('Failed to update tool binding.');
-  } finally {
-    const next = new Set(toolBindingsSavingIds.value);
-    next.delete(binding.id);
-    toolBindingsSavingIds.value = next;
-  }
+function toggleToolBinding(binding: ToolBindingRow, nextEnabled: boolean) {
+  toolBindings.value = toolBindings.value.map((row) => (row.id === binding.id ? { ...row, enabled: nextEnabled } : row));
 }
 
 function removeToolBindingById(id: number) {
   const binding = toolBindings.value.find((row) => row.id === id);
   if (!binding) return;
-  void removeToolBinding(binding);
+  removeToolBinding(binding);
 }
 
 function handleToolBindingToggle(binding: ToolBindingRow, enabled: boolean) {
-  void toggleToolBinding(binding, enabled);
+  toggleToolBinding(binding, enabled);
 }
 
-async function moveToolBinding(binding: ToolBindingRow, delta: number) {
+function moveToolBinding(binding: ToolBindingRow, delta: number) {
   const list = sortedToolBindings.value;
   const idx = list.findIndex((x) => x.id === binding.id);
   if (idx < 0) return;
   const targetIdx = idx + delta;
   if (targetIdx < 0 || targetIdx >= list.length) return;
 
-  const left = list[idx];
-  const right = list[targetIdx];
-
-  toolBindingsSaving.value = true;
-  try {
-    await jsonApiUpdate('/api/ash/bot-tool-bindings', 'bot-tool-bindings', left.id, { sequence: right.sequence });
-    await jsonApiUpdate('/api/ash/bot-tool-bindings', 'bot-tool-bindings', right.id, { sequence: left.sequence });
-    toolBindings.value = sortToolBindings(
-      toolBindings.value.map((row) => {
-        if (row.id === left.id) return { ...row, sequence: right.sequence };
-        if (row.id === right.id) return { ...row, sequence: left.sequence };
-        return row;
-      })
-    );
-  } catch (e) {
-    console.error(e);
-    alert('Failed to reorder tool bindings.');
-  } finally {
-    toolBindingsSaving.value = false;
-  }
+  const next = [...list];
+  const current = next[idx];
+  next[idx] = next[targetIdx];
+  next[targetIdx] = current;
+  toolBindings.value = next.map((row, index) => ({ ...row, sequence: index }));
 }
 
 async function saveUserToolBinding(binding: ToolBindingRow) {

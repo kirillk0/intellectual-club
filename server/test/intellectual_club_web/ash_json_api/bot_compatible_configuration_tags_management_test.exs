@@ -226,6 +226,9 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       )
       |> Ash.create!(actor: actor)
 
+    tool1 = create_tool!(actor, "Tool One", "https://example.com/one")
+    tool2 = create_tool!(actor, "Tool Two", "https://example.com/two")
+
     bot =
       Bot
       |> Ash.Changeset.for_create(:create, %{name: "Tagged bot"}, actor: actor)
@@ -250,6 +253,20 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
             "knowledge_block_bindings" => [
               %{"knowledge_block_id" => block1.id, "enabled" => true, "sequence" => 0},
               %{"knowledge_block_id" => block2.id, "enabled" => true, "sequence" => 1}
+            ],
+            "tool_bindings" => [
+              %{
+                "tool_instance_id" => tool1.id,
+                "alias" => "tool_one",
+                "sharing_mode" => "shared",
+                "enabled" => true
+              },
+              %{
+                "tool_instance_id" => tool2.id,
+                "alias" => "tool_two",
+                "sharing_mode" => "shared",
+                "enabled" => false
+              }
             ]
           }
         }
@@ -272,20 +289,38 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
     assert Enum.map(block_bindings1, & &1.knowledge_block_id) == [block1.id, block2.id]
 
+    tool_bindings1 =
+      BotToolBinding
+      |> Ash.Query.filter(bot_id == ^bot.id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(tool_bindings1, &{&1.tool_instance_id, &1.alias, &1.enabled, &1.sequence}) ==
+             [
+               {tool1.id, "tool_one", true, 0},
+               {tool2.id, "tool_two", false, 1}
+             ]
+
     assert relationship_ids(resp1, "compatible_configuration_tag_bindings") ==
              Enum.sort(Enum.map(bindings1, & &1.id))
 
     assert relationship_ids(resp1, "knowledge_block_bindings") ==
              Enum.map(block_bindings1, & &1.id)
 
+    assert relationship_ids(resp1, "tool_bindings") == Enum.map(tool_bindings1, & &1.id)
+
     assert ids_from_included(resp1, "llm-configuration-tags") == Enum.sort([tag1.id, tag2.id])
     assert ids_from_included(resp1, "knowledge-blocks") == Enum.sort([block1.id, block2.id])
+    assert ids_from_included(resp1, "tool-instances") == Enum.sort([tool1.id, tool2.id])
 
     binding1 = Enum.find(bindings1, &(&1.llm_configuration_tag_id == tag1.id))
     assert binding1
 
     block_binding1 = Enum.find(block_bindings1, &(&1.knowledge_block_id == block1.id))
     assert block_binding1
+
+    tool_binding1 = Enum.find(tool_bindings1, &(&1.tool_instance_id == tool1.id))
+    assert tool_binding1
 
     resp2 =
       conn
@@ -303,6 +338,15 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
                 "knowledge_block_id" => block1.id,
                 "enabled" => true,
                 "sequence" => 0
+              }
+            ],
+            "tool_bindings" => [
+              %{
+                "id" => tool_binding1.id,
+                "tool_instance_id" => tool1.id,
+                "alias" => "tool_one",
+                "sharing_mode" => "shared",
+                "enabled" => false
               }
             ]
           }
@@ -325,14 +369,28 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
     assert Enum.map(block_bindings2, & &1.knowledge_block_id) == [block1.id]
 
+    tool_bindings2 =
+      BotToolBinding
+      |> Ash.Query.filter(bot_id == ^bot.id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(tool_bindings2, &{&1.tool_instance_id, &1.alias, &1.enabled, &1.sequence}) ==
+             [
+               {tool1.id, "tool_one", false, 0}
+             ]
+
     assert relationship_ids(resp2, "compatible_configuration_tag_bindings") ==
              Enum.map(bindings2, & &1.id)
 
     assert relationship_ids(resp2, "knowledge_block_bindings") ==
              Enum.map(block_bindings2, & &1.id)
 
+    assert relationship_ids(resp2, "tool_bindings") == Enum.map(tool_bindings2, & &1.id)
+
     assert ids_from_included(resp2, "llm-configuration-tags") == [tag1.id]
     assert ids_from_included(resp2, "knowledge-blocks") == [block1.id]
+    assert ids_from_included(resp2, "tool-instances") == [tool1.id]
   end
 
   defp create_bot!(actor, name, attrs) do
