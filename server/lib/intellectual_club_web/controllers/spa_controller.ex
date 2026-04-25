@@ -17,7 +17,7 @@ defmodule IntellectualClubWeb.SpaController do
         else
           conn
           |> put_session(:return_to, current_path(conn))
-          |> redirect(to: ~p"/login")
+          |> redirect(to: ~p"/login?next=#{current_path(conn)}")
           |> halt()
         end
 

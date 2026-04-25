@@ -3,7 +3,12 @@ defmodule IntellectualClubWeb.PageControllerTest do
 
   test "GET / redirects anonymous user to /login", %{conn: conn} do
     conn = get(conn, ~p"/")
-    assert redirected_to(conn) == ~p"/login"
+    assert redirected_to(conn) == ~p"/login?next=#{"/"}"
+  end
+
+  test "GET nested SPA route redirects anonymous user to login with next path", %{conn: conn} do
+    conn = get(conn, ~p"/catalogs/bots/42?panel=shares")
+    assert redirected_to(conn) == ~p"/login?next=#{"/catalogs/bots/42?panel=shares"}"
   end
 
   test "GET /login serves SPA shell for anonymous user", %{conn: conn} do
