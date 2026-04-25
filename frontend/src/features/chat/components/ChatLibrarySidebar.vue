@@ -48,73 +48,26 @@
         </div>
 
         <div class="panel-section">
-          <div
-            class="flex compact-actions"
-            style="justify-content: space-between; align-items: center; gap: 8px"
-          >
-            <h4 style="margin: 0">Tools</h4>
-          </div>
-
-          <div class="card stack chat-tool-builder">
-            <div class="chat-tool-builder__fields">
-              <label class="stack chat-tool-builder__field">
-                <span class="muted">Tool</span>
-                <select
-                  :value="newChatToolInstanceId"
-                  class="full"
-                  :disabled="savingChatChanges || !toolLibrary.length"
-                  @change="handleToolSelect"
-                >
-                  <option :value="0">Choose tool…</option>
-                  <option v-for="tool in toolLibrary" :key="tool.id" :value="tool.id">
-                    {{ tool.name }} ({{ tool.type }})
-                  </option>
-                </select>
-              </label>
-
-              <label class="stack chat-tool-builder__field">
-                <span class="muted">Alias</span>
-                <input
-                  :value="newChatToolAlias"
-                  class="full"
-                  :disabled="savingChatChanges"
-                  placeholder="e.g. web"
-                  @input="handleAliasInput"
-                />
-              </label>
-            </div>
-
-            <div class="chat-tool-builder__footer">
-              <p class="muted chat-tool-builder__note">Tools are exposed as <code>alias__function</code>.</p>
-              <button
-                class="primary chat-tool-builder__submit"
-                type="button"
-                :disabled="savingChatChanges || !toolLibrary.length"
-                @click="emit('add-chat-tool-binding')"
-              >
-                Add
-              </button>
-            </div>
-
-            <p v-if="!toolLibrary.length" class="muted" style="margin: 0">
-              No editable tools available.
-            </p>
-          </div>
-
           <ToolBindingsCard
-            :show-header="false"
+            title="Tools"
             :items="chatToolBindings"
             :toolLabel="toolBindingLabel"
             :toolIsOutlet="toolBindingIsOutlet"
             :toolIsOnline="toolBindingIsOnline"
             emptyText="No tools linked."
             toggleLabel="enabled"
+            :addDisabled="savingChatChanges || !toolLibrary.length"
+            @add="openToolBindingPicker"
             :toggleDisabled="() => savingChatChanges"
             :actionsDisabled="() => savingChatChanges"
             @toggle="(binding, enabled) => emit('set-chat-tool-binding-enabled', binding.id, enabled)"
             @move="(binding, delta) => emit('move-chat-tool-binding', binding, delta)"
             @remove="(id) => emit('remove-chat-tool-binding', id)"
-          />
+          >
+            <template #note>
+              <p v-if="!toolLibrary.length" class="muted" style="margin: 0">No editable tools available.</p>
+            </template>
+          </ToolBindingsCard>
         </div>
 
         <div class="panel-section">
@@ -135,14 +88,28 @@
         </div>
       </div>
     </div>
+
+    <ToolBindingPickerModal
+      v-model:open="toolBindingPickerOpen"
+      :toolInstanceId="newChatToolInstanceId"
+      :alias="newChatToolAlias"
+      title="Add chat tool"
+      :tools="toolLibrary"
+      :saving="savingChatChanges"
+      @update:toolInstanceId="(value) => emit('update:newChatToolInstanceId', value)"
+      @update:alias="(value) => emit('update:newChatToolAlias', value)"
+      @confirm="confirmToolBinding"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
+import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
 import type { ChatVariable, ImageAsset, ToolInstanceOption } from '@/types/api';
 
 type ChatBlockLink = {
@@ -179,6 +146,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const toolBindingPickerOpen = ref(false);
 
 const emit = defineEmits<{
   (e: 'update:rightOpen', value: boolean): void;
@@ -200,62 +168,30 @@ const emit = defineEmits<{
   (e: 'add-variable-row'): void;
 }>();
 
-const handleToolSelect = (event: Event) => {
-  const target = event.target as HTMLSelectElement | null;
-  emit('update:newChatToolInstanceId', Number(target?.value || 0));
+const openToolBindingPicker = () => {
+  toolBindingPickerOpen.value = true;
 };
 
-const handleAliasInput = (event: Event) => {
-  const target = event.target as HTMLInputElement | null;
-  emit('update:newChatToolAlias', target?.value || '');
+const confirmToolBinding = () => {
+  const toolInstanceId = Number(props.newChatToolInstanceId || 0);
+  const alias = String(props.newChatToolAlias || '').trim();
+
+  if (
+    !toolInstanceId ||
+    !alias ||
+    alias.includes('__') ||
+    !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias) ||
+    props.chatToolBindings.some((binding) => binding.alias === alias)
+  ) {
+    emit('add-chat-tool-binding');
+    return;
+  }
+
+  toolBindingPickerOpen.value = false;
+  emit('add-chat-tool-binding');
 };
 
 const toolBindingLabel = (binding: ChatToolBindingLink) => props.toolLabel(binding.tool_instance_id);
 const toolBindingIsOutlet = (binding: ChatToolBindingLink) => props.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: ChatToolBindingLink) => props.toolIsOnline(binding.tool_instance_id);
 </script>
-
-<style scoped>
-.chat-tool-builder {
-  padding: 10px;
-  gap: 8px;
-}
-
-.chat-tool-builder__fields {
-  display: grid;
-  gap: 8px;
-}
-
-.chat-tool-builder__field {
-  gap: 4px;
-  min-width: 0;
-}
-
-.chat-tool-builder__footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.chat-tool-builder__note {
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.chat-tool-builder__submit {
-  padding: 5px 10px;
-  font-size: 0.9rem;
-}
-
-@media (max-width: 520px) {
-  .chat-tool-builder__footer {
-    align-items: stretch;
-  }
-
-  .chat-tool-builder__submit {
-    width: 100%;
-  }
-}
-</style>

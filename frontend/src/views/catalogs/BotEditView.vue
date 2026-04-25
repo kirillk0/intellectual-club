@@ -133,13 +133,6 @@
         </div>
 
         <div v-else-if="botTab === 'tools'" class="stack">
-          <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-            <strong>Tool bindings</strong>
-            <RouterLink class="link" to="/catalogs/tools" aria-label="Open tools">
-              manage tools
-            </RouterLink>
-          </div>
-
           <p v-if="sharedReadonly" class="muted">
             This shared bot is read-only. You can still connect your own tools for aliases configured as per-user.
           </p>
@@ -228,41 +221,12 @@
             </div>
           </div>
 
-          <div v-else-if="!isNew" class="card stack" style="padding: 10px">
-            <div class="flex" style="gap: 10px; flex-wrap: wrap; align-items: flex-end">
-              <label class="stack" style="gap: 6px; min-width: 240px">
-                <span class="muted">Tool</span>
-                <select v-model.number="newToolInstanceId" class="full" :disabled="toolLibraryLoading">
-                  <option :value="0">Choose tool…</option>
-                  <option v-for="t in toolLibrary" :key="t.id" :value="t.id">
-                    {{ t.name }} ({{ t.type }})
-                  </option>
-                </select>
-              </label>
-
-              <label class="stack" style="gap: 6px; min-width: 180px">
-                <span class="muted">Alias</span>
-                <input v-model="newToolAlias" class="full" placeholder="e.g. web" />
-              </label>
-
-              <button type="button" class="primary" @click="addToolBinding" :disabled="toolBindingsSaving">
-                Add
-              </button>
-            </div>
-
-            <p class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
-              The model will see tool names as <code>alias__function</code>.
-            </p>
-
-            <p v-if="toolLibraryError" class="error-text" style="margin: 8px 0 0">{{ toolLibraryError }}</p>
-          </div>
-
           <p v-if="toolBindingsLoading" class="muted">Loading…</p>
           <p v-else-if="toolBindingsError" class="error-text">{{ toolBindingsError }}</p>
 
           <ToolBindingsCard
             v-else
-            :show-header="false"
+            title="Tool bindings"
             :items="sortedToolBindings"
             :toolLabel="toolBindingLabel"
             :toolIsOutlet="toolBindingIsOutlet"
@@ -270,14 +234,26 @@
             emptyText="No tools attached."
             toggleLabel="enabled"
             :readonly="sharedReadonly"
+            :addDisabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
             :toggleDisabled="(item) => toolBindingsSavingIds.has(item.id)"
             :actionsDisabled="() => toolBindingsSaving"
+            @add="openToolBindingPicker"
             @toggle="handleToolBindingToggle"
             @move="moveToolBinding"
             @remove="removeToolBindingById"
           >
-            <template #item-meta-extra="{ item }">
-              <div class="muted" style="font-size: 0.85rem; margin-top: 4px">sharing: {{ item.sharing_mode }}</div>
+            <template #header-actions>
+              <button
+                type="button"
+                :disabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
+                @click="openToolBindingPicker"
+              >
+                Add
+              </button>
+            </template>
+
+            <template #note>
+              <p v-if="toolLibraryError" class="error-text" style="margin: 0">{{ toolLibraryError }}</p>
             </template>
           </ToolBindingsCard>
         </div>
@@ -446,6 +422,18 @@
       @toggle="toggleCompatibleTag"
     />
 
+    <ToolBindingPickerModal
+      v-model:open="toolBindingPickerOpen"
+      v-model:toolInstanceId="newToolInstanceId"
+      v-model:alias="newToolAlias"
+      title="Add tool binding"
+      :tools="toolLibrary"
+      :loading="toolLibraryLoading"
+      :saving="toolBindingsSaving"
+      :error="toolLibraryError"
+      @confirm="addToolBinding"
+    />
+
     <BotShareWizardModal
       v-model:open="shareModalOpen"
       :groups="shareGroups"
@@ -470,6 +458,7 @@ import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
+import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import { deleteBotImage, uploadBotImage } from '@/api/images';
@@ -1346,6 +1335,13 @@ watch([perUserBaseBindings, userToolBindings], () => {
 
 const newToolInstanceId = ref(0);
 const newToolAlias = ref('');
+const toolBindingPickerOpen = ref(false);
+
+function openToolBindingPicker() {
+  if (isNew.value || sharedReadonly.value) return;
+  if (!toolLibrary.value.length && !toolLibraryLoading.value) void loadToolLibrary();
+  toolBindingPickerOpen.value = true;
+}
 
 async function addToolBinding() {
   const botId = editor.numericId.value;
@@ -1385,6 +1381,7 @@ async function addToolBinding() {
 
     newToolInstanceId.value = 0;
     newToolAlias.value = '';
+    toolBindingPickerOpen.value = false;
 
     if (createdId) {
       toolBindings.value = sortToolBindings([

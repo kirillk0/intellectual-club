@@ -1,13 +1,14 @@
 <template>
   <div class="stack tool-bindings-card">
-    <div
-      v-if="showHeader && (title || slots['header-actions'])"
-      class="flex"
-      style="justify-content: space-between; align-items: center"
-    >
+    <div v-if="showHeader && title" class="flex" style="justify-content: space-between; align-items: center">
       <strong v-if="title">{{ title }}</strong>
       <div v-if="slots['header-actions']" class="flex" style="gap: 8px; align-items: center">
         <slot name="header-actions"></slot>
+      </div>
+      <div v-else class="flex" style="gap: 8px; align-items: center">
+        <button type="button" :disabled="addDisabled || readonly" @click="emit('add')">
+          {{ addLabel }}
+        </button>
       </div>
     </div>
 
@@ -106,6 +107,8 @@ const props = withDefaults(
     readonly?: boolean;
     showToggle?: boolean;
     showActions?: boolean;
+    addLabel?: string;
+    addDisabled?: boolean;
     toggleDisabled?: (item: ToolBindingItem) => boolean;
     actionsDisabled?: (item: ToolBindingItem) => boolean;
   }>(),
@@ -117,12 +120,15 @@ const props = withDefaults(
     readonly: false,
     showToggle: true,
     showActions: true,
+    addLabel: 'Add',
+    addDisabled: false,
     toggleDisabled: () => false,
     actionsDisabled: () => false,
   }
 );
 
 const emit = defineEmits<{
+  (e: 'add'): void;
   (e: 'move', item: ToolBindingItem, delta: number): void;
   (e: 'remove', id: number): void;
   (e: 'toggle', item: ToolBindingItem, enabled: boolean): void;
