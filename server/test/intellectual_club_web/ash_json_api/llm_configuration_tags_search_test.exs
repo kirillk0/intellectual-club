@@ -54,8 +54,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationTagsSearchTest do
 
   test "GET /api/ash/llm-configuration-tags supports editable_only for foreign tags visible via shared bots",
        %{
-    conn: conn
-  } do
+         conn: conn
+       } do
     %{user: owner} = user_fixture()
     %{user: recipient, password: password} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})

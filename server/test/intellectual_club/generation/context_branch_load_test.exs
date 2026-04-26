@@ -19,7 +19,9 @@ defmodule IntellectualClub.Generation.ContextBranchLoadTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "History branch load", note: "", variables: %{}}, actor: actor)
+        %{title: "History branch load", note: "", variables: %{}},
+        actor: actor
+      )
       |> Ash.create!(actor: actor)
 
     {:ok, _root} = Threads.add_message_to_end(chat, :user, "hello", actor: actor)

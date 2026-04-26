@@ -23,6 +23,7 @@ defmodule IntellectualClub.Generation.Worker do
   @auto_retry_http_status_codes MapSet.new([429, 502])
   @auto_retry_error_kinds MapSet.new(["network", "timeout", "transport"])
   @max_refusal_rounds 3
+  @max_parallel_tool_calls 8
 
   defstruct [
     :context,
@@ -53,6 +54,39 @@ defmodule IntellectualClub.Generation.Worker do
 
   def cancel(pid) do
     GenServer.cast(pid, :cancel)
+  end
+
+  @doc false
+  @spec execute_tool_calls(list(map()), map(), ExecutionContext.t() | nil) :: list(map())
+  def execute_tool_calls(tool_calls, tool_instances_by_alias, execution_context)
+      when is_list(tool_calls) and is_map(tool_instances_by_alias) do
+    max_concurrency =
+      tool_calls
+      |> length()
+      |> min(@max_parallel_tool_calls)
+      |> max(1)
+
+    tool_calls
+    |> Task.async_stream(
+      fn call ->
+        result =
+          Executor.execute_llm_tool(
+            tool_instances_by_alias,
+            call.name,
+            call.args || %{},
+            execution_context
+          )
+
+        decorate_tool_result(call, result)
+      end,
+      max_concurrency: max_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      {:exit, reason} -> exit(reason)
+    end)
   end
 
   @impl true
@@ -967,20 +1001,8 @@ defmodule IntellectualClub.Generation.Worker do
 
     task =
       Task.async(fn ->
-        results =
-          Enum.map(tool_calls, fn call ->
-            result =
-              Executor.execute_llm_tool(
-                tool_instances_by_alias,
-                call.name,
-                call.args || %{},
-                execution_context
-              )
-
-            decorate_tool_result(call, result)
-          end)
-
-        {:tool_results, results}
+        {:tool_results,
+         execute_tool_calls(tool_calls, tool_instances_by_alias, execution_context)}
       end)
 
     %{state | tool_task: task}
