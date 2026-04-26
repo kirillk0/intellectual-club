@@ -56,7 +56,8 @@ defmodule IntellectualClub.LlmCore.ResponsesApi do
       json: payload,
       connect_options: [timeout: connect_timeout_ms],
       receive_timeout: timeout_ms,
-      into: :self
+      into: :self,
+      retry: false
     ]
 
     try do

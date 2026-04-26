@@ -8,6 +8,26 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
 
+  setup do
+    previous_max_retries =
+      Application.get_env(:intellectual_club, :generation_auto_retry_max_retries)
+
+    previous_backoff = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
+    previous_jitter = Application.get_env(:intellectual_club, :generation_auto_retry_jitter_ratio)
+
+    Application.put_env(:intellectual_club, :generation_auto_retry_max_retries, 2)
+    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0, 0])
+    Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
+
+    on_exit(fn ->
+      restore_env(:generation_auto_retry_max_retries, previous_max_retries)
+      restore_env(:generation_auto_retry_backoff_ms, previous_backoff)
+      restore_env(:generation_auto_retry_jitter_ratio, previous_jitter)
+    end)
+
+    :ok
+  end
+
   test "generation retries transient provider errors by recreating the step" do
     %{user: actor} = user_fixture()
 
@@ -98,4 +118,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       end
     end
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
+  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
 end

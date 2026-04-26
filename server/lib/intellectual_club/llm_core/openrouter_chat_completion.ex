@@ -53,7 +53,8 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
       json: payload,
       connect_options: [timeout: connect_timeout_ms],
       receive_timeout: timeout_ms,
-      into: :self
+      into: :self,
+      retry: false
     ]
 
     try do
@@ -196,11 +197,13 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
 
     error_text =
       case error do
-        %{"message" => message} when is_binary(message) and message != "" ->
-          truncate_text(message, 500)
-
         %{} ->
-          truncate_text(inspect(error), 500)
+          error
+          |> extract_error_message()
+          |> case do
+            "" -> truncate_text(inspect(error), 500)
+            message -> truncate_text(message, 500)
+          end
 
         _ ->
           "Provider stream finished with error#{if is_binary(finish_reason), do: ": #{finish_reason}", else: ""}"
@@ -479,9 +482,13 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
     end
   end
 
-  defp extract_error_summary(%{"error" => %{"message" => message}} = _json, _fallback)
-       when is_binary(message) and message != "" do
-    truncate_text(message, 500)
+  defp extract_error_summary(%{"error" => error} = _json, _fallback) when is_map(error) do
+    error
+    |> extract_error_message()
+    |> case do
+      "" -> truncate_text(inspect(error), 500)
+      message -> truncate_text(message, 500)
+    end
   end
 
   defp extract_error_summary(%{"error" => error} = _json, _fallback) when is_binary(error) do
@@ -498,6 +505,50 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
     |> String.trim()
     |> truncate_text(500)
   end
+
+  defp extract_error_message(error) when is_map(error) do
+    message = trimmed_string(Map.get(error, "message") || Map.get(error, :message))
+    raw = raw_error_message(error)
+
+    cond do
+      raw != "" and generic_error_message?(message) ->
+        raw
+
+      message != "" ->
+        message
+
+      raw != "" ->
+        raw
+
+      true ->
+        ""
+    end
+  end
+
+  defp raw_error_message(error) when is_map(error) do
+    metadata = Map.get(error, "metadata") || Map.get(error, :metadata)
+
+    case metadata do
+      %{} ->
+        trimmed_string(Map.get(metadata, "raw") || Map.get(metadata, :raw))
+
+      _other ->
+        ""
+    end
+  end
+
+  defp generic_error_message?(message) when is_binary(message) do
+    message
+    |> String.trim()
+    |> String.downcase()
+    |> then(&(&1 in ["", "error", "provider error", "provider returned error"]))
+  end
+
+  defp generic_error_message?(_message), do: true
+
+  defp trimmed_string(value) when is_binary(value), do: String.trim(value)
+  defp trimmed_string(nil), do: ""
+  defp trimmed_string(value), do: value |> to_string() |> String.trim()
 
   defp truncate_text(value, limit) when is_binary(value) and is_integer(limit) and limit > 0 do
     if String.length(value) <= limit do

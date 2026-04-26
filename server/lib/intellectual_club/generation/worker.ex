@@ -18,8 +18,8 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
 
-  @auto_retry_max_retries 2
-  @auto_retry_backoff_ms [500, 1_500]
+  @default_auto_retry_backoff_ms [500, 1_500, 5_000, 5_000, 5_000, 5_000, 5_000]
+  @default_auto_retry_jitter_ratio 0.2
   @auto_retry_http_status_codes MapSet.new([429, 502])
   @auto_retry_error_kinds MapSet.new(["network", "timeout", "transport"])
   @max_refusal_rounds 3
@@ -150,18 +150,7 @@ defmodule IntellectualClub.Generation.Worker do
       error = Map.get(raw_response, "error")
       status_code = parse_int(is_map(error) && Map.get(error, "code"))
 
-      error_text =
-        cond do
-          is_map(error) and is_binary(Map.get(error, "message")) and
-              Map.get(error, "message") != "" ->
-            Map.get(error, "message")
-
-          is_map(error) ->
-            "Provider returned error"
-
-          true ->
-            "Provider returned error"
-        end
+      error_text = provider_error_text(error)
 
       error_meta = %{
         provider: state.context.provider_type,
@@ -369,7 +358,9 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp maybe_retry_current_step(state, meta) when is_map(meta) do
-    if retryable_provider_error?(meta) and state.step_attempt <= @auto_retry_max_retries do
+    max_retries = auto_retry_max_retries()
+
+    if retryable_provider_error?(meta) and state.step_attempt <= max_retries do
       attempt = state.step_attempt
       delay_ms = backoff_delay_ms(attempt)
       status_code = status_code_from_meta(meta)
@@ -377,7 +368,7 @@ defmodule IntellectualClub.Generation.Worker do
 
       Logger.warning(
         "generation step auto-retry message_id=#{state.context.message_id} " <>
-          "step_id=#{inspect(step_id)} attempt=#{attempt} max_retries=#{@auto_retry_max_retries} " <>
+          "step_id=#{inspect(step_id)} attempt=#{attempt} max_retries=#{max_retries} " <>
           "status_code=#{inspect(status_code)} delay_ms=#{delay_ms}"
       )
 
@@ -450,18 +441,64 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp retryable_provider_error?(_meta), do: false
 
+  defp auto_retry_max_retries do
+    configured = Application.get_env(:intellectual_club, :generation_auto_retry_max_retries)
+
+    cond do
+      is_integer(configured) and configured >= 0 ->
+        configured
+
+      true ->
+        auto_retry_backoff_values() |> length()
+    end
+  end
+
+  defp auto_retry_backoff_values do
+    configured = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
+
+    if is_list(configured) do
+      configured
+      |> Enum.map(&parse_int/1)
+      |> Enum.filter(&(is_integer(&1) and &1 >= 0))
+    else
+      @default_auto_retry_backoff_ms
+    end
+  end
+
   defp backoff_delay_ms(attempt) when is_integer(attempt) and attempt > 0 do
-    case @auto_retry_backoff_ms do
+    case auto_retry_backoff_values() do
       [] ->
         0
 
       values ->
         idx = min(attempt - 1, length(values) - 1)
-        Enum.at(values, idx, 0)
+
+        values
+        |> Enum.at(idx, 0)
+        |> add_retry_jitter()
     end
   end
 
   defp backoff_delay_ms(_attempt), do: 0
+
+  defp add_retry_jitter(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    jitter_limit = round(delay_ms * auto_retry_jitter_ratio())
+
+    if jitter_limit > 0 do
+      delay_ms + :rand.uniform(jitter_limit)
+    else
+      delay_ms
+    end
+  end
+
+  defp add_retry_jitter(delay_ms), do: delay_ms
+
+  defp auto_retry_jitter_ratio do
+    case Application.get_env(:intellectual_club, :generation_auto_retry_jitter_ratio) do
+      value when is_number(value) and value >= 0 -> value
+      _other -> @default_auto_retry_jitter_ratio
+    end
+  end
 
   defp status_code_from_meta(meta) when is_map(meta) do
     value = Map.get(meta, :status_code) || Map.get(meta, "status_code")
@@ -487,6 +524,52 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp string_value(_meta, _key), do: ""
+
+  defp provider_error_text(error) when is_map(error) do
+    message = trimmed_string(Map.get(error, "message") || Map.get(error, :message))
+    raw = provider_error_raw_message(error)
+
+    cond do
+      raw != "" and generic_provider_error_message?(message) ->
+        raw
+
+      message != "" ->
+        message
+
+      raw != "" ->
+        raw
+
+      true ->
+        "Provider returned error"
+    end
+  end
+
+  defp provider_error_text(_error), do: "Provider returned error"
+
+  defp provider_error_raw_message(error) when is_map(error) do
+    metadata = Map.get(error, "metadata") || Map.get(error, :metadata)
+
+    case metadata do
+      %{} ->
+        trimmed_string(Map.get(metadata, "raw") || Map.get(metadata, :raw))
+
+      _other ->
+        ""
+    end
+  end
+
+  defp generic_provider_error_message?(message) when is_binary(message) do
+    message
+    |> String.trim()
+    |> String.downcase()
+    |> then(&(&1 in ["", "error", "provider error", "provider returned error"]))
+  end
+
+  defp generic_provider_error_message?(_message), do: true
+
+  defp trimmed_string(value) when is_binary(value), do: String.trim(value)
+  defp trimmed_string(nil), do: ""
+  defp trimmed_string(value), do: value |> to_string() |> String.trim()
 
   defp parse_int(value) when is_integer(value), do: value
 
