@@ -1416,15 +1416,15 @@ select.full {
 
 .message .bubble .table-scroll {
   margin: 0 0 8px;
-  overflow-x: auto;
+  overflow-x: visible;
   max-width: 100%;
-  -webkit-overflow-scrolling: touch;
 }
 
 .message .bubble .table-scroll table {
   border-collapse: collapse;
-  width: max-content;
-  min-width: 100%;
+  table-layout: fixed;
+  width: 100%;
+  max-width: 100%;
 }
 
 .message .bubble .table-scroll th,
@@ -1433,6 +1433,9 @@ select.full {
   padding: 6px 8px;
   text-align: left;
   vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .typing-indicator {
