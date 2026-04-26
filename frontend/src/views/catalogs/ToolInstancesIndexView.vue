@@ -55,6 +55,7 @@
               :title="t.outlet_online ? 'Online' : 'Offline'"
             />
             <span class="badge">{{ t.max_output_tokens }} max</span>
+            <span v-if="t.rps_limit !== null" class="badge">{{ t.rps_limit }} rps</span>
             <span class="catalog-row__chevron" aria-hidden="true">›</span>
           </div>
         </button>
@@ -80,6 +81,7 @@ type ToolInstanceRow = {
   type: string;
   server_url: string;
   max_output_tokens: number;
+  rps_limit: number | null;
   last_discovered_at: string;
   last_discovery_error: string;
   outlet_online: boolean;
@@ -117,6 +119,17 @@ function normalize(text: string) {
   return text.trim().toLowerCase();
 }
 
+function parseNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function parseRow(resource: JsonApiResource): ToolInstanceRow | null {
   const id = toIntId(resource.id);
   if (!id) return null;
@@ -133,6 +146,7 @@ function parseRow(resource: JsonApiResource): ToolInstanceRow | null {
       typeof attrs.max_output_tokens === 'number'
         ? attrs.max_output_tokens
         : Number(attrs.max_output_tokens || 0),
+    rps_limit: parseNullableNumber(attrs.rps_limit),
     last_discovered_at: String(attrs.last_discovered_at || '').trim(),
     last_discovery_error: String(attrs.last_discovery_error || '').trim(),
     outlet_online: Boolean(attrs.outlet_online),
@@ -180,7 +194,7 @@ async function loadTools() {
     params.set('sort', 'name');
     params.set(
       'fields[tool-instances]',
-      'name,type,config,max_output_tokens,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
+      'name,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
     );
     const payload = await jsonApiList('/api/ash/tool-instances', params);
     tools.value = (payload.data || []).map(parseRow).filter((t): t is ToolInstanceRow => Boolean(t));

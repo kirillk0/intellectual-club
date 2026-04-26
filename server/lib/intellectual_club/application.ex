@@ -18,6 +18,7 @@ defmodule IntellectualClub.Application do
       {DNSCluster, query: Application.get_env(:intellectual_club, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: IntellectualClub.PubSub},
       {IntellectualClub.Outlets.Runtime, []},
+      {IntellectualClub.Tools.RateLimiter, []},
       {Registry, keys: :duplicate, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
       # Start a worker by calling: IntellectualClub.Worker.start_link(arg)

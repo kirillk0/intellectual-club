@@ -1,8 +1,15 @@
 defmodule IntellectualClub.Tools.ExecutorTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Executor
+  alias IntellectualClub.Tools.RateLimiter
+  alias IntellectualClub.Tools.ToolInstance
+
+  setup do
+    RateLimiter.reset()
+    :ok
+  end
 
   test "sanitize_execution_result removes null bytes recursively" do
     result = %ExecutionResult{
@@ -51,6 +58,39 @@ defmodule IntellectualClub.Tools.ExecutorTest do
     assert sanitized.media == [%{"filename" => "image-ÐÂ½.png"}]
     assert sanitized.artifacts == [%{"path" => "/tmp/ÐÂ½.bin"}]
     assert utf8_valid?(sanitized)
+  end
+
+  test "limited tool calls pass through when a slot is available" do
+    tool = limited_tool_instance()
+
+    result = Executor.execute_llm_tool(%{"web" => tool}, "web__search", %{})
+
+    assert %ExecutionResult{} = result
+    assert result.raw["isError"] == true
+    refute result.raw["code"] == "tool_busy"
+  end
+
+  test "limited tool calls return a tool error when backlog is too large" do
+    tool = limited_tool_instance()
+
+    _first = Executor.execute_llm_tool(%{"web" => tool}, "web__search", %{})
+    result = Executor.execute_llm_tool(%{"web" => tool}, "web__search", %{})
+
+    assert result.text == "Tool is busy. Try again later."
+    assert result.raw["isError"] == true
+    assert result.raw["error"] == "tool is busy"
+    assert result.raw["code"] == "tool_busy"
+  end
+
+  defp limited_tool_instance do
+    %ToolInstance{
+      id: System.unique_integer([:positive, :monotonic]),
+      type: "mcp_http",
+      config: %{},
+      secrets: %{},
+      max_output_tokens: 20_000,
+      rps_limit: 0.01
+    }
   end
 
   defp contains_null_byte?(value) when is_binary(value) do

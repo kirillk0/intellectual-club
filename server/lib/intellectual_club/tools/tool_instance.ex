@@ -17,6 +17,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   alias IntellectualClub.Tools.Registry
   alias IntellectualClub.Tools.Changes.DeleteToolDependents
   alias IntellectualClub.Tools.Changes.MergeSecretsPatch
+  alias IntellectualClub.Tools.Changes.ValidatePositiveRpsLimit
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.Changes.ValidateToolType
 
@@ -60,6 +61,11 @@ defmodule IntellectualClub.Tools.ToolInstance do
       public?(true)
       default(20_000)
       constraints(min: 0)
+    end
+
+    attribute :rps_limit, :float do
+      allow_nil?(true)
+      public?(true)
     end
 
     attribute :last_discovered_at, :utc_datetime_usec do
@@ -207,9 +213,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
     end
 
     create :create do
-      accept([:type, :name, :config, :secrets, :max_output_tokens])
+      accept([:type, :name, :config, :secrets, :max_output_tokens, :rps_limit])
       change(relate_actor(:owner))
       change({ValidateToolType, []})
+      change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
     end
 
@@ -238,7 +245,8 @@ defmodule IntellectualClub.Tools.ToolInstance do
           name: Duplication.next_copy_label(source.name),
           config: source.config,
           secrets: if(preserve_secrets?, do: source.secrets, else: %{}),
-          max_output_tokens: source.max_output_tokens
+          max_output_tokens: source.max_output_tokens,
+          rps_limit: source.rps_limit
         })
         |> Ash.Changeset.put_context(
           :duplicate_function_specs,
@@ -274,12 +282,14 @@ defmodule IntellectualClub.Tools.ToolInstance do
       end
 
       change({ValidateToolType, []})
+      change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
     end
 
     update :update do
-      accept([:name, :config, :secrets, :max_output_tokens])
+      accept([:name, :config, :secrets, :max_output_tokens, :rps_limit])
       require_atomic?(false)
+      change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
     end
 

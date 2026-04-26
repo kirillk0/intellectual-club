@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.Executor do
 
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ExecutionResult
+  alias IntellectualClub.Tools.RateLimiter
   alias IntellectualClub.Tools.Registry
 
   @null_byte <<0>>
@@ -58,38 +59,10 @@ defmodule IntellectualClub.Tools.Executor do
   end
 
   defp execute_tool_instance(tool_instance, function_name, args, execution_context) do
-    tool_type = tool_instance.type |> to_string() |> String.trim()
-
     result =
-      try do
-        driver = Registry.driver_for_type!(tool_type)
-        driver.execute(tool_instance, function_name, args || %{}, execution_context)
-      rescue
-        exception -> {:error, Exception.message(exception)}
-      catch
-        :exit, reason -> {:error, Exception.format_exit(reason)}
-      end
-
-    result =
-      case result do
-        {:ok, value} ->
-          ExecutionResult.normalize(value)
-
-        {:error, reason} ->
-          %ExecutionResult{
-            text: to_string(reason || "Tool execution failed"),
-            raw: %{"isError" => true},
-            media: [],
-            artifacts: []
-          }
-
-        other ->
-          %ExecutionResult{
-            text: "Tool execution failed",
-            raw: %{"isError" => true, "raw" => inspect(other)},
-            media: [],
-            artifacts: []
-          }
+      case RateLimiter.await_slot(tool_instance) do
+        :ok -> execute_driver(tool_instance, function_name, args, execution_context)
+        {:error, :busy} -> busy_result()
       end
       |> sanitize_execution_result()
 
@@ -113,6 +86,50 @@ defmodule IntellectualClub.Tools.Executor do
       raw: raw,
       media: result.media,
       artifacts: result.artifacts
+    }
+  end
+
+  defp execute_driver(tool_instance, function_name, args, execution_context) do
+    tool_type = tool_instance.type |> to_string() |> String.trim()
+
+    result =
+      try do
+        driver = Registry.driver_for_type!(tool_type)
+        driver.execute(tool_instance, function_name, args || %{}, execution_context)
+      rescue
+        exception -> {:error, Exception.message(exception)}
+      catch
+        :exit, reason -> {:error, Exception.format_exit(reason)}
+      end
+
+    case result do
+      {:ok, value} ->
+        ExecutionResult.normalize(value)
+
+      {:error, reason} ->
+        %ExecutionResult{
+          text: to_string(reason || "Tool execution failed"),
+          raw: %{"isError" => true},
+          media: [],
+          artifacts: []
+        }
+
+      other ->
+        %ExecutionResult{
+          text: "Tool execution failed",
+          raw: %{"isError" => true, "raw" => inspect(other)},
+          media: [],
+          artifacts: []
+        }
+    end
+  end
+
+  defp busy_result do
+    %ExecutionResult{
+      text: "Tool is busy. Try again later.",
+      raw: %{"isError" => true, "error" => "tool is busy", "code" => "tool_busy"},
+      media: [],
+      artifacts: []
     }
   end
 

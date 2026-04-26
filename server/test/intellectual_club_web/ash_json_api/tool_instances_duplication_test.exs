@@ -50,6 +50,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDuplicationTest do
     assert duplicated.config == source.config
     assert duplicated.secrets == source.secrets
     assert duplicated.max_output_tokens == source.max_output_tokens
+    assert duplicated.rps_limit == source.rps_limit
     assert Enum.map(duplicated_functions, & &1.name) == [function.name]
   end
 
@@ -91,6 +92,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDuplicationTest do
     assert duplicated.config == source.config
     assert duplicated.secrets == %{}
     assert duplicated.max_output_tokens == source.max_output_tokens
+    assert duplicated.rps_limit == source.rps_limit
     assert Enum.map(duplicated_functions, & &1.name) == [function.name]
   end
 
@@ -120,7 +122,8 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDuplicationTest do
         name: name,
         config: %{"server_url" => "https://example.com/mcp"},
         secrets: %{"bearer_token" => "super-secret"},
-        max_output_tokens: 1000
+        max_output_tokens: 1000,
+        rps_limit: 0.5
       },
       actor: actor
     )

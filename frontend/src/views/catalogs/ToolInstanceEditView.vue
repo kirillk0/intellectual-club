@@ -201,6 +201,23 @@
             <div class="muted" style="margin-top: 4px">Limits tool outputs to prevent oversized responses.</div>
           </label>
 
+          <label :class="{ 'field-error': errors.hasField('rps_limit') }">
+            RPS limit
+            <input
+              v-model.number="form.rps_limit"
+              class="full"
+              type="number"
+              min="0"
+              step="0.1"
+              placeholder="No limit"
+              @input="errors.clearField('rps_limit')"
+            />
+            <div v-if="errors.hasField('rps_limit')" class="error-text">
+              {{ errors.messageFor('rps_limit') }}
+            </div>
+            <div class="muted" style="margin-top: 4px">Leave empty to disable rate limiting.</div>
+          </label>
+
           <div v-if="supportsDiscovery && form.last_discovery_error" class="error-text">
             Discovery error: {{ form.last_discovery_error }}
           </div>
@@ -421,6 +438,7 @@ type ToolInstanceForm = {
   type: string;
   config: Record<string, unknown>;
   max_output_tokens: number;
+  rps_limit: number | null | '';
   last_discovered_at: string;
   last_discovery_error: string;
   secrets_present: string[];
@@ -452,6 +470,17 @@ function normalizeString(value: unknown): string {
 function normalizeObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function humanizeKey(key: string): string {
@@ -512,6 +541,7 @@ function fromApi(resource: JsonApiResource): Partial<ToolInstanceForm> {
     config,
     max_output_tokens:
       typeof attrs.max_output_tokens === 'number' ? attrs.max_output_tokens : Number(attrs.max_output_tokens || 0),
+    rps_limit: parseNullableNumber(attrs.rps_limit),
     last_discovered_at: normalizeString(attrs.last_discovered_at),
     last_discovery_error: normalizeString(attrs.last_discovery_error),
     secrets_present,
@@ -567,6 +597,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     type: 'mcp_http',
     config: {},
     max_output_tokens: 20_000,
+    rps_limit: null,
     last_discovered_at: '',
     last_discovery_error: '',
     secrets_present: [],
@@ -582,6 +613,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
       name: form.name,
       config: normalizeObject(form.config),
       max_output_tokens: form.max_output_tokens,
+      rps_limit: parseNullableNumber(form.rps_limit),
     };
 
     // Create requires type, update does not accept it.
@@ -608,6 +640,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     type: form.type,
     config: form.config,
     max_output_tokens: form.max_output_tokens,
+    rps_limit: parseNullableNumber(form.rps_limit),
     secrets_patch: form.secrets_patch,
     secrets_clear: form.secrets_clear,
     can_edit: form.can_edit,
@@ -618,6 +651,10 @@ const editor = useCrudEditor<ToolInstanceForm>({
   documentQuery: () => {
     const params = new URLSearchParams();
     params.set('include', TOOL_DOCUMENT_INCLUDE);
+    params.set(
+      'fields[tool-instances]',
+      'name,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,secrets_present,can_edit,shared_incoming,shared_outgoing,functions'
+    );
     return params;
   },
   onDocument: (payload) => {
