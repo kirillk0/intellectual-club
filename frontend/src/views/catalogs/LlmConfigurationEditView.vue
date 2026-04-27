@@ -49,8 +49,16 @@
 
           <label :class="{ 'field-error': errors.hasField('model_name') }">
             Model name
-            <input v-model="form.model_name" class="full" :disabled="sharedReadonly" @input="errors.clearField('model_name')" />
+            <EditableCombobox
+              :model-value="form.model_name"
+              :options="visibleModelOptions"
+              :disabled="sharedReadonly"
+              toggle-label="Show model options"
+              @update:modelValue="setModelName"
+            />
             <div v-if="errors.hasField('model_name')" class="error-text">{{ errors.messageFor('model_name') }}</div>
+            <div v-else-if="modelsLoading" class="muted small-text">Loading model options…</div>
+            <div v-else-if="modelsError" class="muted small-text">Model list unavailable.</div>
           </label>
 
           <label :class="{ 'field-error': errors.hasField('note') }">
@@ -269,6 +277,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
+import EditableCombobox from '@/components/EditableCombobox.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
@@ -309,6 +318,12 @@ type ConfigurationForm = {
 };
 
 type ProviderOption = { id: number; name: string };
+type ProviderModelOption = {
+  id: string;
+  label: string;
+  context_length?: number | null;
+  supports_image_input?: boolean | null;
+};
 type ConfigurationTagRow = { id: number; name: string };
 type ConfigurationTagBindingRow = { id: number; llm_configuration_tag_id: number; tag_name: string };
 
@@ -642,6 +657,11 @@ const cancelChanges = () => {
 };
 
 const providerOptions = ref<ProviderOption[]>([]);
+const modelOptions = ref<ProviderModelOption[]>([]);
+const modelsLoading = ref(false);
+const modelsError = ref<string | null>(null);
+const modelsProviderId = ref<number | null>(null);
+let modelLoadSeq = 0;
 
 function mergeProviderOptions(options: ProviderOption[]) {
   const byId = new Map<number, ProviderOption>();
@@ -658,6 +678,65 @@ const providerModel = computed({
     form.provider_id = value ? Number(value) : null;
   },
 });
+
+const modelOptionsById = computed(() => {
+  const map = new Map<string, ProviderModelOption>();
+  for (const option of modelOptions.value) map.set(option.id, option);
+  return map;
+});
+
+const visibleModelOptions = computed(() => {
+  const term = form.model_name.trim().toLowerCase();
+  const options = !term
+    ? modelOptions.value
+    : modelOptions.value.filter((option) => {
+        return option.id.toLowerCase().includes(term) || option.label.toLowerCase().includes(term);
+      });
+
+  return options.slice(0, 50).map((option) => option.id);
+});
+
+function normalizeModelOptions(models: ProviderModelOption[]) {
+  const byId = new Map<string, ProviderModelOption>();
+
+  for (const model of models) {
+    const id = String(model.id || '').trim();
+    if (!id) continue;
+    const label = String(model.label || id).trim() || id;
+    byId.set(id, {
+      id,
+      label,
+      context_length:
+        typeof model.context_length === 'number' && Number.isFinite(model.context_length)
+          ? model.context_length
+          : null,
+      supports_image_input:
+        typeof model.supports_image_input === 'boolean' ? model.supports_image_input : null,
+    });
+  }
+
+  return Array.from(byId.values());
+}
+
+function applySelectedModelMetadata(modelName: string) {
+  const option = modelOptionsById.value.get(String(modelName || '').trim());
+  if (!option) return;
+
+  if (typeof option.context_length === 'number' && Number.isFinite(option.context_length)) {
+    form.context_length = option.context_length;
+    errors.clearField('context_length');
+  }
+
+  if (typeof option.supports_image_input === 'boolean') {
+    form.supports_image_input = option.supports_image_input;
+  }
+}
+
+function setModelName(value: string) {
+  form.model_name = value;
+  errors.clearField('model_name');
+  applySelectedModelMetadata(value);
+}
 
 const contextLengthModel = computed({
   get: () => (typeof form.context_length === 'number' ? form.context_length : undefined),
@@ -679,6 +758,38 @@ async function loadProviders() {
     );
   } catch (e) {
     console.warn('Failed to load providers', e);
+  }
+}
+
+async function loadProviderModels(providerId: number | null) {
+  const currentSeq = ++modelLoadSeq;
+  modelOptions.value = [];
+  modelsError.value = null;
+  modelsProviderId.value = providerId;
+
+  if (!providerId) {
+    modelsLoading.value = false;
+    return;
+  }
+
+  modelsLoading.value = true;
+
+  try {
+    const payload = await api.get<{ models?: ProviderModelOption[] }>(
+      `/api/bff/llm-providers/${providerId}/models`,
+      { showErrorBanner: false }
+    );
+
+    if (currentSeq !== modelLoadSeq) return;
+    modelOptions.value = normalizeModelOptions(Array.isArray(payload.models) ? payload.models : []);
+  } catch (error) {
+    if (currentSeq !== modelLoadSeq) return;
+    console.warn('Failed to load provider models', error);
+    modelsError.value = 'Model list unavailable.';
+  } finally {
+    if (currentSeq === modelLoadSeq) {
+      modelsLoading.value = false;
+    }
   }
 }
 
@@ -881,6 +992,14 @@ watch(
   }
 );
 
+watch(
+  () => form.provider_id,
+  (providerId) => {
+    void loadProviderModels(providerId);
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
   void loadProviders();
   void loadKnowledgeBlocks();
@@ -953,5 +1072,10 @@ async function saveSharing(groupIds: number[]) {
 
 .kb-placement-toggle {
   white-space: nowrap;
+}
+
+.small-text {
+  margin-top: 4px;
+  font-size: 0.85rem;
 }
 </style>

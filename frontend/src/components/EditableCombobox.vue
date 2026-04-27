@@ -5,6 +5,7 @@
         :value="modelValue"
         class="full combo-box__input"
         :placeholder="placeholder"
+        :disabled="disabled"
         autocomplete="off"
         aria-autocomplete="list"
         :aria-expanded="options.length ? String(menuOpen) : undefined"
@@ -18,6 +19,7 @@
         v-if="options.length"
         type="button"
         class="combo-box__toggle"
+        :disabled="disabled"
         :aria-expanded="String(menuOpen)"
         :aria-label="toggleLabel"
         @click="toggleMenu"
@@ -48,11 +50,13 @@ type Props = {
   options: string[];
   placeholder?: string;
   toggleLabel?: string;
+  disabled?: boolean;
 };
 
 const props = withDefaults(defineProps<Props>(), {
   placeholder: '',
   toggleLabel: 'Show options',
+  disabled: false,
 });
 
 const emit = defineEmits<{
@@ -61,6 +65,7 @@ const emit = defineEmits<{
 
 const rootRef = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
+const suppressOpenUntilInput = ref(false);
 
 watch(
   () => props.options,
@@ -72,6 +77,8 @@ watch(
 );
 
 const openMenu = () => {
+  if (props.disabled) return;
+  if (suppressOpenUntilInput.value) return;
   if (props.options.length) {
     menuOpen.value = true;
   }
@@ -82,11 +89,14 @@ const closeMenu = () => {
 };
 
 const toggleMenu = () => {
+  if (props.disabled) return;
   if (!props.options.length) return;
+  suppressOpenUntilInput.value = false;
   menuOpen.value = !menuOpen.value;
 };
 
 const selectOption = (option: string) => {
+  suppressOpenUntilInput.value = true;
   emit('update:modelValue', option);
   closeMenu();
 };
@@ -94,6 +104,8 @@ const selectOption = (option: string) => {
 const handleInput = (event: Event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement)) return;
+  if (props.disabled) return;
+  suppressOpenUntilInput.value = false;
   emit('update:modelValue', target.value);
   openMenu();
 };

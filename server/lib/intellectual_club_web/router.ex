@@ -156,6 +156,7 @@ defmodule IntellectualClubWeb.Router do
     post "/tools/:id/discover", ToolsController, :discover
     patch "/tool-functions/:id", ToolsController, :update_function
     get "/llm-usage", LlmUsageController, :index
+    get "/llm-providers/:id/models", LlmProvidersController, :models
     get "/bots/:id/shares", BotSharesController, :show
     put "/bots/:id/shares", BotSharesController, :update
     get "/llm-configurations/:id/shares", LlmConfigurationSharesController, :show
