@@ -48,8 +48,8 @@
           <select
             :value="selectedConfig"
             @change="handleConfigChange"
-            :disabled="configSyncStatus === 'pending'"
-            :title="configSyncStatus === 'pending' ? 'Waiting for server confirmation' : undefined"
+            :disabled="configSelectorDisabled"
+            :title="configSelectorTitle"
           >
             <option value="">No config</option>
             <option v-if="selectedDisabledConfig" :value="selectedDisabledConfig.id" disabled>
@@ -179,6 +179,7 @@ interface Props {
   editConfigLabel: string;
   configSyncStatus: 'synced' | 'pending' | 'error';
   configSyncError: string;
+  isGenerating: boolean;
   menuOpen: boolean;
   menuStyle: Record<string, string>;
   currentBotId: number | null;
@@ -201,6 +202,14 @@ const props = defineProps<Props>();
 const selectedDisabledConfigReasonLabel = computed(() => {
   if (props.selectedDisabledConfigReason === 'incompatible') return 'incompatible';
   return 'disabled';
+});
+
+const configSelectorDisabled = computed(() => props.configSyncStatus === 'pending' || props.isGenerating);
+
+const configSelectorTitle = computed(() => {
+  if (props.isGenerating) return 'Cannot change configuration while generating a response';
+  if (props.configSyncStatus === 'pending') return 'Waiting for server confirmation';
+  return undefined;
 });
 
 const emit = defineEmits<{

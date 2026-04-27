@@ -11,6 +11,7 @@
         :edit-config-label="vm.editConfigLabel"
         :config-sync-status="vm.configSyncStatus"
         :config-sync-error="vm.configSyncError"
+        :is-generating="Boolean(vm.activeGenerationId)"
         :menu-open="vm.menuOpen"
         :menu-style="vm.menuStyle"
         :current-bot-id="vm.currentBotId"
