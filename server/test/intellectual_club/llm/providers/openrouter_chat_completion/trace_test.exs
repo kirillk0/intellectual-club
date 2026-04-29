@@ -1,10 +1,10 @@
-defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTraceTest do
+defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
   use ExUnit.Case, async: true
 
   import Plug.Conn
 
-  alias IntellectualClub.Generation.RequestBuilder
-  alias IntellectualClub.LlmCore.OpenRouterChatCompletionTrace
+  alias IntellectualClub.Llm.Providers.Common.RequestBuilder
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace
 
   test "emits canonical tool call trace from streamed chat completion deltas" do
     scripts = %{
@@ -176,7 +176,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTraceTest do
       )
 
     :ok =
-      OpenRouterChatCompletionTrace.stream_generate(
+      Trace.stream_generate(
         %{
           base_url: base_url,
           api_key: "test-key",

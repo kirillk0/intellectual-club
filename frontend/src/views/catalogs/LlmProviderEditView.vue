@@ -23,6 +23,13 @@
     <div v-if="sharedReadonly" class="card share-banner">
       <strong>Shared with you.</strong> This provider is read-only. Duplicate it to create an editable copy.
     </div>
+    <div v-if="providerTypesLoadError" class="card warning-banner">
+      {{ providerTypesLoadError }}
+    </div>
+    <div v-if="currentProviderTypeMissing" class="card warning-banner">
+      This provider type is not available in the current application build. Saving changes will fail until a
+      supported type is selected.
+    </div>
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
@@ -58,9 +65,14 @@
           <label :class="{ 'field-error': errors.hasField('type') }">
             Type
             <select v-model="form.type" class="full" @change="errors.clearField('type')">
-              <option value="openrouter_chat_completion">openrouter_chat_completion</option>
-              <option value="responses">responses</option>
-              <option value="demo">demo</option>
+              <option
+                v-for="providerType in providerTypeOptions"
+                :key="providerType.type"
+                :value="providerType.type"
+                :disabled="providerType.missing"
+              >
+                {{ providerType.label }}
+              </option>
             </select>
             <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
           </label>
@@ -90,7 +102,7 @@
             </div>
           </label>
 
-          <label v-if="form.auth_method === 'api_key'" :class="{ 'field-error': errors.hasField('api_key') }">
+          <label v-if="showsApiKeyCredential" :class="{ 'field-error': errors.hasField('api_key') }">
             API Key
             <div class="flex" style="justify-content: space-between; gap: 10px; align-items: baseline">
               <div class="muted" style="font-size: 0.85rem">
@@ -131,7 +143,7 @@
           </label>
 
           <label
-            v-if="form.auth_method === 'openai_oauth_refresh_token'"
+            v-if="showsOauthRefreshTokenCredential"
             :class="{ 'field-error': errors.hasField('oauth_refresh_token') }"
           >
             Refresh token
@@ -186,6 +198,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
@@ -205,14 +218,27 @@ type ProviderForm = {
   shared_outgoing: boolean;
 };
 
-const PROVIDER_BASE_URL_OPTIONS: Record<string, string[]> = {
-  openrouter_chat_completion: ['https://openrouter.ai/api/v1'],
-  responses: ['https://api.openai.com/v1', 'https://chatgpt.com/backend-api/codex'],
+type ProviderAuthMethodMetadata = {
+  value: string;
+  label: string;
+  credential?: string | null;
+  required?: boolean;
 };
 
-function baseUrlOptionsForType(type: string): string[] {
-  return PROVIDER_BASE_URL_OPTIONS[String(type || '').trim()] || [];
-}
+type ProviderTypeMetadata = {
+  type: string;
+  label: string;
+  default_auth_method: string;
+  auth_methods: ProviderAuthMethodMetadata[];
+  base_url_options: string[];
+  default_base_url?: string | null;
+  supports_model_discovery: boolean;
+  missing?: boolean;
+};
+
+type ProviderTypesResponse = {
+  types: ProviderTypeMetadata[];
+};
 
 function fromApi(resource: JsonApiResource): Partial<ProviderForm> {
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
@@ -236,6 +262,9 @@ function fromApi(resource: JsonApiResource): Partial<ProviderForm> {
 
 const clearApiKey = ref(false);
 const clearOauthRefreshToken = ref(false);
+const providerTypes = ref<ProviderTypeMetadata[]>([]);
+const providerTypesLoaded = ref(false);
+const providerTypesLoadError = ref('');
 
 const editor = useCrudEditor<ProviderForm>({
   type: 'llm-providers',
@@ -304,23 +333,111 @@ const oauthRefreshTokenPresent = computed(() =>
   (form.credentials_present || []).includes('oauth_refresh_token')
 );
 
-const authMethodOptions = computed(() => {
-  const type = String(form.type || '').trim();
-  const options = [{ value: 'api_key', label: 'API key' }];
-  if (type === 'responses') {
-    options.push({ value: 'openai_oauth_refresh_token', label: 'OpenAI OAuth (Refresh token)' });
+const providerTypesByType = computed(() => {
+  const map = new Map<string, ProviderTypeMetadata>();
+  for (const providerType of providerTypes.value) {
+    map.set(providerType.type, providerType);
   }
+  return map;
+});
+
+const currentProviderType = computed(() => providerTypesByType.value.get(String(form.type || '').trim()) || null);
+const currentProviderTypeMissing = computed(
+  () => loaded.value && providerTypesLoaded.value && Boolean(form.type) && !currentProviderType.value
+);
+const providerTypeOptions = computed(() => {
+  const options = [...providerTypes.value];
+  const type = String(form.type || '').trim();
+
+  if (type && !providerTypesByType.value.has(type)) {
+    options.push({
+      type,
+      label: `${type} (unavailable)`,
+      default_auth_method: String(form.auth_method || 'api_key'),
+      auth_methods: fallbackAuthMethods(),
+      base_url_options: [],
+      default_base_url: null,
+      supports_model_discovery: false,
+      missing: true,
+    });
+  }
+
   return options;
 });
 
-const baseUrlSuggestions = computed(() => baseUrlOptionsForType(form.type));
-const baseUrlPlaceholder = computed(() => baseUrlSuggestions.value[0] || '');
+function fallbackAuthMethods(): ProviderAuthMethodMetadata[] {
+  const method = String(form.auth_method || 'api_key').trim() || 'api_key';
+
+  if (method === 'openai_oauth_refresh_token') {
+    return [{ value: method, label: 'OpenAI OAuth (Refresh token)', credential: 'oauth_refresh_token' }];
+  }
+
+  if (method === 'api_key') {
+    return [{ value: method, label: 'API key', credential: 'api_key' }];
+  }
+
+  return [{ value: method, label: method, credential: null }];
+}
+
+const authMethodOptions = computed(() => {
+  const methods = currentProviderType.value?.auth_methods || fallbackAuthMethods();
+  return methods.map((method) => ({ value: method.value, label: method.label }));
+});
+
+const selectedAuthMethod = computed(() => {
+  const methods = currentProviderType.value?.auth_methods || fallbackAuthMethods();
+  return methods.find((method) => method.value === form.auth_method) || methods[0] || null;
+});
+const selectedCredential = computed(() => selectedAuthMethod.value?.credential || null);
+const showsApiKeyCredential = computed(() => selectedCredential.value === 'api_key');
+const showsOauthRefreshTokenCredential = computed(
+  () => selectedCredential.value === 'oauth_refresh_token'
+);
+
+const baseUrlSuggestions = computed(() => currentProviderType.value?.base_url_options || []);
+const baseUrlPlaceholder = computed(
+  () => currentProviderType.value?.default_base_url || baseUrlSuggestions.value[0] || ''
+);
+
+async function loadProviderTypes() {
+  try {
+    const payload = await api.get<ProviderTypesResponse>('/api/bff/llm-provider-types');
+    providerTypes.value = Array.isArray(payload.types) ? payload.types : [];
+    providerTypesLoaded.value = true;
+    providerTypesLoadError.value = '';
+  } catch (error) {
+    providerTypesLoaded.value = false;
+    providerTypesLoadError.value = 'Provider type metadata could not be loaded.';
+    console.warn('Failed to load provider type metadata', error);
+  }
+}
+
+void loadProviderTypes();
 
 watch(
   () => form.type,
   (type) => {
-    if (String(type || '').trim() !== 'responses' && form.auth_method === 'openai_oauth_refresh_token') {
-      form.auth_method = 'api_key';
+    const providerType = providerTypesByType.value.get(String(type || '').trim());
+    if (!providerType) return;
+
+    if (!providerType.auth_methods.some((method) => method.value === form.auth_method)) {
+      form.auth_method = providerType.default_auth_method;
+    }
+
+    if (!form.base_url && providerType.default_base_url) {
+      form.base_url = providerType.default_base_url;
+    }
+  }
+);
+
+watch(
+  () => providerTypes.value,
+  () => {
+    const providerType = currentProviderType.value;
+    if (!providerType) return;
+
+    if (!providerType.auth_methods.some((method) => method.value === form.auth_method)) {
+      form.auth_method = providerType.default_auth_method;
     }
   }
 );
@@ -334,13 +451,18 @@ watch(
 
 watch(
   () => form.auth_method,
-  (method) => {
-    if (method === 'api_key') {
+  () => {
+    if (selectedCredential.value === 'api_key') {
       form.oauth_refresh_token = '';
       clearOauthRefreshToken.value = false;
-    } else if (method === 'openai_oauth_refresh_token') {
+    } else if (selectedCredential.value === 'oauth_refresh_token') {
       form.api_key = '';
       clearApiKey.value = false;
+    } else {
+      form.api_key = '';
+      form.oauth_refresh_token = '';
+      clearApiKey.value = false;
+      clearOauthRefreshToken.value = false;
     }
   }
 );
@@ -400,5 +522,10 @@ const goList = editor.goList;
   align-items: center;
   border-color: #bfd6f6;
   background: #f5f9ff;
+}
+
+.warning-banner {
+  border-color: #f2c46d;
+  background: #fff8e8;
 }
 </style>

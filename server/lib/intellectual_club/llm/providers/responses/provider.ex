@@ -1,19 +1,63 @@
-defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
-  @moduledoc false
+defmodule IntellectualClub.Llm.Providers.Responses do
+  @moduledoc """
+  Responses API provider package.
+  """
 
-  @behaviour IntellectualClub.Generation.ProviderAdapter
+  @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
   alias IntellectualClub.Chat.Media
-  alias IntellectualClub.Generation.AdapterTraceHelpers
+  alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Generation.History
-  alias IntellectualClub.Generation.RequestBuilder
+  alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Auth
-  alias IntellectualClub.LlmCore.ResponsesApi
+  alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
+  alias IntellectualClub.Llm.Providers.Responses.Api
 
+  @type_id "responses"
   @opaque_sequence 10_000
   @responses_include ["reasoning.encrypted_content"]
+
+  @impl true
+  def type, do: @type_id
+
+  @impl true
+  def label, do: "Responses API"
+
+  @impl true
+  def metadata do
+    %{
+      type: type(),
+      label: label(),
+      default_auth_method: "api_key",
+      auth_methods: [
+        %{value: "api_key", label: "API key", credential: "api_key", required: true},
+        %{
+          value: "openai_oauth_refresh_token",
+          label: "OpenAI OAuth (Refresh token)",
+          credential: "oauth_refresh_token",
+          required: true
+        }
+      ],
+      base_url_options: ["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"],
+      default_base_url: "https://api.openai.com/v1",
+      supports_model_discovery: true
+    }
+  end
+
+  @impl true
+  def validate_provider(provider, opts) do
+    AuthValidation.validate(provider, Keyword.put(opts, :metadata, metadata()))
+  end
+
+  @impl true
+  def list_models(provider) do
+    ModelDiscovery.list_openai_compatible_models(provider,
+      query: %{"client_version" => "1.0.0"}
+    )
+  end
 
   @impl true
   def supports_cache_control?, do: false
@@ -23,7 +67,7 @@ defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
     input_items =
       History.build_responses_input_items(Map.get(opts, :history, []),
         supports_image_input: Map.get(opts, :supports_image_input, false),
-        provider_type: :responses
+        provider_type: type()
       )
 
     raw_request =
@@ -66,7 +110,7 @@ defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
       Enum.flat_map(Map.get(opts, :results, []), fn result ->
         Media.media_followup_input_items(result.media_contents,
           supports_image_input: Map.get(context, :supports_image_input, false),
-          provider_type: :responses
+          provider_type: type()
         )
       end)
 
@@ -123,7 +167,7 @@ defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
 
     case token_result do
       {:ok, token} ->
-        ResponsesApi.stream_generate(
+        Api.stream_generate(
           %{
             base_url: Map.get(context, :provider_base_url),
             api_key: token,
@@ -137,7 +181,7 @@ defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
         emit.(
           {:response_error,
            %{
-             provider: :responses,
+             provider: Map.get(context, :provider_type, type()),
              error_text: error_text,
              raw_request: request_payload,
              raw_response: nil
@@ -187,12 +231,12 @@ defmodule IntellectualClub.Generation.Adapters.ResponsesAdapter do
         |> RuntimeTrace.apply_event(
           {:set_opaque, item_id, :tool_result, @opaque_sequence, opaque}
         )
-        |> AdapterTraceHelpers.apply_media_contents_to_trace(
+        |> TraceHelpers.apply_media_contents_to_trace(
           item_id,
           :tool_result,
           result.media_contents
         )
-        |> AdapterTraceHelpers.apply_artifacts_to_trace(result)
+        |> TraceHelpers.apply_artifacts_to_trace(result)
       end)
 
     {fco_items, runtime_step}

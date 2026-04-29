@@ -21,8 +21,8 @@ defmodule IntellectualClub.Llm.LlmProviderAuthValidationTest do
       )
       |> Ash.create!()
 
-    assert provider.type == :responses
-    assert provider.auth_method == :openai_oauth_refresh_token
+    assert provider.type == "responses"
+    assert provider.auth_method == "openai_oauth_refresh_token"
   end
 
   test "rejects OpenAI OAuth auth method for non-responses providers" do

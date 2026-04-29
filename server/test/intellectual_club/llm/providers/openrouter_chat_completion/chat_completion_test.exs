@@ -1,9 +1,9 @@
-defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTest do
+defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletionTest do
   use ExUnit.Case, async: true
 
   import Plug.Conn
 
-  alias IntellectualClub.LlmCore.OpenRouterChatCompletion
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   @request_payload %{
     "model" => "deepseek/deepseek-v4-pro",
@@ -82,7 +82,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTest do
     parent = self()
 
     :ok =
-      OpenRouterChatCompletion.stream_generate(opts, fn event ->
+      ChatCompletion.stream_generate(opts, fn event ->
         send(parent, {:provider_event, event})
       end)
 

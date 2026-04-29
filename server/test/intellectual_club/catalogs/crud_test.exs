@@ -275,6 +275,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
       )
       |> Ash.create!(actor: actor)
 
-    assert provider.type == :openrouter_chat_completion
+    assert provider.type == "openrouter_chat_completion"
   end
 end

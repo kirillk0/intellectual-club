@@ -1,4 +1,4 @@
-defmodule IntellectualClub.Generation.AdapterTraceHelpers do
+defmodule IntellectualClub.Llm.Providers.Common.TraceHelpers do
   @moduledoc false
 
   alias IntellectualClub.Generation.RuntimeTrace

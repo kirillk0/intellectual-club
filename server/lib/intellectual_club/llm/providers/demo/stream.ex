@@ -1,4 +1,4 @@
-defmodule IntellectualClub.Generation.DemoStream do
+defmodule IntellectualClub.Llm.Providers.Demo.Stream do
   @moduledoc """
   A local streaming provider used for the prototype.
 

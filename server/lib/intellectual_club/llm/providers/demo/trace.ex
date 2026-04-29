@@ -1,4 +1,4 @@
-defmodule IntellectualClub.Generation.DemoStreamTrace do
+defmodule IntellectualClub.Llm.Providers.Demo.Trace do
   @moduledoc """
   Trace-oriented adapter for the local `DemoStream`.
 
@@ -7,7 +7,7 @@ defmodule IntellectualClub.Generation.DemoStreamTrace do
   events so the worker can be provider-agnostic.
   """
 
-  alias IntellectualClub.Generation.DemoStream
+  alias IntellectualClub.Llm.Providers.Demo.Stream
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 
@@ -79,6 +79,6 @@ defmodule IntellectualClub.Generation.DemoStreamTrace do
         )
     end
 
-    DemoStream.run(messages, [chunk_delay_ms: chunk_delay_ms], emit_old)
+    Stream.run(messages, [chunk_delay_ms: chunk_delay_ms], emit_old)
   end
 end

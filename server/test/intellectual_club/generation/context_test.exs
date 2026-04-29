@@ -939,7 +939,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
-    assert context.provider_type == :openrouter_chat_completion
+    assert context.provider_type == "openrouter_chat_completion"
 
     assert context.messages == [
              %{"role" => "user", "content" => "What's the weather?"},
@@ -965,6 +965,78 @@ defmodule IntellectualClub.Generation.ContextTest do
     assistant_history = Enum.at(context.messages, 1)
     refute Map.has_key?(assistant_history, "reasoning")
     refute Map.has_key?(assistant_history, "reasoning_details")
+  end
+
+  test "uses missing provider adapter for provider types unavailable in the application build" do
+    %{user: actor} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Legacy provider", type: :demo, auth_method: :api_key},
+        actor: actor
+      )
+      |> Ash.create!()
+
+    Ecto.Adapters.SQL.query!(
+      Db.repo(),
+      "UPDATE llm_providers SET type = ? WHERE id = ?",
+      ["missing_provider_type", provider.id]
+    )
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "legacy-model",
+          note: nil,
+          parameters: %{},
+          enabled: true,
+          timeout_seconds: 30,
+          context_length: 8192,
+          supports_cache_control: false,
+          supports_image_input: false
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Legacy provider chat",
+          llm_configuration_id: configuration.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _user_message} = Threads.add_message_to_end(chat, :user, "hello", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.provider_type == "missing_provider_type"
+    assert context.adapter_module == IntellectualClub.Llm.Providers.Common.MissingProvider
+
+    assert :ok =
+             context.adapter_module.stream_generate(
+               %{context: context, request_payload: context.request_payload},
+               fn event -> send(self(), event) end
+             )
+
+    assert_receive {:response_error,
+                    %{
+                      provider: "missing_provider_type",
+                      error_kind: "configuration",
+                      error_text: "Provider type is not available: missing_provider_type"
+                    }}
   end
 
   test "keeps completed prefix of canceled assistant messages in chat provider history" do
@@ -1369,7 +1441,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
-    assert context.provider_type == :openrouter_chat_completion
+    assert context.provider_type == "openrouter_chat_completion"
 
     assert context.messages == [
              %{"role" => "user", "content" => "Run tool"},
@@ -1504,7 +1576,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
-    assert context.provider_type == :responses
+    assert context.provider_type == "responses"
     assert is_list(context.messages)
     assert Enum.all?(context.messages, &is_map/1)
     refute Enum.any?(context.messages, &(Map.get(&1, "type") == "reasoning"))

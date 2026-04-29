@@ -1,8 +1,8 @@
-defmodule IntellectualClub.Generation.Adapters.ChatAdapterHelpers do
+defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
   @moduledoc false
 
   alias IntellectualClub.Chat.Media
-  alias IntellectualClub.Generation.AdapterTraceHelpers
+  alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Generation.CacheControl
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
@@ -138,12 +138,12 @@ defmodule IntellectualClub.Generation.Adapters.ChatAdapterHelpers do
       |> RuntimeTrace.apply_event({:ensure_item, key, :tool_result, nil})
       |> RuntimeTrace.apply_event({:set_text, key, :tool_result, 1, to_string(result.text || "")})
       |> RuntimeTrace.apply_event({:set_opaque, key, :tool_result, @opaque_sequence, opaque})
-      |> AdapterTraceHelpers.apply_media_contents_to_trace(
+      |> TraceHelpers.apply_media_contents_to_trace(
         key,
         :tool_result,
         result.media_contents
       )
-      |> AdapterTraceHelpers.apply_artifacts_to_trace(result)
+      |> TraceHelpers.apply_artifacts_to_trace(result)
     end)
   end
 

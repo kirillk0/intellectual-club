@@ -1,4 +1,4 @@
-defmodule IntellectualClub.Generation.RequestBuilder do
+defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   @moduledoc """
   Provider-agnostic request payload builders.
   """

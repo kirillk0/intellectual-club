@@ -1,4 +1,4 @@
-defmodule IntellectualClub.LlmCore.ResponsesApi do
+defmodule IntellectualClub.Llm.Providers.Responses.Api do
   @moduledoc """
   Responses API (OpenAI-compatible) streaming client.
 

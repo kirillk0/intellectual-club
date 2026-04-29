@@ -12,8 +12,8 @@ defmodule IntellectualClub.Generation.Worker do
   require Logger
 
   alias IntellectualClub.Generation.Persistence
-  alias IntellectualClub.Generation.ProviderAdapterResolver
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -103,7 +103,7 @@ defmodule IntellectualClub.Generation.Worker do
 
     adapter =
       Map.get(context, :adapter_module) ||
-        ProviderAdapterResolver.for_provider_type(Map.get(context, :provider_type))
+        ProviderRegistry.fetch_or_missing(Map.get(context, :provider_type))
 
     initial_step_sequence =
       case Map.get(context, :initial_step_sequence) do

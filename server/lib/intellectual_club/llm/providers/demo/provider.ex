@@ -1,11 +1,45 @@
-defmodule IntellectualClub.Generation.Adapters.DemoAdapter do
-  @moduledoc false
+defmodule IntellectualClub.Llm.Providers.Demo do
+  @moduledoc """
+  Local demo provider package.
+  """
 
-  @behaviour IntellectualClub.Generation.ProviderAdapter
+  @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
-  alias IntellectualClub.Generation.Adapters.ChatAdapterHelpers
-  alias IntellectualClub.Generation.DemoStreamTrace
+  alias IntellectualClub.Llm.Providers.Demo.Trace
   alias IntellectualClub.Generation.RequestPayload
+  alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+
+  @type_id "demo"
+
+  @impl true
+  def type, do: @type_id
+
+  @impl true
+  def label, do: "Demo"
+
+  @impl true
+  def metadata do
+    %{
+      type: type(),
+      label: label(),
+      default_auth_method: "api_key",
+      auth_methods: [
+        %{value: "api_key", label: "API key", credential: nil, required: false}
+      ],
+      base_url_options: [],
+      default_base_url: nil,
+      supports_model_discovery: false
+    }
+  end
+
+  @impl true
+  def validate_provider(provider, opts) do
+    AuthValidation.validate(provider, Keyword.put(opts, :metadata, metadata()))
+  end
+
+  @impl true
+  def list_models(_provider), do: {:ok, []}
 
   @impl true
   def supports_cache_control?, do: false
@@ -15,7 +49,7 @@ defmodule IntellectualClub.Generation.Adapters.DemoAdapter do
     messages =
       ChatAdapterHelpers.build_initial_messages(
         opts
-        |> Map.put(:provider_type, :demo)
+        |> Map.put(:provider_type, type())
         |> Map.put(:cache_control_enabled, false)
       )
 
@@ -32,7 +66,7 @@ defmodule IntellectualClub.Generation.Adapters.DemoAdapter do
     followup =
       ChatAdapterHelpers.build_followup_messages(
         opts
-        |> Map.put(:provider_type, :demo)
+        |> Map.put(:provider_type, type())
         |> Map.put(:cache_control_enabled, false)
       )
 
@@ -55,7 +89,7 @@ defmodule IntellectualClub.Generation.Adapters.DemoAdapter do
       |> Map.get(:request_payload, %{})
       |> RequestPayload.stringify_keys()
 
-    DemoStreamTrace.stream_generate(
+    Trace.stream_generate(
       %{
         request_payload: request_payload,
         chunk_delay_ms: Map.get(opts, :chunk_delay_ms, 40)

@@ -13,11 +13,11 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Generation.ProviderAdapterResolver
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
+  alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Tools.BindingResolver
 
   require Ash.Query
@@ -117,7 +117,7 @@ defmodule IntellectualClub.Generation.Context do
         end
 
       provider_type = provider_type_for_configuration(llm_configuration)
-      adapter_module = ProviderAdapterResolver.for_provider_type(provider_type)
+      adapter_module = ProviderRegistry.fetch_or_missing(provider_type)
       request_snapshot = adapter_module.request_snapshot(request_payload)
 
       cache_control_enabled =
@@ -225,9 +225,6 @@ defmodule IntellectualClub.Generation.Context do
         chat_variables: chat.variables
       )
 
-    provider_type = provider_type_for_chat(chat)
-    adapter_module = ProviderAdapterResolver.for_provider_type(provider_type)
-
     supports_image_input =
       bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
 
@@ -237,9 +234,12 @@ defmodule IntellectualClub.Generation.Context do
 
     {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
      provider_oauth_refresh_token, model_name, parameters, timeout_ms, request_payload, messages,
-     cache_control_enabled, history_length} =
+     cache_control_enabled, history_length, adapter_module} =
       case chat.llm_configuration do
         nil ->
+          provider_type = "demo"
+          adapter_module = ProviderRegistry.fetch_or_missing(provider_type)
+
           initial_request =
             adapter_module.build_initial_request(%{
               history: history,
@@ -248,18 +248,19 @@ defmodule IntellectualClub.Generation.Context do
               parameters: %{},
               tools: tools_payload,
               supports_image_input: supports_image_input,
-              provider_type: :demo,
+              provider_type: provider_type,
               cache_control_enabled: false
             })
 
-          {nil, :demo, nil, nil, nil, nil, nil, %{}, nil, initial_request.raw_request,
-           initial_request.request_snapshot.model_input, false, nil}
+          {nil, provider_type, nil, nil, nil, nil, nil, %{}, nil, initial_request.raw_request,
+           initial_request.request_snapshot.model_input, false, nil, adapter_module}
 
         configuration ->
           provider = configuration.provider
 
           provider_id = provider.id
-          provider_type = provider.type
+          provider_type = normalize_provider_type(provider.type)
+          adapter_module = ProviderRegistry.fetch_or_missing(provider_type)
           provider_base_url = provider.base_url
           provider_api_key = provider.api_key
           provider_auth_method = provider.auth_method
@@ -297,7 +298,7 @@ defmodule IntellectualClub.Generation.Context do
 
           {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
            provider_oauth_refresh_token, model_name, parameters, timeout_ms, request_payload,
-           messages, cache_control_enabled, history_length}
+           messages, cache_control_enabled, history_length, adapter_module}
       end
 
     generating_message_params = %{
@@ -799,22 +800,23 @@ defmodule IntellectualClub.Generation.Context do
 
   defp trace_history_message?(_other), do: false
 
-  defp provider_type_for_configuration(%{provider: %{type: type}})
-       when type in [:responses, :openrouter_chat_completion, :openai_compatible, :demo],
-       do: type
+  defp provider_type_for_configuration(%{provider: %{type: type}}),
+    do: normalize_provider_type(type)
 
-  defp provider_type_for_configuration(%{provider: %{type: type}}) when is_atom(type), do: type
-  defp provider_type_for_configuration(_other), do: :demo
+  defp provider_type_for_configuration(_other), do: "demo"
 
-  defp provider_type_for_chat(chat) do
-    case Map.get(chat, :llm_configuration) do
-      %{provider: %{type: type}} when type in [:responses, :openrouter_chat_completion, :demo] ->
-        type
+  defp normalize_provider_type(value) when is_atom(value), do: Atom.to_string(value)
 
-      _ ->
-        nil
+  defp normalize_provider_type(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> "demo"
+      type -> type
     end
   end
+
+  defp normalize_provider_type(_value), do: "demo"
 
   defp max_tool_rounds_for_chat(chat) do
     case Map.get(chat, :bot) do

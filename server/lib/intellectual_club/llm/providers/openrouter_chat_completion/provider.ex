@@ -1,15 +1,53 @@
-defmodule IntellectualClub.Generation.Adapters.OpenRouterChatCompletionAdapter do
-  @moduledoc false
+defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
+  @moduledoc """
+  OpenRouter Chat Completions provider package.
+  """
 
-  @behaviour IntellectualClub.Generation.ProviderAdapter
+  @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
-  alias IntellectualClub.Generation.Adapters.ChatAdapterHelpers
-  alias IntellectualClub.Generation.RequestBuilder
+  alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RequestPayload
-  alias IntellectualClub.LlmCore.OpenRouterChatCompletionTrace
+  alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace
 
+  @type_id "openrouter_chat_completion"
   @anthropic_tool_call_id_pattern ~r/^[a-zA-Z0-9_-]+$/
   @anthropic_tool_call_id_rewrite ~r/[^a-zA-Z0-9_-]+/
+
+  @impl true
+  def type, do: @type_id
+
+  @impl true
+  def label, do: "OpenRouter Chat Completions"
+
+  @impl true
+  def metadata do
+    %{
+      type: type(),
+      label: label(),
+      default_auth_method: "api_key",
+      auth_methods: [
+        %{value: "api_key", label: "API key", credential: "api_key", required: true}
+      ],
+      base_url_options: ["https://openrouter.ai/api/v1"],
+      default_base_url: "https://openrouter.ai/api/v1",
+      supports_model_discovery: true
+    }
+  end
+
+  @impl true
+  def validate_provider(provider, opts) do
+    AuthValidation.validate(provider, Keyword.put(opts, :metadata, metadata()))
+  end
+
+  @impl true
+  def list_models(provider) do
+    ModelDiscovery.list_openai_compatible_models(provider,
+      query: %{"supported_parameters" => "tools"}
+    )
+  end
 
   @impl true
   def supports_cache_control?, do: true
@@ -18,7 +56,7 @@ defmodule IntellectualClub.Generation.Adapters.OpenRouterChatCompletionAdapter d
   def build_initial_request(opts) when is_map(opts) do
     messages =
       opts
-      |> Map.put(:provider_type, :openrouter_chat_completion)
+      |> Map.put(:provider_type, type())
       |> ChatAdapterHelpers.build_initial_messages()
       |> sanitize_messages_for_model(model_name: Map.get(opts, :model_name))
 
@@ -45,7 +83,7 @@ defmodule IntellectualClub.Generation.Adapters.OpenRouterChatCompletionAdapter d
     followup =
       ChatAdapterHelpers.build_followup_messages(
         opts
-        |> Map.put(:provider_type, :openrouter_chat_completion)
+        |> Map.put(:provider_type, type())
         |> Map.put(:cache_control_enabled, Map.get(context, :cache_control_enabled, false))
         |> Map.put(:history_length, Map.get(context, :history_length))
       )
@@ -106,7 +144,7 @@ defmodule IntellectualClub.Generation.Adapters.OpenRouterChatCompletionAdapter d
         )
 
       true ->
-        OpenRouterChatCompletionTrace.stream_generate(
+        Trace.stream_generate(
           %{
             base_url: base_url,
             api_key: api_key,

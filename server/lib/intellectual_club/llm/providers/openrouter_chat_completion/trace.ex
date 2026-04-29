@@ -1,11 +1,11 @@
-defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTrace do
+defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace do
   @moduledoc """
   Trace-oriented adapter for OpenRouter Chat Completions streaming.
 
   It translates provider-specific deltas into canonical runtime trace events.
   """
 
-  alias IntellectualClub.LlmCore.OpenRouterChatCompletion
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 
@@ -58,7 +58,7 @@ defmodule IntellectualClub.LlmCore.OpenRouterChatCompletionTrace do
         )
     end
 
-    OpenRouterChatCompletion.stream_generate(opts, emit_old)
+    ChatCompletion.stream_generate(opts, emit_old)
   end
 
   defp emit_tool_call_trace(emit, %{call_id: call_id, name: name} = tool_call)

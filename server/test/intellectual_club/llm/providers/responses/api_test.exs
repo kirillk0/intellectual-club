@@ -1,9 +1,9 @@
-defmodule IntellectualClub.LlmCore.ResponsesApiTest do
+defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
   use ExUnit.Case, async: true
 
   import Plug.Conn
 
-  alias IntellectualClub.LlmCore.ResponsesApi
+  alias IntellectualClub.Llm.Providers.Responses.Api
 
   @base_opts %{
     base_url: "http://127.0.0.1:9",
@@ -100,7 +100,7 @@ defmodule IntellectualClub.LlmCore.ResponsesApiTest do
     parent = self()
 
     :ok =
-      ResponsesApi.stream_generate(
+      Api.stream_generate(
         %{
           base_url: base_url,
           api_key: "test-key",
@@ -147,7 +147,7 @@ defmodule IntellectualClub.LlmCore.ResponsesApiTest do
     parent = self()
 
     :ok =
-      ResponsesApi.stream_generate(opts, fn event ->
+      Api.stream_generate(opts, fn event ->
         send(parent, {:provider_event, event})
       end)
 

@@ -3,6 +3,29 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
 
   alias IntellectualClub.Llm.LlmProvider
 
+  test "GET /api/bff/llm-provider-types returns provider metadata", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> get("/api/bff/llm-provider-types")
+      |> json_response(200)
+
+    types = response["types"]
+    openrouter = Enum.find(types, &(&1["type"] == "openrouter_chat_completion"))
+    responses = Enum.find(types, &(&1["type"] == "responses"))
+
+    assert openrouter["default_auth_method"] == "api_key"
+    assert openrouter["base_url_options"] == ["https://openrouter.ai/api/v1"]
+    assert openrouter["supports_model_discovery"] == true
+
+    assert Enum.any?(responses["auth_methods"], fn method ->
+             method["value"] == "openai_oauth_refresh_token" and
+               method["credential"] == "oauth_refresh_token"
+           end)
+  end
+
   test "GET /api/bff/llm-providers/:id/models loads OpenRouter tool-capable models", %{
     conn: conn
   } do

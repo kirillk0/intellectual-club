@@ -153,6 +153,7 @@ defmodule IntellectualClubWeb.Router do
     delete "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :delete
 
     get "/tools/types", ToolsController, :types
+    get "/llm-provider-types", LlmProvidersController, :types
     post "/tools/:id/discover", ToolsController, :discover
     patch "/tool-functions/:id", ToolsController, :update_function
     get "/llm-usage", LlmUsageController, :index

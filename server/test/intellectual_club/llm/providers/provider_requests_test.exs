@@ -1,14 +1,14 @@
-defmodule IntellectualClub.Generation.ProviderAdaptersTest do
+defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   use ExUnit.Case, async: true
 
-  alias IntellectualClub.Generation.Adapters.OpenRouterChatCompletionAdapter
-  alias IntellectualClub.Generation.Adapters.ResponsesAdapter
-  alias IntellectualClub.Generation.RequestBuilder
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
+  alias IntellectualClub.Llm.Providers.Responses
+  alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
 
-  test "openrouter adapter builds initial request and snapshot from canonical chat history" do
+  test "openrouter provider builds initial request and snapshot from canonical chat history" do
     result =
-      OpenRouterChatCompletionAdapter.build_initial_request(%{
+      OpenRouterChatCompletion.build_initial_request(%{
         history: [%{role: "user", content: "Hello"}],
         system_prompt: "Be careful.",
         model_name: "openai/gpt-5-mini",
@@ -49,9 +49,9 @@ defmodule IntellectualClub.Generation.ProviderAdaptersTest do
     assert result.request_snapshot.history_length == 2
   end
 
-  test "responses adapter builds initial request and snapshot from canonical history" do
+  test "responses provider builds initial request and snapshot from canonical history" do
     result =
-      ResponsesAdapter.build_initial_request(%{
+      Responses.build_initial_request(%{
         history: [%{role: "user", content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "gpt-5",
@@ -83,7 +83,7 @@ defmodule IntellectualClub.Generation.ProviderAdaptersTest do
     assert result.request_snapshot.system_prompt == "Use tools when needed."
   end
 
-  test "openrouter adapter rebuilds followup chat request from previous raw request and tool results" do
+  test "openrouter provider rebuilds followup chat request from previous raw request and tool results" do
     previous_messages = [
       %{
         "role" => "system",
@@ -148,7 +148,7 @@ defmodule IntellectualClub.Generation.ProviderAdaptersTest do
     ]
 
     followup =
-      OpenRouterChatCompletionAdapter.build_followup_request(%{
+      OpenRouterChatCompletion.build_followup_request(%{
         context: %{
           cache_control_enabled: true,
           history_length: 2,
@@ -182,7 +182,7 @@ defmodule IntellectualClub.Generation.ProviderAdaptersTest do
              ~s({"temperature":18.5})
   end
 
-  test "responses adapter rebuilds followup request from previous raw request raw response and tool results" do
+  test "responses provider rebuilds followup request from previous raw request raw response and tool results" do
     input_items = [
       %{
         "type" => "message",
@@ -237,7 +237,7 @@ defmodule IntellectualClub.Generation.ProviderAdaptersTest do
     ]
 
     followup =
-      ResponsesAdapter.build_followup_request(%{
+      Responses.build_followup_request(%{
         context: %{
           provider_base_url: "https://openrouter.ai/api/v1",
           model_name: "gpt-5",

@@ -7,7 +7,16 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersController do
 
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Llm.ModelCatalog
+  alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClubWeb.Bff.Helpers
+
+  def types(conn, _params) do
+    with {:ok, _actor} <- Helpers.require_actor(conn) do
+      json(conn, %{types: ProviderRegistry.metadata()})
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+    end
+  end
 
   def models(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),

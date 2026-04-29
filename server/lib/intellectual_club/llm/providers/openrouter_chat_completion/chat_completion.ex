@@ -1,4 +1,4 @@
-defmodule IntellectualClub.LlmCore.OpenRouterChatCompletion do
+defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion do
   @moduledoc """
   OpenRouter Chat Completions (OpenAI-compatible) streaming client.
 

@@ -31,20 +31,16 @@ defmodule IntellectualClub.Llm.LlmProvider do
       public?(true)
     end
 
-    attribute :type, :atom do
+    attribute :type, :string do
       allow_nil?(false)
       public?(true)
-      default(:openrouter_chat_completion)
-
-      constraints(one_of: [:openrouter_chat_completion, :responses, :demo])
+      default("openrouter_chat_completion")
     end
 
-    attribute :auth_method, :atom do
+    attribute :auth_method, :string do
       allow_nil?(false)
       public?(true)
-      default(:api_key)
-
-      constraints(one_of: [:api_key, :openai_oauth_refresh_token])
+      default("api_key")
     end
 
     attribute :base_url, :string do
