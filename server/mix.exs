@@ -129,7 +129,35 @@ defmodule IntellectualClub.MixProject do
         "spa.build",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      "picosat.sync": &sync_picosat/1,
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "cmd mix test"
+      ]
     ]
+  end
+
+  defp sync_picosat(_args) do
+    source =
+      ["picosat_nif.so", "picosat_nif.dylib", "picosat_nif.dll"]
+      |> Enum.map(&Path.join([File.cwd!(), "deps", "picosat_elixir", "priv", &1]))
+      |> Enum.find(&File.exists?/1)
+
+    case source do
+      nil ->
+        :ok
+
+      source_path ->
+        target_dir = Path.join([Mix.Project.build_path(), "lib", "picosat_elixir", "priv"])
+        target_path = Path.join(target_dir, Path.basename(source_path))
+
+        if !File.exists?(target_path) do
+          File.mkdir_p!(target_dir)
+          File.cp!(source_path, target_path)
+          Mix.shell().info("Synced #{Path.basename(source_path)} into #{target_dir}")
+        end
+    end
   end
 end
