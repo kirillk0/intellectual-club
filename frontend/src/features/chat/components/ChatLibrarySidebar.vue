@@ -13,7 +13,7 @@
     </div>
 
     <div class="stack panel-body" style="gap: 14px">
-      <div class="panel-pane">
+      <div class="panel-pane chat-library-pane">
         <div v-if="chatTabDirty" class="panel-actions">
           <button
             class="primary"
@@ -195,3 +195,15 @@ const toolBindingLabel = (binding: ChatToolBindingLink) => props.toolLabel(bindi
 const toolBindingIsOutlet = (binding: ChatToolBindingLink) => props.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: ChatToolBindingLink) => props.toolIsOnline(binding.tool_instance_id);
 </script>
+
+<style scoped>
+.chat-library-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-library-pane .panel-section + .panel-section {
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.28);
+}
+</style>
