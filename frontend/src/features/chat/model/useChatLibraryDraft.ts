@@ -5,6 +5,14 @@ import { jsonApiList, toIntId } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { parseImageAsset } from '@/features/media/image';
+import {
+  moveToolBindingInList,
+  normalizeToolBindingSequences,
+  removeToolBindingFromList,
+  setToolBindingEnabledInList,
+  validateNewToolBinding,
+} from '@/features/tools/model/toolBindings';
+import { useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
 import type {
   ChatKnowledgeBlock,
   ChatToolBinding,
@@ -55,9 +63,6 @@ const toChatToolBindingLinks = (bindings: ChatToolBinding[]) =>
 
 const normalizeSequences = (items: ChatBlockLink[]) => [...items].map((item, idx) => ({ ...item, sequence: idx }));
 
-const normalizeToolSequences = (items: ChatToolBindingLink[]) =>
-  [...items].map((item, idx) => ({ ...item, sequence: idx }));
-
 export function useChatLibraryDraft(params: Params) {
   const chatBlocksOriginal = ref<ChatBlockLink[]>([]);
   const chatBlocksDraft = ref<ChatBlockLink[]>([]);
@@ -81,15 +86,7 @@ export function useChatLibraryDraft(params: Params) {
   const chatToolBindings = computed(() => chatToolBindingsDraft.value);
   const linkedChatBlockIds = computed(() => chatBlocksDraft.value.map((b) => b.block));
 
-  const toolLibraryById = computed(() => {
-    const map = new Map<number, ToolInstanceOption>();
-    for (const tool of params.toolLibrary.value || []) {
-      if (typeof tool.id === 'number') {
-        map.set(tool.id, tool);
-      }
-    }
-    return map;
-  });
+  const toolInstanceLibrary = useToolInstanceLibrary(params.toolLibrary);
 
   const chatTabDirty = computed(() => {
     const varsA = normalizeVariablesForCompare(chatVariablesOriginal.value);
@@ -109,7 +106,7 @@ export function useChatLibraryDraft(params: Params) {
   const hydrate = ({ chatBlocks, chatToolBindings, chatVariables: variables }: HydratePayload) => {
     chatBlocksOriginal.value = normalizeSequences(toChatBlockLinks(chatBlocks || []));
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
-    chatToolBindingsOriginal.value = normalizeToolSequences(toChatToolBindingLinks(chatToolBindings || []));
+    chatToolBindingsOriginal.value = normalizeToolBindingSequences(toChatToolBindingLinks(chatToolBindings || []));
     chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
     chatVariablesOriginal.value = variables || [];
     chatVariables.value = [...chatVariablesOriginal.value];
@@ -205,50 +202,31 @@ export function useChatLibraryDraft(params: Params) {
     return `${type} · ${tokens} tokens`;
   };
 
-  const toolLabel = (toolInstanceId: number) => {
-    const tool = toolLibraryById.value.get(toolInstanceId);
-    if (!tool) return `Tool #${toolInstanceId}`;
-    return `${tool.name} (${tool.type})`;
-  };
-
-  const toolTypeLabel = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type || 'Tool';
-
-  const toolIsOutlet = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type === 'outlet';
-
-  const toolIsOnline = (toolInstanceId: number) =>
-    Boolean(toolLibraryById.value.get(toolInstanceId)?.outlet_online);
-
   const addChatToolBinding = () => {
     const toolInstanceId = Number(newChatToolInstanceId.value || 0);
     const alias = String(newChatToolAlias.value || '').trim();
 
-    if (!toolInstanceId) {
-      window.alert('Choose a tool.');
+    const validationError = validateNewToolBinding({
+      toolInstanceId,
+      alias,
+      bindings: chatToolBindingsDraft.value,
+      requireAliasPattern: true,
+      messages: {
+        missingTool: 'Choose a tool.',
+        missingAlias: 'Alias is required.',
+        invalidSeparator: 'Alias must not contain "__".',
+        invalidPattern: 'Alias must start with a letter and contain only letters, numbers, "_" or "-".',
+        duplicateAlias: 'Alias is already used in this chat.',
+      },
+    });
+
+    if (validationError) {
+      window.alert(validationError);
       return;
     }
 
-    if (!alias) {
-      window.alert('Alias is required.');
-      return;
-    }
-
-    if (alias.includes('__')) {
-      window.alert('Alias must not contain "__".');
-      return;
-    }
-
-    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)) {
-      window.alert('Alias must start with a letter and contain only letters, numbers, "_" or "-".');
-      return;
-    }
-
-    if (chatToolBindingsDraft.value.some((binding) => binding.alias === alias)) {
-      window.alert('Alias is already used in this chat.');
-      return;
-    }
-
-    const next = normalizeToolSequences(chatToolBindingsDraft.value);
-    chatToolBindingsDraft.value = normalizeToolSequences([
+    const next = normalizeToolBindingSequences(chatToolBindingsDraft.value);
+    chatToolBindingsDraft.value = normalizeToolBindingSequences([
       ...next,
       {
         id: tempChatToolBindingId--,
@@ -264,27 +242,15 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const moveChatToolBinding = (binding: ChatToolBindingLink, delta: number) => {
-    const idx = chatToolBindingsDraft.value.findIndex((item) => item.id === binding.id);
-    if (idx === -1) return;
-    const nextIndex = idx + delta;
-    if (nextIndex < 0 || nextIndex >= chatToolBindingsDraft.value.length) return;
-    const next = [...chatToolBindingsDraft.value];
-    const current = next[idx];
-    next[idx] = next[nextIndex];
-    next[nextIndex] = current;
-    chatToolBindingsDraft.value = normalizeToolSequences(next);
+    chatToolBindingsDraft.value = moveToolBindingInList(chatToolBindingsDraft.value, binding.id, delta);
   };
 
   const removeChatToolBinding = (bindingId: number) => {
-    chatToolBindingsDraft.value = normalizeToolSequences(
-      chatToolBindingsDraft.value.filter((binding) => binding.id !== bindingId)
-    );
+    chatToolBindingsDraft.value = removeToolBindingFromList(chatToolBindingsDraft.value, bindingId);
   };
 
   const setChatToolBindingEnabled = (bindingId: number, enabled: boolean) => {
-    chatToolBindingsDraft.value = chatToolBindingsDraft.value.map((binding) =>
-      binding.id === bindingId ? { ...binding, enabled } : binding
-    );
+    chatToolBindingsDraft.value = setToolBindingEnabledInList(chatToolBindingsDraft.value, bindingId, enabled);
   };
 
   const addVariableRow = () => {
@@ -366,10 +332,10 @@ export function useChatLibraryDraft(params: Params) {
     chatBlockName,
     chatBlockImage,
     chatBlockMeta,
-    toolLabel,
-    toolTypeLabel,
-    toolIsOutlet,
-    toolIsOnline,
+    toolLabel: toolInstanceLibrary.toolLabel,
+    toolTypeLabel: toolInstanceLibrary.toolTypeLabel,
+    toolIsOutlet: toolInstanceLibrary.toolIsOutlet,
+    toolIsOnline: toolInstanceLibrary.toolIsOnline,
     addChatToolBinding,
     moveChatToolBinding,
     removeChatToolBinding,

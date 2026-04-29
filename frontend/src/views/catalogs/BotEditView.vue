@@ -103,159 +103,61 @@
         </div>
 
         <div v-if="botTab === 'blocks'" class="stack">
-          <KnowledgeBlockLinksCard
-            title="Knowledge blocks"
+          <BotKnowledgeBlocksSection
+            :resetKey="editor.idParam.value"
             :items="bindings.draft.value"
+            :knowledgeBlocks="knowledgeBlocks"
+            :linkedBlockIds="linkedBlockIds"
+            :bindingsLoaded="bindings.loaded.value"
+            :bindingsLoading="bindings.loading.value"
+            :bindingsError="bindings.error.value"
+            :saving="saving.value"
+            :isNew="isNew"
+            :sharedReadonly="sharedReadonly"
             :blockName="blockName"
             :blockImage="blockImage"
             :blockVersion="blockVersion"
-            :addDisabled="!bindings.loaded.value || bindings.loading.value || saving.value || sharedReadonly"
-            :newDisabled="saving.value || sharedReadonly"
-            :openable="true"
-            :readonly="!bindings.loaded.value || bindings.loading.value || saving.value || sharedReadonly"
-            @add="openPicker"
-            @new="openNewBlock"
-            @open="openBlockEditor"
-            @move="(item, delta) => bindings.move(item.id, delta)"
-            @remove="(id) => bindings.remove(id)"
-            @toggle="(item) => bindings.setEnabled(item.id, item.enabled)"
-          >
-            <template #note>
-              <div v-if="bindings.loading.value" class="muted" style="margin-top: 6px">Loading…</div>
-              <div v-else-if="bindings.error.value" class="error-text" style="margin-top: 6px">
-                {{ bindings.error.value }}
-              </div>
-              <div v-else-if="isNew" class="muted" style="margin-top: 6px">
-                Links will be saved when you save the bot.
-              </div>
-            </template>
-          </KnowledgeBlockLinksCard>
+            @add-blocks="bindings.addBlocks"
+            @open-new-block="openNewBlock"
+            @open-block-editor="openBlockEditor"
+            @move="bindings.move"
+            @remove="bindings.remove"
+            @set-enabled="bindings.setEnabled"
+          />
         </div>
 
         <div v-else-if="botTab === 'tools'" class="stack">
-          <p v-if="sharedReadonly" class="muted">
-            This shared bot is read-only. You can still connect your own tools for aliases configured as per-user.
-          </p>
-          <p v-else-if="isNew" class="muted">Save the bot before attaching tools.</p>
-
-          <div v-if="sharedReadonly" class="card stack" style="padding: 10px">
-            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-              <strong>Your tool overrides</strong>
-              <span class="muted" style="font-size: 0.85rem">Only for per-user aliases</span>
-            </div>
-
-            <p v-if="userToolBindingsLoading" class="muted">Loading…</p>
-            <p v-else-if="userToolBindingsError" class="error-text">{{ userToolBindingsError }}</p>
-            <p v-else-if="!perUserBaseBindings.length" class="muted">
-              This bot does not have any per-user tool aliases.
-            </p>
-            <div v-else class="stack" style="gap: 10px">
-              <p v-if="!ownedToolLibrary.length" class="muted">
-                You do not have any editable tools yet. Create a tool in the catalog to connect it here.
-              </p>
-
-              <div v-for="bt in perUserBaseBindings" :key="`user-binding-${bt.id}`" class="card" style="padding: 10px">
-                <div class="stack" style="gap: 10px">
-                  <div class="flex" style="justify-content: space-between; gap: 10px; align-items: center">
-                    <div style="min-width: 0">
-                      <div style="font-weight: 700">{{ bt.alias }}</div>
-                      <div class="muted" style="font-size: 0.85rem">
-                        {{ bt.enabled ? 'Required by the bot when enabled.' : 'Currently disabled on the shared bot.' }}
-                      </div>
-                    </div>
-                    <label class="flex" style="gap: 6px; white-space: nowrap">
-                      <input
-                        type="checkbox"
-                        :checked="userToolDraft(bt.alias).enabled"
-                        :disabled="userToolBindingSavingAliases.has(bt.alias)"
-                        @change="toggleUserToolDraftEnabled(bt.alias, $event)"
-                      />
-                      enabled
-                    </label>
-                  </div>
-
-                  <label class="stack" style="gap: 6px">
-                    <span class="muted">Your tool</span>
-                    <select
-                      :value="userToolDraft(bt.alias).tool_instance_id"
-                      class="full"
-                      :disabled="userToolBindingSavingAliases.has(bt.alias) || !ownedToolLibrary.length"
-                      @change="setUserToolDraftTool(bt.alias, $event)"
-                    >
-                      <option :value="0">Choose your tool…</option>
-                      <option v-for="tool in ownedToolLibrary" :key="tool.id" :value="tool.id">
-                        {{ tool.name }} ({{ tool.type }})
-                      </option>
-                    </select>
-                  </label>
-
-                  <div class="muted" style="font-size: 0.85rem">
-                    <template v-if="userToolDraft(bt.alias).binding_id">
-                      Connected: {{ userToolBindingLabel(bt.alias) }}
-                    </template>
-                    <template v-else>
-                      No personal tool connected for this alias yet.
-                    </template>
-                  </div>
-
-                  <div class="flex" style="gap: 8px; align-items: center">
-                    <button
-                      type="button"
-                      class="primary"
-                      :disabled="userToolBindingSavingAliases.has(bt.alias) || !userToolDraft(bt.alias).tool_instance_id"
-                      @click="saveUserToolBinding(bt)"
-                    >
-                      Save override
-                    </button>
-                    <button
-                      type="button"
-                      class="danger"
-                      :disabled="userToolBindingSavingAliases.has(bt.alias) || !userToolDraft(bt.alias).binding_id"
-                      @click="removeUserToolBinding(bt)"
-                    >
-                      Remove override
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <p v-if="toolBindingsLoading" class="muted">Loading…</p>
-          <p v-else-if="toolBindingsError" class="error-text">{{ toolBindingsError }}</p>
-
-          <ToolBindingsCard
-            v-else
-            title="Tool bindings"
-            :items="sortedToolBindings"
-            :toolLabel="toolBindingLabel"
-            :toolIsOutlet="toolBindingIsOutlet"
-            :toolIsOnline="toolBindingIsOnline"
-            emptyText="No tools attached."
-            toggleLabel="enabled"
-            :readonly="sharedReadonly"
-            :addDisabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
-            :toggleDisabled="() => toolBindingsSaving"
-            :actionsDisabled="() => toolBindingsSaving"
-            @add="openToolBindingPicker"
-            @toggle="handleToolBindingToggle"
-            @move="moveToolBinding"
-            @remove="removeToolBindingById"
-          >
-            <template #header-actions>
-              <button
-                type="button"
-                :disabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
-                @click="openToolBindingPicker"
-              >
-                Add
-              </button>
-            </template>
-
-            <template #note>
-              <p v-if="toolLibraryError" class="error-text" style="margin: 0">{{ toolLibraryError }}</p>
-            </template>
-          </ToolBindingsCard>
+          <BotToolsSection
+            :isNew="isNew"
+            :sharedReadonly="sharedReadonly"
+            :resetKey="editor.idParam.value"
+            :toolLibrary="toolLibrary"
+            :ownedToolLibrary="ownedToolLibrary"
+            :toolLibraryLoading="toolLibraryLoading"
+            :toolLibraryError="toolLibraryError"
+            :toolBindingsLoading="toolBindings.loading.value"
+            :toolBindingsError="toolBindings.error.value"
+            :toolBindingsSaving="toolBindingsSaving"
+            :sortedToolBindings="toolBindings.sortedToolBindings.value"
+            :perUserBaseBindings="toolBindings.perUserBaseBindings.value"
+            :userToolBindingsLoading="userToolOverrides.loading.value"
+            :userToolBindingsError="userToolOverrides.error.value"
+            :userToolBindingSavingAliases="userToolOverrides.savingAliases.value"
+            :toolBindingLabel="toolBindingLabel"
+            :toolBindingIsOutlet="toolBindingIsOutlet"
+            :toolBindingIsOnline="toolBindingIsOnline"
+            :userToolDraft="userToolOverrides.userToolDraft"
+            :userToolBindingLabel="userToolOverrides.label"
+            :addToolBinding="addToolBinding"
+            @load-tool-library="loadToolLibrary"
+            @move-tool-binding="toolBindings.move"
+            @remove-tool-binding="removeToolBindingById"
+            @toggle-tool-binding="toolBindings.toggle"
+            @set-user-tool-draft-tool="userToolOverrides.setDraftTool"
+            @toggle-user-tool-draft-enabled="userToolOverrides.toggleDraftEnabled"
+            @save-user-tool-binding="userToolOverrides.saveOverride"
+            @remove-user-tool-binding="userToolOverrides.removeOverride"
+          />
         </div>
 
         <div
@@ -402,16 +304,6 @@
       </div>
     </fieldset>
 
-    <KnowledgeBlocksPickerModal
-      v-model:open="pickerOpen"
-      v-model:selected="pickerSelected"
-      title="Select blocks"
-      :blocks="knowledgeBlocks"
-      :disabledBlockIds="linkedBlockIds"
-      confirmLabel="Add selected"
-      @confirm="addSelectedBlocks"
-    />
-
     <LlmConfigurationTagsPickerModal
       v-model:open="compatibleTagsPickerOpen"
       title="Select compatible tags"
@@ -420,18 +312,6 @@
       :loading="configurationTagsLoading"
       :error="configurationTagsError"
       @toggle="toggleCompatibleTag"
-    />
-
-    <ToolBindingPickerModal
-      v-model:open="toolBindingPickerOpen"
-      v-model:toolInstanceId="newToolInstanceId"
-      v-model:alias="newToolAlias"
-      title="Add tool binding"
-      :tools="toolLibrary"
-      :loading="toolLibraryLoading"
-      :saving="toolBindingsSaving"
-      :error="toolLibraryError"
-      @confirm="addToolBinding"
     />
 
     <BotShareWizardModal
@@ -450,35 +330,44 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
 import BotShareWizardModal, { type BotShareToolBinding } from '@/components/BotShareWizardModal.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
-import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
-import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
-import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
-import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import { deleteBotImage, uploadBotImage } from '@/api/images';
+import BotKnowledgeBlocksSection from '@/features/catalogs/components/BotKnowledgeBlocksSection.vue';
+import BotToolsSection from '@/features/catalogs/components/BotToolsSection.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import {
   useKnowledgeBlockBindingsDraft,
   type KnowledgeBlockLinkItem,
 } from '@/features/catalogs/model/useKnowledgeBlockBindingsDraft';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
+import {
+  parseBotToolBindingRow,
+  useBotToolBindings,
+  type BotToolBindingRow,
+} from '@/features/catalogs/model/useBotToolBindings';
+import {
+  parseBotUserToolBindingRow,
+  useBotUserToolOverrides,
+} from '@/features/catalogs/model/useBotUserToolOverrides';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { parseImageAsset } from '@/features/media/image';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
+  mergeToolInstanceOptions,
+  parseToolInstanceOption,
+  useToolInstanceLibrary,
+} from '@/features/tools/model/toolInstances';
+import {
   createJsonApiIncludedIndex,
-  jsonApiCreate,
-  jsonApiDelete,
   jsonApiList,
-  jsonApiUpdate,
   relatedResource,
   relatedResources,
   relationshipId,
@@ -486,7 +375,7 @@ import {
   type JsonApiResource,
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
-import type { Group, ImageAsset, KnowledgeBlock } from '@/types/api';
+import type { Group, ImageAsset, KnowledgeBlock, ToolInstanceOption } from '@/types/api';
 
 type BotForm = {
   name: string;
@@ -504,34 +393,6 @@ type BotForm = {
 
 type ConfigurationTagRow = { id: number; name: string };
 type CompatibleTagBindingRow = { id: number; llm_configuration_tag_id: number; tag_name: string };
-type ToolInstanceOption = {
-  id: number;
-  name: string;
-  type: string;
-  outlet_online: boolean | null;
-  can_edit: boolean | null;
-};
-type ToolBindingRow = {
-  id: number;
-  alias: string;
-  tool_instance_id: number;
-  sharing_mode: string;
-  enabled: boolean;
-  sequence: number;
-};
-type UserToolBindingRow = {
-  id: number;
-  alias: string;
-  tool_instance_id: number;
-  enabled: boolean;
-  sequence: number;
-};
-type UserToolBindingDraft = {
-  binding_id: number | null;
-  tool_instance_id: number;
-  enabled: boolean;
-  sequence: number;
-};
 
 type ShareStateResponse = {
   group_ids?: number[];
@@ -611,23 +472,6 @@ function parseKnowledgeBlockOption(resource: JsonApiResource | null | undefined)
   } satisfies KnowledgeBlock;
 }
 
-function parseToolInstanceOption(resource: JsonApiResource | null | undefined): ToolInstanceOption | null {
-  if (!resource) return null;
-  const id = toIntId(resource.id);
-  if (!id) return null;
-  const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  const hasOutletOnline = Object.prototype.hasOwnProperty.call(attrs, 'outlet_online');
-  const hasCanEdit = Object.prototype.hasOwnProperty.call(attrs, 'can_edit');
-
-  return {
-    id,
-    name: String(attrs.name || '').trim(),
-    type: String(attrs.type || '').trim(),
-    outlet_online: hasOutletOnline ? Boolean(attrs.outlet_online) : null,
-    can_edit: hasCanEdit ? attrs.can_edit !== false : null,
-  } satisfies ToolInstanceOption;
-}
-
 function parseKnowledgeBlockBindingItem(
   resource: JsonApiResource,
   includedIndex: ReturnType<typeof createJsonApiIncludedIndex>
@@ -674,67 +518,6 @@ function parseCompatibleTagBindingRow(
   };
 }
 
-function parseToolBindingRow(resource: JsonApiResource): ToolBindingRow | null {
-  const id = toIntId(resource.id);
-  if (!id) return null;
-  const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  const toolInstanceId =
-    relationshipId(resource, 'tool_instance') ??
-    (typeof attrs.tool_instance_id === 'number' ? attrs.tool_instance_id : toIntId(attrs.tool_instance_id as any));
-
-  if (!toolInstanceId) return null;
-
-  return {
-    id,
-    alias: String(attrs.alias || '').trim(),
-    tool_instance_id: toolInstanceId,
-    sharing_mode: String(attrs.sharing_mode || 'shared'),
-    enabled: Boolean(attrs.enabled),
-    sequence: typeof attrs.sequence === 'number' ? attrs.sequence : Number(attrs.sequence || 0),
-  };
-}
-
-function parseUserToolBindingRow(resource: JsonApiResource): UserToolBindingRow | null {
-  const id = toIntId(resource.id);
-  if (!id) return null;
-  const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  const toolInstanceId =
-    relationshipId(resource, 'tool_instance') ??
-    (typeof attrs.tool_instance_id === 'number' ? attrs.tool_instance_id : toIntId(attrs.tool_instance_id as any));
-
-  if (!toolInstanceId) return null;
-
-  return {
-    id,
-    alias: String(attrs.alias || '').trim(),
-    tool_instance_id: toolInstanceId,
-    enabled: Boolean(attrs.enabled),
-    sequence: typeof attrs.sequence === 'number' ? attrs.sequence : Number(attrs.sequence || 0),
-  };
-}
-
-function sortToolBindings<T extends { sequence: number; id: number }>(rows: T[]) {
-  return [...rows].sort((a, b) => (a.sequence || 0) - (b.sequence || 0) || a.id - b.id);
-}
-
-function normalizeToolBindingSequences<T extends ToolBindingRow>(rows: T[]) {
-  return sortToolBindings(rows).map((row, idx) => ({ ...row, sequence: idx }));
-}
-
-function normalizeToolBindingsForCompare(rows: ToolBindingRow[]) {
-  return sortToolBindings(rows).map((binding) => ({
-    alias: String(binding.alias || '').trim(),
-    tool_instance_id: Number(binding.tool_instance_id) || 0,
-    sharing_mode: binding.sharing_mode || 'shared',
-    enabled: Boolean(binding.enabled),
-    sequence: Number(binding.sequence) || 0,
-  }));
-}
-
-function cloneToolBindings(rows: ToolBindingRow[]) {
-  return rows.map((row) => ({ ...row }));
-}
-
 const editor = useCrudEditor<BotForm>({
   type: 'bots',
   basePath: '/api/ash/bots',
@@ -766,7 +549,7 @@ const editor = useCrudEditor<BotForm>({
       ? {}
       : { compatible_configuration_tag_bindings: compatibleTagBindingsPayload.value }),
     ...(bindings.payload.value === undefined ? {} : { knowledge_block_bindings: bindings.payload.value }),
-    ...(toolBindingsPayload.value === undefined ? {} : { tool_bindings: toolBindingsPayload.value }),
+    ...(toolBindings.payload.value === undefined ? {} : { tool_bindings: toolBindings.payload.value }),
   }),
   normalizeForDirty: (form) => ({
     name: form.name,
@@ -788,6 +571,7 @@ const editor = useCrudEditor<BotForm>({
 });
 
 const bindings = useKnowledgeBlockBindingsDraft({});
+const toolBindings = useBotToolBindings();
 
 const allConfigurationTags = ref<ConfigurationTagRow[]>([]);
 const configurationTagsCatalogLoaded = ref(false);
@@ -915,17 +699,17 @@ function applyBotDocument(payload: JsonApiSingleResponse) {
       .filter((tool): tool is ToolInstanceOption => Boolean(tool))
   );
 
-  hydrateToolBindings(
-    toolBindingResources.map(parseToolBindingRow).filter((binding): binding is ToolBindingRow => Boolean(binding))
+  toolBindings.hydrate(
+    toolBindingResources
+      .map(parseBotToolBindingRow)
+      .filter((binding): binding is BotToolBindingRow => Boolean(binding))
   );
 
-  userToolBindings.value = sortToolBindings(
+  userToolOverrides.hydrate(
     userToolBindingResources
-      .map(parseUserToolBindingRow)
-      .filter((binding): binding is UserToolBindingRow => Boolean(binding))
+      .map(parseBotUserToolBindingRow)
+      .filter((binding): binding is NonNullable<ReturnType<typeof parseBotUserToolBindingRow>> => Boolean(binding))
   );
-  userToolBindingsLoading.value = false;
-  userToolBindingsError.value = null;
 }
 
 const toggleCompatibleTag = (tagId: number) => {
@@ -940,7 +724,7 @@ const removeCompatibleTag = (tagId: number) => {
 };
 
 const dirty = computed(
-  () => editor.dirty.value || bindings.dirty.value || compatibleTagBindingsDirty.value || toolBindingsDirty.value
+  () => editor.dirty.value || bindings.dirty.value || compatibleTagBindingsDirty.value || toolBindings.dirty.value
 );
 const saving = computed(() => editor.saving.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
@@ -969,10 +753,7 @@ const cancelChanges = () => {
   editor.reset();
   bindings.reset();
   resetCompatibleTagBindings(currentCompatibleTagBindings.value.map((binding) => ({ ...binding })));
-  toolBindings.value = cloneToolBindings(originalToolBindings.value);
-  newToolInstanceId.value = 0;
-  newToolAlias.value = '';
-  toolBindingPickerOpen.value = false;
+  toolBindings.reset();
 };
 const remove = editor.remove;
 const duplicate = editor.duplicate;
@@ -1115,27 +896,12 @@ const blockName = (id: number) => blocksById.value.get(id)?.name || `Block #${id
 const blockImage = (id: number) => blocksById.value.get(id)?.image || null;
 const blockVersion = (id: number) => blocksById.value.get(id)?.version || '';
 
-const pickerOpen = ref(false);
-const pickerSelected = ref<number[]>([]);
-
 watch(
   () => editor.idParam.value,
   () => {
-    pickerOpen.value = false;
-    pickerSelected.value = [];
     compatibleTagsPickerOpen.value = false;
-    toolBindingPickerOpen.value = false;
-    newToolInstanceId.value = 0;
-    newToolAlias.value = '';
   }
 );
-
-const openPicker = () => {
-  pickerSelected.value = [];
-  pickerOpen.value = true;
-};
-
-const addSelectedBlocks = (ids: number[]) => bindings.addBlocks(ids);
 
 const openBlockEditor = (blockId: number) => {
   const ids = linkedBlockIds.value;
@@ -1182,21 +948,7 @@ const toolLibraryError = ref<string | null>(null);
 const toolLibrary = ref<ToolInstanceOption[]>([]);
 
 function mergeToolLibrary(tools: ToolInstanceOption[]) {
-  const byId = new Map<number, ToolInstanceOption>();
-
-  for (const tool of toolLibrary.value) byId.set(tool.id, tool);
-  for (const tool of tools) {
-    const existing = byId.get(tool.id);
-
-    byId.set(tool.id, {
-      ...existing,
-      ...tool,
-      outlet_online: tool.outlet_online ?? existing?.outlet_online ?? false,
-      can_edit: tool.can_edit ?? existing?.can_edit ?? true,
-    });
-  }
-
-  toolLibrary.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  toolLibrary.value = mergeToolInstanceOptions(toolLibrary.value, tools);
 }
 
 async function loadToolLibrary() {
@@ -1221,115 +973,27 @@ async function loadToolLibrary() {
   }
 }
 
-const toolLibraryById = computed(() => {
-  const map = new Map<number, ToolInstanceOption>();
-  for (const t of toolLibrary.value || []) map.set(t.id, t);
-  return map;
+const toolInstanceLibrary = useToolInstanceLibrary(toolLibrary);
+const toolLibraryById = toolInstanceLibrary.toolLibraryById;
+const ownedToolLibrary = toolInstanceLibrary.ownedToolLibrary;
+const userToolOverrides = useBotUserToolOverrides({
+  botId: editor.numericId,
+  ownedToolLibrary,
+  toolLabel: toolInstanceLibrary.toolLabel,
 });
-const ownedToolLibrary = computed(() => (toolLibrary.value || []).filter((tool) => tool.can_edit !== false));
 
-function toolInstanceLabel(toolInstanceId: number) {
-  const tool = toolLibraryById.value.get(toolInstanceId);
-  if (!tool) return `Tool #${toolInstanceId}`;
-  return `${tool.name} (${tool.type})`;
-}
-
-function toolInstanceIsOutlet(toolInstanceId: number) {
-  return toolLibraryById.value.get(toolInstanceId)?.type === 'outlet';
-}
-
-function toolInstanceOnline(toolInstanceId: number) {
-  return Boolean(toolLibraryById.value.get(toolInstanceId)?.outlet_online);
-}
-
-function baseToolBindingLabel(binding: ToolBindingRow) {
+function baseToolBindingLabel(binding: BotToolBindingRow) {
   if (sharedReadonly.value && binding.sharing_mode === 'per_user') {
     return 'Connected per user';
   }
 
-  return toolInstanceLabel(binding.tool_instance_id);
+  return toolInstanceLibrary.toolLabel(binding.tool_instance_id);
 }
 
-const toolBindingLabel = (binding: ToolBindingRow) => baseToolBindingLabel(binding);
-const toolBindingIsOutlet = (binding: ToolBindingRow) => toolInstanceIsOutlet(binding.tool_instance_id);
-const toolBindingIsOnline = (binding: ToolBindingRow) => toolInstanceOnline(binding.tool_instance_id);
-
-const toolBindingsLoading = ref(false);
-const toolBindingsError = ref<string | null>(null);
-const originalToolBindings = ref<ToolBindingRow[]>([]);
-const toolBindings = ref<ToolBindingRow[]>([]);
-const toolBindingsLoaded = ref(false);
+const toolBindingLabel = (binding: BotToolBindingRow) => baseToolBindingLabel(binding);
+const toolBindingIsOutlet = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOutlet(binding.tool_instance_id);
+const toolBindingIsOnline = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOnline(binding.tool_instance_id);
 const toolBindingsSaving = computed(() => saving.value);
-const userToolBindingsLoading = ref(false);
-const userToolBindingsError = ref<string | null>(null);
-const userToolBindings = ref<UserToolBindingRow[]>([]);
-const userToolBindingDrafts = ref<Record<string, UserToolBindingDraft>>({});
-const userToolBindingSavingAliases = ref(new Set<string>());
-let tempToolBindingId = -1;
-
-const sortedToolBindings = computed(() => sortToolBindings(toolBindings.value || []));
-const perUserBaseBindings = computed(() => sortedToolBindings.value.filter((binding) => binding.sharing_mode === 'per_user'));
-const toolBindingsDirty = computed(
-  () =>
-    JSON.stringify(normalizeToolBindingsForCompare(originalToolBindings.value)) !==
-    JSON.stringify(normalizeToolBindingsForCompare(toolBindings.value))
-);
-const toolBindingsPayload = computed(() => {
-  if (!toolBindingsLoaded.value) return undefined;
-
-  return sortedToolBindings.value.map((binding) => ({
-    ...(binding.id > 0 ? { id: binding.id } : {}),
-    tool_instance_id: binding.tool_instance_id,
-    alias: String(binding.alias || '').trim(),
-    sharing_mode: binding.sharing_mode || 'shared',
-    enabled: Boolean(binding.enabled),
-  }));
-});
-
-function hydrateToolBindings(rows: ToolBindingRow[]) {
-  const normalized = normalizeToolBindingSequences(rows || []);
-  originalToolBindings.value = cloneToolBindings(normalized);
-  toolBindings.value = cloneToolBindings(normalized);
-  tempToolBindingId = -1;
-  toolBindingsLoading.value = false;
-  toolBindingsError.value = null;
-  toolBindingsLoaded.value = true;
-}
-
-function syncUserToolBindingDrafts() {
-  const existingByAlias = new Map<string, UserToolBindingRow>();
-
-  for (const binding of userToolBindings.value || []) {
-    if (binding.alias) existingByAlias.set(binding.alias, binding);
-  }
-
-  const nextDrafts: Record<string, UserToolBindingDraft> = {};
-
-  for (const binding of perUserBaseBindings.value) {
-    const existing = existingByAlias.get(binding.alias);
-    const previous = userToolBindingDrafts.value[binding.alias];
-
-    nextDrafts[binding.alias] = {
-      binding_id: existing?.id ?? null,
-      tool_instance_id: existing?.tool_instance_id ?? previous?.tool_instance_id ?? 0,
-      enabled: existing?.enabled ?? previous?.enabled ?? true,
-      sequence: binding.sequence,
-    };
-  }
-
-  userToolBindingDrafts.value = nextDrafts;
-}
-
-function userToolDraft(alias: string): UserToolBindingDraft {
-  return (
-    userToolBindingDrafts.value[alias] || {
-      binding_id: null,
-      tool_instance_id: 0,
-      enabled: true,
-      sequence: 0,
-    }
-  );
-}
 
 watch(
   () => editor.numericId.value,
@@ -1338,246 +1002,35 @@ watch(
     bindings.hydrate([]);
     resetCompatibleTagBindings([]);
     compatibleTagBindingsLoading.value = false;
-    hydrateToolBindings([]);
-    userToolBindings.value = [];
-    userToolBindingsLoading.value = false;
-    userToolBindingsError.value = null;
+    toolBindings.hydrate([]);
+    userToolOverrides.resetForNewBot();
   },
   { immediate: true }
 );
-
-function setUserToolDraft(alias: string, patch: Partial<UserToolBindingDraft>) {
-  userToolBindingDrafts.value = {
-    ...userToolBindingDrafts.value,
-    [alias]: {
-      ...userToolDraft(alias),
-      ...patch,
-    },
-  };
-}
-
-function setUserToolDraftTool(alias: string, event: Event) {
-  const target = event.target as HTMLSelectElement | null;
-  const nextToolId = target ? Number(target.value || 0) : 0;
-  setUserToolDraft(alias, { tool_instance_id: nextToolId > 0 ? nextToolId : 0 });
-}
-
-function toggleUserToolDraftEnabled(alias: string, event: Event) {
-  const target = event.target as HTMLInputElement | null;
-  setUserToolDraft(alias, { enabled: Boolean(target?.checked) });
-}
-
-function userToolBindingLabel(alias: string) {
-  const draft = userToolDraft(alias);
-  if (!draft.tool_instance_id) return 'No tool selected';
-  return toolInstanceLabel(draft.tool_instance_id);
-}
 
 watch(
   () => editor.numericId.value,
   () => {
-    syncUserToolBindingDrafts();
+    userToolOverrides.syncDrafts(toolBindings.perUserBaseBindings.value);
   },
   { immediate: true }
 );
 
-watch([perUserBaseBindings, userToolBindings], () => {
-  syncUserToolBindingDrafts();
+watch([toolBindings.perUserBaseBindings, userToolOverrides.userToolBindings], () => {
+  userToolOverrides.syncDrafts(toolBindings.perUserBaseBindings.value);
 });
 
-const newToolInstanceId = ref(0);
-const newToolAlias = ref('');
-const toolBindingPickerOpen = ref(false);
-
-function openToolBindingPicker() {
-  if (isNew.value || sharedReadonly.value) return;
-  if (!toolLibrary.value.length && !toolLibraryLoading.value) void loadToolLibrary();
-  toolBindingPickerOpen.value = true;
-}
-
-async function addToolBinding() {
-  if (isNew.value || sharedReadonly.value) return;
-
-  const toolInstanceId = Number(newToolInstanceId.value || 0);
-  const alias = String(newToolAlias.value || '').trim();
-
-  if (!toolInstanceId) {
-    alert('Choose a tool instance.');
-    return;
-  }
-
-  if (!alias) {
-    alert('Alias is required.');
-    return;
-  }
-
-  if (alias.includes('__')) {
-    alert('Alias must not contain "__".');
-    return;
-  }
-
-  if (toolBindings.value.some((binding) => binding.alias === alias)) {
-    alert('Alias is already used in this bot.');
-    return;
-  }
-
-  const next = normalizeToolBindingSequences(toolBindings.value);
-  toolBindings.value = normalizeToolBindingSequences([
-    ...next,
-    {
-      id: tempToolBindingId--,
-      alias,
-      tool_instance_id: toolInstanceId,
-      sharing_mode: 'shared',
-      enabled: true,
-      sequence: next.length,
-    },
-  ]);
-
-  newToolInstanceId.value = 0;
-  newToolAlias.value = '';
-  toolBindingPickerOpen.value = false;
-}
-
-function removeToolBinding(binding: ToolBindingRow) {
-  toolBindings.value = normalizeToolBindingSequences(toolBindings.value.filter((row) => row.id !== binding.id));
-  userToolBindings.value = userToolBindings.value.filter((row) => row.alias !== binding.alias);
-}
-
-function toggleToolBinding(binding: ToolBindingRow, nextEnabled: boolean) {
-  toolBindings.value = toolBindings.value.map((row) => (row.id === binding.id ? { ...row, enabled: nextEnabled } : row));
+function addToolBinding(toolInstanceId: number, alias: string) {
+  if (isNew.value || sharedReadonly.value) return false;
+  return toolBindings.add(toolInstanceId, alias);
 }
 
 function removeToolBindingById(id: number) {
-  const binding = toolBindings.value.find((row) => row.id === id);
-  if (!binding) return;
-  removeToolBinding(binding);
-}
-
-function handleToolBindingToggle(binding: ToolBindingRow, enabled: boolean) {
-  toggleToolBinding(binding, enabled);
-}
-
-function moveToolBinding(binding: ToolBindingRow, delta: number) {
-  const list = sortedToolBindings.value;
-  const idx = list.findIndex((x) => x.id === binding.id);
-  if (idx < 0) return;
-  const targetIdx = idx + delta;
-  if (targetIdx < 0 || targetIdx >= list.length) return;
-
-  const next = [...list];
-  const current = next[idx];
-  next[idx] = next[targetIdx];
-  next[targetIdx] = current;
-  toolBindings.value = next.map((row, index) => ({ ...row, sequence: index }));
-}
-
-async function saveUserToolBinding(binding: ToolBindingRow) {
-  const botId = editor.numericId.value;
-  if (!botId) return;
-
-  const alias = binding.alias;
-  const draft = userToolDraft(alias);
-
-  if (!draft.tool_instance_id) {
-    alert('Choose your tool first.');
-    return;
-  }
-
-  if (!ownedToolLibrary.value.some((tool) => tool.id === draft.tool_instance_id)) {
-    alert('Choose one of your editable tools.');
-    return;
-  }
-
-  userToolBindingSavingAliases.value = new Set([...userToolBindingSavingAliases.value, alias]);
-
-  try {
-    const existing = userToolBindings.value.find((row) => row.alias === alias) || null;
-    const payload = {
-      bot_id: botId,
-      tool_instance_id: draft.tool_instance_id,
-      alias,
-      enabled: draft.enabled,
-      sequence: binding.sequence,
-    };
-
-    if (existing && existing.tool_instance_id === draft.tool_instance_id) {
-      await jsonApiUpdate('/api/ash/bot-user-tool-bindings', 'bot-user-tool-bindings', existing.id, {
-        alias,
-        enabled: draft.enabled,
-        sequence: binding.sequence,
-      });
-
-      userToolBindings.value = sortToolBindings(
-        userToolBindings.value.map((row) =>
-          row.id === existing.id
-            ? {
-                ...row,
-                alias,
-                enabled: draft.enabled,
-                sequence: binding.sequence,
-              }
-            : row
-        )
-      );
-    } else {
-      if (existing) {
-        await jsonApiDelete('/api/ash/bot-user-tool-bindings', existing.id);
-      }
-
-      const created = await jsonApiCreate('/api/ash/bot-user-tool-bindings', 'bot-user-tool-bindings', payload);
-      const createdId = toIntId(created.data.id);
-
-      userToolBindings.value = sortToolBindings([
-        ...userToolBindings.value.filter((row) => row.alias !== alias),
-        ...(createdId
-          ? [
-              {
-                id: createdId,
-                alias,
-                tool_instance_id: draft.tool_instance_id,
-                enabled: draft.enabled,
-                sequence: binding.sequence,
-              } satisfies UserToolBindingRow,
-            ]
-          : []),
-      ]);
-    }
-  } catch (error) {
-    console.error(error);
-    alert(error instanceof Error ? error.message : 'Failed to save your tool override.');
-  } finally {
-    const next = new Set(userToolBindingSavingAliases.value);
-    next.delete(alias);
-    userToolBindingSavingAliases.value = next;
-  }
-}
-
-async function removeUserToolBinding(binding: ToolBindingRow) {
-  const alias = binding.alias;
-  const existing = userToolBindings.value.find((row) => row.alias === alias);
-
-  if (!existing) {
-    setUserToolDraft(alias, { binding_id: null, tool_instance_id: 0, enabled: true, sequence: binding.sequence });
-    return;
-  }
-
-  if (!window.confirm('Remove your personal tool override for this alias?')) return;
-
-  userToolBindingSavingAliases.value = new Set([...userToolBindingSavingAliases.value, alias]);
-
-  try {
-    await jsonApiDelete('/api/ash/bot-user-tool-bindings', existing.id);
-    userToolBindings.value = userToolBindings.value.filter((row) => row.id !== existing.id);
-    setUserToolDraft(alias, { binding_id: null, tool_instance_id: 0, enabled: true, sequence: binding.sequence });
-  } catch (error) {
-    console.error(error);
-    alert(error instanceof Error ? error.message : 'Failed to remove your tool override.');
-  } finally {
-    const next = new Set(userToolBindingSavingAliases.value);
-    next.delete(alias);
-    userToolBindingSavingAliases.value = next;
-  }
+  const removed = toolBindings.remove(id);
+  if (!removed) return;
+  userToolOverrides.userToolBindings.value = userToolOverrides.userToolBindings.value.filter(
+    (row) => row.alias !== removed.alias
+  );
 }
 
 const shareModalOpen = ref(false);
@@ -1587,7 +1040,7 @@ const shareGroups = ref<Group[]>([]);
 const sharedGroupIds = ref<number[]>([]);
 
 const shareToolBindings = computed<BotShareToolBinding[]>(() =>
-  sortedToolBindings.value.map((binding) => ({
+  toolBindings.sortedToolBindings.value.map((binding) => ({
     id: binding.id,
     alias: binding.alias,
     enabled: binding.enabled,
