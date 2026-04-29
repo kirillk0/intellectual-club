@@ -1,7 +1,7 @@
-defmodule IntellectualClub.Generation.HistoryResponsesPhaseTest do
+defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
   use ExUnit.Case, async: true
 
-  alias IntellectualClub.Generation.History
+  alias IntellectualClub.Llm.Providers.Responses.HistoryInput
 
   test "synthesizes commentary and final_answer phases for fallback assistant answers" do
     history = [
@@ -71,7 +71,7 @@ defmodule IntellectualClub.Generation.HistoryResponsesPhaseTest do
       }
     ]
 
-    assert History.build_responses_input_items(history) == [
+    assert HistoryInput.build_input_items(history) == [
              %{
                "type" => "message",
                "role" => "assistant",
@@ -180,7 +180,7 @@ defmodule IntellectualClub.Generation.HistoryResponsesPhaseTest do
       }
     ]
 
-    assert History.build_responses_input_items(history) == [
+    assert HistoryInput.build_input_items(history) == [
              %{
                "type" => "message",
                "role" => "assistant",
@@ -267,7 +267,7 @@ defmodule IntellectualClub.Generation.HistoryResponsesPhaseTest do
       }
     ]
 
-    assert History.build_responses_input_items(history) == [
+    assert HistoryInput.build_input_items(history) == [
              %{
                "type" => "message",
                "role" => "assistant",

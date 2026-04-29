@@ -7,7 +7,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
-  alias IntellectualClub.Generation.History
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
@@ -15,6 +14,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
   alias IntellectualClub.Llm.Providers.Responses.Api
+  alias IntellectualClub.Llm.Providers.Responses.HistoryInput
 
   @type_id "responses"
   @opaque_sequence 10_000
@@ -65,7 +65,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   @impl true
   def build_initial_request(opts) when is_map(opts) do
     input_items =
-      History.build_responses_input_items(Map.get(opts, :history, []),
+      HistoryInput.build_input_items(Map.get(opts, :history, []),
         supports_image_input: Map.get(opts, :supports_image_input, false),
         provider_type: type()
       )

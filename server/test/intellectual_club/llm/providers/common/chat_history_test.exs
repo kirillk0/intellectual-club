@@ -1,8 +1,8 @@
-defmodule IntellectualClub.Generation.HistoryMediaTest do
+defmodule IntellectualClub.Llm.Providers.Common.ChatHistoryTest do
   use IntellectualClub.DataCase, async: false
 
   alias IntellectualClub.Files
-  alias IntellectualClub.Generation.History
+  alias IntellectualClub.Llm.Providers.Common.ChatHistory
 
   test "chat history includes tool-result media placeholder follow-up and ignores artifacts" do
     assert {:ok, file} =
@@ -58,7 +58,7 @@ defmodule IntellectualClub.Generation.HistoryMediaTest do
     ]
 
     messages =
-      History.build_chat_completions_history_messages(history, supports_image_input: false)
+      ChatHistory.build_messages(history, supports_image_input: false)
 
     assert Enum.any?(messages, fn message ->
              message["role"] == "tool" and message["content"] == "tool text"

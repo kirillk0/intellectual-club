@@ -2,9 +2,9 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
   @moduledoc false
 
   alias IntellectualClub.Chat.Media
+  alias IntellectualClub.Llm.Providers.Common.ChatHistory
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Generation.CacheControl
-  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
 
@@ -18,7 +18,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     cache_control_enabled = Map.get(opts, :cache_control_enabled, false)
 
     history_messages =
-      History.build_chat_completions_history_messages(history,
+      ChatHistory.build_messages(history,
         supports_image_input: supports_image_input,
         provider_type: provider_type
       )
