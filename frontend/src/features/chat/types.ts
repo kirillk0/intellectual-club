@@ -1,4 +1,4 @@
-import type { KnowledgeBlock } from '@/types/api';
+import type { ActiveToolBinding as ApiActiveToolBinding, KnowledgeBlock } from '@/types/api';
 
 export type BlockSource = 'bot' | 'chat' | 'config' | 'user';
 
@@ -13,6 +13,10 @@ export type ActiveToolInstance = {
   name: string;
   type: string;
   outlet_online: boolean;
+};
+
+export type ActiveToolBinding = ApiActiveToolBinding & {
+  enabled: boolean;
 };
 
 export type ChatMessageSearchHit = {

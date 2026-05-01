@@ -8,6 +8,7 @@ import type {
   Bot,
   KnowledgeBlock,
   LlmConfiguration,
+  ActiveToolBinding,
   ToolInstanceOption,
 } from '@/types/api';
 import type { ActiveToolInstance } from '@/features/chat/types';
@@ -41,6 +42,7 @@ export type ChatStatePayload = {
   compiled_prompt_text: string | null;
   counters: Counters;
   active_tool_instances: ActiveToolInstance[];
+  active_tool_bindings: ActiveToolBinding[];
   missing_required_per_user_tool_aliases: string[];
   options: {
     bots: Bot[];

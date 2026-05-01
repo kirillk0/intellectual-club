@@ -9,8 +9,6 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolAlias do
 
   alias Ash.Changeset
 
-  require Ash.Query
-
   @alias_re ~r/^[A-Za-z][A-Za-z0-9_-]{0,63}$/
   @max_alias_length 64
 
@@ -26,7 +24,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolAlias do
       if alias_value == "" and changeset.action.type == :create do
         changeset
         |> Changeset.get_attribute(:name)
-        |> generated_alias(changeset)
+        |> generated_alias()
       else
         alias_value
       end
@@ -52,10 +50,9 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolAlias do
     end
   end
 
-  defp generated_alias(name, changeset) do
+  defp generated_alias(name) do
     name
     |> normalize_base()
-    |> unique_alias(changeset)
   end
 
   defp normalize_base(value) do
@@ -69,43 +66,5 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolAlias do
       |> String.slice(0, @max_alias_length)
 
     if Regex.match?(~r/^[a-z]/, base), do: base, else: "tool"
-  end
-
-  defp unique_alias(base, changeset) do
-    owner_id = Changeset.get_attribute(changeset, :owner_id)
-    actor = changeset.context[:private][:actor]
-    existing_aliases = existing_aliases(changeset.resource, owner_id, actor)
-
-    Stream.iterate(0, &(&1 + 1))
-    |> Enum.find_value(fn index ->
-      candidate =
-        case index do
-          0 -> base
-          n -> with_suffix(base, "_#{n + 1}")
-        end
-
-      if MapSet.member?(existing_aliases, candidate), do: nil, else: candidate
-    end)
-  end
-
-  defp existing_aliases(resource, owner_id, actor) when is_integer(owner_id) do
-    resource
-    |> Ash.Query.filter(owner_id == ^owner_id)
-    |> Ash.Query.select([:alias])
-    |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.alias)
-    |> MapSet.new()
-  rescue
-    _ -> MapSet.new()
-  end
-
-  defp existing_aliases(_resource, _owner_id, _actor), do: MapSet.new()
-
-  defp with_suffix(base, suffix) do
-    suffix_length = String.length(suffix)
-
-    base
-    |> String.slice(0, @max_alias_length - suffix_length)
-    |> Kernel.<>(suffix)
   end
 end

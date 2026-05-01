@@ -519,6 +519,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         counters: prompt_context.counters,
         active_tool_instances:
           Enum.map(tool_resolution.active_tool_instances, &Serializer.tool_instance_option/1),
+        active_tool_bindings:
+          Enum.map(tool_resolution.effective_tool_bindings, &Serializer.active_tool_binding/1),
         missing_required_per_user_tool_aliases: tool_resolution.missing_aliases,
         options: %{
           bots: Enum.map(bots, &Serializer.bot_option/1),

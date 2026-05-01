@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
   alias IntellectualClub.Bots.{Bot, BotShare}
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag, LlmProvider}
@@ -226,6 +227,89 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
     assert Enum.map(bindings, &{&1.alias, &1.tool_instance_id, &1.enabled, &1.sequence}) == [
              {"reader", tool_b.id, false, 0}
            ]
+  end
+
+  test "GET /api/bff/chats/:id/state returns only effective active tool bindings", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(:create, %{name: "Tool state bot"}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    bot_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp_http",
+          name: "Bot Tool",
+          alias: "web",
+          config: %{"server_url" => "https://example.com/bot"},
+          secrets: %{"bearer_token" => "bot"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    chat_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Chat Tool",
+          alias: "web",
+          config: %{},
+          secrets: %{"token" => "chat"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    BotToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        bot_id: bot.id,
+        tool_instance_id: bot_tool.id,
+        sharing_mode: :shared,
+        enabled: true,
+        sequence: 10
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Tool state chat", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: chat_tool.id, enabled: true, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!()
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> json_response(200)
+
+    assert [%{"alias" => "web", "source" => "chat", "tool_instance" => tool_payload}] =
+             payload["active_tool_bindings"]
+
+    assert tool_payload["id"] == chat_tool.id
+    assert tool_payload["name"] == "Chat Tool"
+    assert tool_payload["type"] == "native-brave-search"
   end
 
   defp create_provider!(actor, name) do

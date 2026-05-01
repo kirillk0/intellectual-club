@@ -70,7 +70,7 @@
           :source-labels="vm.SOURCE_LABELS"
           :bot-tools-loading="vm.botToolsLoading"
           :bot-tools-error="vm.botToolsError"
-          :active-tool-instances="vm.activeToolInstances"
+          :active-tool-bindings="vm.activeToolBindings"
           :format-step-metric="vm.formatStepMetric"
           :search-hit-meta="vm.searchHitMeta"
           :message-meta-label="vm.messageMetaLabel"

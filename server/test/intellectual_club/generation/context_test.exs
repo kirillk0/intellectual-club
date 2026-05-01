@@ -17,6 +17,8 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.BotToolBinding
+  alias IntellectualClub.Tools.BotUserToolBinding
+  alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
 
@@ -316,6 +318,104 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"
            end)
+  end
+
+  test "chat tool binding shadows bot binding with the same alias" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Shadow bot")
+    bot_tool = create_context_tool!(actor, "Bot Search", "web")
+    chat_tool = create_context_tool!(actor, "Chat Search", "web")
+
+    create_bot_tool_binding!(actor, bot, bot_tool, :shared, 10)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Chat shadow", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    create_chat_tool_binding!(actor, chat, chat_tool, 0)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Find docs", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.tool_instances_by_alias["web"].id == chat_tool.id
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+    assert Enum.map(resolution.effective_tool_bindings, &{&1.alias, &1.source}) == [
+             {"web", :chat}
+           ]
+  end
+
+  test "user bot tool binding shadows creator binding with the same alias" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "User override bot")
+    bot_tool = create_context_tool!(actor, "Bot Search", "web")
+    user_tool = create_context_tool!(actor, "User Search", "web")
+
+    create_bot_tool_binding!(actor, bot, bot_tool, :shared, 100)
+
+    BotUserToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{bot_id: bot.id, tool_instance_id: user_tool.id, enabled: true, sequence: 1},
+      actor: actor
+    )
+    |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "User shadow", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Find docs", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.tool_instances_by_alias["web"].id == user_tool.id
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+    assert Enum.map(resolution.effective_tool_bindings, &{&1.alias, &1.source}) == [
+             {"web", :user}
+           ]
+  end
+
+  test "higher sequence shadows lower sequence at the same source priority" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Sequence shadow", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    lower_tool = create_context_tool!(actor, "Lower Search", "web")
+    higher_tool = create_context_tool!(actor, "Higher Search", "web")
+
+    create_chat_tool_binding!(actor, chat, lower_tool, 10)
+    create_chat_tool_binding!(actor, chat, higher_tool, 20)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Find docs", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.tool_instances_by_alias["web"].id == higher_tool.id
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+    assert Enum.map(resolution.effective_tool_bindings, &{&1.alias, &1.sequence}) == [
+             {"web", 20}
+           ]
   end
 
   test "builds context up to selected parent when parent_id is provided" do
@@ -2066,6 +2166,65 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     payload_messages = Map.get(context.request_payload, "messages")
     assert payload_messages == context.messages
+  end
+
+  defp create_tool_context_bot!(actor, name) do
+    Bot
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        name: name,
+        first_messages: [],
+        variables: %{},
+        max_tool_rounds: 10,
+        context_soft_limit_percent: 80,
+        history_mode: :chat
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp create_context_tool!(actor, name, alias_value) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-brave-search",
+        name: name,
+        alias: alias_value,
+        config: %{},
+        secrets: %{"token" => "#{name}-token"}
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp create_bot_tool_binding!(actor, bot, tool, sharing_mode, sequence) do
+    BotToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        bot_id: bot.id,
+        tool_instance_id: tool.id,
+        sharing_mode: sharing_mode,
+        enabled: true,
+        sequence: sequence
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp create_chat_tool_binding!(actor, chat, tool, sequence) do
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: tool.id, enabled: true, sequence: sequence},
+      actor: actor
+    )
+    |> Ash.create!()
   end
 
   defp create_step!(message_id, sequence, actor, attrs \\ %{}) do

@@ -4,6 +4,7 @@ import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import type {
   ActiveToolInstance,
+  ActiveToolBinding,
   BranchSearchResults,
   ChatMessageSearchHit,
   LinkedBlock,
@@ -247,9 +248,14 @@ export function useChatContextPanel(params: Params) {
   const botToolsLoading = ref(false);
   const botToolsError = ref('');
   const activeToolInstances = ref<ActiveToolInstance[]>([]);
+  const activeToolBindings = ref<ActiveToolBinding[]>([]);
 
-  const hydrate = (payload: { activeToolInstances: ActiveToolInstance[] }) => {
+  const hydrate = (payload: { activeToolInstances: ActiveToolInstance[]; activeToolBindings: ActiveToolBinding[] }) => {
     activeToolInstances.value = payload.activeToolInstances || [];
+    activeToolBindings.value = (payload.activeToolBindings || []).map((binding) => ({
+      ...binding,
+      enabled: true,
+    }));
     botToolsLoading.value = false;
     botToolsError.value = '';
   };
@@ -429,6 +435,7 @@ export function useChatContextPanel(params: Params) {
     botToolsLoading,
     botToolsError,
     activeToolInstances,
+    activeToolBindings,
     hydrate,
     hasFocusMessageQuery,
     handleFocusMessage,

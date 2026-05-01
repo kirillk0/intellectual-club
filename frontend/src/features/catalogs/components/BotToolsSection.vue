@@ -94,7 +94,7 @@
     <ToolBindingsCard
       v-else
       title="Tool bindings"
-      :items="sortedToolBindings"
+      :items="displayToolBindings"
       :toolLabel="toolBindingLabel"
       :toolIsOutlet="toolBindingIsOutlet"
       :toolIsOnline="toolBindingIsOnline"
@@ -138,12 +138,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import type { BotUserToolBindingDraft } from '@/features/catalogs/model/useBotUserToolOverrides';
 import type { BotToolBindingRow } from '@/features/catalogs/model/useBotToolBindings';
+import { markShadowedToolBindings } from '@/features/tools/model/toolBindings';
 import type { ToolInstanceOption } from '@/types/api';
 
 const props = defineProps<{
@@ -183,6 +184,29 @@ const emit = defineEmits<{
 
 const toolBindingPickerOpen = ref(false);
 const newToolInstanceId = ref(0);
+const displayToolBindings = computed(() => {
+  const marked = markShadowedToolBindings(
+    props.sortedToolBindings,
+    'Another enabled bot tool with this alias has priority.'
+  );
+
+  if (!props.sharedReadonly) return marked;
+
+  return marked.map((binding) => {
+    const draft = props.userToolDraft(binding.alias);
+    const hasUserOverride = Boolean(draft.binding_id || draft.tool_instance_id);
+
+    if (binding.enabled && binding.sharing_mode !== 'per_user' && hasUserOverride) {
+      return {
+        ...binding,
+        shadowed: true,
+        shadowedReason: 'Your tool override has priority for this alias.',
+      };
+    }
+
+    return binding;
+  });
+});
 
 function resetPicker() {
   toolBindingPickerOpen.value = false;

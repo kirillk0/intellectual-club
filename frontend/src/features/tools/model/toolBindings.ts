@@ -6,6 +6,11 @@ export type BaseToolBinding = {
   sequence: number;
 };
 
+export type ToolBindingShadowState = {
+  shadowed?: boolean;
+  shadowedReason?: string;
+};
+
 export type ToolBindingValidationOptions<T extends BaseToolBinding> = {
   toolInstanceId: number;
   alias?: string;
@@ -13,7 +18,7 @@ export type ToolBindingValidationOptions<T extends BaseToolBinding> = {
   messages: {
     missingTool: string;
     duplicateTool: string;
-    duplicateAlias: string;
+    duplicateAlias?: string;
   };
 };
 
@@ -69,7 +74,6 @@ export function setToolBindingEnabledInList<T extends BaseToolBinding>(rows: T[]
 
 export function validateNewToolBinding<T extends BaseToolBinding>({
   toolInstanceId,
-  alias,
   bindings,
   messages,
 }: ToolBindingValidationOptions<T>) {
@@ -77,6 +81,40 @@ export function validateNewToolBinding<T extends BaseToolBinding>({
   if ((bindings || []).some((binding) => binding.tool_instance_id === toolInstanceId)) {
     return messages.duplicateTool;
   }
-  if (alias && (bindings || []).some((binding) => binding.alias === alias)) return messages.duplicateAlias;
   return null;
+}
+
+export function markShadowedToolBindings<T extends BaseToolBinding & { sourcePriority?: number }>(
+  rows: T[],
+  reason = 'Another enabled tool with this alias has priority.'
+): Array<T & ToolBindingShadowState> {
+  const winners = new Map<string, T>();
+
+  for (const row of rows || []) {
+    const alias = normalizeText(row.alias);
+    if (!alias || !row.enabled) continue;
+
+    const current = winners.get(alias);
+    if (!current || toolBindingWins(row, current)) {
+      winners.set(alias, row);
+    }
+  }
+
+  return (rows || []).map((row) => {
+    const alias = normalizeText(row.alias);
+    const winner = alias ? winners.get(alias) : null;
+    const shadowed = Boolean(row.enabled && winner && winner.id !== row.id);
+    return shadowed ? { ...row, shadowed: true, shadowedReason: reason } : { ...row, shadowed: false };
+  });
+}
+
+function toolBindingWins<T extends BaseToolBinding & { sourcePriority?: number }>(left: T, right: T) {
+  const leftKey = [Number(left.sourcePriority || 0), Number(left.sequence) || 0, Number(left.id) || 0];
+  const rightKey = [Number(right.sourcePriority || 0), Number(right.sequence) || 0, Number(right.id) || 0];
+
+  for (let index = 0; index < leftKey.length; index += 1) {
+    if (leftKey[index] !== rightKey[index]) return leftKey[index] > rightKey[index];
+  }
+
+  return false;
 }

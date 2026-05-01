@@ -22,8 +22,6 @@ defmodule IntellectualClub.Tools.ToolInstance do
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.Changes.ValidateToolType
 
-  @max_alias_length 64
-
   sqlite do
     table("tool_instances")
     repo(IntellectualClub.Repo)
@@ -91,10 +89,6 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
-  end
-
-  identities do
-    identity(:unique_owner_alias, [:owner_id, :alias])
   end
 
   relationships do
@@ -257,7 +251,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
         |> Ash.Changeset.change_attributes(%{
           type: source.type,
           name: Duplication.next_copy_label(source.name),
-          alias: next_alias(source.alias || source.name, actor),
+          alias: source.alias || source.name,
           config: source.config,
           secrets: if(preserve_secrets?, do: source.secrets, else: %{}),
           max_output_tokens: source.max_output_tokens,
@@ -377,45 +371,4 @@ defmodule IntellectualClub.Tools.ToolInstance do
   end
 
   defp secrets_schema_aliases(_other), do: []
-
-  defp next_alias(value, actor) do
-    base =
-      value
-      |> to_string()
-      |> String.trim()
-      |> case do
-        "" -> "tool"
-        alias_value -> alias_value
-      end
-
-    base = with_suffix(base, "_copy")
-    owner_id = Map.get(actor || %{}, :id)
-
-    existing =
-      __MODULE__
-      |> Ash.Query.filter(owner_id == ^owner_id)
-      |> Ash.Query.select([:alias])
-      |> Ash.read!(actor: actor)
-      |> Enum.map(& &1.alias)
-      |> MapSet.new()
-
-    Stream.iterate(0, &(&1 + 1))
-    |> Enum.find_value(fn index ->
-      candidate =
-        case index do
-          0 -> base
-          n -> with_suffix(base, "_#{n + 1}")
-        end
-
-      if MapSet.member?(existing, candidate), do: nil, else: candidate
-    end)
-  end
-
-  defp with_suffix(base, suffix) do
-    suffix_length = String.length(suffix)
-
-    base
-    |> String.slice(0, @max_alias_length - suffix_length)
-    |> Kernel.<>(suffix)
-  end
 end

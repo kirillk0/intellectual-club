@@ -15,7 +15,12 @@
     <slot name="note"></slot>
 
     <TransitionGroup v-if="sortedItems.length" name="tool-bindings" tag="div" class="list">
-      <div v-for="(item, idx) in sortedItems" :key="item.id" class="row tool-binding-row">
+      <div
+        v-for="(item, idx) in sortedItems"
+        :key="itemKey(item)"
+        class="row tool-binding-row"
+        :class="{ 'tool-binding-row--shadowed': isShadowed(item) }"
+      >
         <input
           v-if="showToggle"
           class="tool-binding-enabled"
@@ -28,7 +33,19 @@
         />
 
         <div class="tool-binding-body">
-          <div class="tool-binding-title">{{ item.alias }}</div>
+          <div class="tool-binding-title-line">
+            <div class="tool-binding-title">
+              <span class="muted tool-binding-title__label">Alias:</span>
+              {{ item.alias || '—' }}
+            </div>
+            <span
+              v-if="isShadowed(item)"
+              class="badge tool-binding-shadowed"
+              :title="shadowedReason(item)"
+            >
+              Shadowed
+            </span>
+          </div>
           <div class="muted tool-binding-meta" :title="toolLabel(item)">
             <span
               v-if="toolIsOutlet?.(item)"
@@ -91,6 +108,9 @@ type ToolBindingItem = {
   enabled: boolean;
   sequence: number;
   tool_instance_id?: number | null;
+  shadowed?: boolean;
+  shadowedReason?: string;
+  source?: string;
   [key: string]: unknown;
 };
 
@@ -145,6 +165,12 @@ const handleToggle = (item: ToolBindingItem, event: Event) => {
 
 const toggleDisabled = (item: ToolBindingItem) => props.toggleDisabled?.(item) ?? false;
 const actionsDisabled = (item: ToolBindingItem) => props.actionsDisabled?.(item) ?? false;
+const isShadowed = (item: ToolBindingItem) => item.shadowed === true;
+const itemKey = (item: ToolBindingItem) => `${item.source || 'binding'}:${item.id}`;
+const shadowedReason = (item: ToolBindingItem) =>
+  typeof item.shadowedReason === 'string' && item.shadowedReason.trim()
+    ? item.shadowedReason
+    : 'Another enabled tool with this alias has priority.';
 </script>
 
 <style scoped>
@@ -162,10 +188,30 @@ const actionsDisabled = (item: ToolBindingItem) => props.actionsDisabled?.(item)
   min-width: 0;
 }
 
+.tool-binding-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .tool-binding-title {
   font-weight: 700;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.tool-binding-title__label {
+  font-weight: 500;
+}
+
+.tool-binding-shadowed {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+}
+
+.tool-binding-row--shadowed {
+  opacity: 0.68;
 }
 
 .tool-binding-meta {

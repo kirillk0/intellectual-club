@@ -201,6 +201,7 @@ export function useChatViewModel() {
     });
     contextPanel.hydrate({
       activeToolInstances: payload.active_tool_instances || [],
+      activeToolBindings: payload.active_tool_bindings || [],
     });
     libraryDraft.hydrate({
       chatBlocks: payload.chat_blocks || [],
@@ -357,6 +358,7 @@ export function useChatViewModel() {
     botToolsLoading: contextPanel.botToolsLoading,
     botToolsError: contextPanel.botToolsError,
     activeToolInstances: contextPanel.activeToolInstances,
+    activeToolBindings: contextPanel.activeToolBindings,
     formatStepMetric: contextPanel.formatStepMetric,
     searchHitMeta: contextPanel.searchHitMeta,
     messageMetaLabel: contextPanel.messageMetaLabel,

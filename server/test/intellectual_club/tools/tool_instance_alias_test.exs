@@ -5,7 +5,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Tools.{BotToolBinding, ChatToolBinding, ToolInstance}
 
-  test "create generates, trims, validates, and scopes aliases per owner" do
+  test "create generates, trims, validates, and allows duplicate aliases" do
     %{user: owner} = user_fixture()
     %{user: other_owner} = user_fixture()
 
@@ -46,14 +46,16 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
              )
              |> Ash.create()
 
-    assert {:error, _error} =
-             ToolInstance
-             |> Ash.Changeset.for_create(
-               :create,
-               %{type: "mcp_http", name: "Duplicate", alias: "web", config: %{}, secrets: %{}},
-               actor: owner
-             )
-             |> Ash.create()
+    duplicate =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{type: "mcp_http", name: "Duplicate", alias: "web", config: %{}, secrets: %{}},
+        actor: owner
+      )
+      |> Ash.create!()
+
+    assert duplicate.alias == "web"
 
     other =
       ToolInstance
@@ -67,7 +69,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
     assert other.alias == "web"
   end
 
-  test "duplicate assigns a unique copy alias" do
+  test "duplicate preserves alias" do
     %{user: owner} = user_fixture()
 
     source =
@@ -84,7 +86,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       |> Ash.Changeset.for_create(:duplicate, %{id: source.id}, actor: owner)
       |> Ash.create!()
 
-    assert duplicated.alias == "web_copy"
+    assert duplicated.alias == "web"
   end
 
   test "bot and chat bindings are unique by tool instance" do

@@ -175,8 +175,7 @@ const confirmToolBinding = () => {
   if (
     !toolInstanceId ||
     !alias ||
-    props.chatToolBindings.some((binding) => binding.tool_instance_id === toolInstanceId) ||
-    props.chatToolBindings.some((binding) => binding.alias === alias)
+    props.chatToolBindings.some((binding) => binding.tool_instance_id === toolInstanceId)
   ) {
     emit('add-chat-tool-binding');
     return;

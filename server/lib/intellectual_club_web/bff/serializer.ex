@@ -253,6 +253,19 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  def active_tool_binding(%{} = binding) do
+    tool_instance = Map.get(binding, :tool_instance)
+
+    %{
+      id: Map.get(binding, :id),
+      source: binding |> Map.get(:source) |> atom_to_string(),
+      alias: Map.get(binding, :alias) || "",
+      sequence: Map.get(binding, :sequence) || 0,
+      tool_instance_id: Map.get(binding, :tool_instance_id),
+      tool_instance: if(is_map(tool_instance), do: tool_instance_option(tool_instance), else: nil)
+    }
+  end
+
   def chat_tool_binding(%ChatToolBinding{} = binding) do
     tool_instance = Map.get(binding, :tool_instance)
 

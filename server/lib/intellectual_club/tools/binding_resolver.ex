@@ -13,6 +13,8 @@ defmodule IntellectualClub.Tools.BindingResolver do
 
   require Ash.Query
 
+  @source_priorities %{bot: 1, user: 2, chat: 3}
+
   def resolve_for_chat(%{} = chat, actor) do
     chat_id = Map.get(chat, :id)
     bot_id = Map.get(chat, :bot_id)
@@ -21,15 +23,18 @@ defmodule IntellectualClub.Tools.BindingResolver do
     user_bindings = load_user_bindings(bot_id, actor)
     chat_bindings = load_chat_bindings(chat_id, actor)
 
-    {entries, missing_aliases} =
-      bot_bindings
-      |> merge_bot_bindings()
-      |> merge_user_bindings(user_bindings)
-      |> merge_chat_bindings(chat_bindings)
+    entries =
+      (candidate_entries(bot_bindings, :bot) ++
+         candidate_entries(user_bindings, :user) ++
+         candidate_entries(chat_bindings, :chat))
+      |> effective_entries()
+
+    missing_aliases = missing_per_user_aliases(bot_bindings, entries)
 
     %{
-      ordered_alias_entries: entries,
-      tool_instances_by_alias: Map.new(entries),
+      ordered_alias_entries: alias_entries(entries),
+      effective_tool_bindings: entries,
+      tool_instances_by_alias: Map.new(entries, &{&1.alias, &1.tool_instance}),
       tools_payload: build_tools_payload(entries, actor),
       missing_aliases: missing_aliases,
       active_tool_instances: unique_tool_instances(entries)
@@ -39,6 +44,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
   def resolve_for_chat(_other, _actor) do
     %{
       ordered_alias_entries: [],
+      effective_tool_bindings: [],
       tool_instances_by_alias: %{},
       tools_payload: [],
       missing_aliases: [],
@@ -46,99 +52,93 @@ defmodule IntellectualClub.Tools.BindingResolver do
     }
   end
 
-  defp merge_bot_bindings(bindings) when is_list(bindings) do
-    Enum.reduce(bindings, {[], MapSet.new()}, fn binding, {entries, missing_aliases} ->
+  defp candidate_entries(bindings, source) when is_list(bindings) do
+    bindings
+    |> Enum.flat_map(fn binding ->
       alias_value = normalized_alias(binding)
+      tool_instance = Map.get(binding, :tool_instance)
 
       cond do
         alias_value == "" ->
-          {entries, missing_aliases}
+          []
 
-        Map.get(binding, :sharing_mode) == :per_user ->
-          {entries, MapSet.put(missing_aliases, alias_value)}
+        source == :bot and Map.get(binding, :sharing_mode) == :per_user ->
+          []
 
-        is_map(Map.get(binding, :tool_instance)) ->
-          {put_alias_entry(entries, alias_value, Map.get(binding, :tool_instance)),
-           missing_aliases}
+        not is_map(tool_instance) ->
+          []
 
         true ->
-          {entries, missing_aliases}
+          [
+            %{
+              id: Map.get(binding, :id) || 0,
+              source: source,
+              source_priority: Map.fetch!(@source_priorities, source),
+              alias: alias_value,
+              sequence: Map.get(binding, :sequence) || 0,
+              tool_instance_id: Map.get(binding, :tool_instance_id),
+              tool_instance: tool_instance
+            }
+          ]
       end
     end)
   end
 
-  defp merge_bot_bindings(_other), do: {[], MapSet.new()}
+  defp candidate_entries(_bindings, _source), do: []
 
-  defp merge_user_bindings({entries, missing_aliases}, bindings) when is_list(bindings) do
-    Enum.reduce(bindings, {entries, missing_aliases}, fn binding,
-                                                         {acc_entries, acc_missing_aliases} ->
-      maybe_put_user_entry(binding, acc_entries, acc_missing_aliases)
+  defp effective_entries(entries) when is_list(entries) do
+    entries
+    |> Enum.reduce(%{}, fn entry, by_alias ->
+      case Map.get(by_alias, entry.alias) do
+        nil ->
+          Map.put(by_alias, entry.alias, entry)
+
+        current ->
+          if entry_wins?(entry, current) do
+            Map.put(by_alias, entry.alias, entry)
+          else
+            by_alias
+          end
+      end
     end)
+    |> Map.values()
+    |> Enum.sort_by(&{&1.source_priority, &1.sequence, &1.id})
   end
 
-  defp merge_user_bindings(acc, _other), do: acc
+  defp effective_entries(_entries), do: []
 
-  defp merge_chat_bindings({entries, missing_aliases}, bindings) when is_list(bindings) do
-    merged =
-      Enum.reduce(bindings, {entries, missing_aliases}, fn binding,
-                                                           {acc_entries, acc_missing_aliases} ->
-        maybe_put_override_entry(binding, acc_entries, acc_missing_aliases)
-      end)
-
-    normalize_resolved_bindings(merged)
+  defp entry_wins?(left, right) do
+    {left.source_priority, left.sequence, left.id} >
+      {right.source_priority, right.sequence, right.id}
   end
 
-  defp merge_chat_bindings(acc, _other), do: normalize_resolved_bindings(acc)
+  defp missing_per_user_aliases(bot_bindings, entries) when is_list(bot_bindings) do
+    provided_aliases =
+      entries
+      |> Enum.filter(&(&1.source in [:user, :chat]))
+      |> Enum.map(& &1.alias)
+      |> MapSet.new()
 
-  defp maybe_put_override_entry(binding, entries, missing_aliases) do
-    alias_value = normalized_alias(binding)
-    tool_instance = Map.get(binding, :tool_instance)
-
-    if alias_value != "" and is_map(tool_instance) do
-      {
-        put_alias_entry(entries, alias_value, tool_instance),
-        MapSet.delete(missing_aliases, alias_value)
-      }
-    else
-      {entries, missing_aliases}
-    end
+    bot_bindings
+    |> Enum.filter(&(Map.get(&1, :sharing_mode) == :per_user))
+    |> Enum.map(&normalized_alias/1)
+    |> Enum.filter(&(&1 != "" and not MapSet.member?(provided_aliases, &1)))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
-  defp maybe_put_user_entry(binding, entries, missing_aliases) do
-    alias_value = normalized_alias(binding)
-    tool_instance = Map.get(binding, :tool_instance)
+  defp missing_per_user_aliases(_bot_bindings, _entries), do: []
 
-    if alias_value != "" and is_map(tool_instance) and
-         MapSet.member?(missing_aliases, alias_value) do
-      {
-        put_alias_entry(entries, alias_value, tool_instance),
-        MapSet.delete(missing_aliases, alias_value)
-      }
-    else
-      {entries, missing_aliases}
-    end
+  defp alias_entries(entries) when is_list(entries) do
+    Enum.map(entries, &{&1.alias, &1.tool_instance})
   end
 
-  defp normalize_resolved_bindings({entries, missing_aliases}) do
-    {entries, missing_aliases |> MapSet.to_list() |> Enum.sort()}
-  end
-
-  defp put_alias_entry(entries, alias_value, tool_instance) when is_list(entries) do
-    case Enum.find_index(entries, fn {existing_alias, _tool_instance} ->
-           existing_alias == alias_value
-         end) do
-      nil ->
-        entries ++ [{alias_value, tool_instance}]
-
-      index ->
-        List.replace_at(entries, index, {alias_value, tool_instance})
-    end
-  end
+  defp alias_entries(_entries), do: []
 
   defp unique_tool_instances(entries) when is_list(entries) do
     {items, _seen_ids} =
       Enum.reduce(entries, {[], MapSet.new()}, fn
-        {_alias_value, %{id: tool_id} = tool_instance}, {acc, seen_ids}
+        %{tool_instance: %{id: tool_id} = tool_instance}, {acc, seen_ids}
         when is_integer(tool_id) ->
           if MapSet.member?(seen_ids, tool_id) do
             {acc, seen_ids}
@@ -156,7 +156,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
   defp unique_tool_instances(_other), do: []
 
   defp build_tools_payload(entries, actor) when is_list(entries) do
-    Enum.flat_map(entries, fn {alias_value, tool_instance} ->
+    Enum.flat_map(entries, fn %{alias: alias_value, tool_instance: tool_instance} ->
       functions = list_model_functions(tool_instance, actor)
 
       Enum.flat_map(functions, fn fn_spec ->

@@ -701,13 +701,13 @@ function applyBotDocument(payload: JsonApiSingleResponse) {
 
   toolBindings.hydrate(
     toolBindingResources
-      .map(parseBotToolBindingRow)
+      .map((resource) => parseBotToolBindingRow(resource, includedIndex))
       .filter((binding): binding is BotToolBindingRow => Boolean(binding))
   );
 
   userToolOverrides.hydrate(
     userToolBindingResources
-      .map(parseBotUserToolBindingRow)
+      .map((resource) => parseBotUserToolBindingRow(resource, includedIndex))
       .filter((binding): binding is NonNullable<ReturnType<typeof parseBotUserToolBindingRow>> => Boolean(binding))
   );
 }

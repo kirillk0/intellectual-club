@@ -217,22 +217,18 @@
           <h4 style="margin: 0">Tools</h4>
           <div v-if="botToolsLoading" class="muted">Loading tools…</div>
           <div v-else-if="botToolsError" class="muted">Failed to load tools.</div>
-          <div v-else-if="activeToolInstances.length">
-            <div v-for="tool in activeToolInstances" :key="tool.id" class="row">
-              <div class="flex" style="gap: 6px; align-items: center; min-width: 0">
-                <span
-                  v-if="tool.type === 'outlet'"
-                  class="status-dot"
-                  :class="tool.outlet_online ? 'success' : 'danger'"
-                  :title="tool.outlet_online ? 'Online' : 'Offline'"
-                />
-                <div style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
-                  {{ tool.name }}
-                </div>
-              </div>
-            </div>
-          </div>
-          <p v-else class="muted">No tools active.</p>
+          <ToolBindingsCard
+            v-else
+            :items="activeToolBindings"
+            :toolLabel="activeToolBindingLabel"
+            :toolIsOutlet="activeToolBindingIsOutlet"
+            :toolIsOnline="activeToolBindingIsOnline"
+            emptyText="No tools active."
+            :showHeader="false"
+            :readonly="true"
+            :showToggle="false"
+            :showActions="false"
+          />
         </div>
       </div>
     </div>
@@ -242,8 +238,9 @@
 <script setup lang="ts">
 import type { ChatBranchMessage } from '@/types/api';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import type {
-  ActiveToolInstance,
+  ActiveToolBinding,
   BranchSearchResults,
   ChatMessageSearchHit,
   LeftPanelTab,
@@ -273,7 +270,7 @@ interface Props {
   sourceLabels: Record<string, string>;
   botToolsLoading: boolean;
   botToolsError: string;
-  activeToolInstances: ActiveToolInstance[];
+  activeToolBindings: ActiveToolBinding[];
   formatStepMetric: (value: unknown) => string;
   searchHitMeta: (hit: ChatMessageSearchHit) => string;
   messageMetaLabel: (msg: ChatBranchMessage) => string;
@@ -300,4 +297,13 @@ const handleSearchInput = (event: Event) => {
   const target = event.target as HTMLInputElement;
   emit('update:branchSearchTerm', target.value);
 };
+
+const activeToolBindingLabel = (binding: ActiveToolBinding) => {
+  const tool = binding.tool_instance;
+  if (!tool) return `Tool #${binding.tool_instance_id}`;
+  return `${tool.type} · ${tool.name}`;
+};
+
+const activeToolBindingIsOutlet = (binding: ActiveToolBinding) => binding.tool_instance?.type === 'outlet';
+const activeToolBindingIsOnline = (binding: ActiveToolBinding) => Boolean(binding.tool_instance?.outlet_online);
 </script>

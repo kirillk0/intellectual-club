@@ -7,6 +7,7 @@ import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledg
 import { parseImageAsset } from '@/features/media/image';
 import {
   moveToolBindingInList,
+  markShadowedToolBindings,
   normalizeToolBindingSequences,
   removeToolBindingFromList,
   setToolBindingEnabledInList,
@@ -82,7 +83,9 @@ export function useChatLibraryDraft(params: Params) {
   const chatBlocksPickerSelection = ref<number[]>([]);
 
   const chatBlocks = computed(() => chatBlocksDraft.value);
-  const chatToolBindings = computed(() => chatToolBindingsDraft.value);
+  const chatToolBindings = computed(() =>
+    markShadowedToolBindings(chatToolBindingsDraft.value, 'Another enabled chat tool with this alias has priority.')
+  );
   const linkedChatBlockIds = computed(() => chatBlocksDraft.value.map((b) => b.block));
 
   const toolInstanceLibrary = useToolInstanceLibrary(params.toolLibrary);

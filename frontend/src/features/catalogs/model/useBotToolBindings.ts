@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue';
 
-import { relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { relationshipId, relatedResource, toIntId, type JsonApiIncludedIndex, type JsonApiResource } from '@/api/jsonApi';
 import {
   cloneToolBindings,
   moveToolBindingInList,
@@ -17,7 +17,10 @@ export type BotToolBindingRow = BaseToolBinding & {
   sharing_mode: string;
 };
 
-export function parseBotToolBindingRow(resource: JsonApiResource): BotToolBindingRow | null {
+export function parseBotToolBindingRow(
+  resource: JsonApiResource,
+  includedIndex?: JsonApiIncludedIndex
+): BotToolBindingRow | null {
   const id = toIntId(resource.id);
   if (!id) return null;
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
@@ -27,9 +30,13 @@ export function parseBotToolBindingRow(resource: JsonApiResource): BotToolBindin
 
   if (!toolInstanceId) return null;
 
+  const toolInstanceResource = includedIndex ? relatedResource(resource, 'tool_instance', includedIndex) : null;
+  const toolInstanceAttrs = (toolInstanceResource?.attributes || {}) as Record<string, unknown>;
+  const alias = String(attrs.alias || toolInstanceAttrs.alias || '').trim();
+
   return {
     id,
-    alias: String(attrs.alias || '').trim(),
+    alias,
     tool_instance_id: toolInstanceId,
     sharing_mode: String(attrs.sharing_mode || 'shared'),
     enabled: Boolean(attrs.enabled),

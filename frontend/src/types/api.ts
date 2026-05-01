@@ -139,6 +139,15 @@ export type ChatToolBinding = {
   tool_instance?: ToolInstanceOption | null;
 };
 
+export type ActiveToolBinding = {
+  id: number;
+  source: 'bot' | 'user' | 'chat' | string;
+  alias: string;
+  sequence: number;
+  tool_instance_id: number;
+  tool_instance?: ToolInstanceOption | null;
+};
+
 export type ChatMessageContent = {
   id: number;
   external_id?: string | null;

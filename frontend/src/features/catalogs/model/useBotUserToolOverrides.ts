@@ -1,6 +1,15 @@
 import { ref, type Ref } from 'vue';
 
-import { jsonApiCreate, jsonApiDelete, jsonApiUpdate, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import {
+  jsonApiCreate,
+  jsonApiDelete,
+  jsonApiUpdate,
+  relationshipId,
+  relatedResource,
+  toIntId,
+  type JsonApiIncludedIndex,
+  type JsonApiResource,
+} from '@/api/jsonApi';
 import { sortToolBindings } from '@/features/tools/model/toolBindings';
 import type { ToolInstanceOption } from '@/types/api';
 import type { BotToolBindingRow } from './useBotToolBindings';
@@ -20,7 +29,10 @@ export type BotUserToolBindingDraft = {
   sequence: number;
 };
 
-export function parseBotUserToolBindingRow(resource: JsonApiResource): BotUserToolBindingRow | null {
+export function parseBotUserToolBindingRow(
+  resource: JsonApiResource,
+  includedIndex?: JsonApiIncludedIndex
+): BotUserToolBindingRow | null {
   const id = toIntId(resource.id);
   if (!id) return null;
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
@@ -30,9 +42,13 @@ export function parseBotUserToolBindingRow(resource: JsonApiResource): BotUserTo
 
   if (!toolInstanceId) return null;
 
+  const toolInstanceResource = includedIndex ? relatedResource(resource, 'tool_instance', includedIndex) : null;
+  const toolInstanceAttrs = (toolInstanceResource?.attributes || {}) as Record<string, unknown>;
+  const alias = String(attrs.alias || toolInstanceAttrs.alias || '').trim();
+
   return {
     id,
-    alias: String(attrs.alias || '').trim(),
+    alias,
     tool_instance_id: toolInstanceId,
     enabled: Boolean(attrs.enabled),
     sequence: typeof attrs.sequence === 'number' ? attrs.sequence : Number(attrs.sequence || 0),
