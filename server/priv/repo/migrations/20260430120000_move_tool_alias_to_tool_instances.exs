@@ -185,11 +185,11 @@ defmodule IntellectualClub.Repo.Migrations.MoveToolAliasToToolInstances do
             tool_instance_id: b.tool_instance_id,
             alias: b.alias,
             created_at: b.created_at,
-            priority: ^priority,
             id: b.id
           }
         )
       )
+      |> Enum.map(&Map.put(&1, :priority, priority))
     end)
     |> Enum.group_by(& &1.tool_instance_id)
     |> Map.new(fn {tool_instance_id, candidates} ->
