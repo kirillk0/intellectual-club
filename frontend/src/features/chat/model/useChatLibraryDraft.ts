@@ -77,7 +77,6 @@ export function useChatLibraryDraft(params: Params) {
 
   const savingChatChanges = ref(false);
   const newChatToolInstanceId = ref(0);
-  const newChatToolAlias = ref('');
 
   const chatBlocksPickerOpen = ref(false);
   const chatBlocksPickerSelection = ref<number[]>([]);
@@ -111,7 +110,6 @@ export function useChatLibraryDraft(params: Params) {
     chatVariablesOriginal.value = variables || [];
     chatVariables.value = [...chatVariablesOriginal.value];
     newChatToolInstanceId.value = 0;
-    newChatToolAlias.value = '';
   };
 
   const cancelChatChanges = () => {
@@ -119,7 +117,6 @@ export function useChatLibraryDraft(params: Params) {
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
     chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
     newChatToolInstanceId.value = 0;
-    newChatToolAlias.value = '';
   };
 
   const saveChatChanges = async () => {
@@ -137,7 +134,6 @@ export function useChatLibraryDraft(params: Params) {
         tool_bindings: (chatToolBindingsDraft.value || []).map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           tool_instance_id: binding.tool_instance_id,
-          alias: String(binding.alias || '').trim(),
           enabled: Boolean(binding.enabled),
         })),
       });
@@ -204,18 +200,15 @@ export function useChatLibraryDraft(params: Params) {
 
   const addChatToolBinding = () => {
     const toolInstanceId = Number(newChatToolInstanceId.value || 0);
-    const alias = String(newChatToolAlias.value || '').trim();
+    const alias = toolInstanceLibrary.toolLibraryById.value.get(toolInstanceId)?.alias || '';
 
     const validationError = validateNewToolBinding({
       toolInstanceId,
       alias,
       bindings: chatToolBindingsDraft.value,
-      requireAliasPattern: true,
       messages: {
         missingTool: 'Choose a tool.',
-        missingAlias: 'Alias is required.',
-        invalidSeparator: 'Alias must not contain "__".',
-        invalidPattern: 'Alias must start with a letter and contain only letters, numbers, "_" or "-".',
+        duplicateTool: 'Tool is already linked to this chat.',
         duplicateAlias: 'Alias is already used in this chat.',
       },
     });
@@ -238,7 +231,6 @@ export function useChatLibraryDraft(params: Params) {
     ]);
 
     newChatToolInstanceId.value = 0;
-    newChatToolAlias.value = '';
   };
 
   const moveChatToolBinding = (binding: ChatToolBindingLink, delta: number) => {
@@ -315,7 +307,6 @@ export function useChatLibraryDraft(params: Params) {
     chatTabDirty,
     savingChatChanges,
     newChatToolInstanceId,
-    newChatToolAlias,
     chatBlocksPickerOpen,
     chatBlocksPickerSelection,
     linkedChatBlockIds,

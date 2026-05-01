@@ -45,8 +45,15 @@
 
         <label :class="{ 'field-error': errors.hasField('name') }">
           Name
-          <input v-model="form.name" class="full" @input="errors.clearField('name')" />
+          <input v-model="form.name" class="full" @input="handleNameInput" />
           <div v-if="errors.hasField('name')" class="error-text">{{ errors.messageFor('name') }}</div>
+        </label>
+
+        <label :class="{ 'field-error': errors.hasField('alias') }">
+          Alias
+          <input v-model="form.alias" class="full" @input="handleAliasInput" />
+          <div v-if="errors.hasField('alias')" class="error-text">{{ errors.messageFor('alias') }}</div>
+          <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
         </label>
 
         <label :class="{ 'field-error': errors.hasField('type') }">
@@ -435,6 +442,7 @@ type ToolDriverMeta = {
 
 type ToolInstanceForm = {
   name: string;
+  alias: string;
   type: string;
   config: Record<string, unknown>;
   max_output_tokens: number;
@@ -470,6 +478,17 @@ function normalizeString(value: unknown): string {
 function normalizeObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function aliasFromName(value: unknown): string {
+  const base = String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
+    .slice(0, 64);
+
+  return /^[a-z]/.test(base) ? base : 'tool';
 }
 
 function parseNullableNumber(value: unknown): number | null {
@@ -537,6 +556,7 @@ function fromApi(resource: JsonApiResource): Partial<ToolInstanceForm> {
 
   return {
     name: normalizeString(attrs.name),
+    alias: normalizeString(attrs.alias),
     type: toolType,
     config,
     max_output_tokens:
@@ -594,6 +614,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   editPath: (id) => `/catalogs/tools/${id}`,
   defaultForm: () => ({
     name: '',
+    alias: '',
     type: 'mcp_http',
     config: {},
     max_output_tokens: 20_000,
@@ -611,6 +632,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   toAttributes: (form) => {
     const attrs: Record<string, unknown> = {
       name: form.name,
+      alias: form.alias,
       config: normalizeObject(form.config),
       max_output_tokens: form.max_output_tokens,
       rps_limit: parseNullableNumber(form.rps_limit),
@@ -637,6 +659,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   },
   normalizeForDirty: (form) => ({
     name: form.name,
+    alias: form.alias,
     type: form.type,
     config: form.config,
     max_output_tokens: form.max_output_tokens,
@@ -653,7 +676,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     params.set('include', TOOL_DOCUMENT_INCLUDE);
     params.set(
       'fields[tool-instances]',
-      'name,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,secrets_present,can_edit,shared_incoming,shared_outgoing,functions'
+      'name,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,secrets_present,can_edit,shared_incoming,shared_outgoing,functions'
     );
     return params;
   },
@@ -684,6 +707,7 @@ const headerDirty = computed(() => dirty.value && !loading.value && !loadError.v
 
 const remove = editor.remove;
 const duplicate = editor.duplicate;
+const aliasTouched = ref(false);
 
 const configText = ref('{}\n');
 const configError = ref<string | null>(null);
@@ -710,12 +734,29 @@ const handleConfigInput = () => {
 
 const reset = () => {
   editor.reset();
+  aliasTouched.value = false;
   resetConfigText();
 };
-const createNew = editor.createNew;
+const createNew = () => {
+  aliasTouched.value = false;
+  editor.createNew();
+};
 const goList = editor.goList;
 
 const toolTab = ref<'settings' | 'credentials' | 'functions'>('settings');
+
+function handleNameInput() {
+  errors.clearField('name');
+  if (isNew.value && !aliasTouched.value) {
+    form.alias = aliasFromName(form.name);
+    errors.clearField('alias');
+  }
+}
+
+function handleAliasInput() {
+  aliasTouched.value = true;
+  errors.clearField('alias');
+}
 
 const currentToolType = computed<ToolDriverMeta | null>(() => {
   const meta = toolTypesByType.value[String(form.type || '').trim()];

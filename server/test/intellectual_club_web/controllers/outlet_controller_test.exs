@@ -10,6 +10,11 @@ defmodule IntellectualClubWeb.OutletControllerTest do
 
   require Ash.Query
 
+  setup do
+    Runtime.reset!()
+    :ok
+  end
+
   test "POST /api/outlet/poll auto-discovers once per runner session and reconciles functions" do
     reset_runtime!()
 

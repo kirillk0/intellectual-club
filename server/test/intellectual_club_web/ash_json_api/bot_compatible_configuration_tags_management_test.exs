@@ -75,8 +75,13 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       )
       |> Ash.create!(actor: owner)
 
-    shared_tool = create_tool!(owner, "Shared tool", "https://example.com/shared")
-    recipient_tool = create_tool!(recipient, "Recipient tool", "https://example.com/recipient")
+    shared_tool = create_tool!(owner, "Shared tool", "https://example.com/shared", "shared_tool")
+
+    per_user_tool =
+      create_tool!(owner, "Personal tool", "https://example.com/personal", "personal_tool")
+
+    recipient_tool =
+      create_tool!(recipient, "Recipient tool", "https://example.com/recipient", "personal_tool")
 
     bot =
       create_bot!(owner, "Shared bot",
@@ -109,7 +114,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         %{
           bot_id: bot.id,
           tool_instance_id: shared_tool.id,
-          alias: "shared_tool",
           sharing_mode: :shared,
           enabled: true,
           sequence: 0
@@ -124,8 +128,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         :create,
         %{
           bot_id: bot.id,
-          tool_instance_id: shared_tool.id,
-          alias: "personal_tool",
+          tool_instance_id: per_user_tool.id,
           sharing_mode: :per_user,
           enabled: true,
           sequence: 1
@@ -140,8 +143,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         :create,
         %{
           bot_id: bot.id,
-          tool_instance_id: shared_tool.id,
-          alias: "personal_tool",
+          tool_instance_id: per_user_tool.id,
           enabled: true,
           sequence: 1
         },
@@ -160,7 +162,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         %{
           bot_id: bot.id,
           tool_instance_id: recipient_tool.id,
-          alias: "personal_tool",
           enabled: true,
           sequence: 1
         },
@@ -226,8 +227,8 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       )
       |> Ash.create!(actor: actor)
 
-    tool1 = create_tool!(actor, "Tool One", "https://example.com/one")
-    tool2 = create_tool!(actor, "Tool Two", "https://example.com/two")
+    tool1 = create_tool!(actor, "Tool One", "https://example.com/one", "tool_one")
+    tool2 = create_tool!(actor, "Tool Two", "https://example.com/two", "tool_two")
 
     bot =
       Bot
@@ -293,6 +294,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       BotToolBinding
       |> Ash.Query.filter(bot_id == ^bot.id)
       |> Ash.Query.sort(sequence: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(tool_bindings1, &{&1.tool_instance_id, &1.alias, &1.enabled, &1.sequence}) ==
@@ -373,6 +375,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       BotToolBinding
       |> Ash.Query.filter(bot_id == ^bot.id)
       |> Ash.Query.sort(sequence: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(tool_bindings2, &{&1.tool_instance_id, &1.alias, &1.enabled, &1.sequence}) ==
@@ -413,13 +416,14 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
     |> Ash.create!(actor: actor)
   end
 
-  defp create_tool!(actor, name, server_url) do
+  defp create_tool!(actor, name, server_url, alias_value) do
     ToolInstance
     |> Ash.Changeset.for_create(
       :create,
       %{
         type: "mcp_http",
         name: name,
+        alias: alias_value,
         config: %{"server_url" => server_url},
         secrets: %{"bearer_token" => "super-secret"},
         max_output_tokens: 1000

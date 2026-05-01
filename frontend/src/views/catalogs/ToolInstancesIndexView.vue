@@ -37,7 +37,7 @@
               <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
             </div>
             <div class="catalog-row__subtitle">
-              {{ t.typeLabel }}
+              {{ t.alias }} · {{ t.typeLabel }}
               <span v-if="t.server_url" class="muted"> · {{ t.server_url }}</span>
             </div>
             <div v-if="t.last_discovery_error" class="error-text" style="margin-top: 4px; font-size: 0.85rem">
@@ -78,6 +78,7 @@ import { formatRelativeDateTime } from '@/utils/dates';
 type ToolInstanceRow = {
   id: number;
   name: string;
+  alias: string;
   type: string;
   server_url: string;
   max_output_tokens: number;
@@ -140,6 +141,7 @@ function parseRow(resource: JsonApiResource): ToolInstanceRow | null {
   return {
     id,
     name: String(attrs.name || '').trim(),
+    alias: String(attrs.alias || '').trim(),
     type: String(attrs.type || '').trim(),
     server_url: String(config.server_url || '').trim(),
     max_output_tokens:
@@ -169,6 +171,7 @@ const visibleTools = computed(() => {
   return all.filter((t) =>
     normalize(
       `${t.name} ${t.type} ${t.server_url} ${t.last_discovered_at} ${t.last_discovery_error}`
+        + ` ${t.alias}`
     ).includes(q)
   );
 });
@@ -194,7 +197,7 @@ async function loadTools() {
     params.set('sort', 'name');
     params.set(
       'fields[tool-instances]',
-      'name,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
+      'name,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
     );
     const payload = await jsonApiList('/api/ash/tool-instances', params);
     tools.value = (payload.data || []).map(parseRow).filter((t): t is ToolInstanceRow => Boolean(t));

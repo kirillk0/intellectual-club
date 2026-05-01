@@ -92,12 +92,10 @@
     <ToolBindingPickerModal
       v-model:open="toolBindingPickerOpen"
       :toolInstanceId="newChatToolInstanceId"
-      :alias="newChatToolAlias"
       title="Add chat tool"
       :tools="toolLibrary"
       :saving="savingChatChanges"
       @update:toolInstanceId="(value) => emit('update:newChatToolInstanceId', value)"
-      @update:alias="(value) => emit('update:newChatToolAlias', value)"
       @confirm="confirmToolBinding"
     />
   </section>
@@ -136,7 +134,6 @@ interface Props {
   chatVariables: Partial<ChatVariable>[];
   toolLibrary: ToolInstanceOption[];
   newChatToolInstanceId: number;
-  newChatToolAlias: string;
   chatBlockName: (blockId: number) => string;
   chatBlockImage: (blockId: number) => ImageAsset | null;
   chatBlockMeta: (block: ChatBlockLink) => string;
@@ -159,7 +156,6 @@ const emit = defineEmits<{
   (e: 'remove-chat-block', blockId: number): void;
   (e: 'touch-chat-blocks'): void;
   (e: 'update:newChatToolInstanceId', value: number): void;
-  (e: 'update:newChatToolAlias', value: string): void;
   (e: 'add-chat-tool-binding'): void;
   (e: 'move-chat-tool-binding', binding: ChatToolBindingLink, delta: number): void;
   (e: 'remove-chat-tool-binding', bindingId: number): void;
@@ -174,13 +170,12 @@ const openToolBindingPicker = () => {
 
 const confirmToolBinding = () => {
   const toolInstanceId = Number(props.newChatToolInstanceId || 0);
-  const alias = String(props.newChatToolAlias || '').trim();
+  const alias = props.toolLibrary.find((tool) => tool.id === toolInstanceId)?.alias || '';
 
   if (
     !toolInstanceId ||
     !alias ||
-    alias.includes('__') ||
-    !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias) ||
+    props.chatToolBindings.some((binding) => binding.tool_instance_id === toolInstanceId) ||
     props.chatToolBindings.some((binding) => binding.alias === alias)
   ) {
     emit('add-chat-tool-binding');

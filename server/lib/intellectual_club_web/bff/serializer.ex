@@ -246,6 +246,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     %{
       id: tool.id,
       name: tool.name,
+      alias: tool.alias,
       type: tool.type,
       outlet_online: loaded_value(Map.get(tool, :outlet_online)),
       can_edit: loaded_value(Map.get(tool, :can_edit))
@@ -259,12 +260,18 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       id: binding.id,
       chat_id: binding.chat_id,
       tool_instance_id: binding.tool_instance_id,
-      alias: binding.alias,
+      alias: tool_instance_alias(binding),
       enabled: binding.enabled,
       sequence: binding.sequence,
       tool_instance: if(is_map(tool_instance), do: tool_instance_option(tool_instance), else: nil)
     }
   end
+
+  defp tool_instance_alias(%{tool_instance: %{alias: alias_value}}) when is_binary(alias_value),
+    do: alias_value
+
+  defp tool_instance_alias(%{alias: alias_value}) when is_binary(alias_value), do: alias_value
+  defp tool_instance_alias(_binding), do: ""
 
   def branch_message(
         %ChatMessage{} = message,

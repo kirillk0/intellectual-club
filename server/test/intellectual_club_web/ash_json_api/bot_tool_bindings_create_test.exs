@@ -37,6 +37,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotToolBindingsCreateTest do
         %{
           type: "mcp_http",
           name: "MCP Tool",
+          alias: "web",
           config: %{"server_url" => "https://example.com/mcp"},
           secrets: %{"bearer_token" => "x"},
           max_output_tokens: 2000
@@ -55,7 +56,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotToolBindingsCreateTest do
           "attributes" => %{
             "bot_id" => bot.id,
             "tool_instance_id" => tool_instance.id,
-            "alias" => "web",
             "sharing_mode" => "shared",
             "enabled" => true,
             "sequence" => 1
@@ -65,7 +65,9 @@ defmodule IntellectualClubWeb.AshJsonApi.BotToolBindingsCreateTest do
       |> json_response(201)
 
     binding_id = String.to_integer(response["data"]["id"])
-    binding = Ash.get!(BotToolBinding, binding_id, actor: actor)
+
+    binding =
+      Ash.get!(BotToolBinding, binding_id, actor: actor) |> Ash.load!(:alias, actor: actor)
 
     assert binding.bot_id == bot.id
     assert binding.tool_instance_id == tool_instance.id

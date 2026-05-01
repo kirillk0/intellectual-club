@@ -70,7 +70,6 @@ export function useBotToolBindings() {
     return sortedToolBindings.value.map((binding) => ({
       ...(binding.id > 0 ? { id: binding.id } : {}),
       tool_instance_id: binding.tool_instance_id,
-      alias: String(binding.alias || '').trim(),
       sharing_mode: binding.sharing_mode || 'shared',
       enabled: Boolean(binding.enabled),
     }));
@@ -101,8 +100,7 @@ export function useBotToolBindings() {
       bindings: toolBindings.value,
       messages: {
         missingTool: 'Choose a tool instance.',
-        missingAlias: 'Alias is required.',
-        invalidSeparator: 'Alias must not contain "__".',
+        duplicateTool: 'Tool is already attached to this bot.',
         duplicateAlias: 'Alias is already used in this bot.',
       },
     });

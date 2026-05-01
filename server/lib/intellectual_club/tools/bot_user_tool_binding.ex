@@ -9,7 +9,6 @@ defmodule IntellectualClub.Tools.BotUserToolBinding do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
-  alias IntellectualClub.Tools.Changes.ValidateBotToolAlias
 
   sqlite do
     table("bot_user_tool_bindings")
@@ -23,11 +22,6 @@ defmodule IntellectualClub.Tools.BotUserToolBinding do
 
   attributes do
     integer_primary_key(:id)
-
-    attribute :alias, :string do
-      allow_nil?(false)
-      public?(true)
-    end
 
     attribute :enabled, :boolean do
       allow_nil?(false)
@@ -62,7 +56,13 @@ defmodule IntellectualClub.Tools.BotUserToolBinding do
   end
 
   identities do
-    identity(:unique_owner_bot_alias, [:owner_id, :bot_id, :alias])
+    identity(:unique_owner_bot_tool_instance, [:owner_id, :bot_id, :tool_instance_id])
+  end
+
+  calculations do
+    calculate :alias, :string, expr(tool_instance.alias) do
+      public?(true)
+    end
   end
 
   json_api do
@@ -74,21 +74,29 @@ defmodule IntellectualClub.Tools.BotUserToolBinding do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:bot_id, :tool_instance_id, :alias, :enabled, :sequence])
+      accept([:bot_id, :tool_instance_id, :enabled, :sequence])
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(relate_actor(:owner))
 
       change(
         {RequireRelatedAccessByActor,
          relationships: [:bot, :tool_instance], access: [bot: :readable, tool_instance: :writable]}
       )
-
-      change({ValidateBotToolAlias, []})
     end
 
     update :update do
-      accept([:alias, :enabled, :sequence])
+      accept([:enabled, :sequence])
       require_atomic?(false)
-      change({ValidateBotToolAlias, []})
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
     end
   end
 

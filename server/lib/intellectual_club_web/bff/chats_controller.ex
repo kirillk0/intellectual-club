@@ -801,12 +801,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
               id = Helpers.parse_optional_integer(Map.get(item, "id"))
               tool_instance_id = Helpers.parse_optional_integer(Map.get(item, "tool_instance_id"))
 
-              alias_value =
-                item
-                |> Map.get("alias", "")
-                |> to_string()
-                |> String.trim()
-
               enabled =
                 case Map.get(item, "enabled", true) do
                   false -> false
@@ -818,14 +812,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
                 not is_integer(tool_instance_id) ->
                   nil
 
-                alias_value == "" ->
-                  nil
-
                 is_integer(id) and id > 0 ->
                   %{
                     id: id,
                     tool_instance_id: tool_instance_id,
-                    alias: alias_value,
                     enabled: enabled,
                     sequence: index
                   }
@@ -833,7 +823,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
                 true ->
                   %{
                     tool_instance_id: tool_instance_id,
-                    alias: alias_value,
                     enabled: enabled,
                     sequence: index
                   }
@@ -958,7 +947,9 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     ChatToolBinding
     |> Ash.Query.filter(chat_id == ^chat_id)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.load([tool_instance: [:name, :type, :outlet_online, :can_edit]], strict?: true)
+    |> Ash.Query.load([tool_instance: [:name, :alias, :type, :outlet_online, :can_edit]],
+      strict?: true
+    )
     |> Ash.read!(actor: actor)
   end
 

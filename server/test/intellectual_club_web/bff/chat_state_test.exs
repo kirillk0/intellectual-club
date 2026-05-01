@@ -461,6 +461,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
         %{
           type: "mcp_http",
           name: "Chat tool",
+          alias: "web",
           config: %{"server_url" => "https://example.com/chat"},
           secrets: %{"bearer_token" => "chat"}
         },
@@ -475,8 +476,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
         %{
           bot_id: bot.id,
           tool_instance_id: base_tool.id,
-          alias: "web",
-          sharing_mode: :per_user,
+          sharing_mode: :shared,
           enabled: true,
           sequence: 0
         },
@@ -500,7 +500,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
         %{
           chat_id: chat.id,
           tool_instance_id: chat_tool.id,
-          alias: "web",
           enabled: true,
           sequence: 0
         },

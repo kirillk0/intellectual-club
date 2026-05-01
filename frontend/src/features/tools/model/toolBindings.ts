@@ -8,14 +8,11 @@ export type BaseToolBinding = {
 
 export type ToolBindingValidationOptions<T extends BaseToolBinding> = {
   toolInstanceId: number;
-  alias: string;
+  alias?: string;
   bindings: T[];
-  requireAliasPattern?: boolean;
   messages: {
     missingTool: string;
-    missingAlias: string;
-    invalidSeparator: string;
-    invalidPattern?: string;
+    duplicateTool: string;
     duplicateAlias: string;
   };
 };
@@ -74,15 +71,12 @@ export function validateNewToolBinding<T extends BaseToolBinding>({
   toolInstanceId,
   alias,
   bindings,
-  requireAliasPattern = false,
   messages,
 }: ToolBindingValidationOptions<T>) {
   if (!toolInstanceId) return messages.missingTool;
-  if (!alias) return messages.missingAlias;
-  if (alias.includes('__')) return messages.invalidSeparator;
-  if (requireAliasPattern && !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)) {
-    return messages.invalidPattern || 'Alias must start with a letter and contain only letters, numbers, "_" or "-".';
+  if ((bindings || []).some((binding) => binding.tool_instance_id === toolInstanceId)) {
+    return messages.duplicateTool;
   }
-  if ((bindings || []).some((binding) => binding.alias === alias)) return messages.duplicateAlias;
+  if (alias && (bindings || []).some((binding) => binding.alias === alias)) return messages.duplicateAlias;
   return null;
 }

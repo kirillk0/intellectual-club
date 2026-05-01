@@ -5,6 +5,11 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
   alias IntellectualClub.Tools.Drivers.Outlet
   alias IntellectualClub.Tools.ToolInstance
 
+  setup do
+    Runtime.reset!()
+    :ok
+  end
+
   test "discover accepts execution result payload returned by outlet runtime" do
     %{user: actor} = user_fixture()
 

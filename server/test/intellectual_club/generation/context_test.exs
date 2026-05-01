@@ -174,6 +174,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           type: "native-brave-search",
           name: "Brave Search",
+          alias: "web",
           config: %{},
           secrets: %{"token" => "token-value"}
         },
@@ -188,7 +189,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           bot_id: bot.id,
           tool_instance_id: tool_instance.id,
-          alias: "web",
           sharing_mode: :shared,
           enabled: true,
           sequence: 10
@@ -219,7 +219,7 @@ defmodule IntellectualClub.Generation.ContextTest do
            end)
   end
 
-  test "chat tool binding overrides bot tool binding with the same alias" do
+  test "chat tool binding contributes its tool instance alias alongside bot tools" do
     %{user: actor} = user_fixture()
 
     bot =
@@ -245,6 +245,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           type: "native-brave-search",
           name: "Bot Search",
+          alias: "bot_web",
           config: %{},
           secrets: %{"token" => "bot-token"}
         },
@@ -259,6 +260,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           type: "native-brave-search",
           name: "Chat Search",
+          alias: "web",
           config: %{},
           secrets: %{"token" => "chat-token"}
         },
@@ -273,7 +275,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           bot_id: bot.id,
           tool_instance_id: bot_tool.id,
-          alias: "web",
           sharing_mode: :shared,
           enabled: true,
           sequence: 0
@@ -298,7 +299,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           chat_id: chat.id,
           tool_instance_id: chat_tool.id,
-          alias: "web",
           enabled: true,
           sequence: 0
         },
@@ -311,6 +311,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
     assert context.tool_instances_by_alias["web"].id == chat_tool.id
+    assert context.tool_instances_by_alias["bot_web"].id == bot_tool.id
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"

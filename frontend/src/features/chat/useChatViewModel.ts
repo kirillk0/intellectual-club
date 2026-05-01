@@ -481,7 +481,6 @@ export function useChatViewModel() {
     chatVariables: libraryDraft.chatVariables,
     toolLibrary,
     newChatToolInstanceId: libraryDraft.newChatToolInstanceId,
-    newChatToolAlias: libraryDraft.newChatToolAlias,
     chatBlockName: libraryDraft.chatBlockName,
     chatBlockImage: libraryDraft.chatBlockImage,
     chatBlockMeta: libraryDraft.chatBlockMeta,

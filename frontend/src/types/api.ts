@@ -90,6 +90,7 @@ export type KnowledgeBlock = {
 export type ToolInstanceOption = {
   id: number;
   name: string;
+  alias: string;
   type: string;
   outlet_online?: boolean | null;
   can_edit?: boolean | null;

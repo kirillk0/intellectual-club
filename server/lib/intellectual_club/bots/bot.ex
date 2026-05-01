@@ -359,7 +359,6 @@ defmodule IntellectualClub.Bots.Bot do
           Enum.map(tool_bindings, fn b ->
             %{
               tool_instance_id: b.tool_instance_id,
-              alias: b.alias,
               sharing_mode: b.sharing_mode,
               enabled: b.enabled,
               sequence: b.sequence
@@ -376,7 +375,6 @@ defmodule IntellectualClub.Bots.Bot do
           Enum.map(user_tool_bindings, fn b ->
             %{
               tool_instance_id: b.tool_instance_id,
-              alias: b.alias,
               enabled: b.enabled,
               sequence: b.sequence
             }
@@ -437,7 +435,6 @@ defmodule IntellectualClub.Bots.Bot do
               %{
                 bot_id: duplicated.id,
                 tool_instance_id: spec.tool_instance_id,
-                alias: spec.alias,
                 sharing_mode: spec.sharing_mode,
                 enabled: spec.enabled,
                 sequence: spec.sequence
@@ -460,7 +457,6 @@ defmodule IntellectualClub.Bots.Bot do
                   %{
                     bot_id: duplicated.id,
                     tool_instance_id: spec.tool_instance_id,
-                    alias: spec.alias,
                     enabled: spec.enabled,
                     sequence: spec.sequence
                   },

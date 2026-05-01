@@ -1,6 +1,6 @@
 defmodule IntellectualClub.Tools.BotToolBinding do
   @moduledoc """
-  A bot-level binding of a tool instance under a stable alias.
+  A bot-level binding of a tool instance.
   """
 
   use IntellectualClub.Resource,
@@ -9,7 +9,6 @@ defmodule IntellectualClub.Tools.BotToolBinding do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
-  alias IntellectualClub.Tools.Changes.ValidateBotToolAlias
 
   sqlite do
     table("bot_tool_bindings")
@@ -23,11 +22,6 @@ defmodule IntellectualClub.Tools.BotToolBinding do
 
   attributes do
     integer_primary_key(:id)
-
-    attribute :alias, :string do
-      allow_nil?(false)
-      public?(true)
-    end
 
     attribute :sharing_mode, :atom do
       allow_nil?(false)
@@ -69,7 +63,13 @@ defmodule IntellectualClub.Tools.BotToolBinding do
   end
 
   identities do
-    identity(:unique_bot_alias, [:bot_id, :alias])
+    identity(:unique_bot_tool_instance, [:bot_id, :tool_instance_id])
+  end
+
+  calculations do
+    calculate :alias, :string, expr(tool_instance.alias) do
+      public?(true)
+    end
   end
 
   json_api do
@@ -81,27 +81,34 @@ defmodule IntellectualClub.Tools.BotToolBinding do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:bot_id, :tool_instance_id, :alias, :sharing_mode, :enabled, :sequence])
+      accept([:bot_id, :tool_instance_id, :sharing_mode, :enabled, :sequence])
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(relate_actor(:owner))
 
       change(
         {RequireRelatedAccessByActor,
          relationships: [:bot, :tool_instance], access: [bot: :writable, tool_instance: :writable]}
       )
-
-      change({ValidateBotToolAlias, []})
     end
 
     update :update do
-      accept([:tool_instance_id, :alias, :sharing_mode, :enabled, :sequence])
+      accept([:tool_instance_id, :sharing_mode, :enabled, :sequence])
       require_atomic?(false)
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
 
       change(
         {RequireRelatedAccessByActor,
          relationships: [:tool_instance], access: [tool_instance: :writable], required?: false}
       )
-
-      change({ValidateBotToolAlias, []})
     end
   end
 

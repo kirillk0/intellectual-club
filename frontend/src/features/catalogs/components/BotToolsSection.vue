@@ -17,10 +17,6 @@
         This bot does not have any per-user tool aliases.
       </p>
       <div v-else class="stack" style="gap: 10px">
-        <p v-if="!ownedToolLibrary.length" class="muted">
-          You do not have any editable tools yet. Create a tool in the catalog to connect it here.
-        </p>
-
         <div v-for="bt in perUserBaseBindings" :key="`user-binding-${bt.id}`" class="card" style="padding: 10px">
           <div class="stack" style="gap: 10px">
             <div class="flex" style="justify-content: space-between; gap: 10px; align-items: center">
@@ -46,15 +42,19 @@
               <select
                 :value="userToolDraft(bt.alias).tool_instance_id"
                 class="full"
-                :disabled="userToolBindingSavingAliases.has(bt.alias) || !ownedToolLibrary.length"
+                :disabled="userToolBindingSavingAliases.has(bt.alias) || !matchingAliasTools(bt.alias).length"
                 @change="handleUserToolSelect(bt.alias, $event)"
               >
                 <option :value="0">Choose your tool…</option>
-                <option v-for="tool in ownedToolLibrary" :key="tool.id" :value="tool.id">
-                  {{ tool.name }} ({{ tool.type }})
+                <option v-for="tool in matchingAliasTools(bt.alias)" :key="tool.id" :value="tool.id">
+                  {{ tool.alias }} · {{ tool.name }} ({{ tool.type }})
                 </option>
               </select>
             </label>
+
+            <p v-if="!matchingAliasTools(bt.alias).length" class="muted" style="margin: 0; font-size: 0.85rem">
+              Create or edit one of your tools with this alias to connect it here.
+            </p>
 
             <div class="muted" style="font-size: 0.85rem">
               <template v-if="userToolDraft(bt.alias).binding_id">
@@ -127,7 +127,6 @@
     <ToolBindingPickerModal
       v-model:open="toolBindingPickerOpen"
       v-model:toolInstanceId="newToolInstanceId"
-      v-model:alias="newToolAlias"
       title="Add tool binding"
       :tools="toolLibrary"
       :loading="toolLibraryLoading"
@@ -184,12 +183,10 @@ const emit = defineEmits<{
 
 const toolBindingPickerOpen = ref(false);
 const newToolInstanceId = ref(0);
-const newToolAlias = ref('');
 
 function resetPicker() {
   toolBindingPickerOpen.value = false;
   newToolInstanceId.value = 0;
-  newToolAlias.value = '';
 }
 
 watch(
@@ -204,8 +201,14 @@ function openToolBindingPicker() {
 }
 
 function confirmToolBinding() {
-  const added = props.addToolBinding(Number(newToolInstanceId.value || 0), String(newToolAlias.value || '').trim());
+  const toolInstanceId = Number(newToolInstanceId.value || 0);
+  const alias = props.toolLibrary.find((tool) => tool.id === toolInstanceId)?.alias || '';
+  const added = props.addToolBinding(toolInstanceId, alias);
   if (added) resetPicker();
+}
+
+function matchingAliasTools(alias: string) {
+  return (props.ownedToolLibrary || []).filter((tool) => tool.alias === alias);
 }
 
 function handleUserToolSelect(alias: string, event: Event) {

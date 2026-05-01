@@ -27,7 +27,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
     configuration = create_configuration!(owner, provider, "shared-model")
     bot_block = create_block!(owner, "Bot block", "Bot block content")
     config_block = create_block!(owner, "Config block", "Config block content")
-    tool = create_tool!(owner, "Shared MCP tool")
+    tool = create_tool!(owner, "Shared MCP tool", "team_web")
     tool_function = create_tool_function!(owner, tool, "search")
 
     _ =
@@ -115,7 +115,11 @@ defmodule IntellectualClub.Sharing.AccessTest do
       )
 
     shared_function = Ash.get!(ToolFunction, tool_function.id, actor: recipient)
-    shared_bot_binding = Ash.get!(BotToolBinding, shared_binding.id, actor: recipient)
+
+    shared_bot_binding =
+      BotToolBinding
+      |> Ash.get!(shared_binding.id, actor: recipient)
+      |> Ash.load!(:alias, actor: recipient)
 
     assert owner_view.can_edit == true
     assert owner_view.shared_incoming == false
@@ -187,7 +191,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
     bot = create_bot!(owner, "Per-user bot")
-    owner_tool = create_tool!(owner, "Owner private tool")
+    owner_tool = create_tool!(owner, "Owner private tool", "personal_web")
 
     per_user_binding =
       BotToolBinding
@@ -196,7 +200,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
         %{
           bot_id: bot.id,
           tool_instance_id: owner_tool.id,
-          alias: "personal_web",
           sharing_mode: :per_user,
           enabled: true,
           sequence: 10
@@ -207,13 +210,16 @@ defmodule IntellectualClub.Sharing.AccessTest do
 
     share_bot!(owner, bot, group)
 
-    recipient_contract = Ash.get!(BotToolBinding, per_user_binding.id, actor: recipient)
+    recipient_contract =
+      BotToolBinding
+      |> Ash.get!(per_user_binding.id, actor: recipient)
+      |> Ash.load!(:alias, actor: recipient)
 
     assert recipient_contract.alias == "personal_web"
     assert recipient_contract.sharing_mode == :per_user
     assert {:error, _} = Ash.get(ToolInstance, owner_tool.id, actor: recipient)
 
-    recipient_tool = create_tool!(recipient, "Recipient own tool")
+    recipient_tool = create_tool!(recipient, "Recipient own tool", "personal_web")
     recipient_block = create_block!(recipient, "Recipient block", "Recipient block content")
 
     user_binding =
@@ -223,13 +229,14 @@ defmodule IntellectualClub.Sharing.AccessTest do
         %{
           bot_id: bot.id,
           tool_instance_id: recipient_tool.id,
-          alias: "personal_web",
           enabled: true,
           sequence: 10
         },
         actor: recipient
       )
       |> Ash.create!()
+      |> then(&Ash.get!(BotUserToolBinding, &1.id, actor: recipient))
+      |> Ash.load!(:alias, actor: recipient)
 
     assert user_binding.alias == "personal_web"
     assert user_binding.owner_id == recipient.id
@@ -438,7 +445,8 @@ defmodule IntellectualClub.Sharing.AccessTest do
     configuration = create_configuration!(owner, provider, "demo-model")
     bot_block = create_block!(owner, "Bot prompt", "Bot prompt content")
     config_block = create_block!(owner, "Config prompt", "Config prompt content")
-    shared_tool = create_fixed_tool!(owner, "Shared search tool")
+    shared_tool = create_fixed_tool!(owner, "Shared search tool", "team_web")
+    per_user_tool = create_fixed_tool!(owner, "Per-user search tool", "personal_web")
 
     _ =
       BotKnowledgeBlock
@@ -470,7 +478,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
         %{
           bot_id: bot.id,
           tool_instance_id: shared_tool.id,
-          alias: "team_web",
           sharing_mode: :shared,
           enabled: true,
           sequence: 10
@@ -485,8 +492,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
         :create,
         %{
           bot_id: bot.id,
-          tool_instance_id: shared_tool.id,
-          alias: "personal_web",
+          tool_instance_id: per_user_tool.id,
           sharing_mode: :per_user,
           enabled: true,
           sequence: 20
@@ -531,7 +537,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
              get_in(item, ["function", "name"]) == "team_web__web_search"
            end)
 
-    recipient_tool = create_fixed_tool!(recipient, "Recipient override tool")
+    recipient_tool = create_fixed_tool!(recipient, "Recipient override tool", "personal_web")
 
     _ =
       BotUserToolBinding
@@ -540,7 +546,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
         %{
           bot_id: bot.id,
           tool_instance_id: recipient_tool.id,
-          alias: "personal_web",
           enabled: true,
           sequence: 20
         },
@@ -652,13 +657,14 @@ defmodule IntellectualClub.Sharing.AccessTest do
     |> Ash.create!()
   end
 
-  defp create_tool!(actor, name) do
+  defp create_tool!(actor, name, alias_value \\ nil) do
     ToolInstance
     |> Ash.Changeset.for_create(
       :create,
       %{
         type: "mcp_http",
         name: name,
+        alias: alias_value,
         config: %{"server_url" => "https://example.com/mcp"},
         secrets: %{"bearer_token" => "token"},
         max_output_tokens: 2000
@@ -668,13 +674,14 @@ defmodule IntellectualClub.Sharing.AccessTest do
     |> Ash.create!()
   end
 
-  defp create_fixed_tool!(actor, name) do
+  defp create_fixed_tool!(actor, name, alias_value) do
     ToolInstance
     |> Ash.Changeset.for_create(
       :create,
       %{
         type: "native-brave-search",
         name: name,
+        alias: alias_value,
         config: %{},
         secrets: %{"token" => "token"},
         max_output_tokens: 2000

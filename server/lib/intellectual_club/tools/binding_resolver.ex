@@ -72,7 +72,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
   defp merge_user_bindings({entries, missing_aliases}, bindings) when is_list(bindings) do
     Enum.reduce(bindings, {entries, missing_aliases}, fn binding,
                                                          {acc_entries, acc_missing_aliases} ->
-      maybe_put_override_entry(binding, acc_entries, acc_missing_aliases)
+      maybe_put_user_entry(binding, acc_entries, acc_missing_aliases)
     end)
   end
 
@@ -95,6 +95,21 @@ defmodule IntellectualClub.Tools.BindingResolver do
     tool_instance = Map.get(binding, :tool_instance)
 
     if alias_value != "" and is_map(tool_instance) do
+      {
+        put_alias_entry(entries, alias_value, tool_instance),
+        MapSet.delete(missing_aliases, alias_value)
+      }
+    else
+      {entries, missing_aliases}
+    end
+  end
+
+  defp maybe_put_user_entry(binding, entries, missing_aliases) do
+    alias_value = normalized_alias(binding)
+    tool_instance = Map.get(binding, :tool_instance)
+
+    if alias_value != "" and is_map(tool_instance) and
+         MapSet.member?(missing_aliases, alias_value) do
       {
         put_alias_entry(entries, alias_value, tool_instance),
         MapSet.delete(missing_aliases, alias_value)
@@ -246,8 +261,10 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
       [
+        :alias,
         tool_instance: [
           :name,
+          :alias,
           :type,
           :config,
           :secrets,
@@ -269,8 +286,10 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
       [
+        :alias,
         tool_instance: [
           :name,
+          :alias,
           :type,
           :config,
           :secrets,
@@ -292,8 +311,10 @@ defmodule IntellectualClub.Tools.BindingResolver do
     |> Ash.Query.sort(sequence: :asc, id: :asc)
     |> Ash.Query.load(
       [
+        :alias,
         tool_instance: [
           :name,
+          :alias,
           :type,
           :config,
           :secrets,
@@ -310,8 +331,18 @@ defmodule IntellectualClub.Tools.BindingResolver do
   defp load_chat_bindings(_chat_id, _actor), do: []
 
   defp normalized_alias(binding) do
-    binding
-    |> Map.get(:alias, "")
+    case Map.get(binding, :alias) do
+      alias_value when is_binary(alias_value) ->
+        alias_value
+
+      _ ->
+        binding
+        |> Map.get(:tool_instance)
+        |> case do
+          %{alias: alias_value} when is_binary(alias_value) -> alias_value
+          _ -> ""
+        end
+    end
     |> to_string()
     |> String.trim()
   end

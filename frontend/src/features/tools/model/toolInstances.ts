@@ -14,6 +14,7 @@ export function parseToolInstanceOption(resource: JsonApiResource | null | undef
   return {
     id,
     name: String(attrs.name || '').trim(),
+    alias: String(attrs.alias || '').trim(),
     type: String(attrs.type || '').trim(),
     outlet_online: hasOutletOnline ? Boolean(attrs.outlet_online) : null,
     can_edit: hasCanEdit ? attrs.can_edit !== false : null,

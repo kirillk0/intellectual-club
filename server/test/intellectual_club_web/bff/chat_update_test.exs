@@ -156,6 +156,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
         %{
           type: "mcp_http",
           name: "Tool A",
+          alias: "web",
           config: %{"server_url" => "https://example.com/a"},
           secrets: %{"bearer_token" => "a"}
         },
@@ -170,6 +171,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
         %{
           type: "mcp_http",
           name: "Tool B",
+          alias: "reader",
           config: %{"server_url" => "https://example.com/b"},
           secrets: %{"bearer_token" => "b"}
         },
@@ -181,8 +183,8 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       conn
       |> patch(~p"/api/bff/chats/#{chat.id}", %{
         "tool_bindings" => [
-          %{"tool_instance_id" => tool_a.id, "alias" => "web", "enabled" => true},
-          %{"tool_instance_id" => tool_b.id, "alias" => "reader", "enabled" => false}
+          %{"tool_instance_id" => tool_a.id, "enabled" => true},
+          %{"tool_instance_id" => tool_b.id, "enabled" => false}
         ]
       })
       |> json_response(200)
@@ -191,6 +193,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       ChatToolBinding
       |> Ash.Query.filter(chat_id == ^chat.id)
       |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(bindings, &{&1.alias, &1.tool_instance_id, &1.enabled, &1.sequence}) == [
@@ -207,7 +210,6 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
           %{
             "id" => first_binding.id,
             "tool_instance_id" => tool_b.id,
-            "alias" => "web",
             "enabled" => false
           }
         ]
@@ -218,10 +220,11 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       ChatToolBinding
       |> Ash.Query.filter(chat_id == ^chat.id)
       |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(bindings, &{&1.alias, &1.tool_instance_id, &1.enabled, &1.sequence}) == [
-             {"web", tool_b.id, false, 0}
+             {"reader", tool_b.id, false, 0}
            ]
   end
 

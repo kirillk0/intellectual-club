@@ -139,6 +139,12 @@ export function useBotUserToolOverrides(params: {
       return;
     }
 
+    const selectedTool = params.ownedToolLibrary.value.find((tool) => tool.id === draft.tool_instance_id);
+    if (selectedTool?.alias !== alias) {
+      window.alert('Choose a tool with the required alias.');
+      return;
+    }
+
     savingAliases.value = new Set([...savingAliases.value, alias]);
 
     try {
@@ -146,14 +152,12 @@ export function useBotUserToolOverrides(params: {
       const payload = {
         bot_id: botId,
         tool_instance_id: draft.tool_instance_id,
-        alias,
         enabled: draft.enabled,
         sequence: binding.sequence,
       };
 
       if (existing && existing.tool_instance_id === draft.tool_instance_id) {
         await jsonApiUpdate('/api/ash/bot-user-tool-bindings', 'bot-user-tool-bindings', existing.id, {
-          alias,
           enabled: draft.enabled,
           sequence: binding.sequence,
         });

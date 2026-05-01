@@ -10,6 +10,11 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
 
   require Ash.Query
 
+  setup do
+    Runtime.reset!()
+    :ok
+  end
+
   test "PATCH /api/bff/tool-functions/:id updates function enabled flag", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
 

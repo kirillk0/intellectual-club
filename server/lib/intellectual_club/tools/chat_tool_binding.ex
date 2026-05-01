@@ -1,6 +1,6 @@
 defmodule IntellectualClub.Tools.ChatToolBinding do
   @moduledoc """
-  A chat-level binding of a tool instance under a stable alias.
+  A chat-level binding of a tool instance.
   """
 
   use IntellectualClub.Resource,
@@ -9,7 +9,6 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
-  alias IntellectualClub.Tools.Changes.ValidateBotToolAlias
 
   sqlite do
     table("chat_tool_bindings")
@@ -23,11 +22,6 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
 
   attributes do
     integer_primary_key(:id)
-
-    attribute :alias, :string do
-      allow_nil?(false)
-      public?(true)
-    end
 
     attribute :enabled, :boolean do
       allow_nil?(false)
@@ -62,7 +56,13 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
   end
 
   identities do
-    identity(:unique_chat_alias, [:chat_id, :alias])
+    identity(:unique_chat_tool_instance, [:chat_id, :tool_instance_id])
+  end
+
+  calculations do
+    calculate :alias, :string, expr(tool_instance.alias) do
+      public?(true)
+    end
   end
 
   json_api do
@@ -74,7 +74,13 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
     defaults([:read, :destroy])
 
     create :create do
-      accept([:chat_id, :tool_instance_id, :alias, :enabled, :sequence])
+      accept([:chat_id, :tool_instance_id, :enabled, :sequence])
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
+
       change(relate_actor(:owner))
 
       change(
@@ -82,20 +88,21 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
          relationships: [:chat, :tool_instance],
          access: [chat: :writable, tool_instance: :writable]}
       )
-
-      change({ValidateBotToolAlias, []})
     end
 
     update :update do
-      accept([:tool_instance_id, :alias, :enabled, :sequence])
+      accept([:tool_instance_id, :enabled, :sequence])
       require_atomic?(false)
+
+      argument :alias, :string do
+        allow_nil?(true)
+        public?(true)
+      end
 
       change(
         {RequireRelatedAccessByActor,
          relationships: [:tool_instance], access: [tool_instance: :writable], required?: false}
       )
-
-      change({ValidateBotToolAlias, []})
     end
   end
 

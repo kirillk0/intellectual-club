@@ -35,6 +35,11 @@ defmodule IntellectualClub.Outlets.Runtime do
     GenServer.start_link(__MODULE__, %{}, Keyword.put_new(opts, :name, __MODULE__))
   end
 
+  @doc false
+  def reset! do
+    GenServer.call(__MODULE__, :reset, 5_000)
+  end
+
   @impl true
   def init(_opts) do
     state = %{
@@ -107,6 +112,10 @@ defmodule IntellectualClub.Outlets.Runtime do
     online = runner_online?(instance, now_ms)
     state = put_instance(state, tool_instance_id, instance)
     {:reply, online, state}
+  end
+
+  def handle_call(:reset, _from, _state) do
+    {:reply, :ok, %{instances: %{}, waiter_index: %{}}}
   end
 
   def handle_call({:poll, tool_instance, payload}, from, state) do

@@ -124,6 +124,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           type: "mcp_http",
           name: "Shared MCP",
+          alias: "shared_tool",
           config: %{"server_url" => "https://shared.example.com/mcp"},
           secrets: %{"bearer_token" => "shared"},
           max_output_tokens: 1000
@@ -139,6 +140,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           type: "mcp_http",
           name: "Private MCP",
+          alias: "private_tool",
           config: %{"server_url" => "https://private.example.com/mcp"},
           secrets: %{"bearer_token" => "private"},
           max_output_tokens: 2000
@@ -154,7 +156,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           bot_id: source_bot.id,
           tool_instance_id: shared_tool.id,
-          alias: "shared_tool",
           sharing_mode: :shared,
           enabled: true,
           sequence: 2
@@ -170,7 +171,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           bot_id: source_bot.id,
           tool_instance_id: private_tool.id,
-          alias: "private_tool",
           sharing_mode: :per_user,
           enabled: false,
           sequence: 4
@@ -186,7 +186,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           bot_id: source_bot.id,
           tool_instance_id: private_tool.id,
-          alias: "private_tool",
           enabled: true,
           sequence: 3
         },
@@ -212,6 +211,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       BotToolBinding
       |> Ash.Query.filter(bot_id == ^duplicated_bot_id)
       |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(
@@ -226,6 +226,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       BotUserToolBinding
       |> Ash.Query.filter(bot_id == ^duplicated_bot_id)
       |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.Query.load([:alias])
       |> Ash.read!(actor: actor)
 
     assert Enum.map(

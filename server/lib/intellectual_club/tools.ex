@@ -23,6 +23,7 @@ defmodule IntellectualClub.Tools do
           default_fields: [
             :type,
             :name,
+            :alias,
             :config,
             :max_output_tokens,
             :last_discovered_at,
@@ -41,6 +42,7 @@ defmodule IntellectualClub.Tools do
           default_fields: [
             :type,
             :name,
+            :alias,
             :config,
             :max_output_tokens,
             :last_discovered_at,
