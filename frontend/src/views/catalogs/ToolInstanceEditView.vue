@@ -548,7 +548,7 @@ function fieldPlaceholder(key: string, schema: JsonSchema): string {
 function fromApi(resource: JsonApiResource): Partial<ToolInstanceForm> {
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
   const config = normalizeObject(attrs.config);
-  const toolType = normalizeString(attrs.type || 'mcp_http') || 'mcp_http';
+  const toolType = normalizeString(attrs.type || 'mcp-http') || 'mcp-http';
 
   const secrets_present = Array.isArray(attrs.secrets_present)
     ? attrs.secrets_present.map((s) => normalizeString(s)).filter((s) => Boolean(s))
@@ -615,7 +615,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   defaultForm: () => ({
     name: '',
     alias: '',
-    type: 'mcp_http',
+    type: 'mcp-http',
     config: {},
     max_output_tokens: 20_000,
     rps_limit: null,
@@ -639,7 +639,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     };
 
     // Create requires type, update does not accept it.
-    if (isNewRoute.value) attrs.type = form.type || 'mcp_http';
+    if (isNewRoute.value) attrs.type = form.type || 'mcp-http';
 
     const patch: Record<string, string> = {};
 

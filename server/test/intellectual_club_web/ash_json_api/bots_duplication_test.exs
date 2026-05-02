@@ -122,7 +122,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Shared MCP",
           alias: "shared_tool",
           config: %{"server_url" => "https://shared.example.com/mcp"},
@@ -138,7 +138,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Private MCP",
           alias: "private_tool",
           config: %{"server_url" => "https://private.example.com/mcp"},

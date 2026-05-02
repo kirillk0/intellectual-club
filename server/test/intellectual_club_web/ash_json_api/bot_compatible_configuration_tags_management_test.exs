@@ -421,7 +421,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
     |> Ash.Changeset.for_create(
       :create,
       %{
-        type: "mcp_http",
+        type: "mcp-http",
         name: name,
         alias: alias_value,
         config: %{"server_url" => server_url},

@@ -2,7 +2,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   @moduledoc """
   MCP server driver over HTTP (JSON-RPC with SSE responses).
 
-  This matches the v1 `mcp_http` tool type.
+  This matches the `mcp-http` tool type.
   """
 
   @behaviour IntellectualClub.Tools.Driver
@@ -12,7 +12,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   @protocol_version "2024-11-05"
 
   @impl true
-  def type, do: "mcp_http"
+  def type, do: "mcp-http"
 
   @impl true
   def title, do: "MCP HTTP"

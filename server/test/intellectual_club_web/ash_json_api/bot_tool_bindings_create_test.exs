@@ -35,7 +35,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotToolBindingsCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "MCP Tool",
           alias: "web",
           config: %{"server_url" => "https://example.com/mcp"},

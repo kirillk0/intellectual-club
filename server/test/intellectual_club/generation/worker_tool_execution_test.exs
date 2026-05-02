@@ -70,7 +70,7 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
 
     tool = %ToolInstance{
       id: System.unique_integer([:positive, :monotonic]),
-      type: "mcp_http",
+      type: "mcp-http",
       config: %{"server_url" => server_url},
       secrets: %{},
       max_output_tokens: 20_000

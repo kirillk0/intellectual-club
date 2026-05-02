@@ -217,7 +217,7 @@ defmodule IntellectualClubWeb.Bff.SharingControllerTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        type: "mcp_http",
+        type: "mcp-http",
         name: name,
         config: %{"server_url" => "https://example.com/mcp"},
         secrets: %{"bearer_token" => "token"},

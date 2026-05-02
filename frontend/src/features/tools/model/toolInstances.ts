@@ -4,7 +4,7 @@ import { toIntId, type JsonApiResource } from '@/api/jsonApi';
 import type { ToolInstanceOption } from '@/types/api';
 
 const TOOL_TYPE_LABELS: Record<string, string> = {
-  mcp_http: 'MCP HTTP',
+  'mcp-http': 'MCP HTTP',
   'native-brave-search': 'Brave Search',
   'native-web-reader': 'Web Reader',
   outlet: 'Outlet',

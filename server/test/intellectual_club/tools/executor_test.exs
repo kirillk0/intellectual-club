@@ -85,7 +85,7 @@ defmodule IntellectualClub.Tools.ExecutorTest do
   defp limited_tool_instance do
     %ToolInstance{
       id: System.unique_integer([:positive, :monotonic]),
-      type: "mcp_http",
+      type: "mcp-http",
       config: %{},
       secrets: %{},
       max_output_tokens: 20_000,

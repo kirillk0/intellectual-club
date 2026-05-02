@@ -23,7 +23,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "BFF function toggle",
           config: %{"server_url" => "https://example.com"},
           max_output_tokens: 500

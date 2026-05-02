@@ -62,7 +62,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Delete tool binding",
           config: %{"server_url" => "https://example.com/delete"},
           secrets: %{"bearer_token" => "delete"}

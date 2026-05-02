@@ -45,7 +45,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "With token",
           config: %{"server_url" => "https://example.com"},
           secrets: %{"bearer_token" => "super-secret"},
@@ -60,7 +60,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Without token",
           config: %{"server_url" => "https://example.net"},
           secrets: %{},
@@ -157,7 +157,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "With functions",
           config: %{"server_url" => "https://example.com"},
           secrets: %{"bearer_token" => "super-secret"},

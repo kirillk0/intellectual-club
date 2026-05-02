@@ -155,7 +155,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Tool A",
           alias: "web",
           config: %{"server_url" => "https://example.com/a"},
@@ -170,7 +170,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Tool B",
           alias: "reader",
           config: %{"server_url" => "https://example.com/b"},
@@ -243,7 +243,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Bot Tool",
           alias: "web",
           config: %{"server_url" => "https://example.com/bot"},

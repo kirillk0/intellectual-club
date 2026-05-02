@@ -25,7 +25,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Delete me",
           config: %{"server_url" => "https://example.com/mcp"},
           secrets: %{"bearer_token" => "x"},
@@ -75,7 +75,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Delete deps",
           config: %{"server_url" => "https://example.com/mcp"},
           secrets: %{"bearer_token" => "x"},

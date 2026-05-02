@@ -445,7 +445,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Base tool",
           config: %{"server_url" => "https://example.com/base"},
           secrets: %{"bearer_token" => "base"}
@@ -459,7 +459,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Chat tool",
           alias: "web",
           config: %{"server_url" => "https://example.com/chat"},

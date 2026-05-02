@@ -14,6 +14,7 @@ defmodule IntellectualClub.Tools.Registry do
   @spec driver_for_type!(String.t()) :: module()
   def driver_for_type!(tool_type) when is_binary(tool_type) do
     case String.trim(tool_type) do
+      "mcp-http" -> McpHttp
       "mcp_http" -> McpHttp
       "native-brave-search" -> NativeBraveSearch
       "native-web-reader" -> NativeWebReader
@@ -25,6 +26,6 @@ defmodule IntellectualClub.Tools.Registry do
 
   @spec list_types() :: list(String.t())
   def list_types do
-    ["mcp_http", "native-brave-search", "native-web-reader", "outlet", "ssh"]
+    ["mcp-http", "native-brave-search", "native-web-reader", "outlet", "ssh"]
   end
 end

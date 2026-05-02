@@ -13,7 +13,7 @@ defmodule IntellectualClub.Tools.DiscoveryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp_http",
+          type: "mcp-http",
           name: "Discovery reconcile tool",
           config: %{"server_url" => "https://example.com"}
         },
