@@ -10,6 +10,32 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     "messages" => [%{"role" => "user", "content" => "Hello"}]
   }
 
+  test "sends OpenRouter app attribution title header" do
+    scripts = %{
+      "/chat/completions" => [
+        {200, sse_chunks([%{"choices" => [%{"delta" => %{"content" => "Hi"}}]}])}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+
+    :ok =
+      ChatCompletion.stream_generate(
+        %{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: @request_payload,
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        },
+        fn _event -> :ok end
+      )
+
+    [request] = recorded_requests(agent, "/chat/completions")
+
+    assert {"x-openrouter-title", "Intellectual Club"} in request.headers
+  end
+
   test "uses metadata raw text for generic streamed provider errors" do
     scripts = %{
       "/chat/completions" => [
@@ -124,6 +150,10 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
       ["data: [DONE]\n\n"]
   end
 
+  defp recorded_requests(agent, path) when is_pid(agent) and is_binary(path) do
+    Agent.get(agent, fn state -> Map.get(state.requests, path, []) end)
+  end
+
   defmodule ScriptedPlug do
     import Plug.Conn
 
@@ -139,13 +169,18 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
           _other -> %{"raw_body" => body}
         end
 
+      request = %{
+        headers: conn.req_headers,
+        payload: payload
+      }
+
       {response_chunks, status_code} =
         Agent.get_and_update(agent, fn state ->
           request_path = conn.request_path
 
           requests =
-            Map.update(state.requests, request_path, [payload], fn existing ->
-              existing ++ [payload]
+            Map.update(state.requests, request_path, [request], fn existing ->
+              existing ++ [request]
             end)
 
           case Map.get(state.scripts, request_path, []) do

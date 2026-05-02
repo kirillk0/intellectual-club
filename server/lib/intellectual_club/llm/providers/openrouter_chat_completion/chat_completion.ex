@@ -43,7 +43,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
     headers = [
       {"authorization", "Bearer " <> api_key},
-      {"content-type", "application/json"}
+      {"content-type", "application/json"},
+      {"x-openrouter-title", "Intellectual Club"}
     ]
 
     request_opts = [
