@@ -21,16 +21,51 @@
         class="row tool-binding-row"
         :class="{ 'tool-binding-row--shadowed': isShadowed(item) }"
       >
-        <input
-          v-if="showToggle"
-          class="tool-binding-enabled"
-          type="checkbox"
-          :checked="item.enabled"
-          :disabled="readonly || toggleDisabled(item)"
-          :aria-label="toggleLabel"
-          :title="toggleLabel"
-          @change="handleToggle(item, $event)"
-        />
+        <div v-if="showToggle || showActions" class="tool-binding-controls">
+          <input
+            v-if="showToggle"
+            class="tool-binding-enabled"
+            type="checkbox"
+            :checked="item.enabled"
+            :disabled="readonly || toggleDisabled(item)"
+            :aria-label="toggleLabel"
+            :title="toggleLabel"
+            @change="handleToggle(item, $event)"
+          />
+
+          <div v-if="showActions" class="tool-binding-actions" @click.stop>
+            <button
+              class="tool-binding-action-button"
+              type="button"
+              :disabled="readonly || actionsDisabled(item) || idx === 0"
+              title="Move up"
+              aria-label="Move up"
+              @click="emit('move', item, -1)"
+            >
+              <SvgIcon name="arrow-up" size="15" />
+            </button>
+            <button
+              class="tool-binding-action-button"
+              type="button"
+              :disabled="readonly || actionsDisabled(item) || idx === sortedItems.length - 1"
+              title="Move down"
+              aria-label="Move down"
+              @click="emit('move', item, 1)"
+            >
+              <SvgIcon name="arrow-down" size="15" />
+            </button>
+            <button
+              class="tool-binding-action-button danger"
+              type="button"
+              :disabled="readonly || actionsDisabled(item)"
+              title="Delete"
+              aria-label="Delete"
+              @click="emit('remove', item.id)"
+            >
+              <SvgIcon name="delete" size="15" />
+            </button>
+          </div>
+        </div>
 
         <div class="tool-binding-body">
           <div class="tool-binding-title-line">
@@ -60,37 +95,6 @@
         </div>
 
         <slot name="item-secondary-actions" :item="item" :index="idx"></slot>
-
-        <div v-if="showActions" class="tool-binding-actions" @click.stop>
-          <button
-            type="button"
-            :disabled="readonly || actionsDisabled(item) || idx === 0"
-            title="Move up"
-            aria-label="Move up"
-            @click="emit('move', item, -1)"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            :disabled="readonly || actionsDisabled(item) || idx === sortedItems.length - 1"
-            title="Move down"
-            aria-label="Move down"
-            @click="emit('move', item, 1)"
-          >
-            ↓
-          </button>
-          <button
-            type="button"
-            class="danger"
-            :disabled="readonly || actionsDisabled(item)"
-            title="Delete"
-            aria-label="Delete"
-            @click="emit('remove', item.id)"
-          >
-            ✕
-          </button>
-        </div>
       </div>
     </TransitionGroup>
     <div v-else class="list">
@@ -101,6 +105,7 @@
 
 <script setup lang="ts">
 import { computed, useSlots } from 'vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type ToolBindingItem = {
   id: number;
@@ -175,16 +180,29 @@ const shadowedReason = (item: ToolBindingItem) =>
 
 <style scoped>
 .tool-binding-row {
-  flex-wrap: wrap;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+}
+
+.tool-binding-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
 .tool-binding-enabled {
-  margin-top: 2px;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 .tool-binding-body {
-  flex: 1 1 220px;
   min-width: 0;
 }
 
@@ -232,15 +250,20 @@ const shadowedReason = (item: ToolBindingItem) =>
 .tool-binding-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: auto;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
 }
 
-@media (max-width: 520px) {
-  .tool-binding-actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
+.tool-binding-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex: 0 0 28px;
+  line-height: 1;
 }
 
 .tool-bindings-move {

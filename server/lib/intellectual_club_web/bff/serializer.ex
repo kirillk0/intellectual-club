@@ -19,7 +19,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClub.Tools.{DriverMetadata, ToolInstance}
 
   @tool_result_preview_char_limit 600
   @tool_result_preview_line_limit 5
@@ -248,10 +248,22 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       name: tool.name,
       alias: tool.alias,
       type: tool.type,
+      type_title: tool_type_title(tool.type),
       outlet_online: loaded_value(Map.get(tool, :outlet_online)),
       can_edit: loaded_value(Map.get(tool, :can_edit))
     }
   end
+
+  defp tool_type_title(type) when is_binary(type) do
+    case DriverMetadata.for_type(type) do
+      %{"title" => title} when is_binary(title) and title != "" -> title
+      _other -> type
+    end
+  rescue
+    _exception -> type
+  end
+
+  defp tool_type_title(type), do: type
 
   def active_tool_binding(%{} = binding) do
     tool_instance = Map.get(binding, :tool_instance)

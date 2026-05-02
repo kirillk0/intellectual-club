@@ -189,28 +189,20 @@
       <div v-else class="panel-pane" role="tabpanel">
         <div class="panel-section">
           <h4 style="margin: 0">Blocks</h4>
-          <div
-            class="row clickable"
-            v-for="item in linkedBlocks"
-            :key="`${item.block.id}-${item.source}-${item.order}`"
-            role="button"
-            tabindex="0"
-            @click="emit('open-context-block-editor', item.block.id)"
-            @keydown.enter.prevent="emit('open-context-block-editor', item.block.id)"
-            @keydown.space.prevent="emit('open-context-block-editor', item.block.id)"
-          >
-            <div>
-              <div>{{ item.block.name }}</div>
-              <div class="muted">
-                {{ item.block.type }} · {{ sourceLabels[item.source] }} ·
-                {{ item.block.token_count }} tokens
-              </div>
-            </div>
-            <span v-if="hasBlockVersion(item.block.version)" class="badge">
-              {{ formatBlockVersion(item.block.version) }}
-            </span>
-          </div>
-          <p v-if="!linkedBlocks.length" class="muted">No blocks linked.</p>
+          <KnowledgeBlockLinksCard
+            title="Blocks"
+            :items="contextBlockLinks"
+            :blockName="contextBlockName"
+            :blockImage="contextBlockImage"
+            :metaText="contextBlockMeta"
+            :openable="true"
+            :readonly="true"
+            :showHeader="false"
+            :showToggle="false"
+            :showActions="false"
+            emptyText="No blocks linked."
+            @open="(blockId) => emit('open-context-block-editor', blockId)"
+          />
         </div>
 
         <div class="panel-section">
@@ -237,8 +229,11 @@
 
 <script setup lang="ts">
 import type { ChatBranchMessage } from '@/types/api';
+import { computed } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
+import { toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
 import type {
   ActiveToolBinding,
   BranchSearchResults,
@@ -280,7 +275,7 @@ interface Props {
   formatBlockVersion: (value: unknown) => string;
 }
 
-defineProps<Props>();
+const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (e: 'update:leftOpen', value: boolean): void;
@@ -301,9 +296,59 @@ const handleSearchInput = (event: Event) => {
 const activeToolBindingLabel = (binding: ActiveToolBinding) => {
   const tool = binding.tool_instance;
   if (!tool) return `Tool #${binding.tool_instance_id}`;
-  return `${tool.type} · ${tool.name}`;
+  return `${formatToolTypeLabel(tool)} · ${tool.name}`;
 };
 
 const activeToolBindingIsOutlet = (binding: ActiveToolBinding) => binding.tool_instance?.type === 'outlet';
 const activeToolBindingIsOnline = (binding: ActiveToolBinding) => Boolean(binding.tool_instance?.outlet_online);
+
+const contextBlockLinks = computed(() =>
+  (props.linkedBlocks || []).map((item, index) => ({
+    id: index + 1,
+    block: item.block.id,
+    enabled: true,
+    sequence: item.order,
+  }))
+);
+
+const contextBlocksById = computed(() => {
+  const map = new Map<number, LinkedBlock>();
+  for (const item of props.linkedBlocks || []) {
+    map.set(item.block.id, item);
+  }
+  return map;
+});
+
+const contextBlocksByLinkId = computed(() => {
+  const map = new Map<number, LinkedBlock>();
+  for (const item of contextBlockLinks.value) {
+    const linked = props.linkedBlocks[item.id - 1];
+    if (linked) map.set(item.id, linked);
+  }
+  return map;
+});
+
+const contextBlockName = (blockId: number) => contextBlocksById.value.get(blockId)?.block.name || `Block #${blockId}`;
+const contextBlockImage = (blockId: number) => contextBlocksById.value.get(blockId)?.block.image || null;
+const contextBlockMeta = (item: { id: number; block: number }) => {
+  const linked = contextBlocksByLinkId.value.get(item.id);
+  if (!linked) return '';
+
+  const block = linked.block;
+  const parts = [
+    blockTypeLabel(block.type),
+    props.sourceLabels[linked.source] || linked.source,
+    `${block.token_count ?? 0} tokens`,
+  ];
+  const version = props.hasBlockVersion(block.version) ? props.formatBlockVersion(block.version) : '';
+
+  if (version) parts.push(version);
+
+  return parts.filter(Boolean).join(' · ');
+};
+
+function blockTypeLabel(type: string | null) {
+  const value = String(type || '').trim();
+  return value ? value.replaceAll('_', ' ') : 'Block';
+}
 </script>

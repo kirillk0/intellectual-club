@@ -3,6 +3,14 @@ import { computed, type Ref } from 'vue';
 import { toIntId, type JsonApiResource } from '@/api/jsonApi';
 import type { ToolInstanceOption } from '@/types/api';
 
+const TOOL_TYPE_LABELS: Record<string, string> = {
+  mcp_http: 'MCP HTTP',
+  'native-brave-search': 'Brave Search',
+  'native-web-reader': 'Web Reader',
+  outlet: 'Outlet',
+  ssh: 'SSH',
+};
+
 export function parseToolInstanceOption(resource: JsonApiResource | null | undefined): ToolInstanceOption | null {
   if (!resource) return null;
   const id = toIntId(resource.id);
@@ -16,9 +24,20 @@ export function parseToolInstanceOption(resource: JsonApiResource | null | undef
     name: String(attrs.name || '').trim(),
     alias: String(attrs.alias || '').trim(),
     type: String(attrs.type || '').trim(),
+    type_title: String(attrs.type_title || '').trim() || null,
     outlet_online: hasOutletOnline ? Boolean(attrs.outlet_online) : null,
     can_edit: hasCanEdit ? attrs.can_edit !== false : null,
   } satisfies ToolInstanceOption;
+}
+
+export function toolTypeLabel(tool: Pick<ToolInstanceOption, 'type' | 'type_title'> | null | undefined) {
+  const title = String(tool?.type_title || '').trim();
+  if (title) return title;
+
+  const type = String(tool?.type || '').trim();
+  if (!type) return 'Tool';
+
+  return TOOL_TYPE_LABELS[type] || humanizeToolType(type);
 }
 
 export function mergeToolInstanceOptions(
@@ -56,10 +75,13 @@ export function useToolInstanceLibrary(toolLibrary: Ref<ToolInstanceOption[]>) {
   const toolLabel = (toolInstanceId: number) => {
     const tool = toolLibraryById.value.get(toolInstanceId);
     if (!tool) return `Tool #${toolInstanceId}`;
-    return `${tool.name} (${tool.type})`;
+    return `${tool.name} (${toolTypeLabel(tool)})`;
   };
 
-  const toolTypeLabel = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type || 'Tool';
+  const toolTypeName = (toolInstanceId: number) => {
+    const tool = toolLibraryById.value.get(toolInstanceId);
+    return tool ? toolTypeLabel(tool) : 'Tool';
+  };
 
   const toolIsOutlet = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type === 'outlet';
 
@@ -69,8 +91,16 @@ export function useToolInstanceLibrary(toolLibrary: Ref<ToolInstanceOption[]>) {
     toolLibraryById,
     ownedToolLibrary,
     toolLabel,
-    toolTypeLabel,
+    toolTypeLabel: toolTypeName,
     toolIsOutlet,
     toolIsOnline,
   };
+}
+
+function humanizeToolType(type: string) {
+  return type
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

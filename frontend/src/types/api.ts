@@ -92,6 +92,7 @@ export type ToolInstanceOption = {
   name: string;
   alias: string;
   type: string;
+  type_title?: string | null;
   outlet_online?: boolean | null;
   can_edit?: boolean | null;
 };
