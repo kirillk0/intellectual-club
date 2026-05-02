@@ -73,24 +73,16 @@
       <div class="card stack">
         <div class="tabs">
           <button class="tab" :class="{ active: botTab === 'blocks' }" type="button" @click="botTab = 'blocks'">
-            Blocks
-          </button>
-          <button
-            class="tab"
-            :class="{ active: botTab === 'firstMessages' }"
-            type="button"
-            @click="botTab = 'firstMessages'"
-          >
-            First messages
+            Blocks ({{ blocksTabCount }})
           </button>
           <button class="tab" :class="{ active: botTab === 'tools' }" type="button" @click="botTab = 'tools'">
-            Tools
+            Tools ({{ toolsTabCount }})
           </button>
           <button class="tab" :class="{ active: botTab === 'context' }" type="button" @click="botTab = 'context'">
             Context
           </button>
           <button class="tab" :class="{ active: botTab === 'configTags' }" type="button" @click="botTab = 'configTags'">
-            Config tags
+            Config tags ({{ configTagsTabCount }})
           </button>
           <button
             class="tab"
@@ -98,7 +90,15 @@
             type="button"
             @click="botTab = 'variables'"
           >
-            Variables
+            Variables ({{ variablesTabCount }})
+          </button>
+          <button
+            class="tab"
+            :class="{ active: botTab === 'firstMessages' }"
+            type="button"
+            @click="botTab = 'firstMessages'"
+          >
+            First messages ({{ firstMessagesTabCount }})
           </button>
         </div>
 
@@ -744,6 +744,10 @@ const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const botTab = ref<'blocks' | 'firstMessages' | 'tools' | 'context' | 'configTags' | 'variables'>('blocks');
+const blocksTabCount = computed(() => bindings.draft.value.length);
+const toolsTabCount = computed(() => toolBindings.sortedToolBindings.value.length);
+const configTagsTabCount = computed(() => draftCompatibleTagIds.value.length);
+const firstMessagesTabCount = computed(() => form.first_messages.length);
 const save = async () => {
   if (saving.value) return;
   await editor.save();
@@ -839,6 +843,7 @@ const varRowsToMap = (rows: VarRow[] | null | undefined): Record<string, string>
 const stableVarMap = (vars: Record<string, string>) => JSON.stringify(Object.entries(vars).sort(([a], [b]) => a.localeCompare(b)));
 
 const variablesRows = ref<VarRow[]>([]);
+const variablesTabCount = computed(() => variablesRows.value.length);
 
 watch(
   () => form.variables,
