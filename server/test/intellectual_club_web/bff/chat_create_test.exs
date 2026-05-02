@@ -197,6 +197,58 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     refute payload["chat"]["llm_configuration_id"] == config_b.id
   end
 
+  test "POST /api/bff/chats uses bot default configuration when selected bot has no chats",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "Provider A")
+    fallback_config = create_configuration!(actor, provider, "model-a")
+    default_config = create_configuration!(actor, provider, "model-b")
+    bot = create_bot!(actor, "Assistant", %{default_llm_configuration_id: default_config.id})
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> json_response(200)
+
+    assert payload["chat"]["llm_configuration_id"] == default_config.id
+    refute payload["chat"]["llm_configuration_id"] == fallback_config.id
+  end
+
+  test "POST /api/bff/chats prefers latest chat configuration over bot default",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "Provider A")
+    default_config = create_configuration!(actor, provider, "model-default")
+    latest_config = create_configuration!(actor, provider, "model-latest")
+    bot = create_bot!(actor, "Assistant", %{default_llm_configuration_id: default_config.id})
+
+    _latest_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Latest chat",
+          note: "",
+          bot_id: bot.id,
+          llm_configuration_id: latest_config.id,
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> json_response(200)
+
+    assert payload["chat"]["llm_configuration_id"] == latest_config.id
+  end
+
   test "POST /api/bff/chats defaults to the latest compatible configuration for the selected bot",
        %{
          conn: conn
@@ -359,6 +411,40 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
+  test "POST /api/bff/chats uses bot default even when disabled and tag-incompatible",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    compatible_tag = create_configuration_tag!(actor, "Compatible")
+    other_tag = create_configuration_tag!(actor, "Other")
+
+    provider = create_provider!(actor, "Provider A")
+
+    _compatible_config =
+      create_configuration!(actor, provider, "model-compatible", compatible_tag.id)
+
+    default_config =
+      create_configuration!(actor, provider, "model-disabled-incompatible", other_tag.id)
+
+    bot =
+      create_bot!(actor, "Assistant", %{
+        default_llm_configuration_id: default_config.id,
+        compatible_configuration_tag_bindings: [%{llm_configuration_tag_id: compatible_tag.id}]
+      })
+
+    default_config
+    |> Ash.Changeset.for_update(:update, %{enabled: false}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> json_response(200)
+
+    assert payload["chat"]["llm_configuration_id"] == default_config.id
+  end
+
   test "POST /api/bff/chats falls back to the first available configuration when latest no bot configuration is disabled",
        %{
          conn: conn
@@ -396,18 +482,21 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     assert payload["chat"]["llm_configuration_id"] == fallback_config.id
   end
 
-  defp create_bot!(actor, name) do
+  defp create_bot!(actor, name, attrs \\ %{}) do
     Bot
     |> Ash.Changeset.for_create(
       :create,
-      %{
-        name: name,
-        first_messages: [],
-        variables: %{},
-        max_tool_rounds: 20,
-        context_soft_limit_percent: 80,
-        history_mode: :chat
-      },
+      Map.merge(
+        %{
+          name: name,
+          first_messages: [],
+          variables: %{},
+          max_tool_rounds: 20,
+          context_soft_limit_percent: 80,
+          history_mode: :chat
+        },
+        attrs
+      ),
       actor: actor
     )
     |> Ash.create!(actor: actor)

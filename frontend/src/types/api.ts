@@ -49,6 +49,7 @@ export type Bot = {
   id: number;
   name: string;
   image?: ImageAsset | null;
+  default_llm_configuration_id?: number | null;
   compatible_configuration_tag_ids?: number[];
   compatible_configuration_tag_names?: string[];
   context_soft_limit_percent?: number | null;

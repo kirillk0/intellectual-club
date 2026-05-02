@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents do
 
   Database foreign keys are non-cascading for:
   - `llm_configuration_knowledge_blocks.llm_configuration_id -> llm_configurations.id`
+  - `bots.default_llm_configuration_id -> llm_configurations.id`
   - `chats.llm_configuration_id -> llm_configurations.id`
   - `chat_messages.llm_configuration_id -> llm_configurations.id`
   """
@@ -22,6 +23,7 @@ defmodule IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents do
       owner_id = actor_id(changeset.context[:private][:actor])
 
       delete_configuration_bindings(repo, llm_configuration_id, owner_id)
+      clear_bot_default_configuration_reference(repo, llm_configuration_id, owner_id)
       clear_chat_configuration_reference(repo, llm_configuration_id, owner_id)
       clear_message_configuration_reference(repo, llm_configuration_id, owner_id)
 
@@ -45,6 +47,22 @@ defmodule IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents do
   end
 
   defp delete_configuration_bindings(_repo, _llm_configuration_id, _owner_id), do: :ok
+
+  defp clear_bot_default_configuration_reference(repo, llm_configuration_id, owner_id)
+       when is_integer(owner_id) do
+    _ =
+      repo.update_all(
+        from(b in "bots",
+          where:
+            b.default_llm_configuration_id == ^llm_configuration_id and b.owner_id == ^owner_id
+        ),
+        set: [default_llm_configuration_id: nil]
+      )
+
+    :ok
+  end
+
+  defp clear_bot_default_configuration_reference(_repo, _llm_configuration_id, _owner_id), do: :ok
 
   defp clear_chat_configuration_reference(repo, llm_configuration_id, owner_id)
        when is_integer(owner_id) do

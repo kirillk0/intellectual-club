@@ -14,6 +14,7 @@ defmodule IntellectualClub.Bots.Bot do
   alias IntellectualClub.Duplication
   alias IntellectualClub.Files
   alias IntellectualClub.Files.Changes.{DeleteAssociatedFile, SetImageFile}
+  alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
   alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding}
 
   require Ash.Query
@@ -185,6 +186,11 @@ defmodule IntellectualClub.Bots.Bot do
       allow_nil?: true,
       attribute_type: :integer
 
+    belongs_to :default_llm_configuration, IntellectualClub.Llm.LlmConfiguration,
+      allow_nil?: true,
+      attribute_type: :integer,
+      public?: true
+
     has_many :knowledge_block_bindings, IntellectualClub.Bots.BotKnowledgeBlock do
       destination_attribute(:bot_id)
       public?(true)
@@ -270,6 +276,7 @@ defmodule IntellectualClub.Bots.Bot do
     includes([
       {:knowledge_block_bindings, [:knowledge_block]},
       {:compatible_configuration_tag_bindings, [:llm_configuration_tag]},
+      :default_llm_configuration,
       {:tool_bindings, [:tool_instance]},
       {:user_tool_bindings, [:tool_instance]}
     ])
@@ -295,7 +302,8 @@ defmodule IntellectualClub.Bots.Bot do
         :context_soft_limit_percent,
         :supports_file_processing,
         :max_file_size_bytes,
-        :history_mode
+        :history_mode,
+        :default_llm_configuration_id
       ])
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -314,6 +322,12 @@ defmodule IntellectualClub.Bots.Bot do
       end
 
       change(relate_actor(:owner))
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:default_llm_configuration], access: :readable, required?: false}
+      )
+
       change(&maybe_manage_knowledge_block_bindings/2)
       change(&maybe_manage_compatible_configuration_tag_bindings/2)
       change(&maybe_manage_tool_bindings/2)
@@ -398,7 +412,8 @@ defmodule IntellectualClub.Bots.Bot do
           context_soft_limit_percent: source.context_soft_limit_percent,
           supports_file_processing: source.supports_file_processing,
           max_file_size_bytes: source.max_file_size_bytes,
-          history_mode: source.history_mode
+          history_mode: source.history_mode,
+          default_llm_configuration_id: source.default_llm_configuration_id
         })
         |> Ash.Changeset.manage_relationship(
           :compatible_configuration_tag_bindings,
@@ -496,7 +511,8 @@ defmodule IntellectualClub.Bots.Bot do
         :context_soft_limit_percent,
         :supports_file_processing,
         :max_file_size_bytes,
-        :history_mode
+        :history_mode,
+        :default_llm_configuration_id
       ])
 
       require_atomic?(false)
@@ -519,6 +535,11 @@ defmodule IntellectualClub.Bots.Bot do
       change(&maybe_manage_knowledge_block_bindings/2)
       change(&maybe_manage_compatible_configuration_tag_bindings/2)
       change(&maybe_manage_tool_bindings/2)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:default_llm_configuration], access: :readable, required?: false}
+      )
     end
 
     update :set_image do

@@ -25,7 +25,7 @@
       </div>
 
       <div class="header-actions toolbar-actions-right">
-        <label class="flex">
+        <div class="flex config-control">
           <span class="config-label">
             Config
             <span
@@ -45,21 +45,20 @@
               Not saved
             </span>
           </span>
-          <select
-            :value="selectedConfig"
-            @change="handleConfigChange"
+          <ChatConfigurationSelect
+            :model-value="selectedConfig"
             :disabled="configSelectorDisabled"
             :title="configSelectorTitle"
-          >
-            <option value="">No config</option>
-            <option v-if="selectedDisabledConfig" :value="selectedDisabledConfig.id" disabled>
-              {{ configLabel(selectedDisabledConfig) }} ({{ selectedDisabledConfigReasonLabel }})
-            </option>
-            <option v-for="cfg in selectableConfigs" :key="cfg.id" :value="cfg.id">
-              {{ configLabel(cfg) }}
-            </option>
-          </select>
-        </label>
+            :selectable-configs="selectableConfigs"
+            :default-config="defaultConfig"
+            :regular-selectable-configs="regularSelectableConfigs"
+            :more-configs="moreConfigs"
+            :selected-disabled-config="selectedDisabledConfig"
+            :config-label="configLabel"
+            @update:model-value="emit('update:selectedConfig', $event)"
+            @change="emit('change-config')"
+          />
+        </div>
 
         <div class="menu" :ref="setMenuAnchorRef">
           <button
@@ -167,12 +166,16 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
 import type { LlmConfiguration } from '@/types/api';
 
 interface Props {
   selectedConfig: number | '';
   appliedConfig: number | '';
   selectableConfigs: LlmConfiguration[];
+  defaultConfig: LlmConfiguration | null;
+  regularSelectableConfigs: LlmConfiguration[];
+  moreConfigs: LlmConfiguration[];
   selectedDisabledConfig: LlmConfiguration | null;
   selectedDisabledConfigReason: 'disabled' | 'incompatible' | null;
   configLabel: (cfg: LlmConfiguration) => string;
@@ -197,11 +200,13 @@ interface Props {
   setMenuButtonRef: (el: Element | null) => void;
 }
 
-const props = defineProps<Props>();
-
-const selectedDisabledConfigReasonLabel = computed(() => {
-  if (props.selectedDisabledConfigReason === 'incompatible') return 'incompatible';
-  return 'disabled';
+const props = withDefaults(defineProps<Props>(), {
+  selectableConfigs: () => [],
+  defaultConfig: null,
+  regularSelectableConfigs: () => [],
+  moreConfigs: () => [],
+  selectedDisabledConfig: null,
+  selectedDisabledConfigReason: null,
 });
 
 const configSelectorDisabled = computed(() => props.configSyncStatus === 'pending' || props.isGenerating);
@@ -226,19 +231,13 @@ const emit = defineEmits<{
   (e: 'dismiss-missing-tools-banner'): void;
 }>();
 
-const handleConfigChange = (event: Event) => {
-  const target = event.target as HTMLSelectElement;
-  const value = target.value;
-  emit('update:selectedConfig', value === '' ? '' : Number(value));
-  emit('change-config');
-};
-
 const appliedConfigText = computed(() => {
   if (props.appliedConfig === '') return 'No config';
   const id = Number(props.appliedConfig);
   if (!Number.isFinite(id)) return 'No config';
   const hit =
     props.selectableConfigs.find((c) => c.id === id) ||
+    props.moreConfigs.find((c) => c.id === id) ||
     (props.selectedDisabledConfig?.id === id ? props.selectedDisabledConfig : null);
   return hit ? props.configLabel(hit) : `Config #${id}`;
 });
@@ -276,6 +275,10 @@ const setMenuButtonRef = (el: Element | null) => {
 .config-status {
   font-size: 0.85em;
   font-weight: 400;
+}
+
+.config-control {
+  align-items: center;
 }
 
 .chat-toolbar__left {

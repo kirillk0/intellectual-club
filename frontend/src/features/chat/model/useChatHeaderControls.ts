@@ -95,24 +95,44 @@ export function useChatHeaderControls(params: Params) {
   const currentBotCompatibleTagNames = computed(() =>
     normalizeNameList(currentBotInfo.value?.compatible_configuration_tag_names || [])
   );
-  const selectableConfigs = computed(() => {
-    const enabledConfigs = (params.llmConfigurations.value || []).filter((config) => config.enabled);
+  const currentBotDefaultConfigurationId = computed(() => {
+    const id = currentBotInfo.value?.default_llm_configuration_id;
+    return typeof id === 'number' && Number.isFinite(id) && id > 0 ? id : null;
+  });
+  const defaultConfig = computed(() => {
+    const id = currentBotDefaultConfigurationId.value;
+    if (!id) return null;
+    return (params.llmConfigurations.value || []).find((config) => config.id === id) || null;
+  });
+  const configMatchesBotFilter = (cfg: LlmConfiguration) => {
     if (
       !currentBotId.value ||
       (!currentBotCompatibleTagIds.value.length && !currentBotCompatibleTagNames.value.length)
     ) {
-      return enabledConfigs;
+      return true;
     }
 
-    return enabledConfigs.filter((cfg) => {
-      const configTagIds = normalizeIdList(cfg.tag_ids || []);
-      const configTagNames = normalizeNameList(cfg.tag_names || []);
+    const configTagIds = normalizeIdList(cfg.tag_ids || []);
+    const configTagNames = normalizeNameList(cfg.tag_names || []);
 
-      return (
-        configTagIds.some((tagId) => currentBotCompatibleTagIds.value.includes(tagId)) ||
-        configTagNames.some((tagName) => currentBotCompatibleTagNames.value.includes(tagName))
-      );
-    });
+    return (
+      configTagIds.some((tagId) => currentBotCompatibleTagIds.value.includes(tagId)) ||
+      configTagNames.some((tagName) => currentBotCompatibleTagNames.value.includes(tagName))
+    );
+  };
+  const regularSelectableConfigs = computed(() =>
+    (params.llmConfigurations.value || []).filter(
+      (config) => config.enabled && configMatchesBotFilter(config) && config.id !== currentBotDefaultConfigurationId.value
+    )
+  );
+  const selectableConfigs = computed(() => {
+    const defaultConfiguration = defaultConfig.value;
+    if (!defaultConfiguration) return regularSelectableConfigs.value;
+    return [defaultConfiguration, ...regularSelectableConfigs.value];
+  });
+  const moreConfigs = computed(() => {
+    const selectableIds = new Set(selectableConfigs.value.map((config) => config.id));
+    return (params.llmConfigurations.value || []).filter((config) => !selectableIds.has(config.id));
   });
   const fileUploadPolicy = computed(() =>
     resolveChatUploadPolicy(currentBotInfo.value, currentConfig.value)
@@ -122,8 +142,10 @@ export function useChatHeaderControls(params: Params) {
 
     const selected = (params.llmConfigurations.value || []).find((config) => config.id === Number(selectedConfig.value));
     if (!selected) return null;
+    if (selectableConfigs.value.some((config) => config.id === selected.id)) return null;
+    if (moreConfigs.value.some((config) => config.id === selected.id)) return null;
     if (!selected.enabled) return 'disabled';
-    return selectableConfigs.value.some((config) => config.id === selected.id) ? null : 'incompatible';
+    return 'incompatible';
   });
   const selectedDisabledConfig = computed(() => {
     if (!selectedConfig.value || !selectedDisabledConfigReason.value) return null;
@@ -384,6 +406,9 @@ export function useChatHeaderControls(params: Params) {
     currentConfigLabel,
     fileUploadPolicy,
     selectableConfigs,
+    defaultConfig,
+    regularSelectableConfigs,
+    moreConfigs,
     selectedDisabledConfig,
     selectedDisabledConfigReason,
     canAttachFiles,

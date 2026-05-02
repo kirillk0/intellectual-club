@@ -122,6 +122,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       id: bot.id,
       name: bot.name,
       image: loaded_value(Map.get(bot, :image)),
+      default_llm_configuration_id: bot.default_llm_configuration_id,
       compatible_configuration_tag_ids: loaded_ids(Map.get(bot, :compatible_configuration_tags)),
       compatible_configuration_tag_names:
         loaded_names(Map.get(bot, :compatible_configuration_tags)),

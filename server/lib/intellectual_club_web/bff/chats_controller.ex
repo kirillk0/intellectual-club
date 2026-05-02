@@ -243,24 +243,51 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   defp default_llm_configuration_id(actor, bot_id) do
     available_configurations = available_llm_configurations_for_bot(actor, bot_id)
 
-    case {
-      latest_chat_llm_configuration_id(
-        actor,
-        bot_id,
-        Enum.map(available_configurations, & &1.id)
-      ),
-      available_configurations
-    } do
-      {llm_configuration_id, _available_configurations} when is_integer(llm_configuration_id) ->
-        llm_configuration_id
+    latest_chat_llm_configuration_id(
+      actor,
+      bot_id,
+      Enum.map(available_configurations, & &1.id)
+    ) ||
+      bot_default_llm_configuration_id(actor, bot_id) ||
+      first_available_llm_configuration_id(available_configurations)
+  end
 
-      {nil, [%LlmConfiguration{id: llm_configuration_id} | _rest]} ->
-        llm_configuration_id
+  defp first_available_llm_configuration_id([
+         %LlmConfiguration{id: llm_configuration_id} | _rest
+       ]),
+       do: llm_configuration_id
 
-      _ ->
+  defp first_available_llm_configuration_id(_available_configurations), do: nil
+
+  defp bot_default_llm_configuration_id(_actor, bot_id) when not is_integer(bot_id), do: nil
+
+  defp bot_default_llm_configuration_id(actor, bot_id) do
+    Bot
+    |> Ash.Query.filter(id == ^bot_id)
+    |> Ash.Query.select([:id, :default_llm_configuration_id])
+    |> Ash.Query.limit(1)
+    |> Ash.read!(actor: actor)
+    |> case do
+      [%Bot{default_llm_configuration_id: llm_configuration_id}]
+      when is_integer(llm_configuration_id) ->
+        if accessible_llm_configuration?(actor, llm_configuration_id) do
+          llm_configuration_id
+        end
+
+      _other ->
         nil
     end
   end
+
+  defp accessible_llm_configuration?(actor, llm_configuration_id)
+       when is_integer(llm_configuration_id) do
+    case Ash.get(LlmConfiguration, llm_configuration_id, actor: actor) do
+      {:ok, %LlmConfiguration{}} -> true
+      _other -> false
+    end
+  end
+
+  defp accessible_llm_configuration?(_actor, _llm_configuration_id), do: false
 
   defp available_llm_configurations_for_bot(actor, bot_id) do
     enabled_configurations =

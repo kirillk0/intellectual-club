@@ -79,7 +79,7 @@
             Tools ({{ toolsTabCount }})
           </button>
           <button class="tab" :class="{ active: botTab === 'context' }" type="button" @click="botTab = 'context'">
-            Context
+            Settings
           </button>
           <button class="tab" :class="{ active: botTab === 'configTags' }" type="button" @click="botTab = 'configTags'">
             Config tags ({{ configTagsTabCount }})
@@ -205,6 +205,26 @@
         </div>
 
         <div v-else-if="botTab === 'context'" class="stack">
+          <label :class="{ 'field-error': errors.hasField('default_llm_configuration_id') }">
+            Default configuration
+            <select
+              v-model="form.default_llm_configuration_id"
+              class="full"
+              :disabled="sharedReadonly || llmConfigurationsLoading"
+              @change="errors.clearField('default_llm_configuration_id')"
+            >
+              <option :value="null">No default configuration</option>
+              <option v-for="cfg in llmConfigurationOptions" :key="cfg.id" :value="cfg.id">
+                {{ configurationOptionLabel(cfg) }}
+              </option>
+            </select>
+            <div v-if="errors.hasField('default_llm_configuration_id')" class="error-text">
+              {{ errors.messageFor('default_llm_configuration_id') }}
+            </div>
+          </label>
+          <p v-if="llmConfigurationsLoading" class="muted">Loading configurations…</p>
+          <p v-else-if="llmConfigurationsError" class="error-text">{{ llmConfigurationsError }}</p>
+
           <label :class="{ 'field-error': errors.hasField('max_tool_rounds') }">
             Max tool rounds
             <input
@@ -382,6 +402,7 @@ type BotForm = {
   image: ImageAsset | null;
   first_messages: string[];
   variables: Record<string, string>;
+  default_llm_configuration_id: number | null;
   max_tool_rounds: number;
   context_soft_limit_percent: number;
   supports_file_processing: boolean;
@@ -393,6 +414,7 @@ type BotForm = {
 
 type ConfigurationTagRow = { id: number; name: string };
 type CompatibleTagBindingRow = { id: number; llm_configuration_tag_id: number; tag_name: string };
+type LlmConfigurationOption = { id: number; model_name: string; note: string; enabled: boolean };
 
 type ShareStateResponse = {
   group_ids?: number[];
@@ -426,6 +448,10 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
     image: parseImageAsset(attrs.image),
     first_messages,
     variables,
+    default_llm_configuration_id:
+      typeof attrs.default_llm_configuration_id === 'number'
+        ? attrs.default_llm_configuration_id
+        : (toIntId(attrs.default_llm_configuration_id as any) ?? relationshipId(resource, 'default_llm_configuration')),
     max_tool_rounds:
       typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 100),
     context_soft_limit_percent:
@@ -527,6 +553,7 @@ const editor = useCrudEditor<BotForm>({
     image: null,
     first_messages: [],
     variables: {},
+    default_llm_configuration_id: null,
     max_tool_rounds: 100,
     context_soft_limit_percent: 80,
     supports_file_processing: false,
@@ -540,6 +567,7 @@ const editor = useCrudEditor<BotForm>({
     name: form.name,
     first_messages: (form.first_messages || []).map((m) => String(m || '').trim()).filter((m) => m !== ''),
     variables: form.variables || {},
+    default_llm_configuration_id: form.default_llm_configuration_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
     supports_file_processing: form.supports_file_processing,
@@ -554,6 +582,7 @@ const editor = useCrudEditor<BotForm>({
     name: form.name,
     first_messages: form.first_messages,
     variables: form.variables,
+    default_llm_configuration_id: form.default_llm_configuration_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
     supports_file_processing: form.supports_file_processing,
@@ -581,6 +610,49 @@ const compatibleTagBindingsError = ref<string | null>(null);
 const currentCompatibleTagBindings = ref<CompatibleTagBindingRow[]>([]);
 const draftCompatibleTagIds = ref<number[]>([]);
 const compatibleTagsPickerOpen = ref(false);
+const llmConfigurationOptions = ref<LlmConfigurationOption[]>([]);
+const llmConfigurationsLoading = ref(false);
+const llmConfigurationsError = ref<string | null>(null);
+
+function parseLlmConfigurationOption(resource: JsonApiResource | null | undefined): LlmConfigurationOption | null {
+  if (!resource) return null;
+  const id = toIntId(resource.id);
+  if (!id) return null;
+  const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  return {
+    id,
+    model_name: String(attrs.model_name || '').trim(),
+    note: String(attrs.note || '').trim(),
+    enabled: Boolean(attrs.enabled),
+  };
+}
+
+function configurationOptionLabel(config: LlmConfigurationOption) {
+  const model = config.model_name.trim();
+  const note = config.note.trim();
+  const label = model && note ? `${model} (${note})` : model || note || `Config #${config.id}`;
+  return config.enabled ? label : `${label} (disabled)`;
+}
+
+async function loadLlmConfigurations() {
+  llmConfigurationsLoading.value = true;
+  llmConfigurationsError.value = null;
+
+  try {
+    const qs = new URLSearchParams();
+    qs.set('sort', 'model_name');
+    qs.set('fields[llm-configurations]', 'model_name,note,enabled');
+    const payload = await jsonApiList('/api/ash/llm-configurations', qs);
+    llmConfigurationOptions.value = (payload.data || [])
+      .map(parseLlmConfigurationOption)
+      .filter((item): item is LlmConfigurationOption => Boolean(item));
+  } catch (error) {
+    console.error(error);
+    llmConfigurationsError.value = error instanceof Error ? error.message : 'Failed to load configurations.';
+  } finally {
+    llmConfigurationsLoading.value = false;
+  }
+}
 
 const attachedCompatibleTags = computed(() => {
   const tagMap = new Map<number, ConfigurationTagRow>();
@@ -944,6 +1016,7 @@ watch(
 
 onMounted(() => {
   void loadKnowledgeBlocks();
+  void loadLlmConfigurations();
   void loadToolLibrary();
 });
 
