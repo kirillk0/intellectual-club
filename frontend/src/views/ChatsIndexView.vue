@@ -4,6 +4,9 @@
       <div class="toolbar fill">
         <strong>Chats</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
+          <RouterLink to="/bookmarks" class="icon-button" aria-label="Open bookmarks" title="Bookmarks">
+            <SvgIcon name="bookmark" />
+          </RouterLink>
           <button class="primary" style="white-space: nowrap" @click="openCreateChatModal" :disabled="creating">
             {{ creating ? 'Creating…' : 'New chat' }}
           </button>
@@ -142,7 +145,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';

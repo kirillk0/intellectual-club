@@ -2,7 +2,12 @@
   <div class="stack">
     <StackToolbarTeleport>
       <div class="toolbar fill">
-        <strong>Bookmarks</strong>
+        <div class="toolbar-title-group">
+          <RouterLink to="/" class="icon-button" aria-label="Back to chats" title="Back to chats">
+            <SvgIcon name="chevron-left" />
+          </RouterLink>
+          <strong>Bookmarks</strong>
+        </div>
       </div>
     </StackToolbarTeleport>
 
@@ -48,9 +53,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { formatRelativeDateTime } from '@/utils/dates';
 
@@ -147,6 +154,12 @@ onMounted(() => {
 
 <style scoped>
 .bookmarks-list {
+  gap: 10px;
+}
+
+.toolbar-title-group {
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
 }
 

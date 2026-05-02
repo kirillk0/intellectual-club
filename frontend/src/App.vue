@@ -15,7 +15,6 @@
             Chats
           </a>
         </RouterLink>
-        <RouterLink to="/bookmarks">Bookmarks</RouterLink>
         <RouterLink to="/catalogs/bots">Bots</RouterLink>
         <RouterLink to="/catalogs/tools">Tools</RouterLink>
         <RouterLink to="/catalogs/knowledge-blocks">Knowledge Blocks</RouterLink>
