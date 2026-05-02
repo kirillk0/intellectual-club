@@ -196,9 +196,8 @@ export function useChatLibraryDraft(params: Params) {
 
   const chatBlockMeta = (binding: ChatBlockLink) => {
     const block = (params.knowledgeBlocks.value || []).find((item) => item.id === binding.block);
-    const type = block?.type || 'Block';
     const tokens = block?.token_count ?? 0;
-    return `${type} · ${tokens} tokens`;
+    return `${tokens} tokens`;
   };
 
   const addChatToolBinding = () => {
@@ -271,7 +270,7 @@ export function useChatLibraryDraft(params: Params) {
     try {
       const qs = new URLSearchParams();
       qs.set('sort', 'name');
-      qs.set('fields[knowledge-blocks]', 'name,version,type,token_count,image');
+      qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
       const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
       const nextBlocks = (payload.data || [])
         .map((resource): KnowledgeBlock | null => {
@@ -282,7 +281,6 @@ export function useChatLibraryDraft(params: Params) {
             id,
             name: String(attrs.name || ''),
             image: parseImageAsset(attrs.image),
-            type: typeof attrs.type === 'string' ? attrs.type : null,
             version: typeof attrs.version === 'string' ? attrs.version : null,
             token_count: typeof attrs.token_count === 'number' ? attrs.token_count : toIntId(attrs.token_count as any),
           } satisfies KnowledgeBlock;

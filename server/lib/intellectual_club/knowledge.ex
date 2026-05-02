@@ -18,7 +18,6 @@ defmodule IntellectualClub.Knowledge do
           default_fields: [
             :name,
             :version,
-            :type,
             :token_count,
             :image,
             :can_edit,
@@ -30,7 +29,6 @@ defmodule IntellectualClub.Knowledge do
           default_fields: [
             :name,
             :version,
-            :type,
             :content,
             :variables,
             :external_id,

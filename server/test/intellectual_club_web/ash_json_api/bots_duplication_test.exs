@@ -29,7 +29,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block A", version: "v1", type: :rules, content: "A"},
+        %{name: "Block A", version: "v1", content: "A"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -38,7 +38,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block B", version: "v1", type: :rules, content: "B"},
+        %{name: "Block B", version: "v1", content: "B"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

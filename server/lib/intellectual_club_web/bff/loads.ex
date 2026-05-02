@@ -52,7 +52,6 @@ defmodule IntellectualClubWeb.Bff.Loads do
     [
       :id,
       :name,
-      :type,
       :version,
       :token_count,
       :image,
@@ -66,7 +65,6 @@ defmodule IntellectualClubWeb.Bff.Loads do
     [
       :id,
       :name,
-      :type,
       :version,
       :token_count,
       :content,
@@ -117,7 +115,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
   end
 
   def knowledge_block_option_select do
-    [:id, :name, :type, :version, :token_count]
+    [:id, :name, :version, :token_count]
   end
 
   def knowledge_block_option_load do

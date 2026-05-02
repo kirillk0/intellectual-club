@@ -255,7 +255,6 @@ const parseKnowledgeBlock = (resource: JsonApiResource): KnowledgeBlock | null =
     id,
     name: String(attrs.name || '').trim() || `Block #${id}`,
     image: parseImageAsset(attrs.image),
-    type: attrs.type == null ? null : String(attrs.type),
     version: attrs.version == null ? null : String(attrs.version),
     token_count: tokenCount,
   };
@@ -485,7 +484,7 @@ const loadSettings = async () => {
   try {
     const blockParams = new URLSearchParams();
     blockParams.set('sort', 'name');
-    blockParams.set('fields[knowledge-blocks]', 'name,type,version,token_count,image');
+    blockParams.set('fields[knowledge-blocks]', 'name,version,token_count,image');
 
     const [blocksPayload, userBlocksPayload] = await Promise.all([
       jsonApiList('/api/ash/knowledge-blocks', blockParams),

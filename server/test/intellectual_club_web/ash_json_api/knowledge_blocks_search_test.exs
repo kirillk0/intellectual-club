@@ -53,7 +53,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksSearchTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Root", version: "v1", type: :rules, content: "x"},
+        %{name: "Block Root", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -62,7 +62,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksSearchTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Child", version: "v1", type: :rules, content: "x"},
+        %{name: "Block Child", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -71,7 +71,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksSearchTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Grandchild", version: "v1", type: :rules, content: "x"},
+        %{name: "Block Grandchild", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -80,7 +80,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksSearchTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Other", version: "v1", type: :rules, content: "x"},
+        %{name: "Block Other", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -89,7 +89,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksSearchTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Untagged", version: "v1", type: :rules, content: "x"},
+        %{name: "Block Untagged", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

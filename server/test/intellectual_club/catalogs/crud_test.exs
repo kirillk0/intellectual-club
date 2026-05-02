@@ -19,7 +19,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
         %{
           name: "Test block",
           version: "v1",
-          type: :lore,
           content: "hello\n//// internal note"
         },
         actor: actor
@@ -40,7 +39,7 @@ defmodule IntellectualClub.Catalogs.CrudTest do
     assert updated.token_count == 4
   end
 
-  test "knowledge block defaults type to rules and accepts empty version" do
+  test "knowledge block accepts empty version" do
     %{user: actor} = user_fixture()
 
     block =
@@ -55,7 +54,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
       )
       |> Ash.create!(actor: actor)
 
-    assert block.type == :rules
     assert block.version == ""
   end
 
@@ -126,7 +124,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
         %{
           name: "KB",
           version: "v1",
-          type: :rules,
           content: "abc"
         },
         actor: actor

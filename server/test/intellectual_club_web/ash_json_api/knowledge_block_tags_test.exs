@@ -44,7 +44,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlockTagsTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block", version: "v1", type: :rules, content: "x"},
+        %{name: "Block", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

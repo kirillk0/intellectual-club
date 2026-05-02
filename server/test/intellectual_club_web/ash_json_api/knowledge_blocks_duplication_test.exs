@@ -42,7 +42,6 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDuplicationTest do
         %{
           name: "Source block",
           version: "v1",
-          type: :rules,
           content: "Important content",
           variables: %{"k" => "v"}
         },
@@ -90,7 +89,6 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDuplicationTest do
     assert duplicated.owner_id == source.owner_id
     assert duplicated.name == source.name
     assert duplicated.version == "v1 copy"
-    assert duplicated.type == source.type
     assert duplicated.content == source.content
     assert duplicated.variables == source.variables
     assert duplicated.token_count == source.token_count
@@ -129,7 +127,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDuplicationTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Image block", version: "v1", type: :rules, content: "Important content"},
+        %{name: "Image block", version: "v1", content: "Important content"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

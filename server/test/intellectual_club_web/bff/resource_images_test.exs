@@ -123,7 +123,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Image block", version: "v1", type: :rules, content: "x", variables: %{}},
+        %{name: "Image block", version: "v1", content: "x", variables: %{}},
         actor: actor
       )
       |> Ash.create!(actor: actor)

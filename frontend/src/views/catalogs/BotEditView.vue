@@ -466,7 +466,6 @@ function parseKnowledgeBlockOption(resource: JsonApiResource | null | undefined)
     id,
     name: String(attrs.name || ''),
     image: parseImageAsset(attrs.image),
-    type: typeof attrs.type === 'string' ? attrs.type : null,
     version: typeof attrs.version === 'string' ? attrs.version : null,
     token_count: typeof attrs.token_count === 'number' ? attrs.token_count : toIntId(attrs.token_count as any),
   } satisfies KnowledgeBlock;
@@ -872,7 +871,7 @@ async function loadKnowledgeBlocks() {
   try {
     const qs = new URLSearchParams();
     qs.set('sort', 'name');
-    qs.set('fields[knowledge-blocks]', 'name,version,type,token_count,image');
+    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
     const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
     mergeKnowledgeBlocks(
       (payload.data || [])

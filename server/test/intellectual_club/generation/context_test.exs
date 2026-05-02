@@ -32,7 +32,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "First block",
           version: "v1",
-          type: :lore,
           content: "First content"
         },
         actor: actor
@@ -46,7 +45,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Second block",
           version: "v1",
-          type: :rules,
           content: "Second content"
         },
         actor: actor
@@ -462,7 +460,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Bot block",
           version: "v1",
-          type: :lore,
           content: "Bot says x={{x}} y={{y}} z={{z}}",
           variables: %{"x" => "bot-block-x"}
         },
@@ -477,7 +474,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Chat block",
           version: "v1",
-          type: :rules,
           content: "Chat says x={{x}} y={{y}}",
           variables: %{"y" => "chat-block-y"}
         },
@@ -492,7 +488,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Config block",
           version: "v1",
-          type: :character,
           content: "Config says x={{x}} y={{y}} z={{z}}",
           variables: %{"z" => "config-block-z"}
         },
@@ -639,7 +634,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Bot block", version: "v1", type: :lore, content: "bot"},
+        %{name: "Bot block", version: "v1", content: "bot"},
         actor: actor
       )
       |> Ash.create!()
@@ -648,7 +643,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Chat block", version: "v1", type: :rules, content: "chat"},
+        %{name: "Chat block", version: "v1", content: "chat"},
         actor: actor
       )
       |> Ash.create!()
@@ -657,7 +652,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config block", version: "v1", type: :character, content: "config"},
+        %{name: "Config block", version: "v1", content: "config"},
         actor: actor
       )
       |> Ash.create!()
@@ -666,7 +661,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "User block", version: "v1", type: :lore, content: "user"},
+        %{name: "User block", version: "v1", content: "user"},
         actor: actor
       )
       |> Ash.create!()
@@ -790,7 +785,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config top", version: "v1", type: :rules, content: "config-top"},
+        %{name: "Config top", version: "v1", content: "config-top"},
         actor: actor
       )
       |> Ash.create!()
@@ -799,7 +794,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Bot block", version: "v1", type: :lore, content: "bot"},
+        %{name: "Bot block", version: "v1", content: "bot"},
         actor: actor
       )
       |> Ash.create!()
@@ -808,7 +803,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Chat block", version: "v1", type: :character, content: "chat"},
+        %{name: "Chat block", version: "v1", content: "chat"},
         actor: actor
       )
       |> Ash.create!()
@@ -817,7 +812,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config bottom", version: "v1", type: :rules, content: "config-bottom"},
+        %{name: "Config bottom", version: "v1", content: "config-bottom"},
         actor: actor
       )
       |> Ash.create!()
@@ -2068,7 +2063,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Prompt", version: "v1", type: :lore, content: "System guidance"},
+        %{name: "Prompt", version: "v1", content: "System guidance"},
         actor: actor
       )
       |> Ash.create!()

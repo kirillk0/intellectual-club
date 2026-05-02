@@ -54,7 +54,7 @@
                   <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
                 </div>
                   <div class="catalog-row__subtitle">
-                    {{ b.typeLabel }}<span v-if="formatVersion(b.version)"> · {{ formatVersion(b.version) }}</span>
+                    {{ formatVersion(b.version) || 'No version' }}
                   </div>
                 </div>
                 <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
@@ -124,7 +124,6 @@ type KnowledgeBlockRow = {
   id: number;
   name: string;
   image: ImageAsset | null;
-  type: string;
   version: string;
   tokenCount: number;
   shared_incoming: boolean;
@@ -185,11 +184,6 @@ watch(
   }
 );
 
-function typeLabel(type: string) {
-  if (!type) return 'Block';
-  return type.replaceAll('_', ' ');
-}
-
 function formatVersion(value: string) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -206,7 +200,6 @@ function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
     id,
     name: String(attrs.name || '').trim(),
     image: parseImageAsset(attrs.image),
-    type: String(attrs.type || '').trim(),
     version: String(attrs.version || '').trim(),
     tokenCount: Number(attrs.token_count || 0),
     shared_incoming: Boolean(attrs.shared_incoming),
@@ -214,7 +207,7 @@ function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
   };
 }
 
-const visibleBlocks = computed(() => blocks.value.map((b) => ({ ...b, typeLabel: typeLabel(b.type) })));
+const visibleBlocks = computed(() => blocks.value);
 
 function selectTag(id: number) {
   const current = selectedTagId.value;
@@ -275,10 +268,7 @@ async function loadBlocks() {
   try {
     const params = new URLSearchParams();
     params.set('sort', 'name');
-    params.set(
-      'fields[knowledge-blocks]',
-      'name,version,type,token_count,image,shared_incoming,shared_outgoing'
-    );
+    params.set('fields[knowledge-blocks]', 'name,version,token_count,image,shared_incoming,shared_outgoing');
     const q = String(route.query.q || '').trim();
     if (q) params.set('q', q);
     if (selectedNoTags.value) params.set('no_tags', 'true');

@@ -214,7 +214,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "User setting block", version: "v1", type: :lore, content: "always include me"},
+        %{name: "User setting block", version: "v1", content: "always include me"},
         actor: actor
       )
       |> Ash.create!()
@@ -255,7 +255,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config top", version: "v1", type: :rules, content: "config-top"},
+        %{name: "Config top", version: "v1", content: "config-top"},
         actor: actor
       )
       |> Ash.create!()
@@ -264,7 +264,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Bot block", version: "v1", type: :lore, content: "bot"},
+        %{name: "Bot block", version: "v1", content: "bot"},
         actor: actor
       )
       |> Ash.create!()
@@ -273,7 +273,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config bottom", version: "v1", type: :rules, content: "config-bottom"},
+        %{name: "Config bottom", version: "v1", content: "config-bottom"},
         actor: actor
       )
       |> Ash.create!()
@@ -388,7 +388,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Image block", version: "v1", type: :rules, content: "content"},
+        %{name: "Image block", version: "v1", content: "content"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -537,7 +537,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config prompt block", version: "v1", type: :rules, content: "config prompt"},
+        %{name: "Config prompt block", version: "v1", content: "config prompt"},
         actor: actor
       )
       |> Ash.create!()

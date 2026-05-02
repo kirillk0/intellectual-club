@@ -49,7 +49,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config block A", version: "v1", type: :rules, content: "A"},
+        %{name: "Config block A", version: "v1", content: "A"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -58,7 +58,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config block B", version: "v1", type: :rules, content: "B"},
+        %{name: "Config block B", version: "v1", content: "B"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

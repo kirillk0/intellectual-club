@@ -63,7 +63,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsIndexTest do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
-      %{name: name, version: "v1", type: :rules, content: "content", variables: %{}},
+      %{name: name, version: "v1", content: "content", variables: %{}},
       actor: actor
     )
     |> Ash.create!(actor: actor)

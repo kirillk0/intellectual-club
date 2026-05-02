@@ -336,7 +336,6 @@ const contextBlockMeta = (item: { id: number; block: number }) => {
 
   const block = linked.block;
   const parts = [
-    blockTypeLabel(block.type),
     props.sourceLabels[linked.source] || linked.source,
     `${block.token_count ?? 0} tokens`,
   ];
@@ -347,8 +346,4 @@ const contextBlockMeta = (item: { id: number; block: number }) => {
   return parts.filter(Boolean).join(' · ');
 };
 
-function blockTypeLabel(type: string | null) {
-  const value = String(type || '').trim();
-  return value ? value.replaceAll('_', ' ') : 'Block';
-}
 </script>

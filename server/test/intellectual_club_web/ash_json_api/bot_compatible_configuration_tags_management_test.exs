@@ -70,7 +70,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Knowledge", version: "v1", type: :rules, content: "content", variables: %{}},
+        %{name: "Knowledge", version: "v1", content: "content", variables: %{}},
         actor: owner
       )
       |> Ash.create!(actor: owner)
@@ -213,7 +213,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block One", version: "v1", type: :rules, content: "x", variables: %{}},
+        %{name: "Block One", version: "v1", content: "x", variables: %{}},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -222,7 +222,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Two", version: "v2", type: :rules, content: "y", variables: %{}},
+        %{name: "Block Two", version: "v2", content: "y", variables: %{}},
         actor: actor
       )
       |> Ash.create!(actor: actor)

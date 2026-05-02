@@ -29,7 +29,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Delete block", version: "v1", type: :rules, content: "x", variables: %{}},
+        %{name: "Delete block", version: "v1", content: "x", variables: %{}},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -144,7 +144,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Delete imaged block", version: "v1", type: :rules, content: "x", variables: %{}},
+        %{name: "Delete imaged block", version: "v1", content: "x", variables: %{}},
         actor: actor
       )
       |> Ash.create!(actor: actor)

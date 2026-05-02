@@ -648,7 +648,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
       %{
         name: name,
         version: "v1",
-        type: :rules,
         content: content,
         variables: %{}
       },

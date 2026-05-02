@@ -41,18 +41,6 @@
           <div v-if="errors.hasField('version')" class="error-text">{{ errors.messageFor('version') }}</div>
         </label>
 
-        <label :class="{ 'field-error': errors.hasField('type') }">
-          Type
-          <select v-model="form.type" class="full" @change="errors.clearField('type')">
-            <option value="rules">rules</option>
-            <option value="lore">lore</option>
-            <option value="character">character</option>
-            <option value="scenario">scenario</option>
-            <option value="style_guide">style_guide</option>
-            <option value="other">other</option>
-          </select>
-          <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
-        </label>
       </div>
 
       <div class="card stack">
@@ -230,7 +218,6 @@ import type { ImageAsset } from '@/types/api';
 type KnowledgeBlockForm = {
   name: string;
   version: string;
-  type: string;
   content: string;
   image: ImageAsset | null;
   variables: Record<string, string>;
@@ -250,7 +237,6 @@ function fromApi(resource: JsonApiResource): Partial<KnowledgeBlockForm> {
   return {
     name: String(attrs.name || ''),
     version: String(attrs.version || ''),
-    type: String(attrs.type || 'rules'),
     content: String(attrs.content || ''),
     image: parseImageAsset(attrs.image),
     variables,
@@ -349,7 +335,6 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
   defaultForm: () => ({
     name: '',
     version: '',
-    type: 'rules',
     content: '',
     image: null,
     variables: {},
@@ -363,7 +348,6 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
   toAttributes: (form) => ({
     name: form.name,
     version: form.version,
-    type: form.type,
     content: form.content,
     variables: form.variables || {},
     ...(tagBindingsPayload.value === undefined ? {} : { tag_bindings: tagBindingsPayload.value }),
@@ -371,7 +355,6 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
   normalizeForDirty: (form) => ({
     name: form.name,
     version: form.version,
-    type: form.type,
     content: form.content,
     variables: form.variables,
     can_edit: form.can_edit,

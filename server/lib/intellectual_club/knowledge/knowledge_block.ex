@@ -90,13 +90,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       constraints(trim?: false, allow_empty?: true)
     end
 
-    attribute :type, :atom do
-      allow_nil?(false)
-      public?(true)
-      default(:rules)
-      constraints(one_of: [:lore, :character, :scenario, :rules, :style_guide, :other])
-    end
-
     attribute :content, :string do
       allow_nil?(false)
       public?(true)
@@ -245,7 +238,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     end
 
     create :create do
-      accept([:name, :version, :type, :content, :variables])
+      accept([:name, :version, :content, :variables])
 
       argument :tag_bindings, {:array, :map} do
         allow_nil?(true)
@@ -287,7 +280,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
         |> Ash.Changeset.change_attributes(%{
           name: source.name,
           version: Duplication.next_copy_label(source.version),
-          type: source.type,
           content: source.content,
           variables: source.variables
         })
@@ -328,7 +320,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     end
 
     update :update do
-      accept([:name, :version, :type, :content, :variables])
+      accept([:name, :version, :content, :variables])
       require_atomic?(false)
 
       argument :tag_bindings, {:array, :map} do
@@ -381,31 +373,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     if q == "" do
       query
     else
-      case type_from_query(q) do
-        nil ->
-          Ash.Query.filter(query, contains(name, ^q) or contains(version, ^q))
-
-        type ->
-          Ash.Query.filter(query, contains(name, ^q) or contains(version, ^q) or type == ^type)
-      end
-    end
-  end
-
-  defp type_from_query(q) when is_binary(q) do
-    normalized =
-      q
-      |> String.downcase()
-      |> String.trim()
-      |> String.replace(~r/[\s-]+/, "_")
-
-    case normalized do
-      "rules" -> :rules
-      "lore" -> :lore
-      "character" -> :character
-      "scenario" -> :scenario
-      "style_guide" -> :style_guide
-      "other" -> :other
-      _ -> nil
+      Ash.Query.filter(query, contains(name, ^q) or contains(version, ^q))
     end
   end
 

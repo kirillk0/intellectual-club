@@ -157,7 +157,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       id: block.id,
       name: block.name,
       image: loaded_value(Map.get(block, :image)),
-      type: atom_to_string(block.type),
       version: block.version,
       token_count: block.token_count,
       can_edit: loaded_value(Map.get(block, :can_edit)),

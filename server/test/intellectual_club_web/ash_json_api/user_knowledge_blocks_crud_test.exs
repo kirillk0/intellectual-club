@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.AshJsonApi.UserKnowledgeBlocksCrudTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "User settings block", version: "v1", type: :lore, content: "x"},
+        %{name: "User settings block", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!()

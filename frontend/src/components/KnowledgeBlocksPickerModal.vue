@@ -91,7 +91,7 @@
                     <div style="flex: 1; min-width: 0">
                       <div style="font-weight: 600">{{ block.name }}</div>
                       <div class="muted" style="font-size: 0.9rem">
-                        {{ block.type || 'Block' }} · {{ block.token_count ?? 0 }} tokens
+                        {{ block.token_count ?? 0 }} tokens
                       </div>
                     </div>
                     <ImageThumbnail :image="block.image" :label="block.name" :size="40" :hideWithoutImage="true" />
@@ -231,7 +231,7 @@ const visibleBlocks = computed(() => {
   return blocks.filter((b) => {
     if (byTag && !byTag.has(b.id)) return false;
     if (!q) return true;
-    return normalize(`${b.name} ${b.type || ''}`).includes(q);
+    return normalize(b.name).includes(q);
   });
 });
 

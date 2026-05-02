@@ -20,7 +20,7 @@ defmodule IntellectualClub.Chat.MetricsTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Bot block", version: "v1", type: :lore, content: "bot block content"},
+        %{name: "Bot block", version: "v1", content: "bot block content"},
         actor: actor
       )
       |> Ash.create!()
@@ -29,7 +29,7 @@ defmodule IntellectualClub.Chat.MetricsTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Chat block", version: "v1", type: :rules, content: "chat block content"},
+        %{name: "Chat block", version: "v1", content: "chat block content"},
         actor: actor
       )
       |> Ash.create!()
@@ -38,7 +38,7 @@ defmodule IntellectualClub.Chat.MetricsTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Config block", version: "v1", type: :character, content: "config block content"},
+        %{name: "Config block", version: "v1", content: "config block content"},
         actor: actor
       )
       |> Ash.create!()
@@ -47,7 +47,7 @@ defmodule IntellectualClub.Chat.MetricsTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "User block", version: "v1", type: :lore, content: "user block content"},
+        %{name: "User block", version: "v1", content: "user block content"},
         actor: actor
       )
       |> Ash.create!()

@@ -43,7 +43,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Delete block", version: "v1", type: :rules, content: "Test"},
+        %{name: "Delete block", version: "v1", content: "Test"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

@@ -79,7 +79,6 @@ export type KnowledgeBlock = {
   id: number;
   name: string;
   image?: ImageAsset | null;
-  type: string | null;
   version: string | null;
   token_count: number | null;
   can_edit?: boolean;

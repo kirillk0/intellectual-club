@@ -72,7 +72,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Delete deps block", version: "v1", type: :rules, content: "x"},
+        %{name: "Delete deps block", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
