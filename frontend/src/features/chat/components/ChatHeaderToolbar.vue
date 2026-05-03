@@ -26,24 +26,21 @@
 
       <div class="header-actions toolbar-actions-right">
         <div class="flex config-control">
-          <span class="config-label">
-            Config
-            <span
-              v-if="configSyncStatus === 'pending'"
-              class="config-status muted"
-              :title="`Effective: ${appliedConfigText}`"
-              aria-live="polite"
-            >
-              Saving…
-            </span>
-            <span
-              v-else-if="configSyncStatus === 'error'"
-              class="config-status error-text"
-              :title="configSyncError || 'Failed to switch configuration'"
-              aria-live="polite"
-            >
-              Not saved
-            </span>
+          <span
+            v-if="configSyncStatus === 'pending'"
+            class="config-status muted"
+            :title="`Effective: ${appliedConfigText}`"
+            aria-live="polite"
+          >
+            Saving…
+          </span>
+          <span
+            v-else-if="configSyncStatus === 'error'"
+            class="config-status error-text"
+            :title="configSyncError || 'Failed to switch configuration'"
+            aria-live="polite"
+          >
+            Not saved
           </span>
           <ChatConfigurationSelect
             :model-value="selectedConfig"
@@ -264,12 +261,6 @@ const setMenuButtonRef = (el: Element | null) => {
 .chat-toolbar {
   justify-content: space-between;
   min-width: 0;
-}
-
-.config-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .config-status {
