@@ -17,8 +17,6 @@
       @delete="remove"
     />
 
-    <AdministrationNav />
-
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
@@ -150,7 +148,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import AdministrationNav from '@/components/AdministrationNav.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
 import { api, isHttpError } from '@/api/client';
 import { fetchCurrentUser, useSessionAuth } from '@/features/auth/session';
