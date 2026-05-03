@@ -2,7 +2,7 @@
   <div class="stack">
     <StackToolbarTeleport>
       <div class="toolbar fill">
-        <strong>LLM Configurations</strong>
+        <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button type="button" @click="openUsage" :disabled="loading">
             Usage
@@ -13,6 +13,8 @@
         </div>
       </div>
     </StackToolbarTeleport>
+
+    <LlmConfigurationNav />
 
     <div class="split-wrapper">
       <div class="catalog-split">
@@ -128,6 +130,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsManagerPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';

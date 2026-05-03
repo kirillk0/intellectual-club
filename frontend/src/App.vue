@@ -12,17 +12,41 @@
             }"
             @click="handleChatsNavigation($event, navigate)"
           >
+            <SvgIcon class="app-nav__icon" name="chat" />
             Chats
           </a>
         </RouterLink>
-        <RouterLink to="/catalogs/bots">Bots</RouterLink>
-        <RouterLink to="/catalogs/tools">Tools</RouterLink>
-        <RouterLink to="/catalogs/knowledge-blocks">Knowledge Blocks</RouterLink>
-        <RouterLink to="/catalogs/llm-providers">LLM Providers</RouterLink>
-        <RouterLink to="/catalogs/llm-configurations">LLM Configurations</RouterLink>
-        <RouterLink v-if="currentUser?.is_admin" to="/administration/users">Administration</RouterLink>
+        <RouterLink to="/catalogs/bots">
+          <SvgIcon class="app-nav__icon" name="bot" />
+          Bots
+        </RouterLink>
+        <RouterLink to="/catalogs/knowledge-blocks">
+          <SvgIcon class="app-nav__icon" name="document" />
+          Knowledge Blocks
+        </RouterLink>
+        <RouterLink to="/catalogs/tools">
+          <SvgIcon class="app-nav__icon" name="wrench" />
+          Tools
+        </RouterLink>
+        <RouterLink to="/catalogs/llm-configurations" custom v-slot="{ href, navigate }">
+          <a
+            :href="href"
+            :class="{ 'router-link-active': isLlmConfigurationRoute }"
+            @click="navigate"
+          >
+            <SvgIcon class="app-nav__icon" name="sliders" />
+            LLM Configuration
+          </a>
+        </RouterLink>
+        <RouterLink v-if="currentUser?.is_admin" to="/administration/users">
+          <SvgIcon class="app-nav__icon" name="shield" />
+          Administration
+        </RouterLink>
         <div class="user-slot" v-if="currentUser">
-          <RouterLink class="user-link" to="/settings">{{ currentUser.username }}</RouterLink>
+          <RouterLink class="user-link" to="/settings">
+            <SvgIcon class="app-nav__icon" name="user" />
+            {{ currentUser.username }}
+          </RouterLink>
           <button
             type="button"
             class="link"
@@ -65,6 +89,7 @@ import {
   useSessionAuth,
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
 
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
@@ -80,6 +105,7 @@ const signingOut = ref(false);
 
 const isLoginRoute = computed(() => route.name === 'login');
 const isChatRoute = computed(() => route.name === 'chat');
+const isLlmConfigurationRoute = computed(() => String(route.name || '').startsWith('llm-'));
 
 const mobileMenuOpen = ref(false);
 

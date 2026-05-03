@@ -2,7 +2,7 @@
   <div class="stack">
     <StackToolbarTeleport>
       <div class="toolbar fill">
-        <strong>LLM Providers</strong>
+        <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button class="primary" type="button" @click="createProvider" :disabled="loading">
             New provider
@@ -10,6 +10,8 @@
         </div>
       </div>
     </StackToolbarTeleport>
+
+    <LlmConfigurationNav />
 
     <section class="card stack">
       <label>
@@ -56,6 +58,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';

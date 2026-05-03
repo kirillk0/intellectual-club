@@ -17,14 +17,9 @@
         <div class="muted">Bot profiles with defaults and attached knowledge blocks.</div>
       </RouterLink>
 
-      <RouterLink class="card catalog-card" to="/catalogs/llm-providers">
-        <div class="catalog-card__title">LLM Providers</div>
-        <div class="muted">Provider endpoints and API keys.</div>
-      </RouterLink>
-
       <RouterLink class="card catalog-card" to="/catalogs/llm-configurations">
-        <div class="catalog-card__title">LLM Configurations</div>
-        <div class="muted">Models, parameters, and capabilities used by generation.</div>
+        <div class="catalog-card__title">LLM Configuration</div>
+        <div class="muted">Models, parameters, provider endpoints, and API keys.</div>
       </RouterLink>
     </section>
   </div>

@@ -14,9 +14,14 @@ import ShareOutgoingIcon from './svg/share-outgoing.svg';
 import SortAlphaIcon from './svg/sort-alpha.svg';
 import SortTimeIcon from './svg/sort-time.svg';
 import BotIcon from './svg/bot.svg';
+import ChatIcon from './svg/chat.svg';
 import ArrowUpIcon from './svg/arrow-up.svg';
 import ArrowDownIcon from './svg/arrow-down.svg';
+import ShieldIcon from './svg/shield.svg';
 import SidebarIcon from './svg/sidebar.svg';
+import SlidersIcon from './svg/sliders.svg';
+import UserIcon from './svg/user.svg';
+import WrenchIcon from './svg/wrench.svg';
 import MusicIcon from './svg/music.svg';
 import VideoIcon from './svg/video.svg';
 import SpreadsheetIcon from './svg/spreadsheet.svg';
@@ -51,9 +56,14 @@ const iconMap: Record<string, Component> = {
   'sort-alpha': SortAlphaIcon,
   'sort-time': SortTimeIcon,
   'bot': BotIcon,
+  'chat': ChatIcon,
   'arrow-up': ArrowUpIcon,
   'arrow-down': ArrowDownIcon,
+  'shield': ShieldIcon,
   'sidebar': SidebarIcon,
+  'sliders': SlidersIcon,
+  'user': UserIcon,
+  'wrench': WrenchIcon,
   'music': MusicIcon,
   'video': VideoIcon,
   'spreadsheet': SpreadsheetIcon,

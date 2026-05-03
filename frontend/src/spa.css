@@ -227,12 +227,23 @@ fieldset {
 }
 
 .app-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   border-radius: 6px;
 }
 
 .app-nav a.router-link-active {
   background: #f2f2f2;
+}
+
+.app-nav__icon {
+  color: #555;
+}
+
+.app-nav a.router-link-active .app-nav__icon {
+  color: #111;
 }
 
 .user-slot {
