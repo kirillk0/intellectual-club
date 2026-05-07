@@ -217,6 +217,8 @@ type ChatListStats = {
 };
 
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
+const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
+const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
 
 const router = useRouter();
 
@@ -385,6 +387,9 @@ function matchesBotFilter(chat: Pick<ChatSummary, 'bot_id'>) {
 const filteredChats = computed(() => chats.value.filter(matchesBotFilter));
 const filteredChatSearchResults = computed(() => chatSearchResults.value.filter(matchesBotFilter));
 const visibleChats = computed(() => (hasChatSearch.value ? filteredChatSearchResults.value : filteredChats.value));
+const hasVisibleGeneratingChat = computed(() =>
+  visibleChats.value.some((chat) => Boolean(chat.active_generation_message_id))
+);
 const allBotsCount = computed(() => {
   if (chatListStats.value.total_chats > 0) return chatListStats.value.total_chats;
   return totalChats.value;
@@ -525,9 +530,18 @@ function normalizeChatListStats(value: unknown): ChatListStats {
   };
 }
 
-async function loadChats() {
-  loading.value = true;
-  error.value = null;
+let chatListLoadSeq = 0;
+
+async function loadChats(
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
+) {
+  const seq = ++chatListLoadSeq;
+  const silent = Boolean(opts.silent);
+  if (!silent) {
+    loading.value = true;
+    error.value = null;
+  }
+
   try {
     const requestedPage = Math.max(1, pageNumber.value);
     const params = new URLSearchParams();
@@ -545,7 +559,13 @@ async function loadChats() {
         has_next?: boolean;
       };
       stats?: ChatListStats;
-    }>(`/api/bff/chats?${params.toString()}`);
+    }>(`/api/bff/chats?${params.toString()}`, {
+      showErrorBanner: opts.showErrorBanner ?? true,
+      signal: opts.signal,
+    });
+
+    if (seq !== chatListLoadSeq) return;
+
     chats.value = payload.chats || [];
     pageNumber.value = Number.isInteger(payload.page?.number) ? Number(payload.page?.number) : requestedPage;
     perPage.value = Number.isInteger(payload.page?.per_page) ? Number(payload.page?.per_page) : perPage.value;
@@ -553,9 +573,16 @@ async function loadChats() {
     hasNextPage.value = Boolean(payload.page?.has_next);
     chatListStats.value = normalizeChatListStats(payload.stats);
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load chats.';
+    if (seq !== chatListLoadSeq) return;
+    if (!silent) {
+      error.value = e instanceof Error ? e.message : 'Failed to load chats.';
+      return;
+    }
+    console.warn('Failed to refresh chats list while polling generation state.', e);
   } finally {
-    loading.value = false;
+    if (!silent && seq === chatListLoadSeq) {
+      loading.value = false;
+    }
   }
 }
 
@@ -587,10 +614,16 @@ function resetChatSearch() {
   chatSearchError.value = '';
 }
 
-async function runChatSearch(term: string) {
+async function runChatSearch(
+  term: string,
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
+) {
   const seq = ++chatSearchSeq;
-  chatSearchLoading.value = true;
-  chatSearchError.value = '';
+  const silent = Boolean(opts.silent);
+  if (!silent) {
+    chatSearchLoading.value = true;
+    chatSearchError.value = '';
+  }
 
   try {
     const params = new URLSearchParams();
@@ -598,16 +631,131 @@ async function runChatSearch(term: string) {
     params.set('per_page', String(perPage.value));
     const bot = String(botFilter.value || '').trim();
     if (bot) params.set('bot', bot);
-    const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chats/search?${params.toString()}`);
+    const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chats/search?${params.toString()}`, {
+      showErrorBanner: opts.showErrorBanner ?? true,
+      signal: opts.signal,
+    });
     if (seq !== chatSearchSeq) return;
     chatSearchResults.value = payload.chats || [];
   } catch (e) {
     if (seq !== chatSearchSeq) return;
-    console.error(e);
-    chatSearchError.value = 'Failed to search chats.';
-    chatSearchResults.value = [];
+    if (!silent) {
+      console.error(e);
+      chatSearchError.value = 'Failed to search chats.';
+      chatSearchResults.value = [];
+      return;
+    }
+    console.warn('Failed to refresh chat search results while polling generation state.', e);
   } finally {
-    if (seq === chatSearchSeq) chatSearchLoading.value = false;
+    if (!silent && seq === chatSearchSeq) chatSearchLoading.value = false;
+  }
+}
+
+let chatListPollTimer: number | null = null;
+let chatListPollAbortController: AbortController | null = null;
+let chatListPollToken = 0;
+let chatListPollingActive = false;
+
+function stopChatListPolling() {
+  chatListPollingActive = false;
+  chatListPollToken += 1;
+
+  if (chatListPollTimer != null) {
+    window.clearTimeout(chatListPollTimer);
+    chatListPollTimer = null;
+  }
+
+  if (chatListPollAbortController) {
+    chatListPollAbortController.abort();
+    chatListPollAbortController = null;
+  }
+}
+
+async function refreshVisibleChatsForGeneration(signal: AbortSignal) {
+  if (hasChatSearch.value) {
+    const term = chatSearchTerm.value.trim();
+    if (!term) return;
+    await runChatSearch(term, { silent: true, showErrorBanner: false, signal });
+    return;
+  }
+
+  await loadChats({ silent: true, showErrorBanner: false, signal });
+}
+
+function startChatListPolling(opts: { immediate?: boolean } = {}) {
+  if (chatListPollingActive || !hasVisibleGeneratingChat.value) return;
+
+  chatListPollingActive = true;
+  const token = ++chatListPollToken;
+
+  const scheduleNext = (delayMs: number) => {
+    if (!chatListPollingActive || chatListPollToken !== token) return;
+    chatListPollTimer = window.setTimeout(() => {
+      void tick();
+    }, delayMs);
+  };
+
+  const tick = async () => {
+    if (!chatListPollingActive || chatListPollToken !== token) return;
+
+    const controller = new AbortController();
+    chatListPollAbortController = controller;
+
+    try {
+      await refreshVisibleChatsForGeneration(controller.signal);
+      if (!chatListPollingActive || chatListPollToken !== token) return;
+
+      if (!hasVisibleGeneratingChat.value) {
+        stopChatListPolling();
+        return;
+      }
+
+      scheduleNext(CHAT_LIST_POLL_SUCCESS_DELAY_MS);
+    } catch (error) {
+      if (!chatListPollingActive || chatListPollToken !== token) return;
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      scheduleNext(CHAT_LIST_POLL_RETRY_DELAY_MS);
+    } finally {
+      if (chatListPollAbortController === controller) {
+        chatListPollAbortController = null;
+      }
+    }
+  };
+
+  if (opts.immediate) {
+    void tick();
+    return;
+  }
+
+  scheduleNext(CHAT_LIST_POLL_SUCCESS_DELAY_MS);
+}
+
+function restartChatListPolling(opts: { immediate?: boolean } = {}) {
+  stopChatListPolling();
+  startChatListPolling(opts);
+}
+
+function handleChatListVisibilityChange() {
+  if (document.visibilityState !== 'visible') {
+    stopChatListPolling();
+    return;
+  }
+
+  if (hasVisibleGeneratingChat.value) {
+    restartChatListPolling({ immediate: true });
+  }
+}
+
+function handleChatListPageShow() {
+  if (hasVisibleGeneratingChat.value) {
+    restartChatListPolling({ immediate: true });
+  }
+}
+
+function handleChatListFocus() {
+  if (document.visibilityState !== 'visible') return;
+  if (hasVisibleGeneratingChat.value) {
+    restartChatListPolling({ immediate: true });
   }
 }
 
@@ -660,6 +808,18 @@ watch(
   }
 );
 
+watch(
+  () => hasVisibleGeneratingChat.value,
+  (hasGenerating) => {
+    if (hasGenerating) {
+      startChatListPolling();
+      return;
+    }
+
+    stopChatListPolling();
+  }
+);
+
 async function openCreateChatModal() {
   if (creating.value) return;
   error.value = null;
@@ -702,12 +862,19 @@ onMounted(() => {
   void loadBots();
   window.addEventListener('resize', updateIsMobile);
   window.addEventListener(CHAT_LIST_RESET_EVENT, handleChatListReset);
+  document.addEventListener('visibilitychange', handleChatListVisibilityChange);
+  window.addEventListener('pageshow', handleChatListPageShow);
+  window.addEventListener('focus', handleChatListFocus);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateIsMobile);
   window.removeEventListener(CHAT_LIST_RESET_EVENT, handleChatListReset);
+  document.removeEventListener('visibilitychange', handleChatListVisibilityChange);
+  window.removeEventListener('pageshow', handleChatListPageShow);
+  window.removeEventListener('focus', handleChatListFocus);
   if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+  stopChatListPolling();
 });
 </script>
 
