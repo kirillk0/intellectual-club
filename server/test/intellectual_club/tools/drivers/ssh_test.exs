@@ -20,6 +20,18 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     assert Enum.any?(functions, fn spec -> Map.get(spec, "name") == "run_command" end)
   end
 
+  test "config schema marks host and username as required and orders connection fields first" do
+    schema = Ssh.config_schema()
+    properties = Map.fetch!(schema, "properties")
+
+    assert schema["required"] == ["host", "username"]
+    assert get_in(properties, ["host", "x-ui", "order"]) == 10
+    assert get_in(properties, ["port", "x-ui", "order"]) == 20
+    assert get_in(properties, ["username", "x-ui", "order"]) == 30
+    assert get_in(properties, ["connect_timeout_seconds", "x-ui", "order"]) > 30
+    assert get_in(properties, ["default_timeout_seconds", "x-ui", "order"]) > 30
+  end
+
   test "download_file advertises file_id as the preferred reference" do
     %{user: actor} = user_fixture()
 
@@ -47,17 +59,38 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
   end
 
   test "execute validates required host" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{
-        type: "ssh",
-        config: %{"host" => "", "username" => "root"},
-        secrets: %{"password" => "secret"}
-      })
+    tool_instance = %ToolInstance{
+      type: "ssh",
+      config: %{"host" => "", "username" => "root"},
+      secrets: %{"password" => "secret"}
+    }
 
     assert {:error, "Tool instance config.host is required."} =
              Ssh.execute(tool_instance, "run_command", %{"command" => "echo ok"})
+  end
+
+  test "create validates required config fields declared by schema" do
+    %{user: actor} = user_fixture()
+
+    result =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "ssh",
+          name: "SSH",
+          config: %{"host" => "", "username" => ""},
+          secrets: %{"password" => "secret"},
+          max_output_tokens: 20_000
+        },
+        actor: actor
+      )
+      |> Ash.create()
+
+    assert {:error, error} = result
+    message = Exception.message(error)
+    assert String.contains?(message, "Host is required.")
+    assert String.contains?(message, "Username is required.")
   end
 
   test "execute validates command arguments" do

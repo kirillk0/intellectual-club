@@ -116,7 +116,10 @@
               :key="field.key"
               :class="{ 'field-error': configFieldHasError(field.key) }"
             >
-              {{ fieldLabel(field.key, field.schema) }}
+              <span class="field-label-text">
+                {{ fieldLabel(field.key, field.schema) }}
+                <span v-if="isConfigFieldRequired(field.key)" class="required-marker" aria-hidden="true">*</span>
+              </span>
 
               <select
                 v-if="Array.isArray(field.schema.enum) && field.schema.enum.length"
@@ -415,6 +418,7 @@ type JsonSchema = {
   title?: string;
   description?: string;
   properties?: Record<string, JsonSchema>;
+  required?: unknown[];
   enum?: unknown[];
   minimum?: number;
   maximum?: number;
@@ -772,6 +776,28 @@ const supportsDiscovery = computed(() => Boolean(currentToolType.value?.supports
 
 type SchemaField = { key: string; schema: JsonSchema };
 
+function schemaFieldOrder(schema: JsonSchema): number | null {
+  const xUi = schema['x-ui'];
+  if (!xUi || typeof xUi !== 'object' || Array.isArray(xUi)) return null;
+
+  const order = (xUi as any).order;
+  if (typeof order === 'number' && Number.isFinite(order)) return order;
+
+  const parsed = Number(order);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compareSchemaFields(a: SchemaField, b: SchemaField): number {
+  const aOrder = schemaFieldOrder(a.schema);
+  const bOrder = schemaFieldOrder(b.schema);
+
+  if (aOrder !== null || bOrder !== null) {
+    return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER) || a.key.localeCompare(b.key);
+  }
+
+  return a.key.localeCompare(b.key);
+}
+
 const configFields = computed<SchemaField[]>(() => {
   const schema = currentToolType.value?.config_schema;
   const props =
@@ -787,7 +813,7 @@ const configFields = computed<SchemaField[]>(() => {
       schema: (raw && typeof raw === 'object' ? raw : {}) as JsonSchema,
     }))
     .filter((f) => Boolean(f.key.trim()))
-    .sort((a, b) => a.key.localeCompare(b.key));
+    .sort(compareSchemaFields);
 });
 
 const secretsFields = computed<SchemaField[]>(() => {
@@ -805,8 +831,18 @@ const secretsFields = computed<SchemaField[]>(() => {
       schema: (raw && typeof raw === 'object' ? raw : {}) as JsonSchema,
     }))
     .filter((f) => Boolean(f.key.trim()))
-    .sort((a, b) => a.key.localeCompare(b.key));
+    .sort(compareSchemaFields);
 });
+
+const requiredConfigKeys = computed(() => {
+  const schema = currentToolType.value?.config_schema;
+  const required = Array.isArray(schema?.required) ? schema.required : [];
+  return new Set(required.map((value) => String(value || '').trim()).filter(Boolean));
+});
+
+function isConfigFieldRequired(fieldKey: string): boolean {
+  return requiredConfigKeys.value.has(String(fieldKey || '').trim());
+}
 
 const hasAuthToggle = computed(() => {
   const keys = new Set(secretsFields.value.map((f) => f.key));
@@ -841,6 +877,32 @@ function configFieldErrorMessage(fieldKey: string): string {
 function clearConfigFieldErrors(fieldKey: string) {
   for (const k of configErrorKeys(fieldKey)) errors.clearField(k);
   errors.clearField('config');
+}
+
+function requiredConfigValuePresent(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim() !== '';
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return true;
+  return false;
+}
+
+function validateRequiredConfigFields(): boolean {
+  let valid = true;
+
+  for (const field of configFields.value) {
+    if (!isConfigFieldRequired(field.key)) continue;
+    clearConfigFieldErrors(field.key);
+
+    if (requiredConfigValuePresent((form.config as any)[field.key])) continue;
+
+    errors.setField(`config/${field.key}`, `${fieldLabel(field.key, field.schema)} is required.`);
+    valid = false;
+  }
+
+  if (!valid) toolTab.value = 'settings';
+  return valid;
 }
 
 function isSecretPresent(secretKey: string): boolean {
@@ -1132,6 +1194,8 @@ const saveWithValidation = async () => {
     return;
   }
 
+  if (!validateRequiredConfigFields()) return;
+
   await editor.save();
   await refreshToolMeta();
   editor.base.value = JSON.parse(JSON.stringify(form)) as ToolInstanceForm;
@@ -1166,6 +1230,17 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.field-label-text {
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+}
+
+.required-marker {
+  color: #b42318;
+  font-weight: 700;
+}
+
 .share-banner {
   display: flex;
   gap: 8px;

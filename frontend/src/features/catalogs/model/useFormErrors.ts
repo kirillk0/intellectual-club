@@ -22,6 +22,16 @@ export function useFormErrors() {
     fieldErrors.value = next;
   };
 
+  const setField = (field: string, message: string) => {
+    const key = String(field || '').trim();
+    const detail = String(message || '').trim();
+    if (!key || !detail) return;
+    fieldErrors.value = {
+      ...fieldErrors.value,
+      [key]: [detail],
+    };
+  };
+
   const hasField = (field: string) => Boolean(fieldErrors.value[field]?.length);
 
   const messageFor = (field: string) => (fieldErrors.value[field] || []).join(' ');
@@ -39,6 +49,7 @@ export function useFormErrors() {
     fieldErrors,
     clear,
     clearField,
+    setField,
     hasField,
     messageFor,
     setFromApiError,

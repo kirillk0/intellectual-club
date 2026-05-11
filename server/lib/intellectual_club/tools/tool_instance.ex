@@ -18,6 +18,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   alias IntellectualClub.Tools.Changes.DeleteToolDependents
   alias IntellectualClub.Tools.Changes.MergeSecretsPatch
   alias IntellectualClub.Tools.Changes.ValidatePositiveRpsLimit
+  alias IntellectualClub.Tools.Changes.ValidateToolConfig
   alias IntellectualClub.Tools.Changes.ValidateToolAlias
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.Changes.ValidateToolType
@@ -226,6 +227,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateToolConfig, []})
     end
 
     create :duplicate do
@@ -294,6 +296,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateToolConfig, []})
     end
 
     update :update do
@@ -302,6 +305,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateToolConfig, []})
     end
 
     update :update_discovery_metadata do

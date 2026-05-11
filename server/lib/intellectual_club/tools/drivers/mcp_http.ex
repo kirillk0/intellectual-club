@@ -44,6 +44,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
           "x-ui" => %{"placeholder" => "https://mcp.example.com"}
         }
       },
+      "required" => ["server_url"],
       "additionalProperties" => false
     }
   end

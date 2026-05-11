@@ -68,33 +68,37 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
           "type" => "string",
           "title" => "Host",
           "description" => "SSH host or IP address.",
-          "x-ui" => %{"placeholder" => "example.com"}
+          "x-ui" => %{"order" => 10, "placeholder" => "example.com"}
         },
         "port" => %{
           "type" => "integer",
           "title" => "Port",
           "description" => "SSH port.",
-          "minimum" => 1
+          "minimum" => 1,
+          "x-ui" => %{"order" => 20}
         },
         "username" => %{
           "type" => "string",
           "title" => "Username",
           "description" => "SSH username.",
-          "x-ui" => %{"placeholder" => "root"}
+          "x-ui" => %{"order" => 30, "placeholder" => "root"}
         },
         "connect_timeout_seconds" => %{
           "type" => "integer",
           "title" => "Connect timeout (seconds)",
           "description" => "Connection/handshake timeout in seconds.",
-          "minimum" => 0
+          "minimum" => 0,
+          "x-ui" => %{"order" => 100}
         },
         "default_timeout_seconds" => %{
           "type" => "integer",
           "title" => "Default command timeout (seconds)",
           "description" => "Default command timeout in seconds when argument is omitted.",
-          "minimum" => 0
+          "minimum" => 0,
+          "x-ui" => %{"order" => 110}
         }
       },
+      "required" => ["host", "username"],
       "additionalProperties" => false
     }
   end
