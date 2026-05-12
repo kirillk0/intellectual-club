@@ -116,6 +116,7 @@
             :userToolBindingsError="userToolOverrides.error.value"
             :userToolBindingSavingAliases="userToolOverrides.savingAliases.value"
             :toolBindingLabel="toolBindingLabel"
+            :toolBindingText="toolBindingText"
             :toolBindingIsOutlet="toolBindingIsOutlet"
             :toolBindingIsOnline="toolBindingIsOnline"
             :userToolDraft="userToolOverrides.userToolDraft"
@@ -1073,6 +1074,13 @@ function baseToolBindingLabel(binding: BotToolBindingRow) {
 }
 
 const toolBindingLabel = (binding: BotToolBindingRow) => baseToolBindingLabel(binding);
+const toolBindingText = (binding: BotToolBindingRow) => {
+  if (sharedReadonly.value && binding.sharing_mode === 'per_user') {
+    return `Connected per user (${binding.alias}) - Tool`;
+  }
+
+  return toolInstanceLibrary.toolBindingText(binding.tool_instance_id, binding.alias);
+};
 const toolBindingIsOutlet = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOnline(binding.tool_instance_id);
 const toolBindingsSaving = computed(() => saving.value);

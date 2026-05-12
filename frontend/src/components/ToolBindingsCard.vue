@@ -19,7 +19,10 @@
         v-for="(item, idx) in sortedItems"
         :key="itemKey(item)"
         class="row tool-binding-row"
-        :class="{ 'tool-binding-row--shadowed': isShadowed(item) }"
+        :class="{
+          'tool-binding-row--shadowed': isShadowed(item),
+          'tool-binding-row--with-controls': showToggle || showActions,
+        }"
       >
         <div v-if="showToggle || showActions" class="tool-binding-controls">
           <input
@@ -69,26 +72,26 @@
 
         <div class="tool-binding-body">
           <div class="tool-binding-title-line">
-            <div class="tool-binding-title">
-              <span class="muted tool-binding-title__label">Alias:</span>
-              {{ item.alias || '—' }}
-            </div>
-            <span
-              v-if="isShadowed(item)"
-              class="badge tool-binding-shadowed"
-              :title="shadowedReason(item)"
-            >
-              Shadowed
-            </span>
-          </div>
-          <div class="muted tool-binding-meta" :title="toolLabel(item)">
             <span
               v-if="toolIsOutlet?.(item)"
               class="status-dot"
               :class="toolIsOnline?.(item) ? 'success' : 'danger'"
               :title="toolIsOnline?.(item) ? 'Online' : 'Offline'"
             />
-            <span class="tool-binding-meta__text">{{ toolLabel(item) }}</span>
+            <span class="tool-binding-title" :title="toolText(item)">
+              <span class="tool-binding-title__primary">
+                <span class="tool-binding-title__name">{{ toolNameText(item) }}</span>
+                <span v-if="toolAliasText(item)" class="muted tool-binding-title__alias">
+                  ({{ toolAliasText(item) }})
+                </span>
+              </span>
+              <span v-if="toolTypeText(item)" class="tool-binding-title__type">
+                <span class="tool-binding-title__separator">-</span>{{ toolTypeText(item) }}
+              </span>
+            </span>
+            <span v-if="isShadowed(item)" class="badge tool-binding-shadowed" :title="shadowedReason(item)">
+              Shadowed
+            </span>
           </div>
           <slot name="item-meta-extra" :item="item"></slot>
           <slot name="item-footer" :item="item"></slot>
@@ -125,6 +128,7 @@ const props = withDefaults(
     showHeader?: boolean;
     items: ToolBindingItem[];
     toolLabel: (item: ToolBindingItem) => string;
+    toolText?: (item: ToolBindingItem) => string;
     toolIsOutlet?: (item: ToolBindingItem) => boolean;
     toolIsOnline?: (item: ToolBindingItem) => boolean;
     emptyText?: string;
@@ -172,6 +176,31 @@ const toggleDisabled = (item: ToolBindingItem) => props.toggleDisabled?.(item) ?
 const actionsDisabled = (item: ToolBindingItem) => props.actionsDisabled?.(item) ?? false;
 const isShadowed = (item: ToolBindingItem) => item.shadowed === true;
 const itemKey = (item: ToolBindingItem) => `${item.source || 'binding'}:${item.id}`;
+const toolText = (item: ToolBindingItem) => {
+  const explicit = props.toolText?.(item);
+  if (explicit) return explicit;
+
+  const label = props.toolLabel(item);
+  const match = label.match(/^(.*)\s+\(([^()]*)\)$/);
+  if (!match) return item.alias ? `${label} (${item.alias})` : label;
+
+  const [, name, type] = match;
+  return item.alias ? `${name} (${item.alias}) - ${type}` : `${name} - ${type}`;
+};
+const toolTextParts = (item: ToolBindingItem) => {
+  const text = toolText(item);
+  const separatorIndex = text.lastIndexOf(' - ');
+  const primary = separatorIndex < 0 ? text : text.slice(0, separatorIndex);
+  const type = separatorIndex < 0 ? '' : text.slice(separatorIndex + 3);
+  const aliasMatch = primary.match(/^(.*)\s+\(([^()]*)\)$/);
+
+  return aliasMatch
+    ? { name: aliasMatch[1], alias: aliasMatch[2], type }
+    : { name: primary, alias: '', type };
+};
+const toolNameText = (item: ToolBindingItem) => toolTextParts(item).name;
+const toolAliasText = (item: ToolBindingItem) => toolTextParts(item).alias;
+const toolTypeText = (item: ToolBindingItem) => toolTextParts(item).type;
 const shadowedReason = (item: ToolBindingItem) =>
   typeof item.shadowedReason === 'string' && item.shadowedReason.trim()
     ? item.shadowedReason
@@ -179,6 +208,10 @@ const shadowedReason = (item: ToolBindingItem) =>
 </script>
 
 <style scoped>
+.tool-bindings-card {
+  container-type: inline-size;
+}
+
 .tool-binding-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -208,19 +241,50 @@ const shadowedReason = (item: ToolBindingItem) =>
 
 .tool-binding-title-line {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
   min-width: 0;
 }
 
 .tool-binding-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-weight: 700;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
-.tool-binding-title__label {
+.tool-binding-title__primary {
+  display: flex;
+  gap: 4px;
+}
+
+.tool-binding-title__primary,
+.tool-binding-title__name,
+.tool-binding-title__alias,
+.tool-binding-title__type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-binding-title__name {
+  font-weight: 700;
+}
+
+.tool-binding-title__alias {
   font-weight: 500;
+}
+
+.tool-binding-title__type {
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.tool-binding-title__separator {
+  display: none;
+  margin: 0 4px;
 }
 
 .tool-binding-shadowed {
@@ -230,21 +294,6 @@ const shadowedReason = (item: ToolBindingItem) =>
 
 .tool-binding-row--shadowed {
   opacity: 0.68;
-}
-
-.tool-binding-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 0.85rem;
-}
-
-.tool-binding-meta__text {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tool-binding-actions {
@@ -269,5 +318,57 @@ const shadowedReason = (item: ToolBindingItem) =>
 .tool-bindings-move {
   transition: transform 160ms ease;
   will-change: transform;
+}
+
+@container (min-width: 560px) {
+  .tool-binding-row--with-controls {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-controls {
+    display: contents;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-enabled {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-body {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-title-line {
+    align-items: center;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-title {
+    flex-direction: row;
+    gap: 0;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-title__type {
+    font-size: inherit;
+    font-weight: 400;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-title__separator {
+    display: inline;
+  }
+
+  .tool-binding-row--with-controls .tool-binding-actions {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .tool-binding-row--with-controls :slotted(*) {
+    grid-column: 4;
+    grid-row: 1;
+    align-self: center;
+  }
 }
 </style>

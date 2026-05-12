@@ -96,6 +96,7 @@
       title="Tool bindings"
       :items="displayToolBindings"
       :toolLabel="toolBindingLabel"
+      :toolText="toolBindingText"
       :toolIsOutlet="toolBindingIsOutlet"
       :toolIsOnline="toolBindingIsOnline"
       emptyText="No tools attached."
@@ -164,6 +165,7 @@ const props = defineProps<{
   userToolBindingsError: string | null;
   userToolBindingSavingAliases: Set<string>;
   toolBindingLabel: (binding: BotToolBindingRow) => string;
+  toolBindingText: (binding: BotToolBindingRow) => string;
   toolBindingIsOutlet: (binding: BotToolBindingRow) => boolean;
   toolBindingIsOnline: (binding: BotToolBindingRow) => boolean;
   userToolDraft: (alias: string) => BotUserToolBindingDraft;

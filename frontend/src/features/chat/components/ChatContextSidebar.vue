@@ -213,6 +213,7 @@
             v-else
             :items="activeToolBindings"
             :toolLabel="activeToolBindingLabel"
+            :toolText="activeToolBindingText"
             :toolIsOutlet="activeToolBindingIsOutlet"
             :toolIsOnline="activeToolBindingIsOnline"
             emptyText="No tools active."
@@ -233,7 +234,7 @@ import { computed } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
-import { toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
+import { toolBindingDisplayText, toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
 import type {
   ActiveToolBinding,
   BranchSearchResults,
@@ -298,6 +299,9 @@ const activeToolBindingLabel = (binding: ActiveToolBinding) => {
   if (!tool) return `Tool #${binding.tool_instance_id}`;
   return `${formatToolTypeLabel(tool)} · ${tool.name}`;
 };
+
+const activeToolBindingText = (binding: ActiveToolBinding) =>
+  toolBindingDisplayText(binding.tool_instance, binding.alias, `Tool #${binding.tool_instance_id}`);
 
 const activeToolBindingIsOutlet = (binding: ActiveToolBinding) => binding.tool_instance?.type === 'outlet';
 const activeToolBindingIsOnline = (binding: ActiveToolBinding) => Boolean(binding.tool_instance?.outlet_online);

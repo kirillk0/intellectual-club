@@ -52,6 +52,7 @@
             title="Tools"
             :items="chatToolBindings"
             :toolLabel="toolBindingLabel"
+            :toolText="toolBindingText"
             :toolIsOutlet="toolBindingIsOutlet"
             :toolIsOnline="toolBindingIsOnline"
             emptyText="No tools linked."
@@ -108,6 +109,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
+import { toolBindingDisplayText } from '@/features/tools/model/toolInstances';
 import type { ChatVariable, ImageAsset, ToolInstanceOption } from '@/types/api';
 
 type ChatBlockLink = {
@@ -186,6 +188,10 @@ const confirmToolBinding = () => {
 };
 
 const toolBindingLabel = (binding: ChatToolBindingLink) => props.toolLabel(binding.tool_instance_id);
+const toolBindingText = (binding: ChatToolBindingLink) => {
+  const tool = props.toolLibrary.find((item) => item.id === binding.tool_instance_id);
+  return toolBindingDisplayText(tool, binding.alias, `Tool #${binding.tool_instance_id}`);
+};
 const toolBindingIsOutlet = (binding: ChatToolBindingLink) => props.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: ChatToolBindingLink) => props.toolIsOnline(binding.tool_instance_id);
 </script>

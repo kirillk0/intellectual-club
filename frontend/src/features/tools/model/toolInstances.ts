@@ -40,6 +40,18 @@ export function toolTypeLabel(tool: Pick<ToolInstanceOption, 'type' | 'type_titl
   return TOOL_TYPE_LABELS[type] || humanizeToolType(type);
 }
 
+export function toolBindingDisplayText(
+  tool: (Pick<ToolInstanceOption, 'id' | 'name' | 'alias' | 'type' | 'type_title'> & { id?: number }) | null | undefined,
+  alias?: string,
+  fallbackName?: string
+) {
+  const name = String(tool?.name || '').trim() || fallbackName || (tool?.id ? `Tool #${tool.id}` : 'Tool');
+  const bindingAlias = String(alias || tool?.alias || '').trim();
+  const type = tool ? toolTypeLabel(tool) : 'Tool';
+
+  return bindingAlias ? `${name} (${bindingAlias}) - ${type}` : `${name} - ${type}`;
+}
+
 export function mergeToolInstanceOptions(
   current: ToolInstanceOption[],
   incoming: ToolInstanceOption[]
@@ -83,6 +95,11 @@ export function useToolInstanceLibrary(toolLibrary: Ref<ToolInstanceOption[]>) {
     return tool ? toolTypeLabel(tool) : 'Tool';
   };
 
+  const toolBindingText = (toolInstanceId: number, alias?: string) => {
+    const tool = toolLibraryById.value.get(toolInstanceId);
+    return toolBindingDisplayText(tool, alias, `Tool #${toolInstanceId}`);
+  };
+
   const toolIsOutlet = (toolInstanceId: number) => toolLibraryById.value.get(toolInstanceId)?.type === 'outlet';
 
   const toolIsOnline = (toolInstanceId: number) => Boolean(toolLibraryById.value.get(toolInstanceId)?.outlet_online);
@@ -91,6 +108,7 @@ export function useToolInstanceLibrary(toolLibrary: Ref<ToolInstanceOption[]>) {
     toolLibraryById,
     ownedToolLibrary,
     toolLabel,
+    toolBindingText,
     toolTypeLabel: toolTypeName,
     toolIsOutlet,
     toolIsOnline,

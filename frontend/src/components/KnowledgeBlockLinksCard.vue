@@ -17,7 +17,12 @@
     <slot name="note"></slot>
 
     <TransitionGroup v-if="sortedItems.length" name="kb-links" tag="div" class="list">
-      <div class="row kb-link-row" v-for="(item, idx) in sortedItems" :key="itemKey(item, idx)">
+      <div
+        class="row kb-link-row"
+        :class="{ 'kb-link-row--with-controls': showToggle || showActions }"
+        v-for="(item, idx) in sortedItems"
+        :key="itemKey(item, idx)"
+      >
         <div v-if="showToggle || showActions" class="kb-controls">
           <input
             v-if="showToggle"
@@ -74,7 +79,6 @@
             @keydown.space.prevent="handleOpen(item.block)"
           >
             <div class="kb-title">{{ blockName(item.block) }}</div>
-            <div class="muted kb-meta">{{ metaText ? metaText(item) : defaultMetaText(item) }}</div>
           </div>
 
           <ImageThumbnail
@@ -155,12 +159,6 @@ const sortedItems = computed(() => [...(props.items || [])].sort((a, b) => a.seq
 
 const itemKey = (item: LinkItem, index: number) => props.itemKey?.(item, index) ?? item.id;
 
-const defaultMetaText = (item: LinkItem) => {
-  const base = `order ${item.sequence}`;
-  const version = (props.blockVersion?.(item.block) || '').trim();
-  return version ? `${base} · ${version}` : base;
-};
-
 const handleOpen = (blockId: number) => {
   if (!props.openable) return;
   emit('open', blockId);
@@ -168,6 +166,10 @@ const handleOpen = (blockId: number) => {
 </script>
 
 <style scoped>
+.kb-links-card {
+  container-type: inline-size;
+}
+
 .kb-link-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -221,10 +223,11 @@ const handleOpen = (blockId: number) => {
   border-radius: 6px;
 }
 
-.kb-title,
-.kb-meta {
-  overflow-wrap: anywhere;
-  word-break: break-word;
+.kb-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kb-actions {
@@ -249,5 +252,40 @@ const handleOpen = (blockId: number) => {
 .kb-links-move {
   transition: transform 160ms ease;
   will-change: transform;
+}
+
+@container (min-width: 560px) {
+  .kb-link-row--with-controls {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+
+  .kb-link-row--with-controls .kb-controls {
+    display: contents;
+  }
+
+  .kb-link-row--with-controls .kb-enabled {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .kb-link-row--with-controls .kb-content-row {
+    grid-column: 2;
+    grid-row: 1;
+    align-items: center;
+  }
+
+  .kb-link-row--with-controls .kb-actions {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .kb-link-row--with-controls :slotted(*) {
+    grid-column: 4;
+    grid-row: 1;
+    align-self: center;
+  }
 }
 </style>

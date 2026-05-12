@@ -42,6 +42,7 @@
               :show-header="false"
               :items="persistedTools"
               :toolLabel="toolLabel"
+              :toolText="toolText"
               emptyText="No tools attached."
               :show-toggle="false"
               :show-actions="false"
@@ -118,6 +119,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
+import { toolBindingDisplayText } from '@/features/tools/model/toolInstances';
 import type { Group } from '@/types/api';
 
 export type BotShareToolBinding = {
@@ -167,6 +169,19 @@ const toolLabel = (binding: BotShareToolBinding) => {
   const type = (binding.tool_instance_type || '').trim();
   return type ? `${name} · ${type}` : name;
 };
+
+const toolText = (binding: BotShareToolBinding) =>
+  toolBindingDisplayText(
+    {
+      id: binding.id,
+      name: binding.tool_instance_name || '',
+      alias: binding.alias || '',
+      type: binding.tool_instance_type || '',
+      type_title: '',
+    },
+    binding.alias,
+    `Tool ${binding.id}`
+  );
 
 const sharingActive = computed(() => selected.value.length > 0);
 const sharedEnabledToolsCount = computed(() =>
