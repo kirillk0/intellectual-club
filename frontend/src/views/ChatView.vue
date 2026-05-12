@@ -21,7 +21,6 @@
         :current-bot-name="vm.currentBotName"
         :chat-base-title="vm.chatBaseTitle"
         :chat-full-title="vm.chatFullTitle"
-        :current-config-label="vm.currentConfigLabel"
         :chat-note="vm.chatNote"
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"

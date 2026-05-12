@@ -75,7 +75,6 @@ export function useChatHeaderControls(params: Params) {
     if (!id) return '';
     return currentBotInfo.value?.name || `Bot #${id}`;
   });
-  const currentConfigLabel = computed(() => (currentConfig.value ? configLabel(currentConfig.value) : ''));
   const chatBaseTitle = computed(() =>
     formatChatBaseTitle({
       botName: currentBotName.value,
@@ -86,7 +85,6 @@ export function useChatHeaderControls(params: Params) {
     formatChatFullTitle({
       botName: currentBotName.value,
       note: params.chatNote.value,
-      configLabel: currentConfigLabel.value,
     })
   );
   const currentBotCompatibleTagIds = computed(() =>
@@ -403,7 +401,6 @@ export function useChatHeaderControls(params: Params) {
     currentBotName,
     chatBaseTitle,
     chatFullTitle,
-    currentConfigLabel,
     fileUploadPolicy,
     selectableConfigs,
     defaultConfig,

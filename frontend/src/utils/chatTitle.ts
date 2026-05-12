@@ -1,7 +1,6 @@
 type ChatTitleParams = {
   botName?: string | null;
   note?: string | null;
-  configLabel?: string | null;
 };
 
 export const formatChatBaseTitle = ({ botName, note }: ChatTitleParams): string => {
@@ -10,8 +9,6 @@ export const formatChatBaseTitle = ({ botName, note }: ChatTitleParams): string 
   return chatNote ? `${bot} (${chatNote})` : bot;
 };
 
-export const formatChatFullTitle = ({ botName, note, configLabel }: ChatTitleParams): string => {
-  const baseTitle = formatChatBaseTitle({ botName, note });
-  const config = String(configLabel || '').trim();
-  return config ? `${baseTitle} (${config})` : baseTitle;
+export const formatChatFullTitle = ({ botName, note }: ChatTitleParams): string => {
+  return formatChatBaseTitle({ botName, note });
 };

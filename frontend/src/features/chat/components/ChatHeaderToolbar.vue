@@ -20,7 +20,15 @@
       <div class="chat-toolbar__title-wrap">
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
           <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
-          <span v-if="currentConfigLabel" class="chat-toolbar__title-config">({{ currentConfigLabel }})</span>
+          <button
+            class="icon-button chat-toolbar__title-edit"
+            type="button"
+            aria-label="Edit chat note"
+            title="Edit chat note"
+            @click="emit('open-note-modal')"
+          >
+            <SvgIcon name="edit" size="14" />
+          </button>
         </div>
       </div>
 
@@ -163,6 +171,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
 import type { LlmConfiguration } from '@/types/api';
 
@@ -186,7 +195,6 @@ interface Props {
   currentBotName: string;
   chatBaseTitle: string;
   chatFullTitle: string;
-  currentConfigLabel: string;
   chatNote: string;
   creatingChat: boolean;
   deleting: boolean;
@@ -302,7 +310,7 @@ const setMenuButtonRef = (el: Element | null) => {
   min-width: 0;
   max-width: 100%;
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: center;
   gap: 6px;
   overflow: hidden;
@@ -316,11 +324,12 @@ const setMenuButtonRef = (el: Element | null) => {
   font-weight: 600;
 }
 
-.chat-toolbar__title-config {
+.chat-toolbar__title-edit {
   flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
   color: #6b7280;
-  font-size: 0.85rem;
-  white-space: nowrap;
+  font-size: 14px;
 }
 
 @media (max-width: 860px) {

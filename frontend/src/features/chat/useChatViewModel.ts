@@ -320,7 +320,6 @@ export function useChatViewModel() {
     currentBotName: headerControls.currentBotName,
     chatBaseTitle: headerControls.chatBaseTitle,
     chatFullTitle: headerControls.chatFullTitle,
-    currentConfigLabel: headerControls.currentConfigLabel,
     canAttachFiles: headerControls.canAttachFiles,
     fileInputAccept: headerControls.fileInputAccept,
     fileAttachTitle: headerControls.fileAttachTitle,
