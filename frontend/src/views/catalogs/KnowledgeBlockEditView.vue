@@ -44,34 +44,6 @@
       </div>
 
       <div class="card stack">
-        <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-          <div class="stack" style="gap: 2px">
-            <strong>Image</strong>
-            <div class="muted" style="font-size: 0.85rem">Used in selectors and catalogs.</div>
-          </div>
-          <div class="flex" style="gap: 8px">
-            <button type="button" :disabled="isNew || saving" @click="triggerImageUpload">Upload</button>
-            <button type="button" class="danger" :disabled="!form.image || saving" @click="removeImage">
-              Remove
-            </button>
-          </div>
-        </div>
-
-        <input ref="imageInput" type="file" accept="image/*" style="display: none" @change="handleImageSelected" />
-
-        <div v-if="form.image" class="row" style="align-items: center; gap: 12px">
-          <ImageThumbnail :image="form.image" :label="form.name" :size="56" />
-          <div class="stack" style="gap: 2px; min-width: 0">
-            <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis">{{ form.image.filename }}</div>
-            <div class="muted" style="font-size: 0.85rem">{{ form.image.mime_type }}</div>
-            <div class="muted" style="font-size: 0.85rem">{{ formatBytes(form.image.size_bytes) }}</div>
-          </div>
-        </div>
-        <div v-else class="muted">No image uploaded.</div>
-        <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading an image.</div>
-      </div>
-
-      <div class="card stack">
         <div class="tabs">
           <button class="tab" :class="{ active: blockTab === 'content' }" type="button" @click="blockTab = 'content'">
             Content
@@ -165,6 +137,34 @@
 
         <div v-else class="stack">
           <div style="font-weight: 700">Details</div>
+          <div class="stack">
+            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+              <div class="stack" style="gap: 2px">
+                <strong>Image</strong>
+                <div class="muted" style="font-size: 0.85rem">Used in selectors and catalogs.</div>
+              </div>
+              <div class="flex" style="gap: 8px">
+                <button type="button" :disabled="isNew || saving" @click="triggerImageUpload">Upload</button>
+                <button type="button" class="danger" :disabled="!form.image || saving" @click="removeImage">
+                  Remove
+                </button>
+              </div>
+            </div>
+
+            <input ref="imageInput" type="file" accept="image/*" style="display: none" @change="handleImageSelected" />
+
+            <div v-if="form.image" class="row" style="align-items: center; gap: 12px">
+              <ImageThumbnail :image="form.image" :label="form.name" :size="56" />
+              <div class="stack" style="gap: 2px; min-width: 0">
+                <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis">{{ form.image.filename }}</div>
+                <div class="muted" style="font-size: 0.85rem">{{ form.image.mime_type }}</div>
+                <div class="muted" style="font-size: 0.85rem">{{ formatBytes(form.image.size_bytes) }}</div>
+              </div>
+            </div>
+            <div v-else class="muted">No image uploaded.</div>
+            <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading an image.</div>
+          </div>
+
           <div class="muted">External ID</div>
           <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px">
             {{ form.external_id || '(generated on save)' }}
