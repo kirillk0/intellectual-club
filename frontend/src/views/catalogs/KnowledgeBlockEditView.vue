@@ -45,8 +45,11 @@
 
       <div class="card stack">
         <div class="tabs">
-          <button class="tab" :class="{ active: blockTab === 'content' }" type="button" @click="blockTab = 'content'">
-            Content
+          <button class="tab" :class="{ active: blockTab === 'preview' }" type="button" @click="blockTab = 'preview'">
+            Preview
+          </button>
+          <button class="tab" :class="{ active: blockTab === 'edit' }" type="button" @click="blockTab = 'edit'">
+            Edit
           </button>
           <button
             class="tab"
@@ -67,7 +70,12 @@
           </button>
         </div>
 
-        <div v-if="blockTab === 'content'" class="stack">
+        <div v-if="blockTab === 'preview'" class="stack knowledge-block-preview">
+          <div v-if="previewMarkdownSource.trim()" class="knowledge-block-preview__content" v-html="previewHtml"></div>
+          <div v-else class="muted knowledge-block-preview__empty">Nothing to preview.</div>
+        </div>
+
+        <div v-else-if="blockTab === 'edit'" class="stack">
           <label>
             Content
             <div
@@ -201,6 +209,7 @@ import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/imag
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
+import { renderChatMessageHtml } from '@/utils/chatMarkdown';
 import {
   createJsonApiIncludedIndex,
   jsonApiCreate,
@@ -386,7 +395,7 @@ const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
-const blockTab = ref<'content' | 'variables' | 'tags' | 'details'>('content');
+const blockTab = ref<'preview' | 'edit' | 'variables' | 'tags' | 'details'>('preview');
 
 type KnowledgeTagRow = {
   id: number;
@@ -529,6 +538,16 @@ const COMMENT_PREFIX = '//// ';
 const contentTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const contentScrollTop = ref(0);
 const contentScrollLeft = ref(0);
+
+function stripKnowledgeBlockComments(content: string) {
+  return String(content || '')
+    .split(/\r?\n/)
+    .filter((line) => !line.startsWith(COMMENT_PREFIX))
+    .join('\n');
+}
+
+const previewMarkdownSource = computed(() => stripKnowledgeBlockComments(form.content));
+const previewHtml = computed(() => renderChatMessageHtml(previewMarkdownSource.value, { highlightCode: true }));
 
 function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -796,6 +815,128 @@ const removeImage = async () => {
   align-items: center;
   border-color: #bfd6f6;
   background: #f5f9ff;
+}
+
+.knowledge-block-preview {
+  min-height: 280px;
+}
+
+.knowledge-block-preview__content {
+  min-height: 280px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 14px 16px;
+  background: #fff;
+  overflow: auto;
+}
+
+.knowledge-block-preview__empty {
+  min-height: 280px;
+  border: 1px dashed #d1d5db;
+  border-radius: 6px;
+  padding: 14px 16px;
+  background: #fafafa;
+}
+
+:deep(.knowledge-block-preview__content :where(h1, h2, h3, h4, h5, h6)) {
+  margin: 10px 0 8px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+:deep(.knowledge-block-preview__content h1) {
+  font-size: 1.25rem;
+}
+
+:deep(.knowledge-block-preview__content h2) {
+  font-size: 1.15rem;
+}
+
+:deep(.knowledge-block-preview__content h3) {
+  font-size: 1.05rem;
+}
+
+:deep(.knowledge-block-preview__content :where(h4, h5, h6)) {
+  font-size: 1rem;
+}
+
+:deep(.knowledge-block-preview__content :where(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th)) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:deep(.knowledge-block-preview__content p) {
+  margin: 0 0 8px;
+}
+
+:deep(.knowledge-block-preview__content p:last-child) {
+  margin-bottom: 0;
+}
+
+:deep(.knowledge-block-preview__content ul),
+:deep(.knowledge-block-preview__content ol) {
+  margin: 0 0 8px 18px;
+  padding: 0;
+}
+
+:deep(.knowledge-block-preview__content blockquote) {
+  margin: 0 0 8px;
+  padding-left: 12px;
+  border-left: 3px solid #e5e7eb;
+  color: #4b5563;
+}
+
+:deep(.knowledge-block-preview__content code) {
+  background: #eee;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.95em;
+}
+
+:deep(.knowledge-block-preview__content pre) {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 10px;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: #111;
+  color: #f5f5f5;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+:deep(.knowledge-block-preview__content pre code) {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+:deep(.knowledge-block-preview__content table) {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+:deep(.knowledge-block-preview__content th),
+:deep(.knowledge-block-preview__content td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+:deep(.knowledge-block-preview__content math.tml-display) {
+  margin: 0 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+:deep(.knowledge-block-preview__content math) {
+  max-width: 100%;
 }
 
 .knowledge-block-content-editor {
