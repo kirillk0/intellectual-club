@@ -92,18 +92,19 @@
 
     <ToolBindingPickerModal
       v-model:open="toolBindingPickerOpen"
-      :toolInstanceId="newChatToolInstanceId"
+      :selected="newChatToolInstanceIds"
       title="Add chat tool"
       :tools="toolLibrary"
+      :disabledToolIds="linkedToolInstanceIds"
       :saving="savingChatChanges"
-      @update:toolInstanceId="(value) => emit('update:newChatToolInstanceId', value)"
-      @confirm="confirmToolBinding"
+      @update:selected="(value) => emit('update:newChatToolInstanceIds', value)"
+      @confirm="confirmToolBindings"
     />
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
@@ -135,7 +136,7 @@ interface Props {
   chatToolBindings: ChatToolBindingLink[];
   chatVariables: Partial<ChatVariable>[];
   toolLibrary: ToolInstanceOption[];
-  newChatToolInstanceId: number;
+  newChatToolInstanceIds: number[];
   chatBlockName: (blockId: number) => string;
   chatBlockImage: (blockId: number) => ImageAsset | null;
   chatBlockMeta: (block: ChatBlockLink) => string;
@@ -157,8 +158,8 @@ const emit = defineEmits<{
   (e: 'move-chat-block', block: ChatBlockLink, delta: number): void;
   (e: 'remove-chat-block', blockId: number): void;
   (e: 'touch-chat-blocks'): void;
-  (e: 'update:newChatToolInstanceId', value: number): void;
-  (e: 'add-chat-tool-binding'): void;
+  (e: 'update:newChatToolInstanceIds', value: number[]): void;
+  (e: 'add-chat-tool-binding', value: number[]): void;
   (e: 'move-chat-tool-binding', binding: ChatToolBindingLink, delta: number): void;
   (e: 'remove-chat-tool-binding', bindingId: number): void;
   (e: 'set-chat-tool-binding-enabled', bindingId: number, enabled: boolean): void;
@@ -170,21 +171,10 @@ const openToolBindingPicker = () => {
   toolBindingPickerOpen.value = true;
 };
 
-const confirmToolBinding = () => {
-  const toolInstanceId = Number(props.newChatToolInstanceId || 0);
-  const alias = props.toolLibrary.find((tool) => tool.id === toolInstanceId)?.alias || '';
+const linkedToolInstanceIds = computed(() => props.chatToolBindings.map((binding) => binding.tool_instance_id));
 
-  if (
-    !toolInstanceId ||
-    !alias ||
-    props.chatToolBindings.some((binding) => binding.tool_instance_id === toolInstanceId)
-  ) {
-    emit('add-chat-tool-binding');
-    return;
-  }
-
-  toolBindingPickerOpen.value = false;
-  emit('add-chat-tool-binding');
+const confirmToolBindings = (toolInstanceIds: number[]) => {
+  emit('add-chat-tool-binding', toolInstanceIds);
 };
 
 const toolBindingLabel = (binding: ChatToolBindingLink) => props.toolLabel(binding.tool_instance_id);

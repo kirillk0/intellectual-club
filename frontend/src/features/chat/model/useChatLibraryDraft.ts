@@ -77,7 +77,7 @@ export function useChatLibraryDraft(params: Params) {
   const chatVariables = ref<Partial<ChatVariable>[]>([]);
 
   const savingChatChanges = ref(false);
-  const newChatToolInstanceId = ref(0);
+  const newChatToolInstanceIds = ref<number[]>([]);
 
   const chatBlocksPickerOpen = ref(false);
   const chatBlocksPickerSelection = ref<number[]>([]);
@@ -112,14 +112,14 @@ export function useChatLibraryDraft(params: Params) {
     chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
     chatVariablesOriginal.value = variables || [];
     chatVariables.value = [...chatVariablesOriginal.value];
-    newChatToolInstanceId.value = 0;
+    newChatToolInstanceIds.value = [];
   };
 
   const cancelChatChanges = () => {
     chatVariables.value = [...chatVariablesOriginal.value];
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
     chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
-    newChatToolInstanceId.value = 0;
+    newChatToolInstanceIds.value = [];
   };
 
   const saveChatChanges = async () => {
@@ -200,39 +200,48 @@ export function useChatLibraryDraft(params: Params) {
     return `${tokens} tokens`;
   };
 
-  const addChatToolBinding = () => {
-    const toolInstanceId = Number(newChatToolInstanceId.value || 0);
-    const alias = toolInstanceLibrary.toolLibraryById.value.get(toolInstanceId)?.alias || '';
-
-    const validationError = validateNewToolBinding({
-      toolInstanceId,
-      alias,
-      bindings: chatToolBindingsDraft.value,
-      messages: {
-        missingTool: 'Choose a tool.',
-        duplicateTool: 'Tool is already linked to this chat.',
-        duplicateAlias: 'Alias is already used in this chat.',
-      },
-    });
-
-    if (validationError) {
-      window.alert(validationError);
-      return;
+  const addChatToolBinding = (toolInstanceIds?: number[]) => {
+    const ids = Array.from(
+      new Set((toolInstanceIds ?? newChatToolInstanceIds.value).map((id) => Number(id || 0)).filter(Boolean))
+    );
+    if (!ids.length) {
+      window.alert('Choose a tool.');
+      return false;
     }
 
     const next = normalizeToolBindingSequences(chatToolBindingsDraft.value);
-    chatToolBindingsDraft.value = normalizeToolBindingSequences([
-      ...next,
-      {
+    const added = [...next];
+
+    for (const toolInstanceId of ids) {
+      const alias = toolInstanceLibrary.toolLibraryById.value.get(toolInstanceId)?.alias || '';
+      const validationError = validateNewToolBinding({
+        toolInstanceId,
+        alias,
+        bindings: added,
+        messages: {
+          missingTool: 'Choose a tool.',
+          duplicateTool: 'Tool is already linked to this chat.',
+          duplicateAlias: 'Alias is already used in this chat.',
+        },
+      });
+
+      if (validationError) {
+        window.alert(validationError);
+        return false;
+      }
+
+      added.push({
         id: tempChatToolBindingId--,
         alias,
         tool_instance_id: toolInstanceId,
         enabled: true,
-        sequence: next.length,
-      },
-    ]);
+        sequence: added.length,
+      });
+    }
 
-    newChatToolInstanceId.value = 0;
+    chatToolBindingsDraft.value = normalizeToolBindingSequences(added);
+    newChatToolInstanceIds.value = [];
+    return true;
   };
 
   const moveChatToolBinding = (binding: ChatToolBindingLink, delta: number) => {
@@ -307,7 +316,7 @@ export function useChatLibraryDraft(params: Params) {
     chatVariables,
     chatTabDirty,
     savingChatChanges,
-    newChatToolInstanceId,
+    newChatToolInstanceIds,
     chatBlocksPickerOpen,
     chatBlocksPickerSelection,
     linkedChatBlockIds,

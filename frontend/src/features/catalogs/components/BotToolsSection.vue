@@ -127,13 +127,14 @@
 
     <ToolBindingPickerModal
       v-model:open="toolBindingPickerOpen"
-      v-model:toolInstanceId="newToolInstanceId"
+      v-model:selected="newToolInstanceIds"
       title="Add tool binding"
       :tools="toolLibrary"
+      :disabledToolIds="linkedToolInstanceIds"
       :loading="toolLibraryLoading"
       :saving="toolBindingsSaving"
       :error="toolLibraryError"
-      @confirm="confirmToolBinding"
+      @confirm="confirmToolBindings"
     />
   </div>
 </template>
@@ -185,7 +186,7 @@ const emit = defineEmits<{
 }>();
 
 const toolBindingPickerOpen = ref(false);
-const newToolInstanceId = ref(0);
+const newToolInstanceIds = ref<number[]>([]);
 const displayToolBindings = computed(() => {
   const marked = markShadowedToolBindings(
     props.sortedToolBindings,
@@ -209,10 +210,11 @@ const displayToolBindings = computed(() => {
     return binding;
   });
 });
+const linkedToolInstanceIds = computed(() => props.sortedToolBindings.map((binding) => binding.tool_instance_id));
 
 function resetPicker() {
   toolBindingPickerOpen.value = false;
-  newToolInstanceId.value = 0;
+  newToolInstanceIds.value = [];
 }
 
 watch(
@@ -226,11 +228,17 @@ function openToolBindingPicker() {
   toolBindingPickerOpen.value = true;
 }
 
-function confirmToolBinding() {
-  const toolInstanceId = Number(newToolInstanceId.value || 0);
-  const alias = props.toolLibrary.find((tool) => tool.id === toolInstanceId)?.alias || '';
-  const added = props.addToolBinding(toolInstanceId, alias);
-  if (added) resetPicker();
+function confirmToolBindings(toolInstanceIds: number[]) {
+  const ids = Array.from(new Set((toolInstanceIds || []).map((id) => Number(id || 0)).filter(Boolean)));
+  if (!ids.length) return;
+
+  for (const toolInstanceId of ids) {
+    const alias = props.toolLibrary.find((tool) => tool.id === toolInstanceId)?.alias || '';
+    const added = props.addToolBinding(toolInstanceId, alias);
+    if (!added) return;
+  }
+
+  resetPicker();
 }
 
 function matchingAliasTools(alias: string) {
