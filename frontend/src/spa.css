@@ -1314,7 +1314,7 @@ select.full {
   max-width: 100%;
 }
 
-.message .bubble .message-content :where(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th) {
+.message .bubble .message-content :where(p, li, blockquote, details, summary, h1, h2, h3, h4, h5, h6, td, th) {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -1447,6 +1447,41 @@ select.full {
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.message .bubble .message-content details {
+  margin: 0 0 8px;
+  min-width: 0;
+}
+
+.message .bubble .message-content details[open] {
+  background: #fff;
+  border: 1px solid #d9dde7;
+  border-radius: 8px;
+  padding: 0 10px 10px;
+}
+
+.message .bubble .message-content details > summary {
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.message .bubble .message-content details[open] > summary {
+  background: #f4f5f8;
+  border-bottom: 1px solid #e7e9ef;
+  border-radius: 7px 7px 0 0;
+  margin: 0 -10px 8px;
+  padding: 8px 10px;
+}
+
+.message .bubble .message-content details[open] > summary:last-child {
+  border-bottom: 0;
+  border-radius: 7px;
+  margin-bottom: 0;
+}
+
+.message .bubble .message-content details[open] > :last-child {
+  margin-bottom: 0;
 }
 
 .typing-indicator {
