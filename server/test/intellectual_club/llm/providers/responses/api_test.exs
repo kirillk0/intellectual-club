@@ -143,6 +143,82 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
            ]
   end
 
+  test "marks overloaded streamed provider errors as retryable" do
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "error",
+             "error" => %{
+               "code" => "server_is_overloaded",
+               "type" => "service_unavailable_error",
+               "message" => "Our servers are currently overloaded. Please try again later."
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gpt-4.1",
+          "input" => []
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == nil
+    assert error.retryable == true
+    assert error.error_text == "Our servers are currently overloaded. Please try again later."
+  end
+
+  test "marks overloaded failed responses as retryable" do
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.failed",
+             "response" => %{
+               "id" => "resp_failed",
+               "status" => "failed",
+               "error" => %{
+                 "code" => "server_is_overloaded",
+                 "type" => "service_unavailable_error",
+                 "message" => "Our servers are currently overloaded. Please try again later."
+               }
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gpt-4.1",
+          "input" => []
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == nil
+    assert error.retryable == true
+    assert error.error_text == "Our servers are currently overloaded. Please try again later."
+  end
+
   defp run_and_capture_error!(opts) when is_map(opts) do
     parent = self()
 

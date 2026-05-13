@@ -11,6 +11,16 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   @opaque_sequence 10_000
   @raw_reasoning_offset 1_000
   @retryable_http_status_codes MapSet.new([429, 502])
+  @retryable_provider_error_codes MapSet.new([
+    "server_is_overloaded",
+    "rate_limit_exceeded",
+    "rate_limited",
+    "temporarily_unavailable"
+  ])
+  @retryable_provider_error_types MapSet.new([
+    "service_unavailable_error",
+    "rate_limit_error"
+  ])
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 
@@ -233,22 +243,18 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   end
 
   defp handle_stream_event(state, %{"type" => "error"} = obj, raw_request, emit) do
-    error_text =
-      obj
-      |> Map.get("error", %{})
-      |> Map.get("message")
-      |> to_string()
-      |> String.trim()
+    error = Map.get(obj, "error") || %{}
+    error_text = provider_error_text(error, "Provider error")
 
     emit.(
       {:response_error,
        %{
          provider: :responses,
-         status_code: nil,
+         status_code: provider_error_status_code(error),
          url: nil,
-         retryable: false,
+         retryable: retryable_provider_error_payload?(error),
          error_kind: "provider",
-         error_text: if(error_text == "", do: "Provider error", else: error_text),
+         error_text: error_text,
          raw_request: raw_request,
          raw_response: obj
        }}
@@ -260,22 +266,17 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   defp handle_stream_event(state, %{"type" => "response.failed"} = obj, raw_request, emit) do
     response = Map.get(obj, "response") || %{}
     error = Map.get(response, "error") || %{}
-
-    error_text =
-      error
-      |> Map.get("message")
-      |> to_string()
-      |> String.trim()
+    error_text = provider_error_text(error, "Response failed")
 
     emit.(
       {:response_error,
        %{
          provider: :responses,
-         status_code: nil,
+         status_code: provider_error_status_code(error),
          url: nil,
-         retryable: false,
+         retryable: retryable_provider_error_payload?(error),
          error_kind: "provider",
-         error_text: if(error_text == "", do: "Response failed", else: error_text),
+         error_text: error_text,
          raw_request: raw_request,
          raw_response: response
        }}
@@ -1175,6 +1176,74 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
     |> reason_to_string()
     |> String.contains?("econn")
   end
+
+  defp provider_error_text(error, fallback) when is_map(error) and is_binary(fallback) do
+    case trimmed_string(Map.get(error, "message") || Map.get(error, :message)) do
+      "" -> fallback
+      message -> message
+    end
+  end
+
+  defp provider_error_text(_error, fallback), do: fallback
+
+  defp provider_error_status_code(error) when is_map(error) do
+    error
+    |> Map.get("code", Map.get(error, :code))
+    |> parse_int()
+  end
+
+  defp provider_error_status_code(_error), do: nil
+
+  defp retryable_provider_error_payload?(error) when is_map(error) do
+    status_code = provider_error_status_code(error)
+    code = error_field(error, :code)
+    type = error_field(error, :type)
+    message = error_field(error, :message)
+
+    (is_integer(status_code) and MapSet.member?(@retryable_http_status_codes, status_code)) or
+      MapSet.member?(@retryable_provider_error_codes, code) or
+      MapSet.member?(@retryable_provider_error_types, type) or
+      retryable_provider_message?(message)
+  end
+
+  defp retryable_provider_error_payload?(_error), do: false
+
+  defp retryable_provider_message?(message) when is_binary(message) do
+    text = message |> String.trim() |> String.downcase()
+
+    text != "" and
+      (String.contains?(text, "overloaded") or
+         String.contains?(text, "try again later") or
+         String.contains?(text, "rate limit") or
+         String.contains?(text, "rate-limited") or
+         String.contains?(text, "temporarily unavailable"))
+  end
+
+  defp retryable_provider_message?(_message), do: false
+
+  defp error_field(error, key) when is_map(error) and is_atom(key) do
+    error
+    |> Map.get(key, Map.get(error, Atom.to_string(key)))
+    |> trimmed_string()
+    |> String.downcase()
+  end
+
+  defp error_field(_error, _key), do: ""
+
+  defp trimmed_string(value) when is_binary(value), do: String.trim(value)
+  defp trimmed_string(nil), do: ""
+  defp trimmed_string(value), do: value |> to_string() |> String.trim()
+
+  defp parse_int(value) when is_integer(value), do: value
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {int, ""} -> int
+      _other -> nil
+    end
+  end
+
+  defp parse_int(_value), do: nil
 
   defp reason_to_string(reason) do
     reason
