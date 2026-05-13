@@ -12,6 +12,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
   @retryable_http_status_codes MapSet.new([429, 502])
 
   @non_append_string_keys ~w(format role name id type tool_call_id)
+  @app_referer "https://github.com/kirillk0/intellectual-club"
+  @app_title "Intellectual Club"
 
   @type event ::
           {:reasoning_delta, String.t(), map() | nil}
@@ -44,7 +46,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     headers = [
       {"authorization", "Bearer " <> api_key},
       {"content-type", "application/json"},
-      {"x-openrouter-title", "Intellectual Club"}
+      {"http-referer", @app_referer},
+      {"x-openrouter-title", @app_title}
     ]
 
     request_opts = [

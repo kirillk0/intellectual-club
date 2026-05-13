@@ -10,7 +10,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     "messages" => [%{"role" => "user", "content" => "Hello"}]
   }
 
-  test "sends OpenRouter app attribution title header" do
+  test "sends OpenRouter app attribution headers" do
     scripts = %{
       "/chat/completions" => [
         {200, sse_chunks([%{"choices" => [%{"delta" => %{"content" => "Hi"}}]}])}
@@ -33,6 +33,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
     [request] = recorded_requests(agent, "/chat/completions")
 
+    assert {"http-referer", "https://github.com/kirillk0/intellectual-club"} in request.headers
     assert {"x-openrouter-title", "Intellectual Club"} in request.headers
   end
 
