@@ -396,6 +396,11 @@ const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const blockTab = ref<'preview' | 'edit' | 'variables' | 'tags' | 'details'>('preview');
+const initializedTabForId = ref<string | null>(null);
+
+function getInitialBlockTab() {
+  return isNew.value || !stripKnowledgeBlockComments(form.content).trim() ? 'edit' : 'preview';
+}
 
 type KnowledgeTagRow = {
   id: number;
@@ -422,6 +427,7 @@ const allTags = ref<KnowledgeTagRow[]>([]);
 watch(
   () => editor.idParam.value,
   () => {
+    initializedTabForId.value = null;
     tagModalOpen.value = false;
     linkedAfterCreate.value = false;
     contentScrollTop.value = 0;
@@ -431,6 +437,18 @@ watch(
       contentTextareaRef.value.scrollLeft = 0;
     }
   }
+);
+
+watch(
+  () => [editor.idParam.value, loaded.value, loading.value] as const,
+  ([id, isLoaded, isLoading]) => {
+    if (!isLoaded || isLoading) return;
+    const currentId = id || 'new';
+    if (initializedTabForId.value === currentId) return;
+    blockTab.value = getInitialBlockTab();
+    initializedTabForId.value = currentId;
+  },
+  { immediate: true }
 );
 
 const tagBindingsLoading = ref(false);
