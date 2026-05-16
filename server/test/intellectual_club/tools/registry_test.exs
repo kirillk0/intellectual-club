@@ -9,6 +9,10 @@ defmodule IntellectualClub.Tools.RegistryTest do
     refute "mcp_http" in Registry.list_types()
   end
 
+  test "lists native artifact reader tool type" do
+    assert "native-artifact-reader" in Registry.list_types()
+  end
+
   test "resolves legacy MCP HTTP tool type for existing data" do
     assert Registry.driver_for_type!("mcp_http") == McpHttp
   end

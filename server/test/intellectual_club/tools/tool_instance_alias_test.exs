@@ -13,7 +13,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Web Reader", config: %{}, secrets: %{}},
+        %{type: "mcp-http", name: "Web Reader", config: mcp_config(), secrets: %{}},
         actor: owner
       )
       |> Ash.create!()
@@ -24,7 +24,13 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Trimmed", alias: "  web  ", config: %{}, secrets: %{}},
+        %{
+          type: "mcp-http",
+          name: "Trimmed",
+          alias: "  web  ",
+          config: mcp_config(),
+          secrets: %{}
+        },
         actor: owner
       )
       |> Ash.create!()
@@ -39,7 +45,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
                  type: "mcp-http",
                  name: "Invalid",
                  alias: "bad__alias",
-                 config: %{},
+                 config: mcp_config(),
                  secrets: %{}
                },
                actor: owner
@@ -50,7 +56,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Duplicate", alias: "web", config: %{}, secrets: %{}},
+        %{type: "mcp-http", name: "Duplicate", alias: "web", config: mcp_config(), secrets: %{}},
         actor: owner
       )
       |> Ash.create!()
@@ -61,7 +67,13 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Other owner", alias: "web", config: %{}, secrets: %{}},
+        %{
+          type: "mcp-http",
+          name: "Other owner",
+          alias: "web",
+          config: mcp_config(),
+          secrets: %{}
+        },
         actor: other_owner
       )
       |> Ash.create!()
@@ -76,7 +88,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Source", alias: "web", config: %{}, secrets: %{}},
+        %{type: "mcp-http", name: "Source", alias: "web", config: mcp_config(), secrets: %{}},
         actor: owner
       )
       |> Ash.create!()
@@ -96,7 +108,13 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
-        %{type: "mcp-http", name: "Unique tool", alias: "unique_tool", config: %{}, secrets: %{}},
+        %{
+          type: "mcp-http",
+          name: "Unique tool",
+          alias: "unique_tool",
+          config: mcp_config(),
+          secrets: %{}
+        },
         actor: owner
       )
       |> Ash.create!()
@@ -146,5 +164,9 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
                actor: owner
              )
              |> Ash.create()
+  end
+
+  defp mcp_config do
+    %{"server_url" => "https://mcp.example.com"}
   end
 end

@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.Registry do
   """
 
   alias IntellectualClub.Tools.Drivers.McpHttp
+  alias IntellectualClub.Tools.Drivers.NativeArtifactReader
   alias IntellectualClub.Tools.Drivers.NativeBraveSearch
   alias IntellectualClub.Tools.Drivers.NativeWebReader
   alias IntellectualClub.Tools.Drivers.Outlet
@@ -16,6 +17,7 @@ defmodule IntellectualClub.Tools.Registry do
     case String.trim(tool_type) do
       "mcp-http" -> McpHttp
       "mcp_http" -> McpHttp
+      "native-artifact-reader" -> NativeArtifactReader
       "native-brave-search" -> NativeBraveSearch
       "native-web-reader" -> NativeWebReader
       "outlet" -> Outlet
@@ -26,6 +28,13 @@ defmodule IntellectualClub.Tools.Registry do
 
   @spec list_types() :: list(String.t())
   def list_types do
-    ["mcp-http", "native-brave-search", "native-web-reader", "outlet", "ssh"]
+    [
+      "mcp-http",
+      "native-artifact-reader",
+      "native-brave-search",
+      "native-web-reader",
+      "outlet",
+      "ssh"
+    ]
   end
 end

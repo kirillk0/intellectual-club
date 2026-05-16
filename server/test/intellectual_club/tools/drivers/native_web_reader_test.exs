@@ -86,6 +86,39 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     assert message =~ "ÐÂ½¨»á»°Ê§°Ü"
   end
 
+  test "read_url uses shared document pagination for text responses" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        type: "native-web-reader",
+        config: %{"chunk_size_tokens" => 10},
+        secrets: %{}
+      })
+
+    body = """
+    alpha beta gamma delta epsilon zeta eta theta
+
+    lambda mu needle nu xi omicron pi rho sigma
+
+    final paragraph with enough words for another chunk
+    """
+
+    {:ok, server} = start_raw_http_server(200, "text/plain", body)
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:ok, {text, raw}} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/text",
+               "page" => 1
+             })
+
+    assert text =~ "Source: http://127.0.0.1:#{server.port}/text"
+    assert text =~ "Page: 1 /"
+    assert raw["pages_total"] >= 1
+  end
+
   defp create_tool_instance!(actor, attrs) when is_map(attrs) do
     ToolInstance
     |> Ash.Changeset.for_create(

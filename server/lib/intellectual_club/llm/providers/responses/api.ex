@@ -12,15 +12,15 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   @raw_reasoning_offset 1_000
   @retryable_http_status_codes MapSet.new([429, 502])
   @retryable_provider_error_codes MapSet.new([
-    "server_is_overloaded",
-    "rate_limit_exceeded",
-    "rate_limited",
-    "temporarily_unavailable"
-  ])
+                                    "server_is_overloaded",
+                                    "rate_limit_exceeded",
+                                    "rate_limited",
+                                    "temporarily_unavailable"
+                                  ])
   @retryable_provider_error_types MapSet.new([
-    "service_unavailable_error",
-    "rate_limit_error"
-  ])
+                                    "service_unavailable_error",
+                                    "rate_limit_error"
+                                  ])
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 
