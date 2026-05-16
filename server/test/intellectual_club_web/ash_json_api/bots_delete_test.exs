@@ -13,6 +13,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
   alias IntellectualClub.Files.FilePayload
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Db
+  alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, ToolInstance}
 
   import Ecto.Query
   require Ash.Query
@@ -77,11 +78,56 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
       )
       |> Ash.create!(actor: actor)
 
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp-http",
+          name: "Delete deps tool",
+          alias: "web",
+          config: %{"server_url" => "https://example.com/mcp"},
+          secrets: %{"bearer_token" => "x"},
+          max_output_tokens: 2000
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     _binding =
       BotKnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
         %{bot_id: bot.id, knowledge_block_id: block.id, enabled: true, sequence: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _tool_binding =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: tool.id,
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 1
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _user_tool_binding =
+      BotUserToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: tool.id,
+          enabled: true,
+          sequence: 2
+        },
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -113,6 +159,11 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
       |> Ash.read!(actor: actor)
 
     assert remaining_bindings == []
+
+    refute Ash.read!(BotToolBinding, actor: actor) |> Enum.any?(&(&1.bot_id == bot.id))
+
+    refute Ash.read!(BotUserToolBinding, actor: actor)
+           |> Enum.any?(&(&1.bot_id == bot.id))
 
     updated_chat = Ash.get!(Chat, chat.id, actor: actor)
     assert updated_chat.bot_id == nil
