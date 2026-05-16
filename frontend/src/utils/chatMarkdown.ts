@@ -430,9 +430,29 @@ const wrapTables = (html: string) => {
   return doc.body.innerHTML;
 };
 
+const addCodeCopyButtons = (root: HTMLElement) => {
+  root.querySelectorAll('pre > code').forEach((code) => {
+    const pre = code.parentElement;
+    if (!pre || pre.parentElement?.classList.contains('code-copy-block')) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'code-copy-block';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-copy-button';
+    button.setAttribute('data-code-copy-button', 'true');
+    button.setAttribute('aria-label', 'Copy code');
+    button.setAttribute('title', 'Copy code');
+
+    pre.parentNode?.insertBefore(wrapper, pre);
+    wrapper.append(button, pre);
+  });
+};
+
 export const renderChatMessageHtml = (
   content: string | null | undefined,
-  options?: { highlightCode?: boolean }
+  options?: { highlightCode?: boolean; codeCopyButtons?: boolean }
 ) => {
   const raw = content == null || content === '' ? '…' : content;
   const prepared = prepareMarkdownMath(raw);
@@ -448,6 +468,9 @@ export const renderChatMessageHtml = (
   replaceMathPlaceholders(wrapper, prepared.placeholders);
   renderTexExpressions(wrapper);
   highlightQuotes(wrapper);
+  if (options?.codeCopyButtons) {
+    addCodeCopyButtons(wrapper);
+  }
 
   const sanitized = DOMPurify.sanitize(wrapper.innerHTML, SANITIZE_OPTIONS);
   return wrapTables(sanitized);

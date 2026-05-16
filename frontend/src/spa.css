@@ -1350,6 +1350,57 @@ select.full {
   margin: 0 0 8px;
 }
 
+.message .bubble .code-copy-block {
+  position: relative;
+  max-width: 100%;
+  margin: 0 0 8px;
+}
+
+.message .bubble .code-copy-block pre {
+  margin: 0;
+  padding-right: 46px;
+}
+
+.message .bubble .code-copy-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(245, 245, 245, 0.82);
+  line-height: 1;
+}
+
+.message .bubble .code-copy-button::before {
+  content: '';
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='7' height='8' rx='1'/%3E%3Cpath d='M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='7' height='8' rx='1'/%3E%3Cpath d='M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.message .bubble .code-copy-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f5;
+}
+
+.message .bubble .code-copy-button.copied {
+  border-color: transparent;
+  background: transparent;
+  color: #9ef0ad;
+}
+
 .message .bubble pre code {
   background: transparent;
   color: inherit;

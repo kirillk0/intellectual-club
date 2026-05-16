@@ -13,7 +13,7 @@
         @attachment-open="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
-      <div class="message-content">
+      <div class="message-content" @click="handleMessageContentClick">
         <template v-for="(part, partIdx) in messageParts" :key="part.key">
           <div class="message-answer-part">
             <span v-if="part.showTimestamp && part.timestamp" class="message-answer-time">
@@ -148,6 +148,7 @@ import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import { copyTextWithFallback } from '@/utils/clipboard';
 
 interface Props {
   message: ChatBranchMessage;
@@ -243,7 +244,7 @@ const messageParts = computed<MessagePart[]>(() => {
 
       parts.push({
         key: partKey(step, item, answerIndex),
-        html: renderMessage(text, { highlightCode: shouldHighlightCode.value }),
+        html: renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true }),
         timestamp: formatTimeOfDay(item.created_at || step.created_at),
         showTimestamp: msg.value.role === 'assistant',
       });
@@ -327,6 +328,33 @@ const totalCostLabel = computed(() => {
 
 const setBubbleEl = (el: Element | null) => {
   props.registerRef?.(el as HTMLElement | null);
+};
+
+const setCopyButtonState = (button: HTMLButtonElement, copied: boolean) => {
+  button.setAttribute('aria-label', copied ? 'Code copied' : 'Copy code');
+  button.setAttribute('title', copied ? 'Code copied' : 'Copy code');
+  button.classList.toggle('copied', copied);
+};
+
+const handleMessageContentClick = async (event: MouseEvent) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const button = target.closest<HTMLButtonElement>('button[data-code-copy-button="true"]');
+  if (!button) return;
+
+  const code = button.closest('.code-copy-block')?.querySelector('pre > code');
+  const text = code?.textContent ?? '';
+  if (!text) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const copied = await copyTextWithFallback(text, { promptLabel: 'Copy the code manually:' });
+  if (!copied) return;
+
+  setCopyButtonState(button, true);
+  window.setTimeout(() => setCopyButtonState(button, false), 1200);
 };
 </script>
 
