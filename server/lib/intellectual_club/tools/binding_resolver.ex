@@ -206,10 +206,13 @@ defmodule IntellectualClub.Tools.BindingResolver do
 
       :fixed ->
         if function_exported?(driver, :fixed_functions, 1) do
+          overrides = fixed_function_overrides(tool_instance, actor)
+
           apply(driver, :fixed_functions, [tool_instance])
           |> List.wrap()
           |> Enum.map(&normalize_fixed_function/1)
           |> Enum.reject(&is_nil/1)
+          |> Enum.map(&apply_fixed_function_override(&1, overrides))
         else
           []
         end
@@ -254,6 +257,24 @@ defmodule IntellectualClub.Tools.BindingResolver do
   end
 
   defp normalize_fixed_function(_other), do: nil
+
+  defp fixed_function_overrides(%{id: tool_instance_id}, actor)
+       when is_integer(tool_instance_id) do
+    ToolFunction
+    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id)
+    |> Ash.read!(actor: actor)
+    |> Map.new(fn function -> {function.name, function.enabled} end)
+  end
+
+  defp fixed_function_overrides(_tool_instance, _actor), do: %{}
+
+  defp apply_fixed_function_override(%{name: name} = function, overrides)
+       when is_map(overrides) do
+    case Map.fetch(overrides, name) do
+      {:ok, enabled} when is_boolean(enabled) -> %{function | enabled: enabled}
+      _other -> function
+    end
+  end
 
   defp load_bot_bindings(bot_id, actor) when is_integer(bot_id) do
     BotToolBinding

@@ -155,6 +155,7 @@ defmodule IntellectualClubWeb.Router do
     get "/tools/types", ToolsController, :types
     get "/llm-provider-types", LlmProvidersController, :types
     post "/tools/:id/discover", ToolsController, :discover
+    patch "/tools/:id/fixed-functions/:name", ToolsController, :update_fixed_function
     patch "/tool-functions/:id", ToolsController, :update_function
     get "/llm-usage", LlmUsageController, :index
     get "/llm-providers/:id/models", LlmProvidersController, :models

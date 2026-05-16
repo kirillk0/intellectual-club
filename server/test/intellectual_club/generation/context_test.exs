@@ -20,7 +20,10 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Tools.BotUserToolBinding
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
+
+  require Ash.Query
 
   test "builds system prompt from bot blocks and prepends it to chat history" do
     %{user: actor} = user_fixture()
@@ -213,6 +216,58 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert %{} = context.tool_instances_by_alias
     assert context.tool_instances_by_alias["web"].id == tool_instance.id
     assert context.tool_instances_by_alias["web"].secrets == %{"bearer_token" => "token-value"}
+
+    assert Enum.any?(context.tools_payload, fn item ->
+             get_in(item, ["function", "name"]) == "web__web_search"
+           end)
+  end
+
+  test "omits disabled fixed driver functions from tools payload and restores them when re-enabled" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Fixed function override bot")
+    tool_instance = create_context_tool!(actor, "Fixed Search", "web")
+    create_bot_tool_binding!(actor, bot, tool_instance, :shared, 10)
+
+    _ =
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: tool_instance.id,
+          name: "web_search",
+          description: "Persisted override",
+          parameters_schema: %{"type" => "object"},
+          enabled: false,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Fixed disabled tools chat", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Search for Elixir", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    refute Enum.any?(context.tools_payload, fn item ->
+             get_in(item, ["function", "name"]) == "web__web_search"
+           end)
+
+    ToolFunction
+    |> Ash.Query.filter(tool_instance_id == ^tool_instance.id and name == "web_search")
+    |> Ash.read_one!(actor: actor)
+    |> Ash.Changeset.for_update(:update, %{enabled: true}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"

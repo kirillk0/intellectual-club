@@ -355,7 +355,7 @@
 	            </p>
 
 	            <div v-else class="stack" style="gap: 10px">
-	              <div v-for="fn in functions" :key="fn.id" class="card" style="padding: 10px">
+	              <div v-for="fn in functions" :key="fn.key" class="card" style="padding: 10px">
 	                <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
 	                  <div style="min-width: 0">
 	                    <div style="font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
@@ -373,7 +373,7 @@
                     <input
                       type="checkbox"
                       :checked="fn.enabled"
-                      :disabled="savingFunctionIds.has(fn.id)"
+                      :disabled="savingFunctionIds.has(fn.key)"
                       @change="toggleFunction(fn, $event)"
                     />
                     enabled
@@ -462,13 +462,15 @@ type ToolInstanceForm = {
 };
 
 type ToolFunctionRow = {
-  id: number;
+  id: number | null;
+  key: string;
   name: string;
   description: string;
   enabled: boolean;
   parameters_schema: unknown;
   discovered_at: string;
   readonly: boolean;
+  fixed: boolean;
 };
 
 const TOOL_DOCUMENT_INCLUDE = 'functions';
@@ -1022,49 +1024,59 @@ function parseFunctionRow(resource: JsonApiResource): ToolFunctionRow | null {
   const id = toIntId(resource.id);
   if (!id) return null;
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  const name = String(attrs.name || '').trim();
 
   return {
     id,
-    name: String(attrs.name || '').trim(),
+    key: `stored:${id}`,
+    name,
     description: String(attrs.description || '').trim(),
     enabled: Boolean(attrs.enabled),
     parameters_schema: attrs.parameters_schema,
     discovered_at: String(attrs.discovered_at || '').trim(),
     readonly: false,
+    fixed: false,
   };
 }
 
 const functionsLoading = ref(false);
 const functionsError = ref<string | null>(null);
 const functions = ref<ToolFunctionRow[]>([]);
-const savingFunctionIds = ref(new Set<number>());
+const persistedFunctionRows = ref<ToolFunctionRow[]>([]);
+const savingFunctionIds = ref(new Set<string>());
 
 function setFixedFunctions() {
   const fixed = currentToolType.value?.fixed_functions || [];
+  const overrides = new Map(persistedFunctionRows.value.map((fn) => [fn.name, fn]));
+
   functions.value = (fixed || []).map((fn, index) => ({
-    id: -(index + 1),
+    id: overrides.get(String(fn.name || '').trim())?.id ?? null,
+    key: `fixed:${String(fn.name || '').trim() || index}`,
     name: String(fn.name || '').trim(),
     description: String(fn.description || '').trim(),
-    enabled: Boolean(fn.enabled),
+    enabled: overrides.get(String(fn.name || '').trim())?.enabled ?? Boolean(fn.enabled),
     parameters_schema: fn.parameters_schema,
-    discovered_at: '',
-    readonly: true,
+    discovered_at: overrides.get(String(fn.name || '').trim())?.discovered_at ?? '',
+    readonly: false,
+    fixed: true,
   }));
   functionsError.value = null;
   functionsLoading.value = false;
 }
 
 function applyToolDocument(payload: JsonApiSingleResponse) {
+  const includedIndex = createJsonApiIncludedIndex(payload.included);
+  const root = payload.data;
+  persistedFunctionRows.value = relatedResources(root, 'functions', includedIndex)
+    .map(parseFunctionRow)
+    .filter((row): row is ToolFunctionRow => Boolean(row));
+
   if (functionsMode.value === 'fixed') {
     setFixedFunctions();
     return;
   }
 
-  const includedIndex = createJsonApiIncludedIndex(payload.included);
-  const root = payload.data;
-  functions.value = relatedResources(root, 'functions', includedIndex)
-    .map(parseFunctionRow)
-    .filter((row): row is ToolFunctionRow => Boolean(row));
+  functions.value = persistedFunctionRows.value;
   functionsError.value = null;
   functionsLoading.value = false;
 }
@@ -1083,6 +1095,7 @@ watch(
     syncDefaultsForFormAndBase();
     discoverStats.value = null;
     functions.value = [];
+    persistedFunctionRows.value = [];
     form.secrets_patch = {};
     form.secrets_clear = {};
     authMethodTouched.value = false;
@@ -1168,22 +1181,41 @@ async function toggleFunction(fn: ToolFunctionRow, event: Event) {
   if (!target) return;
   const nextEnabled = Boolean(target.checked);
 
-  if (savingFunctionIds.value.has(fn.id)) return;
-  savingFunctionIds.value = new Set([...savingFunctionIds.value, fn.id]);
+  if (savingFunctionIds.value.has(fn.key)) return;
+  savingFunctionIds.value = new Set([...savingFunctionIds.value, fn.key]);
 
   try {
-    const payload = await api.patch<{ enabled?: boolean }>(`/api/bff/tool-functions/${fn.id}`, {
-      enabled: nextEnabled,
-    });
+    const payload = fn.fixed
+      ? await api.patch<{ id?: number; enabled?: boolean; discovered_at?: string }>(
+          `/api/bff/tools/${editor.numericId.value}/fixed-functions/${encodeURIComponent(fn.name)}`,
+          {
+            enabled: nextEnabled,
+          }
+        )
+      : await api.patch<{ id?: number; enabled?: boolean; discovered_at?: string }>(`/api/bff/tool-functions/${fn.id}`, {
+          enabled: nextEnabled,
+        });
 
     const persistedEnabled = typeof payload?.enabled === 'boolean' ? payload.enabled : nextEnabled;
-    functions.value = functions.value.map((row) => (row.id === fn.id ? { ...row, enabled: persistedEnabled } : row));
+    functions.value = functions.value.map((row) =>
+      row.key === fn.key
+        ? {
+            ...row,
+            id: typeof payload?.id === 'number' ? payload.id : row.id,
+            enabled: persistedEnabled,
+            discovered_at: typeof payload?.discovered_at === 'string' ? payload.discovered_at : row.discovered_at,
+          }
+        : row
+    );
+    persistedFunctionRows.value = functions.value
+      .filter((row) => typeof row.id === 'number')
+      .map((row) => ({ ...row, fixed: false, key: `stored:${row.id}` }));
   } catch (e) {
     console.error(e);
     alert('Failed to update function.');
   } finally {
     const next = new Set(savingFunctionIds.value);
-    next.delete(fn.id);
+    next.delete(fn.key);
     savingFunctionIds.value = next;
   }
 }

@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Bots.{Bot, BotShare}
   alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.{ToolFunction, ToolInstance}
 
@@ -59,6 +60,154 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
 
     persisted = Ash.get!(ToolFunction, function.id, actor: actor)
     assert persisted.enabled == true
+  end
+
+  test "PATCH /api/bff/tools/:id/fixed-functions/:name creates and updates fixed function overrides",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Fixed function toggle",
+          alias: "web",
+          config: %{},
+          secrets: %{"token" => "token-value"}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> patch("/api/bff/tools/#{tool.id}/fixed-functions/web_search", %{"enabled" => false})
+      |> json_response(200)
+
+    assert response["name"] == "web_search"
+    assert response["enabled"] == false
+    assert response["description"] =~ "Search the web"
+    assert get_in(response, ["parameters_schema", "required"]) == ["query"]
+
+    overrides =
+      ToolFunction
+      |> Ash.Query.filter(tool_instance_id == ^tool.id and name == "web_search")
+      |> Ash.read!(actor: actor)
+
+    assert length(overrides) == 1
+    [override] = overrides
+    assert override.enabled == false
+
+    response =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> patch("/api/bff/tools/#{tool.id}/fixed-functions/web_search", %{"enabled" => true})
+      |> json_response(200)
+
+    assert response["id"] == override.id
+    assert response["enabled"] == true
+
+    overrides =
+      ToolFunction
+      |> Ash.Query.filter(tool_instance_id == ^tool.id and name == "web_search")
+      |> Ash.read!(actor: actor)
+
+    assert length(overrides) == 1
+    assert hd(overrides).enabled == true
+  end
+
+  test "PATCH /api/bff/tools/:id/fixed-functions/:name rejects unknown fixed function",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Fixed function unknown",
+          alias: "web",
+          config: %{},
+          secrets: %{"token" => "token-value"}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> patch("/api/bff/tools/#{tool.id}/fixed-functions/not_a_function", %{"enabled" => false})
+      |> json_response(422)
+
+    assert response["error"] =~ "Unknown fixed function"
+  end
+
+  test "PATCH /api/bff/tools/:id/fixed-functions/:name rejects shared read-only recipients",
+       %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: recipient, password: recipient_password} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Shared fixed tool bot",
+          first_messages: [],
+          variables: %{},
+          max_tool_rounds: 10,
+          context_soft_limit_percent: 80,
+          history_mode: :chat
+        },
+        actor: owner
+      )
+      |> Ash.create!(actor: owner)
+
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Shared fixed function toggle",
+          alias: "web",
+          config: %{},
+          secrets: %{"token" => "token-value"}
+        },
+        actor: owner
+      )
+      |> Ash.create!(actor: owner)
+
+    _ =
+      IntellectualClub.Tools.BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: tool.id,
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 0
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    _ = share_bot!(owner, bot, group)
+
+    response =
+      conn
+      |> sign_in_conn(recipient.username, recipient_password)
+      |> patch("/api/bff/tools/#{tool.id}/fixed-functions/web_search", %{"enabled" => false})
+      |> json_response(422)
+
+    assert response["error"] =~ "read-only"
   end
 
   test "POST /api/bff/tools/:id/discover returns reconcile stats for outlet discovery" do
@@ -213,5 +362,15 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       other ->
         flunk("Unexpected poll result: #{inspect(other)}")
     end
+  end
+
+  defp share_bot!(actor, bot, group) do
+    BotShare
+    |> Ash.Changeset.for_create(
+      :create,
+      %{bot_id: bot.id, user_group_id: group.id},
+      actor: actor
+    )
+    |> Ash.create!()
   end
 end
