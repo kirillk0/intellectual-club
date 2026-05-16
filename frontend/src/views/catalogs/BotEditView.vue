@@ -1111,7 +1111,7 @@ watch([toolBindings.perUserBaseBindings, userToolOverrides.userToolBindings], ()
 });
 
 function addToolBinding(toolInstanceId: number, alias: string) {
-  if (isNew.value || sharedReadonly.value) return false;
+  if (sharedReadonly.value) return false;
   return toolBindings.add(toolInstanceId, alias);
 }
 

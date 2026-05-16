@@ -3,7 +3,7 @@
     <p v-if="sharedReadonly" class="muted">
       This shared bot is read-only. You can still connect your own tools for aliases configured as per-user.
     </p>
-    <p v-else-if="isNew" class="muted">Save the bot before attaching tools.</p>
+    <p v-else-if="isNew" class="muted">Tool bindings will be saved when you save the bot.</p>
 
     <div v-if="sharedReadonly" class="card stack" style="padding: 10px">
       <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
@@ -102,7 +102,7 @@
       emptyText="No tools attached."
       toggleLabel="enabled"
       :readonly="sharedReadonly"
-      :addDisabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
+      :addDisabled="toolLibraryLoading || toolBindingsSaving || sharedReadonly"
       :toggleDisabled="() => toolBindingsSaving"
       :actionsDisabled="() => toolBindingsSaving"
       @add="openToolBindingPicker"
@@ -113,7 +113,7 @@
       <template #header-actions>
         <button
           type="button"
-          :disabled="isNew || toolLibraryLoading || toolBindingsSaving || sharedReadonly"
+          :disabled="toolLibraryLoading || toolBindingsSaving || sharedReadonly"
           @click="openToolBindingPicker"
         >
           Add
@@ -223,7 +223,7 @@ watch(
 );
 
 function openToolBindingPicker() {
-  if (props.isNew || props.sharedReadonly) return;
+  if (props.sharedReadonly) return;
   if (!props.toolLibrary.length && !props.toolLibraryLoading) emit('load-tool-library');
   toolBindingPickerOpen.value = true;
 }
