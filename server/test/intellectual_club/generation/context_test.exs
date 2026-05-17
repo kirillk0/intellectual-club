@@ -295,6 +295,11 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert String.contains?(
              context.system_prompt,
+             "# Available tool instances\nThe available tools are grouped by tool instance."
+           )
+
+    assert String.contains?(
+             context.system_prompt,
              "Tool names have the form `<tool_alias>__<function_name>`."
            )
 
@@ -307,8 +312,13 @@ defmodule IntellectualClub.Generation.ContextTest do
              "Type description: Execute remote commands on an SSH host."
            )
 
+    assert String.contains?(
+             context.system_prompt,
+             "Type description: Execute remote commands on an SSH host.\n\n### Available functions\n- `"
+           )
+
     assert String.contains?(context.system_prompt, "`staging_ssh__run_command`")
-    assert String.contains?(context.system_prompt, "Instance description:\nStaging server.")
+    assert String.contains?(context.system_prompt, "### Instance description\nStaging server.")
     assert String.contains?(context.system_prompt, "Literal {{tool_target}}.")
     refute String.contains?(context.system_prompt, "staging_ssh__upload_file")
     assert String.contains?(context.system_prompt, "## Tool instance `prod_web`")
@@ -459,7 +469,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert String.contains?(context.system_prompt, "## Tool instance `shell`")
     assert String.contains?(context.system_prompt, "`shell__run_command`")
-    assert String.contains?(context.system_prompt, "Instance context:\nRunner hostname: dev-host")
+    assert String.contains?(context.system_prompt, "### Instance context\nRunner hostname: dev-host")
     assert String.contains?(context.system_prompt, "Runner platform: macos")
     assert String.contains?(context.system_prompt, "Runner shell: /bin/zsh -c (kind: zsh)")
   end

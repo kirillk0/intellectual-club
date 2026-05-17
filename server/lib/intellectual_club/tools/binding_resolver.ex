@@ -223,7 +223,6 @@ defmodule IntellectualClub.Tools.BindingResolver do
     else
       [
         "# Available tool instances",
-        "",
         "The available tools are grouped by tool instance. Tool names have the form `<tool_alias>__<function_name>`.",
         "",
         Enum.join(group_sections, "\n\n")
@@ -258,10 +257,10 @@ defmodule IntellectualClub.Tools.BindingResolver do
         maybe_line("Display name: ", display_name),
         maybe_line("Type: ", type_line),
         maybe_line("Type description: ", type_description),
-        "Available functions:",
+        "\n### Available functions",
         render_function_list(alias_value, functions),
-        maybe_block("Instance description:", instance_description),
-        maybe_block("Instance context:", instance_context)
+        maybe_block("### Instance description", instance_description),
+        maybe_block("### Instance context", instance_context)
       ]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
@@ -281,7 +280,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
   defp maybe_line(prefix, value), do: prefix <> value
 
   defp maybe_block(_title, ""), do: ""
-  defp maybe_block(title, value), do: title <> "\n" <> value
+  defp maybe_block(title, value), do: "\n" <> title <> "\n" <> value
 
   defp format_type_line(%{type: type, type_title: title}) do
     type = type |> to_string() |> String.trim()
