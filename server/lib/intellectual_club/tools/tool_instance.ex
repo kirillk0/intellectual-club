@@ -46,6 +46,13 @@ defmodule IntellectualClub.Tools.ToolInstance do
       public?(true)
     end
 
+    attribute :description, :string do
+      allow_nil?(false)
+      public?(true)
+      default("")
+      constraints(trim?: false, allow_empty?: true)
+    end
+
     attribute :alias, :string do
       allow_nil?(false)
       public?(true)
@@ -221,7 +228,17 @@ defmodule IntellectualClub.Tools.ToolInstance do
     end
 
     create :create do
-      accept([:type, :name, :alias, :config, :secrets, :max_output_tokens, :rps_limit])
+      accept([
+        :type,
+        :name,
+        :description,
+        :alias,
+        :config,
+        :secrets,
+        :max_output_tokens,
+        :rps_limit
+      ])
+
       change(relate_actor(:owner))
       change({ValidateToolType, []})
       change({ValidateToolAlias, []})
@@ -253,6 +270,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
         |> Ash.Changeset.change_attributes(%{
           type: source.type,
           name: Duplication.next_copy_label(source.name),
+          description: source.description,
           alias: source.alias || source.name,
           config: source.config,
           secrets: if(preserve_secrets?, do: source.secrets, else: %{}),
@@ -300,7 +318,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
     end
 
     update :update do
-      accept([:name, :alias, :config, :secrets, :max_output_tokens, :rps_limit])
+      accept([:name, :description, :alias, :config, :secrets, :max_output_tokens, :rps_limit])
       require_atomic?(false)
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})

@@ -213,6 +213,9 @@ defmodule IntellectualClub.Generation.Context do
     config_bindings = load_configuration_blocks(chat.llm_configuration_id, actor)
     {config_top_blocks, config_bottom_blocks} = split_configuration_blocks(config_bindings)
     user_blocks = load_user_blocks(actor)
+    tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+    tools_payload = tool_resolution.tools_payload
+    tool_instances_by_alias = tool_resolution.tool_instances_by_alias
 
     system_prompt =
       SystemPrompt.build(
@@ -221,16 +224,13 @@ defmodule IntellectualClub.Generation.Context do
         config_top_blocks: config_top_blocks,
         config_bottom_blocks: config_bottom_blocks,
         user_blocks: user_blocks,
+        tool_context: tool_resolution.tool_context,
         bot_variables: chat.bot && chat.bot.variables,
         chat_variables: chat.variables
       )
 
     supports_image_input =
       bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
-
-    tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
-    tools_payload = tool_resolution.tools_payload
-    tool_instances_by_alias = tool_resolution.tool_instances_by_alias
 
     {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
      provider_oauth_refresh_token, model_name, parameters, timeout_ms, request_payload, messages,

@@ -56,6 +56,19 @@
           <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
         </label>
 
+        <label :class="{ 'field-error': errors.hasField('description') }">
+          Description
+          <textarea
+            v-model="form.description"
+            class="full"
+            rows="5"
+            placeholder="Describe when and how the model should use this tool."
+            @input="errors.clearField('description')"
+          ></textarea>
+          <div v-if="errors.hasField('description')" class="error-text">{{ errors.messageFor('description') }}</div>
+          <div class="muted" style="margin-top: 4px">Visible to the model when this tool is available.</div>
+        </label>
+
         <label :class="{ 'field-error': errors.hasField('type') }">
           Type
           <select
@@ -446,6 +459,7 @@ type ToolDriverMeta = {
 
 type ToolInstanceForm = {
   name: string;
+  description: string;
   alias: string;
   type: string;
   config: Record<string, unknown>;
@@ -562,6 +576,7 @@ function fromApi(resource: JsonApiResource): Partial<ToolInstanceForm> {
 
   return {
     name: normalizeString(attrs.name),
+    description: String(attrs.description || ''),
     alias: normalizeString(attrs.alias),
     type: toolType,
     config,
@@ -620,6 +635,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   editPath: (id) => `/catalogs/tools/${id}`,
   defaultForm: () => ({
     name: '',
+    description: '',
     alias: '',
     type: 'mcp-http',
     config: {},
@@ -638,6 +654,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   toAttributes: (form) => {
     const attrs: Record<string, unknown> = {
       name: form.name,
+      description: form.description,
       alias: form.alias,
       config: normalizeObject(form.config),
       max_output_tokens: form.max_output_tokens,
@@ -665,6 +682,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
   },
   normalizeForDirty: (form) => ({
     name: form.name,
+    description: form.description,
     alias: form.alias,
     type: form.type,
     config: form.config,
@@ -682,7 +700,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     params.set('include', TOOL_DOCUMENT_INCLUDE);
     params.set(
       'fields[tool-instances]',
-      'name,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,secrets_present,can_edit,shared_incoming,shared_outgoing,functions'
+      'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,secrets_present,can_edit,shared_incoming,shared_outgoing,functions'
     );
     return params;
   },

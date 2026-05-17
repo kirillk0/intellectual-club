@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
 
   test "GET /api/bff/chats/:id/state returns trace for markdown user message", %{conn: conn} do
@@ -574,6 +575,68 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       )
       |> Ash.create!(actor: actor)
 
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "mcp-http",
+          name: "Prompt MCP",
+          description: "Use from prompt modal.\nLiteral {{tool_target}}.",
+          alias: "prompt_mcp",
+          config: %{"server_url" => "https://example.com/mcp"},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _enabled_function =
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: tool.id,
+          name: "search_docs",
+          description: "Search project docs.",
+          parameters_schema: %{"type" => "object"},
+          enabled: true,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _disabled_function =
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: tool.id,
+          name: "disabled_tool",
+          description: "Disabled tool.",
+          parameters_schema: %{"type" => "object"},
+          enabled: false,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _tool_binding =
+      ChatToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_id: chat.id,
+          tool_instance_id: tool.id,
+          enabled: true,
+          sequence: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
     {:ok, _message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
 
     payload =
@@ -592,9 +655,30 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     assert is_binary(payload["compiled_prompt_text"])
     assert String.contains?(payload["compiled_prompt_text"], "config prompt")
+    assert String.contains?(payload["compiled_prompt_text"], "# Available tool instances")
+    assert String.contains?(payload["compiled_prompt_text"], "## Tool instance `prompt_mcp`")
+    assert String.contains?(payload["compiled_prompt_text"], "Type: MCP HTTP (mcp-http)")
+    assert String.contains?(payload["compiled_prompt_text"], "`prompt_mcp__search_docs`")
+
+    assert String.contains?(
+             payload["compiled_prompt_text"],
+             "Use from prompt modal.\nLiteral {{tool_target}}."
+           )
+
+    refute String.contains?(payload["compiled_prompt_text"], "prompt_mcp__disabled_tool")
     assert payload["counters"]["history_message_count"] == 1
     refute Map.has_key?(payload, "branch")
     refute Map.has_key?(payload, "options")
+
+    state_payload =
+      conn
+      |> recycle()
+      |> sign_in_conn(actor.username, password)
+      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> json_response(200)
+
+    assert String.contains?(state_payload["compiled_prompt_text"], "# Available tool instances")
+    assert String.contains?(state_payload["compiled_prompt_text"], "`prompt_mcp__search_docs`")
   end
 
   defp all_text_contents(message_payload) do

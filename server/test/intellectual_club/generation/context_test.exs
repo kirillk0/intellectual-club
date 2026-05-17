@@ -16,6 +16,7 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.BotUserToolBinding
   alias IntellectualClub.Tools.BindingResolver
@@ -220,6 +221,247 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"
            end)
+  end
+
+  test "appends synthetic tool context grouped by active tool instance" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Synthetic tool context bot")
+
+    staging_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "ssh",
+          name: "Staging SSH",
+          description: "Staging server.\nUse for staging checks.\nLiteral {{tool_target}}.",
+          alias: "staging_ssh",
+          config: %{"host" => "staging.example.com", "username" => "deploy"},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    prod_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-brave-search",
+          name: "Production Search",
+          description: "Search docs for production incidents only.",
+          alias: "prod_web",
+          config: %{},
+          secrets: %{"token" => "prod-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _disabled_upload =
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: staging_tool.id,
+          name: "upload_file",
+          description: "Disabled upload override",
+          parameters_schema: %{"type" => "object"},
+          enabled: false,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    create_bot_tool_binding!(actor, bot, staging_tool, :shared, 10)
+    create_bot_tool_binding!(actor, bot, prod_tool, :shared, 20)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Synthetic tool context chat", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Check staging", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert String.contains?(context.system_prompt, "# Available tool instances")
+
+    assert String.contains?(
+             context.system_prompt,
+             "Tool names have the form `<tool_alias>__<function_name>`."
+           )
+
+    assert String.contains?(context.system_prompt, "## Tool instance `staging_ssh`")
+    assert String.contains?(context.system_prompt, "Display name: Staging SSH")
+    assert String.contains?(context.system_prompt, "Type: SSH (ssh)")
+
+    assert String.contains?(
+             context.system_prompt,
+             "Type description: Execute remote commands on an SSH host."
+           )
+
+    assert String.contains?(context.system_prompt, "`staging_ssh__run_command`")
+    assert String.contains?(context.system_prompt, "Instance description:\nStaging server.")
+    assert String.contains?(context.system_prompt, "Literal {{tool_target}}.")
+    refute String.contains?(context.system_prompt, "staging_ssh__upload_file")
+    assert String.contains?(context.system_prompt, "## Tool instance `prod_web`")
+    assert String.contains?(context.system_prompt, "`prod_web__web_search`")
+
+    assert Enum.any?(context.tools_payload, fn item ->
+             get_in(item, ["function", "name"]) == "staging_ssh__run_command"
+           end)
+
+    refute Enum.any?(context.tools_payload, fn item ->
+             get_in(item, ["function", "name"]) == "staging_ssh__upload_file"
+           end)
+  end
+
+  test "provider requests include synthetic tool context in provider-specific system fields" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Provider synthetic context bot")
+    tool = create_context_tool!(actor, "Provider Search", "provider_web")
+    create_bot_tool_binding!(actor, bot, tool, :shared, 10)
+
+    chat_completion_config = create_llm_configuration!(actor, :openrouter_chat_completion)
+
+    chat_completion_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Chat Completions synthetic context",
+          bot_id: bot.id,
+          llm_configuration_id: chat_completion_config.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat_completion_chat, :user, "Search", actor: actor)
+
+    chat_completion_context =
+      Context.build!(chat_completion_chat.id, actor: actor, chunk_delay_ms: 0)
+
+    [system_message | _] = chat_completion_context.request_payload["messages"]
+    assert system_message["role"] == "system"
+    assert String.contains?(system_message["content"], "# Available tool instances")
+    assert String.contains?(system_message["content"], "`provider_web__web_search`")
+
+    responses_config = create_llm_configuration!(actor, :responses)
+
+    responses_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Responses synthetic context",
+          bot_id: bot.id,
+          llm_configuration_id: responses_config.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(responses_chat, :user, "Search", actor: actor)
+
+    responses_context = Context.build!(responses_chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert String.contains?(
+             responses_context.request_payload["instructions"],
+             "# Available tool instances"
+           )
+
+    assert String.contains?(
+             responses_context.request_payload["instructions"],
+             "`provider_web__web_search`"
+           )
+  end
+
+  test "synthetic tool context includes outlet runner instance context when online" do
+    Runtime.reset!()
+
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Outlet instance context bot")
+
+    tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "outlet",
+          name: "Shell Outlet",
+          description: "Local shell runner.",
+          alias: "shell",
+          config: %{},
+          secrets: %{"token" => "runner-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    _function =
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: tool.id,
+          name: "run_command",
+          description: "Run a shell command.",
+          parameters_schema: %{"type" => "object"},
+          enabled: true,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    {:ok, %{status: "idle"}} =
+      Runtime.poll(tool, %{
+        "runner_id" => "shell-runner",
+        "runner_session_id" => "shell-session",
+        "capacity" => 0,
+        "max_wait_seconds" => 0,
+        "metadata" => %{
+          "hostname" => "dev-host",
+          "platform" => "macos",
+          "sys_platform" => "darwin",
+          "os_name" => "posix",
+          "shell_kind" => "zsh",
+          "shell_display" => "/bin/zsh -c"
+        }
+      })
+
+    create_bot_tool_binding!(actor, bot, tool, :shared, 10)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Outlet context chat", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Run pwd", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert String.contains?(context.system_prompt, "## Tool instance `shell`")
+    assert String.contains?(context.system_prompt, "`shell__run_command`")
+    assert String.contains?(context.system_prompt, "Instance context:\nRunner hostname: dev-host")
+    assert String.contains?(context.system_prompt, "Runner platform: macos")
+    assert String.contains?(context.system_prompt, "Runner shell: /bin/zsh -c (kind: zsh)")
   end
 
   test "omits disabled fixed driver functions from tools payload and restores them when re-enabled" do
@@ -2276,6 +2518,44 @@ defmodule IntellectualClub.Generation.ContextTest do
     )
     |> Ash.create!()
   end
+
+  defp create_llm_configuration!(actor, provider_type) do
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "#{provider_type} provider",
+          type: provider_type,
+          base_url: provider_base_url(provider_type),
+          api_key: "provider-key"
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    LlmConfiguration
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        provider_id: provider.id,
+        model_name: "test-model",
+        note: nil,
+        parameters: %{},
+        enabled: true,
+        timeout_seconds: 30,
+        context_length: 8192,
+        supports_cache_control: false,
+        supports_image_input: false
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp provider_base_url(:responses), do: "https://api.openai.com/v1"
+  defp provider_base_url(:openrouter_chat_completion), do: "https://openrouter.ai/api/v1"
+  defp provider_base_url(_type), do: "https://example.com/v1"
 
   defp create_step!(message_id, sequence, actor, attrs \\ %{}) do
     ChatMessageStep

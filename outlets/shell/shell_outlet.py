@@ -179,16 +179,6 @@ def _detect_shell_executor() -> tuple[str, list[str], str]:
     return ("sh", ["/bin/sh", "-c"], "/bin/sh -c")
 
 
-def _platform_label() -> str:
-    if os.name == "nt":
-        return "windows"
-    if sys.platform == "darwin":
-        return "macos"
-    if sys.platform.startswith("linux"):
-        return "linux"
-    return sys.platform
-
-
 def _subprocess_isolation_kwargs() -> dict[str, Any]:
     if os.name == "nt":
         create_new_group = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
@@ -287,12 +277,18 @@ _SHELL_KIND, _SHELL_ARGV_PREFIX, _SHELL_DISPLAY = _detect_shell_executor()
 _SHELL_TOOL_DESCRIPTION = (
     "Run a shell command and return stdout/stderr. "
     "If `argv` is provided, the command is executed directly (no shell). "
-    f"If `command` is provided, it is executed via {_SHELL_DISPLAY} on {_platform_label()} (non-interactive). "
+    "If `command` is provided, it is executed via the runner shell (non-interactive). "
     "Prefer `argv` for portability."
 )
 
 
 class ShellOutlet:
+    def outlet_runner_metadata(self) -> dict[str, Any]:
+        return {
+            "shell_kind": _SHELL_KIND,
+            "shell_display": _SHELL_DISPLAY,
+        }
+
     @outlet_tool(
         description=_SHELL_TOOL_DESCRIPTION,
         input_schema={

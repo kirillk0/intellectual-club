@@ -23,6 +23,7 @@ export function parseToolInstanceOption(resource: JsonApiResource | null | undef
   return {
     id,
     name: String(attrs.name || '').trim(),
+    description: String(attrs.description || ''),
     alias: String(attrs.alias || '').trim(),
     type: String(attrs.type || '').trim(),
     type_title: String(attrs.type_title || '').trim() || null,

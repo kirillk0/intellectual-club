@@ -246,6 +246,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     %{
       id: tool.id,
       name: tool.name,
+      description: loaded_string(Map.get(tool, :description)),
       alias: tool.alias,
       type: tool.type,
       type_title: tool_type_title(tool.type),
@@ -419,6 +420,11 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   defp loaded_value(%Ash.NotLoaded{}), do: nil
   defp loaded_value(value), do: value
+
+  defp loaded_string(%Ash.NotLoaded{}), do: ""
+  defp loaded_string(value) when is_binary(value), do: value
+  defp loaded_string(nil), do: ""
+  defp loaded_string(value), do: to_string(value)
 
   defp loaded_records(%Ash.NotLoaded{}), do: []
   defp loaded_records(values) when is_list(values), do: values

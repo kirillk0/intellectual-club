@@ -29,6 +29,24 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   def supports_discovery?, do: true
 
   @impl true
+  def instance_prompt_context(%ToolInstance{} = tool_instance) do
+    metadata = Runtime.runner_metadata(tool_instance)
+
+    [
+      metadata_line("Runner hostname", metadata_value(metadata, "hostname")),
+      metadata_line("Runner platform", platform_summary(metadata)),
+      metadata_line("Runner shell", shell_summary(metadata))
+    ]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      context -> context
+    end
+  end
+
+  @impl true
   def default_config do
     %{
       "max_concurrency" => 20,
@@ -144,6 +162,56 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
 
     {:ok, {text, raw}}
   end
+
+  defp metadata_line(_label, ""), do: ""
+  defp metadata_line(label, value), do: "#{label}: #{value}"
+
+  defp metadata_value(metadata, key) when is_map(metadata) and is_binary(key) do
+    (Map.get(metadata, key) || Map.get(metadata, String.to_atom(key)) || "")
+    |> to_string()
+    |> String.trim()
+    |> String.slice(0, 200)
+  end
+
+  defp metadata_value(_metadata, _key), do: ""
+
+  defp platform_summary(metadata) when is_map(metadata) do
+    platform = metadata_value(metadata, "platform")
+    sys_platform = metadata_value(metadata, "sys_platform")
+    os_name = metadata_value(metadata, "os_name")
+
+    details =
+      []
+      |> maybe_append_detail("sys.platform", sys_platform)
+      |> maybe_append_detail("os.name", os_name)
+      |> Enum.join(", ")
+
+    cond do
+      platform != "" and details != "" -> "#{platform} (#{details})"
+      platform != "" -> platform
+      details != "" -> details
+      true -> ""
+    end
+  end
+
+  defp platform_summary(_metadata), do: ""
+
+  defp shell_summary(metadata) when is_map(metadata) do
+    shell_display = metadata_value(metadata, "shell_display")
+    shell_kind = metadata_value(metadata, "shell_kind")
+
+    cond do
+      shell_display != "" and shell_kind != "" -> "#{shell_display} (kind: #{shell_kind})"
+      shell_display != "" -> shell_display
+      shell_kind != "" -> shell_kind
+      true -> ""
+    end
+  end
+
+  defp shell_summary(_metadata), do: ""
+
+  defp maybe_append_detail(parts, _label, ""), do: parts
+  defp maybe_append_detail(parts, label, value), do: parts ++ ["#{label}=#{value}"]
 
   @spec discovered_tools_from_raw(map()) :: {:ok, list(map())} | {:error, String.t()}
   def discovered_tools_from_raw(%{} = raw) do

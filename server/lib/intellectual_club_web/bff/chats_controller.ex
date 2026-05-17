@@ -522,7 +522,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       prompt_context =
         build_prompt_context_payload(chat, actor,
           history: messages,
-          chat_blocks: chat_blocks
+          chat_blocks: chat_blocks,
+          tool_context: tool_resolution.tool_context
         )
 
       bots = load_bots(actor)
@@ -565,8 +566,15 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat_id = String.to_integer(id)
       chat = Ash.get!(Chat, chat_id, actor: actor)
       history = Threads.active_branch(chat, actor)
+      tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
 
-      json(conn, build_prompt_context_payload(chat, actor, history: history))
+      json(
+        conn,
+        build_prompt_context_payload(chat, actor,
+          history: history,
+          tool_context: tool_resolution.tool_context
+        )
+      )
     end
   end
 
@@ -1007,9 +1015,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         load_prompt_sources(chat, chat_blocks, actor)
       end)
 
+    tool_context =
+      Keyword.get_lazy(opts, :tool_context, fn ->
+        BindingResolver.resolve_for_chat(chat, actor).tool_context
+      end)
+
     %{
       prompt_sources: serialize_prompt_sources(prompt_sources),
-      compiled_prompt_text: compiled_prompt_text(chat, prompt_sources),
+      compiled_prompt_text: compiled_prompt_text(chat, prompt_sources, tool_context),
       counters:
         ChatMetrics.counters_from_history(chat, history, actor, prompt_sources: prompt_sources)
     }
@@ -1024,7 +1037,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     }
   end
 
-  defp compiled_prompt_text(chat, prompt_sources) do
+  defp compiled_prompt_text(chat, prompt_sources, tool_context) do
     bot_blocks = prompt_blocks_from_bindings(Map.get(prompt_sources, :bot, []))
     chat_blocks = prompt_blocks_from_bindings(Map.get(prompt_sources, :chat, []))
 
@@ -1040,6 +1053,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       config_top_blocks: config_top_blocks,
       config_bottom_blocks: config_bottom_blocks,
       user_blocks: user_blocks,
+      tool_context: tool_context,
       bot_variables: bot_variables,
       chat_variables: chat.variables
     )

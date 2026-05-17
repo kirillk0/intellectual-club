@@ -30,12 +30,15 @@ defmodule IntellectualClub.Tools.BindingResolver do
       |> effective_entries()
 
     missing_aliases = missing_per_user_aliases(bot_bindings, entries)
+    tool_groups = build_tool_groups(entries, actor)
 
     %{
       ordered_alias_entries: alias_entries(entries),
       effective_tool_bindings: entries,
       tool_instances_by_alias: Map.new(entries, &{&1.alias, &1.tool_instance}),
-      tools_payload: build_tools_payload(entries, actor),
+      tools_payload: tools_payload_from_groups(tool_groups),
+      tool_context: render_tool_context(tool_groups),
+      tool_groups: tool_groups,
       missing_aliases: missing_aliases,
       active_tool_instances: unique_tool_instances(entries)
     }
@@ -47,6 +50,8 @@ defmodule IntellectualClub.Tools.BindingResolver do
       effective_tool_bindings: [],
       tool_instances_by_alias: %{},
       tools_payload: [],
+      tool_context: "",
+      tool_groups: [],
       missing_aliases: [],
       active_tool_instances: []
     }
@@ -155,35 +160,185 @@ defmodule IntellectualClub.Tools.BindingResolver do
 
   defp unique_tool_instances(_other), do: []
 
-  defp build_tools_payload(entries, actor) when is_list(entries) do
+  defp build_tool_groups(entries, actor) when is_list(entries) do
     Enum.flat_map(entries, fn %{alias: alias_value, tool_instance: tool_instance} ->
-      functions = list_model_functions(tool_instance, actor)
+      functions =
+        tool_instance
+        |> list_model_functions(actor)
+        |> Enum.filter(& &1.enabled)
 
-      Enum.flat_map(functions, fn fn_spec ->
-        if fn_spec.enabled do
-          [
-            %{
-              "type" => "function",
-              "function" => %{
-                "name" => "#{alias_value}__#{fn_spec.name}",
-                "description" => to_string(fn_spec.description || ""),
-                "parameters" =>
-                  if(
-                    is_map(fn_spec.parameters_schema) and map_size(fn_spec.parameters_schema) > 0,
-                    do: fn_spec.parameters_schema,
-                    else: %{"type" => "object", "properties" => %{}}
-                  )
-              }
-            }
-          ]
-        else
-          []
-        end
+      if functions == [] do
+        []
+      else
+        tool_type = tool_instance.type |> to_string() |> String.trim()
+        driver = Registry.driver_for_type!(tool_type)
+
+        [
+          %{
+            alias: alias_value,
+            tool_instance: tool_instance,
+            type: tool_type,
+            type_title: driver_title(driver, tool_type),
+            type_description: driver_description(driver),
+            instance_context: driver_instance_prompt_context(driver, tool_instance),
+            functions: functions
+          }
+        ]
+      end
+    end)
+  end
+
+  defp build_tool_groups(_other, _actor), do: []
+
+  defp tools_payload_from_groups(groups) when is_list(groups) do
+    Enum.flat_map(groups, fn %{alias: alias_value, functions: functions} ->
+      Enum.map(functions, fn fn_spec ->
+        %{
+          "type" => "function",
+          "function" => %{
+            "name" => "#{alias_value}__#{fn_spec.name}",
+            "description" => to_string(fn_spec.description || ""),
+            "parameters" =>
+              if(
+                is_map(fn_spec.parameters_schema) and map_size(fn_spec.parameters_schema) > 0,
+                do: fn_spec.parameters_schema,
+                else: %{"type" => "object", "properties" => %{}}
+              )
+          }
+        }
       end)
     end)
   end
 
-  defp build_tools_payload(_other, _actor), do: []
+  defp tools_payload_from_groups(_other), do: []
+
+  defp render_tool_context(groups) when is_list(groups) and groups != [] do
+    group_sections =
+      groups
+      |> Enum.map(&render_tool_group/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if group_sections == [] do
+      ""
+    else
+      [
+        "# Available tool instances",
+        "",
+        "The available tools are grouped by tool instance. Tool names have the form `<tool_alias>__<function_name>`.",
+        "",
+        Enum.join(group_sections, "\n\n")
+      ]
+      |> Enum.join("\n")
+      |> String.trim()
+    end
+  end
+
+  defp render_tool_context(_groups), do: ""
+
+  defp render_tool_group(%{} = group) do
+    alias_value = group.alias |> to_string() |> String.trim()
+    tool_instance = Map.get(group, :tool_instance) || %{}
+    functions = Map.get(group, :functions) || []
+
+    if alias_value == "" or functions == [] do
+      ""
+    else
+      display_name =
+        (Map.get(tool_instance, :name) || "")
+        |> to_string()
+        |> String.trim()
+
+      type_line = format_type_line(group)
+      type_description = normalize_prompt_text(Map.get(group, :type_description))
+      instance_description = normalize_prompt_text(Map.get(tool_instance, :description))
+      instance_context = normalize_prompt_text(Map.get(group, :instance_context))
+
+      [
+        "## Tool instance `#{inline_code(alias_value)}`",
+        maybe_line("Display name: ", display_name),
+        maybe_line("Type: ", type_line),
+        maybe_line("Type description: ", type_description),
+        "Available functions:",
+        render_function_list(alias_value, functions),
+        maybe_block("Instance description:", instance_description),
+        maybe_block("Instance context:", instance_context)
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+      |> String.trim()
+    end
+  end
+
+  defp render_tool_group(_other), do: ""
+
+  defp render_function_list(alias_value, functions) when is_list(functions) do
+    functions
+    |> Enum.map(fn fn_spec -> "- `#{inline_code("#{alias_value}__#{fn_spec.name}")}`" end)
+    |> Enum.join("\n")
+  end
+
+  defp maybe_line(_prefix, ""), do: ""
+  defp maybe_line(prefix, value), do: prefix <> value
+
+  defp maybe_block(_title, ""), do: ""
+  defp maybe_block(title, value), do: title <> "\n" <> value
+
+  defp format_type_line(%{type: type, type_title: title}) do
+    type = type |> to_string() |> String.trim()
+    title = title |> to_string() |> String.trim()
+
+    cond do
+      title == "" -> type
+      type == "" -> title
+      title == type -> title
+      true -> "#{title} (#{type})"
+    end
+  end
+
+  defp driver_title(driver, fallback) do
+    driver.title()
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> fallback
+      value -> value
+    end
+  rescue
+    _exception -> fallback
+  end
+
+  defp driver_description(driver) do
+    driver.description()
+    |> normalize_prompt_text()
+  rescue
+    _exception -> ""
+  end
+
+  defp driver_instance_prompt_context(driver, tool_instance) do
+    if function_exported?(driver, :instance_prompt_context, 1) do
+      driver
+      |> apply(:instance_prompt_context, [tool_instance])
+      |> normalize_prompt_text()
+    else
+      ""
+    end
+  rescue
+    _exception -> ""
+  end
+
+  defp normalize_prompt_text(nil), do: ""
+
+  defp normalize_prompt_text(value) do
+    value
+    |> to_string()
+    |> String.trim()
+  end
+
+  defp inline_code(value) do
+    value
+    |> to_string()
+    |> String.replace("`", "\\`")
+  end
 
   defp list_model_functions(tool_instance, actor) when is_map(tool_instance) do
     tool_type = tool_instance.type |> to_string() |> String.trim()
@@ -285,6 +440,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
         :alias,
         tool_instance: [
           :name,
+          :description,
           :alias,
           :type,
           :config,
@@ -310,6 +466,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
         :alias,
         tool_instance: [
           :name,
+          :description,
           :alias,
           :type,
           :config,
@@ -335,6 +492,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
         :alias,
         tool_instance: [
           :name,
+          :description,
           :alias,
           :type,
           :config,

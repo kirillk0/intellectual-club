@@ -102,6 +102,15 @@ defmodule IntellectualClub.Outlets.Runtime do
     end
   end
 
+  @spec runner_metadata(tool_instance()) :: map()
+  def runner_metadata(tool_instance) when is_map(tool_instance) do
+    try do
+      GenServer.call(__MODULE__, {:runner_metadata, tool_instance}, 5_000)
+    catch
+      :exit, _reason -> %{}
+    end
+  end
+
   @impl true
   def handle_call({:online?, tool_instance}, _from, state) do
     tool_instance_id = tool_instance.id
@@ -112,6 +121,32 @@ defmodule IntellectualClub.Outlets.Runtime do
     online = runner_online?(instance, now_ms)
     state = put_instance(state, tool_instance_id, instance)
     {:reply, online, state}
+  end
+
+  def handle_call({:runner_metadata, tool_instance}, _from, state) do
+    tool_instance_id = tool_instance.id
+    cfg = Config.from_tool_instance(tool_instance)
+    now_ms = now_ms()
+
+    metadata =
+      case Map.get(state.instances, tool_instance_id) do
+        nil ->
+          %{}
+
+        instance ->
+          instance = Map.put(instance, :config, cfg)
+
+          if runner_online?(instance, now_ms) do
+            case get_in(instance, [:runner, :metadata]) do
+              %{} = metadata -> metadata
+              _other -> %{}
+            end
+          else
+            %{}
+          end
+      end
+
+    {:reply, metadata, state}
   end
 
   def handle_call(:reset, _from, _state) do
@@ -563,7 +598,7 @@ defmodule IntellectualClub.Outlets.Runtime do
           runner_session_id: runner_session_id,
           last_seen_ms: now_ms,
           offline_since_ms: nil,
-          metadata: metadata || %{}
+          metadata: runner_metadata(metadata, %{})
         }
 
         {:ok, %{instance | runner: runner}, state}
@@ -576,7 +611,7 @@ defmodule IntellectualClub.Outlets.Runtime do
             runner = %{
               runner
               | last_seen_ms: now_ms,
-                metadata: metadata || runner.metadata || %{}
+                metadata: runner_metadata(metadata, runner.metadata)
             }
 
             {:ok, %{instance | runner: runner}, state}
@@ -598,13 +633,17 @@ defmodule IntellectualClub.Outlets.Runtime do
               runner_session_id: runner_session_id,
               last_seen_ms: now_ms,
               offline_since_ms: nil,
-              metadata: metadata || %{}
+              metadata: runner_metadata(metadata, %{})
             }
 
             {:ok, %{instance | runner: runner}, state}
         end
     end
   end
+
+  defp runner_metadata(%{} = metadata, _fallback) when map_size(metadata) > 0, do: metadata
+  defp runner_metadata(_metadata, %{} = fallback), do: fallback
+  defp runner_metadata(_metadata, _fallback), do: %{}
 
   defp normalize_poll_params(instance, payload, %Config{} = cfg, runner_id, runner_session_id) do
     capacity_raw = Map.get(payload, "capacity", Map.get(payload, :capacity, cfg.max_concurrency))

@@ -103,6 +103,25 @@ class OutletRunnerCompleteRetryTest(unittest.IsolatedAsyncioTestCase):
         runner._restart_process.assert_called_once()
 
 
+class _MetadataProvider:
+    def outlet_runner_metadata(self) -> dict[str, object]:
+        return {
+            "shell_kind": "bash",
+            "shell_display": "/bin/bash -c",
+        }
+
+
+class OutletRunnerMetadataTest(unittest.TestCase):
+    def test_runner_metadata_merges_base_and_provider_metadata(self):
+        metadata = outlet_base._runner_metadata(_MetadataProvider())
+
+        self.assertIn("hostname", metadata)
+        self.assertIn("platform", metadata)
+        self.assertIn("sys_platform", metadata)
+        self.assertEqual(metadata["shell_kind"], "bash")
+        self.assertEqual(metadata["shell_display"], "/bin/bash -c")
+
+
 class _ContextAwareProvider:
     @outlet_tool(name="context_tool")
     async def context_tool(self) -> dict[str, object]:

@@ -40,6 +40,9 @@
               {{ t.alias }} · {{ t.typeLabel }}
               <span v-if="t.server_url" class="muted"> · {{ t.server_url }}</span>
             </div>
+            <div v-if="t.description" class="muted catalog-row__description">
+              {{ t.description }}
+            </div>
             <div v-if="t.last_discovery_error" class="error-text" style="margin-top: 4px; font-size: 0.85rem">
               Discovery error: {{ t.last_discovery_error }}
             </div>
@@ -78,6 +81,7 @@ import { formatRelativeDateTime } from '@/utils/dates';
 type ToolInstanceRow = {
   id: number;
   name: string;
+  description: string;
   alias: string;
   type: string;
   server_url: string;
@@ -141,6 +145,7 @@ function parseRow(resource: JsonApiResource): ToolInstanceRow | null {
   return {
     id,
     name: String(attrs.name || '').trim(),
+    description: String(attrs.description || '').trim(),
     alias: String(attrs.alias || '').trim(),
     type: String(attrs.type || '').trim(),
     server_url: String(config.server_url || '').trim(),
@@ -170,8 +175,8 @@ const visibleTools = computed(() => {
 
   return all.filter((t) =>
     normalize(
-      `${t.name} ${t.type} ${t.server_url} ${t.last_discovered_at} ${t.last_discovery_error}`
-        + ` ${t.alias}`
+      `${t.name} ${t.type} ${t.server_url} ${t.last_discovered_at} ${t.last_discovery_error}` +
+        ` ${t.alias} ${t.description}`
     ).includes(q)
   );
 });
@@ -197,7 +202,7 @@ async function loadTools() {
     params.set('sort', 'name');
     params.set(
       'fields[tool-instances]',
-      'name,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
+      'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
     );
     const payload = await jsonApiList('/api/ash/tool-instances', params);
     tools.value = (payload.data || []).map(parseRow).filter((t): t is ToolInstanceRow => Boolean(t));
@@ -217,5 +222,13 @@ onMounted(() => {
 <style scoped>
 .share-indicator {
   margin-left: 8px;
+}
+
+.catalog-row__description {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 </style>

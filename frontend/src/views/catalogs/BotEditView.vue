@@ -1041,7 +1041,7 @@ async function loadToolLibrary() {
   try {
     const qs = new URLSearchParams();
     qs.set('sort', 'name');
-    qs.set('fields[tool-instances]', 'name,alias,type,outlet_online,can_edit');
+    qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
     const payload = await jsonApiList('/api/ash/tool-instances', qs);
     mergeToolLibrary(
       (payload.data || [])

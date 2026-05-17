@@ -222,6 +222,56 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert refreshed.last_discovery_error == "Outlet discovery returned an invalid payload."
   end
 
+  test "runtime exposes online runner metadata for outlet instance prompt context" do
+    reset_runtime!()
+
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Metadata outlet",
+        secrets: %{"token" => "runner-metadata"}
+      })
+
+    _poll_response =
+      poll_outlet("runner-metadata", %{
+        "runner_id" => "runner-metadata",
+        "runner_session_id" => "runner-metadata-session",
+        "capacity" => 1,
+        "max_wait_seconds" => 0,
+        "metadata" => %{
+          "hostname" => "worker-1",
+          "platform" => "linux",
+          "sys_platform" => "linux",
+          "os_name" => "posix",
+          "shell_kind" => "bash",
+          "shell_display" => "/bin/bash -c"
+        }
+      })
+
+    assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+
+    assert {:error, :not_found} =
+             Runtime.complete(tool_instance, %{
+               "runner_id" => "runner-metadata",
+               "runner_session_id" => "runner-metadata-session",
+               "call_id" => "missing-call"
+             })
+
+    assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+
+    context = IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance)
+
+    assert String.contains?(context, "Runner hostname: worker-1")
+    assert String.contains?(context, "Runner platform: linux")
+    assert String.contains?(context, "Runner shell: /bin/bash -c (kind: bash)")
+
+    age_runner!(tool_instance.id, 100_000)
+
+    assert Runtime.runner_metadata(tool_instance) == %{}
+    assert IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance) == nil
+  end
+
   defp reset_runtime! do
     :sys.replace_state(Runtime, fn _state -> %{instances: %{}, waiter_index: %{}} end)
   end

@@ -90,6 +90,7 @@ export type KnowledgeBlock = {
 export type ToolInstanceOption = {
   id: number;
   name: string;
+  description?: string | null;
   alias: string;
   type: string;
   type_title?: string | null;

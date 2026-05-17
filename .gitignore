@@ -26,3 +26,4 @@ __pycache__/
 AGENTS.md
 /.playwright-cli
 /server/assets
+.output.txt

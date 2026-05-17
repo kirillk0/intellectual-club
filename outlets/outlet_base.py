@@ -385,6 +385,44 @@ def _load_env_bool(key: str, default: bool) -> bool:
     return bool(default)
 
 
+def _platform_label() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return sys.platform
+
+
+def _base_runner_metadata() -> dict[str, Any]:
+    return {
+        "hostname": socket.gethostname(),
+        "pid": os.getpid(),
+        "platform": _platform_label(),
+        "sys_platform": sys.platform,
+        "os_name": os.name,
+    }
+
+
+def _runner_metadata(provider: Any) -> dict[str, Any]:
+    metadata = _base_runner_metadata()
+    provider_metadata = getattr(provider, "outlet_runner_metadata", None)
+
+    if callable(provider_metadata):
+        try:
+            extra = provider_metadata()
+        except Exception:
+            extra = None
+
+        if isinstance(extra, dict):
+            safe_extra = _safe_json(extra)
+            if isinstance(safe_extra, dict):
+                metadata.update(safe_extra)
+
+    return metadata
+
+
 def _safe_filename(value: str) -> str:
     value = str(value or "").strip()
     if not value:
@@ -527,10 +565,7 @@ class OutletRunner:
         self.poll_check_interval_seconds = float(poll_check_interval_seconds)
         self.poll_endpoint = poll_endpoint
         self.complete_endpoint = complete_endpoint
-        self.metadata = metadata or {
-            "hostname": socket.gethostname(),
-            "pid": os.getpid(),
-        }
+        self.metadata = metadata or _base_runner_metadata()
 
         tools = _build_tool_list(provider)
         self._tool_map: dict[str, OutletTool] = {tool.spec.name: tool for tool in tools}
@@ -981,7 +1016,11 @@ def run_outlet(provider_factory: Callable[[], Any], *, default_name: str) -> Non
     tool_instance_id = None
     if not token and not bool(args.no_pairing):
         try:
-            token, tool_instance_id = _pair_with_server(server_url=server_url, default_name=default_name, metadata={"hostname": socket.gethostname(), "pid": os.getpid()})
+            token, tool_instance_id = _pair_with_server(
+                server_url=server_url,
+                default_name=default_name,
+                metadata=_base_runner_metadata(),
+            )
             _save_token_to_file(token_path, server_url=server_url, token=token, tool_instance_id=tool_instance_id)
             print(f"Outlet token saved to: {token_path}", file=sys.stderr)
         except Exception as exc:
@@ -993,6 +1032,7 @@ def run_outlet(provider_factory: Callable[[], Any], *, default_name: str) -> Non
         sys.exit(2)
 
     provider = provider_factory()
+    metadata = _runner_metadata(provider)
     runner = OutletRunner(
         provider=provider,
         server_url=server_url,
@@ -1001,6 +1041,7 @@ def run_outlet(provider_factory: Callable[[], Any], *, default_name: str) -> Non
         max_concurrency=int(args.max_concurrency),
         poll_max_wait_seconds=float(args.poll_max_wait),
         poll_check_interval_seconds=float(args.poll_check_interval),
+        metadata=metadata,
     )
 
     asyncio.run(runner.serve())

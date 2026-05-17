@@ -19,6 +19,7 @@ defmodule IntellectualClub.Tools.Driver do
   @callback secrets_schema() :: map() | nil
   @callback default_config() :: map()
   @callback fixed_functions(IntellectualClub.Tools.ToolInstance.t()) :: list(map())
+  @callback instance_prompt_context(IntellectualClub.Tools.ToolInstance.t()) :: String.t() | nil
 
   @callback discover(IntellectualClub.Tools.ToolInstance.t()) ::
               {:ok, list(map())} | {:error, term()}
@@ -32,5 +33,5 @@ defmodule IntellectualClub.Tools.Driver do
               {:ok, IntellectualClub.Tools.ExecutionResult.t() | {String.t(), map()} | map()}
               | {:error, term()}
 
-  @optional_callbacks fixed_functions: 1
+  @optional_callbacks fixed_functions: 1, instance_prompt_context: 1
 end
