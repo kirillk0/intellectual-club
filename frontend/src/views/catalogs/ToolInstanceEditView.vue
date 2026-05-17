@@ -56,19 +56,6 @@
           <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
         </label>
 
-        <label :class="{ 'field-error': errors.hasField('description') }">
-          Description
-          <textarea
-            v-model="form.description"
-            class="full"
-            rows="5"
-            placeholder="Describe when and how the model should use this tool."
-            @input="errors.clearField('description')"
-          ></textarea>
-          <div v-if="errors.hasField('description')" class="error-text">{{ errors.messageFor('description') }}</div>
-          <div class="muted" style="margin-top: 4px">Visible to the model when this tool is available.</div>
-        </label>
-
         <label :class="{ 'field-error': errors.hasField('type') }">
           Type
           <select
@@ -96,6 +83,15 @@
             @click="toolTab = 'settings'"
           >
             Settings
+          </button>
+          <button
+            class="tab"
+            :class="{ active: toolTab === 'description' }"
+            type="button"
+            @click="toolTab = 'description'"
+          >
+            Description
+            <span v-if="descriptionHasText" class="tool-tab-indicator" aria-hidden="true"></span>
           </button>
           <button
             class="tab"
@@ -251,7 +247,22 @@
           <div v-if="supportsDiscovery && discoverStatsText" class="muted" style="font-size: 0.9rem">
             {{ discoverStatsText }}
           </div>
-	        </div>
+        </div>
+
+        <div v-else-if="toolTab === 'description'" class="stack">
+          <label :class="{ 'field-error': errors.hasField('description') }">
+            Description
+            <textarea
+              v-model="form.description"
+              class="full"
+              rows="12"
+              placeholder="Describe when and how the model should use this tool."
+              @input="errors.clearField('description')"
+            ></textarea>
+            <div v-if="errors.hasField('description')" class="error-text">{{ errors.messageFor('description') }}</div>
+            <div class="muted" style="margin-top: 4px">Visible to the model when this tool is available.</div>
+          </label>
+        </div>
 
 	        <div v-else-if="toolTab === 'credentials'" class="stack">
 	          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
@@ -767,7 +778,8 @@ const createNew = () => {
 };
 const goList = editor.goList;
 
-const toolTab = ref<'settings' | 'credentials' | 'functions'>('settings');
+const toolTab = ref<'settings' | 'description' | 'credentials' | 'functions'>('settings');
+const descriptionHasText = computed(() => String(form.description || '').trim() !== '');
 
 function handleNameInput() {
   errors.clearField('name');
@@ -972,6 +984,13 @@ watch(
       (form.secrets_patch as any)[other] = '';
       (form.secrets_clear as any)[other] = false;
     }
+  }
+);
+
+watch(
+  () => errors.fieldErrors.value,
+  (fieldErrors) => {
+    if (fieldErrors.description?.length) toolTab.value = 'description';
   }
 );
 
@@ -1297,5 +1316,15 @@ onMounted(() => {
   align-items: center;
   border-color: #bfd6f6;
   background: #f5f9ff;
+}
+
+.tool-tab-indicator {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: middle;
 }
 </style>
