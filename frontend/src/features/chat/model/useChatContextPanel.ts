@@ -440,6 +440,19 @@ export function useChatContextPanel(params: Params) {
     params.stackOpen({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { navKey, returnTo } });
   };
 
+  const openContextToolEditor = (toolInstanceId: number) => {
+    const ids = Array.from(
+      new Set(
+        (activeToolBindings.value || [])
+          .map((binding) => binding.tool_instance_id)
+          .filter((id): id is number => typeof id === 'number' && id > 0)
+      )
+    );
+    const returnTo = params.routeFullPath();
+    const navKey = createRecordset(ids, { returnTo });
+    params.stackOpen({ path: `/catalogs/tools/${toolInstanceId}`, query: { navKey, returnTo } });
+  };
+
   const dispose = () => {
     clearBranchSearchTimer();
     messageRefs.clear();
@@ -483,6 +496,7 @@ export function useChatContextPanel(params: Params) {
     handleBranchItemClick,
     handleSearchResultClick,
     openContextBlockEditor,
+    openContextToolEditor,
     dispose,
   };
 }

@@ -70,31 +70,40 @@
           </div>
         </div>
 
-        <div class="tool-binding-body">
-          <div class="tool-binding-title-line">
-            <span
-              v-if="toolIsOutlet?.(item)"
-              class="status-dot"
-              :class="toolIsOnline?.(item) ? 'success' : 'danger'"
-              :title="toolIsOnline?.(item) ? 'Online' : 'Offline'"
-            />
-            <span class="tool-binding-title" :title="toolText(item)">
-              <span class="tool-binding-title__primary">
-                <span class="tool-binding-title__name">{{ toolNameText(item) }}</span>
-                <span v-if="toolAliasText(item)" class="muted tool-binding-title__alias">
-                  ({{ toolAliasText(item) }})
+        <div
+          :class="['tool-binding-body', openable && 'tool-binding-body--openable']"
+          :role="openable ? 'button' : undefined"
+          :tabindex="openable ? 0 : undefined"
+          @click="handleOpen(item)"
+          @keydown.enter.prevent="handleOpen(item)"
+          @keydown.space.prevent="handleOpen(item)"
+        >
+          <div class="tool-binding-body-main">
+            <div class="tool-binding-title-line">
+              <span
+                v-if="toolIsOutlet?.(item)"
+                class="status-dot"
+                :class="toolIsOnline?.(item) ? 'success' : 'danger'"
+                :title="toolIsOnline?.(item) ? 'Online' : 'Offline'"
+              />
+              <span class="tool-binding-title" :title="toolText(item)">
+                <span class="tool-binding-title__primary">
+                  <span class="tool-binding-title__name">{{ toolNameText(item) }}</span>
+                  <span v-if="toolAliasText(item)" class="muted tool-binding-title__alias">
+                    ({{ toolAliasText(item) }})
+                  </span>
+                </span>
+                <span v-if="toolTypeText(item)" class="tool-binding-title__type">
+                  <span class="tool-binding-title__separator">-</span>{{ toolTypeText(item) }}
                 </span>
               </span>
-              <span v-if="toolTypeText(item)" class="tool-binding-title__type">
-                <span class="tool-binding-title__separator">-</span>{{ toolTypeText(item) }}
+              <span v-if="isShadowed(item)" class="badge tool-binding-shadowed" :title="shadowedReason(item)">
+                Shadowed
               </span>
-            </span>
-            <span v-if="isShadowed(item)" class="badge tool-binding-shadowed" :title="shadowedReason(item)">
-              Shadowed
-            </span>
+            </div>
+            <slot name="item-meta-extra" :item="item"></slot>
+            <slot name="item-footer" :item="item"></slot>
           </div>
-          <slot name="item-meta-extra" :item="item"></slot>
-          <slot name="item-footer" :item="item"></slot>
         </div>
 
         <slot name="item-secondary-actions" :item="item" :index="idx"></slot>
@@ -136,6 +145,7 @@ const props = withDefaults(
     readonly?: boolean;
     showToggle?: boolean;
     showActions?: boolean;
+    openable?: boolean;
     addLabel?: string;
     addDisabled?: boolean;
     toggleDisabled?: (item: ToolBindingItem) => boolean;
@@ -149,6 +159,7 @@ const props = withDefaults(
     readonly: false,
     showToggle: true,
     showActions: true,
+    openable: false,
     addLabel: 'Add',
     addDisabled: false,
     toggleDisabled: () => false,
@@ -161,6 +172,7 @@ const emit = defineEmits<{
   (e: 'move', item: ToolBindingItem, delta: number): void;
   (e: 'remove', id: number): void;
   (e: 'toggle', item: ToolBindingItem, enabled: boolean): void;
+  (e: 'open', toolInstanceId: number): void;
 }>();
 
 const slots = useSlots();
@@ -170,6 +182,12 @@ const sortedItems = computed(() => [...(props.items || [])].sort((a, b) => a.seq
 const handleToggle = (item: ToolBindingItem, event: Event) => {
   const target = event.target as HTMLInputElement | null;
   emit('toggle', item, Boolean(target?.checked));
+};
+const handleOpen = (item: ToolBindingItem) => {
+  if (!props.openable) return;
+  const toolInstanceId = Number(item.tool_instance_id || 0);
+  if (!toolInstanceId) return;
+  emit('open', toolInstanceId);
 };
 
 const toggleDisabled = (item: ToolBindingItem) => props.toggleDisabled?.(item) ?? false;
@@ -237,6 +255,24 @@ const shadowedReason = (item: ToolBindingItem) =>
 
 .tool-binding-body {
   min-width: 0;
+}
+
+.tool-binding-body-main {
+  min-width: 0;
+}
+
+.tool-binding-body--openable {
+  cursor: pointer;
+}
+
+.tool-binding-body--openable:hover .tool-binding-title__name {
+  text-decoration: underline;
+}
+
+.tool-binding-body--openable:focus-visible {
+  outline: 2px solid #4c8dff;
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .tool-binding-title-line {

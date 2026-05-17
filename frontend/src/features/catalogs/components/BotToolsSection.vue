@@ -101,11 +101,13 @@
       :toolIsOnline="toolBindingIsOnline"
       emptyText="No tools attached."
       toggleLabel="enabled"
+      :openable="true"
       :readonly="sharedReadonly"
       :addDisabled="toolLibraryLoading || toolBindingsSaving || sharedReadonly"
       :toggleDisabled="() => toolBindingsSaving"
       :actionsDisabled="() => toolBindingsSaving"
       @add="openToolBindingPicker"
+      @open="(toolInstanceId) => emit('open-tool-editor', toolInstanceId)"
       @toggle="(binding, enabled) => emit('toggle-tool-binding', binding.id, enabled)"
       @move="(binding, delta) => emit('move-tool-binding', binding.id, delta)"
       @remove="(id) => emit('remove-tool-binding', id)"
@@ -176,6 +178,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'load-tool-library'): void;
+  (e: 'open-tool-editor', toolInstanceId: number): void;
   (e: 'move-tool-binding', bindingId: number, delta: number): void;
   (e: 'remove-tool-binding', bindingId: number): void;
   (e: 'toggle-tool-binding', bindingId: number, enabled: boolean): void;

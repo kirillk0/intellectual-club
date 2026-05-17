@@ -168,6 +168,19 @@ export function useChatLibraryDraft(params: Params) {
     params.stackOpen({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { navKey, returnTo } });
   };
 
+  const openChatToolEditor = (toolInstanceId: number) => {
+    const ids = Array.from(
+      new Set(
+        (chatToolBindings.value || [])
+          .map((binding) => binding.tool_instance_id)
+          .filter((id): id is number => typeof id === 'number' && id > 0)
+      )
+    );
+    const returnTo = params.routeFullPath();
+    const navKey = createRecordset(ids, { returnTo });
+    params.stackOpen({ path: `/catalogs/tools/${toolInstanceId}`, query: { navKey, returnTo } });
+  };
+
   const moveChatBlock = (binding: ChatBlockLink, delta: number) => {
     const idx = chatBlocksDraft.value.findIndex((item) => item.id === binding.id);
     if (idx === -1) return;
@@ -328,6 +341,7 @@ export function useChatLibraryDraft(params: Params) {
     openChatBlocksPicker,
     openNewBlock: newBlockDraft.openNewBlock,
     openChatBlockEditor,
+    openChatToolEditor,
     moveChatBlock,
     removeChatBlock,
     chatBlockName,

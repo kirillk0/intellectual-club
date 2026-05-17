@@ -57,8 +57,10 @@
             :toolIsOnline="toolBindingIsOnline"
             emptyText="No tools linked."
             toggleLabel="enabled"
+            :openable="true"
             :addDisabled="savingChatChanges || !toolLibrary.length"
             @add="openToolBindingPicker"
+            @open="(toolInstanceId) => emit('open-chat-tool-editor', toolInstanceId)"
             :toggleDisabled="() => savingChatChanges"
             :actionsDisabled="() => savingChatChanges"
             @toggle="(binding, enabled) => emit('set-chat-tool-binding-enabled', binding.id, enabled)"
@@ -160,6 +162,7 @@ const emit = defineEmits<{
   (e: 'touch-chat-blocks'): void;
   (e: 'update:newChatToolInstanceIds', value: number[]): void;
   (e: 'add-chat-tool-binding', value: number[]): void;
+  (e: 'open-chat-tool-editor', toolInstanceId: number): void;
   (e: 'move-chat-tool-binding', binding: ChatToolBindingLink, delta: number): void;
   (e: 'remove-chat-tool-binding', bindingId: number): void;
   (e: 'set-chat-tool-binding-enabled', bindingId: number, enabled: boolean): void;

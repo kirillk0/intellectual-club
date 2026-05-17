@@ -88,6 +88,7 @@
           @search-result-click="vm.handleSearchResultClick"
           @switch-branch-target="handleContextSwitchBranchTarget"
           @open-context-block-editor="vm.openContextBlockEditor"
+          @open-context-tool-editor="vm.openContextToolEditor"
         />
 
         <section class="card chat-window" :style="getChatWindowGridStyle()" :ref="chatWindowRefEl">
@@ -241,6 +242,7 @@
           @open-chat-blocks-picker="vm.openChatBlocksPicker"
           @open-new-block="vm.openNewBlock"
           @open-chat-block-editor="vm.openChatBlockEditor"
+          @open-chat-tool-editor="vm.openChatToolEditor"
           @update:newChatToolInstanceIds="(value) => (vm.newChatToolInstanceIds = value)"
           @add-chat-tool-binding="vm.addChatToolBinding"
           @move-chat-block="vm.moveChatBlock"

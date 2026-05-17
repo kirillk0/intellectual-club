@@ -218,9 +218,11 @@
             :toolIsOnline="activeToolBindingIsOnline"
             emptyText="No tools active."
             :showHeader="false"
+            :openable="true"
             :readonly="true"
             :showToggle="false"
             :showActions="false"
+            @open="(toolInstanceId) => emit('open-context-tool-editor', toolInstanceId)"
           />
         </div>
       </div>
@@ -287,6 +289,7 @@ const emit = defineEmits<{
   (e: 'search-result-click', hit: ChatMessageSearchHit, inactive: boolean): void;
   (e: 'switch-branch-target', messageId: number, targetId: number): void;
   (e: 'open-context-block-editor', blockId: number): void;
+  (e: 'open-context-tool-editor', toolInstanceId: number): void;
 }>();
 
 const handleSearchInput = (event: Event) => {

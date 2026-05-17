@@ -123,6 +123,7 @@
             :userToolBindingLabel="userToolOverrides.label"
             :addToolBinding="addToolBinding"
             @load-tool-library="loadToolLibrary"
+            @open-tool-editor="openToolEditor"
             @move-tool-binding="toolBindings.move"
             @remove-tool-binding="removeToolBindingById"
             @toggle-tool-binding="toolBindings.toggle"
@@ -1002,6 +1003,13 @@ const newBlockDraft = useKnowledgeBlockNewDraft({
 
 const openNewBlock = newBlockDraft.openNewBlock;
 
+const openToolEditor = (toolInstanceId: number) => {
+  if (!toolInstanceId) return;
+  const ids = linkedToolInstanceIds.value;
+  const navKey = createRecordset(ids, { returnTo: route.fullPath });
+  stackNav.open({ path: `/catalogs/tools/${toolInstanceId}`, query: { navKey, returnTo: route.fullPath } });
+};
+
 watch(
   () => stack.active.value,
   (active, wasActive) => {
@@ -1083,6 +1091,15 @@ const toolBindingText = (binding: BotToolBindingRow) => {
 };
 const toolBindingIsOutlet = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: BotToolBindingRow) => toolInstanceLibrary.toolIsOnline(binding.tool_instance_id);
+const linkedToolInstanceIds = computed(() =>
+  Array.from(
+    new Set(
+      toolBindings.sortedToolBindings.value
+        .map((binding) => binding.tool_instance_id)
+        .filter((id): id is number => typeof id === 'number' && id > 0)
+    )
+  )
+);
 const toolBindingsSaving = computed(() => saving.value);
 
 watch(
