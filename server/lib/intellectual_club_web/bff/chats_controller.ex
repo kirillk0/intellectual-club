@@ -5,10 +5,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
   use IntellectualClubWeb, :controller
 
-  alias IntellectualClub.Accounts.UserKnowledgeBlock
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
-  alias IntellectualClub.Bots.BotKnowledgeBlock
   alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ListingStats
@@ -18,11 +16,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Context, as: GenerationContext
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmConfigurationTag
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
   alias IntellectualClub.Tools.BindingResolver
@@ -522,8 +519,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       prompt_context =
         build_prompt_context_payload(chat, actor,
           history: messages,
-          chat_blocks: chat_blocks,
-          tool_context: tool_resolution.tool_context
+          tool_resolution: tool_resolution
         )
 
       bots = load_bots(actor)
@@ -543,6 +539,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         chat_blocks: Enum.map(chat_blocks, &Serializer.chat_block_binding/1),
         chat_tool_bindings: Enum.map(chat_tool_bindings, &Serializer.chat_tool_binding/1),
         prompt_sources: prompt_context.prompt_sources,
+        prompt_blocks: prompt_context.prompt_blocks,
         compiled_prompt_text: prompt_context.compiled_prompt_text,
         counters: prompt_context.counters,
         active_tool_instances:
@@ -572,7 +569,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         conn,
         build_prompt_context_payload(chat, actor,
           history: history,
-          tool_context: tool_resolution.tool_context
+          tool_resolution: tool_resolution
         )
       )
     end
@@ -990,41 +987,29 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     |> Ash.read!(actor: actor)
   end
 
-  defp load_prompt_sources(chat, chat_blocks, actor) do
-    %{
-      bot: load_bot_prompt_blocks(chat.bot_id, actor),
-      chat: Enum.filter(chat_blocks, &(&1.enabled == true)),
-      configuration: load_configuration_prompt_blocks(chat.llm_configuration_id, actor),
-      user: load_user_prompt_blocks(actor)
-    }
-  end
-
   defp build_prompt_context_payload(chat, actor, opts) do
     history =
       Keyword.get_lazy(opts, :history, fn ->
         Threads.active_branch(chat, actor)
       end)
 
-    chat_blocks =
-      Keyword.get_lazy(opts, :chat_blocks, fn ->
-        load_chat_blocks(chat.id, actor)
-      end)
-
-    prompt_sources =
-      Keyword.get_lazy(opts, :prompt_sources, fn ->
-        load_prompt_sources(chat, chat_blocks, actor)
-      end)
-
-    tool_context =
-      Keyword.get_lazy(opts, :tool_context, fn ->
-        BindingResolver.resolve_for_chat(chat, actor).tool_context
-      end)
+    snapshot =
+      GenerationContext.prompt_snapshot!(chat,
+        actor: actor,
+        tool_resolution:
+          Keyword.get_lazy(opts, :tool_resolution, fn ->
+            BindingResolver.resolve_for_chat(chat, actor)
+          end)
+      )
 
     %{
-      prompt_sources: serialize_prompt_sources(prompt_sources),
-      compiled_prompt_text: compiled_prompt_text(chat, prompt_sources, tool_context),
+      prompt_sources: serialize_prompt_sources(snapshot.prompt_sources),
+      prompt_blocks: serialize_prompt_blocks(snapshot.prompt_blocks),
+      compiled_prompt_text: snapshot.system_prompt,
       counters:
-        ChatMetrics.counters_from_history(chat, history, actor, prompt_sources: prompt_sources)
+        ChatMetrics.counters_from_history(chat, history, actor,
+          prompt_sources: snapshot.prompt_sources
+        )
     }
   end
 
@@ -1035,37 +1020,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       configuration: Enum.map(Map.get(prompt_sources, :configuration, []), &prompt_binding/1),
       user: Enum.map(Map.get(prompt_sources, :user, []), &prompt_binding/1)
     }
-  end
-
-  defp compiled_prompt_text(chat, prompt_sources, tool_context) do
-    bot_blocks = prompt_blocks_from_bindings(Map.get(prompt_sources, :bot, []))
-    chat_blocks = prompt_blocks_from_bindings(Map.get(prompt_sources, :chat, []))
-
-    {config_top_blocks, config_bottom_blocks} =
-      split_configuration_prompt_blocks(Map.get(prompt_sources, :configuration, []))
-
-    user_blocks = prompt_blocks_from_bindings(Map.get(prompt_sources, :user, []))
-    bot_variables = bot_variables(chat)
-
-    SystemPrompt.build(
-      bot_blocks: bot_blocks,
-      chat_blocks: chat_blocks,
-      config_top_blocks: config_top_blocks,
-      config_bottom_blocks: config_bottom_blocks,
-      user_blocks: user_blocks,
-      tool_context: tool_context,
-      bot_variables: bot_variables,
-      chat_variables: chat.variables
-    )
-  end
-
-  defp bot_variables(%{bot: %{variables: variables}}) when is_map(variables), do: variables
-  defp bot_variables(_chat), do: %{}
-
-  defp prompt_blocks_from_bindings(bindings) when is_list(bindings) do
-    bindings
-    |> Enum.map(&Map.get(&1, :knowledge_block))
-    |> Enum.reject(&is_nil/1)
   end
 
   defp prompt_binding(binding) do
@@ -1080,55 +1034,36 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     }
   end
 
-  defp load_bot_prompt_blocks(bot_id, actor) when is_integer(bot_id) do
-    BotKnowledgeBlock
-    |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.select([:id, :bot_id, :knowledge_block_id, :enabled, :sequence])
-    |> Ash.Query.load(Loads.prompt_source_binding(), strict?: true)
-    |> Ash.read!(actor: actor)
+  defp serialize_prompt_blocks(prompt_blocks) when is_list(prompt_blocks) do
+    Enum.map(prompt_blocks, &prompt_block/1)
   end
 
-  defp load_bot_prompt_blocks(_bot_id, _actor), do: []
+  defp serialize_prompt_blocks(_prompt_blocks), do: []
 
-  defp load_configuration_prompt_blocks(configuration_id, actor)
-       when is_integer(configuration_id) do
-    LlmConfigurationKnowledgeBlock
-    |> Ash.Query.filter(llm_configuration_id == ^configuration_id and enabled == true)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.select([
-      :id,
-      :llm_configuration_id,
-      :knowledge_block_id,
-      :selection,
-      :enabled,
-      :sequence
-    ])
-    |> Ash.Query.load(Loads.prompt_source_binding(), strict?: true)
-    |> Ash.read!(actor: actor)
+  defp prompt_block(%{} = entry) do
+    block = Map.get(entry, :knowledge_block)
+
+    %{
+      id: Map.get(entry, :id),
+      source: prompt_block_source(Map.get(entry, :source)),
+      selection: prompt_block_selection(Map.get(entry, :selection)),
+      sequence: Map.get(entry, :sequence),
+      prompt_order: Map.get(entry, :prompt_order),
+      knowledge_block: if(is_map(block), do: Serializer.knowledge_block_option(block), else: nil)
+    }
   end
 
-  defp load_configuration_prompt_blocks(_configuration_id, _actor), do: []
+  defp prompt_block_source(:bot), do: "bot"
+  defp prompt_block_source(:chat), do: "chat"
+  defp prompt_block_source(:config), do: "config"
+  defp prompt_block_source(:user), do: "user"
+  defp prompt_block_source(source) when is_binary(source), do: source
+  defp prompt_block_source(_source), do: nil
 
-  defp split_configuration_prompt_blocks(bindings) when is_list(bindings) do
-    Enum.reduce(bindings, {[], []}, fn binding, {top, bottom} ->
-      block = Map.get(binding, :knowledge_block)
-
-      cond do
-        is_nil(block) ->
-          {top, bottom}
-
-        binding_selection(binding) == :top ->
-          {[block | top], bottom}
-
-        true ->
-          {top, [block | bottom]}
-      end
-    end)
-    |> then(fn {top, bottom} -> {Enum.reverse(top), Enum.reverse(bottom)} end)
-  end
-
-  defp split_configuration_prompt_blocks(_other), do: {[], []}
+  defp prompt_block_selection(:top), do: "top"
+  defp prompt_block_selection(:bottom), do: "bottom"
+  defp prompt_block_selection(value) when is_binary(value), do: value
+  defp prompt_block_selection(_value), do: nil
 
   defp binding_selection(binding) when is_map(binding) do
     case Map.get(binding, :selection) do
@@ -1137,17 +1072,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       _ -> :bottom
     end
   end
-
-  defp load_user_prompt_blocks(%{id: owner_id} = actor) when is_integer(owner_id) do
-    UserKnowledgeBlock
-    |> Ash.Query.filter(owner_id == ^owner_id and enabled == true)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.select([:id, :knowledge_block_id, :enabled, :sequence])
-    |> Ash.Query.load(Loads.prompt_source_binding(), strict?: true)
-    |> Ash.read!(actor: actor)
-  end
-
-  defp load_user_prompt_blocks(_actor), do: []
 
   defp load_llm_configurations(actor) do
     LlmConfiguration

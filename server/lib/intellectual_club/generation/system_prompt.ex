@@ -10,14 +10,25 @@ defmodule IntellectualClub.Generation.SystemPrompt do
   Renders a single system prompt from bot/chat/config/user block collections.
   """
   def build(opts \\ []) do
-    bot_blocks = Keyword.get(opts, :bot_blocks, [])
-    chat_blocks = Keyword.get(opts, :chat_blocks, [])
-    config_top_blocks = Keyword.get(opts, :config_top_blocks, [])
+    ordered_blocks =
+      case Keyword.fetch(opts, :prompt_blocks) do
+        {:ok, blocks} ->
+          List.wrap(blocks)
 
-    config_bottom_blocks =
-      Keyword.get(opts, :config_bottom_blocks, Keyword.get(opts, :config_blocks, []))
+        :error ->
+          bot_blocks = Keyword.get(opts, :bot_blocks, [])
+          chat_blocks = Keyword.get(opts, :chat_blocks, [])
+          config_top_blocks = Keyword.get(opts, :config_top_blocks, [])
 
-    user_blocks = Keyword.get(opts, :user_blocks, [])
+          config_bottom_blocks =
+            Keyword.get(opts, :config_bottom_blocks, Keyword.get(opts, :config_blocks, []))
+
+          user_blocks = Keyword.get(opts, :user_blocks, [])
+
+          [config_top_blocks, bot_blocks, chat_blocks, config_bottom_blocks, user_blocks]
+          |> List.flatten()
+      end
+
     tool_context = Keyword.get(opts, :tool_context, "")
 
     bot_vars = PromptVariables.normalize_map(Keyword.get(opts, :bot_variables, %{}))
@@ -25,8 +36,7 @@ defmodule IntellectualClub.Generation.SystemPrompt do
     base_vars = Map.merge(bot_vars, chat_vars)
 
     rendered_blocks =
-      [config_top_blocks, bot_blocks, chat_blocks, config_bottom_blocks, user_blocks]
-      |> List.flatten()
+      ordered_blocks
       |> Enum.map_join("\n", &format_block(&1, merged_vars_for_block(&1, base_vars)))
 
     [rendered_blocks, format_raw_section(tool_context)]

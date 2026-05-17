@@ -64,6 +64,36 @@ defmodule IntellectualClub.Generation.Context do
     :ok
   end
 
+  @doc """
+  Builds a side-effect-free snapshot of the prompt blocks and rendered system prompt.
+  """
+  def prompt_snapshot!(chat_or_id, opts \\ []) do
+    actor = Keyword.get(opts, :actor)
+    chat = load_prompt_snapshot_chat!(chat_or_id, actor)
+
+    prompt_sources = load_prompt_sources(chat, actor)
+    prompt_blocks = ordered_prompt_blocks(prompt_sources)
+
+    tool_resolution =
+      Keyword.get_lazy(opts, :tool_resolution, fn ->
+        BindingResolver.resolve_for_chat(chat, actor)
+      end)
+
+    system_prompt =
+      SystemPrompt.build(
+        prompt_blocks: Enum.map(prompt_blocks, & &1.knowledge_block),
+        tool_context: Map.get(tool_resolution, :tool_context, ""),
+        bot_variables: bot_variables(chat),
+        chat_variables: chat.variables
+      )
+
+    %{
+      prompt_sources: prompt_sources,
+      prompt_blocks: prompt_blocks,
+      system_prompt: system_prompt
+    }
+  end
+
   def prepare_retry(message_id, opts \\ []) when is_integer(message_id) and is_list(opts) do
     actor = Keyword.get(opts, :actor)
 
@@ -208,26 +238,11 @@ defmodule IntellectualClub.Generation.Context do
         }
       end)
 
-    bot_blocks = load_bot_blocks(chat.bot_id, actor)
-    chat_blocks = load_chat_blocks(chat.id, actor)
-    config_bindings = load_configuration_blocks(chat.llm_configuration_id, actor)
-    {config_top_blocks, config_bottom_blocks} = split_configuration_blocks(config_bindings)
-    user_blocks = load_user_blocks(actor)
     tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
     tools_payload = tool_resolution.tools_payload
     tool_instances_by_alias = tool_resolution.tool_instances_by_alias
-
-    system_prompt =
-      SystemPrompt.build(
-        bot_blocks: bot_blocks,
-        chat_blocks: chat_blocks,
-        config_top_blocks: config_top_blocks,
-        config_bottom_blocks: config_bottom_blocks,
-        user_blocks: user_blocks,
-        tool_context: tool_resolution.tool_context,
-        bot_variables: chat.bot && chat.bot.variables,
-        chat_variables: chat.variables
-      )
+    prompt_snapshot = prompt_snapshot!(chat, actor: actor, tool_resolution: tool_resolution)
+    system_prompt = prompt_snapshot.system_prompt
 
     supports_image_input =
       bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
@@ -832,42 +847,113 @@ defmodule IntellectualClub.Generation.Context do
     end
   end
 
-  defp load_bot_blocks(bot_id, actor) when is_integer(bot_id) do
+  defp load_prompt_snapshot_chat!(%Chat{} = chat, actor) do
+    Ash.load!(chat, [:bot], actor: actor, strict?: true)
+  end
+
+  defp load_prompt_snapshot_chat!(chat_id, actor) when is_integer(chat_id) do
+    Ash.get!(Chat, chat_id, actor: actor, load: [:bot])
+  end
+
+  defp load_prompt_sources(chat, actor) do
+    %{
+      bot: load_bot_prompt_bindings(chat.bot_id, actor),
+      chat: load_chat_prompt_bindings(chat.id, actor),
+      configuration: load_configuration_prompt_bindings(chat.llm_configuration_id, actor),
+      user: load_user_prompt_bindings(actor)
+    }
+  end
+
+  defp load_bot_prompt_bindings(bot_id, actor) when is_integer(bot_id) do
     BotKnowledgeBlock
     |> Ash.Query.filter(bot_id == ^bot_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.load(:knowledge_block)
+    |> Ash.Query.select([:id, :bot_id, :knowledge_block_id, :enabled, :sequence])
+    |> Ash.Query.load(prompt_source_binding_load(), strict?: true)
     |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.knowledge_block)
-    |> Enum.reject(&is_nil/1)
   end
 
-  defp load_bot_blocks(_bot_id, _actor), do: []
+  defp load_bot_prompt_bindings(_bot_id, _actor), do: []
 
-  defp load_chat_blocks(chat_id, actor) when is_integer(chat_id) do
+  defp load_chat_prompt_bindings(chat_id, actor) when is_integer(chat_id) do
     ChatKnowledgeBlock
     |> Ash.Query.filter(chat_id == ^chat_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.load(:knowledge_block)
+    |> Ash.Query.select([:id, :chat_id, :knowledge_block_id, :enabled, :sequence])
+    |> Ash.Query.load(prompt_source_binding_load(), strict?: true)
     |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.knowledge_block)
-    |> Enum.reject(&is_nil/1)
   end
 
-  defp load_chat_blocks(_chat_id, _actor), do: []
+  defp load_chat_prompt_bindings(_chat_id, _actor), do: []
 
-  defp load_configuration_blocks(configuration_id, actor) when is_integer(configuration_id) do
+  defp load_configuration_prompt_bindings(configuration_id, actor)
+       when is_integer(configuration_id) do
     LlmConfigurationKnowledgeBlock
     |> Ash.Query.filter(llm_configuration_id == ^configuration_id and enabled == true)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.select([:id, :selection, :sequence, :knowledge_block_id])
-    |> Ash.Query.load(:knowledge_block)
+    |> Ash.Query.select([
+      :id,
+      :llm_configuration_id,
+      :knowledge_block_id,
+      :selection,
+      :enabled,
+      :sequence
+    ])
+    |> Ash.Query.load(prompt_source_binding_load(), strict?: true)
     |> Ash.read!(actor: actor)
   end
 
-  defp load_configuration_blocks(_configuration_id, _actor), do: []
+  defp load_configuration_prompt_bindings(_configuration_id, _actor), do: []
 
-  defp split_configuration_blocks(bindings) when is_list(bindings) do
+  defp load_user_prompt_bindings(%{id: owner_id} = actor) when is_integer(owner_id) do
+    UserKnowledgeBlock
+    |> Ash.Query.filter(owner_id == ^owner_id and enabled == true)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.Query.select([:id, :knowledge_block_id, :enabled, :sequence])
+    |> Ash.Query.load(prompt_source_binding_load(), strict?: true)
+    |> Ash.read!(actor: actor)
+  end
+
+  defp load_user_prompt_bindings(_actor), do: []
+
+  defp prompt_source_binding_load do
+    [knowledge_block: prompt_source_knowledge_block_load()]
+  end
+
+  defp prompt_source_knowledge_block_load do
+    [
+      :id,
+      :name,
+      :version,
+      :token_count,
+      :content,
+      :variables,
+      :image,
+      :can_edit,
+      :shared_incoming,
+      :shared_outgoing
+    ]
+  end
+
+  defp ordered_prompt_blocks(prompt_sources) when is_map(prompt_sources) do
+    {config_top, config_bottom} =
+      split_configuration_prompt_bindings(Map.get(prompt_sources, :configuration, []))
+
+    [
+      prompt_block_entries(config_top, :config),
+      prompt_block_entries(Map.get(prompt_sources, :bot, []), :bot),
+      prompt_block_entries(Map.get(prompt_sources, :chat, []), :chat),
+      prompt_block_entries(config_bottom, :config),
+      prompt_block_entries(Map.get(prompt_sources, :user, []), :user)
+    ]
+    |> List.flatten()
+    |> Enum.with_index()
+    |> Enum.map(fn {entry, index} -> Map.put(entry, :prompt_order, index) end)
+  end
+
+  defp ordered_prompt_blocks(_prompt_sources), do: []
+
+  defp split_configuration_prompt_bindings(bindings) when is_list(bindings) do
     Enum.reduce(bindings, {[], []}, fn binding, {top, bottom} ->
       block = Map.get(binding, :knowledge_block)
 
@@ -875,27 +961,52 @@ defmodule IntellectualClub.Generation.Context do
         is_nil(block) ->
           {top, bottom}
 
-        Map.get(binding, :selection) == :top ->
-          {[block | top], bottom}
+        binding_selection(binding) == :top ->
+          {[binding | top], bottom}
 
         true ->
-          {top, [block | bottom]}
+          {top, [binding | bottom]}
       end
     end)
     |> then(fn {top, bottom} -> {Enum.reverse(top), Enum.reverse(bottom)} end)
   end
 
-  defp split_configuration_blocks(_other), do: {[], []}
+  defp split_configuration_prompt_bindings(_other), do: {[], []}
 
-  defp load_user_blocks(%{id: owner_id} = actor) when is_integer(owner_id) do
-    UserKnowledgeBlock
-    |> Ash.Query.filter(owner_id == ^owner_id and enabled == true)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.load(:knowledge_block)
-    |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.knowledge_block)
-    |> Enum.reject(&is_nil/1)
+  defp prompt_block_entries(bindings, source) when is_list(bindings) do
+    bindings
+    |> Enum.flat_map(fn binding ->
+      block = Map.get(binding, :knowledge_block)
+
+      if is_nil(block) do
+        []
+      else
+        [
+          %{
+            id: Map.get(binding, :id),
+            source: source,
+            selection: prompt_block_selection(source, binding),
+            sequence: Map.get(binding, :sequence) || 0,
+            knowledge_block: block
+          }
+        ]
+      end
+    end)
   end
 
-  defp load_user_blocks(_actor), do: []
+  defp prompt_block_entries(_bindings, _source), do: []
+
+  defp prompt_block_selection(:config, binding), do: binding_selection(binding)
+  defp prompt_block_selection(_source, _binding), do: nil
+
+  defp binding_selection(binding) when is_map(binding) do
+    case Map.get(binding, :selection) do
+      :top -> :top
+      "top" -> :top
+      _ -> :bottom
+    end
+  end
+
+  defp bot_variables(%{bot: %{variables: variables}}) when is_map(variables), do: variables
+  defp bot_variables(_chat), do: %{}
 end

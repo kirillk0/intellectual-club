@@ -56,6 +56,7 @@ export function useChatViewModel() {
     configuration: [],
     user: [],
   });
+  const promptBlocks = ref<ChatStatePayload['prompt_blocks']>([]);
   const compiledPromptText = ref('');
 
   const bots = ref<Bot[]>([]);
@@ -82,6 +83,7 @@ export function useChatViewModel() {
     if (!chatId.value) return;
     const payload = await api.get<ChatPromptContextPayload>(`/api/bff/chats/${chatId.value}/prompt-context`);
     promptSources.value = payload.prompt_sources || promptSources.value;
+    promptBlocks.value = payload.prompt_blocks || [];
     compiledPromptText.value = payload.compiled_prompt_text || '';
     counters.value = payload.counters || counters.value;
   };
@@ -108,6 +110,7 @@ export function useChatViewModel() {
     chatId,
     branch,
     promptSources,
+    promptBlocks,
     currentConfig: headerControls.currentConfig,
     currentBotInfo: headerControls.currentBotInfo,
     isMobile: ui.isMobile,
@@ -188,6 +191,7 @@ export function useChatViewModel() {
     branch.value = payload.branch || [];
     counters.value = payload.counters || counters.value;
     promptSources.value = payload.prompt_sources || promptSources.value;
+    promptBlocks.value = payload.prompt_blocks || [];
     compiledPromptText.value = payload.compiled_prompt_text || '';
 
     bots.value = payload.options?.bots || [];

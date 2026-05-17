@@ -290,8 +290,10 @@ defmodule IntellectualClub.Generation.ContextTest do
     {:ok, _} = Threads.add_message_to_end(chat, :user, "Check staging", actor: actor)
 
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+    snapshot = Context.prompt_snapshot!(chat.id, actor: actor)
 
     assert String.contains?(context.system_prompt, "# Available tool instances")
+    assert snapshot.system_prompt == context.system_prompt
 
     assert String.contains?(
              context.system_prompt,
@@ -469,7 +471,12 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert String.contains?(context.system_prompt, "## Tool instance `shell`")
     assert String.contains?(context.system_prompt, "`shell__run_command`")
-    assert String.contains?(context.system_prompt, "### Instance context\nRunner hostname: dev-host")
+
+    assert String.contains?(
+             context.system_prompt,
+             "### Instance context\nRunner hostname: dev-host"
+           )
+
     assert String.contains?(context.system_prompt, "Runner platform: macos")
     assert String.contains?(context.system_prompt, "Runner shell: /bin/zsh -c (kind: zsh)")
   end
@@ -1124,6 +1131,15 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!()
 
+    user_block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "User block", version: "v1", content: "user"},
+        actor: actor
+      )
+      |> Ash.create!()
+
     bot =
       Bot
       |> Ash.Changeset.for_create(
@@ -1231,14 +1247,44 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!()
 
+    _ =
+      UserKnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{knowledge_block_id: user_block.id, enabled: true, sequence: 40},
+        actor: actor
+      )
+      |> Ash.create!()
+
     {:ok, _} = Threads.add_message_to_end(chat, :user, "hello", actor: actor)
 
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+    snapshot = Context.prompt_snapshot!(chat.id, actor: actor)
 
     assert Regex.match?(
-             ~r/# Config top.*# Bot block.*# Chat block.*# Config bottom/s,
+             ~r/# Config top.*# Bot block.*# Chat block.*# Config bottom.*# User block/s,
              context.system_prompt
            )
+
+    assert snapshot.system_prompt == context.system_prompt
+
+    assert Enum.map(snapshot.prompt_blocks, & &1.knowledge_block.name) == [
+             "Config top",
+             "Bot block",
+             "Chat block",
+             "Config bottom",
+             "User block"
+           ]
+
+    assert Enum.map(snapshot.prompt_blocks, & &1.source) == [
+             :config,
+             :bot,
+             :chat,
+             :config,
+             :user
+           ]
+
+    assert Enum.map(snapshot.prompt_blocks, & &1.prompt_order) == [0, 1, 2, 3, 4]
   end
 
   test "builds chat provider history from answer and tool items while excluding reasoning" do

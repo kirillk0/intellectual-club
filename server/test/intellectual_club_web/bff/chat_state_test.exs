@@ -352,6 +352,18 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
                "top",
                "bottom"
              ]
+
+    prompt_blocks = payload["prompt_blocks"] || []
+
+    assert Enum.map(prompt_blocks, &get_in(&1, ["knowledge_block", "name"])) == [
+             "Config top",
+             "Bot block",
+             "Config bottom"
+           ]
+
+    assert Enum.map(prompt_blocks, & &1["source"]) == ["config", "bot", "config"]
+    assert Enum.map(prompt_blocks, & &1["selection"]) == ["top", nil, "bottom"]
+    assert Enum.map(prompt_blocks, & &1["prompt_order"]) == [0, 1, 2]
   end
 
   test "GET /api/bff/chats/:id/state includes image metadata in bot and knowledge block options",
@@ -653,6 +665,12 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
            ]) ==
              block.id
 
+    assert Enum.map(payload["prompt_blocks"] || [], &get_in(&1, ["knowledge_block", "name"])) == [
+             "Config prompt block"
+           ]
+
+    assert Enum.map(payload["prompt_blocks"] || [], & &1["prompt_order"]) == [0]
+
     assert is_binary(payload["compiled_prompt_text"])
     assert String.contains?(payload["compiled_prompt_text"], "config prompt")
     assert String.contains?(payload["compiled_prompt_text"], "# Available tool instances")
@@ -679,6 +697,11 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     assert String.contains?(state_payload["compiled_prompt_text"], "# Available tool instances")
     assert String.contains?(state_payload["compiled_prompt_text"], "`prompt_mcp__search_docs`")
+
+    assert Enum.map(
+             state_payload["prompt_blocks"] || [],
+             &get_in(&1, ["knowledge_block", "name"])
+           ) == ["Config prompt block"]
   end
 
   defp all_text_contents(message_payload) do

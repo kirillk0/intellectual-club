@@ -24,7 +24,17 @@ export type Counters = {
 export type PromptBinding = {
   id: number;
   enabled: boolean;
+  selection?: 'top' | 'bottom' | null;
   sequence: number;
+  knowledge_block: KnowledgeBlock | null;
+};
+
+export type PromptBlock = {
+  id: number;
+  source: 'bot' | 'chat' | 'config' | 'user';
+  selection: 'top' | 'bottom' | null;
+  sequence: number;
+  prompt_order: number;
   knowledge_block: KnowledgeBlock | null;
 };
 
@@ -39,6 +49,7 @@ export type ChatStatePayload = {
     configuration: PromptBinding[];
     user: PromptBinding[];
   };
+  prompt_blocks: PromptBlock[];
   compiled_prompt_text: string | null;
   counters: Counters;
   active_tool_instances: ActiveToolInstance[];
@@ -55,7 +66,7 @@ export type ChatStatePayload = {
 
 export type ChatPromptContextPayload = Pick<
   ChatStatePayload,
-  'prompt_sources' | 'compiled_prompt_text' | 'counters'
+  'prompt_sources' | 'prompt_blocks' | 'compiled_prompt_text' | 'counters'
 >;
 
 export type PollResponse = {

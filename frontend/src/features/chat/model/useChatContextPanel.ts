@@ -5,13 +5,14 @@ import { createRecordset } from '@/features/catalogs/model/recordsets';
 import type {
   ActiveToolInstance,
   ActiveToolBinding,
+  BlockSource,
   BranchSearchResults,
   ChatMessageSearchHit,
   LinkedBlock,
 } from '@/features/chat/types';
 import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
 import type { Bot, ChatBranchMessage, LlmConfiguration } from '@/types/api';
-import type { PromptBinding } from '@/features/chat/model/chatViewModel.shared';
+import type { PromptBinding, PromptBlock } from '@/features/chat/model/chatViewModel.shared';
 
 type Params = {
   chatId: ComputedRef<number>;
@@ -22,6 +23,7 @@ type Params = {
     configuration: PromptBinding[];
     user: PromptBinding[];
   }>;
+  promptBlocks: Ref<PromptBlock[]>;
   currentConfig: ComputedRef<LlmConfiguration | null>;
   currentBotInfo: ComputedRef<Bot | null>;
   isMobile: Ref<boolean>;
@@ -36,12 +38,43 @@ type Params = {
 const getQueryString = (value: unknown) =>
   Array.isArray(value) ? value[0] : typeof value === 'string' ? value : undefined;
 
+const normalizeBlockSource = (source: unknown): BlockSource | null => {
+  if (source === 'bot' || source === 'chat' || source === 'config' || source === 'user') {
+    return source;
+  }
+  return null;
+};
+
 export function useChatContextPanel(params: Params) {
   const linkedBlocks = computed<LinkedBlock[]>(() => {
-    const buckets: Array<{ source: 'bot' | 'chat' | 'config' | 'user'; list: PromptBinding[] }> = [
+    const promptBlockItems = [...(params.promptBlocks.value || [])]
+      .filter((item) => Boolean(item?.knowledge_block))
+      .sort((a, b) => (a.prompt_order ?? 0) - (b.prompt_order ?? 0));
+
+    if (promptBlockItems.length) {
+      return promptBlockItems.flatMap((item) => {
+        const source = normalizeBlockSource(item.source);
+        if (!source || !item.knowledge_block) return [];
+
+        return [
+          {
+            block: item.knowledge_block,
+            source,
+            order: item.prompt_order ?? 0,
+          },
+        ];
+      });
+    }
+
+    const configurationBlocks = params.promptSources.value.configuration || [];
+    const configurationTop = configurationBlocks.filter((binding) => binding.selection === 'top');
+    const configurationBottom = configurationBlocks.filter((binding) => binding.selection !== 'top');
+
+    const buckets: Array<{ source: BlockSource; list: PromptBinding[] }> = [
+      { source: 'config', list: configurationTop },
       { source: 'bot', list: params.promptSources.value.bot || [] },
       { source: 'chat', list: params.promptSources.value.chat || [] },
-      { source: 'config', list: params.promptSources.value.configuration || [] },
+      { source: 'config', list: configurationBottom },
       { source: 'user', list: params.promptSources.value.user || [] },
     ];
 
@@ -53,15 +86,12 @@ export function useChatContextPanel(params: Params) {
         items.push({
           block: binding.knowledge_block,
           source: bucket.source,
-          order: binding.sequence ?? 0,
+          order: items.length,
         });
       }
     }
 
-    return items.sort((a, b) => {
-      if (a.source !== b.source) return a.source.localeCompare(b.source);
-      return (a.order || 0) - (b.order || 0);
-    });
+    return items;
   });
 
   const formatStepMetric = (value: unknown) => {
