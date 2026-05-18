@@ -63,12 +63,12 @@ export const createPendingChatFiles = (files: File[]) =>
 export const pendingFileProgressPercent = (file: PendingChatFile) =>
   Math.max(0, Math.min(100, Math.round((Number.isFinite(file.progress) ? file.progress : 0) * 100)));
 
-export const formatUploadSpeed = (bytesPerSecond: number) => {
+const formatUploadSpeed = (bytesPerSecond: number) => {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '';
   return `${formatFileBytes(bytesPerSecond)}/s`;
 };
 
-export const formatUploadEta = (etaSeconds: number | null) => {
+const formatUploadEta = (etaSeconds: number | null) => {
   if (etaSeconds == null || !Number.isFinite(etaSeconds) || etaSeconds < 0) return '';
   if (etaSeconds < 60) return `${Math.round(etaSeconds)}s left`;
 
@@ -220,13 +220,13 @@ export const getAttachmentMimeType = (content: ChatMessageContent) =>
 
 export const getAttachmentSize = (content: ChatMessageContent) => content.media?.size_bytes || 0;
 
-export const getAttachmentExtension = (name: string) => {
+const getAttachmentExtension = (name: string) => {
   const trimmed = name.trim();
   const parts = trimmed.split('.');
   return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
 };
 
-export const isMarkdownAttachment = (name: string, mimeType: string) => {
+const isMarkdownAttachment = (name: string, mimeType: string) => {
   const normalizedMimeType = mimeType.trim().toLowerCase();
   return (
     normalizedMimeType === 'text/markdown' ||
@@ -236,7 +236,7 @@ export const isMarkdownAttachment = (name: string, mimeType: string) => {
   );
 };
 
-export const isTextAttachment = (name: string, mimeType: string) => {
+const isTextAttachment = (name: string, mimeType: string) => {
   const normalizedMimeType = mimeType.trim().toLowerCase();
 
   if (isMarkdownAttachment(name, mimeType)) return true;

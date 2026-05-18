@@ -10,7 +10,7 @@ export type JsonApiErrorObject = {
   meta?: unknown;
 };
 
-export type JsonApiRelationshipData =
+type JsonApiRelationshipData =
   | { type: string; id: string }
   | Array<{ type: string; id: string }>
   | null;
@@ -22,7 +22,7 @@ export type JsonApiResource<TAttributes extends Record<string, unknown> = Record
   relationships?: Record<string, { data?: JsonApiRelationshipData }>;
 };
 
-export type JsonApiDocument<TData> = {
+type JsonApiDocument<TData> = {
   data: TData;
   included?: JsonApiResource[];
   meta?: unknown;
@@ -40,9 +40,9 @@ export type JsonApiSingleResponse<TAttributes extends Record<string, unknown> = 
 export type JsonApiMutationResponse<TAttributes extends Record<string, unknown> = Record<string, unknown>> =
   JsonApiSingleResponse<TAttributes>;
 
-export type JsonApiErrorResponse = { errors: JsonApiErrorObject[] };
+type JsonApiErrorResponse = { errors: JsonApiErrorObject[] };
 
-export function isJsonApiErrorResponse(value: unknown): value is JsonApiErrorResponse {
+function isJsonApiErrorResponse(value: unknown): value is JsonApiErrorResponse {
   if (!value || typeof value !== 'object') return false;
   const v = value as { errors?: unknown };
   return Array.isArray(v.errors);
@@ -55,7 +55,7 @@ export function getJsonApiErrors(error: unknown): JsonApiErrorObject[] | null {
   return httpError.bodyJson.errors;
 }
 
-export function jsonApiHeaders(): HeadersInit {
+function jsonApiHeaders(): HeadersInit {
   return {
     accept: 'application/vnd.api+json',
     'content-type': 'application/vnd.api+json',
@@ -76,15 +76,7 @@ export function relationshipId(resource: JsonApiResource, relName: string): numb
   return toIntId(data.id);
 }
 
-export function relationshipIds(resource: JsonApiResource, relName: string): number[] {
-  const rel = resource.relationships?.[relName];
-  const data = rel?.data;
-  if (!data) return [];
-  if (!Array.isArray(data)) return [];
-  return data.map((d) => toIntId(d.id)).filter((n): n is number => typeof n === 'number');
-}
-
-export function jsonApiResourceKey(type: string, id: string | number): string {
+function jsonApiResourceKey(type: string, id: string | number): string {
   return `${String(type)}:${String(id)}`;
 }
 
@@ -204,11 +196,4 @@ export async function jsonApiUpdate<TAttributes extends Record<string, unknown> 
 
 export async function jsonApiDelete(basePath: string, id: number): Promise<void> {
   await api.del(`${basePath}/${id}`, { headers: jsonApiHeaders() });
-}
-
-export async function jsonApiPost<TResponse>(
-  path: string,
-  body: unknown = {}
-): Promise<TResponse> {
-  return api.post<TResponse>(path, body, { headers: jsonApiHeaders() });
 }

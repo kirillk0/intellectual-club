@@ -13,7 +13,7 @@ export type AdminUser = {
   groups?: AdminUserGroupSummary[];
 };
 
-export type AdminUserSummary = {
+type AdminUserSummary = {
   id: number;
   username: string;
   is_admin: boolean;

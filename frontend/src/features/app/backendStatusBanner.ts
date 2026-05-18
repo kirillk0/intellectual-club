@@ -30,7 +30,7 @@ export function showBackendStatusBanner(next: BackendStatusBannerState) {
   banner.value = next;
 }
 
-export function dismissBackendStatusBanner() {
+function dismissBackendStatusBanner() {
   if (banner.value) {
     lastDismissedFingerprint = fingerprint(banner.value);
     lastDismissedAt = Date.now();

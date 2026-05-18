@@ -84,18 +84,6 @@ export function getRecordset(key: string | null | undefined): CrudRecordset | nu
   return recordsets.get(key) ?? null;
 }
 
-export function upsertRecordset(key: string, ids: number[], opts: { returnTo?: string | null } = {}) {
-  if (!key) return;
-  const existing = recordsets.get(key);
-  recordsets.set(key, {
-    ids: Array.from(ids),
-    createdAt: existing?.createdAt ?? Date.now(),
-    returnTo: opts.returnTo ?? existing?.returnTo ?? null,
-  });
-  pruneRecordsets();
-  persistRecordsets();
-}
-
 export function appendRecordsetId(key: string, id: number) {
   const rs = getRecordset(key);
   if (!rs) return;
@@ -113,4 +101,3 @@ export function removeRecordsetId(key: string, id: number) {
   recordsets.set(key, { ...rs });
   persistRecordsets();
 }
-

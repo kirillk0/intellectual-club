@@ -1,6 +1,6 @@
 import { api, getCsrfToken, HttpError, isHttpError } from '@/api/client';
 
-export type ChatUploadStatus = 'uploading' | 'uploaded' | 'aborted' | 'expired' | string;
+type ChatUploadStatus = 'uploading' | 'uploaded' | 'aborted' | 'expired' | string;
 
 export type ChatUploadInfo = {
   upload_id: string;
@@ -24,7 +24,7 @@ export class UploadAbortedError extends Error {
   }
 }
 
-export class UploadNetworkError extends Error {
+class UploadNetworkError extends Error {
   constructor(message = 'Upload request failed.') {
     super(message);
     this.name = 'UploadNetworkError';

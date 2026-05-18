@@ -33,7 +33,6 @@ type Params = {
   editExistingAttachments: Ref<ExistingChatAttachment[]>;
 };
 
-type AttachmentPreviewKind = 'image' | 'text' | 'markdown' | 'binary';
 type PendingAttachmentScope = 'composer' | 'edit';
 
 type AttachmentPreviewItem =

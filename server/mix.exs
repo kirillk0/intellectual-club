@@ -56,8 +56,6 @@ defmodule IntellectualClub.MixProject do
       {:ash_admin, "~> 0.13.24"},
       {:bcrypt_elixir, "~> 3.0"},
       {:picosat_elixir, "~> 0.2.3"},
-      {:earmark, "~> 1.4"},
-      {:html_sanitize_ex, "~> 1.4"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},

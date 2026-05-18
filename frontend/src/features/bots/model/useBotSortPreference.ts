@@ -50,7 +50,7 @@ const parseTimestamp = (value: string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export const botSortTimestamp = (record: BotSortRecord): number => {
+const botSortTimestamp = (record: BotSortRecord): number => {
   return (
     parseTimestamp(record.sort_activity_at) ||
     parseTimestamp(record.updated_at) ||
@@ -61,7 +61,7 @@ export const botSortTimestamp = (record: BotSortRecord): number => {
 const botSortName = (record: BotSortRecord): string => String(record.name || '').trim();
 const isNoBotRecord = (record: BotSortRecord): boolean => record.id === '';
 
-export const compareBotsForSortMode = (
+const compareBotsForSortMode = (
   left: BotSortRecord,
   right: BotSortRecord,
   mode: BotSortMode
