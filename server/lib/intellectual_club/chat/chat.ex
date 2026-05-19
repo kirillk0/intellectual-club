@@ -10,6 +10,7 @@ defmodule IntellectualClub.Chat.Chat do
 
   alias IntellectualClub.Chat.Changes.ClearLastMessageReference
   alias IntellectualClub.Chat.Changes.CreateFirstMessages
+  alias IntellectualClub.Chat.Changes.DeleteChatSharesOnAccessBoundaryChange
   alias IntellectualClub.Chat.Changes.NormalizeChatFields
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
@@ -125,9 +126,31 @@ defmodule IntellectualClub.Chat.Chat do
       destination_attribute(:chat_id)
       public?(true)
     end
+
+    has_many :shares, IntellectualClub.Chat.ChatShare do
+      destination_attribute(:chat_id)
+    end
   end
 
   calculations do
+    calculate :can_edit, :boolean, expr(owner_id == ^actor(:id)) do
+      public?(true)
+    end
+
+    calculate :shared_incoming,
+              :boolean,
+              expr(
+                owner_id != ^actor(:id) and not exists(knowledge_block_bindings) and
+                  not exists(tool_bindings) and
+                  exists(shares.user_group.memberships, user_id == ^actor(:id))
+              ) do
+      public?(true)
+    end
+
+    calculate :shared_outgoing, :boolean, expr(exists(shares)) do
+      public?(true)
+    end
+
     calculate :message_count, :integer, {IntellectualClub.Chat.Calculations.MessageCount, []} do
       public?(true)
     end
@@ -150,6 +173,7 @@ defmodule IntellectualClub.Chat.Chat do
       primary?(true)
       require_atomic?(false)
       change({ClearLastMessageReference, []})
+      change(cascade_destroy(:shares, after_action?: false))
       change(cascade_destroy(:knowledge_block_bindings, after_action?: false))
       change(cascade_destroy(:tool_bindings, after_action?: false))
 
@@ -184,6 +208,30 @@ defmodule IntellectualClub.Chat.Chat do
       change({CreateFirstMessages, []})
     end
 
+    create :create_empty do
+      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+
+      argument :knowledge_block_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      argument :tool_bindings, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      change(relate_actor(:owner))
+      change({NormalizeChatFields, []})
+      change(&maybe_manage_knowledge_block_bindings/2)
+      change(&maybe_manage_tool_bindings/2)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+      )
+    end
+
     update :update do
       accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
       require_atomic?(false)
@@ -206,6 +254,8 @@ defmodule IntellectualClub.Chat.Chat do
         {RequireRelatedAccessByActor,
          relationships: [:bot, :llm_configuration], access: :readable, required?: false}
       )
+
+      change({DeleteChatSharesOnAccessBoundaryChange, []})
     end
 
     update :set_last_message do
@@ -222,6 +272,11 @@ defmodule IntellectualClub.Chat.Chat do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
+
+      authorize_if expr(
+                     not exists(knowledge_block_bindings) and not exists(tool_bindings) and
+                       exists(shares.user_group.memberships, user_id == ^actor(:id))
+                   )
     end
 
     policy action_type(:create) do

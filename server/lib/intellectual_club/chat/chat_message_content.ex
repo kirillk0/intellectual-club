@@ -117,6 +117,10 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
+
+      authorize_if expr(
+                     chat_message_item.chat_message_step.chat_message.chat.shared_incoming == true
+                   )
     end
 
     policy action_type(:create) do

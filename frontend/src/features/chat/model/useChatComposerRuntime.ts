@@ -31,6 +31,7 @@ type ScrollToLastMessage = (opts?: {
 type Params = {
   chatId: ComputedRef<number>;
   branch: Ref<ChatBranchMessage[]>;
+  readOnly: ComputedRef<boolean>;
   loadError: Ref<string>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
@@ -618,6 +619,7 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const send = async () => {
+    if (params.readOnly.value) return;
     if (!params.chatId.value || sending.value) return;
     if (params.activeGenerationId.value) return;
 
@@ -666,6 +668,7 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const cancelActiveGeneration = async () => {
+    if (params.readOnly.value) return;
     const messageId = params.activeGenerationId.value;
     if (!messageId || params.cancelingGenerationId.value === messageId) return;
     params.cancelingGenerationId.value = messageId;
@@ -691,6 +694,7 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const addPendingFiles = (files: File[]) => {
+    if (params.readOnly.value) return;
     if (!files.length) return;
     const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
 

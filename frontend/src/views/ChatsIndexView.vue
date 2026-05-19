@@ -67,6 +67,14 @@
                 :row-role="chatResultRole(c)"
               >
                 <template #badges>
+                  <span
+                    v-if="c.shared_outgoing"
+                    class="share-indicator"
+                    title="Shared with groups"
+                    aria-label="Shared with groups"
+                  >
+                    <SvgIcon name="share-outgoing" />
+                  </span>
                   <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
                     {{ matchBadgeLabel(c.match_type) }}
                   </span>
@@ -171,6 +179,9 @@ type ChatSummary = {
   message_count?: number | null;
   first_message_preview?: string | null;
   first_message_role?: 'user' | 'assistant' | null;
+  can_edit?: boolean | null;
+  shared_incoming?: boolean | null;
+  shared_outgoing?: boolean | null;
 };
 
 type ChatSearchResult = ChatSummary & {
@@ -908,4 +919,9 @@ onBeforeUnmount(() => {
   color: #2563eb;
 }
 
+.share-indicator {
+  display: inline-flex;
+  align-items: center;
+  color: #2563eb;
+}
 </style>

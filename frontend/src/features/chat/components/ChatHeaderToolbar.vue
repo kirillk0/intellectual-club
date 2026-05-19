@@ -21,6 +21,7 @@
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
           <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
           <button
+            v-if="canEdit"
             class="icon-button chat-toolbar__title-edit"
             type="button"
             aria-label="Edit chat note"
@@ -82,6 +83,9 @@
             <button class="menu-item" type="button" @click="emit('open-config-editor')" :disabled="!selectedConfig">
               {{ editConfigLabel }}
             </button>
+            <button v-if="canEdit" class="menu-item" type="button" @click="emit('open-share')">
+              Share…
+            </button>
             <div class="menu-divider" aria-hidden="true"></div>
             <div
               class="menu-item"
@@ -113,7 +117,7 @@
                 >
                   {{ currentBotName || 'No bot' }}
                 </span>
-                <button type="button" class="link" @click="emit('open-bot-modal')" style="padding: 0">
+                <button v-if="canEdit" type="button" class="link" @click="emit('open-bot-modal')" style="padding: 0">
                   change
                 </button>
               </div>
@@ -136,10 +140,10 @@
                 >
                   {{ chatNote || 'No note' }}
                 </span>
-                <button type="button" class="link" @click="emit('open-note-modal')" style="padding: 0">edit</button>
+                <button v-if="canEdit" type="button" class="link" @click="emit('open-note-modal')" style="padding: 0">edit</button>
               </div>
             </div>
-            <button class="menu-item danger" type="button" @click="emit('delete-chat')" :disabled="deleting">
+            <button v-if="canEdit" class="menu-item danger" type="button" @click="emit('delete-chat')" :disabled="deleting">
               {{ deleting ? 'Deleting…' : 'Delete chat' }}
             </button>
           </div>
@@ -148,7 +152,7 @@
     </div>
 
     <div
-      v-if="showMissingToolsBanner"
+      v-if="canEdit && showMissingToolsBanner"
       class="card flex"
       style="padding: 10px; justify-content: space-between; align-items: center; gap: 12px"
     >
@@ -198,6 +202,7 @@ interface Props {
   chatNote: string;
   creatingChat: boolean;
   deleting: boolean;
+  canEdit: boolean;
   showMissingToolsBanner: boolean;
   missingRequiredPerUserToolAliases: string[];
   setMenuRef: (el: Element | null) => void;
@@ -214,9 +219,10 @@ const props = withDefaults(defineProps<Props>(), {
   selectedDisabledConfigReason: null,
 });
 
-const configSelectorDisabled = computed(() => props.configSyncStatus === 'pending' || props.isGenerating);
+const configSelectorDisabled = computed(() => !props.canEdit || props.configSyncStatus === 'pending' || props.isGenerating);
 
 const configSelectorTitle = computed(() => {
+  if (!props.canEdit) return 'Shared chats are read-only';
   if (props.isGenerating) return 'Cannot change configuration while generating a response';
   if (props.configSyncStatus === 'pending') return 'Waiting for server confirmation';
   return undefined;
@@ -231,6 +237,7 @@ const emit = defineEmits<{
   (e: 'open-bot-editor'): void;
   (e: 'open-bot-modal'): void;
   (e: 'open-note-modal'): void;
+  (e: 'open-share'): void;
   (e: 'delete-chat'): void;
   (e: 'open-bot-tools'): void;
   (e: 'dismiss-missing-tools-banner'): void;

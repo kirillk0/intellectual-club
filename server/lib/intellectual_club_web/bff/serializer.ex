@@ -188,6 +188,9 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       llm_configuration_id: chat.llm_configuration_id,
       llm_configuration_label: llm_configuration_label,
       active_generation_message_id: active_generation_message_id(chat),
+      can_edit: loaded_value(Map.get(chat, :can_edit)),
+      shared_incoming: loaded_value(Map.get(chat, :shared_incoming)),
+      shared_outgoing: loaded_value(Map.get(chat, :shared_outgoing)),
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at),
       last_activity_at: datetime_iso(Keyword.get(opts, :activity_at))
@@ -224,6 +227,9 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       bot_id: chat.bot_id,
       llm_configuration_id: chat.llm_configuration_id,
       variables: variable_entries_from_map(chat.variables || %{}),
+      can_edit: loaded_value(Map.get(chat, :can_edit)),
+      shared_incoming: loaded_value(Map.get(chat, :shared_incoming)),
+      shared_outgoing: loaded_value(Map.get(chat, :shared_outgoing)),
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at)
     }

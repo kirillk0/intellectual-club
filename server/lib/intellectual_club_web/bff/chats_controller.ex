@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
   alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
@@ -22,6 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationTag
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
+  alias IntellectualClub.Sharing
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
@@ -41,12 +43,16 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
       page =
         Chat
+        |> Ash.Query.filter(owner_id == ^actor.id)
         |> maybe_apply_chat_bot_filter(bot_filter)
         |> Ash.Query.sort(updated_at: :desc, id: :desc)
         |> Ash.Query.load([
           :bot,
           :last_message,
           :active_root_message_id,
+          :can_edit,
+          :shared_incoming,
+          :shared_outgoing,
           llm_configuration: [:provider]
         ])
         |> Ash.Query.page(
@@ -306,6 +312,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   defp latest_chat_llm_configuration_id(actor, bot_id, available_ids) do
     Chat
     |> maybe_apply_default_llm_configuration_chat_filter(bot_id)
+    |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(
       not is_nil(llm_configuration_id) and llm_configuration_id in ^available_ids
     )
@@ -454,62 +461,66 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   def update(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       chat_id = String.to_integer(id)
-      chat = Ash.get!(Chat, chat_id, actor: actor)
 
       allowed_fields =
         ~w(title note bot_id llm_configuration_id variables knowledge_block_bindings tool_bindings)
 
-      patch =
-        params
-        |> Map.take(allowed_fields)
-        |> normalize_chat_patch()
-        |> maybe_adjust_llm_configuration_for_bot_change(chat, actor)
+      with {:ok, chat} <- fetch_owned_chat(chat_id, actor) do
+        patch =
+          params
+          |> Map.take(allowed_fields)
+          |> normalize_chat_patch()
+          |> maybe_adjust_llm_configuration_for_bot_change(chat, actor)
 
-      chat =
-        chat
-        |> Ash.Changeset.for_update(:update, patch, actor: actor)
-        |> Ash.update!()
+        chat =
+          chat
+          |> Ash.Changeset.for_update(:update, patch, actor: actor)
+          |> Ash.update!()
 
-      json(conn, %{chat: Serializer.chat_detail(chat)})
+        json(conn, %{chat: Serializer.chat_detail(chat)})
+      else
+        {:error, error} -> render_access_error(conn, error)
+      end
     end
   end
 
   def delete(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       chat_id = String.to_integer(id)
-      chat = Ash.get!(Chat, chat_id, actor: actor)
 
-      case Ash.destroy(chat, actor: actor) do
-        :ok ->
-          json(conn, %{status: "ok"})
+      with {:ok, chat} <- fetch_owned_chat(chat_id, actor) do
+        case Ash.destroy(chat, actor: actor) do
+          :ok ->
+            json(conn, %{status: "ok"})
 
-        {:ok, _chat} ->
-          json(conn, %{status: "ok"})
+          {:ok, _chat} ->
+            json(conn, %{status: "ok"})
 
-        {:error, %Ash.Error.Forbidden{} = error} ->
-          conn
-          |> put_status(:forbidden)
-          |> json(%{error: "Forbidden: #{Exception.message(error)}"})
+          {:error, %Ash.Error.Forbidden{} = error} ->
+            conn
+            |> put_status(:forbidden)
+            |> json(%{error: "Forbidden: #{Exception.message(error)}"})
 
-        {:error, %Ash.Error.Invalid{} = error} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Invalid request: #{Exception.message(error)}"})
+          {:error, %Ash.Error.Invalid{} = error} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Invalid request: #{Exception.message(error)}"})
 
-        {:error, error} ->
-          conn
-          |> put_status(:internal_server_error)
-          |> json(%{error: "Failed to delete chat: #{inspect(error)}"})
+          {:error, error} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "Failed to delete chat: #{inspect(error)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
 
   def state(conn, %{"id" => id}) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
-      chat_id = String.to_integer(id)
-
-      chat = Ash.get!(Chat, chat_id, actor: actor)
-
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, %Chat{} = chat} <- fetch_readable_chat(chat_id, actor) do
       {messages, branch_meta_by_id} = load_branch(chat, actor)
 
       chat_blocks = load_chat_blocks(chat_id, actor)
@@ -555,6 +566,58 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         },
         active_generation_message_id: generating_message_id
       })
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:ok, nil} ->
+        render_access_error(conn, :not_found)
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def shares(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, state} <- Sharing.get_chat_share_state(chat_id, actor) do
+      json(conn, state)
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def update_shares(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, group_ids} <- parse_group_ids(params),
+         {:ok, state} <- Sharing.replace_chat_share_state(chat_id, group_ids, actor) do
+      json(conn, state)
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def continue_conversation(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, chat} <- Continuation.continue_chat(chat_id, actor) do
+      json(conn, %{chat: Serializer.chat_detail(chat)})
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
     end
   end
 
@@ -581,9 +644,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       content = params |> Map.get("content", "") |> to_string()
       explicit_parent? = Map.has_key?(params, "parent_id")
       parent_id = Helpers.parse_optional_integer(Map.get(params, "parent_id"))
-      upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor)
 
-      with {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
+      with {:ok, _chat} <- fetch_owned_chat(chat_id, actor),
+           upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor),
+           {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
            {:ok, :ok} <-
              create_user_message_with_prepared_attachments(
                chat_id,
@@ -602,6 +666,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           generation: %{message_id: context.message_id}
         })
       else
+        {:error, :forbidden} ->
+          render_access_error(conn, :forbidden)
+
+        {:error, :not_found} ->
+          render_access_error(conn, :not_found)
+
         {:error, {:user_message, error}} ->
           conn
           |> put_status(:unprocessable_entity)
@@ -691,19 +761,23 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       parent_id = Helpers.parse_optional_integer(Map.get(params, "parent_id"))
       generation_opts = maybe_put_parent_id([actor: actor], parent_id)
 
-      case GenerationSupervisor.start_generation(chat_id, generation_opts) do
-        {:ok, context} ->
-          {messages, branch_meta_by_id} = load_branch(chat_id, actor)
+      with {:ok, _chat} <- fetch_owned_chat(chat_id, actor) do
+        case GenerationSupervisor.start_generation(chat_id, generation_opts) do
+          {:ok, context} ->
+            {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
-          json(conn, %{
-            branch: serialize_branch(messages, branch_meta_by_id, actor),
-            generation: %{message_id: context.message_id}
-          })
+            json(conn, %{
+              branch: serialize_branch(messages, branch_meta_by_id, actor),
+              generation: %{message_id: context.message_id}
+            })
 
-        {:error, reason} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to start generation: #{inspect(reason)}"})
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to start generation: #{inspect(reason)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -728,7 +802,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         |> maybe_put_switch_direction(direction)
         |> maybe_put_switch_target(target_id)
 
-      with message_id when is_integer(message_id) <- message_id,
+      with {:ok, _chat} <- fetch_owned_chat(chat_id, actor),
+           message_id when is_integer(message_id) <- message_id,
            {:ok, _meta} <- Threads.switch_branch(chat_id, message_id, opts) do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
@@ -740,6 +815,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "message_id is required"})
+
+        {:error, :forbidden} ->
+          render_access_error(conn, :forbidden)
+
+        {:error, :not_found} ->
+          render_access_error(conn, :not_found)
 
         {:error, reason} ->
           conn
@@ -754,7 +835,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat_id = String.to_integer(id)
       message_id = Helpers.parse_optional_integer(Map.get(params, "message_id"))
 
-      with message_id when is_integer(message_id) <- message_id,
+      with {:ok, _chat} <- fetch_owned_chat(chat_id, actor),
+           message_id when is_integer(message_id) <- message_id,
            {:ok, _meta} <- Threads.activate_branch(chat_id, message_id, actor) do
         {messages, branch_meta_by_id} = load_branch(chat_id, actor)
 
@@ -766,6 +848,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "message_id is required"})
+
+        {:error, :forbidden} ->
+          render_access_error(conn, :forbidden)
+
+        {:error, :not_found} ->
+          render_access_error(conn, :not_found)
 
         {:error, reason} ->
           conn
@@ -1119,4 +1207,96 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     do: Keyword.put(opts, :target_id, target_id)
 
   defp maybe_put_switch_target(opts, _target_id), do: opts
+
+  defp parse_resource_id(id) do
+    case Helpers.parse_optional_integer(id) do
+      value when is_integer(value) and value > 0 -> {:ok, value}
+      _other -> {:error, :not_found}
+    end
+  end
+
+  defp parse_group_ids(params) do
+    case Map.get(params, "group_ids", []) do
+      ids when is_list(ids) ->
+        if Enum.all?(ids, &valid_integer_like?/1) do
+          {:ok, Helpers.parse_integer_list(ids)}
+        else
+          {:error, {:validation, "group_ids must contain integers."}}
+        end
+
+      _other ->
+        {:error, {:validation, "group_ids must be a list."}}
+    end
+  end
+
+  defp valid_integer_like?(value) when is_integer(value), do: true
+
+  defp valid_integer_like?(value) when is_binary(value) do
+    match?({number, ""} when number > 0, Integer.parse(value))
+  end
+
+  defp valid_integer_like?(_value), do: false
+
+  defp fetch_owned_chat(chat_id, actor) do
+    case Ash.get(Chat, chat_id, actor: actor) do
+      {:ok, %Chat{owner_id: owner_id} = chat} when owner_id == actor.id -> {:ok, chat}
+      {:ok, %Chat{}} -> {:error, :forbidden}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, %Ash.Error.Query.NotFound{}} -> {:error, :not_found}
+      {:error, %Ash.Error.Forbidden{}} -> {:error, :forbidden}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_readable_chat(chat_id, actor) do
+    Chat
+    |> Ash.Query.filter(id == ^chat_id)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load([:can_edit, :shared_incoming, :shared_outgoing], strict?: true)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, [%Chat{} = chat]} -> {:ok, chat}
+      {:ok, []} -> {:error, :not_found}
+      {:error, %Ash.Error.Forbidden{}} -> {:error, :forbidden}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp render_access_error(conn, {:validation, message}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: message})
+  end
+
+  defp render_access_error(conn, :forbidden) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "Forbidden"})
+  end
+
+  defp render_access_error(conn, :not_found) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "Not found"})
+  end
+
+  defp render_access_error(conn, %Ash.Error.Forbidden{}) do
+    render_access_error(conn, :forbidden)
+  end
+
+  defp render_access_error(conn, %Ash.Error.Query.NotFound{}) do
+    render_access_error(conn, :not_found)
+  end
+
+  defp render_access_error(conn, %Ash.Error.Invalid{} = error) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: Exception.message(error)})
+  end
+
+  defp render_access_error(conn, error) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: Exception.message(error)})
+  end
 end

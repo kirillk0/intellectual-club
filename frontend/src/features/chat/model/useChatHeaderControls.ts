@@ -17,6 +17,7 @@ type Params = {
   routeFullPath: () => string;
   chat: Ref<Chat | null>;
   chatNote: Ref<string>;
+  canEdit: ComputedRef<boolean>;
   bots: Ref<Bot[]>;
   llmConfigurations: Ref<LlmConfiguration[]>;
   activeGenerationId: Ref<number | null>;
@@ -150,7 +151,7 @@ export function useChatHeaderControls(params: Params) {
     return (params.llmConfigurations.value || []).find((config) => config.id === Number(selectedConfig.value)) || null;
   });
 
-  const canAttachFiles = computed(() => fileUploadPolicy.value.allowsFiles);
+  const canAttachFiles = computed(() => params.canEdit.value && fileUploadPolicy.value.allowsFiles);
   const fileInputAccept = computed(() => fileUploadPolicy.value.accept);
   const fileAttachTitle = computed(() => describeChatUploadPolicy(fileUploadPolicy.value));
   const fileDropHint = computed(() =>
@@ -206,6 +207,7 @@ export function useChatHeaderControls(params: Params) {
   const savingNote = ref(false);
 
   const openNoteModal = () => {
+    if (!params.canEdit.value) return;
     noteModalValue.value = params.chatNote.value || '';
     noteModalOpen.value = true;
   };
@@ -215,6 +217,7 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const saveNote = async () => {
+    if (!params.canEdit.value) return;
     if (!params.chatId.value || savingNote.value) return;
     savingNote.value = true;
     try {
@@ -252,6 +255,7 @@ export function useChatHeaderControls(params: Params) {
   ]);
 
   const openBotModal = () => {
+    if (!params.canEdit.value) return;
     botModalValue.value = params.chat.value?.bot_id ?? '';
     botModalOpen.value = true;
   };
@@ -261,6 +265,7 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const saveBotSelection = async () => {
+    if (!params.canEdit.value) return;
     if (!params.chatId.value || savingBot.value) return;
     savingBot.value = true;
     try {
@@ -305,6 +310,7 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const updateConfig = async () => {
+    if (!params.canEdit.value) return;
     if (!params.chatId.value) return;
     if (params.activeGenerationId.value) {
       window.alert('Cannot change configuration while generating a response.');
@@ -360,6 +366,7 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const openBotTools = () => {
+    if (!params.canEdit.value) return;
     window.alert('Not implemented yet.');
     params.closeMenu();
   };
@@ -369,6 +376,7 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const removeChat = async () => {
+    if (!params.canEdit.value) return;
     if (!params.chatId.value || params.deleting.value) return;
     const ok = window.confirm('Delete this chat? All messages will be removed.');
     if (!ok) {

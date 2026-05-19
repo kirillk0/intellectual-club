@@ -196,6 +196,8 @@ defmodule IntellectualClub.Chat.ChatMessage do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
+
+      authorize_if expr(chat.shared_incoming == true)
     end
 
     policy action_type(:create) do

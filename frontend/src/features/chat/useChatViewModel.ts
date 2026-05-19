@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { api } from '@/api/client';
+import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import { useChatContextPanel } from '@/features/chat/model/useChatContextPanel';
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import { useChatHeaderControls } from '@/features/chat/model/useChatHeaderControls';
@@ -23,10 +23,23 @@ import type {
   Bot,
   Chat,
   ChatBranchMessage,
+  Group,
   KnowledgeBlock,
   LlmConfiguration,
   ToolInstanceOption,
 } from '@/types/api';
+
+type ChatShareEligibility = {
+  id: number;
+  eligible: boolean;
+  disabled_reason?: string | null;
+};
+
+type ChatShareState = {
+  group_ids?: number[];
+  eligible_group_ids?: number[];
+  group_eligibility?: ChatShareEligibility[];
+};
 
 export function useChatViewModel() {
   const route = useRoute();
@@ -39,9 +52,12 @@ export function useChatViewModel() {
 
   const loaded = ref(false);
   const loadError = ref('');
+  const chatUnavailable = ref(false);
 
   const chat = ref<Chat | null>(null);
   const chatNote = ref('');
+  const canEdit = computed(() => chat.value?.can_edit !== false);
+  const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
   const branch = ref<ChatBranchMessage[]>([]);
   const counters = ref<Counters>({
     prompt_token_count: 0,
@@ -66,6 +82,15 @@ export function useChatViewModel() {
 
   const activeGenerationId = ref<number | null>(null);
   const cancelingGenerationId = ref<number | null>(null);
+  const continuingConversation = ref(false);
+
+  const shareModalOpen = ref(false);
+  const shareGroups = ref<Group[]>([]);
+  const sharedGroupIds = ref<number[]>([]);
+  const shareDisabledGroupIds = ref<number[]>([]);
+  const shareDisabledGroupReasons = ref<Record<number, string>>({});
+  const shareLoading = ref(false);
+  const shareSaving = ref(false);
 
   const setMenuRef = (el: Element | null) => {
     ui.menuRef.value = el as HTMLElement | null;
@@ -93,6 +118,7 @@ export function useChatViewModel() {
     routeFullPath: () => route.fullPath,
     chat,
     chatNote,
+    canEdit,
     bots,
     llmConfigurations,
     activeGenerationId,
@@ -109,6 +135,7 @@ export function useChatViewModel() {
   const contextPanel = useChatContextPanel({
     chatId,
     branch,
+    readOnly: sharedReadonly,
     promptSources,
     promptBlocks,
     currentConfig: headerControls.currentConfig,
@@ -127,6 +154,7 @@ export function useChatViewModel() {
   const composerRuntime = useChatComposerRuntime({
     chatId,
     branch,
+    readOnly: sharedReadonly,
     loadError,
     fileUploadPolicy: headerControls.fileUploadPolicy,
     waitForConfigSync: headerControls.waitForConfigSync,
@@ -138,6 +166,7 @@ export function useChatViewModel() {
   const messageActions = useChatMessageActions({
     chatId,
     chat,
+    readOnly: sharedReadonly,
     branch,
     selectedConfig: headerControls.selectedConfig,
     fileUploadPolicy: headerControls.fileUploadPolicy,
@@ -166,6 +195,7 @@ export function useChatViewModel() {
 
   const libraryDraft = useChatLibraryDraft({
     chatId,
+    readOnly: sharedReadonly,
     knowledgeBlocks,
     toolLibrary,
     routeFullPath: () => route.fullPath,
@@ -183,8 +213,11 @@ export function useChatViewModel() {
     }
 
     loadError.value = '';
+    chatUnavailable.value = false;
 
-    const payload = await api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`);
+    const payload = await api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`, {
+      showErrorBanner: false,
+    });
 
     chat.value = payload.chat;
     chatNote.value = payload.chat?.note || '';
@@ -224,11 +257,96 @@ export function useChatViewModel() {
     try {
       await loadChat(opts);
     } catch (error) {
-      console.error(error);
-      loadError.value = error instanceof Error ? error.message : 'Failed to load chat.';
+      chat.value = null;
+      branch.value = [];
+      if (isHttpError(error) && (error.status === 403 || error.status === 404)) {
+        chatUnavailable.value = true;
+        loadError.value = '';
+      } else {
+        console.error(error);
+        chatUnavailable.value = false;
+        loadError.value = getApiErrorMessage(error, 'Failed to load chat.');
+      }
     } finally {
       loaded.value = true;
     }
+  };
+
+  const normalizeNumberIds = (ids: unknown): number[] =>
+    Array.isArray(ids)
+      ? ids.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0)
+      : [];
+
+  const applyShareState = (state: ChatShareState) => {
+    sharedGroupIds.value = normalizeNumberIds(state.group_ids);
+    const eligibility = Array.isArray(state.group_eligibility) ? state.group_eligibility : [];
+    shareDisabledGroupIds.value = eligibility
+      .filter((item) => !item.eligible)
+      .map((item) => item.id)
+      .filter((id) => Number.isInteger(id) && id > 0);
+    shareDisabledGroupReasons.value = Object.fromEntries(
+      eligibility
+        .filter((item) => !item.eligible && item.disabled_reason)
+        .map((item) => [item.id, String(item.disabled_reason)])
+    );
+  };
+
+  const openShareModal = async () => {
+    if (!canEdit.value || !chatId.value || shareLoading.value) return;
+    ui.closeMenu();
+    shareModalOpen.value = true;
+    shareLoading.value = true;
+    try {
+      const [groupsPayload, state] = await Promise.all([
+        api.get<{ groups: Group[] }>('/api/bff/me/groups'),
+        api.get<ChatShareState>(`/api/bff/chats/${chatId.value}/shares`),
+      ]);
+      shareGroups.value = groupsPayload.groups || [];
+      applyShareState(state || {});
+    } catch (error) {
+      console.error(error);
+      loadError.value = error instanceof Error ? error.message : 'Failed to load sharing settings.';
+    } finally {
+      shareLoading.value = false;
+    }
+  };
+
+  const saveShareGroups = async (groupIds: number[]) => {
+    if (!canEdit.value || !chatId.value || shareSaving.value) return;
+    shareSaving.value = true;
+    try {
+      const state = await api.put<ChatShareState>(`/api/bff/chats/${chatId.value}/shares`, {
+        group_ids: groupIds,
+      });
+      applyShareState(state || {});
+      shareModalOpen.value = false;
+      await loadChatSafe({ mode: 'soft' });
+    } catch (error) {
+      console.error(error);
+      window.alert(error instanceof Error ? error.message : 'Failed to save sharing settings.');
+    } finally {
+      shareSaving.value = false;
+    }
+  };
+
+  const continueConversation = async () => {
+    if (!sharedReadonly.value || !chatId.value || continuingConversation.value) return;
+    continuingConversation.value = true;
+    try {
+      const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chats/${chatId.value}/continue`, {});
+      const nextId = payload.chat?.id;
+      if (!nextId) throw new Error('Missing chat id');
+      await router.push(`/chats/${nextId}`);
+    } catch (error) {
+      console.error(error);
+      window.alert(getApiErrorMessage(error, 'Failed to continue conversation.'));
+    } finally {
+      continuingConversation.value = false;
+    }
+  };
+
+  const backToChats = async () => {
+    await router.push('/chats');
   };
 
   watch(
@@ -244,6 +362,7 @@ export function useChatViewModel() {
       contextPanel.resetForChatChange();
       void (async () => {
         await loadChatSafe();
+        if (chatUnavailable.value || !chat.value) return;
         await contextPanel.handleFocusMessage();
       })();
     }
@@ -279,6 +398,7 @@ export function useChatViewModel() {
     if (chatId.value) {
       void (async () => {
         await loadChatSafe();
+        if (chatUnavailable.value || !chat.value) return;
         await contextPanel.handleFocusMessage();
       })();
     }
@@ -298,8 +418,11 @@ export function useChatViewModel() {
   return {
     loaded,
     loadError,
+    chatUnavailable,
     chat,
     chatNote,
+    canEdit,
+    sharedReadonly,
     branch,
     counters,
     bots,
@@ -343,6 +466,18 @@ export function useChatViewModel() {
     openBotEditor: headerControls.openBotEditor,
     openBotTools: headerControls.openBotTools,
     dismissMissingToolsBanner: headerControls.dismissMissingToolsBanner,
+    openShareModal,
+    shareModalOpen,
+    shareGroups,
+    sharedGroupIds,
+    shareDisabledGroupIds,
+    shareDisabledGroupReasons,
+    shareLoading,
+    shareSaving,
+    saveShareGroups,
+    continuingConversation,
+    continueConversation,
+    backToChats,
     closeOverlays: ui.closeOverlays,
     promptTokenCount: contextPanel.promptTokenCount,
     historyTokenCount: contextPanel.historyTokenCount,

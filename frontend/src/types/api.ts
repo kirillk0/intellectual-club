@@ -118,6 +118,9 @@ export type Chat = {
   bot_id: number | null;
   llm_configuration_id: number | null;
   variables: ChatVariable[];
+  can_edit?: boolean | null;
+  shared_incoming?: boolean | null;
+  shared_outgoing?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

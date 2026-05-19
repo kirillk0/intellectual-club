@@ -1,5 +1,17 @@
 <template>
-  <div class="stack chat-page" v-if="vm.loaded">
+  <div v-if="vm.loaded && vm.chatUnavailable" class="chat-unavailable">
+    <section class="chat-unavailable__panel">
+      <div class="chat-unavailable__icon" aria-hidden="true">
+        <SvgIcon name="chat" />
+      </div>
+      <div class="chat-unavailable__copy">
+        <h1>Chat unavailable</h1>
+        <p>This chat was deleted, the share was revoked, or you do not have access to it.</p>
+      </div>
+      <button class="primary" type="button" @click="vm.backToChats">Back to chats</button>
+    </section>
+  </div>
+  <div class="stack chat-page" v-else-if="vm.loaded && vm.chat">
     <StackToolbarTeleport>
       <ChatHeaderToolbar
         :selected-config="vm.selectedConfig"
@@ -24,6 +36,7 @@
         :chat-note="vm.chatNote"
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
+        :can-edit="vm.canEdit"
         :show-missing-tools-banner="vm.showMissingToolsBanner"
         :missing-required-per-user-tool-aliases="vm.missingRequiredPerUserToolAliases"
         :set-menu-ref="vm.setMenuRef"
@@ -37,6 +50,7 @@
         @open-bot-editor="vm.openBotEditor"
         @open-bot-modal="vm.openBotModal"
         @open-note-modal="vm.openNoteModal"
+        @open-share="vm.openShareModal"
         @delete-chat="vm.removeChat"
         @open-bot-tools="vm.openBotTools"
         @dismiss-missing-tools-banner="vm.dismissMissingToolsBanner"
@@ -67,6 +81,7 @@
           :branch-search-loading="vm.branchSearchLoading"
           :branch-search-error="vm.branchSearchError"
           :branch-search-results="vm.branchSearchResults"
+          :readonly="vm.sharedReadonly"
           :branch="vm.branch"
           :linked-blocks="vm.linkedBlocks"
           :source-labels="vm.SOURCE_LABELS"
@@ -102,6 +117,7 @@
               :copied="vm.copiedMessageId === msg.id"
               :retrying="vm.retryingMessageId === msg.id"
               :bookmarking="vm.isBookmarkingMessage(msg.id)"
+              :readonly="vm.sharedReadonly"
               :branching-assistant-id="vm.branchingAssistantId"
               :working-open="vm.isWorkingOpen(msg.id)"
               :can-delete="vm.canDeleteMessage(msg, idx)"
@@ -129,7 +145,22 @@
               @attachment-open="vm.openAttachmentPreview"
             />
           </div>
+          <div v-if="vm.sharedReadonly" class="chat-readonly-panel">
+            <div>
+              <strong>Shared read-only chat</strong>
+              <p class="muted">You can read live updates and artifacts. Continue to make your own copy.</p>
+            </div>
+            <button
+              class="primary"
+              type="button"
+              :disabled="vm.continuingConversation"
+              @click="vm.continueConversation"
+            >
+              {{ vm.continuingConversation ? 'Continuing…' : 'Continue conversation' }}
+            </button>
+          </div>
           <form
+            v-else
             class="chat-input-form"
             :class="{ 'chat-input-form--dragging': dragActive }"
             @submit.prevent="vm.activeGenerationId ? vm.cancelActiveGeneration() : vm.send()"
@@ -225,6 +256,7 @@
           :is-mobile="vm.isMobile"
           :chat-tab-dirty="vm.chatTabDirty"
           :saving-chat-changes="vm.savingChatChanges"
+          :readonly="vm.sharedReadonly"
           :chat-blocks="vm.chatBlocks"
           :chat-tool-bindings="vm.chatToolBindings"
           :chat-variables="vm.chatVariables"
@@ -279,6 +311,20 @@
         <SvgIcon name="chevron-left" />
       </button>
     </div>
+
+    <Teleport to="body">
+      <ShareWithGroupsModal
+        v-model:open="vm.shareModalOpen"
+        title="Share chat"
+        :groups="vm.shareGroups"
+        :selected-group-ids="vm.sharedGroupIds"
+        :disabled-group-ids="vm.shareDisabledGroupIds"
+        :disabled-group-reasons="vm.shareDisabledGroupReasons"
+        :loading="vm.shareLoading"
+        :saving="vm.shareSaving"
+        @save="vm.saveShareGroups"
+      />
+    </Teleport>
 
     <Teleport to="body">
       <ChatEditMessageModal
@@ -404,6 +450,18 @@
       @confirm="vm.addChatBlocks"
     />
   </div>
+  <div v-else-if="vm.loaded" class="chat-unavailable">
+    <section class="chat-unavailable__panel">
+      <div class="chat-unavailable__icon" aria-hidden="true">
+        <SvgIcon name="chat" />
+      </div>
+      <div class="chat-unavailable__copy">
+        <h1>Chat unavailable</h1>
+        <p>{{ vm.loadError || 'This chat could not be loaded.' }}</p>
+      </div>
+      <button class="primary" type="button" @click="vm.backToChats">Back to chats</button>
+    </section>
+  </div>
   <p v-else class="muted">Loading…</p>
 </template>
 
@@ -420,6 +478,7 @@ import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
+import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue';
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';
@@ -449,6 +508,7 @@ const chatWindowRefEl = (el: Element | null) => {
 };
 
 const handleContextSwitchBranchTarget = (messageId: number, targetId: number) => {
+  if (vm.sharedReadonly) return;
   vm.switchBranchHandler(messageId, undefined, targetId);
 };
 
@@ -577,6 +637,74 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 .chat-page .panel-tab:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
+}
+
+.chat-page .chat-readonly-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.chat-page .chat-readonly-panel p {
+  margin: 3px 0 0;
+}
+
+.chat-unavailable {
+  min-height: calc(100vh - var(--app-header-height, 56px));
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #fafafa;
+}
+
+.chat-unavailable__panel {
+  width: min(520px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 28px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+}
+
+.chat-unavailable__icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 22px;
+}
+
+.chat-unavailable__copy {
+  display: grid;
+  gap: 6px;
+}
+
+.chat-unavailable__copy h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.chat-unavailable__copy p {
+  margin: 0;
+  color: #6b7280;
+}
+
+@media (max-width: 720px) {
+  .chat-page .chat-readonly-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 .chat-page .panel-body {

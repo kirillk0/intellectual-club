@@ -623,11 +623,19 @@ defmodule IntellectualClub.Chat.Search do
     term = contains_query_term(term)
 
     Chat
+    |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
-    |> Ash.Query.load([:bot, :last_message, llm_configuration: [:provider]])
+    |> Ash.Query.load([
+      :bot,
+      :last_message,
+      :can_edit,
+      :shared_incoming,
+      :shared_outgoing,
+      llm_configuration: [:provider]
+    ])
     |> Ash.read!(actor: actor)
   end
 
@@ -636,6 +644,7 @@ defmodule IntellectualClub.Chat.Search do
     meta_list = MapSet.to_list(meta_ids)
 
     ChatMessage
+    |> Ash.Query.filter(owner_id == ^actor.id)
     |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
     |> apply_bot_filter_via_chat(bot_filter)
@@ -676,10 +685,18 @@ defmodule IntellectualClub.Chat.Search do
   defp load_chats_by_ids(chat_ids, limit, actor)
        when is_list(chat_ids) and is_integer(limit) do
     Chat
+    |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(id in ^chat_ids)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
-    |> Ash.Query.load([:bot, :last_message, llm_configuration: [:provider]])
+    |> Ash.Query.load([
+      :bot,
+      :last_message,
+      :can_edit,
+      :shared_incoming,
+      :shared_outgoing,
+      llm_configuration: [:provider]
+    ])
     |> Ash.read!(actor: actor)
   end
 

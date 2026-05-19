@@ -25,6 +25,7 @@ type ScrollToLastMessage = (opts?: {
 type Params = {
   chatId: ComputedRef<number>;
   chat: Ref<Chat | null>;
+  readOnly: ComputedRef<boolean>;
   branch: Ref<ChatBranchMessage[]>;
   selectedConfig: Ref<number | ''>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
@@ -117,6 +118,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const toggleBookmark = async (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
     const messageId = msg.id;
     if (!messageId) return;
     if (isBookmarkingMessage(messageId)) return;
@@ -171,6 +173,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const canDeleteMessage = (msg: ChatBranchMessage, _idx: number) => {
+    if (params.readOnly.value) return false;
     if (!msg.id) return false;
     if (msg.status === 'generating') return false;
     if (deletingMessageId.value === msg.id) return false;
@@ -178,6 +181,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const deleteMessageTitle = (msg: ChatBranchMessage, _idx: number) => {
+    if (params.readOnly.value) return 'Shared chats are read-only';
     if (!msg.id) return 'Message is not saved yet';
     if (msg.status === 'generating') return 'Cannot delete while generating';
     if (deletingMessageId.value === msg.id) return 'Deleting…';
@@ -222,6 +226,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const retryLastStep = async (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
     const messageId = msg.id;
     if (!params.chatId.value || !messageId) return;
     if (retryingMessageId.value === messageId) return;
@@ -258,6 +263,7 @@ export function useChatMessageActions(params: Params) {
     direction?: 'prev' | 'next',
     targetId?: number
   ) => {
+    if (params.readOnly.value) return;
     if (!params.chatId.value) return;
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[] }>(
@@ -325,6 +331,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const startEdit = (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
     if (!msg.id) return;
     void params.clearPendingFilesCollection(editPendingFiles);
     const targets = extractEditableTextContents(msg);
@@ -346,6 +353,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const branchFromAssistant = async (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
     if (!msg.id || !params.chatId.value) return;
     if (branchingAssistantId.value === msg.id) return;
     branchingAssistantId.value = msg.id;
@@ -383,6 +391,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const startBranch = (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
     if (!msg.id) return;
     if (msg.role === 'user') {
       void params.clearPendingFilesCollection(editPendingFiles);
@@ -422,6 +431,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const addEditPendingFiles = (files: File[]) => {
+    if (params.readOnly.value) return;
     if (!files.length) return;
     const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
 
@@ -437,6 +447,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const saveEdit = async () => {
+    if (params.readOnly.value) return;
     if (!editingMessage.value?.id || savingEdit.value) return;
     savingEdit.value = true;
     editError.value = '';

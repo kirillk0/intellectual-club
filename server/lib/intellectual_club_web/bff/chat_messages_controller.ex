@@ -29,36 +29,45 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      case GenerationSupervisor.poll_generation(message_id, %{}, []) do
-        {:ok, runtime} ->
-          message = load_persisted_message(message_id, actor)
-          steps = serialize_message_steps(message)
-          current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
+      with {:ok, _message} <- Ash.get(ChatMessage, message_id, actor: actor) do
+        case GenerationSupervisor.poll_generation(message_id, %{}, []) do
+          {:ok, runtime} ->
+            message = load_persisted_message(message_id, actor)
+            steps = serialize_message_steps(message)
+            current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
 
-          json(conn, %{
-            message_id: message_id,
-            runtime: true,
-            status: Atom.to_string(runtime.status),
-            current_step: current_step,
-            steps: steps,
-            token_count: if(message, do: message.token_count, else: nil),
-            error_detail: if(message, do: message.error_detail, else: nil),
-            finished_at: if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
-          })
+            json(conn, %{
+              message_id: message_id,
+              runtime: true,
+              status: Atom.to_string(runtime.status),
+              current_step: current_step,
+              steps: steps,
+              token_count: if(message, do: message.token_count, else: nil),
+              error_detail: if(message, do: message.error_detail, else: nil),
+              finished_at:
+                if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
+            })
 
-        :not_found ->
-          render_poll_fallback(conn, message_id, actor)
+          :not_found ->
+            render_poll_fallback(conn, message_id, actor)
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
 
   def cancel(conn, %{"id" => id}) do
-    with {:ok, _actor} <- Helpers.require_actor(conn) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      case GenerationSupervisor.cancel_generation(message_id) do
-        :not_found -> json(conn, %{status: "not_found"})
-        _other -> json(conn, %{status: "ok"})
+      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+        case GenerationSupervisor.cancel_generation(message_id) do
+          :not_found -> json(conn, %{status: "not_found"})
+          _other -> json(conn, %{status: "ok"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -67,54 +76,58 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      case GenerationSupervisor.retry_last_step(message_id, actor: actor) do
-        {:ok, context} ->
-          render_retry_generation(conn, context, actor)
+      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+        case GenerationSupervisor.retry_last_step(message_id, actor: actor) do
+          {:ok, context} ->
+            render_retry_generation(conn, context, actor)
 
-        {:error, :not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "Message not found"})
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Message not found"})
 
-        {:error, :assistant_only} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Only assistant messages can be retried."})
+          {:error, :assistant_only} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Only assistant messages can be retried."})
 
-        {:error, :invalid_status} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Message must be in error or canceled state."})
+          {:error, :invalid_status} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Message must be in error or canceled state."})
 
-        {:error, :no_steps_to_retry} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "No steps to retry."})
+          {:error, :no_steps_to_retry} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "No steps to retry."})
 
-        {:error, :invalid_step_request} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Step request payload is unavailable."})
+          {:error, :invalid_step_request} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Step request payload is unavailable."})
 
-        {:error, :configuration_not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "Configuration not found."})
+          {:error, :configuration_not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Configuration not found."})
 
-        {:error, :already_running} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Message generation is already running."})
+          {:error, :already_running} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Message generation is already running."})
 
-        {:error, reason} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to retry generation: #{inspect(reason)}"})
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to retry generation: #{inspect(reason)}"})
 
-        other ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to retry generation: #{inspect(other)}"})
+          other ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to retry generation: #{inspect(other)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -124,59 +137,63 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       message_id = String.to_integer(message_id)
       step_id = String.to_integer(step_id)
 
-      case GenerationSupervisor.retry_from_step(message_id, step_id, actor: actor) do
-        {:ok, context} ->
-          render_retry_generation(conn, context, actor)
+      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+        case GenerationSupervisor.retry_from_step(message_id, step_id, actor: actor) do
+          {:ok, context} ->
+            render_retry_generation(conn, context, actor)
 
-        {:error, :not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "Message not found"})
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Message not found"})
 
-        {:error, :step_not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "Step not found"})
+          {:error, :step_not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Step not found"})
 
-        {:error, :assistant_only} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Only assistant messages can be retried."})
+          {:error, :assistant_only} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Only assistant messages can be retried."})
 
-        {:error, :invalid_status} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Retry from this step is available after generation stops."})
+          {:error, :invalid_status} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Retry from this step is available after generation stops."})
 
-        {:error, :no_steps_to_retry} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "No steps to retry."})
+          {:error, :no_steps_to_retry} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "No steps to retry."})
 
-        {:error, :invalid_step_request} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Step request payload is unavailable."})
+          {:error, :invalid_step_request} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Step request payload is unavailable."})
 
-        {:error, :configuration_not_found} ->
-          conn
-          |> put_status(:not_found)
-          |> json(%{error: "Configuration not found."})
+          {:error, :configuration_not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Configuration not found."})
 
-        {:error, :already_running} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Message generation is already running."})
+          {:error, :already_running} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Message generation is already running."})
 
-        {:error, reason} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to retry generation: #{inspect(reason)}"})
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to retry generation: #{inspect(reason)}"})
 
-        other ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to retry generation: #{inspect(other)}"})
+          other ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to retry generation: #{inspect(other)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -184,20 +201,23 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   def delete(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
-      message = Ash.get!(ChatMessage, message_id, actor: actor)
 
-      case Threads.delete_message_keep_children(message.chat_id, message_id, actor) do
-        {:ok, _meta} ->
-          {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
+      with {:ok, message} <- fetch_owned_message(message_id, actor) do
+        case Threads.delete_message_keep_children(message.chat_id, message_id, actor) do
+          {:ok, _meta} ->
+            {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
 
-          json(conn, %{
-            branch: serialize_branch(messages, branch_meta_by_id, actor)
-          })
+            json(conn, %{
+              branch: serialize_branch(messages, branch_meta_by_id, actor)
+            })
 
-        {:error, reason} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Failed to delete message: #{inspect(reason)}"})
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Failed to delete message: #{inspect(reason)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -206,56 +226,60 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      message =
-        Ash.get!(ChatMessage, message_id,
-          actor: actor,
-          load: Loads.message_tree(),
-          strict?: true
-        )
+      with {:ok, _owned_message} <- fetch_owned_message(message_id, actor) do
+        message =
+          Ash.get!(ChatMessage, message_id,
+            actor: actor,
+            load: Loads.message_tree(),
+            strict?: true
+          )
 
-      if message.status == :generating do
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: "Cannot edit a generating message."})
-      else
-        wanted_type = wanted_item_type(message.role)
-        editable_contents = editable_text_contents(message, wanted_type)
-
-        editable_media = editable_media_contents(message, media_item_type(message.role))
-        upload_policy = ChatUploadPolicy.load_for_chat(message.chat_id, actor)
-
-        with {:ok, text_updates} <-
-               parse_message_text_update(params, editable_contents, allow_legacy?: true),
-             {:ok, media_removals, prepared_uploads} <-
-               parse_message_media_update(params, editable_media),
-             {:ok, :updated} <-
-               ChatAttachments.with_prepared_file_ids(
-                 message.chat_id,
-                 actor,
-                 upload_policy,
-                 prepared_uploads,
-                 fn media_additions ->
-                   apply_message_update(
-                     message_id,
-                     message,
-                     actor,
-                     text_updates,
-                     media_removals,
-                     media_additions
-                   )
-                 end
-               ) do
-          {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
-
-          json(conn, %{
-            branch: serialize_branch(messages, branch_meta_by_id, actor)
-          })
+        if message.status == :generating do
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Cannot edit a generating message."})
         else
-          {:error, error_message} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: error_message})
+          wanted_type = wanted_item_type(message.role)
+          editable_contents = editable_text_contents(message, wanted_type)
+
+          editable_media = editable_media_contents(message, media_item_type(message.role))
+          upload_policy = ChatUploadPolicy.load_for_chat(message.chat_id, actor)
+
+          with {:ok, text_updates} <-
+                 parse_message_text_update(params, editable_contents, allow_legacy?: true),
+               {:ok, media_removals, prepared_uploads} <-
+                 parse_message_media_update(params, editable_media),
+               {:ok, :updated} <-
+                 ChatAttachments.with_prepared_file_ids(
+                   message.chat_id,
+                   actor,
+                   upload_policy,
+                   prepared_uploads,
+                   fn media_additions ->
+                     apply_message_update(
+                       message_id,
+                       message,
+                       actor,
+                       text_updates,
+                       media_removals,
+                       media_additions
+                     )
+                   end
+                 ) do
+            {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
+
+            json(conn, %{
+              branch: serialize_branch(messages, branch_meta_by_id, actor)
+            })
+          else
+            {:error, error_message} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: error_message})
+          end
         end
+      else
+        {:error, error} -> render_access_error(conn, error)
       end
     end
   end
@@ -774,7 +798,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, message} <-
            Ash.get(ChatMessage, message_id, actor: actor, load: load, strict?: true) do
       message =
-        if message.status == :generating do
+        if message.status == :generating and actor_owns_message?(message, actor) do
           case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
             {:ok, _context} ->
               {:ok, fresh} =
@@ -850,5 +874,58 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     (message.steps || [])
     |> Enum.sort_by(& &1.sequence)
     |> Enum.map(&Serializer.step/1)
+  end
+
+  defp fetch_owned_message(message_id, actor) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
+      {:ok, %ChatMessage{owner_id: owner_id} = message} when owner_id == actor.id ->
+        {:ok, message}
+
+      {:ok, %ChatMessage{}} ->
+        {:error, :forbidden}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, %Ash.Error.Query.NotFound{}} ->
+        {:error, :not_found}
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        {:error, :forbidden}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp actor_owns_message?(%ChatMessage{owner_id: owner_id}, %{id: actor_id}),
+    do: is_integer(owner_id) and owner_id == actor_id
+
+  defp actor_owns_message?(_message, _actor), do: false
+
+  defp render_access_error(conn, :forbidden) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "Forbidden"})
+  end
+
+  defp render_access_error(conn, :not_found) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "Message not found"})
+  end
+
+  defp render_access_error(conn, %Ash.Error.Forbidden{}) do
+    render_access_error(conn, :forbidden)
+  end
+
+  defp render_access_error(conn, %Ash.Error.Query.NotFound{}) do
+    render_access_error(conn, :not_found)
+  end
+
+  defp render_access_error(conn, error) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: Exception.message(error)})
   end
 end

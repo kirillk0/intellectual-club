@@ -1,23 +1,25 @@
-defmodule IntellectualClub.Bots.BotShare do
+defmodule IntellectualClub.Chat.ChatShare do
   @moduledoc """
-  Grants read access to a bot for all members of a user group.
+  Grants read-only access to a live chat for all members of a user group.
+
+  The bot and configuration snapshots intentionally make shares dependent on
+  the exact chat access boundary that was validated at sharing time.
   """
 
   use IntellectualClub.Resource,
-    domain: IntellectualClub.Bots,
+    domain: IntellectualClub.Chat,
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Accounts.Changes.RequireActorMembershipInRelatedUserGroup
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
-  alias IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare
 
   sqlite do
-    table("bot_shares")
+    table("chat_shares")
     repo(IntellectualClub.Repo)
   end
 
   postgres do
-    table("bot_shares")
+    table("chat_shares")
     repo(IntellectualClub.PostgresRepo)
   end
 
@@ -28,17 +30,25 @@ defmodule IntellectualClub.Bots.BotShare do
   end
 
   relationships do
-    belongs_to :bot, IntellectualClub.Bots.Bot,
+    belongs_to :chat, IntellectualClub.Chat.Chat,
       allow_nil?: false,
       attribute_type: :integer
 
     belongs_to :user_group, IntellectualClub.Accounts.UserGroup,
       allow_nil?: false,
       attribute_type: :integer
+
+    belongs_to :bot, IntellectualClub.Bots.Bot,
+      allow_nil?: false,
+      attribute_type: :integer
+
+    belongs_to :llm_configuration, IntellectualClub.Llm.LlmConfiguration,
+      allow_nil?: false,
+      attribute_type: :integer
   end
 
   identities do
-    identity(:unique_pair, [:bot_id, :user_group_id])
+    identity(:unique_pair, [:chat_id, :user_group_id])
   end
 
   actions do
@@ -46,21 +56,25 @@ defmodule IntellectualClub.Bots.BotShare do
 
     create :create do
       primary?(true)
-      accept([:bot_id, :user_group_id])
-      change({RequireRelatedAccessByActor, relationships: [:bot], access: :writable})
+      accept([:chat_id, :user_group_id, :bot_id, :llm_configuration_id])
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:chat, :bot, :llm_configuration],
+         access: [chat: :writable, bot: :readable, llm_configuration: :readable]}
+      )
+
       change({RequireActorMembershipInRelatedUserGroup, relationship: :user_group})
     end
 
     destroy :destroy do
       primary?(true)
-      require_atomic?(false)
-      change({DeleteChatSharesForRevokedShare, resource: :bot})
     end
   end
 
   policies do
     policy action_type(:read) do
-      authorize_if expr(bot.owner_id == ^actor(:id))
+      authorize_if expr(chat.owner_id == ^actor(:id))
     end
 
     policy action_type(:create) do
@@ -68,7 +82,7 @@ defmodule IntellectualClub.Bots.BotShare do
     end
 
     policy action_type(:destroy) do
-      authorize_if expr(bot.owner_id == ^actor(:id))
+      authorize_if expr(chat.owner_id == ^actor(:id))
     end
   end
 end

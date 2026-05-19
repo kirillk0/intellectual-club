@@ -17,6 +17,7 @@ import type { PromptBinding, PromptBlock } from '@/features/chat/model/chatViewM
 type Params = {
   chatId: ComputedRef<number>;
   branch: Ref<ChatBranchMessage[]>;
+  readOnly: ComputedRef<boolean>;
   promptSources: Ref<{
     bot: PromptBinding[];
     chat: PromptBinding[];
@@ -352,6 +353,7 @@ export function useChatContextPanel(params: Params) {
       return;
     }
 
+    if (params.readOnly.value) return;
     if (!params.chatId.value) return;
 
     try {
@@ -404,7 +406,7 @@ export function useChatContextPanel(params: Params) {
       return;
     }
 
-    if (inactive) {
+    if (inactive && !params.readOnly.value) {
       try {
         const payload = await api.post<{ branch: ChatBranchMessage[] }>(
           `/api/bff/chats/${params.chatId.value}/activate-branch`,

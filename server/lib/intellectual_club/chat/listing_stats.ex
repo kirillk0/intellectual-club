@@ -82,7 +82,7 @@ defmodule IntellectualClub.Chat.ListingStats do
 
   defp latest_no_bot_chat_activity_at(actor) do
     Chat
-    |> Ash.Query.filter(is_nil(bot_id))
+    |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id))
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(1)
     |> Ash.read!(actor: actor)

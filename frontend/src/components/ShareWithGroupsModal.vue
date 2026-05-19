@@ -10,9 +10,24 @@
         <div v-if="loading" class="muted">Loading…</div>
         <div v-else class="stack" style="gap: 10px; max-height: 55vh; overflow: auto">
           <p v-if="!groups.length" class="muted">You are not a member of any groups.</p>
-          <label v-for="group in groups" :key="group.id" class="flex" style="gap: 10px; align-items: center">
-            <input v-model="selected" type="checkbox" :value="group.id" :disabled="saving" />
+          <label
+            v-for="group in groups"
+            :key="group.id"
+            class="flex"
+            :class="{ muted: groupDisabled(group.id) }"
+            style="gap: 10px; align-items: center"
+            :title="disabledReason(group.id) || undefined"
+          >
+            <input
+              v-model="selected"
+              type="checkbox"
+              :value="group.id"
+              :disabled="saving || checkboxDisabled(group.id)"
+            />
             <span>{{ group.name }}</span>
+            <span v-if="disabledReason(group.id)" class="muted" style="font-size: 0.85rem">
+              {{ disabledReason(group.id) }}
+            </span>
           </label>
         </div>
 
@@ -37,11 +52,15 @@ const props = withDefaults(
     title?: string;
     groups: Group[];
     selectedGroupIds: number[];
+    disabledGroupIds?: number[];
+    disabledGroupReasons?: Record<number, string>;
     loading?: boolean;
     saving?: boolean;
   }>(),
   {
     title: 'Share',
+    disabledGroupIds: () => [],
+    disabledGroupReasons: () => ({}),
     loading: false,
     saving: false,
   }
@@ -53,6 +72,10 @@ const emit = defineEmits<{
 }>();
 
 const selected = ref<number[]>([]);
+const disabledSet = () => new Set(props.disabledGroupIds || []);
+const groupDisabled = (groupId: number) => disabledSet().has(groupId);
+const checkboxDisabled = (groupId: number) => groupDisabled(groupId) && !selected.value.includes(groupId);
+const disabledReason = (groupId: number) => props.disabledGroupReasons?.[groupId] || '';
 
 watch(
   () => props.open,
@@ -69,5 +92,5 @@ watch(
 );
 
 const emitClose = () => emit('update:open', false);
-const emitSave = () => emit('save', [...selected.value]);
+const emitSave = () => emit('save', selected.value.filter((id) => !groupDisabled(id)));
 </script>

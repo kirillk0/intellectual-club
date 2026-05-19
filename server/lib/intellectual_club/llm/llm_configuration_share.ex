@@ -9,6 +9,7 @@ defmodule IntellectualClub.Llm.LlmConfigurationShare do
 
   alias IntellectualClub.Accounts.Changes.RequireActorMembershipInRelatedUserGroup
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
+  alias IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare
 
   sqlite do
     table("llm_configuration_shares")
@@ -41,7 +42,7 @@ defmodule IntellectualClub.Llm.LlmConfigurationShare do
   end
 
   actions do
-    defaults([:read, :destroy])
+    defaults([:read])
 
     create :create do
       primary?(true)
@@ -52,6 +53,12 @@ defmodule IntellectualClub.Llm.LlmConfigurationShare do
       )
 
       change({RequireActorMembershipInRelatedUserGroup, relationship: :user_group})
+    end
+
+    destroy :destroy do
+      primary?(true)
+      require_atomic?(false)
+      change({DeleteChatSharesForRevokedShare, resource: :llm_configuration})
     end
   end
 

@@ -14,7 +14,7 @@
 
     <div class="stack panel-body" style="gap: 14px">
       <div class="panel-pane chat-library-pane">
-        <div v-if="chatTabDirty" class="panel-actions">
+        <div v-if="!readonly && chatTabDirty" class="panel-actions">
           <button
             class="primary"
             type="button"
@@ -36,8 +36,9 @@
             :blockImage="chatBlockImage"
             :metaText="chatBlockMeta"
             :openable="true"
-            :addDisabled="savingChatChanges"
-            :newDisabled="savingChatChanges"
+            :readonly="readonly"
+            :addDisabled="readonly || savingChatChanges"
+            :newDisabled="readonly || savingChatChanges"
             @add="emit('open-chat-blocks-picker')"
             @new="emit('open-new-block')"
             @open="(blockId) => emit('open-chat-block-editor', blockId)"
@@ -58,11 +59,11 @@
             emptyText="No tools linked."
             toggleLabel="enabled"
             :openable="true"
-            :addDisabled="savingChatChanges || !toolLibrary.length"
+            :addDisabled="readonly || savingChatChanges || !toolLibrary.length"
             @add="openToolBindingPicker"
             @open="(toolInstanceId) => emit('open-chat-tool-editor', toolInstanceId)"
-            :toggleDisabled="() => savingChatChanges"
-            :actionsDisabled="() => savingChatChanges"
+            :toggleDisabled="() => readonly || savingChatChanges"
+            :actionsDisabled="() => readonly || savingChatChanges"
             @toggle="(binding, enabled) => emit('set-chat-tool-binding-enabled', binding.id, enabled)"
             @move="(binding, delta) => emit('move-chat-tool-binding', binding, delta)"
             @remove="(id) => emit('remove-chat-tool-binding', id)"
@@ -83,10 +84,11 @@
           <VariablesTable
             v-if="chatVariables.length"
             :modelValue="chatVariables"
+            :readonly="readonly"
             @update:modelValue="(value) => emit('update:chatVariables', value)"
           />
           <div v-else class="flex" style="justify-content: flex-start">
-            <button class="link" type="button" @click="emit('add-variable-row')">+ Add variable</button>
+            <button class="link" type="button" :disabled="readonly" @click="emit('add-variable-row')">+ Add variable</button>
           </div>
         </div>
       </div>
@@ -98,7 +100,7 @@
       title="Add chat tool"
       :tools="toolLibrary"
       :disabledToolIds="linkedToolInstanceIds"
-      :saving="savingChatChanges"
+      :saving="readonly || savingChatChanges"
       @update:selected="(value) => emit('update:newChatToolInstanceIds', value)"
       @confirm="confirmToolBindings"
     />
@@ -134,6 +136,7 @@ interface Props {
   isMobile: boolean;
   chatTabDirty: boolean;
   savingChatChanges: boolean;
+  readonly?: boolean;
   chatBlocks: ChatBlockLink[];
   chatToolBindings: ChatToolBindingLink[];
   chatVariables: Partial<ChatVariable>[];
@@ -147,7 +150,9 @@ interface Props {
   toolIsOnline: (toolInstanceId: number) => boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  readonly: false,
+});
 const toolBindingPickerOpen = ref(false);
 
 const emit = defineEmits<{
@@ -171,12 +176,14 @@ const emit = defineEmits<{
 }>();
 
 const openToolBindingPicker = () => {
+  if (props.readonly) return;
   toolBindingPickerOpen.value = true;
 };
 
 const linkedToolInstanceIds = computed(() => props.chatToolBindings.map((binding) => binding.tool_instance_id));
 
 const confirmToolBindings = (toolInstanceIds: number[]) => {
+  if (props.readonly) return;
   emit('add-chat-tool-binding', toolInstanceIds);
 };
 

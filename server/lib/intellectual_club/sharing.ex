@@ -1,15 +1,19 @@
 defmodule IntellectualClub.Sharing do
   @moduledoc """
-  High-level sharing operations for bots and LLM configurations.
+  High-level sharing operations for bots, chats, and LLM configurations.
   """
 
   alias IntellectualClub.Accounts.UserGroup
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotShare
+  alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatKnowledgeBlock
+  alias IntellectualClub.Chat.ChatShare
   alias IntellectualClub.Db
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationShare
   alias IntellectualClub.Tools.BotToolBinding
+  alias IntellectualClub.Tools.ChatToolBinding
 
   require Ash.Query
 
@@ -48,6 +52,27 @@ defmodule IntellectualClub.Sharing do
       when is_integer(configuration_id) do
     with {:ok, configuration} <- fetch_owned_llm_configuration(configuration_id, actor) do
       {:ok, load_llm_configuration_share_state(configuration, actor)}
+    end
+  end
+
+  def get_chat_share_state(chat_id, actor) when is_integer(chat_id) do
+    with {:ok, chat} <- fetch_owned_chat(chat_id, actor) do
+      {:ok, load_chat_share_state(chat, actor)}
+    end
+  end
+
+  def replace_chat_share_state(chat_id, group_ids, actor)
+      when is_integer(chat_id) and is_list(group_ids) do
+    with {:ok, chat} <- fetch_owned_chat(chat_id, actor),
+         {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor),
+         :ok <- validate_chat_share_request(chat, allowed_group_ids, actor) do
+      transaction(fn repo ->
+        with :ok <- replace_chat_shares(chat, allowed_group_ids, actor) do
+          load_chat_share_state(chat, actor)
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
     end
   end
 
@@ -100,6 +125,16 @@ defmodule IntellectualClub.Sharing do
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  defp fetch_owned_chat(chat_id, actor) do
+    case Ash.get(Chat, chat_id, actor: actor) do
+      {:ok, %Chat{owner_id: owner_id} = chat} when owner_id == actor.id -> {:ok, chat}
+      {:ok, %Chat{}} -> {:error, :forbidden}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, %Ash.Error.Query.NotFound{}} -> {:error, :not_found}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -208,6 +243,25 @@ defmodule IntellectualClub.Sharing do
     }
   end
 
+  defp load_chat_share_state(chat, actor) do
+    shares =
+      ChatShare
+      |> Ash.Query.filter(chat_id == ^chat.id)
+      |> Ash.Query.sort(user_group_id: :asc)
+      |> Ash.read!(actor: actor)
+
+    eligibility = chat_share_group_eligibility(chat, actor)
+
+    %{
+      group_ids: Enum.map(shares, & &1.user_group_id),
+      eligible_group_ids:
+        eligibility
+        |> Enum.filter(& &1.eligible)
+        |> Enum.map(& &1.id),
+      group_eligibility: eligibility
+    }
+  end
+
   defp replace_bot_shares(bot, requested_group_ids, actor) do
     existing_shares =
       BotShare
@@ -291,6 +345,193 @@ defmodule IntellectualClub.Sharing do
         {:error, error}
     end
   end
+
+  defp validate_chat_share_request(_chat, [], _actor), do: :ok
+
+  defp validate_chat_share_request(chat, group_ids, actor) do
+    with :ok <- validate_chat_shareable(chat, actor),
+         :ok <- validate_chat_dependencies_shared(chat, group_ids, actor) do
+      :ok
+    end
+  end
+
+  defp validate_chat_shareable(%Chat{bot_id: bot_id}, _actor) when not is_integer(bot_id) do
+    {:error, {:validation, "Chat must have a bot before it can be shared."}}
+  end
+
+  defp validate_chat_shareable(%Chat{llm_configuration_id: configuration_id}, _actor)
+       when not is_integer(configuration_id) do
+    {:error, {:validation, "Chat must have a configuration before it can be shared."}}
+  end
+
+  defp validate_chat_shareable(%Chat{} = chat, actor) do
+    cond do
+      chat_has_knowledge_blocks?(chat, actor) ->
+        {:error, {:validation, "Chats with chat blocks cannot be shared yet."}}
+
+      chat_has_tool_bindings?(chat, actor) ->
+        {:error, {:validation, "Chats with chat tools cannot be shared yet."}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_chat_dependencies_shared(%Chat{} = chat, group_ids, actor) do
+    bot_group_ids =
+      BotShare
+      |> Ash.Query.filter(bot_id == ^chat.bot_id and user_group_id in ^group_ids)
+      |> Ash.read!(actor: actor)
+      |> Enum.map(& &1.user_group_id)
+      |> MapSet.new()
+
+    configuration_group_ids =
+      LlmConfigurationShare
+      |> Ash.Query.filter(
+        llm_configuration_id == ^chat.llm_configuration_id and user_group_id in ^group_ids
+      )
+      |> Ash.read!(actor: actor)
+      |> Enum.map(& &1.user_group_id)
+      |> MapSet.new()
+
+    requested = MapSet.new(group_ids)
+
+    if MapSet.subset?(requested, bot_group_ids) and
+         MapSet.subset?(requested, configuration_group_ids) do
+      :ok
+    else
+      {:error,
+       {:validation,
+        "You can only share this chat with groups that already have access to its bot and configuration."}}
+    end
+  end
+
+  defp replace_chat_shares(chat, requested_group_ids, actor) do
+    existing_shares =
+      ChatShare
+      |> Ash.Query.filter(chat_id == ^chat.id)
+      |> Ash.read!(actor: actor)
+
+    requested_group_ids_set = MapSet.new(requested_group_ids)
+
+    {stale_or_removed, reusable} =
+      Enum.split_with(existing_shares, fn share ->
+        not MapSet.member?(requested_group_ids_set, share.user_group_id) or
+          share.bot_id != chat.bot_id or
+          share.llm_configuration_id != chat.llm_configuration_id
+      end)
+
+    reusable_by_group_id = Map.new(reusable, &{&1.user_group_id, &1})
+
+    stale_or_removed
+    |> Enum.reduce_while(:ok, fn share, :ok ->
+      case share
+           |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
+           |> Ash.destroy() do
+        :ok -> {:cont, :ok}
+        {:ok, _share} -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      :ok ->
+        requested_group_ids
+        |> Enum.reject(&Map.has_key?(reusable_by_group_id, &1))
+        |> Enum.reduce_while(:ok, fn group_id, :ok ->
+          case ChatShare
+               |> Ash.Changeset.for_create(
+                 :create,
+                 %{
+                   chat_id: chat.id,
+                   user_group_id: group_id,
+                   bot_id: chat.bot_id,
+                   llm_configuration_id: chat.llm_configuration_id
+                 },
+                 actor: actor
+               )
+               |> Ash.create() do
+            {:ok, _share} -> {:cont, :ok}
+            {:error, error} -> {:halt, {:error, error}}
+          end
+        end)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp chat_share_group_eligibility(%Chat{} = chat, actor) do
+    groups = list_actor_groups(actor) |> elem_or_empty()
+    bot_group_ids = shared_bot_group_id_set(chat.bot_id, actor)
+    configuration_group_ids = shared_configuration_group_id_set(chat.llm_configuration_id, actor)
+    shareable_result = validate_chat_shareable(chat, actor)
+
+    Enum.map(groups, fn group ->
+      reason =
+        cond do
+          shareable_result != :ok ->
+            validation_message(shareable_result)
+
+          not MapSet.member?(bot_group_ids, group.id) ->
+            "Share the chat bot with this group first."
+
+          not MapSet.member?(configuration_group_ids, group.id) ->
+            "Share the chat configuration with this group first."
+
+          true ->
+            nil
+        end
+
+      %{
+        id: group.id,
+        eligible: is_nil(reason),
+        disabled_reason: reason
+      }
+    end)
+  end
+
+  defp elem_or_empty({:ok, values}) when is_list(values), do: values
+  defp elem_or_empty(_other), do: []
+
+  defp shared_bot_group_id_set(bot_id, actor) when is_integer(bot_id) do
+    BotShare
+    |> Ash.Query.filter(bot_id == ^bot_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(& &1.user_group_id)
+    |> MapSet.new()
+  end
+
+  defp shared_bot_group_id_set(_bot_id, _actor), do: MapSet.new()
+
+  defp shared_configuration_group_id_set(configuration_id, actor)
+       when is_integer(configuration_id) do
+    LlmConfigurationShare
+    |> Ash.Query.filter(llm_configuration_id == ^configuration_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(& &1.user_group_id)
+    |> MapSet.new()
+  end
+
+  defp shared_configuration_group_id_set(_configuration_id, _actor), do: MapSet.new()
+
+  defp chat_has_knowledge_blocks?(%Chat{} = chat, actor) do
+    ChatKnowledgeBlock
+    |> Ash.Query.filter(chat_id == ^chat.id)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(actor: actor)
+    |> Enum.any?()
+  end
+
+  defp chat_has_tool_bindings?(%Chat{} = chat, actor) do
+    ChatToolBinding
+    |> Ash.Query.filter(chat_id == ^chat.id)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(actor: actor)
+    |> Enum.any?()
+  end
+
+  defp validation_message({:error, {:validation, message}}) when is_binary(message), do: message
+  defp validation_message(_other), do: "This chat cannot be shared yet."
 
   defp replace_bot_tool_modes(_bot, tool_modes, _actor) when map_size(tool_modes) == 0, do: :ok
 

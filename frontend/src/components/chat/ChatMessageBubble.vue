@@ -64,7 +64,7 @@
           <span v-if="copied" class="copy-hint">Copied</span>
           <div class="spacer"></div>
           <button
-            v-if="msg.prev_sibling_id"
+            v-if="!readonly && msg.prev_sibling_id"
             class="icon-button message-action"
             type="button"
             @click="emit('switch-branch', 'prev')"
@@ -77,6 +77,7 @@
             <SvgIcon name="copy" />
           </button>
           <button
+            v-if="!readonly"
             class="icon-button message-action"
             :class="{ active: Boolean(msg.bookmarked) }"
             type="button"
@@ -89,6 +90,7 @@
             <SvgIcon name="bookmark" />
           </button>
           <button
+            v-if="!readonly"
             class="icon-button message-action"
             type="button"
             :disabled="!messageId || msg.status === 'generating'"
@@ -99,6 +101,7 @@
             <SvgIcon name="edit" />
           </button>
           <button
+            v-if="!readonly"
             class="icon-button message-action"
             type="button"
             :disabled="branchDisabled"
@@ -109,6 +112,7 @@
             <SvgIcon name="branch" />
           </button>
           <button
+            v-if="!readonly"
             class="icon-button message-action"
             type="button"
             :disabled="!canDelete"
@@ -119,7 +123,7 @@
             <SvgIcon name="delete" />
           </button>
           <button
-            v-if="msg.next_sibling_id"
+            v-if="!readonly && msg.next_sibling_id"
             class="icon-button message-action"
             type="button"
             @click="emit('switch-branch', 'next')"
@@ -161,6 +165,7 @@ interface Props {
   workingOpen?: boolean;
   canDelete?: boolean;
   deleteTitle?: string;
+  readonly?: boolean;
   registerRef?: (el: HTMLElement | null) => void;
 }
 
@@ -173,6 +178,7 @@ const props = withDefaults(defineProps<Props>(), {
   workingOpen: false,
   canDelete: false,
   deleteTitle: 'Delete',
+  readonly: false,
 });
 
 const emit = defineEmits<{
@@ -197,7 +203,7 @@ const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
 );
 
-const canRetry = computed(() => Boolean(messageId.value) && (msg.value.steps || []).length > 0);
+const canRetry = computed(() => !props.readonly && Boolean(messageId.value) && (msg.value.steps || []).length > 0);
 
 const shouldHighlightCode = computed(() => msg.value.status !== 'generating');
 
@@ -289,6 +295,7 @@ const previewAttachmentContents = computed(() => {
 
 const branchDisabled = computed(() => {
   if (!messageId.value) return true;
+  if (props.readonly) return true;
   if (props.branchingAssistantId == null) return false;
   return props.branchingAssistantId === messageId.value;
 });

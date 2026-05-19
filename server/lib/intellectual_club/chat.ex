@@ -9,6 +9,7 @@ defmodule IntellectualClub.Chat do
 
   resources do
     resource(IntellectualClub.Chat.Chat)
+    resource(IntellectualClub.Chat.ChatShare)
     resource(IntellectualClub.Chat.ChatUploadSession)
     resource(IntellectualClub.Chat.ChatMessage)
     resource(IntellectualClub.Chat.MessageBookmark)

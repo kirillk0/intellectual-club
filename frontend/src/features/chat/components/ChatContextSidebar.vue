@@ -127,7 +127,7 @@
                 </div>
               </div>
 
-              <div v-if="branchSearchResults.inactive.length" class="branch-search-divider">
+              <div v-if="!readonly && branchSearchResults.inactive.length" class="branch-search-divider">
                 <div class="branch-search-label">Inactive branch</div>
                 <div
                   v-for="hit in branchSearchResults.inactive"
@@ -166,7 +166,7 @@
                   <div class="branch-item-meta">{{ messageMetaLabel(msg) || '—' }}</div>
                   <div class="branch-item-snippet" :title="messageText(msg)">{{ preview(messageText(msg)) }}</div>
                 </div>
-              <div v-if="msg.siblings && msg.siblings.length > 1" class="branch-links">
+              <div v-if="!readonly && msg.siblings && msg.siblings.length > 1" class="branch-links">
                 <span
                   v-for="sib in msg.siblings"
                   :key="sib.id"
@@ -263,6 +263,7 @@ interface Props {
   branchSearchLoading: boolean;
   branchSearchError: string;
   branchSearchResults: BranchSearchResults;
+  readonly?: boolean;
   branch: ChatBranchMessage[];
   linkedBlocks: LinkedBlock[];
   sourceLabels: Record<string, string>;
@@ -278,7 +279,9 @@ interface Props {
   formatBlockVersion: (value: unknown) => string;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  readonly: false,
+});
 
 const emit = defineEmits<{
   (e: 'update:leftOpen', value: boolean): void;

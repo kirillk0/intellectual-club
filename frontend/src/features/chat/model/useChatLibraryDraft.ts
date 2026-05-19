@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from 'vue';
+import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
 import { api } from '@/api/client';
 import { jsonApiList, toIntId } from '@/api/jsonApi';
@@ -31,7 +31,8 @@ import {
 } from '@/features/chat/model/chatViewModel.shared';
 
 type Params = {
-  chatId: Ref<number>;
+  chatId: ComputedRef<number>;
+  readOnly: ComputedRef<boolean>;
   knowledgeBlocks: Ref<KnowledgeBlock[]>;
   toolLibrary: Ref<ToolInstanceOption[]>;
   routeFullPath: () => string;
@@ -116,6 +117,7 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const cancelChatChanges = () => {
+    if (params.readOnly.value) return;
     chatVariables.value = [...chatVariablesOriginal.value];
     chatBlocksDraft.value = [...chatBlocksOriginal.value];
     chatToolBindingsDraft.value = [...chatToolBindingsOriginal.value];
@@ -123,6 +125,7 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const saveChatChanges = async () => {
+    if (params.readOnly.value) return;
     if (!params.chatId.value || savingChatChanges.value) return;
     savingChatChanges.value = true;
 
@@ -151,10 +154,12 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const touchChatBlocks = () => {
+    if (params.readOnly.value) return;
     // Mutations happen via v-model; this hook exists for parity with v1.
   };
 
   const openChatBlocksPicker = () => {
+    if (params.readOnly.value) return;
     chatBlocksPickerSelection.value = [];
     chatBlocksPickerOpen.value = true;
   };
@@ -182,6 +187,7 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const moveChatBlock = (binding: ChatBlockLink, delta: number) => {
+    if (params.readOnly.value) return;
     const idx = chatBlocksDraft.value.findIndex((item) => item.id === binding.id);
     if (idx === -1) return;
     const nextIndex = idx + delta;
@@ -194,6 +200,7 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const removeChatBlock = (bindingId: number) => {
+    if (params.readOnly.value) return;
     chatBlocksDraft.value = chatBlocksDraft.value.filter((binding) => binding.id !== bindingId);
   };
 
@@ -214,6 +221,7 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const addChatToolBinding = (toolInstanceIds?: number[]) => {
+    if (params.readOnly.value) return false;
     const ids = Array.from(
       new Set((toolInstanceIds ?? newChatToolInstanceIds.value).map((id) => Number(id || 0)).filter(Boolean))
     );
@@ -258,22 +266,27 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const moveChatToolBinding = (binding: ChatToolBindingLink, delta: number) => {
+    if (params.readOnly.value) return;
     chatToolBindingsDraft.value = moveToolBindingInList(chatToolBindingsDraft.value, binding.id, delta);
   };
 
   const removeChatToolBinding = (bindingId: number) => {
+    if (params.readOnly.value) return;
     chatToolBindingsDraft.value = removeToolBindingFromList(chatToolBindingsDraft.value, bindingId);
   };
 
   const setChatToolBindingEnabled = (bindingId: number, enabled: boolean) => {
+    if (params.readOnly.value) return;
     chatToolBindingsDraft.value = setToolBindingEnabledInList(chatToolBindingsDraft.value, bindingId, enabled);
   };
 
   const addVariableRow = () => {
+    if (params.readOnly.value) return;
     chatVariables.value = [...chatVariables.value, { key: '', value: '' }];
   };
 
   const addChatBlocks = (blockIds: number[]) => {
+    if (params.readOnly.value) return;
     const existing = new Set(linkedChatBlockIds.value);
     const additions = (blockIds || []).filter((id) => !existing.has(id));
     if (!additions.length) return;
