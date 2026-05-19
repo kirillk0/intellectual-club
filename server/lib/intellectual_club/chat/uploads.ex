@@ -3,11 +3,8 @@ defmodule IntellectualClub.Chat.Uploads do
   Chunked upload sessions for chat attachments.
   """
 
-  import Ecto.Query, only: [from: 2]
-
   alias IntellectualClub.Chat.ChatUploadSession
   alias IntellectualClub.Chat.UploadPolicy
-  alias IntellectualClub.Db
   alias IntellectualClub.Files
 
   require Ash.Query
@@ -186,21 +183,14 @@ defmodule IntellectualClub.Chat.Uploads do
   @spec cleanup_stale_uploads!() :: :ok
   def cleanup_stale_uploads! do
     now = DateTime.utc_now()
-    repo = Db.repo()
 
-    rows =
-      repo.all(
-        from(u in "chat_upload_sessions",
-          where:
-            fragment("? IN ('aborted', 'expired')", field(u, :status)) or
-              field(u, :expires_at) <= ^now,
-          select: %{id: field(u, :id), external_id: field(u, :external_id)}
-        )
-      )
-
-    Enum.each(rows, fn row ->
-      delete_upload_file(row)
-      destroy_upload_record_by_id(row.id)
+    ChatUploadSession
+    |> Ash.Query.filter(status in [:aborted, :expired] or expires_at <= ^now)
+    |> Ash.Query.select([:id, :external_id])
+    |> Ash.read!(authorize?: false)
+    |> Enum.each(fn upload ->
+      delete_upload_file(upload)
+      destroy_upload_record(upload)
     end)
 
     :ok
