@@ -17,7 +17,9 @@ defmodule IntellectualClubWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico favicon.png robots.txt)
+  def static_paths,
+    do:
+      ~w(assets fonts images apple-touch-icon.png favicon.ico favicon.png manifest.webmanifest robots.txt service-worker.js)
 
   def router do
     quote do

@@ -9,6 +9,10 @@ html {
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  --app-safe-area-top: env(safe-area-inset-top, 0px);
+  --app-safe-area-right: env(safe-area-inset-right, 0px);
+  --app-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-area-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -133,9 +137,10 @@ fieldset {
   box-shadow: 0 0 0 1px rgba(192, 57, 43, 0.12);
 }
 .app-shell {
-  min-height: 100vh;
+  min-height: calc(var(--app-vh, 1vh) * 100);
   display: flex;
   flex-direction: column;
+  padding-bottom: var(--app-safe-area-bottom);
 }
 
 .backend-status-banner {
@@ -185,7 +190,11 @@ fieldset {
   display: flex;
   align-items: center;
   gap: var(--app-header-gap);
-  padding: var(--app-header-padding-y) var(--app-header-padding-x);
+  padding:
+    calc(var(--app-header-padding-y) + var(--app-safe-area-top))
+    calc(var(--app-header-padding-x) + var(--app-safe-area-right))
+    var(--app-header-padding-y)
+    calc(var(--app-header-padding-x) + var(--app-safe-area-left));
   border-bottom: 1px solid #eee;
   position: sticky;
   top: 0;
@@ -204,9 +213,9 @@ fieldset {
   display: none;
   gap: 12px;
   position: absolute;
-  top: 46px;
-  right: 10px;
-  left: 10px;
+  top: calc(100% + 4px);
+  right: calc(10px + var(--app-safe-area-right));
+  left: calc(10px + var(--app-safe-area-left));
   flex-direction: column;
   padding: 10px;
   background: #fff;
@@ -366,11 +375,19 @@ fieldset {
   }
 
   .app-main {
-    padding: 8px 10px 14px;
+    padding:
+      8px
+      calc(10px + var(--app-safe-area-right))
+      calc(14px + var(--app-safe-area-bottom))
+      calc(10px + var(--app-safe-area-left));
   }
 
   .app-main.app-main--chat {
-    padding: 6px 6px 12px;
+    padding:
+      6px
+      calc(6px + var(--app-safe-area-right))
+      calc(12px + var(--app-safe-area-bottom))
+      calc(6px + var(--app-safe-area-left));
   }
 
   .app-main.app-main--chat .chat-window.card {
@@ -400,11 +417,19 @@ fieldset {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 12px 16px 24px;
+  padding:
+    12px
+    calc(16px + var(--app-safe-area-right))
+    calc(24px + var(--app-safe-area-bottom))
+    calc(16px + var(--app-safe-area-left));
 }
 
 .app-main.app-main--login {
-  padding: 12px;
+  padding:
+    12px
+    calc(12px + var(--app-safe-area-right))
+    calc(12px + var(--app-safe-area-bottom))
+    calc(12px + var(--app-safe-area-left));
 }
 
 .stack-nav {
@@ -812,7 +837,7 @@ select.full {
 
 .chat-page {
   flex: 1;
-  min-height: 100vh;
+  min-height: calc(var(--app-vh, 1vh) * 100);
 }
 
 .chat-page .split-wrapper {
