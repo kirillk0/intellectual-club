@@ -7,8 +7,15 @@
       </div>
       <div class="chat-result-meta">
         <div class="muted">{{ metaText }}</div>
-        <span v-if="generating" class="chat-result-generating" aria-label="Generating" title="Generating">
+        <span
+          v-if="generationState"
+          class="chat-result-generation-state"
+          :class="`chat-result-generation-state--${generationState}`"
+          :aria-label="generationStateLabel"
+          :title="generationStateLabel"
+        >
           <span class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></span>
+          <SvgIcon v-if="generationState === 'done'" name="check" size="14" />
         </span>
       </div>
       <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
@@ -31,6 +38,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { RouterLink, type RouteLocationRaw } from 'vue-router';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
+
+type GenerationState = 'generating' | 'done';
 
 interface Props {
   to: RouteLocationRaw;
@@ -41,7 +51,7 @@ interface Props {
   previewText?: string | null;
   previewRole?: 'user' | 'assistant' | null;
   snippet?: string | null;
-  generating?: boolean;
+  generationState?: GenerationState | null;
   rowRole?: 'user' | 'assistant' | null;
 }
 
@@ -51,7 +61,7 @@ const props = withDefaults(defineProps<Props>(), {
   previewText: null,
   previewRole: null,
   snippet: null,
-  generating: false,
+  generationState: null,
   rowRole: null,
 });
 
@@ -64,6 +74,10 @@ const previewToneClass = computed(() => ({
   'chat-preview--user': props.previewRole === 'user',
   'chat-preview--assistant': props.previewRole === 'assistant',
 }));
+
+const generationStateLabel = computed(() =>
+  props.generationState === 'done' ? 'Generation complete' : 'Generating'
+);
 </script>
 
 <style scoped>
@@ -86,10 +100,20 @@ const previewToneClass = computed(() => ({
   font-size: 0.85rem;
 }
 
-.chat-result-generating {
+.chat-result-generation-state {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 36px;
   min-height: 18px;
+}
+
+.chat-result-generation-state--done {
+  color: #15803d;
+}
+
+.chat-result-generation-state--done .typing-indicator {
+  display: none;
 }
 
 .chat-result-name {

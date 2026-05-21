@@ -63,7 +63,7 @@
                 :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
                 :preview-role="!hasChatSearch ? c.first_message_role : null"
                 :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
-                :generating="Boolean(c.active_generation_message_id)"
+                :generation-state="generationStateForChat(c)"
                 :row-role="chatResultRole(c)"
               >
                 <template #badges>
@@ -232,6 +232,8 @@ type ChatListIdleStatePayload = {
   active_generation_message_id?: number | null;
 };
 
+type GenerationState = 'generating' | 'done';
+
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
 const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
@@ -255,6 +257,7 @@ const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
 const chatListIdleRevision = ref<string | null>(null);
+const generationCompleteChatIds = ref(new Set<number>());
 const botFilter = ref<string>('');
 const botSearchTerm = ref('');
 const bots = ref<Bot[]>([]);
@@ -447,6 +450,11 @@ function chatLabel(chat: ChatSummary) {
   return formatChatBaseTitle({ botName: chat.bot_name, note: chat.note });
 }
 
+function generationStateForChat(chat: ChatSummary): GenerationState | null {
+  if (chat.active_generation_message_id) return 'generating';
+  return generationCompleteChatIds.value.has(chat.id) ? 'done' : null;
+}
+
 function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {
   return hasChatSearch.value && typeof (chat as ChatSearchResult).match_type === 'string';
 }
@@ -551,6 +559,29 @@ function normalizeChatListStats(value: unknown): ChatListStats {
 }
 
 let chatListLoadSeq = 0;
+let previousVisibleGeneratingChatIds = new Set<number>();
+
+function syncVisibleGenerationState(nextChats: ChatSummary[]) {
+  const nextGeneratingIds = new Set<number>();
+  const nextCompleteIds = new Set(generationCompleteChatIds.value);
+  let completeIdsChanged = false;
+
+  for (const chat of nextChats) {
+    if (chat.active_generation_message_id) {
+      nextGeneratingIds.add(chat.id);
+      if (nextCompleteIds.delete(chat.id)) completeIdsChanged = true;
+      continue;
+    }
+
+    if (previousVisibleGeneratingChatIds.has(chat.id) && !nextCompleteIds.has(chat.id)) {
+      nextCompleteIds.add(chat.id);
+      completeIdsChanged = true;
+    }
+  }
+
+  previousVisibleGeneratingChatIds = nextGeneratingIds;
+  if (completeIdsChanged) generationCompleteChatIds.value = nextCompleteIds;
+}
 
 async function loadChats(
   opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
@@ -588,6 +619,7 @@ async function loadChats(
     if (seq !== chatListLoadSeq) return;
 
     chats.value = payload.chats || [];
+    syncVisibleGenerationState(visibleChats.value);
     pageNumber.value = Number.isInteger(payload.page?.number) ? Number(payload.page?.number) : requestedPage;
     perPage.value = Number.isInteger(payload.page?.per_page) ? Number(payload.page?.per_page) : perPage.value;
     totalChats.value = Number.isInteger(payload.page?.total) ? Number(payload.page?.total) : chats.value.length;
@@ -660,6 +692,7 @@ async function runChatSearch(
     });
     if (seq !== chatSearchSeq) return;
     chatSearchResults.value = payload.chats || [];
+    syncVisibleGenerationState(visibleChats.value);
   } catch (e) {
     if (seq !== chatSearchSeq) return;
     if (!silent) {

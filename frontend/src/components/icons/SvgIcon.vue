@@ -30,6 +30,7 @@ import CodeIcon from './svg/code.svg';
 import FilterIcon from './svg/filter.svg';
 import BranchIcon from './svg/branch.svg';
 import BookmarkIcon from './svg/bookmark.svg';
+import CheckIcon from './svg/check.svg';
 import ChevronLeftIcon from './svg/chevron-left.svg';
 import ChevronRightIcon from './svg/chevron-right.svg';
 import RetryIcon from './svg/retry.svg';
@@ -72,6 +73,7 @@ const iconMap: Record<string, Component> = {
   'filter': FilterIcon,
   'branch': BranchIcon,
   'bookmark': BookmarkIcon,
+  'check': CheckIcon,
   'chevron-left': ChevronLeftIcon,
   'chevron-right': ChevronRightIcon,
   'retry': RetryIcon,
