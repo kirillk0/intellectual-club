@@ -62,6 +62,12 @@ export type ChatStatePayload = {
     tool_instances: ToolInstanceOption[];
   };
   active_generation_message_id: number | null;
+  idle_revision?: string | null;
+};
+
+export type ChatIdleStatePayload = {
+  revision?: string | null;
+  active_generation_message_id?: number | null;
 };
 
 export type ChatPromptContextPayload = Pick<

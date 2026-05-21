@@ -227,9 +227,17 @@ type ChatListStats = {
   bots: ChatListBotStat[];
 };
 
+type ChatListIdleStatePayload = {
+  revision?: string | null;
+  active_generation_message_id?: number | null;
+};
+
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
 const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
+const CHAT_LIST_IDLE_POLL_DELAY_MS = 30_000;
+const CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS = 30_000;
+const CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
 const router = useRouter();
 
@@ -246,6 +254,7 @@ const chatSearchTerm = ref('');
 const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
+const chatListIdleRevision = ref<string | null>(null);
 const botFilter = ref<string>('');
 const botSearchTerm = ref('');
 const bots = ref<Bot[]>([]);
@@ -570,6 +579,7 @@ async function loadChats(
         has_next?: boolean;
       };
       stats?: ChatListStats;
+      idle_revision?: string | null;
     }>(`/api/bff/chats?${params.toString()}`, {
       showErrorBanner: opts.showErrorBanner ?? true,
       signal: opts.signal,
@@ -583,6 +593,8 @@ async function loadChats(
     totalChats.value = Number.isInteger(payload.page?.total) ? Number(payload.page?.total) : chats.value.length;
     hasNextPage.value = Boolean(payload.page?.has_next);
     chatListStats.value = normalizeChatListStats(payload.stats);
+    chatListIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
+    startChatListIdlePolling();
   } catch (e) {
     if (seq !== chatListLoadSeq) return;
     if (!silent) {
@@ -666,6 +678,11 @@ let chatListPollTimer: number | null = null;
 let chatListPollAbortController: AbortController | null = null;
 let chatListPollToken = 0;
 let chatListPollingActive = false;
+let chatListIdlePollTimer: number | null = null;
+let chatListIdlePollAbortController: AbortController | null = null;
+let chatListIdlePollToken = 0;
+let chatListIdlePollingActive = false;
+let chatListIdleLastImmediateAt = 0;
 
 function stopChatListPolling() {
   chatListPollingActive = false;
@@ -682,6 +699,21 @@ function stopChatListPolling() {
   }
 }
 
+function stopChatListIdlePolling() {
+  chatListIdlePollingActive = false;
+  chatListIdlePollToken += 1;
+
+  if (chatListIdlePollTimer != null) {
+    window.clearTimeout(chatListIdlePollTimer);
+    chatListIdlePollTimer = null;
+  }
+
+  if (chatListIdlePollAbortController) {
+    chatListIdlePollAbortController.abort();
+    chatListIdlePollAbortController = null;
+  }
+}
+
 async function refreshVisibleChatsForGeneration(signal: AbortSignal) {
   if (hasChatSearch.value) {
     const term = chatSearchTerm.value.trim();
@@ -691,6 +723,98 @@ async function refreshVisibleChatsForGeneration(signal: AbortSignal) {
   }
 
   await loadChats({ silent: true, showErrorBanner: false, signal });
+}
+
+function chatListIdleProbeParams() {
+  const params = new URLSearchParams();
+  params.set('page', String(Math.max(1, pageNumber.value)));
+  params.set('per_page', String(perPage.value));
+  const bot = String(botFilter.value || '').trim();
+  if (bot) params.set('bot', bot);
+  if (chatListIdleRevision.value) params.set('revision', chatListIdleRevision.value);
+  return params;
+}
+
+function canRunChatListIdleProbe() {
+  return document.visibilityState === 'visible' && !chatListPollingActive && !hasVisibleGeneratingChat.value;
+}
+
+async function runChatListIdleProbe(signal: AbortSignal) {
+  if (!canRunChatListIdleProbe()) return;
+
+  const payload = await api.get<ChatListIdleStatePayload | undefined>(
+    `/api/bff/chats/idle-state?${chatListIdleProbeParams().toString()}`,
+    {
+      signal,
+      showErrorBanner: false,
+    }
+  );
+
+  if (!payload) return;
+
+  if (typeof payload.revision === 'string') {
+    chatListIdleRevision.value = payload.revision;
+  }
+
+  if (hasChatSearch.value) {
+    const term = chatSearchTerm.value.trim();
+    if (term) await runChatSearch(term, { silent: true, showErrorBanner: false, signal });
+    return;
+  }
+
+  await loadChats({ silent: true, showErrorBanner: false, signal });
+}
+
+function startChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
+  if (chatListIdlePollingActive) return;
+
+  chatListIdlePollingActive = true;
+  const token = ++chatListIdlePollToken;
+
+  const scheduleNext = (delayMs: number) => {
+    if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
+    chatListIdlePollTimer = window.setTimeout(() => {
+      void tick();
+    }, delayMs);
+  };
+
+  const tick = async () => {
+    if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
+
+    const controller = new AbortController();
+    chatListIdlePollAbortController = controller;
+
+    try {
+      await runChatListIdleProbe(controller.signal);
+      if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
+      scheduleNext(CHAT_LIST_IDLE_POLL_DELAY_MS);
+    } catch (error) {
+      if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      console.warn('Failed to refresh chats list while idle polling.', error);
+      scheduleNext(CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS);
+    } finally {
+      if (chatListIdlePollAbortController === controller) {
+        chatListIdlePollAbortController = null;
+      }
+    }
+  };
+
+  if (opts.immediate) {
+    const now = Date.now();
+    if (!opts.throttle || now - chatListIdleLastImmediateAt >= CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS) {
+      chatListIdleLastImmediateAt = now;
+      void tick();
+      return;
+    }
+  }
+
+  scheduleNext(CHAT_LIST_IDLE_POLL_DELAY_MS);
+}
+
+function restartChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
+  stopChatListIdlePolling();
+  startChatListIdlePolling(opts);
 }
 
 function startChatListPolling(opts: { immediate?: boolean } = {}) {
@@ -749,18 +873,23 @@ function restartChatListPolling(opts: { immediate?: boolean } = {}) {
 function handleChatListVisibilityChange() {
   if (document.visibilityState !== 'visible') {
     stopChatListPolling();
+    stopChatListIdlePolling();
     return;
   }
 
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
   }
+
+  restartChatListIdlePolling({ immediate: true, throttle: true });
 }
 
 function handleChatListPageShow() {
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
   }
+
+  restartChatListIdlePolling({ immediate: true, throttle: true });
 }
 
 function handleChatListFocus() {
@@ -768,6 +897,8 @@ function handleChatListFocus() {
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
   }
+
+  restartChatListIdlePolling({ immediate: true, throttle: true });
 }
 
 async function loadBots(opts: { showError?: boolean } = {}) {
@@ -792,6 +923,7 @@ async function loadBots(opts: { showError?: boolean } = {}) {
 watch(
   () => chatSearchTerm.value,
   (value) => {
+    chatListIdleRevision.value = null;
     const term = value.trim();
     if (!term) {
       if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
@@ -810,6 +942,7 @@ watch(
 watch(
   () => botFilter.value,
   () => {
+    chatListIdleRevision.value = null;
     if (!hasChatSearch.value) return;
     const term = chatSearchTerm.value.trim();
     if (!term) return;
@@ -886,6 +1019,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', handleChatListFocus);
   if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
   stopChatListPolling();
+  stopChatListIdlePolling();
 });
 </script>
 

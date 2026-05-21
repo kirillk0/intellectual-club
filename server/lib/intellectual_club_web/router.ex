@@ -110,7 +110,9 @@ defmodule IntellectualClubWeb.Router do
 
     get "/chats", ChatsController, :index
     get "/chats/search", ChatsController, :search
+    get "/chats/idle-state", ChatsController, :idle_state
     post "/chats", ChatsController, :create
+    get "/chats/:id/idle-state", ChatsController, :idle_state
     get "/chats/:id/state", ChatsController, :state
     get "/chats/:id/prompt-context", ChatsController, :prompt_context
     get "/chats/:id/search", ChatsController, :search_messages

@@ -12,6 +12,7 @@ import {
   useChatUiChrome,
 } from '@/features/chat/model/useChatUiChrome';
 import {
+  type ChatIdleStatePayload,
   type ChatPromptContextPayload,
   type ChatStatePayload,
   type Counters,
@@ -40,6 +41,10 @@ type ChatShareState = {
   eligible_group_ids?: number[];
   group_eligibility?: ChatShareEligibility[];
 };
+
+const CHAT_IDLE_POLL_DELAY_MS = 30_000;
+const CHAT_IDLE_POLL_RETRY_DELAY_MS = 30_000;
+const CHAT_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
 export function useChatViewModel() {
   const route = useRoute();
@@ -82,6 +87,7 @@ export function useChatViewModel() {
 
   const activeGenerationId = ref<number | null>(null);
   const cancelingGenerationId = ref<number | null>(null);
+  const chatIdleRevision = ref<string | null>(null);
   const continuingConversation = ref(false);
 
   const shareModalOpen = ref(false);
@@ -245,9 +251,11 @@ export function useChatViewModel() {
       chatToolBindings: payload.chat_tool_bindings || [],
       chatVariables: payload.chat?.variables || [],
     });
+    chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
     loaded.value = true;
+    startChatIdlePolling();
     if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
       void contextPanel.scrollToLastMessage();
     }
@@ -259,6 +267,7 @@ export function useChatViewModel() {
     } catch (error) {
       chat.value = null;
       branch.value = [];
+      chatIdleRevision.value = null;
       if (isHttpError(error) && (error.status === 403 || error.status === 404)) {
         chatUnavailable.value = true;
         loadError.value = '';
@@ -271,6 +280,134 @@ export function useChatViewModel() {
       loaded.value = true;
     }
   };
+
+  let chatIdlePollTimer: number | null = null;
+  let chatIdlePollAbortController: AbortController | null = null;
+  let chatIdlePollToken = 0;
+  let chatIdlePollingActive = false;
+  let chatIdleLastImmediateAt = 0;
+
+  function stopChatIdlePolling() {
+    chatIdlePollingActive = false;
+    chatIdlePollToken += 1;
+
+    if (chatIdlePollTimer != null) {
+      window.clearTimeout(chatIdlePollTimer);
+      chatIdlePollTimer = null;
+    }
+
+    if (chatIdlePollAbortController) {
+      chatIdlePollAbortController.abort();
+      chatIdlePollAbortController = null;
+    }
+  }
+
+  function canRunChatIdleProbe() {
+    return (
+      loaded.value &&
+      Boolean(chat.value) &&
+      document.visibilityState === 'visible' &&
+      activeGenerationId.value == null
+    );
+  }
+
+  function chatIdleProbeParams() {
+    const params = new URLSearchParams();
+    if (chatIdleRevision.value) params.set('revision', chatIdleRevision.value);
+    return params;
+  }
+
+  async function runChatIdleProbe(signal: AbortSignal) {
+    if (!chatId.value || !canRunChatIdleProbe()) return;
+
+    const query = chatIdleProbeParams().toString();
+    const suffix = query ? `?${query}` : '';
+    const payload = await api.get<ChatIdleStatePayload | undefined>(
+      `/api/bff/chats/${chatId.value}/idle-state${suffix}`,
+      {
+        signal,
+        showErrorBanner: false,
+      }
+    );
+
+    if (!payload) return;
+
+    if (typeof payload.revision === 'string') {
+      chatIdleRevision.value = payload.revision;
+    }
+
+    await loadChatSafe({ mode: 'soft' });
+  }
+
+  function startChatIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
+    if (chatIdlePollingActive) return;
+
+    chatIdlePollingActive = true;
+    const token = ++chatIdlePollToken;
+
+    const scheduleNext = (delayMs: number) => {
+      if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
+      chatIdlePollTimer = window.setTimeout(() => {
+        void tick();
+      }, delayMs);
+    };
+
+    const tick = async () => {
+      if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
+
+      const controller = new AbortController();
+      chatIdlePollAbortController = controller;
+
+      try {
+        await runChatIdleProbe(controller.signal);
+        if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
+        scheduleNext(CHAT_IDLE_POLL_DELAY_MS);
+      } catch (error) {
+        if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        console.warn('Failed to refresh chat while idle polling.', error);
+        scheduleNext(CHAT_IDLE_POLL_RETRY_DELAY_MS);
+      } finally {
+        if (chatIdlePollAbortController === controller) {
+          chatIdlePollAbortController = null;
+        }
+      }
+    };
+
+    if (opts.immediate) {
+      const now = Date.now();
+      if (!opts.throttle || now - chatIdleLastImmediateAt >= CHAT_IDLE_IMMEDIATE_THROTTLE_MS) {
+        chatIdleLastImmediateAt = now;
+        void tick();
+        return;
+      }
+    }
+
+    scheduleNext(CHAT_IDLE_POLL_DELAY_MS);
+  }
+
+  function restartChatIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
+    stopChatIdlePolling();
+    startChatIdlePolling(opts);
+  }
+
+  function handleChatIdleVisibilityChange() {
+    if (document.visibilityState !== 'visible') {
+      stopChatIdlePolling();
+      return;
+    }
+
+    restartChatIdlePolling({ immediate: true, throttle: true });
+  }
+
+  function handleChatIdlePageShow() {
+    restartChatIdlePolling({ immediate: true, throttle: true });
+  }
+
+  function handleChatIdleFocus() {
+    if (document.visibilityState !== 'visible') return;
+    restartChatIdlePolling({ immediate: true, throttle: true });
+  }
 
   const normalizeNumberIds = (ids: unknown): number[] =>
     Array.isArray(ids)
@@ -359,6 +496,8 @@ export function useChatViewModel() {
     () => chatId.value,
     () => {
       if (!chatId.value) return;
+      stopChatIdlePolling();
+      chatIdleRevision.value = null;
       contextPanel.resetForChatChange();
       void (async () => {
         await loadChatSafe();
@@ -393,8 +532,11 @@ export function useChatViewModel() {
     ui.restorePanelState();
     ui.mountListeners(handleKeyNavigation);
     document.addEventListener('visibilitychange', composerRuntime.handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleChatIdleVisibilityChange);
     window.addEventListener('pageshow', composerRuntime.handlePageShow);
+    window.addEventListener('pageshow', handleChatIdlePageShow);
     window.addEventListener('focus', composerRuntime.handleFocus);
+    window.addEventListener('focus', handleChatIdleFocus);
     if (chatId.value) {
       void (async () => {
         await loadChatSafe();
@@ -405,13 +547,17 @@ export function useChatViewModel() {
   });
 
   onBeforeUnmount(() => {
+    stopChatIdlePolling();
     void composerRuntime.dispose();
     void messageActions.dispose();
     contextPanel.dispose();
     inspectors.dispose();
     document.removeEventListener('visibilitychange', composerRuntime.handleVisibilityChange);
+    document.removeEventListener('visibilitychange', handleChatIdleVisibilityChange);
     window.removeEventListener('pageshow', composerRuntime.handlePageShow);
+    window.removeEventListener('pageshow', handleChatIdlePageShow);
     window.removeEventListener('focus', composerRuntime.handleFocus);
+    window.removeEventListener('focus', handleChatIdleFocus);
     ui.unmountListeners();
   });
 

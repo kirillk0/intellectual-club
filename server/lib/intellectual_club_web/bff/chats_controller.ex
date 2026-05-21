@@ -91,8 +91,59 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           total: Map.get(page, :count, length(payload)),
           has_next: Map.get(page, :more?, false)
         },
-        stats: Serializer.chat_list_stats(sidebar_stats)
+        stats: Serializer.chat_list_stats(sidebar_stats),
+        idle_revision: chat_list_idle_revision(pagination, bot_filter, page, chats)
       })
+    else
+      {:error, error_message} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: error_message})
+    end
+  end
+
+  def idle_state(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, %Chat{} = chat} <- fetch_readable_chat_for_idle(chat_id, actor) do
+      revision = chat_idle_revision(chat)
+
+      if client_revision_matches?(params, revision) do
+        send_resp(conn, :no_content, "")
+      else
+        json(conn, %{
+          revision: revision,
+          active_generation_message_id: active_generation_message_id(chat)
+        })
+      end
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:ok, nil} ->
+        render_access_error(conn, :not_found)
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def idle_state(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- parse_bot_filter(params) do
+      pagination = pagination_params(params)
+      page = read_chat_list_page(actor, bot_filter, pagination, [:last_message])
+      chats = Map.get(page, :results, [])
+      revision = chat_list_idle_revision(pagination, bot_filter, page, chats)
+
+      if client_revision_matches?(params, revision) do
+        send_resp(conn, :no_content, "")
+      else
+        json(conn, %{
+          revision: revision,
+          active_generation_message_id: visible_active_generation_message_id(chats)
+        })
+      end
     else
       {:error, error_message} ->
         conn
@@ -521,6 +572,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- parse_resource_id(id),
          {:ok, %Chat{} = chat} <- fetch_readable_chat(chat_id, actor) do
+      chat = Ash.load!(chat, [:last_message], actor: actor)
       {messages, branch_meta_by_id} = load_branch(chat, actor)
 
       chat_blocks = load_chat_blocks(chat_id, actor)
@@ -564,7 +616,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           knowledge_blocks: Enum.map(knowledge_blocks, &Serializer.knowledge_block_option/1),
           tool_instances: Enum.map(tool_instances, &Serializer.tool_instance_option/1)
         },
-        active_generation_message_id: generating_message_id
+        active_generation_message_id: generating_message_id,
+        idle_revision: chat_idle_revision(chat)
       })
     else
       {:error, %Plug.Conn{} = conn} ->
@@ -978,6 +1031,120 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
+  defp read_chat_list_page(actor, bot_filter, pagination, loads) do
+    Chat
+    |> Ash.Query.filter(owner_id == ^actor.id)
+    |> maybe_apply_chat_bot_filter(bot_filter)
+    |> Ash.Query.sort(updated_at: :desc, id: :desc)
+    |> Ash.Query.load(loads, strict?: true)
+    |> Ash.Query.page(
+      limit: pagination.per_page,
+      offset: (pagination.page - 1) * pagination.per_page,
+      count: true
+    )
+    |> Ash.read!(actor: actor)
+  end
+
+  defp chat_list_idle_revision(pagination, bot_filter, page, chats) when is_list(chats) do
+    revision_parts = [
+      :chat_list,
+      pagination.page,
+      pagination.per_page,
+      normalize_bot_filter_for_revision(bot_filter),
+      Map.get(page, :count, length(chats)),
+      Enum.map(chats, &chat_list_revision_row/1)
+    ]
+
+    hash_revision(revision_parts)
+  end
+
+  defp chat_list_revision_row(%Chat{} = chat) do
+    last_message = loaded_last_message(chat)
+
+    [
+      chat.id,
+      datetime_revision_value(chat.updated_at),
+      Map.get(chat, :last_message_id),
+      active_generation_message_id(chat),
+      message_status_revision_value(last_message),
+      datetime_revision_value(Map.get(last_message || %{}, :updated_at))
+    ]
+  end
+
+  defp chat_idle_revision(%Chat{} = chat) do
+    last_message = loaded_last_message(chat)
+
+    [
+      :chat,
+      chat.id,
+      datetime_revision_value(chat.updated_at),
+      Map.get(chat, :last_message_id),
+      active_generation_message_id(chat),
+      message_status_revision_value(last_message),
+      datetime_revision_value(Map.get(last_message || %{}, :updated_at))
+    ]
+    |> hash_revision()
+  end
+
+  defp hash_revision(parts) do
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary(parts))
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp client_revision_matches?(params, revision) when is_map(params) do
+    params
+    |> Map.get("revision", "")
+    |> to_string()
+    |> String.trim()
+    |> Kernel.==(revision)
+  end
+
+  defp visible_active_generation_message_id(chats) when is_list(chats) do
+    Enum.find_value(chats, &active_generation_message_id/1)
+  end
+
+  defp active_generation_message_id(%Chat{} = chat) do
+    case loaded_last_message(chat) do
+      %ChatMessage{id: id, status: status} when status in [:generating, "generating"] ->
+        id
+
+      _other ->
+        nil
+    end
+  end
+
+  defp loaded_last_message(%Chat{} = chat) do
+    case Map.get(chat, :last_message) do
+      %Ash.NotLoaded{} -> nil
+      %ChatMessage{} = message -> message
+      _other -> nil
+    end
+  end
+
+  defp message_status_revision_value(%ChatMessage{status: status}) when is_atom(status),
+    do: Atom.to_string(status)
+
+  defp message_status_revision_value(%ChatMessage{status: status}) when is_binary(status),
+    do: status
+
+  defp message_status_revision_value(_message), do: nil
+
+  defp datetime_revision_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp datetime_revision_value(%NaiveDateTime{} = value) do
+    value
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  defp datetime_revision_value(_value), do: nil
+
+  defp normalize_bot_filter_for_revision(nil), do: nil
+  defp normalize_bot_filter_for_revision(:none), do: "none"
+  defp normalize_bot_filter_for_revision(bot_id) when is_integer(bot_id), do: bot_id
+  defp normalize_bot_filter_for_revision(other), do: to_string(other)
+
   defp preview_len(params) when is_map(params) do
     default = 200
 
@@ -1259,6 +1426,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       {:ok, []} -> {:error, :not_found}
       {:error, %Ash.Error.Forbidden{}} -> {:error, :forbidden}
       {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_readable_chat_for_idle(chat_id, actor) do
+    with {:ok, %Chat{} = chat} <- fetch_readable_chat(chat_id, actor) do
+      {:ok, Ash.load!(chat, [:last_message], actor: actor)}
     end
   end
 
