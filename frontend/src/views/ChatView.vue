@@ -58,6 +58,7 @@
     </StackToolbarTeleport>
 
     <p v-if="vm.loadError" class="error-text">{{ vm.loadError }}</p>
+    <h1 class="chat-print-title">{{ vm.chatFullTitle || vm.chatBaseTitle || 'Chat' }}</h1>
 
     <div class="split-wrapper">
       <div class="split" :style="{ gridTemplateColumns: vm.gridColumns }" style="min-height: 70vh">
@@ -971,9 +972,204 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   display: none;
 }
 
+.chat-print-title {
+  display: none;
+}
+
 @media (max-width: 720px) {
   .chat-composer__actions {
     padding: 4px 8px;
+  }
+}
+
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+
+  body:has(.chat-page) {
+    background: #fff;
+    color: #111;
+  }
+
+  body:has(.chat-page) .app-header,
+  body:has(.chat-page) .backend-status-banner,
+  body:has(.chat-page) .floating-dropdown,
+  body:has(.chat-page) .panel-backdrop {
+    display: none !important;
+  }
+
+  body:has(.chat-page) .app-shell,
+  body:has(.chat-page) .app-main,
+  body:has(.chat-page) .stack-nav,
+  body:has(.chat-page) .stack-layer {
+    display: block !important;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  body:has(.chat-page) .stack-nav--active .stack-layer--active {
+    position: static !important;
+  }
+
+  .chat-page {
+    display: block !important;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+
+  .chat-print-title {
+    display: block;
+    margin: 0 0 12mm;
+    color: #111;
+    font-size: 18pt;
+    font-weight: 650;
+    line-height: 1.25;
+    break-after: avoid;
+  }
+
+  .chat-page .split-wrapper,
+  .chat-page .split {
+    display: block !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .chat-page .sidebar,
+  .chat-page .panel-toggle,
+  .chat-page .chat-input-form,
+  .chat-page .chat-readonly-panel {
+    display: none !important;
+  }
+
+  .chat-page .chat-window.card {
+    display: block !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+  }
+
+  .chat-page .message-list {
+    min-height: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .chat-page .message {
+    display: block !important;
+    margin: 0 0 7mm !important;
+    padding: 0 !important;
+    break-inside: auto;
+  }
+
+  .chat-page .message .bubble {
+    margin: 0 !important;
+    border: 1px solid #d7dce3 !important;
+    border-radius: 6px !important;
+    padding: 7mm 8mm !important;
+    background: #fff !important;
+    color: #111 !important;
+    box-shadow: none !important;
+    break-inside: auto;
+  }
+
+  .chat-page .message .bubble::before {
+    display: block;
+    margin-bottom: 3mm;
+    color: #4b5563;
+    font-size: 8pt;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chat-page .message.user .bubble::before {
+    content: 'User';
+  }
+
+  .chat-page .message.assistant .bubble::before {
+    content: 'Assistant';
+  }
+
+  .chat-page .message.user .bubble {
+    border-left: 3px solid #2563eb !important;
+  }
+
+  .chat-page .message.assistant .bubble {
+    border-left: 3px solid #6b7280 !important;
+  }
+
+  .chat-page .working-block,
+  .chat-page .message-actions,
+  .chat-page .copy-hint,
+  .chat-page .retry-link,
+  .chat-page .typing-indicator,
+  .chat-page .code-copy-button {
+    display: none !important;
+  }
+
+  .chat-page .message-footer {
+    display: block !important;
+    margin-top: 5mm !important;
+    padding-top: 2.5mm !important;
+    border-top: 1px solid #e5e7eb !important;
+  }
+
+  .chat-page .message-meta,
+  .chat-page .message-answer-time {
+    color: #5f6673 !important;
+    font-size: 8.5pt !important;
+  }
+
+  .chat-page .message .bubble .message-content {
+    font-size: 10.5pt;
+    line-height: 1.45;
+  }
+
+  .chat-page .message .bubble .message-content :where(h1, h2, h3, h4, h5, h6) {
+    break-after: avoid;
+  }
+
+  .chat-page .message .bubble a {
+    color: #111 !important;
+    text-decoration: underline;
+  }
+
+  .chat-page .message .bubble pre,
+  .chat-page .message .bubble code {
+    border: 1px solid #d7dce3;
+    background: #f6f8fa !important;
+    color: #111 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .chat-page .message .bubble pre {
+    white-space: pre-wrap;
+    overflow: visible !important;
+  }
+
+  .chat-page .message .bubble pre code {
+    border: 0;
+    background: transparent !important;
+  }
+
+  .chat-page .message .bubble .table-scroll {
+    overflow: visible !important;
+  }
+
+  .chat-page .message .bubble .table-scroll table {
+    table-layout: auto;
   }
 }
 </style>
