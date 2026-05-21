@@ -191,11 +191,17 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: min(58vh, 520px);
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .picker-actions {
