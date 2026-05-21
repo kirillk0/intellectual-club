@@ -7,6 +7,7 @@ const TOOL_TYPE_LABELS: Record<string, string> = {
   'mcp-http': 'MCP HTTP',
   'native-artifact-reader': 'Artifact Reader',
   'native-brave-search': 'Brave Search',
+  'native-knowledge-library': 'Knowledge Library',
   'native-web-reader': 'Web Reader',
   outlet: 'Outlet',
   ssh: 'SSH',

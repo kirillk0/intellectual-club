@@ -43,7 +43,7 @@
               <div style="flex: 1; min-width: 0">
                 <div style="font-weight: 600">{{ tool.alias || tool.name || `Tool #${tool.id}` }}</div>
                 <div class="muted" style="font-size: 0.9rem">
-                  {{ tool.name || `Tool #${tool.id}` }} · {{ tool.type_title || tool.type || 'Tool' }}
+                  {{ tool.name || `Tool #${tool.id}` }} · {{ toolTypeName(tool) }}
                 </div>
               </div>
             </label>
@@ -72,6 +72,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, Teleport } from 'vue';
+import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 
 type ToolOption = {
   id: number;
@@ -114,6 +115,7 @@ const selectedLocal = computed(() => props.selected ?? []);
 
 const isDisabled = (id: number) => (props.disabledToolIds || []).includes(id);
 const normalize = (text: unknown) => String(text ?? '').trim().toLowerCase();
+const toolTypeName = (tool: ToolOption) => toolTypeLabel(tool);
 
 const visibleTools = computed(() => {
   const q = normalize(query.value);
@@ -121,7 +123,7 @@ const visibleTools = computed(() => {
   if (!q) return tools;
 
   return tools.filter((tool) =>
-    [tool.alias, tool.name, tool.type_title, tool.type, `Tool #${tool.id}`].some((value) =>
+    [tool.alias, tool.name, toolTypeName(tool), tool.type, `Tool #${tool.id}`].some((value) =>
       normalize(value).includes(q)
     )
   );

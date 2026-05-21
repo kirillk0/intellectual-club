@@ -47,7 +47,7 @@
               >
                 <option :value="0">Choose your tool…</option>
                 <option v-for="tool in matchingAliasTools(bt.alias)" :key="tool.id" :value="tool.id">
-                  {{ tool.alias }} · {{ tool.name }} ({{ tool.type }})
+                  {{ tool.alias }} · {{ tool.name }} ({{ toolTypeLabel(tool) }})
                 </option>
               </select>
             </label>
@@ -149,6 +149,7 @@ import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import type { BotUserToolBindingDraft } from '@/features/catalogs/model/useBotUserToolOverrides';
 import type { BotToolBindingRow } from '@/features/catalogs/model/useBotToolBindings';
 import { markShadowedToolBindings } from '@/features/tools/model/toolBindings';
+import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import type { ToolInstanceOption } from '@/types/api';
 
 const props = defineProps<{

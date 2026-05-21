@@ -66,10 +66,10 @@
             :title="!isNew ? 'Tool type cannot be changed after creation.' : ''"
           >
             <option v-if="form.type && !toolTypesByType[form.type]" :value="form.type">
-              {{ form.type }}
+              {{ toolTypeOptionLabel(form.type) }}
             </option>
             <option v-for="t in toolTypes" :key="t.type" :value="t.type">
-              {{ t.title ? `${t.title} (${t.type})` : t.type }}
+              {{ toolTypeOptionLabel(t.type, t.title) }}
             </option>
           </select>
           <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
@@ -475,6 +475,7 @@ import {
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
+import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import { formatRelativeDateTime } from '@/utils/dates';
 
 type JsonSchema = {
@@ -571,6 +572,10 @@ function parseNullableNumber(value: unknown): number | null {
 
   const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toolTypeOptionLabel(type: string, title?: string | null): string {
+  return toolTypeLabel({ type, type_title: title ?? null });
 }
 
 function humanizeKey(key: string): string {

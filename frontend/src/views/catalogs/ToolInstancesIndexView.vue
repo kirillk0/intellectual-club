@@ -75,6 +75,7 @@ import { useRoute, useRouter } from 'vue-router';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { formatRelativeDateTime } from '@/utils/dates';
 
@@ -163,9 +164,7 @@ function parseRow(resource: JsonApiResource): ToolInstanceRow | null {
 }
 
 function typeLabel(value: string) {
-  const t = String(value || '').trim();
-  if (!t) return 'tool';
-  return t;
+  return toolTypeLabel({ type: value, type_title: null });
 }
 
 const visibleTools = computed(() => {
