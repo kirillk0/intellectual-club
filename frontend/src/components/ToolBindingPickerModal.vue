@@ -42,8 +42,10 @@
               />
               <div style="flex: 1; min-width: 0">
                 <div style="font-weight: 600">{{ tool.alias || tool.name || `Tool #${tool.id}` }}</div>
-                <div class="muted" style="font-size: 0.9rem">
-                  {{ tool.name || `Tool #${tool.id}` }} · {{ toolTypeName(tool) }}
+                <div class="muted picker-tool-meta">
+                  <span>{{ tool.name || `Tool #${tool.id}` }}</span>
+                  <span aria-hidden="true">·</span>
+                  <ToolTypeBadge :tool="tool" />
                 </div>
               </div>
             </label>
@@ -73,6 +75,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, Teleport } from 'vue';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
+import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 
 type ToolOption = {
   id: number;
@@ -212,6 +215,21 @@ watch(
 
 .picker-row.disabled {
   opacity: 0.6;
+}
+
+.picker-tool-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.9rem;
+}
+
+.picker-tool-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 720px) {

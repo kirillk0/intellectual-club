@@ -36,8 +36,10 @@
               <span v-if="t.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
               <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
             </div>
-            <div class="catalog-row__subtitle">
-              {{ t.alias }} · {{ t.typeLabel }}
+            <div class="catalog-row__subtitle tool-row__subtitle">
+              <span>{{ t.alias }}</span>
+              <span aria-hidden="true">·</span>
+              <ToolTypeBadge :type="t.type" :typeTitle="t.typeLabel" />
               <span v-if="t.server_url" class="muted"> · {{ t.server_url }}</span>
             </div>
             <div v-if="t.description" class="muted catalog-row__description">
@@ -73,6 +75,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
@@ -229,5 +232,12 @@ onMounted(() => {
   overflow: hidden;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.tool-row__subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 </style>

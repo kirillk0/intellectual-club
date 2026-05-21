@@ -46,6 +46,13 @@ import FileVideoIcon from './svg/file-video.svg';
 import FileCodeIcon from './svg/file-code.svg';
 import FileMarkdownIcon from './svg/file-markdown.svg';
 import FileArchiveIcon from './svg/file-archive.svg';
+import ToolArtifactIcon from './svg/tool-artifact.svg';
+import ToolBookIcon from './svg/tool-book.svg';
+import ToolGlobeIcon from './svg/tool-globe.svg';
+import ToolOutletIcon from './svg/tool-outlet.svg';
+import ToolPlugIcon from './svg/tool-plug.svg';
+import ToolSearchIcon from './svg/tool-search.svg';
+import ToolTerminalIcon from './svg/tool-terminal.svg';
 
 const iconMap: Record<string, Component> = {
   'copy': CopyIcon,
@@ -89,6 +96,13 @@ const iconMap: Record<string, Component> = {
   'file-code': FileCodeIcon,
   'file-markdown': FileMarkdownIcon,
   'file-archive': FileArchiveIcon,
+  'tool-artifact': ToolArtifactIcon,
+  'tool-book': ToolBookIcon,
+  'tool-globe': ToolGlobeIcon,
+  'tool-outlet': ToolOutletIcon,
+  'tool-plug': ToolPlugIcon,
+  'tool-search': ToolSearchIcon,
+  'tool-terminal': ToolTerminalIcon,
 };
 
 const props = defineProps<{

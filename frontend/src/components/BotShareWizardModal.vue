@@ -43,6 +43,7 @@
               :items="persistedTools"
               :toolLabel="toolLabel"
               :toolText="toolText"
+              :toolType="toolType"
               emptyText="No tools attached."
               :show-toggle="false"
               :show-actions="false"
@@ -182,6 +183,8 @@ const toolText = (binding: BotShareToolBinding) =>
     binding.alias,
     `Tool ${binding.id}`
   );
+
+const toolType = (binding: BotShareToolBinding) => binding.tool_instance_type || '';
 
 const sharingActive = computed(() => selected.value.length > 0);
 const sharedEnabledToolsCount = computed(() =>

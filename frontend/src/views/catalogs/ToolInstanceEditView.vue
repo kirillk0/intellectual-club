@@ -56,24 +56,17 @@
           <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
         </label>
 
-        <label :class="{ 'field-error': errors.hasField('type') }">
-          Type
-          <select
+        <div class="tool-type-field" :class="{ 'field-error': errors.hasField('type') }">
+          <div class="tool-type-field__label">Type</div>
+          <ToolTypeSelect
             v-model="form.type"
-            class="full"
-            @change="errors.clearField('type')"
+            :options="toolTypes"
             :disabled="!isNew"
             :title="!isNew ? 'Tool type cannot be changed after creation.' : ''"
-          >
-            <option v-if="form.type && !toolTypesByType[form.type]" :value="form.type">
-              {{ toolTypeOptionLabel(form.type) }}
-            </option>
-            <option v-for="t in toolTypes" :key="t.type" :value="t.type">
-              {{ toolTypeOptionLabel(t.type, t.title) }}
-            </option>
-          </select>
+            @change="errors.clearField('type')"
+          />
           <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
-        </label>
+        </div>
 
         <div class="tabs">
           <button
@@ -115,9 +108,10 @@
           <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
           <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
 
-          <p v-if="currentToolType && currentToolType.description" class="muted" style="margin-top: 4px">
-            {{ currentToolType.description }}
-          </p>
+          <div v-if="currentToolType" class="tool-type-summary muted">
+            <ToolTypeBadge :type="currentToolType.type" :typeTitle="currentToolType.title" />
+            <span v-if="currentToolType.description">{{ currentToolType.description }}</span>
+          </div>
 
           <template v-if="configFields.length">
             <label
@@ -475,8 +469,9 @@ import {
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import { formatRelativeDateTime } from '@/utils/dates';
+import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
+import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
 
 type JsonSchema = {
   type?: string;
@@ -572,10 +567,6 @@ function parseNullableNumber(value: unknown): number | null {
 
   const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function toolTypeOptionLabel(type: string, title?: string | null): string {
-  return toolTypeLabel({ type, type_title: title ?? null });
 }
 
 function humanizeKey(key: string): string {
@@ -1465,6 +1456,20 @@ onMounted(() => {
   align-items: baseline;
 }
 
+.tool-type-field {
+  color: #444;
+  font-size: 0.9rem;
+}
+
+.tool-type-field__label {
+  margin-bottom: 2px;
+}
+
+.field-error :deep(.tool-type-select__trigger) {
+  border-color: #c0392b;
+  box-shadow: 0 0 0 1px rgba(192, 57, 43, 0.12);
+}
+
 .required-marker {
   color: #b42318;
   font-weight: 700;
@@ -1486,5 +1491,17 @@ onMounted(() => {
   border-radius: 50%;
   background: currentColor;
   vertical-align: middle;
+}
+
+.tool-type-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.tool-type-summary > span:last-child {
+  min-width: 0;
 }
 </style>

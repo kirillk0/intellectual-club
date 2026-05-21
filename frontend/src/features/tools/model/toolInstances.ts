@@ -13,6 +13,16 @@ const TOOL_TYPE_LABELS: Record<string, string> = {
   ssh: 'SSH',
 };
 
+const TOOL_TYPE_ICONS: Record<string, string> = {
+  'mcp-http': 'tool-plug',
+  'native-artifact-reader': 'tool-artifact',
+  'native-brave-search': 'tool-search',
+  'native-knowledge-library': 'tool-book',
+  'native-web-reader': 'tool-globe',
+  outlet: 'tool-outlet',
+  ssh: 'tool-terminal',
+};
+
 export function parseToolInstanceOption(resource: JsonApiResource | null | undefined): ToolInstanceOption | null {
   if (!resource) return null;
   const id = toIntId(resource.id);
@@ -41,6 +51,13 @@ export function toolTypeLabel(tool: Pick<ToolInstanceOption, 'type' | 'type_titl
   if (!type) return 'Tool';
 
   return TOOL_TYPE_LABELS[type] || humanizeToolType(type);
+}
+
+export function toolTypeIconName(type: string | null | undefined) {
+  const normalized = String(type || '').trim();
+  if (!normalized) return 'wrench';
+
+  return TOOL_TYPE_ICONS[normalized] || 'wrench';
 }
 
 export function toolBindingDisplayText(

@@ -97,6 +97,7 @@
       :items="displayToolBindings"
       :toolLabel="toolBindingLabel"
       :toolText="toolBindingText"
+      :toolType="toolBindingType"
       :toolIsOutlet="toolBindingIsOutlet"
       :toolIsOnline="toolBindingIsOnline"
       emptyText="No tools attached."
@@ -247,6 +248,10 @@ function confirmToolBindings(toolInstanceIds: number[]) {
 
 function matchingAliasTools(alias: string) {
   return (props.ownedToolLibrary || []).filter((tool) => tool.alias === alias);
+}
+
+function toolBindingType(binding: BotToolBindingRow) {
+  return props.toolLibrary.find((tool) => tool.id === binding.tool_instance_id)?.type || '';
 }
 
 function handleUserToolSelect(alias: string, event: Event) {

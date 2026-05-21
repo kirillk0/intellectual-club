@@ -94,7 +94,8 @@
                   </span>
                 </span>
                 <span v-if="toolTypeText(item)" class="tool-binding-title__type">
-                  <span class="tool-binding-title__separator">-</span>{{ toolTypeText(item) }}
+                  <span class="tool-binding-title__separator">-</span>
+                  <ToolTypeBadge :type="toolTypeValue(item)" :typeTitle="toolTypeText(item)" />
                 </span>
               </span>
               <span v-if="isShadowed(item)" class="badge tool-binding-shadowed" :title="shadowedReason(item)">
@@ -118,6 +119,7 @@
 <script setup lang="ts">
 import { computed, useSlots } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 
 type ToolBindingItem = {
   id: number;
@@ -138,6 +140,7 @@ const props = withDefaults(
     items: ToolBindingItem[];
     toolLabel: (item: ToolBindingItem) => string;
     toolText?: (item: ToolBindingItem) => string;
+    toolType?: (item: ToolBindingItem) => string | null | undefined;
     toolIsOutlet?: (item: ToolBindingItem) => boolean;
     toolIsOnline?: (item: ToolBindingItem) => boolean;
     emptyText?: string;
@@ -219,6 +222,7 @@ const toolTextParts = (item: ToolBindingItem) => {
 const toolNameText = (item: ToolBindingItem) => toolTextParts(item).name;
 const toolAliasText = (item: ToolBindingItem) => toolTextParts(item).alias;
 const toolTypeText = (item: ToolBindingItem) => toolTextParts(item).type;
+const toolTypeValue = (item: ToolBindingItem) => props.toolType?.(item) || toolTypeText(item);
 const shadowedReason = (item: ToolBindingItem) =>
   typeof item.shadowedReason === 'string' && item.shadowedReason.trim()
     ? item.shadowedReason

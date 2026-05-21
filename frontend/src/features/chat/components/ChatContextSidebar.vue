@@ -214,6 +214,7 @@
             :items="activeToolBindings"
             :toolLabel="activeToolBindingLabel"
             :toolText="activeToolBindingText"
+            :toolType="activeToolBindingType"
             :toolIsOutlet="activeToolBindingIsOutlet"
             :toolIsOnline="activeToolBindingIsOnline"
             emptyText="No tools active."
@@ -309,6 +310,7 @@ const activeToolBindingLabel = (binding: ActiveToolBinding) => {
 const activeToolBindingText = (binding: ActiveToolBinding) =>
   toolBindingDisplayText(binding.tool_instance, binding.alias, `Tool #${binding.tool_instance_id}`);
 
+const activeToolBindingType = (binding: ActiveToolBinding) => binding.tool_instance?.type || '';
 const activeToolBindingIsOutlet = (binding: ActiveToolBinding) => binding.tool_instance?.type === 'outlet';
 const activeToolBindingIsOnline = (binding: ActiveToolBinding) => Boolean(binding.tool_instance?.outlet_online);
 

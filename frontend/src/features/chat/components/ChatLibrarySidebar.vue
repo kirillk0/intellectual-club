@@ -54,6 +54,7 @@
             :items="chatToolBindings"
             :toolLabel="toolBindingLabel"
             :toolText="toolBindingText"
+            :toolType="toolBindingType"
             :toolIsOutlet="toolBindingIsOutlet"
             :toolIsOnline="toolBindingIsOnline"
             emptyText="No tools linked."
@@ -192,6 +193,8 @@ const toolBindingText = (binding: ChatToolBindingLink) => {
   const tool = props.toolLibrary.find((item) => item.id === binding.tool_instance_id);
   return toolBindingDisplayText(tool, binding.alias, `Tool #${binding.tool_instance_id}`);
 };
+const toolBindingType = (binding: ChatToolBindingLink) =>
+  props.toolLibrary.find((item) => item.id === binding.tool_instance_id)?.type || '';
 const toolBindingIsOutlet = (binding: ChatToolBindingLink) => props.toolIsOutlet(binding.tool_instance_id);
 const toolBindingIsOnline = (binding: ChatToolBindingLink) => props.toolIsOnline(binding.tool_instance_id);
 </script>
