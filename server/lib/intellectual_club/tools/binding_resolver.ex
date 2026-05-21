@@ -438,6 +438,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
       [
         :alias,
         tool_instance: [
+          :owner_id,
           :name,
           :description,
           :alias,
@@ -464,6 +465,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
       [
         :alias,
         tool_instance: [
+          :owner_id,
           :name,
           :description,
           :alias,
@@ -490,6 +492,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
       [
         :alias,
         tool_instance: [
+          :owner_id,
           :name,
           :description,
           :alias,

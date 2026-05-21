@@ -272,7 +272,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
           name: Duplication.next_copy_label(source.name),
           description: source.description,
           alias: source.alias || source.name,
-          config: source.config,
+          config: duplicate_config(source, preserve_secrets?),
           secrets: if(preserve_secrets?, do: source.secrets, else: %{}),
           max_output_tokens: source.max_output_tokens,
           rps_limit: source.rps_limit
@@ -393,4 +393,14 @@ defmodule IntellectualClub.Tools.ToolInstance do
   end
 
   defp secrets_schema_aliases(_other), do: []
+
+  defp duplicate_config(%{type: "native-knowledge-library", config: config}, false)
+       when is_map(config) do
+    config
+    |> Map.delete("knowledge_tag_id")
+    |> Map.delete(:knowledge_tag_id)
+  end
+
+  defp duplicate_config(%{config: config}, _preserve_secrets?) when is_map(config), do: config
+  defp duplicate_config(_source, _preserve_secrets?), do: %{}
 end

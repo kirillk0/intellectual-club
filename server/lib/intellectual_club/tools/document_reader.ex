@@ -72,6 +72,40 @@ defmodule IntellectualClub.Tools.DocumentReader do
     end
   end
 
+  def ensure_text_cache_ready(cache_root, lock_id, doc_id, text, source_meta, cfg)
+      when is_binary(cache_root) and is_binary(doc_id) and is_binary(text) and
+             is_map(source_meta) and is_map(cfg) do
+    doc_dir = Path.join(cache_root, doc_id)
+
+    with :ok <- File.mkdir_p(cache_root) do
+      if cache_valid?(doc_dir, cfg.cache_ttl_seconds) do
+        {:ok, {doc_dir, read_meta(doc_dir), true}}
+      else
+        with_doc_lock(lock_id, doc_id, fn ->
+          if cache_valid?(doc_dir, cfg.cache_ttl_seconds) do
+            {:ok, {doc_dir, read_meta(doc_dir), true}}
+          else
+            cleanup_cache(cache_root, cfg.cache_ttl_seconds, cfg.cache_max_bytes)
+
+            _ = File.rm_rf(doc_dir)
+
+            case build_text_cache(doc_dir, text, source_meta, cfg) do
+              {:ok, meta} ->
+                {:ok, {doc_dir, meta, false}}
+
+              {:error, reason} ->
+                _ = File.rm_rf(doc_dir)
+                {:error, reason}
+            end
+          end
+        end)
+      end
+    else
+      {:error, reason} ->
+        {:error, "Failed to prepare cache: #{inspect(reason)}"}
+    end
+  end
+
   def parse_page(args) when is_map(args) do
     raw = map_get(args, "page")
 
@@ -311,6 +345,28 @@ defmodule IntellectualClub.Tools.DocumentReader do
       meta =
         source_meta
         |> Map.merge(extraction_meta)
+        |> Map.merge(%{
+          "chunk_size_tokens" => cfg.chunk_size_tokens,
+          "pages_total" => pages_total(doc_dir, %{})
+        })
+
+      with :ok <- write_json(Path.join(doc_dir, "meta.json"), meta),
+           :ok <- File.write(Path.join(doc_dir, "READY"), "ok\n") do
+        {:ok, meta}
+      else
+        {:error, reason} ->
+          {:error, "Failed to finalize cache: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp build_text_cache(doc_dir, text, source_meta, cfg)
+       when is_binary(text) and is_map(source_meta) and is_map(cfg) do
+    with :ok <- File.mkdir_p(doc_dir),
+         normalized_text <- normalize_text(text),
+         :ok <- write_pages(doc_dir, split_to_pages(normalized_text, cfg.chunk_size_tokens)) do
+      meta =
+        source_meta
         |> Map.merge(%{
           "chunk_size_tokens" => cfg.chunk_size_tokens,
           "pages_total" => pages_total(doc_dir, %{})

@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.Registry do
   alias IntellectualClub.Tools.Drivers.McpHttp
   alias IntellectualClub.Tools.Drivers.NativeArtifactReader
   alias IntellectualClub.Tools.Drivers.NativeBraveSearch
+  alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
   alias IntellectualClub.Tools.Drivers.NativeWebReader
   alias IntellectualClub.Tools.Drivers.Outlet
   alias IntellectualClub.Tools.Drivers.Ssh
@@ -19,6 +20,7 @@ defmodule IntellectualClub.Tools.Registry do
       "mcp_http" -> McpHttp
       "native-artifact-reader" -> NativeArtifactReader
       "native-brave-search" -> NativeBraveSearch
+      "native-knowledge-library" -> NativeKnowledgeLibrary
       "native-web-reader" -> NativeWebReader
       "outlet" -> Outlet
       "ssh" -> Ssh
@@ -32,6 +34,7 @@ defmodule IntellectualClub.Tools.Registry do
       "mcp-http",
       "native-artifact-reader",
       "native-brave-search",
+      "native-knowledge-library",
       "native-web-reader",
       "outlet",
       "ssh"

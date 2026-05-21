@@ -7,6 +7,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
 
   alias Ash.Changeset
   alias IntellectualClub.Tools.Registry
+  alias IntellectualClub.Tools.ToolInstance
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -14,27 +15,99 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
       type = tool_type(changeset)
       config = tool_config(changeset)
 
-      with {:ok, driver} <- driver_for_type(type),
-           %{} = schema <- driver.config_schema(),
-           required when required != [] <- required_fields(schema) do
-        defaults = normalize_map(driver.default_config())
-        merged_config = Map.merge(defaults, normalize_map(config))
+      with {:ok, driver} <- driver_for_type(type) do
+        config = maybe_normalize_driver_config(driver, config)
+        changeset = Changeset.force_change_attribute(changeset, :config, config)
+        changeset = validate_required_fields(changeset, driver, config)
 
-        Enum.reduce(required, changeset, fn field, acc ->
-          if required_value_present?(Map.get(merged_config, field)) do
-            acc
-          else
-            Changeset.add_error(acc,
-              field: :config,
-              message: "#{field_label(schema, field)} is required."
-            )
-          end
-        end)
+        validate_driver_config(changeset, driver, type, config)
       else
         _other -> changeset
       end
     end)
   end
+
+  defp validate_required_fields(changeset, driver, config) do
+    with %{} = schema <- driver.config_schema(),
+         required when required != [] <- required_fields(schema) do
+      defaults = normalize_map(driver.default_config())
+      merged_config = Map.merge(defaults, normalize_map(config))
+
+      Enum.reduce(required, changeset, fn field, acc ->
+        if required_value_present?(Map.get(merged_config, field)) do
+          acc
+        else
+          Changeset.add_error(acc,
+            field: :config,
+            message: "#{field_label(schema, field)} is required."
+          )
+        end
+      end)
+    else
+      _other -> changeset
+    end
+  end
+
+  defp validate_driver_config(changeset, driver, type, config) do
+    if function_exported?(driver, :validate_config, 3) do
+      tool_instance = tool_instance_for_validation(changeset, type, config)
+      actor = changeset.context[:private][:actor]
+
+      case driver.validate_config(tool_instance, config, actor) do
+        :ok ->
+          changeset
+
+        {:error, message} when is_binary(message) ->
+          Changeset.add_error(changeset, field: :config, message: message)
+
+        {:error, opts} when is_list(opts) ->
+          field = Keyword.get(opts, :field, :config)
+          message = Keyword.get(opts, :message, "is invalid")
+          Changeset.add_error(changeset, field: field, message: message)
+
+        {:error, other} ->
+          Changeset.add_error(changeset, field: :config, message: to_string(other))
+
+        _other ->
+          changeset
+      end
+    else
+      changeset
+    end
+  end
+
+  defp maybe_normalize_driver_config(driver, config) do
+    if function_exported?(driver, :normalize_config, 1) do
+      case driver.normalize_config(config) do
+        %{} = normalized -> normalized
+        _other -> normalize_map(config)
+      end
+    else
+      normalize_map(config)
+    end
+  end
+
+  defp tool_instance_for_validation(changeset, type, config) do
+    data = changeset.data || %{}
+
+    %ToolInstance{
+      id: Map.get(data, :id),
+      type: type,
+      owner_id: owner_id_for_validation(changeset),
+      config: config
+    }
+  end
+
+  defp owner_id_for_validation(changeset) do
+    Changeset.get_attribute(changeset, :owner_id) ||
+      case changeset.data do
+        %{owner_id: owner_id} -> owner_id
+        _ -> actor_id(changeset.context[:private][:actor])
+      end
+  end
+
+  defp actor_id(%{id: id}) when is_integer(id), do: id
+  defp actor_id(_actor), do: nil
 
   defp tool_type(changeset) do
     raw =

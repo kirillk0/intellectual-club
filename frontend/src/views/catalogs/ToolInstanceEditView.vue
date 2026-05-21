@@ -130,48 +130,75 @@
                 <span v-if="isConfigFieldRequired(field.key)" class="required-marker" aria-hidden="true">*</span>
               </span>
 
-              <select
-                v-if="Array.isArray(field.schema.enum) && field.schema.enum.length"
-                v-model="(form.config as any)[field.key]"
-                class="full"
-                @change="clearConfigFieldErrors(field.key)"
-              >
-                <option v-for="opt in field.schema.enum" :key="String(opt)" :value="opt">
-                  {{ String(opt) }}
-                </option>
-              </select>
+              <template v-if="configWidget(field.schema) === 'knowledge-tag-select'">
+                <input :value="selectedKnowledgeTagLabel(field.key)" class="full" readonly />
 
-              <div v-else-if="field.schema.type === 'boolean'" style="margin-top: 6px">
-                <input
+                <div class="flex" style="gap: 8px; margin-top: 8px">
+                  <button
+                    type="button"
+                    :disabled="saving || loading"
+                    @click="openKnowledgeTagPicker(field.key)"
+                  >
+                    Select
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="saving || loading || !selectedKnowledgeTagId(field.key)"
+                    @click="clearKnowledgeTag(field.key)"
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <p v-if="knowledgeTagsError" class="error-text">
+                  {{ knowledgeTagsError }}
+                </p>
+              </template>
+
+              <template v-else>
+                <select
+                  v-if="Array.isArray(field.schema.enum) && field.schema.enum.length"
                   v-model="(form.config as any)[field.key]"
-                  type="checkbox"
+                  class="full"
                   @change="clearConfigFieldErrors(field.key)"
+                >
+                  <option v-for="opt in field.schema.enum" :key="String(opt)" :value="opt">
+                    {{ String(opt) }}
+                  </option>
+                </select>
+
+                <div v-else-if="field.schema.type === 'boolean'" style="margin-top: 6px">
+                  <input
+                    v-model="(form.config as any)[field.key]"
+                    type="checkbox"
+                    @change="clearConfigFieldErrors(field.key)"
+                  />
+                </div>
+
+                <input
+                  v-else-if="field.schema.type === 'integer' || field.schema.type === 'number'"
+                  v-model.number="(form.config as any)[field.key]"
+                  class="full"
+                  type="number"
+                  :step="field.schema.type === 'integer' ? 1 : 0.1"
+                  :min="typeof field.schema.minimum === 'number' ? field.schema.minimum : undefined"
+                  :max="typeof field.schema.maximum === 'number' ? field.schema.maximum : undefined"
+                  @input="clearConfigFieldErrors(field.key)"
                 />
-              </div>
 
-              <input
-                v-else-if="field.schema.type === 'integer' || field.schema.type === 'number'"
-                v-model.number="(form.config as any)[field.key]"
-                class="full"
-                type="number"
-                :step="field.schema.type === 'integer' ? 1 : 0.1"
-                :min="typeof field.schema.minimum === 'number' ? field.schema.minimum : undefined"
-                :max="typeof field.schema.maximum === 'number' ? field.schema.maximum : undefined"
-                @input="clearConfigFieldErrors(field.key)"
-              />
+                <input
+                  v-else-if="field.schema.type === 'string' || !field.schema.type"
+                  v-model="(form.config as any)[field.key]"
+                  class="full"
+                  :type="fieldInputType(field.key, field.schema)"
+                  :placeholder="fieldPlaceholder(field.key, field.schema)"
+                  @input="clearConfigFieldErrors(field.key)"
+                />
 
-              <input
-                v-else-if="field.schema.type === 'string' || !field.schema.type"
-                v-model="(form.config as any)[field.key]"
-                class="full"
-                :type="fieldInputType(field.key, field.schema)"
-                :placeholder="fieldPlaceholder(field.key, field.schema)"
-                @input="clearConfigFieldErrors(field.key)"
-              />
-
-              <div v-else class="muted" style="margin-top: 4px">
-                Unsupported field type: {{ String(field.schema.type) }}. Use Advanced JSON editor below.
-              </div>
+                <div v-else class="muted" style="margin-top: 4px">
+                  Unsupported field type: {{ String(field.schema.type) }}. Use Advanced JSON editor below.
+                </div>
+              </template>
 
               <div v-if="configFieldHasError(field.key)" class="error-text">
                 {{ configFieldErrorMessage(field.key) }}
@@ -415,6 +442,16 @@
         </div>
       </div>
     </fieldset>
+
+    <KnowledgeTagsPickerModal
+      v-model:open="knowledgeTagPickerOpen"
+      :tags="knowledgeTags"
+      :selectedTagIds="knowledgeTagPickerSelectedIds"
+      :loading="knowledgeTagsLoading"
+      :error="knowledgeTagsError"
+      title="Select knowledge tag"
+      @select="selectKnowledgeTag"
+    />
   </div>
 
   <p v-else class="muted">Loading…</p>
@@ -424,10 +461,13 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
+import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import { api, isHttpError } from '@/api/client';
 import {
   createJsonApiIncludedIndex,
   jsonApiGet,
+  jsonApiList,
+  relationshipId,
   relatedResources,
   toIntId,
   type JsonApiResource,
@@ -830,6 +870,108 @@ function compareSchemaFields(a: SchemaField, b: SchemaField): number {
   return a.key.localeCompare(b.key);
 }
 
+type KnowledgeTagRow = {
+  id: number;
+  name: string;
+  full_name: string;
+  parent_id: number | null;
+};
+
+const knowledgeTagPickerOpen = ref(false);
+const knowledgeTagPickerFieldKey = ref<string | null>(null);
+const knowledgeTagsLoading = ref(false);
+const knowledgeTagsError = ref<string | null>(null);
+const knowledgeTagsLoaded = ref(false);
+const knowledgeTags = ref<KnowledgeTagRow[]>([]);
+
+function configWidget(schema: JsonSchema): string {
+  const xUi = schema['x-ui'];
+  if (xUi && typeof xUi === 'object' && !Array.isArray(xUi)) {
+    const widget = (xUi as any).widget;
+    if (typeof widget === 'string') return widget;
+  }
+  return '';
+}
+
+function parseKnowledgeTagRow(resource: JsonApiResource): KnowledgeTagRow | null {
+  const id = toIntId(resource.id);
+  if (!id) return null;
+
+  const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  const parentId =
+    (typeof attrs.parent_id === 'number' ? attrs.parent_id : toIntId(attrs.parent_id as any)) ??
+    relationshipId(resource, 'parent');
+
+  return {
+    id,
+    name: String(attrs.name || '').trim(),
+    full_name: String(attrs.full_name || '').trim(),
+    parent_id: parentId ?? null,
+  };
+}
+
+async function loadKnowledgeTags() {
+  if (knowledgeTagsLoading.value || knowledgeTagsLoaded.value) return;
+  knowledgeTagsLoading.value = true;
+  knowledgeTagsError.value = null;
+
+  try {
+    const params = new URLSearchParams();
+    params.set('sort', 'full_name');
+    const payload = await jsonApiList('/api/ash/knowledge-tags', params);
+    knowledgeTags.value = (payload.data || [])
+      .map(parseKnowledgeTagRow)
+      .filter((tag): tag is KnowledgeTagRow => Boolean(tag));
+    knowledgeTagsLoaded.value = true;
+  } catch (e) {
+    console.error(e);
+    knowledgeTagsError.value = e instanceof Error ? e.message : 'Failed to load knowledge tags.';
+  } finally {
+    knowledgeTagsLoading.value = false;
+  }
+}
+
+function selectedKnowledgeTagId(fieldKey: string): number | null {
+  return toIntId((form.config as any)[fieldKey] as any) ?? null;
+}
+
+function selectedKnowledgeTagLabel(fieldKey: string): string {
+  const id = selectedKnowledgeTagId(fieldKey);
+  if (!id) return 'No tag selected';
+
+  const tag = knowledgeTags.value.find((item) => item.id === id);
+  if (!tag) return `Tag #${id}`;
+
+  const label = tag.full_name || tag.name;
+  return label || `Tag #${id}`;
+}
+
+const knowledgeTagPickerSelectedIds = computed(() => {
+  const fieldKey = knowledgeTagPickerFieldKey.value;
+  if (!fieldKey) return [];
+  const id = selectedKnowledgeTagId(fieldKey);
+  return id ? [id] : [];
+});
+
+async function openKnowledgeTagPicker(fieldKey: string) {
+  knowledgeTagPickerFieldKey.value = fieldKey;
+  knowledgeTagPickerOpen.value = true;
+  await loadKnowledgeTags();
+}
+
+function selectKnowledgeTag(tagId: number) {
+  const fieldKey = knowledgeTagPickerFieldKey.value;
+  if (!fieldKey) return;
+  (form.config as any)[fieldKey] = tagId;
+  clearConfigFieldErrors(fieldKey);
+  knowledgeTagPickerOpen.value = false;
+}
+
+function clearKnowledgeTag(fieldKey: string) {
+  delete (form.config as any)[fieldKey];
+  clearConfigFieldErrors(fieldKey);
+}
+
 const configFields = computed<SchemaField[]>(() => {
   const schema = currentToolType.value?.config_schema;
   const props =
@@ -847,6 +989,19 @@ const configFields = computed<SchemaField[]>(() => {
     .filter((f) => Boolean(f.key.trim()))
     .sort(compareSchemaFields);
 });
+
+watch(
+  () =>
+    configFields.value
+      .filter((field) => configWidget(field.schema) === 'knowledge-tag-select')
+      .map((field) => selectedKnowledgeTagId(field.key))
+      .filter((id): id is number => typeof id === 'number'),
+  (ids) => {
+    if (!ids.length || sharedReadonly.value) return;
+    void loadKnowledgeTags();
+  },
+  { immediate: true }
+);
 
 const secretsFields = computed<SchemaField[]>(() => {
   const schema = currentToolType.value?.secrets_schema;
