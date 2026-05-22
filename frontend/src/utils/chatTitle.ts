@@ -6,7 +6,7 @@ type ChatTitleParams = {
 export const formatChatBaseTitle = ({ botName, note }: ChatTitleParams): string => {
   const bot = String(botName || '').trim() || 'No bot';
   const chatNote = String(note || '').trim();
-  return chatNote ? `${bot} (${chatNote})` : bot;
+  return chatNote ? `${chatNote} - ${bot}` : bot;
 };
 
 export const formatChatFullTitle = ({ botName, note }: ChatTitleParams): string => {

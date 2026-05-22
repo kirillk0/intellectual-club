@@ -81,7 +81,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { RouterLink, useRoute, useRouter, type RouteLocationNormalizedLoaded } from 'vue-router';
 import {
   ensureAuthInitialized,
   refreshSessionUser,
@@ -89,6 +89,7 @@ import {
   useSessionAuth,
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
+import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
 
@@ -106,6 +107,18 @@ const signingOut = ref(false);
 const isLoginRoute = computed(() => route.name === 'login');
 const isChatRoute = computed(() => route.name === 'chat');
 const isLlmConfigurationRoute = computed(() => String(route.name || '').startsWith('llm-'));
+type RouteTitle = string | ((route: RouteLocationNormalizedLoaded) => string);
+
+const resolveRouteTitle = (targetRoute: RouteLocationNormalizedLoaded) => {
+  if (targetRoute.name === 'chat' && pageTitleOverride.value) return pageTitleOverride.value;
+
+  const routeTitle = targetRoute.meta.title as RouteTitle | undefined;
+  if (typeof routeTitle === 'function') return routeTitle(targetRoute).trim();
+  if (typeof routeTitle === 'string') return routeTitle.trim();
+  return '';
+};
+
+useDocumentTitle(computed(() => resolveRouteTitle(route)));
 
 const mobileMenuOpen = ref(false);
 

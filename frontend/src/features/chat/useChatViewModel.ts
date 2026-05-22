@@ -20,6 +20,7 @@ import {
 import { SOURCE_LABELS } from '@/features/chat/types';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
+import { usePageTitleOverride } from '@/features/app/documentTitle';
 import type {
   Bot,
   Chat,
@@ -137,6 +138,12 @@ export function useChatViewModel() {
     reloadChat: () => loadChat({ mode: 'soft' }),
     refreshPromptContext: () => refreshPromptContextFromServer(),
   });
+  const chatDocumentTitle = computed(() => {
+    if (!chat.value || chatUnavailable.value) return 'Chat';
+    return headerControls.chatFullTitle.value || 'Chat';
+  });
+
+  usePageTitleOverride(chatDocumentTitle);
 
   const contextPanel = useChatContextPanel({
     chatId,

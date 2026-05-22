@@ -59,6 +59,7 @@ import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 
 type BookmarkChat = {
@@ -112,9 +113,7 @@ function niceDate(iso: string | null) {
 }
 
 function chatLabel(chat: BookmarkChat) {
-  const bot = (chat.bot_name || '').trim() || 'No bot';
-  const note = (chat.note || '').trim();
-  return note ? `${bot} (${note})` : bot;
+  return formatChatBaseTitle({ botName: chat.bot_name, note: chat.note });
 }
 
 function bookmarkResultLink(entry: BookmarkEntry) {
