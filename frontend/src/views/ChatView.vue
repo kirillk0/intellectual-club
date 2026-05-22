@@ -423,10 +423,12 @@
         :kind="vm.attachmentPreviewKind"
         :can-navigate="vm.attachmentPreviewCanNavigate"
         :loading="vm.attachmentPreviewLoading"
+        :download-pending="vm.attachmentPreviewDownloadPending"
         :error="vm.attachmentPreviewError"
         :text="vm.attachmentPreviewText"
         @prev="vm.showPreviousAttachmentPreview"
         @next="vm.showNextAttachmentPreview"
+        @download="vm.downloadAttachmentPreview"
         @close="vm.closeAttachmentPreview"
       />
     </Teleport>

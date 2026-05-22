@@ -5,14 +5,17 @@
         <div class="attachment-preview-header">
           <div class="attachment-preview-title-wrap">
             <h3 class="attachment-preview-title">
-              <a
+              <button
                 v-if="url"
+                type="button"
                 class="attachment-preview-title-link"
-                :href="url"
-                :download="title"
+                :disabled="downloadPending"
+                :aria-label="`Download ${title}`"
+                :title="`Download ${title}`"
+                @click="emit('download')"
               >
                 {{ title }}
-              </a>
+              </button>
               <span v-else>{{ title }}</span>
             </h3>
           </div>
@@ -87,6 +90,7 @@ interface Props {
   kind: 'image' | 'text' | 'markdown' | 'binary';
   canNavigate?: boolean;
   loading?: boolean;
+  downloadPending?: boolean;
   error?: string;
   text?: string;
 }
@@ -96,6 +100,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'prev'): void;
   (e: 'next'): void;
+  (e: 'download'): void;
 }>();
 
 const errorText = computed(() => (props.error || '').trim());
@@ -135,12 +140,28 @@ const handleImageClick = () => {
 
 .attachment-preview-title-link {
   color: inherit;
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
   text-decoration: underline;
   text-underline-offset: 0.12em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.attachment-preview-title-link:hover {
+.attachment-preview-title-link:hover:not(:disabled) {
   text-decoration-thickness: 2px;
+}
+
+.attachment-preview-title-link:disabled {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 .attachment-preview-actions {

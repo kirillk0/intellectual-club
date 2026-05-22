@@ -9,6 +9,13 @@ import {
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
+import {
+  isFileSaveAbort,
+  loadUrlAsFile,
+  saveBlobAsFile,
+  saveUrlAsFile,
+  shouldUseFileShareForDownloads,
+} from '@/utils/download';
 import type {
   ChatBranchMessage,
   ChatMessageContent,
@@ -48,6 +55,12 @@ type AttachmentPreviewItem =
       scope: PendingAttachmentScope;
       fileId: string;
     };
+
+type PreparedAttachmentDownload = {
+  key: string;
+  file: File | null;
+  error: unknown | null;
+};
 
 export function useChatInspectors(params: Params) {
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
@@ -323,13 +336,17 @@ export function useChatInspectors(params: Params) {
   const attachmentPreviewUrl = ref('');
   const attachmentPreviewKind = ref<'image' | 'text' | 'markdown' | 'binary'>('binary');
   const attachmentPreviewLoading = ref(false);
+  const attachmentPreviewDownloadPending = ref(false);
   const attachmentPreviewError = ref('');
   const attachmentPreviewText = ref('');
   const attachmentPreviewRequestToken = ref(0);
   const attachmentPreviewItems = ref<AttachmentPreviewItem[]>([]);
   const attachmentPreviewIndex = ref(0);
   const attachmentPreviewCanNavigate = computed(() => attachmentPreviewItems.value.length > 1);
+  const attachmentPreviewCurrentItem = ref<AttachmentPreviewItem | null>(null);
   let attachmentPreviewObjectUrl: string | null = null;
+  let preparedAttachmentDownload: PreparedAttachmentDownload | null = null;
+  let preparedAttachmentDownloadAbort: AbortController | null = null;
 
   const previewItemKey = (item: AttachmentPreviewItem) => item.key;
   const messagePreviewKey = (messageId: number, contentId: number) => `message-${messageId}-${contentId}`;
@@ -392,6 +409,44 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewObjectUrl = null;
   };
 
+  const resetPreparedAttachmentDownload = (abort = true) => {
+    if (abort) preparedAttachmentDownloadAbort?.abort();
+    preparedAttachmentDownloadAbort = null;
+    preparedAttachmentDownload = null;
+  };
+
+  const prepareAttachmentDownloadForFileShare = (
+    item: AttachmentPreviewItem,
+    url: string,
+    name: string,
+    mimeType: string,
+    token: number
+  ) => {
+    if (!shouldUseFileShareForDownloads() || !url) return;
+
+    const key = previewItemKey(item);
+    const abortController = new AbortController();
+    preparedAttachmentDownloadAbort = abortController;
+    preparedAttachmentDownload = { key, file: null, error: null };
+    attachmentPreviewDownloadPending.value = true;
+
+    loadUrlAsFile(url, name, mimeType, abortController.signal)
+      .then((file) => {
+        if (attachmentPreviewRequestToken.value !== token || preparedAttachmentDownload?.key !== key) return;
+        preparedAttachmentDownload = { key, file, error: null };
+      })
+      .catch((error) => {
+        if (abortController.signal.aborted) return;
+        if (attachmentPreviewRequestToken.value !== token || preparedAttachmentDownload?.key !== key) return;
+        preparedAttachmentDownload = { key, file: null, error };
+      })
+      .finally(() => {
+        if (attachmentPreviewRequestToken.value !== token || preparedAttachmentDownload?.key !== key) return;
+        preparedAttachmentDownloadAbort = null;
+        attachmentPreviewDownloadPending.value = false;
+      });
+  };
+
   const openMessageAttachmentPreview = async (payload: {
     messageId: number;
     content: ChatMessageContent;
@@ -409,12 +464,15 @@ export function useChatInspectors(params: Params) {
 
   const showAttachmentPreviewItem = async (item: AttachmentPreviewItem) => {
     revokeAttachmentPreviewObjectUrl();
+    resetPreparedAttachmentDownload();
 
     const token = attachmentPreviewRequestToken.value + 1;
     attachmentPreviewRequestToken.value = token;
     attachmentPreviewOpen.value = true;
     attachmentPreviewError.value = '';
     attachmentPreviewText.value = '';
+    attachmentPreviewDownloadPending.value = false;
+    attachmentPreviewCurrentItem.value = item;
 
     if (item.type === 'message') {
       const contentId = Number(item.content?.id || 0);
@@ -428,6 +486,7 @@ export function useChatInspectors(params: Params) {
       attachmentPreviewUrl.value = url;
       attachmentPreviewKind.value = kind;
       attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
+      prepareAttachmentDownloadForFileShare(item, url, name, mimeType, token);
 
       if (kind === 'image' || kind === 'binary' || !url) {
         attachmentPreviewLoading.value = false;
@@ -558,22 +617,75 @@ export function useChatInspectors(params: Params) {
     await showAttachmentPreviewItem(attachmentPreviewItems.value[nextIndex]);
   };
 
+  const downloadAttachmentPreview = async () => {
+    if (attachmentPreviewDownloadPending.value) return;
+
+    const item = attachmentPreviewCurrentItem.value;
+    if (!item) return;
+
+    attachmentPreviewDownloadPending.value = true;
+
+    try {
+      if (item.type === 'message') {
+        const contentId = Number(item.content?.id || 0);
+        const name = getAttachmentName(item.content);
+        const mimeType = getAttachmentMimeType(item.content);
+        const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
+        if (!url) throw new Error('Attachment is not available.');
+
+        if (shouldUseFileShareForDownloads()) {
+          const prepared = preparedAttachmentDownload;
+          const key = previewItemKey(item);
+
+          if (prepared?.key === key && prepared.file) {
+            await saveBlobAsFile(prepared.file, name, mimeType);
+            return;
+          }
+
+          if (prepared?.key === key && prepared.error) {
+            throw prepared.error;
+          }
+
+          throw new Error('Attachment is still preparing for download.');
+        }
+
+        await saveUrlAsFile(url, name, mimeType);
+        return;
+      }
+
+      const pending = findPendingAttachment(item.fileId, item.scope);
+      if (!pending) throw new Error('Attachment is no longer available.');
+
+      await saveBlobAsFile(pending.file, pending.name, pending.mimeType);
+    } catch (error) {
+      if (!isFileSaveAbort(error)) {
+        alert(errorMessage(error, 'Failed to download attachment.'));
+      }
+    } finally {
+      attachmentPreviewDownloadPending.value = false;
+    }
+  };
+
   const closeAttachmentPreview = () => {
     revokeAttachmentPreviewObjectUrl();
+    resetPreparedAttachmentDownload();
     attachmentPreviewOpen.value = false;
     attachmentPreviewTitle.value = 'Attachment';
     attachmentPreviewUrl.value = '';
     attachmentPreviewKind.value = 'binary';
     attachmentPreviewLoading.value = false;
+    attachmentPreviewDownloadPending.value = false;
     attachmentPreviewError.value = '';
     attachmentPreviewText.value = '';
     attachmentPreviewItems.value = [];
     attachmentPreviewIndex.value = 0;
+    attachmentPreviewCurrentItem.value = null;
     attachmentPreviewRequestToken.value += 1;
   };
 
   const dispose = () => {
     revokeAttachmentPreviewObjectUrl();
+    resetPreparedAttachmentDownload();
   };
 
   return {
@@ -611,6 +723,7 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewUrl,
     attachmentPreviewKind,
     attachmentPreviewLoading,
+    attachmentPreviewDownloadPending,
     attachmentPreviewError,
     attachmentPreviewText,
     attachmentPreviewCanNavigate,
@@ -619,6 +732,7 @@ export function useChatInspectors(params: Params) {
     openExistingAttachmentPreview,
     showPreviousAttachmentPreview,
     showNextAttachmentPreview,
+    downloadAttachmentPreview,
     closeAttachmentPreview,
     dispose,
   };
