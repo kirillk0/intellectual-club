@@ -1,7 +1,7 @@
 <template>
   <transition name="fade">
     <div class="modal-backdrop" @click.self="emit('cancel')">
-      <div class="modal" :style="{ maxWidth: '520px' }">
+      <div ref="modalRef" class="modal" :style="{ maxWidth: '520px' }" tabindex="-1">
         <div class="modal-header-row">
           <h3 style="margin: 0">{{ title }}</h3>
           <button
@@ -54,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import {
@@ -92,6 +92,7 @@ const emit = defineEmits<{
 }>();
 
 const localValue = ref<number | ''>(props.modelValue);
+const modalRef = ref<HTMLElement | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
   get: () => botSortMode.value,
@@ -113,9 +114,38 @@ watch(
 );
 
 const emitSave = () => {
+  if (saving.value) return;
   emit('update:modelValue', localValue.value);
   emit('save', localValue.value);
 };
+
+const handleEnterKey = (event: KeyboardEvent) => {
+  if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing) return;
+
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  const modal = modalRef.value;
+  const interactiveSelector = [
+    'button',
+    'a[href]',
+    'input:not([type="radio"])',
+    'select',
+    'textarea',
+    '[contenteditable="true"]',
+  ].join(',');
+
+  if (modal?.contains(target) && target?.closest(interactiveSelector)) return;
+  event.preventDefault();
+  emitSave();
+};
+
+onMounted(() => {
+  window.addEventListener('keydown', handleEnterKey);
+  nextTick(() => modalRef.value?.focus());
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleEnterKey);
+});
 
 const toggleBotSortMode = () => {
   botSortModeValue.value = botSortModeValue.value === 'recent_activity' ? 'name' : 'recent_activity';
