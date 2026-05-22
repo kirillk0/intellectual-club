@@ -15,18 +15,22 @@
     <slot name="note"></slot>
 
     <TransitionGroup v-if="sortedItems.length" name="tool-bindings" tag="div" class="list">
-      <div
+      <ToolBindingListItem
         v-for="(item, idx) in sortedItems"
         :key="itemKey(item)"
-        class="row tool-binding-row"
-        :class="{
-          'tool-binding-row--shadowed': isShadowed(item),
-          'tool-binding-row--with-controls': showToggle || showActions,
-        }"
+        :name="toolNameText(item)"
+        :alias="toolAliasText(item)"
+        :type="toolTypeValue(item)"
+        :typeTitle="toolTypeText(item)"
+        :isOutlet="toolIsOutlet?.(item)"
+        :isOnline="toolIsOnline?.(item)"
+        :shadowed="isShadowed(item)"
+        :shadowedReason="shadowedReason(item)"
+        :openable="openable"
+        @open="handleOpen(item)"
       >
-        <div v-if="showToggle || showActions" class="tool-binding-controls">
+        <template v-if="showToggle" #leading>
           <input
-            v-if="showToggle"
             class="tool-binding-enabled"
             type="checkbox"
             :checked="item.enabled"
@@ -35,80 +39,53 @@
             :title="toggleLabel"
             @change="handleToggle(item, $event)"
           />
+        </template>
 
-          <div v-if="showActions" class="tool-binding-actions" @click.stop>
-            <button
-              class="tool-binding-action-button"
-              type="button"
-              :disabled="readonly || actionsDisabled(item) || idx === 0"
-              title="Move up"
-              aria-label="Move up"
-              @click="emit('move', item, -1)"
-            >
-              <SvgIcon name="arrow-up" size="15" />
-            </button>
-            <button
-              class="tool-binding-action-button"
-              type="button"
-              :disabled="readonly || actionsDisabled(item) || idx === sortedItems.length - 1"
-              title="Move down"
-              aria-label="Move down"
-              @click="emit('move', item, 1)"
-            >
-              <SvgIcon name="arrow-down" size="15" />
-            </button>
-            <button
-              class="tool-binding-action-button danger"
-              type="button"
-              :disabled="readonly || actionsDisabled(item)"
-              title="Delete"
-              aria-label="Delete"
-              @click="emit('remove', item.id)"
-            >
-              <SvgIcon name="delete" size="15" />
-            </button>
-          </div>
-        </div>
+        <template v-if="showActions" #actions>
+          <button
+            class="tool-binding-action-button"
+            type="button"
+            :disabled="readonly || actionsDisabled(item) || idx === 0"
+            title="Move up"
+            aria-label="Move up"
+            @click="emit('move', item, -1)"
+          >
+            <SvgIcon name="arrow-up" size="15" />
+          </button>
+          <button
+            class="tool-binding-action-button"
+            type="button"
+            :disabled="readonly || actionsDisabled(item) || idx === sortedItems.length - 1"
+            title="Move down"
+            aria-label="Move down"
+            @click="emit('move', item, 1)"
+          >
+            <SvgIcon name="arrow-down" size="15" />
+          </button>
+          <button
+            class="tool-binding-action-button danger"
+            type="button"
+            :disabled="readonly || actionsDisabled(item)"
+            title="Delete"
+            aria-label="Delete"
+            @click="emit('remove', item.id)"
+          >
+            <SvgIcon name="delete" size="15" />
+          </button>
+        </template>
 
-        <div
-          :class="['tool-binding-body', openable && 'tool-binding-body--openable']"
-          :role="openable ? 'button' : undefined"
-          :tabindex="openable ? 0 : undefined"
-          @click="handleOpen(item)"
-          @keydown.enter.prevent="handleOpen(item)"
-          @keydown.space.prevent="handleOpen(item)"
-        >
-          <div class="tool-binding-body-main">
-            <div class="tool-binding-title-line">
-              <span
-                v-if="toolIsOutlet?.(item)"
-                class="status-dot"
-                :class="toolIsOnline?.(item) ? 'success' : 'danger'"
-                :title="toolIsOnline?.(item) ? 'Online' : 'Offline'"
-              />
-              <span class="tool-binding-title" :title="toolText(item)">
-                <span class="tool-binding-title__primary">
-                  <span class="tool-binding-title__name">{{ toolNameText(item) }}</span>
-                  <span v-if="toolAliasText(item)" class="muted tool-binding-title__alias">
-                    ({{ toolAliasText(item) }})
-                  </span>
-                </span>
-                <span v-if="toolTypeText(item)" class="tool-binding-title__type">
-                  <span class="tool-binding-title__separator">-</span>
-                  <ToolTypeBadge :type="toolTypeValue(item)" :typeTitle="toolTypeText(item)" />
-                </span>
-              </span>
-              <span v-if="isShadowed(item)" class="badge tool-binding-shadowed" :title="shadowedReason(item)">
-                Shadowed
-              </span>
-            </div>
-            <slot name="item-meta-extra" :item="item"></slot>
-            <slot name="item-footer" :item="item"></slot>
-          </div>
-        </div>
+        <template v-if="slots['item-meta-extra']" #meta>
+          <slot name="item-meta-extra" :item="item"></slot>
+        </template>
 
-        <slot name="item-secondary-actions" :item="item" :index="idx"></slot>
-      </div>
+        <template v-if="slots['item-footer']" #footer>
+          <slot name="item-footer" :item="item"></slot>
+        </template>
+
+        <template v-if="slots['item-secondary-actions']" #secondary>
+          <slot name="item-secondary-actions" :item="item" :index="idx"></slot>
+        </template>
+      </ToolBindingListItem>
     </TransitionGroup>
     <div v-else class="list">
       <p class="muted">{{ emptyText }}</p>
@@ -119,7 +96,7 @@
 <script setup lang="ts">
 import { computed, useSlots } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
+import ToolBindingListItem from '@/components/ToolBindingListItem.vue';
 
 type ToolBindingItem = {
   id: number;
@@ -234,114 +211,11 @@ const shadowedReason = (item: ToolBindingItem) =>
   container-type: inline-size;
 }
 
-.tool-binding-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px;
-  padding: 10px;
-}
-
-.tool-binding-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
 .tool-binding-enabled {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
   margin: 0;
-}
-
-.tool-binding-body {
-  min-width: 0;
-}
-
-.tool-binding-body-main {
-  min-width: 0;
-}
-
-.tool-binding-body--openable {
-  cursor: pointer;
-}
-
-.tool-binding-body--openable:hover .tool-binding-title__name {
-  text-decoration: underline;
-}
-
-.tool-binding-body--openable:focus-visible {
-  outline: 2px solid #4c8dff;
-  outline-offset: 2px;
-  border-radius: 6px;
-}
-
-.tool-binding-title-line {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 0;
-}
-
-.tool-binding-title {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-weight: 700;
-}
-
-.tool-binding-title__primary {
-  display: flex;
-  gap: 4px;
-}
-
-.tool-binding-title__primary,
-.tool-binding-title__name,
-.tool-binding-title__alias,
-.tool-binding-title__type {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-binding-title__name {
-  font-weight: 700;
-}
-
-.tool-binding-title__alias {
-  font-weight: 500;
-}
-
-.tool-binding-title__type {
-  font-size: 0.85rem;
-  font-weight: 400;
-}
-
-.tool-binding-title__separator {
-  display: none;
-  margin: 0 4px;
-}
-
-.tool-binding-shadowed {
-  flex: 0 0 auto;
-  font-size: 0.72rem;
-}
-
-.tool-binding-row--shadowed {
-  opacity: 0.68;
-}
-
-.tool-binding-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  min-width: 0;
 }
 
 .tool-binding-action-button {
@@ -358,57 +232,5 @@ const shadowedReason = (item: ToolBindingItem) =>
 .tool-bindings-move {
   transition: transform 160ms ease;
   will-change: transform;
-}
-
-@container (min-width: 560px) {
-  .tool-binding-row--with-controls {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-    align-items: center;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-controls {
-    display: contents;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-enabled {
-    grid-column: 1;
-    grid-row: 1;
-    align-self: center;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-body {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-title-line {
-    align-items: center;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-title {
-    flex-direction: row;
-    gap: 0;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-title__type {
-    font-size: inherit;
-    font-weight: 400;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-title__separator {
-    display: inline;
-  }
-
-  .tool-binding-row--with-controls .tool-binding-actions {
-    grid-column: 3;
-    grid-row: 1;
-    align-self: center;
-  }
-
-  .tool-binding-row--with-controls :slotted(*) {
-    grid-column: 4;
-    grid-row: 1;
-    align-self: center;
-  }
 }
 </style>

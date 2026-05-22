@@ -26,29 +26,29 @@
           <p v-else-if="!visibleTools.length" class="muted" style="margin: 0">No tools found.</p>
 
           <div v-else class="list picker-list">
-            <label
+            <ToolBindingListItem
               v-for="tool in visibleTools"
               :key="tool.id"
-              class="row picker-row"
+              :name="toolName(tool)"
+              :alias="toolAlias(tool)"
+              :type="tool.type"
+              :typeTitle="toolTypeName(tool)"
+              :isOutlet="tool.type === 'outlet'"
+              :isOnline="Boolean(tool.outlet_online)"
+              as="label"
               :class="{ disabled: isDisabled(tool.id) }"
-              style="gap: 10px; align-items: center"
             >
+              <template #leading>
               <input
+                class="picker-row__checkbox"
                 type="checkbox"
                 :disabled="saving || isDisabled(tool.id)"
                 :checked="selectedLocal.includes(tool.id)"
                 aria-label="Select tool"
                 @change="toggle(tool.id)"
               />
-              <div style="flex: 1; min-width: 0">
-                <div style="font-weight: 600">{{ tool.alias || tool.name || `Tool #${tool.id}` }}</div>
-                <div class="muted picker-tool-meta">
-                  <span>{{ tool.name || `Tool #${tool.id}` }}</span>
-                  <span aria-hidden="true">·</span>
-                  <ToolTypeBadge :tool="tool" />
-                </div>
-              </div>
-            </label>
+              </template>
+            </ToolBindingListItem>
           </div>
         </div>
 
@@ -75,7 +75,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, Teleport } from 'vue';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
-import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
+import ToolBindingListItem from '@/components/ToolBindingListItem.vue';
 
 type ToolOption = {
   id: number;
@@ -83,6 +83,7 @@ type ToolOption = {
   alias: string;
   type: string;
   type_title?: string | null;
+  outlet_online?: boolean | null;
 };
 
 const props = withDefaults(
@@ -119,7 +120,8 @@ const selectedLocal = computed(() => props.selected ?? []);
 const isDisabled = (id: number) => (props.disabledToolIds || []).includes(id);
 const normalize = (text: unknown) => String(text ?? '').trim().toLowerCase();
 const toolTypeName = (tool: ToolOption) => toolTypeLabel(tool);
-
+const toolName = (tool: ToolOption) => String(tool.name || '').trim() || `Tool #${tool.id}`;
+const toolAlias = (tool: ToolOption) => String(tool.alias || '').trim();
 const visibleTools = computed(() => {
   const q = normalize(query.value);
   const tools = props.tools || [];
@@ -173,6 +175,7 @@ watch(
 
 <style scoped>
 .tool-binding-picker {
+  container-type: inline-size;
   width: min(640px, 96vw);
   max-height: 90vh;
   overflow: hidden;
@@ -213,23 +216,14 @@ watch(
   margin-top: 0;
 }
 
-.picker-row.disabled {
+.disabled {
   opacity: 0.6;
 }
 
-.picker-tool-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 0.9rem;
-}
-
-.picker-tool-meta > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.picker-row__checkbox {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 @media (max-width: 720px) {

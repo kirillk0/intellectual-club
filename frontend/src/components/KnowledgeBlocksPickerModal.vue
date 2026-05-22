@@ -64,15 +64,20 @@
                 <p v-if="tagFilterError" class="error-text">{{ tagFilterError }}</p>
 
                 <div class="list picker-list">
-                  <label
+                  <KnowledgeBlockListItem
                     v-for="block in visibleBlocks"
                     :key="block.id"
-                    class="row picker-row"
-                    :class="{ disabled: isDisabled(block.id) }"
-                    style="gap: 10px; align-items: center"
+                    :name="block.name"
+                    :image="block.image"
+                    :meta="`${block.token_count ?? 0} tokens`"
+                    :version="block.version"
+                    :disabled="isDisabled(block.id)"
+                    as="label"
                   >
+                    <template #leading>
                     <input
                       v-if="selectionMode !== 'single'"
+                      class="picker-row__input"
                       type="checkbox"
                       :disabled="isDisabled(block.id)"
                       :checked="selectedLocal.includes(block.id)"
@@ -81,6 +86,7 @@
                     />
                     <input
                       v-else
+                      class="picker-row__input"
                       type="radio"
                       name="kb-select"
                       :disabled="isDisabled(block.id)"
@@ -88,15 +94,8 @@
                       @change="selectSingle(block.id)"
                       aria-label="Select block"
                     />
-                    <div style="flex: 1; min-width: 0">
-                      <div style="font-weight: 600">{{ block.name }}</div>
-                      <div class="muted" style="font-size: 0.9rem">
-                        {{ block.token_count ?? 0 }} tokens
-                      </div>
-                    </div>
-                    <ImageThumbnail :image="block.image" :label="block.name" :size="40" :hideWithoutImage="true" />
-                    <span v-if="versionBadgeText(block.version)" class="badge">{{ versionBadgeText(block.version) }}</span>
-                  </label>
+                    </template>
+                  </KnowledgeBlockListItem>
                 </div>
 
                 <p v-if="!visibleBlocks.length" class="muted">No blocks found.</p>
@@ -169,7 +168,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Teleport } from 'vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
-import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import type { KnowledgeBlock } from '@/types/api';
@@ -240,15 +239,6 @@ const confirmLabelWithCount = computed(() => {
   if (!selectedLocal.value.length) return base;
   return `${base} (${selectedLocal.value.length})`;
 });
-
-const versionBadgeText = (value: unknown) => {
-  if (value == null) return '';
-  const text = String(value).trim();
-  if (!text) return '';
-  if (/^v\\d+/i.test(text)) return text;
-  if (/^\\d+$/.test(text)) return `v${text}`;
-  return text;
-};
 
 const close = () => emit('update:open', false);
 
@@ -421,6 +411,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .knowledge-block-picker {
+  container-type: inline-size;
   width: min(880px, 96vw);
   height: min(90vh, 760px);
   max-height: 90vh;
@@ -489,8 +480,10 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
-.picker-row.disabled {
-  opacity: 0.6;
+.picker-row__input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 @media (max-width: 720px) {
