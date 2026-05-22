@@ -147,7 +147,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
   end
 
   identities do
-    identity(:unique_external_id, [:external_id])
+    identity(:unique_owner_external_id, [:owner_id, :external_id])
   end
 
   calculations do
@@ -243,6 +243,20 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       argument :tag_bindings, {:array, :map} do
         allow_nil?(true)
         public?(true)
+      end
+
+      change(relate_actor(:owner))
+      change({NormalizeVersion, []})
+      change({NormalizeKnowledgeBlockFields, []})
+      change({SetTokenCount, []})
+      change(&maybe_manage_tag_bindings/2)
+    end
+
+    create :import_markdown do
+      accept([:external_id, :name, :version, :content, :variables])
+
+      argument :tag_bindings, {:array, :map} do
+        allow_nil?(true)
       end
 
       change(relate_actor(:owner))

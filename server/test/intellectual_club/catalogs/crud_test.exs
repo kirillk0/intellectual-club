@@ -89,6 +89,54 @@ defmodule IntellectualClub.Catalogs.CrudTest do
     assert updated.variables == %{"name" => "Bob", "company" => "42"}
   end
 
+  test "knowledge block external_id is unique per owner" do
+    %{user: actor} = user_fixture()
+    %{user: other_actor} = user_fixture()
+    external_id = "11111111-1111-4111-8111-111111111111"
+
+    block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :import_markdown,
+        %{
+          external_id: external_id,
+          name: "Shared source",
+          content: "source"
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    other_block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :import_markdown,
+        %{
+          external_id: external_id,
+          name: "Imported copy",
+          content: "copy"
+        },
+        actor: other_actor
+      )
+      |> Ash.create!(actor: other_actor)
+
+    assert block.external_id == other_block.external_id
+    assert block.owner_id != other_block.owner_id
+
+    assert {:error, _error} =
+             KnowledgeBlock
+             |> Ash.Changeset.for_create(
+               :import_markdown,
+               %{
+                 external_id: external_id,
+                 name: "Duplicate",
+                 content: "duplicate"
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+  end
+
   test "knowledge tags store full_name based on parent" do
     %{user: actor} = user_fixture()
 

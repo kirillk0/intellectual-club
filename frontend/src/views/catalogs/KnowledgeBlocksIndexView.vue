@@ -4,6 +4,22 @@
       <div class="toolbar fill">
         <strong>Knowledge Blocks</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
+          <button
+            v-if="transferAvailable"
+            type="button"
+            @click="openExportModal"
+            :disabled="loading || exportSaving || !visibleBlocks.length"
+          >
+            Export
+          </button>
+          <button
+            v-if="transferAvailable"
+            type="button"
+            @click="openImportPicker"
+            :disabled="importBusy"
+          >
+            {{ importPreviewLoading ? 'Loading…' : 'Import' }}
+          </button>
           <button class="primary" type="button" @click="createBlock" :disabled="loading">
             New block
           </button>
@@ -33,6 +49,8 @@
               Search
               <input v-model="search" type="search" class="full" placeholder="Search blocks" />
             </label>
+            <p v-if="transferStatus" class="muted transfer-message">{{ transferStatus }}</p>
+            <p v-if="transferError" class="error-text transfer-message">{{ transferError }}</p>
           </section>
 
           <p v-if="loading" class="muted">Loading…</p>
@@ -48,11 +66,21 @@
                 @click="openBlock(b.id)"
               >
                 <div class="catalog-row__main">
-                <div class="catalog-row__title">
-                  {{ b.name }}
-                  <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
-                  <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
-                </div>
+                  <div class="catalog-row__title">
+                    {{ b.name }}
+                    <span
+                      v-if="b.shared_incoming"
+                      class="share-indicator"
+                      title="Shared with you"
+                      aria-label="Shared with you"
+                    ><SvgIcon name="share-incoming" /></span>
+                    <span
+                      v-else-if="b.shared_outgoing"
+                      class="share-indicator"
+                      title="Shared with groups"
+                      aria-label="Shared with groups"
+                    ><SvgIcon name="share-outgoing" /></span>
+                  </div>
                   <div class="catalog-row__subtitle">
                     {{ formatVersion(b.version) || 'No version' }}
                   </div>
@@ -105,15 +133,54 @@
         #
       </button>
     </div>
+
+    <input
+      ref="importInputRef"
+      class="hidden-file-input"
+      type="file"
+      multiple
+      accept=".md,.markdown,.zip,text/markdown,application/zip"
+      aria-label="Import Markdown files"
+      @change="handleImportFilesChange"
+    />
+
+    <KnowledgeBlocksMarkdownExportModal
+      :open="exportModalOpen"
+      :blocks="visibleBlocks"
+      :saving="exportSaving"
+      :error="exportError"
+      @update:open="setExportModalOpen"
+      @export="exportSelectedBlocks"
+    />
+
+    <KnowledgeBlocksMarkdownImportModal
+      :open="importModalOpen"
+      :items="importPreviewItems"
+      :saving="importSaving"
+      :error="importError"
+      @update:open="setImportModalOpen"
+      @import="confirmImport"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { getApiErrorMessage } from '@/api/client';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import KnowledgeBlocksMarkdownExportModal from '@/components/KnowledgeBlocksMarkdownExportModal.vue';
+import KnowledgeBlocksMarkdownImportModal from '@/components/KnowledgeBlocksMarkdownImportModal.vue';
 import KnowledgeTagsManagerPanel from '@/components/KnowledgeTagsManagerPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import {
+  exportKnowledgeBlocksMarkdownArchive,
+  importKnowledgeBlocksMarkdown,
+  previewKnowledgeBlocksMarkdownImport,
+  type MarkdownImportAction,
+  type MarkdownImportItem,
+  type MarkdownImportSummary,
+} from '@/api/knowledgeBlocksMarkdown';
 import { parseImageAsset } from '@/features/media/image';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
@@ -136,11 +203,23 @@ const router = useRouter();
 const loading = ref(false);
 const error = ref<string | null>(null);
 const blocks = ref<KnowledgeBlockRow[]>([]);
+const transferError = ref<string | null>(null);
+const transferStatus = ref<string | null>(null);
 
 const search = ref(String(route.query.q || ''));
 
 const isMobile = ref(false);
 const tagsOverlayOpen = ref(false);
+const importInputRef = ref<HTMLInputElement | null>(null);
+const exportModalOpen = ref(false);
+const exportSaving = ref(false);
+const exportError = ref<string | null>(null);
+const importModalOpen = ref(false);
+const importPreviewLoading = ref(false);
+const importSaving = ref(false);
+const importError = ref<string | null>(null);
+const importFiles = ref<File[]>([]);
+const importPreviewItems = ref<MarkdownImportItem[]>([]);
 
 function updateIsMobile() {
   isMobile.value = window.matchMedia('(max-width: 860px)').matches;
@@ -157,6 +236,8 @@ function closeTagsOverlay() {
 const selectedTagId = computed(() => toIntId(route.query.tag as any));
 const selectedNoTags = computed(() => parseBooleanQuery(route.query.no_tags));
 const hasActiveTagFilter = computed(() => Boolean(selectedTagId.value) || selectedNoTags.value);
+const transferAvailable = computed(() => Boolean(selectedTagId.value) && !selectedNoTags.value);
+const importBusy = computed(() => importPreviewLoading.value || importSaving.value);
 
 function parseBooleanQuery(value: unknown): boolean {
   const source = Array.isArray(value) ? value[0] : value;
@@ -187,8 +268,8 @@ watch(
 function formatVersion(value: string) {
   const text = String(value || '').trim();
   if (!text) return '';
-  if (/^v\\d+/i.test(text)) return text;
-  if (/^\\d+$/.test(text)) return `v${text}`;
+  if (/^v\d+/i.test(text)) return text;
+  if (/^\d+$/.test(text)) return `v${text}`;
   return text;
 }
 
@@ -208,6 +289,160 @@ function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
 }
 
 const visibleBlocks = computed(() => blocks.value);
+
+function describeTransferError(error: unknown, fallback: string) {
+  return getApiErrorMessage(error, fallback);
+}
+
+function pluralize(count: number, singular: string, plural: string) {
+  return count === 1 ? singular : plural;
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function setExportModalOpen(open: boolean) {
+  exportModalOpen.value = open;
+  if (!open && !exportSaving.value) exportError.value = null;
+}
+
+function openExportModal() {
+  exportError.value = null;
+  transferError.value = null;
+  transferStatus.value = null;
+  exportModalOpen.value = true;
+}
+
+async function exportSelectedBlocks(blockIds: number[]) {
+  const tagId = selectedTagId.value;
+  if (!tagId || !blockIds.length) return;
+
+  exportSaving.value = true;
+  exportError.value = null;
+  transferError.value = null;
+  transferStatus.value = null;
+
+  try {
+    const archive = await exportKnowledgeBlocksMarkdownArchive(tagId, blockIds);
+    saveBlob(archive.blob, archive.filename);
+    exportModalOpen.value = false;
+    transferStatus.value = `Exported ${blockIds.length} ${pluralize(blockIds.length, 'block', 'blocks')}.`;
+  } catch (e) {
+    console.error(e);
+    exportError.value = describeTransferError(e, 'Failed to export knowledge blocks.');
+  } finally {
+    exportSaving.value = false;
+  }
+}
+
+function openImportPicker() {
+  if (!transferAvailable.value || importBusy.value) return;
+  transferError.value = null;
+  transferStatus.value = null;
+  importError.value = null;
+  if (importInputRef.value) importInputRef.value.value = '';
+  importInputRef.value?.click();
+}
+
+async function handleImportFilesChange(event: Event) {
+  const input = event.target instanceof HTMLInputElement ? event.target : null;
+  const files = Array.from(input?.files || []);
+  if (input) input.value = '';
+  if (!files.length) return;
+  await previewImportFiles(files);
+}
+
+async function previewImportFiles(files: File[]) {
+  const tagId = selectedTagId.value;
+  if (!tagId) return;
+
+  importPreviewLoading.value = true;
+  importError.value = null;
+  transferError.value = null;
+  transferStatus.value = null;
+  importFiles.value = files;
+  importPreviewItems.value = [];
+
+  try {
+    const preview = await previewKnowledgeBlocksMarkdownImport(tagId, files);
+    importPreviewItems.value = preview.items || [];
+
+    if (importPreviewItems.value.length === 1 && !importPreviewItems.value[0]?.existing_block) {
+      const item = importPreviewItems.value[0];
+      await commitImport({ [item.key]: 'import' }, '', files);
+      return;
+    }
+
+    importModalOpen.value = true;
+  } catch (e) {
+    console.error(e);
+    transferError.value = describeTransferError(e, 'Failed to inspect import files.');
+    clearImportState();
+  } finally {
+    importPreviewLoading.value = false;
+  }
+}
+
+function setImportModalOpen(open: boolean) {
+  importModalOpen.value = open;
+  if (!open && !importSaving.value) clearImportState();
+}
+
+function clearImportState() {
+  importFiles.value = [];
+  importPreviewItems.value = [];
+  importError.value = null;
+}
+
+function confirmImport(payload: { version: string; decisions: Record<string, MarkdownImportAction> }) {
+  void commitImport(payload.decisions, payload.version);
+}
+
+async function commitImport(
+  decisions: Record<string, MarkdownImportAction>,
+  version: string,
+  files = importFiles.value
+) {
+  const tagId = selectedTagId.value;
+  if (!tagId || !files.length) return;
+
+  importSaving.value = true;
+  importError.value = null;
+  transferError.value = null;
+  transferStatus.value = null;
+
+  try {
+    const summary = await importKnowledgeBlocksMarkdown({ tagId, files, version, decisions });
+    importModalOpen.value = false;
+    clearImportState();
+    transferStatus.value = formatImportSummary(summary);
+    await loadBlocks();
+  } catch (e) {
+    console.error(e);
+    const message = describeTransferError(e, 'Failed to import knowledge blocks.');
+    if (importModalOpen.value) importError.value = message;
+    else transferError.value = message;
+  } finally {
+    importSaving.value = false;
+  }
+}
+
+function formatImportSummary(summary: MarkdownImportSummary) {
+  const changed = Number(summary.imported || 0);
+  const skipped = Number(summary.skipped || 0);
+  const parts = [`Imported ${changed} ${pluralize(changed, 'block', 'blocks')}`];
+  if (skipped) parts.push(`skipped ${skipped}`);
+  return `${parts.join(', ')}.`;
+}
 
 function selectTag(id: number) {
   const current = selectedTagId.value;
@@ -315,10 +550,29 @@ watch(
   },
   { immediate: true }
 );
+
+watch(
+  () => [selectedTagId.value, selectedNoTags.value],
+  () => {
+    if (!transferAvailable.value) {
+      exportModalOpen.value = false;
+      importModalOpen.value = false;
+      clearImportState();
+    }
+  }
+);
 </script>
 
 <style scoped>
 .share-indicator {
   margin-left: 8px;
+}
+
+.transfer-message {
+  margin: 0;
+}
+
+.hidden-file-input {
+  display: none;
 }
 </style>

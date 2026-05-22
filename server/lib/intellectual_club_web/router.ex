@@ -157,6 +157,9 @@ defmodule IntellectualClubWeb.Router do
     patch "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :update
     delete "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :delete
 
+    post "/knowledge-blocks/markdown-import/preview", KnowledgeBlocksMarkdownController, :preview
+    post "/knowledge-blocks/markdown-import", KnowledgeBlocksMarkdownController, :import
+
     get "/tools/types", ToolsController, :types
     get "/llm-provider-types", LlmProvidersController, :types
     post "/tools/:id/discover", ToolsController, :discover
@@ -180,6 +183,8 @@ defmodule IntellectualClubWeb.Router do
     get "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :show
     post "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :update
     delete "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :delete
+
+    post "/knowledge-blocks/markdown-export", KnowledgeBlocksMarkdownController, :export
   end
 
   scope "/api/ash" do
