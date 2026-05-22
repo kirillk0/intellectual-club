@@ -10,7 +10,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
 
   @opaque_sequence 10_000
   @raw_reasoning_offset 1_000
-  @retryable_http_status_codes MapSet.new([429, 502])
+  @retryable_http_status_codes MapSet.new([429, 502, 503])
   @retryable_provider_error_codes MapSet.new([
                                     "server_is_overloaded",
                                     "rate_limit_exceeded",
@@ -76,7 +76,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
       if response.status >= 400 do
         body_text = read_full_text(response)
         response_json = safe_json_decode(body_text)
-        raw_response = normalize_raw_response(response_json, body_text)
+        raw_response = normalize_raw_response(response_json, body_text, response.status)
 
         emit.(
           {:response_error,
@@ -1064,18 +1064,27 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
     end
   end
 
-  defp normalize_raw_response(value, fallback_text) do
+  defp normalize_raw_response(value, fallback_text, status_code) do
     cond do
       is_map(value) ->
-        value
+        maybe_put_status_code(value, status_code)
 
       is_nil(value) ->
         %{"raw_text" => String.trim(fallback_text || "")}
+        |> maybe_put_status_code(status_code)
 
       true ->
         %{"raw" => value}
+        |> maybe_put_status_code(status_code)
     end
   end
+
+  defp maybe_put_status_code(raw_response, status_code)
+       when is_map(raw_response) and is_integer(status_code) do
+    Map.put_new(raw_response, "status_code", status_code)
+  end
+
+  defp maybe_put_status_code(raw_response, _status_code), do: raw_response
 
   defp read_full_text(%Response{} = response) do
     response.body

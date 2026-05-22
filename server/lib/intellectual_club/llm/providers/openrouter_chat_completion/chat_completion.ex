@@ -9,7 +9,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   alias Req.Response
 
-  @retryable_http_status_codes MapSet.new([429, 502])
+  @retryable_http_status_codes MapSet.new([429, 502, 503])
 
   @non_append_string_keys ~w(format role name id type tool_call_id)
   @app_referer "https://github.com/kirillk0/intellectual-club"
@@ -67,7 +67,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
       if response.status >= 400 do
         body_text = read_full_text(response)
         response_json = safe_json_decode(body_text)
-        raw_response = normalize_raw_response(response_json, body_text)
+        raw_response = normalize_raw_response(response_json, body_text, response.status)
 
         emit.(
           {:response_error,
@@ -473,18 +473,27 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   defp normalize_stream_tool_call(_tool_call, _index), do: nil
 
-  defp normalize_raw_response(value, fallback_text) do
+  defp normalize_raw_response(value, fallback_text, status_code) do
     cond do
       is_map(value) ->
-        value
+        maybe_put_status_code(value, status_code)
 
       is_nil(value) ->
         %{"raw_text" => String.trim(fallback_text || "")}
+        |> maybe_put_status_code(status_code)
 
       true ->
         %{"raw" => value}
+        |> maybe_put_status_code(status_code)
     end
   end
+
+  defp maybe_put_status_code(raw_response, status_code)
+       when is_map(raw_response) and is_integer(status_code) do
+    Map.put_new(raw_response, "status_code", status_code)
+  end
+
+  defp maybe_put_status_code(raw_response, _status_code), do: raw_response
 
   defp extract_error_summary(%{"error" => error} = _json, _fallback) when is_map(error) do
     error

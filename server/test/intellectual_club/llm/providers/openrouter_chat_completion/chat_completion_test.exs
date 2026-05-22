@@ -105,6 +105,37 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     assert error.error_text == "Provider quota is temporarily exhausted."
   end
 
+  test "includes HTTP status in non-JSON error raw response and marks 503 retryable" do
+    body = "upstream connect error or disconnect/reset before headers"
+
+    scripts = %{
+      "/chat/completions" => [
+        {503, [body]}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: @request_payload,
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == 503
+    assert error.retryable == true
+    assert error.error_kind == "http"
+    assert error.error_text == body
+
+    assert error.raw_response == %{
+             "raw_text" => body,
+             "status_code" => 503
+           }
+  end
+
   defp run_and_capture_error!(opts) when is_map(opts) do
     parent = self()
 
