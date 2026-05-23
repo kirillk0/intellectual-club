@@ -66,21 +66,13 @@ defmodule IntellectualClub.Chat.ListingStats do
         }
       end)
     end)
-    |> Map.put(:no_bot_last_activity_at, latest_no_bot_chat_activity_at(actor))
+    |> Map.put(:no_bot_last_activity_at, no_bot_last_activity_at(actor))
   end
 
   def sidebar(_actor), do: empty_sidebar_stats()
 
-  defp empty_sidebar_stats do
-    %{
-      total_chat_count: 0,
-      no_bot_chat_count: 0,
-      no_bot_last_activity_at: nil,
-      bot_stats: []
-    }
-  end
-
-  defp latest_no_bot_chat_activity_at(actor) do
+  @spec no_bot_last_activity_at(any()) :: DateTime.t() | NaiveDateTime.t() | nil
+  def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id))
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
@@ -90,6 +82,17 @@ defmodule IntellectualClub.Chat.ListingStats do
       [%Chat{} = chat] -> chat.updated_at || chat.created_at
       _ -> nil
     end
+  end
+
+  def no_bot_last_activity_at(_actor), do: nil
+
+  defp empty_sidebar_stats do
+    %{
+      total_chat_count: 0,
+      no_bot_chat_count: 0,
+      no_bot_last_activity_at: nil,
+      bot_stats: []
+    }
   end
 
   defp normalize_count(value) when is_integer(value) and value >= 0, do: value

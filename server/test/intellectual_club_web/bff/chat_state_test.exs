@@ -108,6 +108,15 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     config = create_configuration!(actor, provider, "model-x", 8192)
     bot = create_bot!(actor, "Agent bot", 75)
 
+    no_bot_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "No bot options chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     chat =
       Chat
       |> Ash.Changeset.for_create(
@@ -136,6 +145,12 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert is_binary(bot_payload["created_at"])
     assert is_binary(bot_payload["updated_at"])
     assert bot_payload["sort_activity_at"] == bot_payload["updated_at"]
+
+    assert get_in(payload, ["options", "no_bot_last_activity_at"]) ==
+             IntellectualClubWeb.Bff.Serializer.datetime_iso(
+               no_bot_chat.updated_at || no_bot_chat.created_at
+             )
+
     assert cfg_payload["context_length"] == 8192
   end
 

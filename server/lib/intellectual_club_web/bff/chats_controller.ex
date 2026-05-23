@@ -634,6 +634,8 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           Enum.map(tool_resolution.effective_tool_bindings, &Serializer.active_tool_binding/1),
         missing_required_per_user_tool_aliases: tool_resolution.missing_aliases,
         options: %{
+          no_bot_last_activity_at:
+            Serializer.datetime_iso(ListingStats.no_bot_last_activity_at(actor)),
           bots: Enum.map(bots, &Serializer.bot_option/1),
           llm_configurations: Enum.map(llm_configurations, &Serializer.configuration_option/1),
           knowledge_blocks: Enum.map(knowledge_blocks, &Serializer.knowledge_block_option/1),

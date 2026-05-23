@@ -19,6 +19,7 @@ type Params = {
   chatNote: Ref<string>;
   canEdit: ComputedRef<boolean>;
   bots: Ref<Bot[]>;
+  noBotSortActivityAt: Ref<string | null>;
   llmConfigurations: Ref<LlmConfiguration[]>;
   activeGenerationId: Ref<number | null>;
   menuOpen: Ref<boolean>;
@@ -239,9 +240,20 @@ export function useChatHeaderControls(params: Params) {
   const creatingChat = ref(false);
   const newChatModalOpen = ref(false);
   const newChatBotValue = ref<number | ''>('');
+  const noBotSortActivityAt = computed(() => {
+    if (params.noBotSortActivityAt.value) return params.noBotSortActivityAt.value;
+    if (params.chat.value?.bot_id != null) return null;
+    return params.chat.value?.updated_at ?? params.chat.value?.created_at ?? null;
+  });
 
   const createChatBotOptions = computed(() => [
-    { id: '', name: 'No bot' },
+    {
+      id: '',
+      name: 'No bot',
+      sort_activity_at: noBotSortActivityAt.value,
+      updated_at: noBotSortActivityAt.value,
+      created_at: noBotSortActivityAt.value,
+    },
     ...(params.bots.value || []).map((bot) => ({
       id: bot.id,
       name: bot.name,

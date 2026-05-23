@@ -83,6 +83,7 @@ export function useChatViewModel() {
   const compiledPromptText = ref('');
 
   const bots = ref<Bot[]>([]);
+  const noBotSortActivityAt = ref<string | null>(null);
   const llmConfigurations = ref<LlmConfiguration[]>([]);
   const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
   const toolLibrary = ref<ToolInstanceOption[]>([]);
@@ -128,6 +129,7 @@ export function useChatViewModel() {
     chatNote,
     canEdit,
     bots,
+    noBotSortActivityAt,
     llmConfigurations,
     activeGenerationId,
     menuOpen: ui.menuOpen,
@@ -232,6 +234,7 @@ export function useChatViewModel() {
     compiledPromptText.value = payload.compiled_prompt_text || '';
 
     bots.value = payload.options?.bots || [];
+    noBotSortActivityAt.value = payload.options?.no_bot_last_activity_at ?? null;
     llmConfigurations.value = payload.options?.llm_configurations || [];
     knowledgeBlocks.value = payload.options?.knowledge_blocks || [];
     toolLibrary.value = payload.options?.tool_instances || [];

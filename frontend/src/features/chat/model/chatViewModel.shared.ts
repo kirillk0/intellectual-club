@@ -61,6 +61,7 @@ export type ChatSettingsStatePayload = {
   active_tool_bindings: ActiveToolBinding[];
   missing_required_per_user_tool_aliases: string[];
   options: {
+    no_bot_last_activity_at?: string | null;
     bots: Bot[];
     llm_configurations: LlmConfiguration[];
     knowledge_blocks: KnowledgeBlock[];
