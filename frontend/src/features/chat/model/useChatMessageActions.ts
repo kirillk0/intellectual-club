@@ -46,7 +46,6 @@ export type OpenWorkingState = {
   steps: ChatMessageStep[];
   selectedStepId: number | null;
   selectedStep: ChatMessageStep | null;
-  selectedLatest: boolean;
   open: boolean;
   loading: boolean;
   error: string;
@@ -129,12 +128,6 @@ export function useChatMessageActions(params: Params) {
   const replaceBranch = (nextBranch: ChatBranchMessage[] | null | undefined) => {
     params.branch.value = nextBranch || [];
     clearWorking();
-  };
-
-  const isLatestStepId = (steps: ChatMessageStep[], selectedStepId: number | null | undefined) => {
-    if (!selectedStepId || !steps.length) return true;
-    const latest = [...steps].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).at(-1);
-    return latest?.id === selectedStepId;
   };
 
   const isBookmarkingMessage = (messageId: number | null | undefined) => {
@@ -270,7 +263,6 @@ export function useChatMessageActions(params: Params) {
         steps: payload.steps || [],
         selectedStepId,
         selectedStep: payload.step || null,
-        selectedLatest: stepId === 'latest' || isLatestStepId(payload.steps || [], selectedStepId),
         open: true,
         loading: false,
         error: '',
@@ -303,7 +295,6 @@ export function useChatMessageActions(params: Params) {
       steps: current?.messageId === id ? current.steps : [],
       selectedStepId: current?.messageId === id ? current.selectedStepId : null,
       selectedStep: current?.messageId === id ? current.selectedStep : null,
-      selectedLatest: true,
       open: false,
       loading: true,
       error: '',
@@ -321,17 +312,32 @@ export function useChatMessageActions(params: Params) {
     const state = openWorking.value;
     if (!state || state.messageId !== messageId) return null;
     if (!state.open) return null;
-    if (state.selectedLatest) return 'latest';
     return state.selectedStepId && state.selectedStepId > 0 ? String(state.selectedStepId) : 'latest';
   };
 
   const applyWorkingPoll = (messageId: number, payload: PollResponse['working_open']) => {
     if (!payload || openWorking.value?.messageId !== messageId) return;
     if (!openWorking.value.open) return;
+    if (openWorking.value.loading) return;
+
+    const current = openWorking.value;
+    const selectedStepId = payload.selected_step_id ?? payload.step?.id ?? current.selectedStepId;
+    const steps = Array.isArray(payload.steps) ? payload.steps : current.steps;
+    if (current.selectedStepId && selectedStepId && selectedStepId !== current.selectedStepId) {
+      openWorking.value = {
+        ...current,
+        steps,
+        loading: false,
+        error: '',
+      };
+      return;
+    }
+
     openWorking.value = {
-      ...openWorking.value,
-      selectedStepId: payload.selected_step_id ?? payload.step?.id ?? openWorking.value.selectedStepId,
-      selectedStep: payload.step || openWorking.value.selectedStep,
+      ...current,
+      steps,
+      selectedStepId,
+      selectedStep: payload.step || current.selectedStep,
       loading: false,
       error: '',
     };

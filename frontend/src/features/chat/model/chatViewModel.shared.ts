@@ -88,6 +88,7 @@ export type PollResponse = {
   working?: ChatBranchMessage['working'];
   working_open?: {
     step_count?: number | null;
+    steps?: ChatMessageStep[] | null;
     selected_step_id?: number | null;
     step?: ChatMessageStep | null;
   } | null;

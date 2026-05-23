@@ -53,6 +53,12 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     assert is_map(get_in(open_payload, ["working_open", "step"]))
     assert get_in(open_payload, ["working_open", "step", "finished_at"]) == nil
+    assert is_list(get_in(open_payload, ["working_open", "steps"]))
+
+    assert get_in(open_payload, ["working_open", "selected_step_id"]) in Enum.map(
+             get_in(open_payload, ["working_open", "steps"]),
+             & &1["id"]
+           )
 
     Process.sleep(40)
 

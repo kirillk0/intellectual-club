@@ -899,12 +899,12 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       selected_step_id: map_get(runtime_step, :id, "id"),
       step: runtime_step
     }
-    |> maybe_put_step_count(message_id, actor)
+    |> maybe_put_step_index(message_id, actor, runtime_step)
   end
 
   defp working_open_latest(message_id, actor, _runtime_step) do
     case ChatBranchPayload.working_payload(message_id, nil, actor) do
-      {:ok, payload} -> Map.take(payload, [:step_count, :selected_step_id, :step])
+      {:ok, payload} -> Map.take(payload, [:step_count, :steps, :selected_step_id, :step])
       {:error, _error} -> nil
     end
   end
@@ -915,24 +915,54 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         selected_step_id: step_id,
         step: runtime_step
       }
-      |> maybe_put_step_count(message_id, actor)
+      |> maybe_put_step_index(message_id, actor, runtime_step)
     else
       case ChatBranchPayload.working_payload(message_id, step_id, actor) do
-        {:ok, payload} -> Map.take(payload, [:step_count, :selected_step_id, :step])
-        {:error, _error} -> nil
+        {:ok, payload} ->
+          payload
+          |> Map.take([:selected_step_id, :step])
+          |> put_step_index(Map.get(payload, :steps, []), runtime_step)
+
+        {:error, _error} ->
+          nil
       end
     end
   end
 
-  defp maybe_put_step_count(payload, message_id, actor) when is_map(payload) do
+  defp maybe_put_step_index(payload, message_id, actor, runtime_step) when is_map(payload) do
     case ChatBranchPayload.working_payload(message_id, nil, actor) do
       {:ok, working_payload} ->
-        Map.put(payload, :step_count, Map.get(working_payload, :step_count))
+        put_step_index(payload, Map.get(working_payload, :steps, []), runtime_step)
 
       {:error, _error} ->
-        payload
+        put_step_index(payload, [], runtime_step)
     end
   end
+
+  defp put_step_index(payload, steps, runtime_step) when is_map(payload) and is_list(steps) do
+    steps = upsert_runtime_step_summary(steps, runtime_step)
+
+    payload
+    |> Map.put(:steps, steps)
+    |> Map.put(:step_count, length(steps))
+  end
+
+  defp upsert_runtime_step_summary(steps, runtime_step)
+       when is_list(steps) and is_map(runtime_step) do
+    runtime_summary = Serializer.working_step_summary(runtime_step)
+    runtime_sequence = Map.get(runtime_summary, :sequence)
+    runtime_id = Map.get(runtime_summary, :id)
+
+    steps
+    |> Enum.reject(fn summary ->
+      (not is_nil(runtime_sequence) and Map.get(summary, :sequence) == runtime_sequence) or
+        (not is_nil(runtime_id) and Map.get(summary, :id) == runtime_id)
+    end)
+    |> Kernel.++([runtime_summary])
+    |> Enum.sort_by(fn summary -> Map.get(summary, :sequence) || 0 end)
+  end
+
+  defp upsert_runtime_step_summary(steps, _runtime_step) when is_list(steps), do: steps
 
   defp parse_working_poll_request(nil), do: :none
   defp parse_working_poll_request(""), do: :latest
