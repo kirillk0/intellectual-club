@@ -1,7 +1,14 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="close">
-      <div class="modal knowledge-block-picker" role="dialog" aria-modal="true">
+  <ModalWindow
+    :open="open"
+    backdrop-class="modal-backdrop--mobile-stretch"
+    modal-class="knowledge-block-picker"
+    :aria-label="title"
+    :submit-disabled="selectionMode === 'single' || !selectedLocal.length"
+    submit-shortcut="auto"
+    @cancel="close"
+    @submit="confirm"
+  >
         <div class="picker-header">
           <strong>{{ title }}</strong>
           <button type="button" aria-label="Close" @click="close">Close</button>
@@ -159,16 +166,14 @@
             Clear selection
           </button>
         </div>
-      </div>
-    </div>
-  </Teleport>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { Teleport } from 'vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import type { KnowledgeBlock } from '@/types/api';
@@ -410,7 +415,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.knowledge-block-picker {
+:global(.knowledge-block-picker) {
   container-type: inline-size;
   width: min(880px, 96vw);
   height: min(90vh, 760px);
@@ -487,13 +492,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 720px) {
-  .modal-backdrop {
+  :global(.modal-backdrop--mobile-stretch) {
     padding: 0;
     align-items: stretch;
     justify-content: stretch;
   }
 
-  .knowledge-block-picker {
+  :global(.knowledge-block-picker) {
     width: 100%;
     height: calc(var(--app-vh, 1vh) * 100);
     max-height: calc(var(--app-vh, 1vh) * 100);

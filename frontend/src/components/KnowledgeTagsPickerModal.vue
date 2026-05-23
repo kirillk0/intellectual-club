@@ -1,7 +1,11 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="close">
-      <div class="modal knowledge-tag-picker" role="dialog" aria-modal="true" aria-label="Add tag">
+  <ModalWindow
+    :open="open"
+    backdrop-class="modal-backdrop--mobile-stretch"
+    modal-class="knowledge-tag-picker"
+    aria-label="Add tag"
+    @cancel="close"
+  >
         <div class="picker-header">
           <strong>{{ title }}</strong>
           <button type="button" aria-label="Close" @click="close">Close</button>
@@ -26,15 +30,13 @@
         <div class="modal-actions">
           <button type="button" @click="close">Done</button>
         </div>
-      </div>
-    </div>
-  </Teleport>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { Teleport } from 'vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -87,7 +89,7 @@ function handleSelect(tagId: number) {
 </script>
 
 <style scoped>
-.knowledge-tag-picker {
+:global(.knowledge-tag-picker) {
   width: min(720px, 96vw);
   max-height: 90vh;
   overflow: hidden;
@@ -110,13 +112,13 @@ function handleSelect(tagId: number) {
 }
 
 @media (max-width: 720px) {
-  .modal-backdrop {
+  :global(.modal-backdrop--mobile-stretch) {
     padding: 0;
     align-items: stretch;
     justify-content: stretch;
   }
 
-  .knowledge-tag-picker {
+  :global(.knowledge-tag-picker) {
     width: 100%;
     height: calc(var(--app-vh, 1vh) * 100);
     max-height: calc(var(--app-vh, 1vh) * 100);

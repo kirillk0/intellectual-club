@@ -1,109 +1,111 @@
 <template>
-  <transition name="fade">
-    <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-      <div class="modal step-details-modal">
-        <h3 style="margin: 0">Step {{ stepLabel }}</h3>
+  <ModalWindow
+    :open="open"
+    modal-class="step-details-modal"
+    :aria-label="`Step ${stepLabel} details`"
+    @cancel="emit('close')"
+  >
+    <h3 style="margin: 0">Step {{ stepLabel }}</h3>
 
-        <div class="step-tabs" role="tablist" aria-label="Step details tabs">
-          <button
-            v-for="tab in tabs"
-            :key="tab.id"
-            class="step-tab"
-            :class="{ active: activeTab === tab.id }"
-            type="button"
-            role="tab"
-            :aria-selected="activeTab === tab.id"
-            @click="activeTab = tab.id"
-          >
-            {{ tab.label }}
-          </button>
-        </div>
-
-        <div class="step-panel">
-          <template v-if="activeTab === 'billing'">
-            <div class="step-info-row">
-              <span class="step-info-label">Input tokens</span>
-              <span>{{ formatMetric(step?.input_tokens) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Cached input tokens</span>
-              <span>{{ formatMetric(step?.cached_input_tokens) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Output tokens</span>
-              <span>{{ formatMetric(step?.output_tokens) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Reasoning tokens</span>
-              <span>{{ formatMetric(step?.reasoning_tokens) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Time to first token</span>
-              <span>{{ formatDurationMs(step?.time_to_first_token_ms) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Output speed (TPS)</span>
-              <span>{{ formatTokensPerSecond(step?.tokens_per_second) }}</span>
-            </div>
-            <div class="step-info-row">
-              <span class="step-info-label">Cost (USD)</span>
-              <span>{{ formatCost(step?.cost) }}</span>
-            </div>
-          </template>
-
-          <template v-else-if="activeTab === 'request'">
-            <div v-if="requestLoading" class="muted">Loading payload…</div>
-            <div v-else-if="requestErrorText" class="error-text">{{ requestErrorText }}</div>
-            <JsonTreeView
-              v-else
-              class="step-payload"
-              :value="requestPayloadValue"
-              :download-filename="requestDownloadFilename"
-            />
-          </template>
-
-          <template v-else-if="activeTab === 'response'">
-            <div v-if="responseLoading" class="muted">Loading payload…</div>
-            <div v-else-if="responseErrorText" class="error-text">{{ responseErrorText }}</div>
-            <JsonTreeView
-              v-else
-              class="step-payload"
-              :value="responsePayloadValue"
-              :download-filename="responseDownloadFilename"
-            />
-          </template>
-
-          <template v-else>
-            <div class="step-actions-panel">
-              <p v-if="showGeneratingNote" class="muted step-actions-note">
-                Retry from this step is available after generation stops.
-              </p>
-              <button
-                v-else
-                type="button"
-                class="link step-actions-link"
-                :disabled="!canRetryFromStep || retryFromStepPending"
-                @click="emit('retry-from-step')"
-              >
-                {{ retryFromStepPending ? 'Retrying…' : 'Retry from this step' }}
-              </button>
-              <p v-if="showUnavailableNote" class="muted step-actions-note">Step is not available.</p>
-            </div>
-          </template>
-        </div>
-
-        <div class="modal-actions">
-          <div class="spacer"></div>
-          <button type="button" @click="emit('close')">Close</button>
-        </div>
-      </div>
+    <div class="step-tabs" role="tablist" aria-label="Step details tabs">
+      <button
+        v-for="tab in tabs"
+        :key="tab.id"
+        class="step-tab"
+        :class="{ active: activeTab === tab.id }"
+        type="button"
+        role="tab"
+        :aria-selected="activeTab === tab.id"
+        @click="activeTab = tab.id"
+      >
+        {{ tab.label }}
+      </button>
     </div>
-  </transition>
+
+    <div class="step-panel">
+      <template v-if="activeTab === 'billing'">
+        <div class="step-info-row">
+          <span class="step-info-label">Input tokens</span>
+          <span>{{ formatMetric(step?.input_tokens) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Cached input tokens</span>
+          <span>{{ formatMetric(step?.cached_input_tokens) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Output tokens</span>
+          <span>{{ formatMetric(step?.output_tokens) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Reasoning tokens</span>
+          <span>{{ formatMetric(step?.reasoning_tokens) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Time to first token</span>
+          <span>{{ formatDurationMs(step?.time_to_first_token_ms) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Output speed (TPS)</span>
+          <span>{{ formatTokensPerSecond(step?.tokens_per_second) }}</span>
+        </div>
+        <div class="step-info-row">
+          <span class="step-info-label">Cost (USD)</span>
+          <span>{{ formatCost(step?.cost) }}</span>
+        </div>
+      </template>
+
+      <template v-else-if="activeTab === 'request'">
+        <div v-if="requestLoading" class="muted">Loading payload…</div>
+        <div v-else-if="requestErrorText" class="error-text">{{ requestErrorText }}</div>
+        <JsonTreeView
+          v-else
+          class="step-payload"
+          :value="requestPayloadValue"
+          :download-filename="requestDownloadFilename"
+        />
+      </template>
+
+      <template v-else-if="activeTab === 'response'">
+        <div v-if="responseLoading" class="muted">Loading payload…</div>
+        <div v-else-if="responseErrorText" class="error-text">{{ responseErrorText }}</div>
+        <JsonTreeView
+          v-else
+          class="step-payload"
+          :value="responsePayloadValue"
+          :download-filename="responseDownloadFilename"
+        />
+      </template>
+
+      <template v-else>
+        <div class="step-actions-panel">
+          <p v-if="showGeneratingNote" class="muted step-actions-note">
+            Retry from this step is available after generation stops.
+          </p>
+          <button
+            v-else
+            type="button"
+            class="link step-actions-link"
+            :disabled="!canRetryFromStep || retryFromStepPending"
+            @click="emit('retry-from-step')"
+          >
+            {{ retryFromStepPending ? 'Retrying…' : 'Retry from this step' }}
+          </button>
+          <p v-if="showUnavailableNote" class="muted step-actions-note">Step is not available.</p>
+        </div>
+      </template>
+    </div>
+
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button type="button" @click="emit('close')">Close</button>
+    </div>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 
+import ModalWindow from '@/components/ModalWindow.vue';
 import JsonTreeView from '@/components/chat/JsonTreeView.vue';
 import type { ChatMessageStep } from '@/types/api';
 import {
@@ -202,7 +204,7 @@ const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetr
 </script>
 
 <style scoped>
-.step-details-modal {
+:global(.step-details-modal) {
   max-width: 980px;
 }
 

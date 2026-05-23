@@ -1,124 +1,130 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="emitClose">
-      <div class="modal" role="dialog" aria-modal="true" style="max-width: 760px">
-        <h3 style="margin: 0 0 12px">{{ title }}</h3>
+  <ModalWindow
+    :open="open"
+    max-width="760px"
+    :aria-label="title"
+    :cancel-disabled="saving"
+    :submit-disabled="saving || loading || (requiresConfirmation && !confirmSharedTools)"
+    submit-shortcut="auto"
+    @cancel="emitClose"
+    @submit="emitSave"
+  >
+    <h3 style="margin: 0 0 12px">{{ title }}</h3>
 
-        <div class="tabs" style="margin-bottom: 12px">
-          <button class="tab" :class="{ active: step === 'groups' }" type="button" @click="step = 'groups'">
-            Groups
-          </button>
-          <button class="tab" :class="{ active: step === 'tools' }" type="button" @click="step = 'tools'">
-            Tools
-          </button>
-        </div>
+    <div class="tabs" style="margin-bottom: 12px">
+      <button class="tab" :class="{ active: step === 'groups' }" type="button" @click="step = 'groups'">
+        Groups
+      </button>
+      <button class="tab" :class="{ active: step === 'tools' }" type="button" @click="step = 'tools'">
+        Tools
+      </button>
+    </div>
 
-        <div v-if="step === 'groups'">
-          <p class="muted" style="margin-top: 0">
-            Select groups that should have access. Group members will see this bot read-only.
-          </p>
+    <div v-if="step === 'groups'">
+      <p class="muted" style="margin-top: 0">
+        Select groups that should have access. Group members will see this bot read-only.
+      </p>
 
-          <div v-if="loading" class="muted">Loading…</div>
-          <div v-else class="stack" style="gap: 10px; max-height: 55vh; overflow: auto">
-            <p v-if="!groups.length" class="muted">You are not a member of any groups.</p>
-            <label v-for="group in groups" :key="group.id" class="flex" style="gap: 10px; align-items: center">
-              <input v-model="selected" type="checkbox" :value="group.id" :disabled="saving" />
-              <span>{{ group.name }}</span>
-            </label>
-          </div>
-        </div>
-
-        <div v-else>
-          <p class="muted" style="margin-top: 0">
-            Choose which tools should be shared with group members and which should be connected by each user.
-          </p>
-
-          <p v-if="hasUnsavedTools" class="muted" style="margin-top: 0">
-            Unsaved tool bindings are not included here. Save the bot to include newly added tools.
-          </p>
-
-          <div style="max-height: 45vh; overflow: auto">
-            <ToolBindingsCard
-              :show-header="false"
-              :items="persistedTools"
-              :toolLabel="toolLabel"
-              :toolText="toolText"
-              :toolType="toolType"
-              emptyText="No tools attached."
-              :show-toggle="false"
-              :show-actions="false"
-              readonly
-            >
-              <template #item-meta-extra="{ item }">
-                <div v-if="!item.enabled" class="muted" style="font-size: 0.85rem; margin-top: 4px">(disabled)</div>
-              </template>
-
-              <template #item-secondary-actions="{ item }">
-                <div class="stack" style="gap: 6px">
-                  <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
-                    <input
-                      v-model="toolModes[String(item.id)]"
-                      type="radio"
-                      :name="`tool-mode-${item.id}`"
-                      value="shared"
-                      :disabled="saving"
-                    />
-                    <span>Shared</span>
-                  </label>
-                  <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
-                    <input
-                      v-model="toolModes[String(item.id)]"
-                      type="radio"
-                      :name="`tool-mode-${item.id}`"
-                      value="per_user"
-                      :disabled="saving"
-                    />
-                    <span>Per-user</span>
-                  </label>
-                </div>
-              </template>
-
-              <template #item-footer="{ item }">
-                <p
-                  v-if="toolModes[String(item.id)] === 'shared'"
-                  class="muted"
-                  style="margin: 8px 0 0; font-size: 0.85rem"
-                >
-                  Shared tools run using your tool credentials for all group members.
-                </p>
-                <p v-else class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
-                  Per-user tools must be connected by each group member for this alias.
-                </p>
-              </template>
-            </ToolBindingsCard>
-          </div>
-
-          <div v-if="requiresConfirmation" class="card stack" style="padding: 10px; margin-top: 12px">
-            <label class="flex" style="gap: 10px; align-items: flex-start">
-              <input v-model="confirmSharedTools" type="checkbox" :disabled="saving" />
-              <span>I understand that shared tools will run using my credentials.</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="modal-actions">
-          <button
-            class="primary"
-            type="button"
-            :disabled="saving || loading || (requiresConfirmation && !confirmSharedTools)"
-            @click="emitSave"
-          >
-            {{ saving ? 'Saving…' : 'Save' }}
-          </button>
-          <button type="button" :disabled="saving" @click="emitClose">Cancel</button>
-        </div>
+      <div v-if="loading" class="muted">Loading…</div>
+      <div v-else class="stack" style="gap: 10px; max-height: 55vh; overflow: auto">
+        <p v-if="!groups.length" class="muted">You are not a member of any groups.</p>
+        <label v-for="group in groups" :key="group.id" class="flex" style="gap: 10px; align-items: center">
+          <input v-model="selected" type="checkbox" :value="group.id" :disabled="saving" />
+          <span>{{ group.name }}</span>
+        </label>
       </div>
     </div>
-  </Teleport>
+
+    <div v-else>
+      <p class="muted" style="margin-top: 0">
+        Choose which tools should be shared with group members and which should be connected by each user.
+      </p>
+
+      <p v-if="hasUnsavedTools" class="muted" style="margin-top: 0">
+        Unsaved tool bindings are not included here. Save the bot to include newly added tools.
+      </p>
+
+      <div style="max-height: 45vh; overflow: auto">
+        <ToolBindingsCard
+          :show-header="false"
+          :items="persistedTools"
+          :toolLabel="toolLabel"
+          :toolText="toolText"
+          :toolType="toolType"
+          emptyText="No tools attached."
+          :show-toggle="false"
+          :show-actions="false"
+          readonly
+        >
+          <template #item-meta-extra="{ item }">
+            <div v-if="!item.enabled" class="muted" style="font-size: 0.85rem; margin-top: 4px">(disabled)</div>
+          </template>
+
+          <template #item-secondary-actions="{ item }">
+            <div class="stack" style="gap: 6px">
+              <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
+                <input
+                  v-model="toolModes[String(item.id)]"
+                  type="radio"
+                  :name="`tool-mode-${item.id}`"
+                  value="shared"
+                  :disabled="saving"
+                />
+                <span>Shared</span>
+              </label>
+              <label class="flex" style="gap: 8px; align-items: center; justify-content: flex-end">
+                <input
+                  v-model="toolModes[String(item.id)]"
+                  type="radio"
+                  :name="`tool-mode-${item.id}`"
+                  value="per_user"
+                  :disabled="saving"
+                />
+                <span>Per-user</span>
+              </label>
+            </div>
+          </template>
+
+          <template #item-footer="{ item }">
+            <p
+              v-if="toolModes[String(item.id)] === 'shared'"
+              class="muted"
+              style="margin: 8px 0 0; font-size: 0.85rem"
+            >
+              Shared tools run using your tool credentials for all group members.
+            </p>
+            <p v-else class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
+              Per-user tools must be connected by each group member for this alias.
+            </p>
+          </template>
+        </ToolBindingsCard>
+      </div>
+
+      <div v-if="requiresConfirmation" class="card stack" style="padding: 10px; margin-top: 12px">
+        <label class="flex" style="gap: 10px; align-items: flex-start">
+          <input v-model="confirmSharedTools" type="checkbox" :disabled="saving" />
+          <span>I understand that shared tools will run using my credentials.</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button
+        class="primary"
+        type="button"
+        :disabled="saving || loading || (requiresConfirmation && !confirmSharedTools)"
+        @click="emitSave"
+      >
+        {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+      <button type="button" :disabled="saving" @click="emitClose">Cancel</button>
+    </div>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import { toolBindingDisplayText } from '@/features/tools/model/toolInstances';
 import type { Group } from '@/types/api';

@@ -1,85 +1,87 @@
 <template>
-  <transition name="fade">
-    <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-      <div class="modal attachment-preview-modal" role="dialog" aria-modal="true" :aria-label="title">
-        <div class="attachment-preview-header">
-          <div class="attachment-preview-title-wrap">
-            <h3 class="attachment-preview-title">
-              <button
-                v-if="url"
-                type="button"
-                class="attachment-preview-title-link"
-                :disabled="downloadPending"
-                :aria-label="`Download ${title}`"
-                :title="`Download ${title}`"
-                @click="emit('download')"
-              >
-                {{ title }}
-              </button>
-              <span v-else>{{ title }}</span>
-            </h3>
-          </div>
-          <div class="attachment-preview-actions">
-            <button
-              v-if="canNavigate"
-              type="button"
-              class="attachment-preview-action"
-              aria-label="Previous attachment"
-              title="Previous attachment"
-              @click="emit('prev')"
-            >
-              <SvgIcon name="chevron-left" />
-            </button>
-            <button
-              v-if="canNavigate"
-              type="button"
-              class="attachment-preview-action"
-              aria-label="Next attachment"
-              title="Next attachment"
-              @click="emit('next')"
-            >
-              <SvgIcon name="chevron-right" />
-            </button>
-            <button
-              type="button"
-              class="attachment-preview-action attachment-preview-action--close"
-              aria-label="Close preview"
-              title="Close preview"
-              @click="emit('close')"
-            >
-              <span aria-hidden="true">&#215;</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="loading" class="muted attachment-preview-state">Loading attachment…</div>
-        <div v-else-if="errorText" class="error-text attachment-preview-state">{{ errorText }}</div>
-        <div v-else-if="kind === 'image'" class="attachment-preview-image-wrap">
-          <img
-            class="attachment-preview-image"
-            :class="{ 'attachment-preview-image--interactive': canNavigate }"
-            :src="url"
-            :alt="title"
-            @click="handleImageClick"
-          />
-        </div>
-        <div v-else-if="kind === 'markdown'" class="attachment-preview-markdown">
-          <div class="message assistant attachment-preview-message">
-            <div class="bubble">
-              <div class="message-content chat-markdown" v-html="markdownHtml"></div>
-            </div>
-          </div>
-        </div>
-        <pre v-else-if="kind === 'text'" class="attachment-preview-text">{{ textValue || '—' }}</pre>
-        <div v-else class="attachment-preview-state muted">Preview is not available for this file type.</div>
+  <ModalWindow
+    :open="open"
+    modal-class="attachment-preview-modal"
+    :aria-label="title"
+    @cancel="emit('close')"
+  >
+    <div class="attachment-preview-header">
+      <div class="attachment-preview-title-wrap">
+        <h3 class="attachment-preview-title">
+          <button
+            v-if="url"
+            type="button"
+            class="attachment-preview-title-link"
+            :disabled="downloadPending"
+            :aria-label="`Download ${title}`"
+            :title="`Download ${title}`"
+            @click="emit('download')"
+          >
+            {{ title }}
+          </button>
+          <span v-else>{{ title }}</span>
+        </h3>
+      </div>
+      <div class="attachment-preview-actions">
+        <button
+          v-if="canNavigate"
+          type="button"
+          class="attachment-preview-action"
+          aria-label="Previous attachment"
+          title="Previous attachment"
+          @click="emit('prev')"
+        >
+          <SvgIcon name="chevron-left" />
+        </button>
+        <button
+          v-if="canNavigate"
+          type="button"
+          class="attachment-preview-action"
+          aria-label="Next attachment"
+          title="Next attachment"
+          @click="emit('next')"
+        >
+          <SvgIcon name="chevron-right" />
+        </button>
+        <button
+          type="button"
+          class="attachment-preview-action attachment-preview-action--close"
+          aria-label="Close preview"
+          title="Close preview"
+          @click="emit('close')"
+        >
+          <span aria-hidden="true">&#215;</span>
+        </button>
       </div>
     </div>
-  </transition>
+
+    <div v-if="loading" class="muted attachment-preview-state">Loading attachment…</div>
+    <div v-else-if="errorText" class="error-text attachment-preview-state">{{ errorText }}</div>
+    <div v-else-if="kind === 'image'" class="attachment-preview-image-wrap">
+      <img
+        class="attachment-preview-image"
+        :class="{ 'attachment-preview-image--interactive': canNavigate }"
+        :src="url"
+        :alt="title"
+        @click="handleImageClick"
+      />
+    </div>
+    <div v-else-if="kind === 'markdown'" class="attachment-preview-markdown">
+      <div class="message assistant attachment-preview-message">
+        <div class="bubble">
+          <div class="message-content chat-markdown" v-html="markdownHtml"></div>
+        </div>
+      </div>
+    </div>
+    <pre v-else-if="kind === 'text'" class="attachment-preview-text">{{ textValue || '—' }}</pre>
+    <div v-else class="attachment-preview-state muted">Preview is not available for this file type.</div>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { renderChatMessageHtml } from '@/utils/chatMarkdown';
 
@@ -114,7 +116,7 @@ const handleImageClick = () => {
 </script>
 
 <style scoped>
-.attachment-preview-modal {
+:global(.attachment-preview-modal) {
   width: min(980px, 96vw);
 }
 

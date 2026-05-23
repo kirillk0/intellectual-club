@@ -1,7 +1,15 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="close">
-      <div class="modal markdown-transfer-modal" role="dialog" aria-modal="true" aria-label="Import knowledge blocks">
+  <ModalWindow
+    :open="open"
+    backdrop-class="modal-backdrop--mobile-stretch"
+    modal-class="markdown-transfer-modal markdown-import-modal"
+    aria-label="Import knowledge blocks"
+    :cancel-disabled="saving"
+    :submit-disabled="saving || !items.length"
+    submit-shortcut="auto"
+    @cancel="close"
+    @submit="confirm"
+  >
         <div class="markdown-transfer-modal__header">
           <strong>Import knowledge blocks</strong>
           <button type="button" :disabled="saving" aria-label="Close" @click="close">Close</button>
@@ -58,14 +66,13 @@
           </button>
           <button type="button" :disabled="saving" @click="close">Cancel</button>
         </div>
-      </div>
-    </div>
-  </Teleport>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, Teleport } from 'vue';
+import { ref, watch } from 'vue';
 import type { MarkdownImportAction, MarkdownImportItem } from '@/api/knowledgeBlocksMarkdown';
+import ModalWindow from '@/components/ModalWindow.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -145,7 +152,7 @@ watch(
 </script>
 
 <style scoped>
-.markdown-transfer-modal {
+:global(.markdown-import-modal) {
   width: min(860px, 96vw);
   max-height: 90vh;
   display: flex;
@@ -206,13 +213,13 @@ watch(
 }
 
 @media (max-width: 720px) {
-  .modal-backdrop {
+  :global(.modal-backdrop--mobile-stretch) {
     padding: 0;
     align-items: stretch;
     justify-content: stretch;
   }
 
-  .markdown-transfer-modal {
+  :global(.markdown-import-modal) {
     width: 100%;
     height: calc(var(--app-vh, 1vh) * 100);
     max-height: calc(var(--app-vh, 1vh) * 100);

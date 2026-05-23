@@ -1,49 +1,55 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="emitClose">
-      <div class="modal" role="dialog" aria-modal="true" style="max-width: 520px">
-        <h3 style="margin: 0 0 12px">{{ title }}</h3>
-        <p class="muted" style="margin-top: 0">
-          Select groups that should have access. Group members will see this item read-only.
-        </p>
+  <ModalWindow
+    :open="open"
+    max-width="520px"
+    :aria-label="title"
+    :cancel-disabled="saving"
+    :submit-disabled="saving || loading"
+    submit-shortcut="auto"
+    @cancel="emitClose"
+    @submit="emitSave"
+  >
+    <h3 style="margin: 0 0 12px">{{ title }}</h3>
+    <p class="muted" style="margin-top: 0">
+      Select groups that should have access. Group members will see this item read-only.
+    </p>
 
-        <div v-if="loading" class="muted">Loading…</div>
-        <div v-else class="stack" style="gap: 10px; max-height: 55vh; overflow: auto">
-          <p v-if="!groups.length" class="muted">You are not a member of any groups.</p>
-          <label
-            v-for="group in groups"
-            :key="group.id"
-            class="flex"
-            :class="{ muted: groupDisabled(group.id) }"
-            style="gap: 10px; align-items: center"
-            :title="disabledReason(group.id) || undefined"
-          >
-            <input
-              v-model="selected"
-              type="checkbox"
-              :value="group.id"
-              :disabled="saving || checkboxDisabled(group.id)"
-            />
-            <span>{{ group.name }}</span>
-            <span v-if="disabledReason(group.id)" class="muted" style="font-size: 0.85rem">
-              {{ disabledReason(group.id) }}
-            </span>
-          </label>
-        </div>
-
-        <div class="modal-actions">
-          <button class="primary" type="button" :disabled="saving || loading" @click="emitSave">
-            {{ saving ? 'Saving…' : 'Save' }}
-          </button>
-          <button type="button" :disabled="saving" @click="emitClose">Cancel</button>
-        </div>
-      </div>
+    <div v-if="loading" class="muted">Loading…</div>
+    <div v-else class="stack" style="gap: 10px; max-height: 55vh; overflow: auto">
+      <p v-if="!groups.length" class="muted">You are not a member of any groups.</p>
+      <label
+        v-for="group in groups"
+        :key="group.id"
+        class="flex"
+        :class="{ muted: groupDisabled(group.id) }"
+        style="gap: 10px; align-items: center"
+        :title="disabledReason(group.id) || undefined"
+      >
+        <input
+          v-model="selected"
+          type="checkbox"
+          :value="group.id"
+          :disabled="saving || checkboxDisabled(group.id)"
+        />
+        <span>{{ group.name }}</span>
+        <span v-if="disabledReason(group.id)" class="muted" style="font-size: 0.85rem">
+          {{ disabledReason(group.id) }}
+        </span>
+      </label>
     </div>
-  </Teleport>
+
+    <div class="modal-actions">
+      <button class="primary" type="button" :disabled="saving || loading" @click="emitSave">
+        {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+      <button type="button" :disabled="saving" @click="emitClose">Cancel</button>
+    </div>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import type { Group } from '@/types/api';
 
 const props = withDefaults(

@@ -1,32 +1,34 @@
 <template>
-  <transition name="fade">
-    <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
-      <div class="modal" style="max-width: 900px">
-        <h3 style="margin: 0">{{ title || 'Payload' }}</h3>
-        <div v-if="loading" class="muted" style="margin-top: 8px">Loading payload…</div>
-        <div v-else-if="errorText" class="error-text" style="margin-top: 8px">{{ errorText }}</div>
-        <pre
-          v-else
-          class="code-block"
-          style="
-            white-space: pre-wrap;
-            word-break: break-word;
-            max-height: 65vh;
-            overflow: auto;
-            margin-top: 8px;
-          "
-        >{{ textValue || '—' }}</pre>
-        <div class="modal-actions">
-          <div class="spacer"></div>
-          <button type="button" @click="emit('close')">Close</button>
-        </div>
-      </div>
+  <ModalWindow
+    :open="open"
+    max-width="900px"
+    :aria-label="title || 'Payload'"
+    @cancel="emit('close')"
+  >
+    <h3 style="margin: 0">{{ title || 'Payload' }}</h3>
+    <div v-if="loading" class="muted" style="margin-top: 8px">Loading payload…</div>
+    <div v-else-if="errorText" class="error-text" style="margin-top: 8px">{{ errorText }}</div>
+    <pre
+      v-else
+      class="code-block"
+      style="
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 65vh;
+        overflow: auto;
+        margin-top: 8px;
+      "
+    >{{ textValue || '—' }}</pre>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button type="button" @click="emit('close')">Close</button>
     </div>
-  </transition>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 
 interface Props {
   open: boolean;

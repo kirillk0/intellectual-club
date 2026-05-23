@@ -1,26 +1,29 @@
 <template>
-  <transition name="fade">
-    <div
-      v-if="open"
-      class="modal-backdrop"
-      :class="{ 'modal-backdrop--compact': compactViewport }"
-      @touchmove="handleBackdropTouchMove"
-    >
-      <div
-        class="modal edit-message-modal"
-        :class="{
-          'edit-message-modal--dragging': dragActive,
-          'edit-message-modal--compact': compactViewport,
-        }"
-        :style="modalStyle"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="title"
-        @dragenter.prevent="handleDragEnter"
-        @dragover.prevent="handleDragOver"
-        @dragleave.prevent="handleDragLeave"
-        @drop.prevent="handleDrop"
-      >
+  <ModalWindow
+    :open="open"
+    :backdrop-class="{
+      'edit-message-modal-backdrop': true,
+      'modal-backdrop--compact': compactViewport,
+    }"
+    :modal-class="{
+      'edit-message-modal': true,
+      'edit-message-modal--dragging': dragActive,
+      'edit-message-modal--compact': compactViewport,
+    }"
+    :modal-style="modalStyle"
+    :aria-label="title"
+    :cancel-disabled="saving"
+    :submit-disabled="saving"
+    :close-on-backdrop="false"
+    submit-shortcut="auto"
+    @cancel="emit('cancel')"
+    @submit="handleTextareaSubmit"
+    @backdrop-touchmove="handleBackdropTouchMove"
+    @dragenter.prevent="handleDragEnter"
+    @dragover.prevent="handleDragOver"
+    @dragleave.prevent="handleDragLeave"
+    @drop.prevent="handleDrop"
+  >
         <h3 style="margin: 0">{{ title }}</h3>
 
         <div class="edit-message-modal__body">
@@ -48,8 +51,6 @@
               autofocus
               :aria-label="contents.length > 1 ? `Message content ${selectedContentIndex + 1}` : 'Message content'"
               @paste="handleTextareaPaste"
-              @keydown.enter.ctrl.exact.prevent="handleTextareaSubmit"
-              @keydown.enter.meta.exact.prevent="handleTextareaSubmit"
               @input="(event) => updateAt(selectedContentIndex, (event.target as HTMLTextAreaElement).value)"
             ></textarea>
           </div>
@@ -154,14 +155,13 @@
             {{ confirmLabel }}
           </button>
         </div>
-      </div>
-    </div>
-  </transition>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
+import ModalWindow from '@/components/ModalWindow.vue';
 import {
   clipboardHasStringContent,
   describePendingFileUploadStatus,
@@ -289,12 +289,6 @@ const handleTextareaSubmit = () => {
   emit('save');
 };
 
-const handleWindowKeydown = (event: KeyboardEvent) => {
-  if (!props.open || saving.value) return;
-  if (event.key !== 'Escape') return;
-  emit('cancel');
-};
-
 const computeModalHeight = () => {
   const visualViewport = window.visualViewport;
   const viewportHeight = visualViewport?.height ?? window.innerHeight;
@@ -418,7 +412,6 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
-      window.addEventListener('keydown', handleWindowKeydown);
       lockDocumentScroll();
       attachViewportListeners();
       attachScrollLockListeners();
@@ -426,7 +419,6 @@ watch(
       return;
     }
 
-    window.removeEventListener('keydown', handleWindowKeydown);
     detachViewportListeners();
     detachScrollLockListeners();
     unlockDocumentScroll();
@@ -435,7 +427,6 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleWindowKeydown);
   detachViewportListeners();
   detachScrollLockListeners();
   unlockDocumentScroll();
@@ -513,7 +504,7 @@ const handleDrop = (event: DragEvent) => {
 </script>
 
 <style scoped>
-.edit-message-modal {
+:global(.edit-message-modal) {
   display: grid;
   gap: 12px;
   width: min(920px, 96vw);
@@ -529,13 +520,13 @@ const handleDrop = (event: DragEvent) => {
   overscroll-behavior: contain;
 }
 
-.edit-message-modal--compact {
+:global(.edit-message-modal--compact) {
   height: auto;
   overflow: auto;
   align-content: start;
 }
 
-.edit-message-modal--dragging {
+:global(.edit-message-modal--dragging) {
   border-color: #2563eb;
   background: rgba(219, 234, 254, 0.24);
 }
@@ -756,12 +747,12 @@ const handleDrop = (event: DragEvent) => {
   pointer-events: none;
 }
 
-.modal-backdrop {
+:global(.edit-message-modal-backdrop) {
   overscroll-behavior: none;
   overflow: hidden;
 }
 
-.modal-backdrop--compact {
+:global(.modal-backdrop--compact) {
   align-items: flex-start;
   padding-top: 8px;
   padding-bottom: 8px;
@@ -775,12 +766,12 @@ const handleDrop = (event: DragEvent) => {
 }
 
 @media (max-width: 640px) {
-  .modal-backdrop {
+  :global(.edit-message-modal-backdrop) {
     align-items: flex-start;
     padding: 10px 4px;
   }
 
-  .edit-message-modal {
+  :global(.edit-message-modal) {
     width: min(100vw - 8px, 920px);
     height: var(--edit-message-modal-height, calc(100dvh - 20px));
     max-height: var(--edit-message-modal-height, calc(100dvh - 20px));

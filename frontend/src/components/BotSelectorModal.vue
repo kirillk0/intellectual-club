@@ -1,61 +1,66 @@
 <template>
-  <transition name="fade">
-    <div class="modal-backdrop" @click.self="emit('cancel')">
-      <div ref="modalRef" class="modal" :style="{ maxWidth: '520px' }" tabindex="-1">
-        <div class="modal-header-row">
-          <h3 style="margin: 0">{{ title }}</h3>
-          <button
-            type="button"
-            class="sort-toggle"
-            :class="{ active: botSortModeValue === 'recent_activity' }"
-            :aria-label="botSortToggleLabel"
-            :title="botSortToggleLabel"
-            @click="toggleBotSortMode"
-          >
-            <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
-          </button>
-        </div>
-        <div class="stack" style="max-height: 60vh; overflow: auto">
-          <label
-            class="row"
-            style="gap: 10px; align-items: center"
-            v-for="opt in choices"
-            :key="String(opt.id)"
-          >
-            <input type="radio" name="bot-select" :value="opt.id" v-model="localValue" />
-            <span
-              v-if="opt.shared_incoming"
-              class="muted"
-              title="Shared with you"
-              aria-label="Shared with you"
-              ><SvgIcon name="share-incoming" /></span
-            >
-            <span
-              v-else-if="opt.shared_outgoing"
-              class="muted"
-              title="Shared with groups"
-              aria-label="Shared with groups"
-              ><SvgIcon name="share-outgoing" /></span
-            >
-            <span style="flex: 1">{{ opt.name }}</span>
-            <ImageThumbnail :image="opt.image" :label="opt.name" :size="36" :hideWithoutImage="true" />
-          </label>
-        </div>
-        <div class="modal-actions">
-          <div class="spacer"></div>
-          <button type="button" @click="emit('cancel')" :disabled="saving">Cancel</button>
-          <button class="primary" type="button" @click="emitSave" :disabled="saving">
-            {{ saving ? savingLabel : confirmLabel }}
-          </button>
-        </div>
-      </div>
+  <ModalWindow
+    max-width="520px"
+    :cancel-disabled="saving"
+    :submit-disabled="saving"
+    :aria-label="title"
+    submit-shortcut="auto"
+    @cancel="emit('cancel')"
+    @submit="emitSave"
+  >
+    <div class="modal-header-row">
+      <h3 style="margin: 0">{{ title }}</h3>
+      <button
+        type="button"
+        class="sort-toggle"
+        :class="{ active: botSortModeValue === 'recent_activity' }"
+        :aria-label="botSortToggleLabel"
+        :title="botSortToggleLabel"
+        @click="toggleBotSortMode"
+      >
+        <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
+      </button>
     </div>
-  </transition>
+    <div class="stack" style="max-height: 60vh; overflow: auto">
+      <label
+        class="row"
+        style="gap: 10px; align-items: center"
+        v-for="opt in choices"
+        :key="String(opt.id)"
+      >
+        <input type="radio" name="bot-select" :value="opt.id" v-model="localValue" />
+        <span
+          v-if="opt.shared_incoming"
+          class="muted"
+          title="Shared with you"
+          aria-label="Shared with you"
+          ><SvgIcon name="share-incoming" /></span
+        >
+        <span
+          v-else-if="opt.shared_outgoing"
+          class="muted"
+          title="Shared with groups"
+          aria-label="Shared with groups"
+          ><SvgIcon name="share-outgoing" /></span
+        >
+        <span style="flex: 1">{{ opt.name }}</span>
+        <ImageThumbnail :image="opt.image" :label="opt.name" :size="36" :hideWithoutImage="true" />
+      </label>
+    </div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button type="button" @click="emit('cancel')" :disabled="saving">Cancel</button>
+      <button class="primary" type="button" @click="emitSave" :disabled="saving">
+        {{ saving ? savingLabel : confirmLabel }}
+      </button>
+    </div>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import {
   sortBotsByPreference,
@@ -92,7 +97,6 @@ const emit = defineEmits<{
 }>();
 
 const localValue = ref<number | ''>(props.modelValue);
-const modalRef = ref<HTMLElement | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
   get: () => botSortMode.value,
@@ -118,34 +122,6 @@ const emitSave = () => {
   emit('update:modelValue', localValue.value);
   emit('save', localValue.value);
 };
-
-const handleEnterKey = (event: KeyboardEvent) => {
-  if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing) return;
-
-  const target = event.target instanceof HTMLElement ? event.target : null;
-  const modal = modalRef.value;
-  const interactiveSelector = [
-    'button',
-    'a[href]',
-    'input:not([type="radio"])',
-    'select',
-    'textarea',
-    '[contenteditable="true"]',
-  ].join(',');
-
-  if (modal?.contains(target) && target?.closest(interactiveSelector)) return;
-  event.preventDefault();
-  emitSave();
-};
-
-onMounted(() => {
-  window.addEventListener('keydown', handleEnterKey);
-  nextTick(() => modalRef.value?.focus());
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleEnterKey);
-});
 
 const toggleBotSortMode = () => {
   botSortModeValue.value = botSortModeValue.value === 'recent_activity' ? 'name' : 'recent_activity';

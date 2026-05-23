@@ -1,7 +1,15 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="close">
-      <div class="modal tool-binding-picker" role="dialog" aria-modal="true" aria-label="Select tools">
+  <ModalWindow
+    :open="open"
+    backdrop-class="modal-backdrop--mobile-stretch"
+    modal-class="tool-binding-picker"
+    aria-label="Select tools"
+    :cancel-disabled="saving"
+    :submit-disabled="confirmDisabled"
+    submit-shortcut="auto"
+    @cancel="close"
+    @submit="confirm"
+  >
         <div class="picker-header">
           <strong>{{ title }}</strong>
           <button type="button" :disabled="saving" aria-label="Close" @click="close">Close</button>
@@ -67,13 +75,12 @@
             Clear selection
           </button>
         </div>
-      </div>
-    </div>
-  </Teleport>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, Teleport } from 'vue';
+import { computed, ref, watch } from 'vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import ToolBindingListItem from '@/components/ToolBindingListItem.vue';
 
@@ -174,7 +181,7 @@ watch(
 </script>
 
 <style scoped>
-.tool-binding-picker {
+:global(.tool-binding-picker) {
   container-type: inline-size;
   width: min(640px, 96vw);
   max-height: 90vh;
@@ -227,13 +234,13 @@ watch(
 }
 
 @media (max-width: 720px) {
-  .modal-backdrop {
+  :global(.modal-backdrop--mobile-stretch) {
     padding: 0;
     align-items: stretch;
     justify-content: stretch;
   }
 
-  .tool-binding-picker {
+  :global(.tool-binding-picker) {
     width: 100%;
     height: calc(var(--app-vh, 1vh) * 100);
     max-height: calc(var(--app-vh, 1vh) * 100);
