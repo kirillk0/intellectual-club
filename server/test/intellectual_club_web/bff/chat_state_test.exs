@@ -22,7 +22,9 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
 
-  test "GET /api/bff/chats/:id/state returns trace for markdown user message", %{conn: conn} do
+  test "GET /api/bff/chats/:id/state returns lean content for markdown user message", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -50,11 +52,14 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     first = List.first(branch)
     texts = all_text_contents(first)
+    refute Map.has_key?(first, "steps")
     assert Enum.any?(texts, &String.contains?(&1, "# Title"))
     assert Enum.any?(texts, &String.contains?(&1, "**world**"))
   end
 
-  test "GET /api/bff/chats/:id/state includes nested steps/items/contents", %{conn: conn} do
+  test "GET /api/bff/chats/:id/state includes lean content, usage, and working summary", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -86,12 +91,16 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     assert is_map(assistant)
     assert is_binary(assistant["finished_at"])
-    assert is_binary(get_in(assistant, ["steps", Access.at(0), "finished_at"]))
+    refute Map.has_key?(assistant, "steps")
+    assert get_in(assistant, ["working", "step_count"]) == 1
+    assert is_binary(get_in(assistant, ["usage", "latest_step", "finished_at"]))
 
     assert Enum.any?(all_text_contents(assistant), &String.contains?(&1, "TAIL"))
   end
 
-  test "GET /api/bff/chats/:id/state includes context settings in options", %{conn: conn} do
+  test "GET /api/bff/chats/:id/settings-state includes context settings in options", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -114,7 +123,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/settings-state")
     payload = json_response(conn, 200)
 
     bots = get_in(payload, ["options", "bots"]) || []
@@ -130,9 +139,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert cfg_payload["context_length"] == 8192
   end
 
-  test "GET /api/bff/chats/:id/state includes configuration and bot tag metadata in options", %{
-    conn: conn
-  } do
+  test "GET /api/bff/chats/:id/settings-state includes configuration and bot tag metadata in options",
+       %{
+         conn: conn
+       } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -189,7 +199,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chats/#{chat.id}/settings-state")
       |> json_response(200)
 
     bot_payload =
@@ -207,7 +217,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert cfg_payload["tag_names"] == ["Compatible"]
   end
 
-  test "GET /api/bff/chats/:id/state includes user prompt sources", %{conn: conn} do
+  test "GET /api/bff/chats/:id/settings-state includes user prompt sources", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -236,7 +246,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/settings-state")
     payload = json_response(conn, 200)
 
     user_sources = get_in(payload, ["prompt_sources", "user"]) || []
@@ -246,9 +256,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert get_in(first_source, ["knowledge_block", "id"]) == user_block.id
   end
 
-  test "GET /api/bff/chats/:id/state orders configuration top blocks before bot blocks", %{
-    conn: conn
-  } do
+  test "GET /api/bff/chats/:id/settings-state orders configuration top blocks before bot blocks",
+       %{
+         conn: conn
+       } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -339,7 +350,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     {:ok, _message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/settings-state")
     payload = json_response(conn, 200)
 
     assert Regex.match?(
@@ -366,7 +377,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert Enum.map(prompt_blocks, & &1["prompt_order"]) == [0, 1, 2]
   end
 
-  test "GET /api/bff/chats/:id/state includes image metadata in bot and knowledge block options",
+  test "GET /api/bff/chats/:id/settings-state includes image metadata in bot and knowledge block options",
        %{
          conn: conn
        } do
@@ -424,7 +435,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/settings-state")
     payload = json_response(conn, 200)
 
     bot_payload =
@@ -445,9 +456,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
              "/api/bff/knowledge-blocks/#{block.id}/image"
   end
 
-  test "GET /api/bff/chats/:id/state includes chat tool bindings and resolved active tools", %{
-    conn: conn
-  } do
+  test "GET /api/bff/chats/:id/settings-state includes chat tool bindings and resolved active tools",
+       %{
+         conn: conn
+       } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -522,7 +534,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chats/#{chat.id}/settings-state")
       |> json_response(200)
 
     assert get_in(payload, ["missing_required_per_user_tool_aliases"]) == []
@@ -692,7 +704,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       conn
       |> recycle()
       |> sign_in_conn(actor.username, password)
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chats/#{chat.id}/settings-state")
       |> json_response(200)
 
     assert String.contains?(state_payload["compiled_prompt_text"], "# Available tool instances")
@@ -705,11 +717,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   end
 
   defp all_text_contents(message_payload) do
-    (Map.get(message_payload, "steps") || [])
-    |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-    |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-    |> Enum.filter(fn content -> Map.get(content, "kind") == "text" end)
-    |> Enum.map(fn content -> Map.get(content, "content_text") || "" end)
+    message_payload
+    |> get_in(["content", "parts"])
+    |> List.wrap()
+    |> Enum.map(fn part -> Map.get(part, "text") || "" end)
   end
 
   defp create_bot!(actor, name, context_soft_limit_percent) do

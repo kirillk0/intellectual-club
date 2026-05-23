@@ -7,7 +7,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
-  alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.ListingStats
@@ -28,6 +27,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClubWeb.Bff.ChatAttachments
+  alias IntellectualClubWeb.Bff.ChatBranchPayload
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Loads
@@ -577,21 +577,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat = Ash.load!(chat, [:last_message], actor: actor)
       {messages, branch_meta_by_id} = load_branch(chat, actor)
 
-      chat_blocks = load_chat_blocks(chat_id, actor)
-      chat_tool_bindings = load_chat_tool_bindings(chat_id, actor)
-      tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
-
-      prompt_context =
-        build_prompt_context_payload(chat, actor,
-          history: messages,
-          tool_resolution: tool_resolution
-        )
-
-      bots = load_bots(actor)
-      llm_configurations = load_llm_configurations(actor)
-      knowledge_blocks = load_knowledge_blocks(actor)
-      tool_instances = load_editable_tool_instances(actor)
-
       generating_message_id =
         messages
         |> Enum.find_value(fn message ->
@@ -601,6 +586,42 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       json(conn, %{
         chat: Serializer.chat_detail(chat),
         branch: serialize_branch(messages, branch_meta_by_id, actor),
+        active_generation_message_id: generating_message_id,
+        idle_revision: chat_idle_revision(chat)
+      })
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:ok, nil} ->
+        render_access_error(conn, :not_found)
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def settings_state(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, %Chat{} = chat} <- fetch_readable_chat(chat_id, actor) do
+      chat_blocks = load_chat_blocks(chat_id, actor)
+      chat_tool_bindings = load_chat_tool_bindings(chat_id, actor)
+      tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+      history = Threads.active_branch(chat, actor)
+
+      prompt_context =
+        build_prompt_context_payload(chat, actor,
+          history: history,
+          tool_resolution: tool_resolution
+        )
+
+      bots = load_bots(actor)
+      llm_configurations = load_llm_configurations(actor)
+      knowledge_blocks = load_knowledge_blocks(actor)
+      tool_instances = load_editable_tool_instances(actor)
+
+      json(conn, %{
         chat_blocks: Enum.map(chat_blocks, &Serializer.chat_block_binding/1),
         chat_tool_bindings: Enum.map(chat_tool_bindings, &Serializer.chat_tool_binding/1),
         prompt_sources: prompt_context.prompt_sources,
@@ -617,9 +638,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           llm_configurations: Enum.map(llm_configurations, &Serializer.configuration_option/1),
           knowledge_blocks: Enum.map(knowledge_blocks, &Serializer.knowledge_block_option/1),
           tool_instances: Enum.map(tool_instances, &Serializer.tool_instance_option/1)
-        },
-        active_generation_message_id: generating_message_id,
-        idle_revision: chat_idle_revision(chat)
+        }
       })
     else
       {:error, %Plug.Conn{} = conn} ->
@@ -1209,22 +1228,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
   defp load_branch(chat_or_id, actor) do
     {messages, branch_meta} =
-      Threads.active_branch_with_meta(chat_or_id, actor,
-        load: Loads.message_tree(),
-        strict?: true
-      )
+      Threads.active_branch_with_meta(chat_or_id, actor, strict?: true)
 
     branch_meta_by_id = Map.new(branch_meta, fn node -> {node.id, node} end)
     {messages, branch_meta_by_id}
   end
 
   defp serialize_branch(messages, branch_meta_by_id, actor) do
-    bookmarked_message_ids =
-      messages
-      |> Enum.map(& &1.id)
-      |> Bookmarking.bookmarked_message_id_set(actor)
-
-    Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id, bookmarked_message_ids))
+    ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
   end
 
   defp load_chat_blocks(chat_id, actor) do

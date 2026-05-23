@@ -301,7 +301,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chats/#{chat.id}/settings-state")
       |> json_response(200)
 
     assert [%{"alias" => "web", "source" => "chat", "tool_instance" => tool_payload}] =

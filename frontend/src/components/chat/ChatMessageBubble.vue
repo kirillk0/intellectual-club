@@ -5,9 +5,14 @@
         v-if="msg.role === 'assistant'"
         :message-id="messageId"
         :message-status="msg.status || null"
-        :steps="msg.steps || []"
+        :summary="msg.working || null"
+        :step-index="workingState?.steps || []"
+        :selected-step="workingState?.selectedStep || null"
+        :loading="Boolean(workingState?.loading)"
+        :error="workingState?.error || ''"
         :open="workingOpen"
         @toggle="emit('toggle-working')"
+        @step-select="(stepId) => emit('working-step-select', stepId)"
         @step-info="(step) => emit('step-info', step)"
         @content-open="(payload) => emit('content-open', payload)"
         @attachment-open="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
@@ -142,12 +147,8 @@
 import { computed } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
-import type {
-  ChatBranchMessage,
-  ChatMessageContent,
-  ChatMessageItem,
-  ChatMessageStep,
-} from '@/types/api';
+import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
+import type { ChatBranchMessage, ChatMessageContent, ChatMessageStep } from '@/types/api';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
@@ -163,6 +164,7 @@ interface Props {
   bookmarking?: boolean;
   branchingAssistantId?: number | null;
   workingOpen?: boolean;
+  workingState?: OpenWorkingState | null;
   canDelete?: boolean;
   deleteTitle?: string;
   readonly?: boolean;
@@ -176,6 +178,7 @@ const props = withDefaults(defineProps<Props>(), {
   bookmarking: false,
   branchingAssistantId: null,
   workingOpen: false,
+  workingState: null,
   canDelete: false,
   deleteTitle: 'Delete',
   readonly: false,
@@ -190,6 +193,7 @@ const emit = defineEmits<{
   (e: 'retry'): void;
   (e: 'delete'): void;
   (e: 'switch-branch', direction: 'prev' | 'next'): void;
+  (e: 'working-step-select', stepId: number): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
   (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent; contents?: ChatMessageContent[] }): void;
@@ -203,7 +207,9 @@ const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
 );
 
-const canRetry = computed(() => !props.readonly && Boolean(messageId.value) && (msg.value.steps || []).length > 0);
+const canRetry = computed(
+  () => !props.readonly && Boolean(messageId.value) && (msg.value.working?.step_count || 0) > 0
+);
 
 const shouldHighlightCode = computed(() => msg.value.status !== 'generating');
 
@@ -213,14 +219,6 @@ const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => {
   return aSeq - bSeq;
 };
 
-const joinTextContents = (contents: ChatMessageContent[] | null | undefined) => {
-  const list = (contents || []).slice().sort(sortBySequence);
-  return list
-    .filter((c) => c && c.kind === 'text' && c.content_text)
-    .map((c) => String(c.content_text ?? ''))
-    .join('');
-};
-
 type MessagePart = {
   key: string;
   html: string;
@@ -228,34 +226,22 @@ type MessagePart = {
   showTimestamp: boolean;
 };
 
-const partKey = (step: ChatMessageStep, item: ChatMessageItem, index: number) => {
-  if (typeof item.id === 'number' && item.id > 0) return `item-${item.id}`;
-  const stepSeq = typeof step.sequence === 'number' ? step.sequence : 0;
-  const itemSeq = typeof item.sequence === 'number' ? item.sequence : 0;
-  return `item-${stepSeq}-${itemSeq}-${index}`;
-};
-
 const messageParts = computed<MessagePart[]>(() => {
-  const wantedType = msg.value.role === 'user' ? 'input' : 'answer';
-  const steps = (msg.value.steps || []).slice().sort(sortBySequence);
   const parts: MessagePart[] = [];
-  let answerIndex = 0;
 
-  for (const step of steps) {
-    const items = (step.items || []).slice().sort(sortBySequence);
-    for (const item of items) {
-      if (!item || item.type !== wantedType) continue;
-      const text = joinTextContents(item.contents);
-      if (!text.trim()) continue;
+  for (const [index, part] of [...(msg.value.content?.parts || [])].sort(sortBySequence).entries()) {
+    const text = String(part.text ?? '');
+    if (!text.trim()) continue;
 
-      parts.push({
-        key: partKey(step, item, answerIndex),
-        html: renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true }),
-        timestamp: formatTimeOfDay(item.created_at || step.created_at),
-        showTimestamp: msg.value.role === 'assistant',
-      });
-      answerIndex += 1;
-    }
+    parts.push({
+      key:
+        typeof part.content_id === 'number' && part.content_id > 0
+          ? `content-${part.content_id}`
+          : `content-${part.step_sequence || 0}-${part.item_sequence || 0}-${part.sequence || index}`,
+      html: renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true }),
+      timestamp: formatTimeOfDay(part.created_at),
+      showTimestamp: msg.value.role === 'assistant',
+    });
   }
 
   if (msg.value.role === 'assistant' && msg.value.status !== 'generating' && parts.length > 0) {
@@ -268,30 +254,11 @@ const messageParts = computed<MessagePart[]>(() => {
   return parts;
 });
 
-const collectItemContents = (wantedTypes: string[]) => {
-  const steps = (msg.value.steps || []).slice().sort(sortBySequence);
-  const contents: ChatMessageContent[] = [];
+const messageMediaContents = computed(() =>
+  (msg.value.content?.media || []).slice().sort(sortBySequence).filter((content) => content.kind === 'media')
+);
 
-  for (const step of steps) {
-    const items = (step.items || []).slice().sort(sortBySequence);
-    for (const item of items) {
-      if (!item || !wantedTypes.includes(item.type)) continue;
-      contents.push(...((item.contents || []).slice().sort(sortBySequence) as ChatMessageContent[]));
-    }
-  }
-
-  return contents;
-};
-
-const messageMediaContents = computed(() => {
-  if (msg.value.role === 'user') return collectItemContents(['input']).filter((content) => content.kind === 'media');
-  return collectItemContents(['artifact']).filter((content) => content.kind === 'media');
-});
-
-const previewAttachmentContents = computed(() => {
-  if (msg.value.role === 'user') return collectItemContents(['input']).filter((content) => content.kind === 'media');
-  return collectItemContents(['artifact', 'tool_result']).filter((content) => content.kind === 'media');
-});
+const previewAttachmentContents = computed(() => messageMediaContents.value);
 
 const branchDisabled = computed(() => {
   if (!messageId.value) return true;
@@ -301,20 +268,10 @@ const branchDisabled = computed(() => {
 });
 
 const totalCostLabel = computed(() => {
-  const steps = msg.value.steps || [];
-  let total = 0;
-  let hasCost = false;
-
-  for (const step of steps) {
-    const rawCost = step?.cost;
-    if (rawCost == null) continue;
-    const cost = typeof rawCost === 'number' ? rawCost : Number(rawCost);
-    if (!Number.isFinite(cost)) continue;
-    total += cost;
-    hasCost = true;
-  }
-
-  if (!hasCost) return null;
+  const rawTotal = msg.value.usage?.total_cost;
+  if (rawTotal == null) return null;
+  const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal);
+  if (!Number.isFinite(total)) return null;
 
   const roundedToCents = Math.round(total * 100) / 100;
   if (roundedToCents !== 0) return roundedToCents.toFixed(2);

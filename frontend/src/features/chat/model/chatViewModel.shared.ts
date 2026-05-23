@@ -41,6 +41,11 @@ export type PromptBlock = {
 export type ChatStatePayload = {
   chat: Chat;
   branch: ChatBranchMessage[];
+  active_generation_message_id: number | null;
+  idle_revision?: string | null;
+};
+
+export type ChatSettingsStatePayload = {
   chat_blocks: ChatKnowledgeBlock[];
   chat_tool_bindings: ChatToolBinding[];
   prompt_sources: {
@@ -61,8 +66,6 @@ export type ChatStatePayload = {
     knowledge_blocks: KnowledgeBlock[];
     tool_instances: ToolInstanceOption[];
   };
-  active_generation_message_id: number | null;
-  idle_revision?: string | null;
 };
 
 export type ChatIdleStatePayload = {
@@ -71,7 +74,7 @@ export type ChatIdleStatePayload = {
 };
 
 export type ChatPromptContextPayload = Pick<
-  ChatStatePayload,
+  ChatSettingsStatePayload,
   'prompt_sources' | 'prompt_blocks' | 'compiled_prompt_text' | 'counters'
 >;
 
@@ -79,11 +82,25 @@ export type PollResponse = {
   message_id: number;
   runtime: boolean;
   status: string;
-  current_step: ChatMessageStep | null;
-  steps?: ChatMessageStep[] | null;
+  content?: ChatBranchMessage['content'];
+  usage?: ChatBranchMessage['usage'];
+  working?: ChatBranchMessage['working'];
+  working_open?: {
+    step_count?: number | null;
+    selected_step_id?: number | null;
+    step?: ChatMessageStep | null;
+  } | null;
   finished_at?: string | null;
   token_count?: number | null;
   error_detail?: string | null;
+};
+
+export type WorkingPayload = {
+  message_id: number;
+  step_count: number;
+  steps: ChatMessageStep[];
+  selected_step_id?: number | null;
+  step?: ChatMessageStep | null;
 };
 
 export type ChatBlockLink = {

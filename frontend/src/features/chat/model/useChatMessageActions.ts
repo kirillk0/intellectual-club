@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from 'vue';
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 
 import { api, getApiErrorMessage } from '@/api/client';
 import {
@@ -13,9 +13,11 @@ import {
 import {
   buildMessageUpdatePayload,
   buildSendPayload,
+  type PollResponse,
+  type WorkingPayload,
 } from '@/features/chat/model/chatViewModel.shared';
 import { copyTextWithFallback } from '@/utils/clipboard';
-import type { Chat, ChatBranchMessage } from '@/types/api';
+import type { Chat, ChatBranchMessage, ChatMessageStep } from '@/types/api';
 
 type ScrollToLastMessage = (opts?: {
   behavior?: ScrollBehavior;
@@ -39,13 +41,23 @@ type Params = {
   afterBranchSwitched?: () => void;
 };
 
+export type OpenWorkingState = {
+  messageId: number;
+  steps: ChatMessageStep[];
+  selectedStepId: number | null;
+  selectedStep: ChatMessageStep | null;
+  selectedLatest: boolean;
+  loading: boolean;
+  error: string;
+};
+
 export function useChatMessageActions(params: Params) {
   const copiedMessageId = ref<number | null>(null);
   const retryingMessageId = ref<number | null>(null);
   const branchingAssistantId = ref<number | null>(null);
   const deletingMessageId = ref<number | null>(null);
   const bookmarkingMessageIds = ref<Set<number>>(new Set());
-  const workingOpenById = ref<Set<number>>(new Set());
+  const openWorking = ref<OpenWorkingState | null>(null);
 
   const editingMessage = ref<ChatBranchMessage | null>(null);
   const modalMode = ref<'edit' | 'branch'>('edit');
@@ -72,21 +84,9 @@ export function useChatMessageActions(params: Params) {
   const confirm = (message: string) => window.confirm(message);
   const alert = (message: string) => window.alert(message);
 
-  const joinTextContents = (contents: unknown) => {
-    const list = Array.isArray(contents) ? contents : [];
-    return list
-      .filter((content) => content && typeof content === 'object' && (content as { kind?: unknown }).kind === 'text')
-      .map((content) => String((content as { content_text?: unknown }).content_text ?? ''))
-      .join('');
-  };
-
   const messagePrimaryText = (msg: ChatBranchMessage) => {
-    const wantedType = msg.role === 'user' ? 'input' : 'answer';
-    const steps = msg.steps || [];
-    const items = steps.flatMap((step) => step.items || []);
-    const texts = items
-      .filter((item) => item && item.type === wantedType)
-      .map((item) => joinTextContents(item.contents))
+    const texts = (msg.content?.parts || [])
+      .map((part) => String(part.text ?? ''))
       .filter((text) => String(text).trim() !== '');
     return texts.at(-1) ?? '';
   };
@@ -110,6 +110,21 @@ export function useChatMessageActions(params: Params) {
     const idx = params.branch.value.findIndex((item) => item.id === messageId);
     if (idx === -1) return;
     params.branch.value[idx] = { ...params.branch.value[idx], ...patch };
+  };
+
+  const closeWorking = () => {
+    openWorking.value = null;
+  };
+
+  const replaceBranch = (nextBranch: ChatBranchMessage[] | null | undefined) => {
+    params.branch.value = nextBranch || [];
+    closeWorking();
+  };
+
+  const isLatestStepId = (steps: ChatMessageStep[], selectedStepId: number | null | undefined) => {
+    if (!selectedStepId || !steps.length) return true;
+    const latest = [...steps].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).at(-1);
+    return latest?.id === selectedStepId;
   };
 
   const isBookmarkingMessage = (messageId: number | null | undefined) => {
@@ -203,7 +218,7 @@ export function useChatMessageActions(params: Params) {
         `/api/bff/chat-messages/${msg.id}/delete`,
         {}
       );
-      params.branch.value = payload.branch || [];
+      replaceBranch(payload.branch);
     } catch (error) {
       console.error(error);
       alert('Failed to delete the message.');
@@ -214,15 +229,90 @@ export function useChatMessageActions(params: Params) {
 
   const isWorkingOpen = (id: number | null | undefined) => {
     if (!id) return false;
-    return workingOpenById.value.has(id);
+    return openWorking.value?.messageId === id;
+  };
+
+  const workingStateFor = (id: number | null | undefined) => {
+    if (!id) return null;
+    return openWorking.value?.messageId === id ? openWorking.value : null;
+  };
+
+  const loadWorking = async (messageId: number, stepId: number | 'latest' = 'latest') => {
+    const current = openWorking.value;
+    if (!current || current.messageId !== messageId) return;
+
+    openWorking.value = { ...current, loading: true, error: '' };
+
+    const paramsQuery = new URLSearchParams();
+    if (stepId !== 'latest') paramsQuery.set('step_id', String(stepId));
+    const suffix = paramsQuery.toString() ? `?${paramsQuery.toString()}` : '';
+
+    try {
+      const payload = await api.get<WorkingPayload>(`/api/bff/chat-messages/${messageId}/working${suffix}`, {
+        showErrorBanner: false,
+      });
+      if (openWorking.value?.messageId !== messageId) return;
+      const selectedStepId = payload.selected_step_id ?? payload.step?.id ?? null;
+      openWorking.value = {
+        messageId,
+        steps: payload.steps || [],
+        selectedStepId,
+        selectedStep: payload.step || null,
+        selectedLatest: stepId === 'latest' || isLatestStepId(payload.steps || [], selectedStepId),
+        loading: false,
+        error: '',
+      };
+    } catch (error) {
+      if (openWorking.value?.messageId !== messageId) return;
+      openWorking.value = {
+        ...openWorking.value,
+        loading: false,
+        error: errorMessage(error, 'Failed to load working details.'),
+      };
+    }
   };
 
   const toggleWorking = (id: number | null | undefined) => {
     if (!id) return;
-    const next = new Set(workingOpenById.value);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    workingOpenById.value = next;
+    if (openWorking.value?.messageId === id) {
+      closeWorking();
+      return;
+    }
+
+    openWorking.value = {
+      messageId: id,
+      steps: [],
+      selectedStepId: null,
+      selectedStep: null,
+      selectedLatest: true,
+      loading: true,
+      error: '',
+    };
+    void loadWorking(id, 'latest');
+  };
+
+  const selectWorkingStep = (messageId: number | null | undefined, stepId: number | null | undefined) => {
+    if (!messageId || !stepId) return;
+    if (openWorking.value?.messageId !== messageId) return;
+    void loadWorking(messageId, stepId);
+  };
+
+  const getOpenWorkingPollRequest = (messageId: number) => {
+    const state = openWorking.value;
+    if (!state || state.messageId !== messageId) return null;
+    if (state.selectedLatest) return 'latest';
+    return state.selectedStepId && state.selectedStepId > 0 ? String(state.selectedStepId) : 'latest';
+  };
+
+  const applyWorkingPoll = (messageId: number, payload: PollResponse['working_open']) => {
+    if (!payload || openWorking.value?.messageId !== messageId) return;
+    openWorking.value = {
+      ...openWorking.value,
+      selectedStepId: payload.selected_step_id ?? payload.step?.id ?? openWorking.value.selectedStepId,
+      selectedStep: payload.step || openWorking.value.selectedStep,
+      loading: false,
+      error: '',
+    };
   };
 
   const retryLastStep = async (msg: ChatBranchMessage) => {
@@ -242,7 +332,7 @@ export function useChatMessageActions(params: Params) {
         {}
       );
 
-      params.branch.value = payload.branch || [];
+      replaceBranch(payload.branch);
 
       const generationId = payload.generation?.message_id;
       if (generationId) {
@@ -274,7 +364,7 @@ export function useChatMessageActions(params: Params) {
           target_id: targetId,
         }
       );
-      params.branch.value = payload.branch || [];
+      replaceBranch(payload.branch);
       params.afterBranchSwitched?.();
     } catch (error) {
       console.error(error);
@@ -282,26 +372,15 @@ export function useChatMessageActions(params: Params) {
   };
 
   const extractEditableTextContents = (msg: ChatBranchMessage) => {
-    const wantedType = msg.role === 'user' ? 'input' : 'answer';
     const targets: Array<{ id: number; sequence: number; text: string }> = [];
 
-    const steps = msg.steps || [];
-    for (const step of [...steps].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-      const items = step.items || [];
-      for (const item of [...items].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-        if (item.type !== wantedType) continue;
-
-        const contents = item.contents || [];
-        for (const content of [...contents].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-          if (content.kind !== 'text') continue;
-          if (typeof content.id !== 'number') continue;
-          targets.push({
-            id: content.id,
-            sequence: content.sequence ?? 0,
-            text: String(content.content_text ?? ''),
-          });
-        }
-      }
+    for (const part of [...(msg.content?.parts || [])].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
+      if (typeof part.content_id !== 'number') continue;
+      targets.push({
+        id: part.content_id,
+        sequence: part.sequence ?? 0,
+        text: String(part.text ?? ''),
+      });
     }
 
     return targets;
@@ -309,22 +388,11 @@ export function useChatMessageActions(params: Params) {
 
   const extractEditableMediaContents = (msg: ChatBranchMessage) => {
     if (!msg.id) return [];
-
-    const wantedType = msg.role === 'user' ? 'input' : 'artifact';
     const attachments: ExistingChatAttachment[] = [];
 
-    const steps = msg.steps || [];
-    for (const step of [...steps].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-      const items = step.items || [];
-      for (const item of [...items].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-        if (item.type !== wantedType) continue;
-
-        const contents = item.contents || [];
-        for (const content of [...contents].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
-          const attachment = mapContentToExistingAttachment(content, msg.id);
-          if (attachment) attachments.push(attachment);
-        }
-      }
+    for (const content of msg.content?.media || []) {
+      const attachment = mapContentToExistingAttachment(content, msg.id);
+      if (attachment) attachments.push(attachment);
     }
 
     return attachments;
@@ -377,7 +445,7 @@ export function useChatMessageActions(params: Params) {
         `/api/bff/chats/${params.chatId.value}/generate`,
         { parent_id: parentId }
       );
-      params.branch.value = payload.branch || [];
+      replaceBranch(payload.branch);
       const messageId = payload.generation?.message_id;
       if (messageId) {
         await params.startPolling(messageId);
@@ -473,7 +541,7 @@ export function useChatMessageActions(params: Params) {
           `/api/bff/chat-messages/${editingMessage.value.id}`,
           updatePayload
         );
-        params.branch.value = payload.branch || [];
+        replaceBranch(payload.branch);
         resetEditState();
       } else {
         const configReady = await params.waitForConfigSync();
@@ -498,7 +566,7 @@ export function useChatMessageActions(params: Params) {
               )
             : { content: editContents.value[0] ?? '', parent_id: parentId }
         );
-        params.branch.value = payload.branch || [];
+        replaceBranch(payload.branch);
         resetEditState();
 
         const messageId = payload.generation?.message_id;
@@ -518,7 +586,17 @@ export function useChatMessageActions(params: Params) {
     }
   };
 
+  watch(
+    () => params.branch.value.map((message) => message.id).join(':'),
+    () => {
+      const messageId = openWorking.value?.messageId;
+      if (!messageId) return;
+      if (!params.branch.value.some((message) => message.id === messageId)) closeWorking();
+    }
+  );
+
   const dispose = async () => {
+    closeWorking();
     await params.clearPendingFilesCollection(editPendingFiles);
   };
 
@@ -544,7 +622,11 @@ export function useChatMessageActions(params: Params) {
     deleteMessageTitle,
     confirmAndDeleteMessage,
     isWorkingOpen,
+    workingStateFor,
     toggleWorking,
+    selectWorkingStep,
+    getOpenWorkingPollRequest,
+    applyWorkingPoll,
     retryLastStep,
     switchBranchHandler,
     startEdit,

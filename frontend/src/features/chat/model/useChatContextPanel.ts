@@ -110,11 +110,8 @@ export function useChatContextPanel(params: Params) {
 
   const findLatestStepWithUsage = (messages: ChatBranchMessage[]) => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const steps = messages[i].steps || [];
-      for (let j = steps.length - 1; j >= 0; j -= 1) {
-        const step = steps[j];
-        if (step.input_tokens != null || step.output_tokens != null) return step;
-      }
+      const step = messages[i].usage?.latest_step;
+      if (step && (step.input_tokens != null || step.output_tokens != null)) return step;
     }
     return null;
   };

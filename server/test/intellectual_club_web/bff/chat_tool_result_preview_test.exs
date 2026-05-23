@@ -180,51 +180,44 @@ defmodule IntellectualClubWeb.Bff.ChatToolResultPreviewTest do
       )
       |> Ash.create!(actor: actor)
 
-    state =
+    working =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chat-messages/#{assistant_message.id}/working")
       |> json_response(200)
 
-    assistant_payload =
-      Enum.find(state["branch"] || [], fn message ->
-        message["id"] == assistant_message.id
-      end) || %{}
+    step_payload = working["step"] || %{}
+    step_payloads = [step_payload]
 
     preview_content =
-      assistant_payload
-      |> Map.get("steps", [])
+      step_payloads
       |> Enum.flat_map(fn s -> Map.get(s, "items", []) end)
       |> Enum.filter(fn i -> Map.get(i, "type") == "tool_result" end)
       |> Enum.flat_map(fn i -> Map.get(i, "contents", []) end)
       |> Enum.find(fn c -> Map.get(c, "id") == content.id end)
 
     chat_style_preview =
-      assistant_payload
-      |> Map.get("steps", [])
+      step_payloads
       |> Enum.flat_map(fn s -> Map.get(s, "items", []) end)
       |> Enum.filter(fn i -> Map.get(i, "type") == "tool_result" end)
       |> Enum.flat_map(fn i -> Map.get(i, "contents", []) end)
       |> Enum.find(fn c -> Map.get(c, "id") == chat_style_opaque.id end)
 
     responses_text_preview =
-      assistant_payload
-      |> Map.get("steps", [])
+      step_payloads
       |> Enum.flat_map(fn s -> Map.get(s, "items", []) end)
       |> Enum.filter(fn i -> Map.get(i, "type") == "tool_result" end)
       |> Enum.flat_map(fn i -> Map.get(i, "contents", []) end)
       |> Enum.find(fn c -> Map.get(c, "id") == responses_text_content.id end)
 
     responses_style_preview =
-      assistant_payload
-      |> Map.get("steps", [])
+      step_payloads
       |> Enum.flat_map(fn s -> Map.get(s, "items", []) end)
       |> Enum.filter(fn i -> Map.get(i, "type") == "tool_result" end)
       |> Enum.flat_map(fn i -> Map.get(i, "contents", []) end)
       |> Enum.find(fn c -> Map.get(c, "id") == responses_style_opaque.id end)
 
     reasoning_contents =
-      assistant_payload
-      |> Map.get("steps", [])
+      step_payloads
       |> Enum.flat_map(fn s -> Map.get(s, "items", []) end)
       |> Enum.find(fn i -> Map.get(i, "id") == reasoning_item.id end)
       |> then(&(&1 || %{}))

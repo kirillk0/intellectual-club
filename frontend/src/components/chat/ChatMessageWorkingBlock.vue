@@ -15,7 +15,9 @@
 
     <transition name="fade">
       <div v-show="open" class="working-body" :id="workingBodyId">
-        <template v-if="currentStep">
+        <div v-if="loading" class="working-item-body muted">Loading working details…</div>
+        <div v-else-if="error" class="working-item-body error-text">{{ error }}</div>
+        <template v-else-if="currentStep">
           <div v-if="showStepNavigation" class="working-nav">
             <div class="working-nav-buttons" role="group" aria-label="Step navigation">
               <button type="button" class="link" :disabled="!canGoPrev" @click="goFirst">
@@ -35,11 +37,11 @@
               <span class="working-nav-select-label">Step</span>
               <select
                 class="working-nav-select"
-                :value="currentStepIndex"
+                :value="currentStepId || ''"
                 @change="onStepSelectChange"
                 aria-label="Select step"
               >
-                <option v-for="option in stepOptions" :key="option.index" :value="option.index">
+                <option v-for="option in stepOptions" :key="option.id" :value="option.id">
                   Step {{ option.number }}
                 </option>
               </select>
@@ -136,16 +138,22 @@
             </template>
           </div>
         </template>
+        <div v-else class="working-item-body muted">No working details</div>
       </div>
     </transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
-import type { ChatMessageContent, ChatMessageItem, ChatMessageStep } from '@/types/api';
+import type {
+  ChatMessageContent,
+  ChatMessageItem,
+  ChatMessageStep,
+  ChatMessageWorkingSummary,
+} from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import { displayTimestampIso, formatTimeOfDay } from '@/utils/dates';
@@ -153,19 +161,28 @@ import { displayTimestampIso, formatTimeOfDay } from '@/utils/dates';
 interface Props {
   messageId: number | null;
   messageStatus?: 'generating' | 'canceled' | 'error' | 'done' | string | null;
-  steps?: ChatMessageStep[] | null;
+  summary?: ChatMessageWorkingSummary | null;
+  stepIndex?: ChatMessageStep[] | null;
+  selectedStep?: ChatMessageStep | null;
+  loading?: boolean;
+  error?: string;
   open?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   messageId: null,
   messageStatus: null,
-  steps: () => [],
+  summary: null,
+  stepIndex: () => [],
+  selectedStep: null,
+  loading: false,
+  error: '',
   open: false,
 });
 
 const emit = defineEmits<{
   (e: 'toggle'): void;
+  (e: 'step-select', stepId: number): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
   (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent }): void;
@@ -180,16 +197,19 @@ const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => {
 const orderedItems = (step: ChatMessageStep | null | undefined): ChatMessageItem[] =>
   ((step?.items || []).slice().sort(sortBySequence) as ChatMessageItem[]);
 
-const steps = computed(() => (props.steps || []).slice().sort(sortBySequence));
+const steps = computed(() => (props.stepIndex || []).slice().sort(sortBySequence));
 const open = computed(() => Boolean(props.open));
-const currentStepIndex = ref(0);
+const loading = computed(() => Boolean(props.loading));
+const error = computed(() => props.error || '');
 
 const hasWorking = computed(() => {
   if (!props.messageId) return false;
-  return steps.value.length > 0;
+  return (props.summary?.step_count || 0) > 0 || steps.value.length > 0 || Boolean(props.selectedStep);
 });
 
 const lastStepNumber = computed<number | null>(() => {
+  if (typeof props.summary?.latest_step_sequence === 'number') return props.summary.latest_step_sequence;
+  if (typeof props.summary?.step_count === 'number' && props.summary.step_count > 0) return props.summary.step_count;
   if (!steps.value.length) return null;
   const sequences = steps.value
     .map((s) => (typeof s.sequence === 'number' ? s.sequence : null))
@@ -200,7 +220,14 @@ const lastStepNumber = computed<number | null>(() => {
 
 const workingBodyId = computed(() => (props.messageId ? `working-${props.messageId}` : undefined));
 const showStepNavigation = computed(() => steps.value.length > 1);
-const currentStep = computed(() => steps.value[currentStepIndex.value] || null);
+const currentStep = computed(() => props.selectedStep || null);
+const currentStepId = computed(() => currentStep.value?.id ?? null);
+const currentStepIndex = computed(() => {
+  const id = currentStepId.value;
+  const index = steps.value.findIndex((step) => step.id === id);
+  if (index >= 0) return index;
+  return steps.value.length ? steps.value.length - 1 : 0;
+});
 const currentStepNumber = computed(() => {
   if (!currentStep.value) return null;
   return stepNumber(currentStep.value, currentStepIndex.value);
@@ -209,7 +236,7 @@ const currentStepTime = computed(() => formatTimeOfDay(displayTimestampIso(curre
 
 const stepOptions = computed(() =>
   steps.value.map((step, index) => ({
-    index,
+    id: step.id,
     number: stepNumber(step, index),
   }))
 );
@@ -217,71 +244,36 @@ const stepOptions = computed(() =>
 const canGoPrev = computed(() => currentStepIndex.value > 0);
 const canGoNext = computed(() => currentStepIndex.value < steps.value.length - 1);
 
-const setCurrentStepToLast = () => {
-  if (!steps.value.length) {
-    currentStepIndex.value = 0;
-    return;
-  }
-  currentStepIndex.value = steps.value.length - 1;
+const selectStepAt = (index: number) => {
+  const step = steps.value[index];
+  if (!step?.id) return;
+  emit('step-select', step.id);
 };
 
-watch(
-  () => open.value,
-  (isOpen, wasOpen) => {
-    if (isOpen && !wasOpen) {
-      setCurrentStepToLast();
-    }
-  }
-);
-
-watch(
-  () => steps.value.length,
-  (length, previous) => {
-    if (!length) {
-      currentStepIndex.value = 0;
-      return;
-    }
-    if (currentStepIndex.value > length - 1) {
-      currentStepIndex.value = length - 1;
-    }
-    if (!open.value && length !== previous) {
-      setCurrentStepToLast();
-    }
-  }
-);
-
-watch(
-  () => props.messageId,
-  () => {
-    currentStepIndex.value = 0;
-  }
-);
-
 const goFirst = () => {
-  currentStepIndex.value = 0;
+  selectStepAt(0);
 };
 
 const goPrev = () => {
   if (!canGoPrev.value) return;
-  currentStepIndex.value -= 1;
+  selectStepAt(currentStepIndex.value - 1);
 };
 
 const goNext = () => {
   if (!canGoNext.value) return;
-  currentStepIndex.value += 1;
+  selectStepAt(currentStepIndex.value + 1);
 };
 
 const goLast = () => {
   if (!steps.value.length) return;
-  currentStepIndex.value = steps.value.length - 1;
+  selectStepAt(steps.value.length - 1);
 };
 
 const onStepSelectChange = (event: Event) => {
   const target = event.target as HTMLSelectElement;
-  const nextIndex = Number(target.value);
-  if (!Number.isFinite(nextIndex)) return;
-  if (nextIndex < 0 || nextIndex >= steps.value.length) return;
-  currentStepIndex.value = nextIndex;
+  const stepId = Number(target.value);
+  if (!Number.isFinite(stepId) || stepId <= 0) return;
+  emit('step-select', stepId);
 };
 
 const canOpenStep = (step: ChatMessageStep | null) => Boolean(step && typeof step.id === 'number' && step.id > 0);

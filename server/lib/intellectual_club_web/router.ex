@@ -114,6 +114,7 @@ defmodule IntellectualClubWeb.Router do
     post "/chats", ChatsController, :create
     get "/chats/:id/idle-state", ChatsController, :idle_state
     get "/chats/:id/state", ChatsController, :state
+    get "/chats/:id/settings-state", ChatsController, :settings_state
     get "/chats/:id/prompt-context", ChatsController, :prompt_context
     get "/chats/:id/search", ChatsController, :search_messages
     get "/chats/:id/shares", ChatsController, :shares
@@ -142,6 +143,7 @@ defmodule IntellectualClubWeb.Router do
     post "/chat-messages/:id/bookmark", BookmarksController, :toggle_message
     patch "/chat-messages/:id", ChatMessagesController, :update
     get "/chat-messages/:id/poll", ChatMessagesController, :poll
+    get "/chat-messages/:id/working", ChatMessagesController, :working
 
     get "/chat-messages/:message_id/steps/:step_id/raw", ChatMessagesController, :step_raw
 

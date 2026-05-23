@@ -7,7 +7,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   require Logger
 
-  alias IntellectualClub.Chat.Bookmarking
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
@@ -19,13 +18,14 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
   alias IntellectualClubWeb.Bff.ChatAttachments
+  alias IntellectualClubWeb.Bff.ChatBranchPayload
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
   alias IntellectualClubWeb.Bff.Loads
   alias IntellectualClubWeb.Bff.Serializer
 
-  def poll(conn, %{"id" => id} = _params) do
+  def poll(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
@@ -33,27 +33,61 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         case GenerationSupervisor.poll_generation(message_id, %{}, []) do
           {:ok, runtime} ->
             message = load_persisted_message(message_id, actor)
-            steps = serialize_message_steps(message)
             current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
 
-            json(conn, %{
-              message_id: message_id,
-              runtime: true,
-              status: Atom.to_string(runtime.status),
-              current_step: current_step,
-              steps: steps,
-              token_count: if(message, do: message.token_count, else: nil),
-              error_detail: if(message, do: message.error_detail, else: nil),
-              finished_at:
-                if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
-            })
+            payload =
+              if message,
+                do:
+                  ChatBranchPayload.message(message, actor,
+                    runtime_steps_by_message_id: %{message_id => current_step}
+                  ),
+                else: %{}
+
+            response =
+              %{
+                message_id: message_id,
+                runtime: true,
+                status: status_string(runtime.status),
+                content: Map.get(payload, :content, %{parts: [], media: []}),
+                usage: Map.get(payload, :usage, %{latest_step: nil, total_cost: nil}),
+                working: Map.get(payload, :working, Serializer.working_summary([])),
+                token_count: if(message, do: message.token_count, else: nil),
+                error_detail: if(message, do: message.error_detail, else: nil),
+                finished_at:
+                  if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
+              }
+              |> maybe_put_working_open(message_id, params, actor, current_step)
+
+            json(conn, response)
 
           :not_found ->
-            render_poll_fallback(conn, message_id, actor)
+            render_poll_fallback(conn, message_id, actor, params)
         end
       else
         {:error, error} -> render_access_error(conn, error)
       end
+    end
+  end
+
+  def working(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, step_id} <- parse_working_step_id(Map.get(params, "step_id")),
+         {:ok, payload} <-
+           ChatBranchPayload.working_payload(String.to_integer(id), step_id, actor) do
+      json(conn, payload)
+    else
+      {:error, :invalid_step_id} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "step_id must be an integer or latest"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Working step not found"})
+
+      {:error, error} ->
+        render_access_error(conn, error)
     end
   end
 
@@ -384,10 +418,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp load_branch(chat_id, actor) when is_integer(chat_id) do
     {messages, branch_meta} =
-      Threads.active_branch_with_meta(chat_id, actor,
-        load: Loads.message_tree(),
-        strict?: true
-      )
+      Threads.active_branch_with_meta(chat_id, actor, strict?: true)
 
     branch_meta_by_id = Map.new(branch_meta, fn node -> {node.id, node} end)
     {messages, branch_meta_by_id}
@@ -403,12 +434,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp serialize_branch(messages, branch_meta_by_id, actor) do
-    bookmarked_message_ids =
-      messages
-      |> Enum.map(& &1.id)
-      |> Bookmarking.bookmarked_message_id_set(actor)
-
-    Enum.map(messages, &Serializer.branch_message(&1, branch_meta_by_id, bookmarked_message_ids))
+    ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
   end
 
   defp wanted_item_type(:user), do: :input
@@ -792,25 +818,16 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     |> Enum.join("")
   end
 
-  defp render_poll_fallback(conn, message_id, actor) do
-    load = Loads.message_tree()
-
-    with {:ok, message} <-
-           Ash.get(ChatMessage, message_id, actor: actor, load: load, strict?: true) do
+  defp render_poll_fallback(conn, message_id, actor, params) do
+    with {:ok, message} <- Ash.get(ChatMessage, message_id, actor: actor) do
       message =
         if message.status == :generating and actor_owns_message?(message, actor) do
           case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
             {:ok, _context} ->
-              {:ok, fresh} =
-                Ash.get(ChatMessage, message_id, actor: actor, load: load, strict?: true)
-
-              fresh
+              Ash.get!(ChatMessage, message_id, actor: actor)
 
             {:error, :already_running} ->
-              {:ok, fresh} =
-                Ash.get(ChatMessage, message_id, actor: actor, load: load, strict?: true)
-
-              fresh
+              Ash.get!(ChatMessage, message_id, actor: actor)
 
             {:error, reason} ->
               Logger.warning(
@@ -819,33 +836,29 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
               :ok = GenerationPersistence.cancel_orphaned_generating_message!(message_id)
 
-              {:ok, fresh} =
-                Ash.get(ChatMessage, message_id, actor: actor, load: load, strict?: true)
-
-              fresh
+              Ash.get!(ChatMessage, message_id, actor: actor)
           end
         else
           message
         end
 
-      steps = serialize_message_steps(message)
+      payload = ChatBranchPayload.message(message, actor)
 
-      current_step =
-        case steps do
-          [] -> nil
-          _ -> Enum.max_by(steps, &Map.get(&1, :sequence, 0))
-        end
+      response =
+        %{
+          message_id: message_id,
+          runtime: false,
+          status: status_string(message.status),
+          content: Map.get(payload, :content, %{parts: [], media: []}),
+          usage: Map.get(payload, :usage, %{latest_step: nil, total_cost: nil}),
+          working: Map.get(payload, :working, Serializer.working_summary([])),
+          token_count: message.token_count,
+          error_detail: message.error_detail,
+          finished_at: Serializer.datetime_iso(message.finished_at)
+        }
+        |> maybe_put_working_open(message_id, params, actor, nil)
 
-      json(conn, %{
-        message_id: message_id,
-        runtime: false,
-        status: Atom.to_string(message.status),
-        token_count: message.token_count,
-        current_step: current_step,
-        steps: steps,
-        error_detail: message.error_detail,
-        finished_at: Serializer.datetime_iso(message.finished_at)
-      })
+      json(conn, response)
     else
       {:error, _error} ->
         conn
@@ -855,11 +868,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp load_persisted_message(message_id, actor) when is_integer(message_id) do
-    case Ash.get(ChatMessage, message_id,
-           actor: actor,
-           load: Loads.message_tree(),
-           strict?: true
-         ) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
       {:ok, message} ->
         message
 
@@ -868,12 +877,106 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     end
   end
 
-  defp serialize_message_steps(nil), do: []
+  defp maybe_put_working_open(response, message_id, params, actor, runtime_step) do
+    case parse_working_poll_request(Map.get(params, "working_step_id")) do
+      :none ->
+        response
 
-  defp serialize_message_steps(message) do
-    (message.steps || [])
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map(&Serializer.step/1)
+      :latest ->
+        Map.put(response, :working_open, working_open_latest(message_id, actor, runtime_step))
+
+      {:id, step_id} ->
+        Map.put(
+          response,
+          :working_open,
+          working_open_selected(message_id, step_id, actor, runtime_step)
+        )
+    end
+  end
+
+  defp working_open_latest(message_id, actor, runtime_step) when is_map(runtime_step) do
+    %{
+      selected_step_id: map_get(runtime_step, :id, "id"),
+      step: runtime_step
+    }
+    |> maybe_put_step_count(message_id, actor)
+  end
+
+  defp working_open_latest(message_id, actor, _runtime_step) do
+    case ChatBranchPayload.working_payload(message_id, nil, actor) do
+      {:ok, payload} -> Map.take(payload, [:step_count, :selected_step_id, :step])
+      {:error, _error} -> nil
+    end
+  end
+
+  defp working_open_selected(message_id, step_id, actor, runtime_step) do
+    if runtime_step_matches?(runtime_step, step_id) do
+      %{
+        selected_step_id: step_id,
+        step: runtime_step
+      }
+      |> maybe_put_step_count(message_id, actor)
+    else
+      case ChatBranchPayload.working_payload(message_id, step_id, actor) do
+        {:ok, payload} -> Map.take(payload, [:step_count, :selected_step_id, :step])
+        {:error, _error} -> nil
+      end
+    end
+  end
+
+  defp maybe_put_step_count(payload, message_id, actor) when is_map(payload) do
+    case ChatBranchPayload.working_payload(message_id, nil, actor) do
+      {:ok, working_payload} ->
+        Map.put(payload, :step_count, Map.get(working_payload, :step_count))
+
+      {:error, _error} ->
+        payload
+    end
+  end
+
+  defp parse_working_poll_request(nil), do: :none
+  defp parse_working_poll_request(""), do: :latest
+  defp parse_working_poll_request("latest"), do: :latest
+
+  defp parse_working_poll_request(value) do
+    case parse_working_step_id(value) do
+      {:ok, nil} -> :latest
+      {:ok, step_id} -> {:id, step_id}
+      {:error, _error} -> :none
+    end
+  end
+
+  defp parse_working_step_id(nil), do: {:ok, nil}
+  defp parse_working_step_id(""), do: {:ok, nil}
+  defp parse_working_step_id("latest"), do: {:ok, nil}
+  defp parse_working_step_id(value) when is_integer(value) and value > 0, do: {:ok, value}
+
+  defp parse_working_step_id(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {step_id, ""} when step_id > 0 -> {:ok, step_id}
+      _other -> {:error, :invalid_step_id}
+    end
+  end
+
+  defp parse_working_step_id(_value), do: {:error, :invalid_step_id}
+
+  defp runtime_step_matches?(runtime_step, step_id) when is_map(runtime_step) do
+    map_get(runtime_step, :id, "id") == step_id
+  end
+
+  defp runtime_step_matches?(_runtime_step, _step_id), do: false
+
+  defp status_string(nil), do: nil
+  defp status_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp status_string(value) when is_binary(value), do: value
+  defp status_string(value), do: to_string(value)
+
+  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
+    cond do
+      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
+      Map.has_key?(map, string_key) -> Map.get(map, string_key)
+      true -> default
+    end
   end
 
   defp fetch_owned_message(message_id, actor) do

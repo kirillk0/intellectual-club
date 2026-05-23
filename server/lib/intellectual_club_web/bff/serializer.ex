@@ -338,6 +338,141 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  def branch_message_light(
+        %ChatMessage{} = message,
+        branch_meta_by_id \\ %{},
+        bookmarked_message_ids \\ MapSet.new(),
+        extras \\ %{}
+      ) do
+    meta = Map.get(branch_meta_by_id, message.id, %{})
+
+    %{
+      id: message.id,
+      parent_id: message.parent_id,
+      role: atom_to_string(message.role),
+      status: atom_to_string(message.status),
+      error_detail: message.error_detail,
+      token_count: message.token_count,
+      created_at: datetime_iso(message.created_at),
+      finished_at: datetime_iso(Map.get(message, :finished_at)),
+      llm_configuration_id: message.llm_configuration_id,
+      bookmarked: MapSet.member?(bookmarked_message_ids, message.id),
+      content: Map.get(extras, :content, %{parts: [], media: []}),
+      usage: Map.get(extras, :usage, %{latest_step: nil, total_cost: nil}),
+      working: Map.get(extras, :working, working_summary([])),
+      prev_sibling_id: Map.get(meta, :prev_sibling),
+      next_sibling_id: Map.get(meta, :next_sibling),
+      siblings:
+        Enum.map(Map.get(meta, :siblings, []), fn sibling ->
+          %{
+            id: Map.get(sibling, :id),
+            size: Map.get(sibling, :size),
+            active: Map.get(sibling, :active)
+          }
+        end)
+    }
+  end
+
+  def message_content_snapshot(
+        %ChatMessageContent{} = content,
+        %ChatMessageItem{} = item,
+        %ChatMessageStep{} = step
+      ) do
+    item_type = atom_to_string(item.type)
+    serialized = content(content, item_type)
+
+    %{
+      step_id: step.id,
+      step_sequence: step.sequence,
+      item_id: item.id,
+      item_sequence: item.sequence,
+      content_id: content.id,
+      sequence: content.sequence,
+      text: Map.get(serialized, :content_text),
+      content_text_truncated: Map.get(serialized, :content_text_truncated),
+      created_at: datetime_iso(item.created_at || step.created_at)
+    }
+  end
+
+  def media_content_snapshot(
+        %ChatMessageContent{} = content,
+        %ChatMessageItem{} = item,
+        %ChatMessageStep{} = step
+      ) do
+    item_type = atom_to_string(item.type)
+
+    content(content, item_type)
+    |> Map.merge(%{
+      step_id: step.id,
+      step_sequence: step.sequence,
+      item_id: item.id,
+      item_sequence: item.sequence
+    })
+  end
+
+  def working_summary(steps) when is_list(steps) do
+    summaries = Enum.map(steps, &working_step_summary/1)
+    latest = latest_step_summary(summaries)
+
+    %{
+      step_count: length(summaries),
+      latest_step_id: if(latest, do: Map.get(latest, :id), else: nil),
+      latest_step_sequence: if(latest, do: Map.get(latest, :sequence), else: nil),
+      latest_step_status: if(latest, do: Map.get(latest, :status), else: nil)
+    }
+  end
+
+  def working_step_summary(%ChatMessageStep{} = step) do
+    %{
+      id: step.id,
+      sequence: step.sequence,
+      created_at: datetime_iso(step.created_at),
+      time_to_first_token_ms:
+        StepMetrics.time_to_first_token_ms(step.created_at, Map.get(step, :first_token_at)),
+      tokens_per_second:
+        StepMetrics.tokens_per_second(
+          step.output_tokens,
+          Map.get(step, :first_token_at),
+          Map.get(step, :finished_at)
+        ),
+      finished_at: datetime_iso(Map.get(step, :finished_at)),
+      status: atom_to_string(step.status),
+      response_final: step.response_final,
+      input_tokens: step.input_tokens,
+      output_tokens: step.output_tokens,
+      cached_input_tokens: step.cached_input_tokens,
+      reasoning_tokens: step.reasoning_tokens,
+      cost: step.cost
+    }
+  end
+
+  def working_step_summary(step) when is_map(step) do
+    %{
+      id: map_get(step, :id, "id"),
+      sequence: map_get(step, :sequence, "sequence"),
+      created_at: normalize_datetime_value(map_get(step, :created_at, "created_at")),
+      time_to_first_token_ms: map_get(step, :time_to_first_token_ms, "time_to_first_token_ms"),
+      tokens_per_second: map_get(step, :tokens_per_second, "tokens_per_second"),
+      finished_at: normalize_datetime_value(map_get(step, :finished_at, "finished_at")),
+      status: map_get(step, :status, "status") |> atom_to_string(),
+      response_final: map_get(step, :response_final, "response_final"),
+      input_tokens: map_get(step, :input_tokens, "input_tokens"),
+      output_tokens: map_get(step, :output_tokens, "output_tokens"),
+      cached_input_tokens: map_get(step, :cached_input_tokens, "cached_input_tokens"),
+      reasoning_tokens: map_get(step, :reasoning_tokens, "reasoning_tokens"),
+      cost: map_get(step, :cost, "cost")
+    }
+  end
+
+  def usage_summary(steps) when is_list(steps) do
+    summaries = Enum.map(steps, &working_step_summary/1)
+
+    %{
+      latest_step: latest_step_summary(summaries),
+      total_cost: total_step_cost(summaries)
+    }
+  end
+
   def step(%ChatMessageStep{} = step) do
     items = ordered_by_sequence(step.items)
 
@@ -475,6 +610,41 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       _ -> nil
     end
   end
+
+  defp latest_step_summary([]), do: nil
+
+  defp latest_step_summary(summaries) when is_list(summaries) do
+    Enum.max_by(summaries, &{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || 0}, fn -> nil end)
+  end
+
+  defp total_step_cost(summaries) when is_list(summaries) do
+    {total, count} =
+      Enum.reduce(summaries, {0.0, 0}, fn summary, {total, count} ->
+        case numeric_value(Map.get(summary, :cost)) do
+          nil -> {total, count}
+          cost -> {total + cost, count + 1}
+        end
+      end)
+
+    if count == 0, do: nil, else: total
+  end
+
+  defp numeric_value(value) when is_integer(value), do: value * 1.0
+  defp numeric_value(value) when is_float(value), do: value
+
+  defp numeric_value(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp numeric_value(_value), do: nil
+
+  defp normalize_datetime_value(%DateTime{} = value), do: datetime_iso(value)
+  defp normalize_datetime_value(%NaiveDateTime{} = value), do: datetime_iso(value)
+  defp normalize_datetime_value(value) when is_binary(value), do: value
+  defp normalize_datetime_value(_value), do: nil
 
   defp normalize_runtime_item(item) when is_map(item) do
     type = map_get(item, :type, "type") |> atom_to_string()

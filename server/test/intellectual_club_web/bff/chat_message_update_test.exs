@@ -387,20 +387,17 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
   end
 
   defp answer_text_contents(message_payload) do
-    (Map.get(message_payload, "steps") || [])
-    |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-    |> Enum.filter(fn item -> Map.get(item, "type") == "answer" end)
-    |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-    |> Enum.filter(fn content -> Map.get(content, "kind") == "text" end)
+    message_payload
+    |> get_in(["content", "parts"])
+    |> List.wrap()
     |> Enum.sort_by(fn content -> Map.get(content, "sequence") || 0 end)
-    |> Enum.map(fn content -> Map.get(content, "content_text") || "" end)
+    |> Enum.map(fn content -> Map.get(content, "text") || "" end)
   end
 
-  defp media_contents(message_payload, item_type) do
-    (Map.get(message_payload, "steps") || [])
-    |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-    |> Enum.filter(fn item -> Map.get(item, "type") == item_type end)
-    |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
+  defp media_contents(message_payload, _item_type) do
+    message_payload
+    |> get_in(["content", "media"])
+    |> List.wrap()
     |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
     |> Enum.sort_by(fn content -> Map.get(content, "sequence") || 0 end)
   end

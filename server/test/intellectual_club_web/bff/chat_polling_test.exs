@@ -11,7 +11,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
 
-  test "poll returns current_step snapshot while generation is running", %{conn: conn} do
+  test "poll returns lean answer snapshot while generation is running", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -40,9 +40,19 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     assert payload["runtime"] == true
     assert payload["status"] == "generating"
     assert payload["finished_at"] == nil
-    assert is_map(payload["current_step"])
-    assert payload["current_step"]["finished_at"] == nil
+    refute Map.has_key?(payload, "current_step")
+    refute Map.has_key?(payload, "steps")
+    assert is_map(payload["content"])
+    assert get_in(payload, ["working", "step_count"]) >= 1
     assert is_binary(answer1)
+
+    open_payload =
+      conn
+      |> get("/api/bff/chat-messages/#{context.message_id}/poll?working_step_id=latest")
+      |> json_response(200)
+
+    assert is_map(get_in(open_payload, ["working_open", "step"]))
+    assert get_in(open_payload, ["working_open", "step", "finished_at"]) == nil
 
     Process.sleep(40)
 
@@ -75,16 +85,13 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     Process.sleep(10)
 
-    state =
+    working =
       conn
-      |> get("/api/bff/chats/#{chat.id}/state")
+      |> get("/api/bff/chat-messages/#{context.message_id}/working")
       |> json_response(200)
 
-    message =
-      Enum.find(state["branch"] || [], fn msg -> msg["id"] == context.message_id end) || %{}
-
     step =
-      case message do
+      case working do
         %{"steps" => [first | _rest]} when is_map(first) -> first
         _ -> %{}
       end
@@ -129,9 +136,10 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     assert payload["status"] in ["done", "canceled", "error"]
     assert is_binary(payload["finished_at"])
     assert is_integer(payload["token_count"])
-    assert is_list(payload["steps"])
-    assert is_map(payload["current_step"])
-    assert is_binary(payload["current_step"]["finished_at"])
+    refute Map.has_key?(payload, "steps")
+    refute Map.has_key?(payload, "current_step")
+    assert get_in(payload, ["working", "step_count"]) >= 1
+    assert is_binary(get_in(payload, ["usage", "latest_step", "finished_at"]))
 
     {_payload, answer} = poll_answer_text(conn, context.message_id)
     assert String.trim(answer) != ""
@@ -245,17 +253,12 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
       |> get("/api/bff/chat-messages/#{message_id}/poll")
       |> json_response(200)
 
-    step = Map.get(payload, "current_step") || %{}
-    items = Map.get(step, "items") || []
-
-    answer_item = Enum.find(items, fn item -> Map.get(item, "type") == "answer" end) || %{}
-    contents = Map.get(answer_item, "contents") || []
-
     text =
-      contents
-      |> Enum.filter(fn content -> Map.get(content, "kind") == "text" end)
+      payload
+      |> get_in(["content", "parts"])
+      |> List.wrap()
       |> Enum.sort_by(fn content -> Map.get(content, "sequence") || 0 end)
-      |> Enum.map_join("", fn content -> Map.get(content, "content_text") || "" end)
+      |> Enum.map_join("", fn content -> Map.get(content, "text") || "" end)
 
     {payload, text}
   end

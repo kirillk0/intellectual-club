@@ -78,11 +78,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     [user_message] = user_messages
 
-    media_contents =
-      (Map.get(user_message, "steps") || [])
-      |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-      |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-      |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
+    media_contents = media_contents(user_message)
 
     assert length(media_contents) == 1
     [media_content] = media_contents
@@ -122,11 +118,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     assert length(user_messages) == 1
     [user_message] = user_messages
 
-    media_contents =
-      (Map.get(user_message, "steps") || [])
-      |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-      |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-      |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
+    media_contents = media_contents(user_message)
 
     assert length(media_contents) == 1
     [media_content] = media_contents
@@ -283,11 +275,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     assert is_map(copied_user_message)
 
-    copied_media =
-      (Map.get(copied_user_message, "steps") || [])
-      |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-      |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-      |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
+    copied_media = media_contents(copied_user_message)
 
     assert length(copied_media) == 1
     [content] = copied_media
@@ -407,11 +395,17 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
   end
 
   defp all_text_contents(message_payload) do
-    (Map.get(message_payload, "steps") || [])
-    |> Enum.flat_map(fn step -> Map.get(step, "items") || [] end)
-    |> Enum.flat_map(fn item -> Map.get(item, "contents") || [] end)
-    |> Enum.filter(fn content -> Map.get(content, "kind") == "text" end)
-    |> Enum.map(fn content -> Map.get(content, "content_text") || "" end)
+    message_payload
+    |> get_in(["content", "parts"])
+    |> List.wrap()
+    |> Enum.map(fn part -> Map.get(part, "text") || "" end)
+  end
+
+  defp media_contents(message_payload) do
+    message_payload
+    |> get_in(["content", "media"])
+    |> List.wrap()
+    |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
   end
 
   defp wait_for_generation_to_finish(conn, message_id, attempts_left \\ 200)

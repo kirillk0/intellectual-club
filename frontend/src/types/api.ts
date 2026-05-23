@@ -196,6 +196,35 @@ export type ChatMessageStep = {
   items?: ChatMessageItem[] | null;
 };
 
+export type ChatMessageContentPart = {
+  step_id?: number | null;
+  step_sequence?: number | null;
+  item_id?: number | null;
+  item_sequence?: number | null;
+  content_id: number;
+  sequence: number;
+  text: string;
+  content_text_truncated?: boolean;
+  created_at?: string | null;
+};
+
+export type ChatMessageUsage = {
+  latest_step?: Omit<ChatMessageStep, 'items'> | null;
+  total_cost?: number | null;
+};
+
+export type ChatMessageWorkingSummary = {
+  step_count: number;
+  latest_step_id?: number | null;
+  latest_step_sequence?: number | null;
+  latest_step_status?: string | null;
+};
+
+export type ChatMessageContentSnapshot = {
+  parts: ChatMessageContentPart[];
+  media: ChatMessageContent[];
+};
+
 export type ChatBranchMessage = {
   id: number;
   parent_id?: number | null;
@@ -207,6 +236,9 @@ export type ChatBranchMessage = {
   created_at?: string | null;
   finished_at?: string | null;
   llm_configuration_id?: number | null;
+  content?: ChatMessageContentSnapshot | null;
+  usage?: ChatMessageUsage | null;
+  working?: ChatMessageWorkingSummary | null;
   steps?: ChatMessageStep[] | null;
   prev_sibling_id?: number | null;
   next_sibling_id?: number | null;

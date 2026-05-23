@@ -21,7 +21,7 @@ import {
   buildSendPayload,
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
-import type { ChatBranchMessage, ChatMessageStep } from '@/types/api';
+import type { ChatBranchMessage } from '@/types/api';
 
 type ScrollToLastMessage = (opts?: {
   behavior?: ScrollBehavior;
@@ -38,6 +38,8 @@ type Params = {
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
   scrollToLastMessage: ScrollToLastMessage;
+  getOpenWorkingPollRequest?: (messageId: number) => string | null;
+  applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
 };
 
 export function useChatComposerRuntime(params: Params) {
@@ -458,43 +460,6 @@ export function useChatComposerRuntime(params: Params) {
     }
   };
 
-  const upsertRuntimeStepIntoSteps = (
-    steps: ChatMessageStep[] | null | undefined,
-    runtimeStep: ChatMessageStep
-  ): ChatMessageStep[] => {
-    const list = steps || [];
-    if (!list.length) return [runtimeStep];
-
-    const runtimeSeq = typeof runtimeStep.sequence === 'number' ? runtimeStep.sequence : null;
-
-    if (runtimeSeq == null) {
-      return [...list, runtimeStep];
-    }
-
-    for (let i = list.length - 1; i >= 0; i -= 1) {
-      const candidate = list[i];
-      if (typeof candidate?.sequence === 'number' && candidate.sequence === runtimeSeq) {
-        return [...list.slice(0, i), runtimeStep, ...list.slice(i + 1)];
-      }
-    }
-
-    return [...list, runtimeStep];
-  };
-
-  const mergePolledSteps = (
-    currentSteps: ChatMessageStep[] | null | undefined,
-    persistedSteps: ChatMessageStep[] | null | undefined,
-    runtimeStep: ChatMessageStep | null | undefined
-  ): ChatMessageStep[] => {
-    const base = Array.isArray(persistedSteps) && persistedSteps.length > 0 ? persistedSteps : currentSteps || [];
-
-    if (runtimeStep) {
-      return upsertRuntimeStepIntoSteps(base, runtimeStep);
-    }
-
-    return [...base];
-  };
-
   const updateBranchMessage = (messageId: number, patch: Partial<ChatBranchMessage>) => {
     const idx = params.branch.value.findIndex((item) => item.id === messageId);
     if (idx === -1) return;
@@ -508,7 +473,12 @@ export function useChatComposerRuntime(params: Params) {
     const timeoutHandle = window.setTimeout(() => controller.abort(), 25_000);
 
     try {
-      const response = await api.get<PollResponse>(`/api/bff/chat-messages/${messageId}/poll`, {
+      const searchParams = new URLSearchParams();
+      const workingStepId = params.getOpenWorkingPollRequest?.(messageId);
+      if (workingStepId) searchParams.set('working_step_id', workingStepId);
+      const suffix = searchParams.toString() ? `?${searchParams.toString()}` : '';
+
+      const response = await api.get<PollResponse>(`/api/bff/chat-messages/${messageId}/poll${suffix}`, {
         signal: controller.signal,
         showErrorBanner: false,
       });
@@ -529,12 +499,14 @@ export function useChatComposerRuntime(params: Params) {
           patch.token_count = response.token_count;
         }
 
-        const mergedSteps = mergePolledSteps(current.steps || [], response.steps || [], response.current_step);
-        if (mergedSteps.length > 0) {
-          patch.steps = mergedSteps;
-        }
+        if (response.content) patch.content = response.content;
+        if (response.usage) patch.usage = response.usage;
+        if (response.working) patch.working = response.working;
 
         updateBranchMessage(messageId, patch);
+        if (response.working_open !== undefined) {
+          params.applyWorkingPoll?.(messageId, response.working_open);
+        }
         if (shouldKeepPageAtBottom) void keepPageScrolledToBottom();
       }
 

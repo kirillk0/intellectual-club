@@ -14,6 +14,7 @@ import {
 import {
   type ChatIdleStatePayload,
   type ChatPromptContextPayload,
+  type ChatSettingsStatePayload,
   type ChatStatePayload,
   type Counters,
 } from '@/features/chat/model/chatViewModel.shared';
@@ -72,13 +73,13 @@ export function useChatViewModel() {
     total_token_count: 0,
   });
 
-  const promptSources = ref<ChatStatePayload['prompt_sources']>({
+  const promptSources = ref<ChatSettingsStatePayload['prompt_sources']>({
     bot: [],
     chat: [],
     configuration: [],
     user: [],
   });
-  const promptBlocks = ref<ChatStatePayload['prompt_blocks']>([]);
+  const promptBlocks = ref<ChatSettingsStatePayload['prompt_blocks']>([]);
   const compiledPromptText = ref('');
 
   const bots = ref<Bot[]>([]);
@@ -164,6 +165,9 @@ export function useChatViewModel() {
     stackOpen: stackNav.open,
   });
 
+  let getOpenWorkingPollRequest: (messageId: number) => string | null = () => null;
+  let applyWorkingPoll: Parameters<typeof useChatComposerRuntime>[0]['applyWorkingPoll'] = () => {};
+
   const composerRuntime = useChatComposerRuntime({
     chatId,
     branch,
@@ -174,6 +178,8 @@ export function useChatViewModel() {
     activeGenerationId,
     cancelingGenerationId,
     scrollToLastMessage: contextPanel.scrollToLastMessage,
+    getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
+    applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
   });
 
   const messageActions = useChatMessageActions({
@@ -192,6 +198,9 @@ export function useChatViewModel() {
     clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
     afterBranchSwitched: contextPanel.rerunBranchSearch,
   });
+
+  getOpenWorkingPollRequest = messageActions.getOpenWorkingPollRequest;
+  applyWorkingPoll = messageActions.applyWorkingPoll;
 
   const inspectors = useChatInspectors({
     compiledPromptText,
@@ -216,25 +225,7 @@ export function useChatViewModel() {
     reloadChat: () => loadChat({ mode: 'soft' }),
   });
 
-  const loadChat = async (opts: { mode?: 'initial' | 'soft' } = {}) => {
-    const mode = opts.mode || 'initial';
-    if (mode === 'initial') {
-      loaded.value = false;
-      composerRuntime.stopPolling();
-      activeGenerationId.value = null;
-      cancelingGenerationId.value = null;
-    }
-
-    loadError.value = '';
-    chatUnavailable.value = false;
-
-    const payload = await api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`, {
-      showErrorBanner: false,
-    });
-
-    chat.value = payload.chat;
-    chatNote.value = payload.chat?.note || '';
-    branch.value = payload.branch || [];
+  const applySettingsState = (payload: ChatSettingsStatePayload) => {
     counters.value = payload.counters || counters.value;
     promptSources.value = payload.prompt_sources || promptSources.value;
     promptBlocks.value = payload.prompt_blocks || [];
@@ -246,7 +237,7 @@ export function useChatViewModel() {
     toolLibrary.value = payload.options?.tool_instances || [];
 
     headerControls.hydrate({
-      selectedConfig: payload.chat?.llm_configuration_id ?? '',
+      selectedConfig: chat.value?.llm_configuration_id ?? '',
       missingRequiredPerUserToolAliases: payload.missing_required_per_user_tool_aliases || [],
     });
     contextPanel.hydrate({
@@ -256,8 +247,46 @@ export function useChatViewModel() {
     libraryDraft.hydrate({
       chatBlocks: payload.chat_blocks || [],
       chatToolBindings: payload.chat_tool_bindings || [],
-      chatVariables: payload.chat?.variables || [],
+      chatVariables: chat.value?.variables || [],
     });
+  };
+
+  const loadSettingsState = async () => {
+    if (!chatId.value) return;
+    const payload = await api.get<ChatSettingsStatePayload>(`/api/bff/chats/${chatId.value}/settings-state`, {
+      showErrorBanner: false,
+    });
+    applySettingsState(payload);
+  };
+
+  const loadChat = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
+    const mode = opts.mode || 'initial';
+    const includeSettings = opts.includeSettings !== false;
+    if (mode === 'initial') {
+      loaded.value = false;
+      composerRuntime.stopPolling();
+      activeGenerationId.value = null;
+      cancelingGenerationId.value = null;
+    }
+
+    loadError.value = '';
+    chatUnavailable.value = false;
+
+    const [payload, settingsPayload] = await Promise.all([
+      api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`, {
+        showErrorBanner: false,
+      }),
+      includeSettings
+        ? api.get<ChatSettingsStatePayload>(`/api/bff/chats/${chatId.value}/settings-state`, {
+            showErrorBanner: false,
+          })
+        : Promise.resolve(null),
+    ]);
+
+    chat.value = payload.chat;
+    chatNote.value = payload.chat?.note || '';
+    branch.value = payload.branch || [];
+    if (settingsPayload) applySettingsState(settingsPayload);
     chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
@@ -268,7 +297,7 @@ export function useChatViewModel() {
     }
   };
 
-  const loadChatSafe = async (opts: { mode?: 'initial' | 'soft' } = {}) => {
+  const loadChatSafe = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
     try {
       await loadChat(opts);
     } catch (error) {
@@ -343,7 +372,7 @@ export function useChatViewModel() {
       chatIdleRevision.value = payload.revision;
     }
 
-    await loadChatSafe({ mode: 'soft' });
+    await loadChatSafe({ mode: 'soft', includeSettings: false });
   }
 
   function startChatIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
@@ -672,7 +701,9 @@ export function useChatViewModel() {
     branchingAssistantId: messageActions.branchingAssistantId,
     isBookmarkingMessage: messageActions.isBookmarkingMessage,
     isWorkingOpen: messageActions.isWorkingOpen,
+    workingStateFor: messageActions.workingStateFor,
     toggleWorking: messageActions.toggleWorking,
+    selectWorkingStep: messageActions.selectWorkingStep,
     canDeleteMessage: messageActions.canDeleteMessage,
     deleteMessageTitle: messageActions.deleteMessageTitle,
     copyMessage: messageActions.copyMessage,
