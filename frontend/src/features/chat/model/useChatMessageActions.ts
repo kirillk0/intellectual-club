@@ -47,6 +47,7 @@ export type OpenWorkingState = {
   selectedStepId: number | null;
   selectedStep: ChatMessageStep | null;
   selectedLatest: boolean;
+  open: boolean;
   loading: boolean;
   error: string;
 };
@@ -58,6 +59,7 @@ export function useChatMessageActions(params: Params) {
   const deletingMessageId = ref<number | null>(null);
   const bookmarkingMessageIds = ref<Set<number>>(new Set());
   const openWorking = ref<OpenWorkingState | null>(null);
+  let workingLoadVersion = 0;
 
   const editingMessage = ref<ChatBranchMessage | null>(null);
   const modalMode = ref<'edit' | 'branch'>('edit');
@@ -112,13 +114,21 @@ export function useChatMessageActions(params: Params) {
     params.branch.value[idx] = { ...params.branch.value[idx], ...patch };
   };
 
-  const closeWorking = () => {
+  const clearWorking = () => {
+    workingLoadVersion += 1;
     openWorking.value = null;
+  };
+
+  const closeWorking = () => {
+    const current = openWorking.value;
+    if (!current) return;
+    workingLoadVersion += 1;
+    openWorking.value = { ...current, open: false, loading: false, error: '' };
   };
 
   const replaceBranch = (nextBranch: ChatBranchMessage[] | null | undefined) => {
     params.branch.value = nextBranch || [];
-    closeWorking();
+    clearWorking();
   };
 
   const isLatestStepId = (steps: ChatMessageStep[], selectedStepId: number | null | undefined) => {
@@ -229,7 +239,7 @@ export function useChatMessageActions(params: Params) {
 
   const isWorkingOpen = (id: number | null | undefined) => {
     if (!id) return false;
-    return openWorking.value?.messageId === id;
+    return openWorking.value?.messageId === id && openWorking.value.open;
   };
 
   const workingStateFor = (id: number | null | undefined) => {
@@ -241,6 +251,8 @@ export function useChatMessageActions(params: Params) {
     const current = openWorking.value;
     if (!current || current.messageId !== messageId) return;
 
+    const loadVersion = workingLoadVersion + 1;
+    workingLoadVersion = loadVersion;
     openWorking.value = { ...current, loading: true, error: '' };
 
     const paramsQuery = new URLSearchParams();
@@ -251,7 +263,7 @@ export function useChatMessageActions(params: Params) {
       const payload = await api.get<WorkingPayload>(`/api/bff/chat-messages/${messageId}/working${suffix}`, {
         showErrorBanner: false,
       });
-      if (openWorking.value?.messageId !== messageId) return;
+      if (workingLoadVersion !== loadVersion || openWorking.value?.messageId !== messageId) return;
       const selectedStepId = payload.selected_step_id ?? payload.step?.id ?? null;
       openWorking.value = {
         messageId,
@@ -259,11 +271,12 @@ export function useChatMessageActions(params: Params) {
         selectedStepId,
         selectedStep: payload.step || null,
         selectedLatest: stepId === 'latest' || isLatestStepId(payload.steps || [], selectedStepId),
+        open: true,
         loading: false,
         error: '',
       };
     } catch (error) {
-      if (openWorking.value?.messageId !== messageId) return;
+      if (workingLoadVersion !== loadVersion || openWorking.value?.messageId !== messageId) return;
       openWorking.value = {
         ...openWorking.value,
         loading: false,
@@ -274,17 +287,24 @@ export function useChatMessageActions(params: Params) {
 
   const toggleWorking = (id: number | null | undefined) => {
     if (!id) return;
-    if (openWorking.value?.messageId === id) {
+    const current = openWorking.value;
+    if (current?.messageId === id && current.open) {
       closeWorking();
+      return;
+    }
+    if (current?.messageId === id && current.loading) {
+      clearWorking();
       return;
     }
 
     openWorking.value = {
+      ...(current?.messageId === id ? current : {}),
       messageId: id,
-      steps: [],
-      selectedStepId: null,
-      selectedStep: null,
+      steps: current?.messageId === id ? current.steps : [],
+      selectedStepId: current?.messageId === id ? current.selectedStepId : null,
+      selectedStep: current?.messageId === id ? current.selectedStep : null,
       selectedLatest: true,
+      open: false,
       loading: true,
       error: '',
     };
@@ -300,12 +320,14 @@ export function useChatMessageActions(params: Params) {
   const getOpenWorkingPollRequest = (messageId: number) => {
     const state = openWorking.value;
     if (!state || state.messageId !== messageId) return null;
+    if (!state.open) return null;
     if (state.selectedLatest) return 'latest';
     return state.selectedStepId && state.selectedStepId > 0 ? String(state.selectedStepId) : 'latest';
   };
 
   const applyWorkingPoll = (messageId: number, payload: PollResponse['working_open']) => {
     if (!payload || openWorking.value?.messageId !== messageId) return;
+    if (!openWorking.value.open) return;
     openWorking.value = {
       ...openWorking.value,
       selectedStepId: payload.selected_step_id ?? payload.step?.id ?? openWorking.value.selectedStepId,
@@ -591,12 +613,12 @@ export function useChatMessageActions(params: Params) {
     () => {
       const messageId = openWorking.value?.messageId;
       if (!messageId) return;
-      if (!params.branch.value.some((message) => message.id === messageId)) closeWorking();
+      if (!params.branch.value.some((message) => message.id === messageId)) clearWorking();
     }
   );
 
   const dispose = async () => {
-    closeWorking();
+    clearWorking();
     await params.clearPendingFilesCollection(editPendingFiles);
   };
 

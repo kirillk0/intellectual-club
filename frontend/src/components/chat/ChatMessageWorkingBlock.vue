@@ -10,6 +10,18 @@
       Working<span v-if="lastStepNumber != null && lastStepNumber > 1" class="working-toggle-count">
         ({{ lastStepNumber }})
       </span>
+      <span v-if="loading && !open" class="working-toggle-status" role="status" aria-live="polite">
+        Loading…
+      </span>
+      <span
+        v-else-if="!open && error"
+        class="working-toggle-status error-text"
+        role="status"
+        aria-live="polite"
+        :title="error"
+      >
+        Failed to load
+      </span>
       <span class="chevron">{{ open ? '▲' : '▼' }}</span>
     </button>
 
@@ -144,9 +156,9 @@
             </template>
           </div>
         </template>
-        <div v-else-if="loading" class="working-item-body muted">Loading working details…</div>
-        <div v-else-if="error" class="working-item-body error-text">{{ error }}</div>
-        <div v-else class="working-item-body muted">No working details</div>
+        <div v-else-if="open && loading" class="working-item-body muted">Loading working details…</div>
+        <div v-else-if="open && error" class="working-item-body error-text">{{ error }}</div>
+        <div v-else-if="open" class="working-item-body muted">No working details</div>
       </div>
     </transition>
   </div>
@@ -453,6 +465,22 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 .working-toggle-count {
   color: #6b7280;
+}
+
+.working-toggle-status {
+  margin-left: auto;
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.working-toggle-status.error-text {
+  color: #c0392b;
+}
+
+.working-toggle-status + .chevron {
+  margin-left: 0;
 }
 
 .working-body {
