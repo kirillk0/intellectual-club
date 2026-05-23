@@ -40,6 +40,23 @@ defmodule IntellectualClubWeb.Bff.Loads do
     ]
   end
 
+  def message_preview_tree do
+    [
+      steps: [
+        :sequence,
+        items: [
+          :sequence,
+          :type,
+          contents: [
+            :sequence,
+            :kind,
+            :content_text
+          ]
+        ]
+      ]
+    ]
+  end
+
   def prompt_source_binding do
     [knowledge_block: prompt_source_knowledge_block()]
   end

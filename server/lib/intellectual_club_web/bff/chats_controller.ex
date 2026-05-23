@@ -49,7 +49,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         |> Ash.Query.load([
           :bot,
           :last_message,
-          :active_root_message_id,
           :can_edit,
           :shared_incoming,
           :shared_outgoing,
@@ -64,21 +63,24 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
       chats = Map.get(page, :results, [])
 
-      message_count_by_chat =
-        Threads.active_branch_counts_by_chat(Enum.map(chats, & &1.id), actor)
+      active_branch_summaries =
+        Threads.active_branch_summaries_by_chat(Enum.map(chats, & &1.id), actor)
 
-      first_message_previews = load_active_root_message_previews(chats, preview_len, actor)
+      first_message_previews =
+        load_active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
+
       sidebar_stats = ListingStats.sidebar(actor)
 
       payload =
         Enum.map(chats, fn chat ->
           activity_at = chat_activity_at(chat)
+          active_branch_summary = Map.get(active_branch_summaries, chat.id, %{})
 
           {first_message_preview, first_message_role} =
             Map.get(first_message_previews, chat.id, {nil, nil})
 
           Serializer.chat_summary(chat, activity_at: activity_at)
-          |> Map.put(:message_count, Map.get(message_count_by_chat, chat.id, 0))
+          |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
         end)
@@ -1165,12 +1167,14 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
-  defp load_active_root_message_previews(chats, preview_len, actor)
+  defp load_active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
        when is_list(chats) and is_integer(preview_len) do
     root_message_ids_by_chat =
       chats
       |> Enum.reduce(%{}, fn chat, acc ->
-        case Map.get(chat, :active_root_message_id) do
+        summary = Map.get(active_branch_summaries, chat.id, %{})
+
+        case Map.get(summary, :root_message_id) do
           message_id when is_integer(message_id) ->
             Map.put(acc, chat.id, message_id)
 
@@ -1187,7 +1191,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       else
         ChatMessage
         |> Ash.Query.filter(id in ^message_ids)
-        |> Ash.Query.load(Loads.message_tree(), strict?: true)
+        |> Ash.Query.load(Loads.message_preview_tree(), strict?: true)
         |> Ash.read!(actor: actor)
         |> Map.new(fn message -> {message.id, message} end)
       end

@@ -340,6 +340,32 @@ defmodule IntellectualClub.Chat.Threads do
   Returns active branch message ids grouped by chat id.
   """
   def active_branch_ids_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    chat_ids
+    |> active_branch_chains_by_chat(actor)
+    |> Map.new(fn {chat_id, active_ids} -> {chat_id, MapSet.new(active_ids)} end)
+  end
+
+  @doc """
+  Returns active branch message counts grouped by chat id.
+  """
+  def active_branch_counts_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    chat_ids
+    |> active_branch_chains_by_chat(actor)
+    |> Map.new(fn {chat_id, active_ids} -> {chat_id, length(active_ids)} end)
+  end
+
+  @doc """
+  Returns active branch root ids and message counts grouped by chat id.
+  """
+  def active_branch_summaries_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    chat_ids
+    |> active_branch_chains_by_chat(actor)
+    |> Map.new(fn {chat_id, active_ids} ->
+      {chat_id, %{root_message_id: List.first(active_ids), message_count: length(active_ids)}}
+    end)
+  end
+
+  defp active_branch_chains_by_chat(chat_ids, actor) when is_list(chat_ids) do
     chat_ids =
       chat_ids
       |> Enum.filter(&is_integer/1)
@@ -367,20 +393,11 @@ defmodule IntellectualClub.Chat.Threads do
           end)
         end)
 
-      Enum.reduce(chats, %{}, fn chat, acc ->
+      Map.new(chats, fn chat ->
         active_ids = chain_ids(chat.last_message_id, Map.get(parents_by_chat, chat.id, %{}))
-        Map.put(acc, chat.id, MapSet.new(active_ids))
+        {chat.id, active_ids}
       end)
     end
-  end
-
-  @doc """
-  Returns active branch message counts grouped by chat id.
-  """
-  def active_branch_counts_by_chat(chat_ids, actor) when is_list(chat_ids) do
-    chat_ids
-    |> active_branch_ids_by_chat(actor)
-    |> Map.new(fn {chat_id, active_ids} -> {chat_id, MapSet.size(active_ids)} end)
   end
 
   defp fetch_chat!(%Chat{} = chat, _actor), do: chat

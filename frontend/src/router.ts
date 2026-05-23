@@ -19,7 +19,13 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { title: 'Sign in' } },
-    { path: '/', name: 'chats', component: () => import('./views/ChatsIndexView.vue'), meta: { title: 'Chats' } },
+    {
+      path: '/',
+      alias: '/chats',
+      name: 'chats',
+      component: () => import('./views/ChatsIndexView.vue'),
+      meta: { title: 'Chats' },
+    },
     {
       path: '/bookmarks',
       name: 'bookmarks',
