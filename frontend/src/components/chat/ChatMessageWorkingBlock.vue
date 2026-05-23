@@ -14,30 +14,32 @@
     </button>
 
     <transition name="fade">
-      <div v-show="open" class="working-body" :id="workingBodyId">
-        <div v-if="loading" class="working-item-body muted">Loading working details…</div>
-        <div v-else-if="error" class="working-item-body error-text">{{ error }}</div>
-        <template v-else-if="currentStep">
+      <div v-show="open" class="working-body" :id="workingBodyId" :aria-busy="loading ? 'true' : 'false'">
+        <template v-if="currentStep">
           <div v-if="showStepNavigation" class="working-nav">
             <div class="working-nav-buttons" role="group" aria-label="Step navigation">
-              <button type="button" class="link" :disabled="!canGoPrev" @click="goFirst">
+              <button type="button" class="link" :disabled="loading || !canGoPrev" @click="goFirst">
                 &lt;&lt; first
               </button>
-              <button type="button" class="link" :disabled="!canGoPrev" @click="goPrev">
+              <button type="button" class="link" :disabled="loading || !canGoPrev" @click="goPrev">
                 &lt; previous
               </button>
-              <button type="button" class="link" :disabled="!canGoNext" @click="goNext">
+              <button type="button" class="link" :disabled="loading || !canGoNext" @click="goNext">
                 next &gt;
               </button>
-              <button type="button" class="link" :disabled="!canGoNext" @click="goLast">
+              <button type="button" class="link" :disabled="loading || !canGoNext" @click="goLast">
                 last &gt;&gt;
               </button>
             </div>
             <label class="working-nav-select-wrap">
+              <span v-if="loading" class="working-nav-loading" role="status" aria-live="polite">
+                Loading…
+              </span>
               <span class="working-nav-select-label">Step</span>
               <select
                 class="working-nav-select"
                 :value="currentStepId || ''"
+                :disabled="loading"
                 @change="onStepSelectChange"
                 aria-label="Select step"
               >
@@ -47,6 +49,10 @@
               </select>
             </label>
           </div>
+          <div v-else-if="loading" class="working-inline-state muted" role="status" aria-live="polite">
+            Loading step…
+          </div>
+          <div v-if="error" class="working-inline-state error-text" role="alert">{{ error }}</div>
 
           <div class="working-step">
             <div class="working-step-links">
@@ -138,6 +144,8 @@
             </template>
           </div>
         </template>
+        <div v-else-if="loading" class="working-item-body muted">Loading working details…</div>
+        <div v-else-if="error" class="working-item-body error-text">{{ error }}</div>
         <div v-else class="working-item-body muted">No working details</div>
       </div>
     </transition>
@@ -476,12 +484,22 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   color: #6b7280;
 }
 
+.working-nav-loading {
+  color: #6b7280;
+  white-space: nowrap;
+}
+
 .working-nav-select-label {
   white-space: nowrap;
 }
 
 .working-nav-select {
   min-width: 108px;
+}
+
+.working-inline-state {
+  margin-bottom: 10px;
+  font-size: 0.85rem;
 }
 
 .working-step {
