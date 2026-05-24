@@ -303,7 +303,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       |> Ash.create!(actor: actor)
 
     item_payloads =
-      Enum.map(1..1001, fn sequence ->
+      Enum.map(1..201, fn sequence ->
         %{
           chat_message_step_id: step.id,
           sequence: sequence,

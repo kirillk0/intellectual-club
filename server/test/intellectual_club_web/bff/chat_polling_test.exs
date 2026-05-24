@@ -32,10 +32,15 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     {:ok, context} =
       GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 5)
 
-    # Allow a few chunks to accumulate.
-    Process.sleep(40)
+    {payload, answer1} =
+      wait_until(fn ->
+        {payload, answer} = poll_answer_text(conn, context.message_id)
 
-    {payload, answer1} = poll_answer_text(conn, context.message_id)
+        if payload["runtime"] == true and payload["status"] == "generating" and
+             byte_size(answer) > 0 do
+          {payload, answer}
+        end
+      end)
 
     assert payload["runtime"] == true
     assert payload["status"] == "generating"
@@ -60,9 +65,14 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
              & &1["id"]
            )
 
-    Process.sleep(40)
+    {_payload, answer2} =
+      wait_until(fn ->
+        {payload, answer} = poll_answer_text(conn, context.message_id)
 
-    {_payload, answer2} = poll_answer_text(conn, context.message_id)
+        if payload["status"] == "generating" and byte_size(answer) > byte_size(answer1) do
+          {payload, answer}
+        end
+      end)
 
     assert byte_size(answer2) >= byte_size(answer1)
 
@@ -89,12 +99,18 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     {:ok, context} =
       GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 5)
 
-    Process.sleep(10)
-
     working =
-      conn
-      |> get("/api/bff/chat-messages/#{context.message_id}/working")
-      |> json_response(200)
+      wait_until(fn ->
+        payload =
+          conn
+          |> get("/api/bff/chat-messages/#{context.message_id}/working")
+          |> json_response(200)
+
+        case payload do
+          %{"steps" => [first | _rest]} when is_map(first) -> payload
+          _other -> nil
+        end
+      end)
 
     step =
       case working do
@@ -213,26 +229,6 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     assert final_payload["status"] == "done"
   end
 
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left \\ 200)
-
-  defp wait_for_generation_to_finish(_conn, _message_id, 0) do
-    flunk("Generation did not finish within timeout")
-  end
-
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left) do
-    payload =
-      conn
-      |> get("/api/bff/chat-messages/#{message_id}/poll")
-      |> json_response(200)
-
-    if payload["status"] in ["done", "canceled", "error"] do
-      payload
-    else
-      Process.sleep(20)
-      wait_for_generation_to_finish(conn, message_id, attempts_left - 1)
-    end
-  end
-
   defp wait_for_poll_fallback(conn, message_id, attempts_left \\ 200)
 
   defp wait_for_poll_fallback(_conn, _message_id, 0) do
@@ -267,5 +263,35 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
       |> Enum.map_join("", fn content -> Map.get(content, "text") || "" end)
 
     {payload, text}
+  end
+
+  defp wait_until(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 1_000)
+    interval_ms = Keyword.get(opts, :interval_ms, 5)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    do_wait_until(fun, deadline, interval_ms)
+  end
+
+  defp do_wait_until(fun, deadline, interval_ms) do
+    case fun.() do
+      nil ->
+        wait_until_next_attempt(fun, deadline, interval_ms)
+
+      false ->
+        wait_until_next_attempt(fun, deadline, interval_ms)
+
+      result ->
+        result
+    end
+  end
+
+  defp wait_until_next_attempt(fun, deadline, interval_ms) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      flunk("Condition was not met before timeout")
+    else
+      Process.sleep(interval_ms)
+      do_wait_until(fun, deadline, interval_ms)
+    end
   end
 end

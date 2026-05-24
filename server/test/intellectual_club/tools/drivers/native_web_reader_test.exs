@@ -72,7 +72,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
       <<"<html><body><h1> HTTP/1.1 ", 208, 194, 189, 168, 187, 225, 187, 176, 202, 167, 176, 220,
         "</h1></body></html>">>
 
-    {:ok, server} = start_raw_http_server(500, "text/html", body)
+    {:ok, server} = start_raw_http_server(400, "text/html", body)
 
     on_exit(fn -> stop_raw_http_server(server) end)
 
@@ -81,7 +81,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
                "url" => "http://127.0.0.1:#{server.port}/broken"
              })
 
-    assert String.starts_with?(message, "HTTP error while fetching URL: 500.")
+    assert String.starts_with?(message, "HTTP error while fetching URL: 400.")
     assert String.valid?(message)
     assert message =~ "ÐÂ½¨»á»°Ê§°Ü"
   end

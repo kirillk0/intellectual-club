@@ -408,26 +408,6 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     |> Enum.filter(fn content -> Map.get(content, "kind") == "media" end)
   end
 
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left \\ 200)
-
-  defp wait_for_generation_to_finish(_conn, _message_id, 0) do
-    flunk("Generation did not finish within timeout")
-  end
-
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left) do
-    payload =
-      conn
-      |> get(~p"/api/bff/chat-messages/#{message_id}/poll")
-      |> json_response(200)
-
-    if payload["status"] in ["done", "canceled", "error"] do
-      :ok
-    else
-      Process.sleep(20)
-      wait_for_generation_to_finish(conn, message_id, attempts_left - 1)
-    end
-  end
-
   defp temp_upload(filename, content_type, payload) do
     path =
       Path.join(System.tmp_dir!(), "chat-send-#{System.unique_integer([:positive])}-#{filename}")

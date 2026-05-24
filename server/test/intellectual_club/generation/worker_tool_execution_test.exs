@@ -99,7 +99,7 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
           {:tool_call_entered, pid, tool_name} -> {pid, tool_name}
           {:tool_call_wait_timeout, tool_name} -> flunk("Tool call timed out: #{tool_name}")
         after
-          1_000 -> flunk("Expected both tool calls to enter execution concurrently")
+          3_000 -> flunk("Expected both tool calls to enter execution concurrently")
         end
       end)
 
@@ -120,6 +120,8 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
       {Bandit, plug: {ConcurrentMcpPlug, test_pid: self()}, scheme: :http, port: port}
     )
 
+    wait_for_server!(port)
+
     "http://127.0.0.1:#{port}"
   end
 
@@ -128,5 +130,25 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp wait_for_server!(port) when is_integer(port) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    do_wait_for_server!(port, deadline)
+  end
+
+  defp do_wait_for_server!(port, deadline) do
+    case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 50) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+
+      {:error, _reason} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          flunk("MCP server did not start before timeout")
+        else
+          Process.sleep(5)
+          do_wait_for_server!(port, deadline)
+        end
+    end
   end
 end

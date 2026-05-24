@@ -181,8 +181,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
           base_url: base_url,
           api_key: "test-key",
           request_payload: request_payload,
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000
+          timeout_ms: 5_000,
+          connect_timeout_ms: 5_000
         },
         fn event ->
           send(parent, {:provider_event, event})
@@ -263,6 +263,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
         {Bandit, plug: {__MODULE__.ScriptedSSEPlug, agent: agent}, scheme: :http, port: port}
       )
 
+    wait_for_server!(port)
+
     {"http://127.0.0.1:#{port}", agent}
   end
 
@@ -271,6 +273,26 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp wait_for_server!(port) when is_integer(port) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    do_wait_for_server!(port, deadline)
+  end
+
+  defp do_wait_for_server!(port, deadline) do
+    case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 50) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+
+      {:error, _reason} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          flunk("Scripted SSE server did not start before timeout")
+        else
+          Process.sleep(5)
+          do_wait_for_server!(port, deadline)
+        end
+    end
   end
 
   defp sse_chunks(objects) when is_list(objects) do

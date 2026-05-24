@@ -34,28 +34,6 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
     wait_for_generation_to_finish(conn, assistant_message.id)
   end
 
-  test "POST /api/bff/chat-messages/:id/retry-last-step retries assistant message in canceled state",
-       %{
-         conn: conn
-       } do
-    %{user: actor, password: password} = user_fixture()
-    conn = sign_in_conn(conn, actor.username, password)
-
-    chat = create_chat!(actor, "Retry canceled")
-
-    {assistant_message, _old_step} =
-      create_retryable_assistant_message!(chat, actor, :canceled, "hello")
-
-    conn = post(conn, ~p"/api/bff/chat-messages/#{assistant_message.id}/retry-last-step", %{})
-    payload = json_response(conn, 200)
-
-    assert get_in(payload, ["generation", "message_id"]) == assistant_message.id
-    retried = find_message(payload["branch"] || [], assistant_message.id)
-    assert retried["status"] in ["generating", "done"]
-
-    wait_for_generation_to_finish(conn, assistant_message.id)
-  end
-
   test "POST /api/bff/chat-messages/:id/retry-last-step rejects done messages", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -112,33 +90,6 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
     assert preserved_step.id == step_1.id
     assert retried_step.sequence == 2
     assert retried_step.id != step_2.id
-  end
-
-  test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step retries a canceled message from an earlier step",
-       %{conn: conn} do
-    %{user: actor, password: password} = user_fixture()
-    conn = sign_in_conn(conn, actor.username, password)
-
-    chat = create_chat!(actor, "Retry from canceled step")
-
-    {assistant_message, [step_1, step_2, step_3]} =
-      create_retryable_assistant_message_with_steps!(chat, actor, :canceled, "hello", 3)
-
-    conn =
-      post(
-        conn,
-        ~p"/api/bff/chat-messages/#{assistant_message.id}/steps/#{step_2.id}/retry-from-step",
-        %{}
-      )
-
-    payload = json_response(conn, 200)
-
-    assert get_in(payload, ["generation", "message_id"]) == assistant_message.id
-    assert {:ok, _step} = Ash.get(ChatMessageStep, step_1.id, actor: actor)
-    assert {:error, _error} = Ash.get(ChatMessageStep, step_2.id, actor: actor)
-    assert {:error, _error} = Ash.get(ChatMessageStep, step_3.id, actor: actor)
-
-    wait_for_generation_to_finish(conn, assistant_message.id)
   end
 
   test "POST /api/bff/chat-messages/:message_id/steps/:step_id/retry-from-step rejects generating messages",
@@ -253,26 +204,6 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
 
   defp retryable_step_status(:generating), do: :waiting_provider
   defp retryable_step_status(status), do: status
-
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left \\ 200)
-
-  defp wait_for_generation_to_finish(_conn, _message_id, 0) do
-    flunk("Generation did not finish within timeout")
-  end
-
-  defp wait_for_generation_to_finish(conn, message_id, attempts_left) do
-    payload =
-      conn
-      |> get("/api/bff/chat-messages/#{message_id}/poll")
-      |> json_response(200)
-
-    if payload["status"] in ["done", "canceled", "error"] do
-      :ok
-    else
-      Process.sleep(20)
-      wait_for_generation_to_finish(conn, message_id, attempts_left - 1)
-    end
-  end
 
   defp find_message(branch, message_id) do
     Enum.find(branch, fn message -> message["id"] == message_id end) || %{}

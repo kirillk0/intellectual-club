@@ -23,6 +23,9 @@ config :intellectual_club, IntellectualClubWeb.Endpoint,
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# Keep password hashing representative but cheap in tests.
+config :bcrypt_elixir, log_rounds: 1
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
@@ -35,6 +38,7 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 config :intellectual_club,
+  demo_chunk_delay_ms: 0,
   token_signing_secret: "test-token-signing-secret",
   openai_oauth_req_options: [
     plug: {Req.Test, IntellectualClub.Llm.Auth.OpenAIOAuth}
