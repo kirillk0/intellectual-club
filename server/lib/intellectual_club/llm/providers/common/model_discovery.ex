@@ -23,11 +23,12 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
     end
   end
 
-  @spec list_anthropic_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
-  def list_anthropic_models(provider) when is_map(provider) do
+  @spec list_anthropic_models(map(), keyword()) ::
+          {:ok, [model_option()]} | {:error, String.t()}
+  def list_anthropic_models(provider, opts \\ []) when is_map(provider) and is_list(opts) do
     with {:ok, api_key} <- api_key(provider),
          {:ok, url} <- models_url(provider, %{}),
-         {:ok, body} <- request_anthropic_models(url, api_key),
+         {:ok, body} <- request_anthropic_models(url, api_key, opts),
          {:ok, models} <- parse_anthropic_models(body) do
       {:ok, models}
     end
@@ -108,7 +109,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
       {:error, "Provider model list request failed."}
   end
 
-  defp request_anthropic_models(url, api_key) do
+  defp request_anthropic_models(url, api_key, opts) do
     response =
       Req.get!(
         url: url,
@@ -127,7 +128,11 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
         decode_body(body)
 
       %Response{status: status} ->
-        {:error, "Provider model list request failed with HTTP #{status}."}
+        if status in Keyword.get(opts, :empty_on_statuses, []) do
+          {:ok, %{"data" => []}}
+        else
+          {:error, "Provider model list request failed with HTTP #{status}."}
+        end
     end
   rescue
     _exception ->

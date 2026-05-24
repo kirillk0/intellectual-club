@@ -18,7 +18,12 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     responses = Enum.find(types, &(&1["type"] == "responses"))
 
     assert anthropic["default_auth_method"] == "api_key"
-    assert anthropic["base_url_options"] == ["https://api.anthropic.com/v1"]
+
+    assert anthropic["base_url_options"] == [
+             "https://api.anthropic.com/v1",
+             "https://api.deepseek.com/anthropic"
+           ]
+
     assert anthropic["supports_model_discovery"] == true
 
     assert openrouter["default_auth_method"] == "api_key"
@@ -126,6 +131,33 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
            ]
 
     [request] = requests_for(agent, "/models")
+    assert request.query_string == ""
+    assert {"x-api-key", "test-key"} in request.headers
+    assert {"anthropic-version", "2023-06-01"} in request.headers
+  end
+
+  test "GET /api/bff/llm-providers/:id/models treats missing Anthropic-compatible model list as empty",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    scripts = %{
+      "/anthropic/models" => [
+        {404, ""}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    provider = create_provider!(actor, base_url <> "/anthropic", :anthropic_messages)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> get("/api/bff/llm-providers/#{provider.id}/models")
+      |> json_response(200)
+
+    assert response == %{"models" => []}
+
+    [request] = requests_for(agent, "/anthropic/models")
     assert request.query_string == ""
     assert {"x-api-key", "test-key"} in request.headers
     assert {"anthropic-version", "2023-06-01"} in request.headers

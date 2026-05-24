@@ -15,6 +15,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
 
   @type_id "anthropic_messages"
+  @anthropic_base_url "https://api.anthropic.com/v1"
+  @deepseek_anthropic_base_url "https://api.deepseek.com/anthropic"
   @opaque_sequence 10_000
 
   @impl true
@@ -32,8 +34,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       auth_methods: [
         %{value: "api_key", label: "API key", credential: "api_key", required: true}
       ],
-      base_url_options: ["https://api.anthropic.com/v1"],
-      default_base_url: "https://api.anthropic.com/v1",
+      base_url_options: [@anthropic_base_url, @deepseek_anthropic_base_url],
+      default_base_url: @anthropic_base_url,
       supports_model_discovery: true
     }
   end
@@ -45,7 +47,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
 
   @impl true
   def list_models(provider) do
-    ModelDiscovery.list_anthropic_models(provider)
+    ModelDiscovery.list_anthropic_models(provider, empty_on_statuses: [404])
   end
 
   @impl true
