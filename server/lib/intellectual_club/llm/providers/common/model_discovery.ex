@@ -23,6 +23,16 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
     end
   end
 
+  @spec list_anthropic_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
+  def list_anthropic_models(provider) when is_map(provider) do
+    with {:ok, api_key} <- api_key(provider),
+         {:ok, url} <- models_url(provider, %{}),
+         {:ok, body} <- request_anthropic_models(url, api_key),
+         {:ok, models} <- parse_anthropic_models(body) do
+      {:ok, models}
+    end
+  end
+
   @spec parse_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
   def parse_models(%{"data" => []}), do: {:ok, []}
 
@@ -51,6 +61,19 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
     })
   end
 
+  defp api_key(provider) when is_map(provider) do
+    provider
+    |> Map.get(:api_key)
+    |> case do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: {:error, "Provider API key is not set."}, else: {:ok, value}
+
+      _other ->
+        {:error, "Provider API key is not set."}
+    end
+  end
+
   defp models_url(%{base_url: base_url}, query) when is_map(query) do
     base_url = normalize_base_url(base_url)
 
@@ -68,6 +91,32 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
       Req.get!(
         url: url,
         headers: [{"authorization", "Bearer " <> token}, {"accept", "application/json"}],
+        connect_options: [timeout: 10_000],
+        receive_timeout: 30_000,
+        retry: false
+      )
+
+    case response do
+      %Response{status: status, body: body} when status in 200..299 ->
+        decode_body(body)
+
+      %Response{status: status} ->
+        {:error, "Provider model list request failed with HTTP #{status}."}
+    end
+  rescue
+    _exception ->
+      {:error, "Provider model list request failed."}
+  end
+
+  defp request_anthropic_models(url, api_key) do
+    response =
+      Req.get!(
+        url: url,
+        headers: [
+          {"x-api-key", api_key},
+          {"anthropic-version", "2023-06-01"},
+          {"accept", "application/json"}
+        ],
         connect_options: [timeout: 10_000],
         receive_timeout: 30_000,
         retry: false
@@ -108,6 +157,27 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
   end
 
   defp openai_model_option(_model), do: nil
+
+  defp parse_anthropic_models(%{"data" => []}), do: {:ok, []}
+
+  defp parse_anthropic_models(%{"data" => data}) when is_list(data) do
+    data
+    |> Enum.map(&anthropic_model_option/1)
+    |> normalize_model_options()
+  end
+
+  defp parse_anthropic_models(_body), do: {:error, "Unsupported model list response."}
+
+  defp anthropic_model_option(%{"id" => id} = model) when is_binary(id) do
+    %{
+      id: String.trim(id),
+      label: label_or_id(Map.get(model, "display_name"), id),
+      context_length: nil,
+      supports_image_input: nil
+    }
+  end
+
+  defp anthropic_model_option(_model), do: nil
 
   defp codex_model_option(%{"slug" => slug} = model) when is_binary(slug) do
     %{

@@ -13,8 +13,13 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
       |> json_response(200)
 
     types = response["types"]
+    anthropic = Enum.find(types, &(&1["type"] == "anthropic_messages"))
     openrouter = Enum.find(types, &(&1["type"] == "openrouter_chat_completion"))
     responses = Enum.find(types, &(&1["type"] == "responses"))
+
+    assert anthropic["default_auth_method"] == "api_key"
+    assert anthropic["base_url_options"] == ["https://api.anthropic.com/v1"]
+    assert anthropic["supports_model_discovery"] == true
 
     assert openrouter["default_auth_method"] == "api_key"
     assert openrouter["base_url_options"] == ["https://openrouter.ai/api/v1"]
@@ -79,6 +84,51 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     [request] = requests_for(agent, "/models")
     assert request.query_string == "supported_parameters=tools"
     assert {"authorization", "Bearer test-key"} in request.headers
+  end
+
+  test "GET /api/bff/llm-providers/:id/models loads Anthropic models", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    scripts = %{
+      "/models" => [
+        {200,
+         %{
+           "data" => [
+             %{
+               "id" => "claude-sonnet-4-20250514",
+               "display_name" => "Claude Sonnet 4",
+               "type" => "model"
+             }
+           ],
+           "first_id" => "claude-sonnet-4-20250514",
+           "has_more" => false,
+           "last_id" => "claude-sonnet-4-20250514"
+         }}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    provider = create_provider!(actor, base_url, :anthropic_messages)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> get("/api/bff/llm-providers/#{provider.id}/models")
+      |> json_response(200)
+
+    assert response["models"] == [
+             %{
+               "id" => "claude-sonnet-4-20250514",
+               "label" => "Claude Sonnet 4",
+               "context_length" => nil,
+               "supports_image_input" => nil
+             }
+           ]
+
+    [request] = requests_for(agent, "/models")
+    assert request.query_string == ""
+    assert {"x-api-key", "test-key"} in request.headers
+    assert {"anthropic-version", "2023-06-01"} in request.headers
   end
 
   test "GET /api/bff/llm-providers/:id/models parses responses data schema", %{conn: conn} do
