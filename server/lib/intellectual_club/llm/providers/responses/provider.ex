@@ -12,9 +12,9 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
-  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
   alias IntellectualClub.Llm.Providers.Responses.Api
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
+  alias IntellectualClub.Llm.Providers.Responses.ModelDiscovery
 
   @type_id "responses"
   @opaque_sequence 10_000
@@ -54,9 +54,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   @impl true
   def list_models(provider) do
-    ModelDiscovery.list_openai_compatible_models(provider,
-      query: %{"client_version" => "1.0.0"}
-    )
+    ModelDiscovery.list_models(provider)
   end
 
   @impl true

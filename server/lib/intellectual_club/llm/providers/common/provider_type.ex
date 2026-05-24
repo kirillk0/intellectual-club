@@ -39,11 +39,18 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
           required(:supports_model_discovery) => boolean()
         }
 
+  @type model_option :: %{
+          required(:id) => String.t(),
+          required(:label) => String.t(),
+          required(:context_length) => integer() | nil,
+          required(:supports_image_input) => boolean() | nil
+        }
+
   @callback type() :: String.t()
   @callback label() :: String.t()
   @callback metadata() :: metadata()
   @callback validate_provider(map(), keyword()) :: :ok | {:error, keyword(String.t())}
-  @callback list_models(map()) :: {:ok, [map()]} | {:error, String.t()}
+  @callback list_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
 
   @callback supports_cache_control?() :: boolean()
   @callback build_initial_request(map()) :: initial_request_result()

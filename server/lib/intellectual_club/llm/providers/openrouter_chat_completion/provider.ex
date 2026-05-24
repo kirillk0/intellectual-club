@@ -9,7 +9,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
-  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ModelDiscovery
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace
 
   @type_id "openrouter_chat_completion"
@@ -44,9 +44,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   @impl true
   def list_models(provider) do
-    ModelDiscovery.list_openai_compatible_models(provider,
-      query: %{"supported_parameters" => "tools"}
-    )
+    ModelDiscovery.list_models(provider)
   end
 
   @impl true

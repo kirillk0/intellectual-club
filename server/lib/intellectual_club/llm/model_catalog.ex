@@ -3,10 +3,10 @@ defmodule IntellectualClub.Llm.ModelCatalog do
   Facade for provider-owned model discovery.
   """
 
-  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
+  alias IntellectualClub.Llm.Providers.Common.ProviderType
   alias IntellectualClub.Llm.Providers.Common.Registry
 
-  @type model_option :: ModelDiscovery.model_option()
+  @type model_option :: ProviderType.model_option()
 
   @spec list_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
   def list_models(provider) when is_map(provider) do
@@ -18,7 +18,4 @@ defmodule IntellectualClub.Llm.ModelCatalog do
         {:error, "Provider type is not supported for model discovery."}
     end
   end
-
-  @spec parse_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
-  def parse_models(body), do: ModelDiscovery.parse_models(body)
 end

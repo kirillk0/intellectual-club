@@ -3,56 +3,8 @@ defmodule IntellectualClub.Llm.ModelCatalogTest do
 
   alias IntellectualClub.Llm.ModelCatalog
 
-  test "parses OpenAI and OpenRouter data model lists with metadata" do
-    assert {:ok, models} =
-             ModelCatalog.parse_models(%{
-               "data" => [
-                 %{
-                   "id" => "openai/gpt-5-mini",
-                   "name" => "GPT 5 Mini",
-                   "context_length" => 128_000,
-                   "architecture" => %{"input_modalities" => ["text", "image"]}
-                 }
-               ]
-             })
-
-    assert models == [
-             %{
-               id: "openai/gpt-5-mini",
-               label: "GPT 5 Mini",
-               context_length: 128_000,
-               supports_image_input: true
-             }
-           ]
-  end
-
-  test "parses Codex models lists with metadata" do
-    assert {:ok, models} =
-             ModelCatalog.parse_models(%{
-               "models" => [
-                 %{
-                   "slug" => "gpt-5.4",
-                   "display_name" => "gpt-5.4",
-                   "context_window" => 272_000,
-                   "max_context_window" => 1_000_000,
-                   "input_modalities" => ["text", "image"]
-                 }
-               ]
-             })
-
-    assert models == [
-             %{
-               id: "gpt-5.4",
-               label: "gpt-5.4",
-               context_length: 272_000,
-               supports_image_input: true
-             }
-           ]
-  end
-
-  test "rejects unsupported model list schemas" do
-    assert {:error, "Unsupported model list response."} =
-             ModelCatalog.parse_models(%{"items" => []})
+  test "delegates supported providers to their provider modules" do
+    assert {:ok, []} = ModelCatalog.list_models(%{type: :demo})
   end
 
   test "returns missing credential errors without external requests" do
@@ -65,5 +17,10 @@ defmodule IntellectualClub.Llm.ModelCatalogTest do
                api_key: nil,
                oauth_refresh_token: nil
              })
+  end
+
+  test "returns controlled errors for unknown provider types" do
+    assert {:error, "Provider type is not supported for model discovery."} =
+             ModelCatalog.list_models(%{type: :unknown_provider_type})
   end
 end

@@ -8,10 +8,10 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Api
+  alias IntellectualClub.Llm.Providers.AnthropicMessages.ModelDiscovery
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
-  alias IntellectualClub.Llm.Providers.Common.ModelDiscovery
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
 
   @type_id "anthropic_messages"
@@ -47,7 +47,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
 
   @impl true
   def list_models(provider) do
-    ModelDiscovery.list_anthropic_models(provider, empty_on_statuses: [404])
+    ModelDiscovery.list_models(provider)
   end
 
   @impl true
