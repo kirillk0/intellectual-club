@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
 
   import Plug.Conn
 
+  alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Api
 
   test "sends Anthropic headers and streams text and tool calls into trace events" do
@@ -129,6 +130,97 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
                "input" => %{"city" => "Paris"}
              }
            ]
+  end
+
+  test "does not classify first tool call after thinking as answer" do
+    scripts = %{
+      "/messages" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "message_start",
+             "message" => %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "model" => "claude-sonnet-4-20250514",
+               "content" => [],
+               "stop_reason" => nil,
+               "usage" => %{"input_tokens" => 10, "output_tokens" => 1}
+             }
+           },
+           %{
+             "type" => "content_block_start",
+             "index" => 0,
+             "content_block" => %{"type" => "thinking", "thinking" => ""}
+           },
+           %{
+             "type" => "content_block_delta",
+             "index" => 0,
+             "delta" => %{"type" => "thinking_delta", "thinking" => "Need data."}
+           },
+           %{"type" => "content_block_stop", "index" => 0},
+           %{
+             "type" => "content_block_start",
+             "index" => 1,
+             "content_block" => %{
+               "type" => "tool_use",
+               "id" => "toolu_1",
+               "name" => "weather__get",
+               "input" => %{}
+             }
+           },
+           %{
+             "type" => "content_block_delta",
+             "index" => 1,
+             "delta" => %{"type" => "input_json_delta", "partial_json" => ~s({"city":"Paris"})}
+           },
+           %{"type" => "content_block_stop", "index" => 1},
+           %{
+             "type" => "message_delta",
+             "delta" => %{"stop_reason" => "tool_use", "stop_sequence" => nil},
+             "usage" => %{"output_tokens" => 20}
+           },
+           %{"type" => "message_stop"}
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    parent = self()
+
+    :ok =
+      Api.stream_generate(
+        %{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "claude-sonnet-4-20250514",
+            "max_tokens" => 128,
+            "messages" => [],
+            "stream" => true
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        },
+        fn event ->
+          send(parent, {:provider_event, event})
+        end
+      )
+
+    step =
+      collect_provider_events([])
+      |> Enum.reduce(RuntimeTrace.new_step(), fn
+        {:trace, trace_event}, acc -> RuntimeTrace.apply_event(acc, trace_event)
+        _event, acc -> acc
+      end)
+
+    items = RuntimeTrace.persistable(step).items
+    sequences = Enum.map(items, & &1.sequence)
+
+    assert Enum.map(items, &{&1.sequence, &1.type}) == [{1, "reasoning"}, {2, "tool_call"}]
+    assert sequences == Enum.uniq(sequences)
+    refute Enum.any?(items, &(&1.type == "answer"))
   end
 
   test "marks overloaded streamed provider errors as retryable" do

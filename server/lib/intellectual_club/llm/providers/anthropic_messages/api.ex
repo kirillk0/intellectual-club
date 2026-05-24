@@ -322,7 +322,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
 
         if is_binary(thinking) and thinking != "" do
           emit.({:trace, {:ensure_item, "reasoning", :reasoning, 1}})
-          emit.({:trace, {:ensure_item, "answer", :answer, 2}})
           emit.({:trace, {:append_text, "reasoning", :reasoning, idx + 1, thinking}})
         end
 
