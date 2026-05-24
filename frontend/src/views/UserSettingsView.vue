@@ -16,6 +16,18 @@
 
     <template v-else>
       <section class="card stack">
+        <h3 style="margin: 0">Language</h3>
+        <label>
+          Language preference
+          <select v-model="preferredLocaleDraft" class="full" :disabled="saving">
+            <option value="">System/browser</option>
+            <option value="en">English</option>
+            <option value="ru">Russian</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="card stack">
         <KnowledgeBlockLinksCard
           title="Knowledge blocks"
           :items="cardItems"
@@ -111,12 +123,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
+import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { parseImageAsset } from '@/features/media/image';
 import {
   jsonApiCreate,
@@ -127,7 +140,7 @@ import {
   toIntId,
   type JsonApiResource,
 } from '@/api/jsonApi';
-import type { KnowledgeBlock, UserKnowledgeBlock } from '@/types/api';
+import type { KnowledgeBlock, SessionUser, UserKnowledgeBlock } from '@/types/api';
 
 type PasswordField = 'current_password' | 'new_password' | 'new_password_confirm' | '_form';
 type PasswordFieldErrors = Record<PasswordField, string[]>;
@@ -137,9 +150,11 @@ type UserKnowledgeBlockLink = {
   enabled: boolean;
   sequence: number;
 };
+type LocaleDraft = '' | 'en' | 'ru';
 
 const router = useRouter();
 const route = useRoute();
+const { currentUser } = useSessionAuth();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -153,6 +168,8 @@ const pickerSelection = ref<number[]>([]);
 let nextTempId = -1;
 
 const baseBlocksSnapshot = ref('');
+const preferredLocaleDraft = ref<LocaleDraft>('');
+const basePreferredLocaleDraft = ref<LocaleDraft>('');
 
 const passwordForm = reactive({
   current_password: '',
@@ -179,7 +196,9 @@ const normalizeUserBlocks = (rows: UserKnowledgeBlock[]) =>
 
 const snapshotUserBlocks = (rows: UserKnowledgeBlock[]) => JSON.stringify(normalizeUserBlocks(rows));
 
-const dirty = computed(() => snapshotUserBlocks(userBlocks.value) !== baseBlocksSnapshot.value);
+const blocksDirty = computed(() => snapshotUserBlocks(userBlocks.value) !== baseBlocksSnapshot.value);
+const languageDirty = computed(() => preferredLocaleDraft.value !== basePreferredLocaleDraft.value);
+const dirty = computed(() => blocksDirty.value || languageDirty.value);
 
 const sortedUserBlocks = computed(() => [...(userBlocks.value || [])].sort((a, b) => a.sequence - b.sequence));
 
@@ -231,6 +250,17 @@ const clearPasswordFieldError = (field: PasswordField) => {
     ...passwordFormErrors.value,
     [field]: [],
   };
+};
+
+const localeDraftFromUser = (user: SessionUser | null | undefined): LocaleDraft => {
+  const locale = user?.preferred_locale;
+  return locale === 'en' || locale === 'ru' ? locale : '';
+};
+
+const resetLocaleDraft = () => {
+  const draft = localeDraftFromUser(currentUser.value);
+  preferredLocaleDraft.value = draft;
+  basePreferredLocaleDraft.value = draft;
 };
 
 const pushPasswordError = (field: PasswordField, message: string) => {
@@ -370,43 +400,54 @@ const saveAll = async () => {
   saving.value = true;
 
   try {
-    const desired = sortedUserBlocks.value.map((row, idx) => ({ ...row, sequence: idx }));
-    const desiredPersistedIds = new Set(
-      desired.map((row) => row.id).filter((id): id is number => typeof id === 'number' && id > 0)
-    );
-    const persistedBase = normalizeUserBlocks(JSON.parse(baseBlocksSnapshot.value || '[]'));
-    const removedIds = persistedBase
-      .map((row) => row.id)
-      .filter((id): id is number => typeof id === 'number' && id > 0 && !desiredPersistedIds.has(id));
+    if (blocksDirty.value) {
+      const desired = sortedUserBlocks.value.map((row, idx) => ({ ...row, sequence: idx }));
+      const desiredPersistedIds = new Set(
+        desired.map((row) => row.id).filter((id): id is number => typeof id === 'number' && id > 0)
+      );
+      const persistedBase = normalizeUserBlocks(JSON.parse(baseBlocksSnapshot.value || '[]'));
+      const removedIds = persistedBase
+        .map((row) => row.id)
+        .filter((id): id is number => typeof id === 'number' && id > 0 && !desiredPersistedIds.has(id));
 
-    await Promise.all(removedIds.map((id) => jsonApiDelete('/api/ash/user-knowledge-blocks', id)));
+      await Promise.all(removedIds.map((id) => jsonApiDelete('/api/ash/user-knowledge-blocks', id)));
 
-    const upserted = await Promise.all(
-      desired.map(async (row, idx) => {
-        if (typeof row.id === 'number' && row.id > 0) {
-          const updated = await jsonApiUpdate(
-            '/api/ash/user-knowledge-blocks',
-            'user-knowledge-blocks',
-            row.id,
-            {
-              enabled: Boolean(row.enabled),
-              sequence: idx,
-            }
-          );
-          return parseUserKnowledgeBlock(updated.data, row);
-        }
+      const upserted = await Promise.all(
+        desired.map(async (row, idx) => {
+          if (typeof row.id === 'number' && row.id > 0) {
+            const updated = await jsonApiUpdate(
+              '/api/ash/user-knowledge-blocks',
+              'user-knowledge-blocks',
+              row.id,
+              {
+                enabled: Boolean(row.enabled),
+                sequence: idx,
+              }
+            );
+            return parseUserKnowledgeBlock(updated.data, row);
+          }
 
-        const created = await jsonApiCreate('/api/ash/user-knowledge-blocks', 'user-knowledge-blocks', {
-          knowledge_block_id: row.knowledge_block_id,
-          enabled: Boolean(row.enabled),
-          sequence: idx,
-        });
-        return parseUserKnowledgeBlock(created.data, row);
-      })
-    );
+          const created = await jsonApiCreate('/api/ash/user-knowledge-blocks', 'user-knowledge-blocks', {
+            knowledge_block_id: row.knowledge_block_id,
+            enabled: Boolean(row.enabled),
+            sequence: idx,
+          });
+          return parseUserKnowledgeBlock(created.data, row);
+        })
+      );
 
-    userBlocks.value = upserted.filter((row): row is UserKnowledgeBlock => Boolean(row));
-    baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
+      userBlocks.value = upserted.filter((row): row is UserKnowledgeBlock => Boolean(row));
+      baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
+    }
+
+    if (languageDirty.value) {
+      const payload = await api.patch<{ user: SessionUser }>('/api/bff/me', {
+        preferred_locale: preferredLocaleDraft.value || null,
+      });
+      applySessionUser(payload.user);
+      preferredLocaleDraft.value = localeDraftFromUser(payload.user);
+      basePreferredLocaleDraft.value = preferredLocaleDraft.value;
+    }
   } catch (error) {
     console.error(error);
     alert('Failed to save user settings.');
@@ -500,6 +541,7 @@ const loadSettings = async () => {
       .filter((row): row is UserKnowledgeBlock => Boolean(row));
 
     baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
+    resetLocaleDraft();
   } catch (error) {
     console.error(error);
     loadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';
@@ -511,4 +553,11 @@ const loadSettings = async () => {
 onMounted(() => {
   loadSettings();
 });
+
+watch(
+  () => currentUser.value?.preferred_locale,
+  () => {
+    if (!languageDirty.value) resetLocaleDraft();
+  }
+);
 </script>

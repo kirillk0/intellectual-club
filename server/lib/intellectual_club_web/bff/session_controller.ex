@@ -10,12 +10,15 @@ defmodule IntellectualClubWeb.Bff.SessionController do
   alias IntellectualClubWeb.Bff.Serializer
 
   def show(conn, _params) do
-    case Helpers.require_actor(conn) do
-      {:ok, actor} ->
-        json(conn, %{user: Serializer.user(actor)})
+    case Helpers.current_user(conn) do
+      {:ok, user} ->
+        json(conn, %{user: Serializer.user(user)})
 
-      {:error, conn} ->
-        conn
+      {:error, _reason} ->
+        case Helpers.require_actor(conn) do
+          {:error, conn} -> conn
+          {:ok, user} -> json(conn, %{user: Serializer.user(user)})
+        end
     end
   end
 
@@ -48,7 +51,7 @@ defmodule IntellectualClubWeb.Bff.SessionController do
   defp invalid_credentials(conn) do
     conn
     |> put_status(:unauthorized)
-    |> json(%{detail: "Incorrect username or password."})
+    |> json(%{detail: gettext("Incorrect username or password.")})
   end
 
   defp normalize_credential(value, opts \\ [])

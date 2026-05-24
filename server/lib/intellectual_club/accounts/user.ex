@@ -45,6 +45,12 @@ defmodule IntellectualClub.Accounts.User do
       default(false)
     end
 
+    attribute :preferred_locale, :string do
+      allow_nil?(true)
+      public?(true)
+      constraints(trim?: true, allow_empty?: false)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -92,6 +98,13 @@ defmodule IntellectualClub.Accounts.User do
       argument(:subject, :string, allow_nil?: false)
       get?(true)
       prepare(AshAuthentication.Preparations.FilterBySubject)
+    end
+
+    read :get_current do
+      description("Get the current user by actor id")
+      argument(:id, :integer, allow_nil?: false)
+      get?(true)
+      filter(expr(id == ^arg(:id)))
     end
 
     create :create do
@@ -191,6 +204,14 @@ defmodule IntellectualClub.Accounts.User do
       change({AshAuthentication.Strategy.Password.HashPasswordChange, strategy_name: :password})
     end
 
+    update :update_settings do
+      description("Update settings for the current user")
+      accept([:preferred_locale])
+      require_atomic?(false)
+
+      validate(attribute_in(:preferred_locale, [nil, "en", "ru"]))
+    end
+
     destroy :destroy do
       description("Delete a user as an admin")
       require_atomic?(false)
@@ -229,6 +250,10 @@ defmodule IntellectualClub.Accounts.User do
     end
 
     policy action(:change_password) do
+      authorize_if expr(id == ^actor(:id))
+    end
+
+    policy action([:get_current, :update_settings]) do
       authorize_if expr(id == ^actor(:id))
     end
 

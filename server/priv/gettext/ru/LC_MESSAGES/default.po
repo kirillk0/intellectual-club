@@ -1,0 +1,30 @@
+msgid ""
+msgstr ""
+"Language: ru\n"
+
+msgid "Unauthorized"
+msgstr "Требуется вход."
+
+msgid "Forbidden"
+msgstr "Недостаточно прав."
+
+msgid "Not found"
+msgstr "Не найдено."
+
+msgid "Validation failed"
+msgstr "Проверка не пройдена"
+
+msgid "Incorrect username or password."
+msgstr "Неверное имя пользователя или пароль."
+
+msgid "Failed to load groups."
+msgstr "Не удалось загрузить группы."
+
+msgid "Failed to save user settings."
+msgstr "Не удалось сохранить настройки пользователя."
+
+msgid "Failed to change password."
+msgstr "Не удалось изменить пароль."
+
+msgid "Current password is incorrect."
+msgstr "Текущий пароль указан неверно."

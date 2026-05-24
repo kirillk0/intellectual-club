@@ -2,6 +2,7 @@ export type SessionUser = {
   id: number;
   username: string;
   is_admin: boolean;
+  preferred_locale: 'en' | 'ru' | null;
 };
 
 export type AdminUser = {

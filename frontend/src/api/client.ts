@@ -2,6 +2,7 @@ import {
   clearBackendStatusBanner,
   showBackendStatusBanner,
 } from '@/features/app/backendStatusBanner';
+import { getEffectiveLocale, translate } from '@/i18n';
 
 export function getCsrfToken(): string | null {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]');
@@ -70,10 +71,10 @@ function extractMessageFromBodyText(bodyText: string): string | null {
 
 function defaultMessageForStatus(status: number, statusText: string): string {
   if (status === 413) {
-    return 'Request body is too large. Try a smaller upload.';
+    return translate('Request body is too large. Try a smaller upload.');
   }
 
-  return asNonEmptyString(statusText) || `Request failed with status ${status}.`;
+  return asNonEmptyString(statusText) || translate('Request failed with status {status}.', { status });
 }
 
 function buildHttpErrorMessage(params: {
@@ -133,30 +134,30 @@ function isAbortError(error: unknown): boolean {
 
 function genericServerBannerMessage(status: number): string {
   if ([502, 503, 504].includes(status)) {
-    return 'The server is temporarily unavailable. Please try again.';
+    return translate('The server is temporarily unavailable. Please try again.');
   }
 
-  return 'The server returned an unexpected error. Please try again.';
+  return translate('The server returned an unexpected error. Please try again.');
 }
 
 function genericClientBannerMessage(status: number): string {
   switch (status) {
     case 400:
-      return 'The server could not process this request. Review the input and try again.';
+      return translate('The server could not process this request. Review the input and try again.');
     case 401:
-      return 'Your session is no longer valid. Sign in and try again.';
+      return translate('Your session is no longer valid. Sign in and try again.');
     case 403:
-      return 'You do not have permission to perform this action.';
+      return translate('You do not have permission to perform this action.');
     case 404:
-      return 'The requested resource could not be found.';
+      return translate('The requested resource could not be found.');
     case 409:
-      return 'This request conflicts with the current server state. Refresh and try again.';
+      return translate('This request conflicts with the current server state. Refresh and try again.');
     case 422:
-      return 'The submitted data is invalid. Review the fields and try again.';
+      return translate('The submitted data is invalid. Review the fields and try again.');
     case 429:
-      return 'Too many requests were sent. Wait a moment and try again.';
+      return translate('Too many requests were sent. Wait a moment and try again.');
     default:
-      return 'The request could not be completed. Review the input and try again.';
+      return translate('The request could not be completed. Review the input and try again.');
   }
 }
 
@@ -197,14 +198,14 @@ function buildServerBannerMessage(error: HttpError): string {
 function buildHttpBanner(error: HttpError): { title: string; message: string } | null {
   if (error.status >= 500) {
     return {
-      title: 'Server error',
+      title: translate('Server error'),
       message: buildServerBannerMessage(error),
     };
   }
 
   if (error.status >= 400) {
     return {
-      title: 'Request error',
+      title: translate('Request error'),
       message: buildClientBannerMessage(error),
     };
   }
@@ -213,7 +214,7 @@ function buildHttpBanner(error: HttpError): { title: string; message: string } |
 }
 
 function buildNetworkBannerMessage(error: unknown): string {
-  const fallback = 'The request could not reach the server. Check your connection and try again.';
+  const fallback = translate('The request could not reach the server. Check your connection and try again.');
 
   if (!(error instanceof Error)) return fallback;
 
@@ -238,6 +239,9 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   } = options;
   const headers = new Headers(requestOptions.headers || {});
   if (!headers.has('accept')) headers.set('accept', 'application/json');
+  if (path.startsWith('/api/bff') && !headers.has('x-ui-locale')) {
+    headers.set('x-ui-locale', getEffectiveLocale());
+  }
 
   const method = (requestOptions.method || 'GET').toUpperCase();
   const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
@@ -262,7 +266,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   } catch (error) {
     if (!isAbortError(error) && showErrorBanner) {
       showBackendStatusBanner({
-        title: 'Connection problem',
+        title: translate('Connection problem'),
         message: buildNetworkBannerMessage(error),
       });
     }

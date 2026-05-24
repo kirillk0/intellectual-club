@@ -1,3 +1,5 @@
+import { getEffectiveLocale, translate } from '@/i18n';
+
 const parseIsoDate = (iso?: string | null): Date | null => {
   if (!iso) return null;
   const date = new Date(iso);
@@ -16,7 +18,8 @@ export const formatRelativeDateTime = (iso?: string | null): string => {
   const isSameDay = (a: Date, b: Date) =>
     a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
-  const timePart = date.toLocaleTimeString('en-GB', {
+  const locale = getEffectiveLocale() === 'ru' ? 'ru-RU' : 'en-GB';
+  const timePart = date.toLocaleTimeString(locale, {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit',
@@ -24,14 +27,14 @@ export const formatRelativeDateTime = (iso?: string | null): string => {
   });
 
   if (isSameDay(date, startOfToday)) {
-    return `Today, ${timePart}`;
+    return translate('Today, {time}', { time: timePart });
   }
 
   if (isSameDay(date, startOfYesterday)) {
-    return `Yesterday, ${timePart}`;
+    return translate('Yesterday, {time}', { time: timePart });
   }
 
-  const datePart = date.toLocaleDateString('en-GB', {
+  const datePart = date.toLocaleDateString(locale, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -44,7 +47,9 @@ export const formatTimeOfDay = (iso?: string | null): string => {
   const date = parseIsoDate(iso);
   if (!date) return '';
 
-  return date.toLocaleTimeString('en-GB', {
+  const locale = getEffectiveLocale() === 'ru' ? 'ru-RU' : 'en-GB';
+
+  return date.toLocaleTimeString(locale, {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit',

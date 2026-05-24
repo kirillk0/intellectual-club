@@ -1,0 +1,30 @@
+msgid ""
+msgstr ""
+"Language: en\n"
+
+msgid "Unauthorized"
+msgstr ""
+
+msgid "Forbidden"
+msgstr ""
+
+msgid "Not found"
+msgstr ""
+
+msgid "Validation failed"
+msgstr ""
+
+msgid "Incorrect username or password."
+msgstr ""
+
+msgid "Failed to load groups."
+msgstr ""
+
+msgid "Failed to save user settings."
+msgstr ""
+
+msgid "Failed to change password."
+msgstr ""
+
+msgid "Current password is incorrect."
+msgstr ""

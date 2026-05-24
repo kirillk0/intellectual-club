@@ -6,26 +6,41 @@ defmodule IntellectualClubWeb.Bff.Helpers do
   import Plug.Conn
   import Phoenix.Controller
 
+  alias IntellectualClub.Accounts.User
   alias IntellectualClubWeb.ErrorJSON
+
+  use Gettext, backend: IntellectualClubWeb.Gettext
 
   def actor(conn) do
     Ash.PlugHelpers.get_actor(conn) || conn.assigns[:current_user]
   end
 
+  def current_user(conn) do
+    with %{id: user_id} = actor when is_integer(user_id) <- actor(conn),
+         {:ok, %User{} = user} <-
+           User
+           |> Ash.Query.for_read(:get_current, %{id: user_id})
+           |> Ash.read_one(actor: actor) do
+      {:ok, user}
+    else
+      _other -> {:error, :unauthorized}
+    end
+  end
+
   def require_actor(conn) do
-    case actor(conn) do
-      nil ->
+    case current_user(conn) do
+      {:error, _reason} ->
         conn =
           conn
           |> put_status(:unauthorized)
           |> put_view(ErrorJSON)
-          |> json(%{error: "Unauthorized"})
+          |> json(%{error: gettext("Unauthorized")})
           |> halt()
 
         {:error, conn}
 
-      actor ->
-        {:ok, actor}
+      {:ok, user} ->
+        {:ok, user}
     end
   end
 
@@ -38,7 +53,7 @@ defmodule IntellectualClubWeb.Bff.Helpers do
           conn
           |> put_status(:forbidden)
           |> put_view(ErrorJSON)
-          |> json(%{error: "Forbidden"})
+          |> json(%{error: gettext("Forbidden")})
           |> halt()
 
         {:error, conn}

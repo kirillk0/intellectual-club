@@ -25,6 +25,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Locale
   end
 
   pipeline :api_mixed_session do
@@ -32,6 +33,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Locale
   end
 
   pipeline :ash_json_api do
@@ -40,6 +42,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Locale
   end
 
   scope "/", IntellectualClubWeb do
@@ -91,6 +94,7 @@ defmodule IntellectualClubWeb.Router do
     post "/auth/logout", SessionController, :delete
 
     get "/me", MeController, :show
+    patch "/me", MeController, :update
     get "/me/groups", MeController, :groups
     post "/me/change-password", MeController, :change_password
     get "/bookmarks", BookmarksController, :index

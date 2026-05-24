@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "id"]) == user.id
     assert get_in(response, ["user", "username"]) == user.username
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
+    assert get_in(response, ["user", "preferred_locale"]) == nil
   end
 
   test "POST /api/bff/auth/login returns 401 for invalid credentials", %{conn: conn} do
@@ -33,6 +34,21 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
       |> json_response(401)
 
     assert response["detail"] == "Incorrect username or password."
+  end
+
+  test "POST /api/bff/auth/login localizes controlled errors", %{conn: conn} do
+    %{user: user} = user_fixture()
+
+    response =
+      conn
+      |> put_req_header("x-ui-locale", "ru")
+      |> post("/api/bff/auth/login", %{
+        "username" => user.username,
+        "password" => "wrong-password"
+      })
+      |> json_response(401)
+
+    assert response["detail"] == translated("ru", "Incorrect username or password.")
   end
 
   test "GET /api/bff/auth/me returns 401 for anonymous request", %{conn: conn} do
@@ -56,6 +72,7 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "id"]) == user.id
     assert get_in(response, ["user", "username"]) == user.username
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
+    assert get_in(response, ["user", "preferred_locale"]) == nil
   end
 
   test "POST /api/bff/auth/logout clears authenticated session", %{conn: conn} do
@@ -72,5 +89,11 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     |> recycle()
     |> get("/api/bff/auth/me")
     |> json_response(401)
+  end
+
+  defp translated(locale, msgid) do
+    Gettext.with_locale(IntellectualClubWeb.Gettext, locale, fn ->
+      Gettext.gettext(IntellectualClubWeb.Gettext, msgid)
+    end)
   end
 end

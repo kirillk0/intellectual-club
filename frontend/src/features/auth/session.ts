@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
 import { api, isHttpError } from '@/api/client';
+import { normalizePreferredLocale, setPreferredLocale } from '@/i18n';
 import type { SessionUser } from '@/types/api';
 
 const currentUser = ref<SessionUser | null>(null);
@@ -16,15 +17,21 @@ const parseInitialUserFromDom = (): SessionUser | null => {
   const username = String(host.dataset.currentUserUsername || '').trim();
   const isAdminRaw = String(host.dataset.currentUserIsAdmin || '').trim();
   const isAdmin = isAdminRaw === 'true';
+  const preferredLocale = normalizePreferredLocale(host.dataset.currentUserPreferredLocale || null);
 
   if (!Number.isFinite(id) || id <= 0 || username === '') return null;
 
-  return { id, username, is_admin: isAdmin };
+  return { id, username, is_admin: isAdmin, preferred_locale: preferredLocale };
+};
+
+export const applySessionUser = (user: SessionUser | null) => {
+  currentUser.value = user;
+  setPreferredLocale(user?.preferred_locale ?? null);
 };
 
 export const ensureAuthInitialized = () => {
   if (initialized.value) return;
-  currentUser.value = parseInitialUserFromDom();
+  applySessionUser(parseInitialUserFromDom());
   initialized.value = true;
 };
 
@@ -41,7 +48,7 @@ export const signIn = async (username: string, password: string): Promise<Sessio
     { redirectOnUnauthorized: false }
   );
 
-  currentUser.value = payload.user;
+  applySessionUser(payload.user);
   initialized.value = true;
   return payload.user;
 };
@@ -51,7 +58,7 @@ export const fetchCurrentUser = async (): Promise<SessionUser> => {
     redirectOnUnauthorized: false,
   });
 
-  currentUser.value = payload.user;
+  applySessionUser(payload.user);
   initialized.value = true;
   return payload.user;
 };
@@ -64,7 +71,7 @@ export const refreshSessionUser = async (): Promise<SessionUser | null> => {
       return await fetchCurrentUser();
     } catch (error) {
       if (isHttpError(error) && error.status === 401) {
-        currentUser.value = null;
+        applySessionUser(null);
         initialized.value = true;
         return null;
       }
@@ -80,6 +87,6 @@ export const refreshSessionUser = async (): Promise<SessionUser | null> => {
 
 export const signOut = async (): Promise<void> => {
   await api.post('/api/bff/auth/logout', {});
-  currentUser.value = null;
+  applySessionUser(null);
   initialized.value = true;
 };

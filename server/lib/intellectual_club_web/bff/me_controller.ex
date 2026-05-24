@@ -11,8 +11,28 @@ defmodule IntellectualClubWeb.Bff.MeController do
   alias IntellectualClubWeb.Bff.Serializer
 
   def show(conn, _params) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
-      json(conn, %{user: Serializer.user(actor)})
+    with {:ok, user} <- Helpers.require_actor(conn) do
+      json(conn, %{user: Serializer.user(user)})
+    end
+  end
+
+  def update(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, updated_user} <- update_user_settings(actor, params, actor) do
+      json(conn, %{user: Serializer.user(updated_user)})
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, {:validation, field_errors}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{detail: gettext("Validation failed"), errors: field_errors})
+
+      {:error, _other} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{detail: gettext("Failed to save user settings.")})
     end
   end
 
@@ -27,7 +47,7 @@ defmodule IntellectualClubWeb.Bff.MeController do
       {:error, _error} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "Failed to load groups."})
+        |> json(%{error: gettext("Failed to load groups.")})
     end
   end
 
@@ -44,12 +64,12 @@ defmodule IntellectualClubWeb.Bff.MeController do
       {:error, {:validation, field_errors}} ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{detail: "Validation failed", errors: field_errors})
+        |> json(%{detail: gettext("Validation failed"), errors: field_errors})
 
       {:error, _other} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{detail: "Failed to change password."})
+        |> json(%{detail: gettext("Failed to change password.")})
     end
   end
 
@@ -61,6 +81,37 @@ defmodule IntellectualClubWeb.Bff.MeController do
   end
 
   defp fetch_user(_actor), do: {:error, :not_found}
+
+  defp update_user_settings(%User{} = user, params, actor) do
+    payload = %{
+      preferred_locale: normalize_preferred_locale(Map.get(params, "preferred_locale"))
+    }
+
+    user
+    |> Ash.Changeset.for_update(:update_settings, payload, actor: actor)
+    |> Ash.update()
+    |> case do
+      {:ok, updated_user} ->
+        {:ok, updated_user}
+
+      {:error, %Ash.Error.Invalid{} = error} ->
+        {:error, {:validation, invalid_error_map(error)}}
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
+  defp normalize_preferred_locale(nil), do: nil
+  defp normalize_preferred_locale(""), do: nil
+
+  defp normalize_preferred_locale(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_preferred_locale(value), do: value
 
   defp change_user_password(%User{} = user, params, actor) do
     payload = %{
@@ -103,6 +154,7 @@ defmodule IntellectualClubWeb.Bff.MeController do
   defp map_error_field(:password), do: "new_password"
   defp map_error_field(:password_confirmation), do: "new_password_confirm"
   defp map_error_field(:current_password), do: "current_password"
+  defp map_error_field(:preferred_locale), do: "preferred_locale"
   defp map_error_field(nil), do: "_form"
 
   defp map_error_field(field) when is_atom(field), do: Atom.to_string(field)
@@ -112,7 +164,7 @@ defmodule IntellectualClubWeb.Bff.MeController do
   defp normalize_error_message(%AshAuthentication.Errors.AuthenticationFailed{
          field: :current_password
        }),
-       do: "Current password is incorrect."
+       do: gettext("Current password is incorrect.")
 
   defp normalize_error_message(%{message: message}) when is_binary(message) do
     message

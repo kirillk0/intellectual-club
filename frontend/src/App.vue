@@ -90,6 +90,7 @@ import {
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
+import { effectiveLocale, translate } from '@/i18n';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
 
@@ -112,9 +113,10 @@ type RouteTitle = string | ((route: RouteLocationNormalizedLoaded) => string);
 const resolveRouteTitle = (targetRoute: RouteLocationNormalizedLoaded) => {
   if (targetRoute.name === 'chat' && pageTitleOverride.value) return pageTitleOverride.value;
 
+  effectiveLocale.value;
   const routeTitle = targetRoute.meta.title as RouteTitle | undefined;
-  if (typeof routeTitle === 'function') return routeTitle(targetRoute).trim();
-  if (typeof routeTitle === 'string') return routeTitle.trim();
+  if (typeof routeTitle === 'function') return translate(routeTitle(targetRoute).trim());
+  if (typeof routeTitle === 'string') return translate(routeTitle.trim());
   return '';
 };
 
