@@ -94,4 +94,41 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert serialized.time_to_first_token_ms == 250
     assert_in_delta serialized.tokens_per_second, 10.0, 0.0001
   end
+
+  test "usage summary keeps the latest step with token usage" do
+    usage =
+      Serializer.usage_summary([
+        %{
+          id: 101,
+          sequence: 1,
+          status: :done,
+          input_tokens: 120,
+          output_tokens: 20,
+          cost: 0.01
+        },
+        %{
+          id: 102,
+          sequence: 2,
+          status: :waiting_provider,
+          input_tokens: nil,
+          output_tokens: nil,
+          cost: nil
+        }
+      ])
+
+    assert usage.latest_step.id == 101
+    assert usage.latest_step.input_tokens == 120
+    assert usage.latest_step.output_tokens == 20
+    assert usage.total_cost == 0.01
+  end
+
+  test "usage summary falls back to latest step when no token usage exists" do
+    usage =
+      Serializer.usage_summary([
+        %{id: 101, sequence: 1, status: :done, input_tokens: nil, output_tokens: nil},
+        %{id: 102, sequence: 2, status: :done, input_tokens: nil, output_tokens: nil}
+      ])
+
+    assert usage.latest_step.id == 102
+  end
 end

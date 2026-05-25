@@ -469,7 +469,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     summaries = Enum.map(steps, &working_step_summary/1)
 
     %{
-      latest_step: latest_step_summary(summaries),
+      latest_step: latest_step_with_usage_summary(summaries),
       total_cost: total_step_cost(summaries)
     }
   end
@@ -617,6 +617,21 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp latest_step_summary(summaries) when is_list(summaries) do
     Enum.max_by(summaries, &{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || 0}, fn -> nil end)
   end
+
+  defp latest_step_with_usage_summary(summaries) when is_list(summaries) do
+    summaries_with_usage = Enum.filter(summaries, &step_has_token_usage?/1)
+
+    case latest_step_summary(summaries_with_usage) do
+      nil -> latest_step_summary(summaries)
+      latest -> latest
+    end
+  end
+
+  defp step_has_token_usage?(summary) when is_map(summary) do
+    not is_nil(Map.get(summary, :input_tokens)) or not is_nil(Map.get(summary, :output_tokens))
+  end
+
+  defp step_has_token_usage?(_summary), do: false
 
   defp total_step_cost(summaries) when is_list(summaries) do
     {total, count} =
