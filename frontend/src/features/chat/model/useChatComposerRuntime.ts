@@ -21,6 +21,7 @@ import {
   buildSendPayload,
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
+import { translate } from '@/i18n';
 import type { ChatBranchMessage } from '@/types/api';
 
 type ScrollToLastMessage = (opts?: {
@@ -50,19 +51,23 @@ export function useChatComposerRuntime(params: Params) {
 
   const sendButtonLabel = computed(() => {
     if (params.activeGenerationId.value) {
-      return params.cancelingGenerationId.value === params.activeGenerationId.value ? 'Cancelling…' : 'Cancel';
+      return params.cancelingGenerationId.value === params.activeGenerationId.value
+        ? translate('Cancelling…')
+        : translate('Cancel');
     }
 
     if (sending.value) {
       const uploadProgress = overallPendingUploadProgress(pendingFiles.value);
       if (uploadProgress.active) {
-        return `Uploading… ${Math.max(1, Math.round(uploadProgress.progress * 100))}%`;
+        return translate('Uploading… {progress}%', {
+          progress: Math.max(1, Math.round(uploadProgress.progress * 100)),
+        });
       }
 
-      return 'Sending…';
+      return translate('Sending…');
     }
 
-    return 'Send';
+    return translate('Send');
   });
 
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
@@ -601,7 +606,7 @@ export function useChatComposerRuntime(params: Params) {
     try {
       const configReady = await params.waitForConfigSync();
       if (!configReady) {
-        params.loadError.value = 'Configuration change is still syncing. Please wait.';
+        params.loadError.value = translate('Configuration change is still syncing. Please wait.');
         return;
       }
 
@@ -633,7 +638,7 @@ export function useChatComposerRuntime(params: Params) {
       void params.scrollToLastMessage({ behavior: 'smooth', block: 'end' });
     } catch (error) {
       console.error(error);
-      params.loadError.value = errorMessage(error, 'Failed to send message.');
+      params.loadError.value = errorMessage(error, translate('Failed to send message.'));
     } finally {
       sending.value = false;
     }
