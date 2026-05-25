@@ -132,6 +132,94 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
            ]
   end
 
+  test "normalizes cache usage as total input tokens and cache reads" do
+    scripts = %{
+      "/messages" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "message_start",
+             "message" => %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "model" => "claude-sonnet-4-20250514",
+               "content" => [],
+               "stop_reason" => nil,
+               "usage" => %{
+                 "input_tokens" => 10,
+                 "cache_read_input_tokens" => 20,
+                 "cache_creation_input_tokens" => 30,
+                 "output_tokens" => 1
+               }
+             }
+           },
+           %{
+             "type" => "message_delta",
+             "delta" => %{"stop_reason" => "end_turn", "stop_sequence" => nil},
+             "usage" => %{"output_tokens" => 7}
+           },
+           %{"type" => "message_stop"}
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    parent = self()
+
+    :ok =
+      Api.stream_generate(
+        %{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "claude-sonnet-4-20250514",
+            "max_tokens" => 128,
+            "messages" => [],
+            "stream" => true
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        },
+        fn event ->
+          send(parent, {:provider_event, event})
+        end
+      )
+
+    events = collect_provider_events([])
+
+    step =
+      Enum.reduce(events, RuntimeTrace.new_step(), fn
+        {:trace, trace_event}, acc -> RuntimeTrace.apply_event(acc, trace_event)
+        _event, acc -> acc
+      end)
+
+    assert step.input_tokens == 60
+    assert step.cached_input_tokens == 20
+    assert step.output_tokens == 7
+
+    {:response_complete, meta} =
+      Enum.find(events, fn
+        {:response_complete, _meta} -> true
+        _other -> false
+      end)
+
+    assert meta.usage == %{
+             input_tokens: 60,
+             output_tokens: 7,
+             cached_input_tokens: 20,
+             reasoning_tokens: nil,
+             cost: nil
+           }
+
+    assert meta.raw_response["usage"] == %{
+             "input_tokens" => 10,
+             "cache_read_input_tokens" => 20,
+             "cache_creation_input_tokens" => 30,
+             "output_tokens" => 7
+           }
+  end
+
   test "does not classify first tool call after thinking as answer" do
     scripts = %{
       "/messages" => [

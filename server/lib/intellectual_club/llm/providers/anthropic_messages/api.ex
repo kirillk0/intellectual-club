@@ -574,14 +574,16 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   end
 
   defp normalized_trace_usage(%{"usage" => usage}) when is_map(usage) do
-    input_tokens = coerce_int(Map.get(usage, "input_tokens"))
-    output_tokens = coerce_int(Map.get(usage, "output_tokens"))
-
-    cached_input_tokens =
+    input_tokens =
       sum_present_ints([
+        Map.get(usage, "input_tokens"),
         Map.get(usage, "cache_read_input_tokens"),
         Map.get(usage, "cache_creation_input_tokens")
       ])
+
+    output_tokens = coerce_int(Map.get(usage, "output_tokens"))
+
+    cached_input_tokens = coerce_int(Map.get(usage, "cache_read_input_tokens"))
 
     %{
       input_tokens: input_tokens,
