@@ -5,6 +5,7 @@
     :submit-disabled="saving"
     :aria-label="title"
     submit-shortcut="auto"
+    @keydown="handleModalKeydown"
     @cancel="emit('cancel')"
     @submit="emitSave"
   >
@@ -21,12 +22,14 @@
         <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
       </button>
     </div>
-    <div class="stack" style="max-height: 60vh; overflow: auto">
+    <div ref="listRef" class="stack" style="max-height: 60vh; overflow: auto">
       <label
-        class="row"
+        class="row bot-selector-option"
+        :class="{ 'bot-selector-option--selected': opt.id === localValue }"
         style="gap: 10px; align-items: center"
-        v-for="opt in choices"
+        v-for="(opt, index) in choices"
         :key="String(opt.id)"
+        :data-bot-option-index="index"
       >
         <input type="radio" name="bot-select" :value="opt.id" v-model="localValue" />
         <span
@@ -58,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -97,6 +100,7 @@ const emit = defineEmits<{
 }>();
 
 const localValue = ref<number | ''>(props.modelValue);
+const listRef = ref<HTMLElement | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
   get: () => botSortMode.value,
@@ -121,6 +125,38 @@ const emitSave = () => {
   if (saving.value) return;
   emit('update:modelValue', localValue.value);
   emit('save', localValue.value);
+};
+
+const focusOption = (index: number) => {
+  void nextTick(() => {
+    const row = listRef.value?.querySelector<HTMLElement>(`[data-bot-option-index="${index}"]`);
+    const input = row?.querySelector<HTMLInputElement>('input[type="radio"]');
+    row?.scrollIntoView({ block: 'nearest' });
+    input?.focus({ preventScroll: true });
+  });
+};
+
+const handleModalKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const options = choices.value;
+  if (!options.length) return;
+
+  const currentIndex = options.findIndex((opt) => opt.id === localValue.value);
+  const fallbackIndex = event.key === 'ArrowDown' ? 0 : options.length - 1;
+  const nextIndex =
+    currentIndex < 0
+      ? fallbackIndex
+      : event.key === 'ArrowDown'
+        ? (currentIndex + 1) % options.length
+        : (currentIndex - 1 + options.length) % options.length;
+
+  localValue.value = options[nextIndex]?.id ?? '';
+  focusOption(nextIndex);
 };
 
 const toggleBotSortMode = () => {
@@ -185,5 +221,13 @@ const saving = computed(() => Boolean(props.saving));
   background: #f1f7ff;
   border-color: #b8d6ff;
   color: #1d4ed8;
+}
+
+.bot-selector-option {
+  border-radius: 8px;
+}
+
+.bot-selector-option--selected {
+  background: #f8fafc;
 }
 </style>
