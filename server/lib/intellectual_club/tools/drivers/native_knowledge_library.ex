@@ -545,42 +545,124 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   defp collect_block_snippets(tool_instance, blocks, cfg, regex, snippet_len_chars, max_snippets) do
-    Enum.reduce_while(blocks, {[], 0}, fn block, {acc, searched_count} ->
-      remaining = max_snippets - length(acc)
+    {matches, searched_count} =
+      collect_first_block_matches(
+        tool_instance,
+        blocks,
+        cfg,
+        regex,
+        snippet_len_chars,
+        max_snippets
+      )
 
-      if remaining <= 0 do
-        {:halt, {acc, searched_count}}
+    first_snippets = Enum.map(matches, & &1.first_snippet)
+    remaining = max_snippets - length(first_snippets)
+
+    snippets =
+      if remaining > 0 do
+        first_snippets ++
+          collect_additional_block_snippets(
+            matches,
+            regex,
+            snippet_len_chars,
+            max_snippets,
+            remaining
+          )
       else
+        first_snippets
+      end
+
+    {snippets, searched_count}
+  end
+
+  defp collect_first_block_matches(
+         tool_instance,
+         blocks,
+         cfg,
+         regex,
+         snippet_len_chars,
+         max_snippets
+       ) do
+    Enum.reduce_while(blocks, {[], 0}, fn block, {matches, searched_count} ->
+      if length(matches) >= max_snippets do
+        {:halt, {matches, searched_count}}
+      else
+        searched_count = searched_count + 1
+
         case ensure_block_cache_ready(tool_instance, block, cfg) do
           {:ok, {doc_dir, meta, _cached}} ->
             total_pages = DocumentReader.pages_total(doc_dir, meta)
 
             {block_snippets, _match_pages} =
-              DocumentReader.collect_snippets(
-                doc_dir,
-                total_pages,
-                regex,
-                snippet_len_chars,
-                remaining
-              )
+              DocumentReader.collect_snippets(doc_dir, total_pages, regex, snippet_len_chars, 1)
 
-            mapped =
-              Enum.map(block_snippets, fn item ->
-                %{
-                  block_id: block.id,
-                  block_name: block.name,
-                  page: item.page,
-                  snippet: item.snippet
+            case block_snippets do
+              [first_snippet | _rest] ->
+                match = %{
+                  block: block,
+                  doc_dir: doc_dir,
+                  total_pages: total_pages,
+                  first_snippet: block_snippet(block, first_snippet)
                 }
-              end)
 
-            {:cont, {acc ++ mapped, searched_count + 1}}
+                {:cont, {matches ++ [match], searched_count}}
+
+              [] ->
+                {:cont, {matches, searched_count}}
+            end
 
           {:error, _reason} ->
-            {:cont, {acc, searched_count + 1}}
+            {:cont, {matches, searched_count}}
         end
       end
     end)
+  end
+
+  defp collect_additional_block_snippets(
+         matches,
+         regex,
+         snippet_len_chars,
+         max_snippets,
+         remaining
+       ) do
+    matches
+    |> Enum.map(fn match ->
+      {block_snippets, _match_pages} =
+        DocumentReader.collect_snippets(
+          match.doc_dir,
+          match.total_pages,
+          regex,
+          snippet_len_chars,
+          max_snippets
+        )
+
+      block_snippets
+      |> Enum.drop(1)
+      |> Enum.map(&block_snippet(match.block, &1))
+    end)
+    |> round_robin_snippets(remaining)
+  end
+
+  defp round_robin_snippets(snippet_groups, remaining) do
+    snippet_groups
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {group, group_index} ->
+      group
+      |> Enum.with_index()
+      |> Enum.map(fn {snippet, snippet_index} -> {snippet_index, group_index, snippet} end)
+    end)
+    |> Enum.sort()
+    |> Enum.map(fn {_snippet_index, _group_index, snippet} -> snippet end)
+    |> Enum.take(remaining)
+  end
+
+  defp block_snippet(block, item) do
+    %{
+      block_id: block.id,
+      block_name: block.name,
+      page: item.page,
+      snippet: item.snippet
+    }
   end
 
   defp ensure_block_cache_ready(%ToolInstance{} = tool_instance, %KnowledgeBlock{} = block, cfg)

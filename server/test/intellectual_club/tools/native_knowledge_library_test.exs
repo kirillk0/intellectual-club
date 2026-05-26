@@ -94,6 +94,55 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     assert context =~ "The list is truncated"
   end
 
+  test "search distributes limited snippets across matching blocks before filling extras" do
+    %{user: owner} = user_fixture()
+
+    tag = create_tag!(owner, "Distributed Search Library")
+
+    alpha_block =
+      create_block!(
+        owner,
+        "Alpha Block",
+        "v1",
+        "needle alpha first. #{String.duplicate("padding ", 16)} needle alpha second."
+      )
+
+    beta_block = create_block!(owner, "Beta Block", "v1", "needle beta only.")
+    gamma_block = create_block!(owner, "Gamma Block", "v1", "needle gamma only.")
+
+    attach_tag!(owner, alpha_block, tag)
+    attach_tag!(owner, beta_block, tag)
+    attach_tag!(owner, gamma_block, tag)
+
+    tool = create_library_tool!(owner, tag.id)
+
+    assert {:ok, {_search_text, limited_raw}} =
+             NativeKnowledgeLibrary.execute(tool, "search_blocks", %{
+               "regex" => "needle",
+               "max_snippets" => 2,
+               "snippet_len_chars" => 40
+             })
+
+    limited_block_ids = Enum.map(limited_raw["snippets"], & &1["block_id"])
+    assert length(limited_block_ids) == 2
+    assert Enum.uniq(limited_block_ids) == limited_block_ids
+    assert limited_block_ids == [alpha_block.id, beta_block.id]
+
+    assert {:ok, {_search_text, filled_raw}} =
+             NativeKnowledgeLibrary.execute(tool, "search_blocks", %{
+               "regex" => "needle",
+               "max_snippets" => 4,
+               "snippet_len_chars" => 40
+             })
+
+    assert Enum.map(filled_raw["snippets"], & &1["block_id"]) == [
+             alpha_block.id,
+             beta_block.id,
+             gamma_block.id,
+             alpha_block.id
+           ]
+  end
+
   test "shared recipients execute owner library without direct block access" do
     %{user: owner} = user_fixture()
     %{user: recipient} = user_fixture()
