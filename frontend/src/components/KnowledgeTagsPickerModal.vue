@@ -4,11 +4,10 @@
     backdrop-class="modal-backdrop--mobile-stretch"
     modal-class="knowledge-tag-picker"
     aria-label="Add tag"
-    @cancel="close"
+    @cancel="cancel"
   >
         <div class="picker-header">
           <strong>{{ title }}</strong>
-          <button type="button" aria-label="Close" @click="close">Close</button>
         </div>
 
         <div class="picker-body">
@@ -18,8 +17,8 @@
           <KnowledgeTagsTree
             v-else
             :tags="tags"
-            :selectedId="activeId"
-            :selectedIds="selectedTagIds"
+            :selectedId="selectionMode === 'single' ? activeId : null"
+            :selectedIds="draftSelectedTagIds"
             :disabledIds="disabledTagIds"
             storageKey="ic.knowledge_tags.tree.open_state.v1"
             :defaultExpandDepth="2"
@@ -28,7 +27,9 @@
         </div>
 
         <div class="modal-actions">
-          <button type="button" @click="close">Done</button>
+          <div class="spacer"></div>
+          <button type="button" @click="cancel">Cancel</button>
+          <button class="primary" type="button" @click="confirm">Done</button>
         </div>
   </ModalWindow>
 </template>
@@ -45,6 +46,7 @@ const props = withDefaults(
     tags: KnowledgeTagTreeItem[];
     selectedTagIds?: number[];
     disabledTagIds?: number[];
+    selectionMode?: 'multi' | 'single';
     loading?: boolean;
     error?: string | null;
   }>(),
@@ -52,6 +54,7 @@ const props = withDefaults(
     title: 'Add tag',
     selectedTagIds: () => [],
     disabledTagIds: () => [],
+    selectionMode: 'multi',
     loading: false,
     error: null,
   }
@@ -63,8 +66,11 @@ const emit = defineEmits<{
 }>();
 
 const activeId = ref<number | null>(null);
+const draftSelectedTagIds = ref<number[]>([]);
 const disabledTagIds = computed(() => props.disabledTagIds || []);
-const selectedTagIds = computed(() => props.selectedTagIds || []);
+
+const normalizeIds = (ids: number[] | undefined) =>
+  Array.from(new Set((ids || []).filter((id) => Number.isInteger(id) && id > 0)));
 
 watch(
   () => props.open,
@@ -74,17 +80,48 @@ watch(
       return;
     }
     activeId.value = null;
+    draftSelectedTagIds.value = normalizeIds(props.selectedTagIds);
   }
 );
 
-function close() {
+function cancel() {
   activeId.value = null;
   emit('update:open', false);
 }
 
 function handleSelect(tagId: number) {
   activeId.value = tagId;
-  emit('select', tagId);
+  if (props.selectionMode === 'single') {
+    draftSelectedTagIds.value = [tagId];
+    return;
+  }
+
+  const set = new Set(draftSelectedTagIds.value);
+  if (set.has(tagId)) set.delete(tagId);
+  else set.add(tagId);
+  draftSelectedTagIds.value = normalizeIds(Array.from(set));
+}
+
+function confirm() {
+  const previousIds = normalizeIds(props.selectedTagIds);
+  const nextIds = normalizeIds(draftSelectedTagIds.value);
+
+  if (props.selectionMode === 'single') {
+    const nextId = nextIds[0] ?? null;
+    if (nextId && nextId !== (previousIds[0] ?? null)) emit('select', nextId);
+    cancel();
+    return;
+  }
+
+  const previous = new Set(previousIds);
+  const next = new Set(nextIds);
+  for (const tagId of previous) {
+    if (!next.has(tagId)) emit('select', tagId);
+  }
+  for (const tagId of next) {
+    if (!previous.has(tagId)) emit('select', tagId);
+  }
+  cancel();
 }
 </script>
 

@@ -4,11 +4,10 @@
     backdrop-class="modal-backdrop--mobile-stretch"
     modal-class="llm-config-tag-picker"
     aria-label="Select tags"
-    @cancel="close"
+    @cancel="cancel"
   >
         <div class="picker-header">
           <strong>{{ title }}</strong>
-          <button type="button" aria-label="Close" @click="close">Close</button>
         </div>
 
         <label class="stack" style="gap: 6px">
@@ -23,13 +22,15 @@
           <LlmConfigurationTagsList
             v-else
             :tags="visibleTags"
-            :selectedIds="selectedTagIds"
-            @select="emit('toggle', $event)"
+            :selectedIds="draftSelectedTagIds"
+            @select="toggleDraft"
           />
         </div>
 
         <div class="modal-actions">
-          <button type="button" @click="close">Done</button>
+          <div class="spacer"></div>
+          <button type="button" @click="cancel">Cancel</button>
+          <button class="primary" type="button" @click="confirm">Done</button>
         </div>
   </ModalWindow>
 </template>
@@ -62,11 +63,17 @@ const emit = defineEmits<{
 }>();
 
 const search = ref('');
+const draftSelectedTagIds = ref<number[]>([]);
+
+const normalizeIds = (ids: number[] | undefined) =>
+  Array.from(new Set((ids || []).filter((id) => Number.isInteger(id) && id > 0)));
 
 watch(
   () => props.open,
   (open) => {
-    if (open) search.value = '';
+    if (!open) return;
+    search.value = '';
+    draftSelectedTagIds.value = normalizeIds(props.selectedTagIds);
   }
 );
 
@@ -77,7 +84,26 @@ const visibleTags = computed(() => {
   return tags.filter((tag) => String(tag.name || '').toLowerCase().includes(q));
 });
 
-function close() {
+function cancel() {
+  emit('update:open', false);
+}
+
+function toggleDraft(tagId: number) {
+  const set = new Set(draftSelectedTagIds.value);
+  if (set.has(tagId)) set.delete(tagId);
+  else set.add(tagId);
+  draftSelectedTagIds.value = normalizeIds(Array.from(set));
+}
+
+function confirm() {
+  const previous = new Set(normalizeIds(props.selectedTagIds));
+  const next = new Set(draftSelectedTagIds.value);
+  for (const tagId of previous) {
+    if (!next.has(tagId)) emit('toggle', tagId);
+  }
+  for (const tagId of next) {
+    if (!previous.has(tagId)) emit('toggle', tagId);
+  }
   emit('update:open', false);
 }
 </script>

@@ -12,7 +12,6 @@
   >
         <div class="picker-header">
           <strong>{{ title }}</strong>
-          <button type="button" :disabled="saving" aria-label="Close" @click="close">Close</button>
         </div>
 
         <div class="picker-controls">
@@ -25,6 +24,14 @@
             :disabled="saving"
           />
           <button v-if="query" type="button" :disabled="saving" @click="query = ''">Clear</button>
+          <button
+            v-if="selectedLocal.length"
+            type="button"
+            :disabled="saving"
+            @click="emit('update:selected', [])"
+          >
+            Clear selection
+          </button>
         </div>
 
         <div class="picker-body">
@@ -61,18 +68,10 @@
         </div>
 
         <div class="modal-actions picker-actions">
+          <div class="spacer"></div>
+          <button type="button" :disabled="saving" @click="close">Cancel</button>
           <button class="primary" type="button" :disabled="confirmDisabled" @click="confirm">
             {{ saving ? 'Adding…' : confirmLabelWithCount }}
-          </button>
-          <button type="button" :disabled="saving" @click="close">Cancel</button>
-          <div class="spacer"></div>
-          <button
-            v-if="selectedLocal.length"
-            type="button"
-            :disabled="saving"
-            @click="emit('update:selected', [])"
-          >
-            Clear selection
           </button>
         </div>
   </ModalWindow>
@@ -111,7 +110,7 @@ const props = withDefaults(
     loading: false,
     saving: false,
     error: null,
-    confirmLabel: 'Add selected',
+    confirmLabel: 'Add',
   }
 );
 
@@ -144,7 +143,7 @@ const visibleTools = computed(() => {
 const enabledSelection = computed(() => selectedLocal.value.filter((id) => !isDisabled(id)));
 
 const confirmLabelWithCount = computed(() => {
-  const base = props.confirmLabel ?? 'Add selected';
+  const base = props.confirmLabel ?? 'Add';
   if (!enabledSelection.value.length) return base;
   return `${base} (${enabledSelection.value.length})`;
 });

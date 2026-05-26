@@ -11,7 +11,6 @@
   >
         <div class="picker-header">
           <strong>{{ title }}</strong>
-          <button type="button" aria-label="Close" @click="close">Close</button>
         </div>
 
         <div class="picker-body">
@@ -55,6 +54,13 @@
                     aria-label="Search blocks"
                   />
                   <button v-if="query" type="button" @click="query = ''">Clear</button>
+                  <button
+                    v-if="selectionMode !== 'single' && selectedLocal.length"
+                    type="button"
+                    @click="emit('update:selected', [])"
+                  >
+                    Clear selection
+                  </button>
                   <button
                     v-if="isMobile && !tagsOverlayOpen"
                     class="panel-toggle"
@@ -147,6 +153,8 @@
         </div>
 
         <div class="modal-actions picker-actions">
+          <div class="spacer"></div>
+          <button type="button" @click="close">Cancel</button>
           <button
             v-if="selectionMode !== 'single'"
             class="primary"
@@ -155,15 +163,6 @@
             @click="confirm"
           >
             {{ confirmLabelWithCount }}
-          </button>
-          <button type="button" @click="close">Cancel</button>
-          <div class="spacer"></div>
-          <button
-            v-if="selectionMode !== 'single' && selectedLocal.length"
-            type="button"
-            @click="emit('update:selected', [])"
-          >
-            Clear selection
           </button>
         </div>
   </ModalWindow>
@@ -193,7 +192,7 @@ const props = withDefaults(
   {
     title: 'Select blocks',
     disabledBlockIds: () => [],
-    confirmLabel: 'Add selected',
+    confirmLabel: 'Add',
     selectionMode: 'multi',
   }
 );
@@ -240,7 +239,7 @@ const visibleBlocks = computed(() => {
 });
 
 const confirmLabelWithCount = computed(() => {
-  const base = props.confirmLabel ?? 'Add selected';
+  const base = props.confirmLabel ?? 'Add';
   if (!selectedLocal.value.length) return base;
   return `${base} (${selectedLocal.value.length})`;
 });

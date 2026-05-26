@@ -99,6 +99,7 @@ const translatePatternRu = (key: string): string | null => {
   };
 
   const patterns: Array<[RegExp, (match: RegExpExecArray) => string]> = [
+    [/^Add \((\d+)\)$/u, (match) => `${ruMessages.Add ?? 'Add'} (${match[1]})`],
     [/^(Blocks|Tools|Config tags|Variables|First messages) \((\d+)\)$/u, (match) =>
       `${countedLabels[match[1]] ?? match[1]} (${match[2]})`],
     [/^(Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],

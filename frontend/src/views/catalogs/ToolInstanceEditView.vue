@@ -443,6 +443,7 @@
       :selectedTagIds="knowledgeTagPickerSelectedIds"
       :loading="knowledgeTagsLoading"
       :error="knowledgeTagsError"
+      selectionMode="single"
       title="Select knowledge tag"
       @select="selectKnowledgeTag"
     />

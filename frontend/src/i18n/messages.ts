@@ -14,6 +14,7 @@ export const ruMessages: Record<string, string> = {
   'Add tag': 'Добавить тег',
   'Add tags': 'Добавить теги',
   'Add tool binding': 'Добавить привязку инструмента',
+  'Adding…': 'Добавление…',
   'Admin': 'Администратор',
   'Admin access cannot be removed from your own account.': 'Нельзя снять права администратора со своей учетной записи.',
   'Administration': 'Администрирование',

@@ -34,7 +34,7 @@
       title="Select blocks"
       :blocks="knowledgeBlocks"
       :disabledBlockIds="linkedBlockIds"
-      confirmLabel="Add selected"
+      confirmLabel="Add"
       @confirm="confirmBlocks"
     />
   </div>
