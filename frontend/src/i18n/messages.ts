@@ -451,6 +451,7 @@ export const ruMessages: Record<string, string> = {
   'Show model options': 'Показать настройки модели',
   'Show options': 'Показать настройки',
   'Show raw text': 'Показать сырой текст',
+  'Shown in the chat list after the bot name.': 'Показывается в списке чатов после имени бота.',
   'Show tags filter': 'Показать фильтр тегов',
   'Sign in': 'Войти',
   'Sign out': 'Выйти',
