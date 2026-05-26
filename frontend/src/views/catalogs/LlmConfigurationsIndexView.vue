@@ -4,8 +4,8 @@
       <div class="toolbar fill">
         <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button type="button" @click="openUsage" :disabled="loading">
-            Usage
+          <button class="icon-button" type="button" @click="openUsage" :disabled="loading" aria-label="Usage" title="Usage">
+            <SvgIcon name="bar-chart" />
           </button>
           <button class="primary" type="button" @click="createConfig" :disabled="loading">
             New configuration

@@ -25,6 +25,7 @@ import WrenchIcon from './svg/wrench.svg';
 import MusicIcon from './svg/music.svg';
 import VideoIcon from './svg/video.svg';
 import SpreadsheetIcon from './svg/spreadsheet.svg';
+import BarChartIcon from './svg/bar-chart.svg';
 import DocumentIcon from './svg/document.svg';
 import CodeIcon from './svg/code.svg';
 import FilterIcon from './svg/filter.svg';
@@ -75,6 +76,7 @@ const iconMap: Record<string, Component> = {
   'music': MusicIcon,
   'video': VideoIcon,
   'spreadsheet': SpreadsheetIcon,
+  'bar-chart': BarChartIcon,
   'document': DocumentIcon,
   'code': CodeIcon,
   'filter': FilterIcon,
