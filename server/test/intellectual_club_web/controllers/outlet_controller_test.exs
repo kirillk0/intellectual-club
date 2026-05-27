@@ -272,6 +272,45 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance) == nil
   end
 
+  test "POST /api/outlet/calls/:call_id/files accepts unicode filename query parameter" do
+    reset_runtime!()
+
+    %{user: actor} = user_fixture()
+
+    _tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Unicode upload outlet",
+        secrets: %{"token" => "runner-unicode-upload"}
+      })
+
+    poll_response =
+      poll_outlet("runner-unicode-upload", %{
+        "runner_id" => "runner-upload",
+        "runner_session_id" => "runner-upload-session",
+        "capacity" => 1,
+        "max_wait_seconds" => 0
+      })
+
+    assert poll_response["status"] == "ok"
+    [task] = poll_response["tasks"]
+
+    filename = "отчет.txt"
+
+    response =
+      build_conn()
+      |> put_req_header("authorization", "Bearer runner-unicode-upload")
+      |> put_req_header("content-type", "text/plain")
+      |> post(
+        "/api/outlet/calls/#{task["call_id"]}/files?filename=#{URI.encode_www_form(filename)}",
+        "payload"
+      )
+      |> json_response(200)
+
+    assert response["file"]["filename"] == filename
+    assert response["file"]["mime_type"] == "text/plain"
+    assert response["file"]["size_bytes"] == 7
+  end
+
   defp reset_runtime! do
     :sys.replace_state(Runtime, fn _state -> %{instances: %{}, waiter_index: %{}} end)
   end

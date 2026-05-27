@@ -344,13 +344,20 @@ def require_call_context() -> OutletCallContext:
 async def upload_call_file(*, filename: str, mime_type: str, payload: bytes) -> dict[str, Any]:
     context = require_call_context()
     url = _join_url(context.server_url, f"/api/outlet/calls/{context.call_id}/files")
+    filename_value = str(filename or "file.bin")
     headers = {
         "Authorization": f"Bearer {context.token}",
         "Content-Type": str(mime_type or "application/octet-stream"),
-        "X-Filename": str(filename or "file.bin"),
     }
+    if filename_value.isascii():
+        headers["X-Filename"] = filename_value
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        response = await client.post(url, content=payload, headers=headers)
+        response = await client.post(
+            url,
+            content=payload,
+            headers=headers,
+            params={"filename": filename_value},
+        )
         response.raise_for_status()
         data = response.json()
         file_data = data.get("file")

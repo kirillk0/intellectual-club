@@ -4,7 +4,14 @@ import unittest
 from unittest import mock
 
 import outlets.outlet_base as outlet_base
-from outlets.outlet_base import OutletCallContext, OutletRunner, current_call_context, download_call_file, outlet_tool
+from outlets.outlet_base import (
+    OutletCallContext,
+    OutletRunner,
+    current_call_context,
+    download_call_file,
+    outlet_tool,
+    upload_call_file,
+)
 
 
 class OutletRunnerCompleteRetryTest(unittest.IsolatedAsyncioTestCase):
@@ -158,6 +165,57 @@ class OutletRunnerCallContextTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OutletFileHelpersTest(unittest.IsolatedAsyncioTestCase):
+    async def test_upload_call_file_sends_unicode_filename_in_query_params(self):
+        response = mock.Mock()
+        response.raise_for_status = mock.Mock()
+        response.json = mock.Mock(
+            return_value={
+                "file": {
+                    "file_id": 5,
+                    "file_external_id": "file-123",
+                    "filename": "привет.txt",
+                }
+            }
+        )
+
+        client = mock.AsyncMock()
+        client.post = mock.AsyncMock(return_value=response)
+
+        client_manager = mock.AsyncMock()
+        client_manager.__aenter__.return_value = client
+        client_manager.__aexit__.return_value = False
+
+        token = outlet_base._CALL_CONTEXT.set(
+            OutletCallContext(
+                call_id="call-123",
+                server_url="http://localhost:8002",
+                token="runner-token",
+            )
+        )
+
+        try:
+            with mock.patch("outlets.outlet_base.httpx.AsyncClient", return_value=client_manager):
+                result = await upload_call_file(
+                    filename="привет.txt",
+                    mime_type="text/plain",
+                    payload=b"hello",
+                )
+        finally:
+            outlet_base._CALL_CONTEXT.reset(token)
+
+        client.post.assert_awaited_once()
+        self.assertEqual(
+            client.post.await_args.args,
+            ("http://localhost:8002/api/outlet/calls/call-123/files",),
+        )
+        kwargs = client.post.await_args.kwargs
+        self.assertEqual(kwargs["content"], b"hello")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer runner-token")
+        self.assertEqual(kwargs["headers"]["Content-Type"], "text/plain")
+        self.assertNotIn("X-Filename", kwargs["headers"])
+        self.assertEqual(kwargs["params"], {"filename": "привет.txt"})
+        self.assertEqual(result["file_external_id"], "file-123")
+
     async def test_download_call_file_uses_file_route(self):
         response = mock.Mock()
         response.content = b"payload"
