@@ -156,7 +156,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       |> RequestPayload.stringify_keys()
 
     token_result =
-      Auth.get_bearer_token(%{
+      Auth.get_bearer_token_with_meta(%{
         provider_id: Map.get(context, :provider_id),
         auth_method: Map.get(context, :provider_auth_method),
         api_key: Map.get(context, :provider_api_key),
@@ -174,6 +174,24 @@ defmodule IntellectualClub.Llm.Providers.Responses do
           },
           emit
         )
+
+      {:error, error_text, error_meta} ->
+        error_meta = if is_map(error_meta), do: error_meta, else: %{}
+
+        emit.(
+          {:response_error,
+           Map.merge(
+             error_meta,
+             %{
+               provider: Map.get(context, :provider_type, type()),
+               error_text: error_text,
+               raw_request: request_payload,
+               raw_response: nil
+             }
+           )}
+        )
+
+        :ok
 
       {:error, error_text} ->
         emit.(

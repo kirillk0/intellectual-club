@@ -17,6 +17,19 @@ defmodule IntellectualClub.Llm.Auth do
           optional(:oauth_refresh_token) => String.t() | nil
         }) :: {:ok, String.t()} | {:error, String.t()}
   def get_bearer_token(opts) when is_map(opts) do
+    case get_bearer_token_with_meta(opts) do
+      {:ok, token} -> {:ok, token}
+      {:error, message, _meta} -> {:error, message}
+    end
+  end
+
+  @spec get_bearer_token_with_meta(%{
+          optional(:provider_id) => integer() | nil,
+          optional(:auth_method) => auth_method() | String.t() | nil,
+          optional(:api_key) => String.t() | nil,
+          optional(:oauth_refresh_token) => String.t() | nil
+        }) :: {:ok, String.t()} | {:error, String.t(), OpenAIOAuth.error_meta()}
+  def get_bearer_token_with_meta(opts) when is_map(opts) do
     provider_id = Map.get(opts, :provider_id)
     auth_method = normalize_auth_method(Map.get(opts, :auth_method))
 
@@ -25,7 +38,7 @@ defmodule IntellectualClub.Llm.Auth do
         api_key = Map.get(opts, :api_key)
 
         if blank?(api_key) do
-          {:error, "Provider API key is not set"}
+          {:error, "Provider API key is not set", %{retryable: false, error_kind: "auth"}}
         else
           {:ok, String.trim(api_key)}
         end
@@ -34,9 +47,12 @@ defmodule IntellectualClub.Llm.Auth do
         refresh_token = Map.get(opts, :oauth_refresh_token)
 
         if blank?(refresh_token) do
-          {:error, "Provider OAuth refresh token is not set"}
+          {:error, "Provider OAuth refresh token is not set",
+           %{retryable: false, error_kind: "auth"}}
         else
-          OpenAIOAuth.get_access_token(String.trim(refresh_token), provider_id: provider_id)
+          OpenAIOAuth.get_access_token_with_meta(String.trim(refresh_token),
+            provider_id: provider_id
+          )
         end
     end
   end

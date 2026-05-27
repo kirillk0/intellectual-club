@@ -19,6 +19,12 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0, 0])
     Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
 
+    table = :ic_openai_oauth_token_cache
+
+    if :ets.whereis(table) != :undefined do
+      :ets.delete_all_objects(table)
+    end
+
     on_exit(fn ->
       restore_env(:generation_auto_retry_max_retries, previous_max_retries)
       restore_env(:generation_auto_retry_backoff_ms, previous_backoff)
@@ -89,6 +95,92 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
     assert step.sequence == 1
     assert step.id != context.step_id
+    assert message.status == :error
+  end
+
+  test "generation retries OAuth refresh transport errors through common retry path" do
+    %{user: actor} = user_fixture()
+
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+    previous_req_options = Application.get_env(:intellectual_club, :openai_oauth_req_options)
+
+    Application.put_env(:intellectual_club, :openai_oauth_req_options,
+      plug: fn conn ->
+        Agent.update(attempts, &(&1 + 1))
+        Req.Test.transport_error(conn, :timeout)
+      end
+    )
+
+    on_exit(fn ->
+      if is_nil(previous_req_options) do
+        Application.delete_env(:intellectual_club, :openai_oauth_req_options)
+      else
+        Application.put_env(:intellectual_club, :openai_oauth_req_options, previous_req_options)
+      end
+    end)
+
+    oauth_refresh_token =
+      "rt_retry_transport_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "OAuth retry provider",
+          type: :responses,
+          auth_method: :openai_oauth_refresh_token,
+          base_url: "https://api.openai.com/v1",
+          oauth_refresh_token: oauth_refresh_token
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "gpt-4.1-mini",
+          note: "",
+          parameters: %{},
+          timeout_seconds: 1
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "OAuth auto retry",
+          note: "",
+          variables: %{},
+          llm_configuration_id: configuration.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Please fail OAuth refresh", actor: actor)
+
+    {:ok, context} = GenerationSupervisor.start_generation(chat.id, actor: actor)
+
+    message = wait_for_status!(context.message_id, actor, [:error], 12_000)
+
+    step =
+      message.steps
+      |> List.wrap()
+      |> Enum.max_by(& &1.sequence)
+
+    assert step.sequence == 1
+    assert Agent.get(attempts, & &1) == 3
+    assert message.error_detail =~ "OAuth token refresh failed"
     assert message.status == :error
   end
 

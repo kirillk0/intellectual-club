@@ -13,9 +13,25 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   @cache_table :ic_openai_oauth_token_cache
   @default_lock_timeout_ms 15_000
   @default_lock_stale_after_ms 60_000
+  @retryable_http_status_codes MapSet.new([429, 502, 503])
+
+  @type error_meta :: %{
+          optional(:retryable) => boolean(),
+          optional(:error_kind) => String.t(),
+          optional(:status_code) => integer() | nil
+        }
 
   @spec get_access_token(String.t(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def get_access_token(refresh_token, opts \\ []) when is_binary(refresh_token) do
+    case get_access_token_with_meta(refresh_token, opts) do
+      {:ok, token} -> {:ok, token}
+      {:error, message, _meta} -> {:error, message}
+    end
+  end
+
+  @spec get_access_token_with_meta(String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, String.t(), error_meta()}
+  def get_access_token_with_meta(refresh_token, opts \\ []) when is_binary(refresh_token) do
     provider_id = Keyword.get(opts, :provider_id)
 
     ensure_cache_table!()
@@ -23,21 +39,24 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
     cache_key = cache_key(provider_id, refresh_token)
     now = System.system_time(:second)
 
-    case lookup_cached_token(cache_key, now) do
-      {:ok, token} ->
-        {:ok, token}
+    result =
+      case lookup_cached_token(cache_key, now) do
+        {:ok, token} ->
+          {:ok, token}
 
-      :miss ->
-        refresh_token_to_use = resolve_refresh_token(refresh_token, provider_id)
+        :miss ->
+          refresh_token_to_use = resolve_refresh_token(refresh_token, provider_id)
 
-        if blank?(refresh_token_to_use) do
-          {:error, "Refresh token is not set"}
-        else
-          maybe_with_lock(provider_id, cache_key, fn ->
-            refresh_and_cache(refresh_token_to_use, cache_key, now, provider_id: provider_id)
-          end)
-        end
-    end
+          if blank?(refresh_token_to_use) do
+            {:error, "Refresh token is not set"}
+          else
+            maybe_with_lock(provider_id, cache_key, fn ->
+              refresh_and_cache(refresh_token_to_use, cache_key, now, provider_id: provider_id)
+            end)
+          end
+      end
+
+    normalize_result(result)
   end
 
   defp lookup_cached_token(cache_key, now) do
@@ -115,10 +134,10 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
         {:ok, Req.request!(request_opts)}
       rescue
         exception ->
-          {:error, Exception.message(exception)}
+          {:error, Exception.message(exception), exception_error_meta(exception)}
       catch
         :exit, reason ->
-          {:error, Exception.format_exit(reason)}
+          {:error, Exception.format_exit(reason), exit_error_meta(reason)}
       end
 
     case response do
@@ -148,7 +167,8 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
           {:ok, token}
         else
           _ ->
-            {:error, "OAuth token refresh returned an unexpected response"}
+            {:error, "OAuth token refresh returned an unexpected response",
+             %{retryable: false, error_kind: "provider"}}
         end
 
       {:ok, %{status: status, body: body}} when is_integer(status) ->
@@ -156,11 +176,13 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
           handle_refresh_token_reused(cache_key, provider_id, refresh_token, now)
         else
           message = extract_error_message(body)
-          {:error, "OAuth token refresh failed (status #{status}): #{message}"}
+
+          {:error, "OAuth token refresh failed (status #{status}): #{message}",
+           http_error_meta(status)}
         end
 
-      {:error, reason} ->
-        {:error, "OAuth token refresh failed: #{reason}"}
+      {:error, reason, meta} ->
+        {:error, "OAuth token refresh failed: #{reason}", meta}
     end
   end
 
@@ -177,16 +199,80 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
 
         cond do
           blank?(latest) ->
-            {:error, "OAuth refresh token was already used and no new token is available"}
+            {:error, "OAuth refresh token was already used and no new token is available",
+             %{retryable: false, error_kind: "auth"}}
 
           String.trim(latest) == String.trim(refresh_token) ->
-            {:error, "OAuth refresh token was already used and no new token is available"}
+            {:error, "OAuth refresh token was already used and no new token is available",
+             %{retryable: false, error_kind: "auth"}}
 
           true ->
             refresh_and_cache(String.trim(latest), cache_key, now, provider_id: provider_id)
         end
     end
   end
+
+  defp normalize_result({:ok, token}) when is_binary(token), do: {:ok, token}
+
+  defp normalize_result({:error, message, meta}) when is_map(meta) do
+    {:error, to_string(message), meta}
+  end
+
+  defp normalize_result({:error, message}) do
+    {:error, to_string(message), %{}}
+  end
+
+  defp http_error_meta(status) when is_integer(status) do
+    %{
+      status_code: status,
+      error_kind: "http",
+      retryable: MapSet.member?(@retryable_http_status_codes, status)
+    }
+  end
+
+  defp exception_error_meta(%Req.TransportError{reason: reason}) do
+    %{retryable: true, error_kind: transport_error_kind(reason)}
+  end
+
+  defp exception_error_meta(%Req.HTTPError{protocol: :http2, reason: reason})
+       when reason in [:unprocessed, :pool_not_available] do
+    %{retryable: true, error_kind: "transport"}
+  end
+
+  defp exception_error_meta(_exception), do: %{retryable: false, error_kind: "auth"}
+
+  defp exit_error_meta(reason) do
+    if retryable_exit_reason?(reason) do
+      %{retryable: true, error_kind: exit_error_kind(reason)}
+    else
+      %{retryable: false, error_kind: "auth"}
+    end
+  end
+
+  defp retryable_exit_reason?(reason) do
+    reason
+    |> inspect()
+    |> String.downcase()
+    |> then(fn text ->
+      String.contains?(text, "timeout") or
+        String.contains?(text, "transport") or
+        String.contains?(text, "econnrefused") or
+        String.contains?(text, "closed")
+    end)
+  end
+
+  defp exit_error_kind(reason) do
+    text = reason |> inspect() |> String.downcase()
+
+    if String.contains?(text, "timeout") do
+      "timeout"
+    else
+      "transport"
+    end
+  end
+
+  defp transport_error_kind(reason) when reason in [:timeout, :request_timeout], do: "timeout"
+  defp transport_error_kind(_reason), do: "transport"
 
   defp refresh_token_reused?(body) do
     case normalize_json(body) do

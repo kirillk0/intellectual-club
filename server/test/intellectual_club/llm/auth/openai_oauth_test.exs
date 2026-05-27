@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Auth.OpenAIOAuth
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.Providers.Responses
 
   setup do
     table = :ic_openai_oauth_token_cache
@@ -150,6 +151,35 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     assert message =~ "invalid_grant"
   end
 
+  test "returns retryable metadata on transport refresh failure" do
+    refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    Req.Test.expect(OpenAIOAuth, 1, fn conn ->
+      Req.Test.transport_error(conn, :timeout)
+    end)
+
+    assert {:error, message, meta} = OpenAIOAuth.get_access_token_with_meta(refresh_token)
+
+    assert message =~ "OAuth token refresh failed"
+    assert meta.retryable == true
+    assert meta.error_kind == "timeout"
+  end
+
+  test "returns retryable metadata on transient refresh HTTP status" do
+    refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    Req.Test.expect(OpenAIOAuth, 1, fn conn ->
+      Plug.Conn.send_resp(conn, 503, "temporarily unavailable")
+    end)
+
+    assert {:error, message, meta} = OpenAIOAuth.get_access_token_with_meta(refresh_token)
+
+    assert message =~ "OAuth token refresh failed (status 503)"
+    assert meta.status_code == 503
+    assert meta.error_kind == "http"
+    assert meta.retryable == true
+  end
+
   test "uses refresh token auth method in Auth.get_bearer_token/1" do
     refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
 
@@ -200,5 +230,34 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     end)
 
     assert OpenAIOAuth.get_access_token("rt_arg", provider_id: provider.id) == {:ok, "at_1"}
+  end
+
+  test "responses provider forwards OAuth refresh retry metadata to common generation errors" do
+    refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
+    parent = self()
+
+    Req.Test.expect(OpenAIOAuth, 1, fn conn ->
+      Req.Test.transport_error(conn, :timeout)
+    end)
+
+    assert :ok =
+             Responses.stream_generate(
+               %{
+                 context: %{
+                   provider_type: "responses",
+                   provider_auth_method: :openai_oauth_refresh_token,
+                   provider_oauth_refresh_token: refresh_token
+                 },
+                 request_payload: %{"model" => "gpt-4.1", "input" => []}
+               },
+               fn event -> send(parent, {:provider_event, event}) end
+             )
+
+    assert_receive {:provider_event, {:response_error, error}}, 1_000
+
+    assert error.error_text =~ "OAuth token refresh failed"
+    assert error.retryable == true
+    assert error.error_kind == "timeout"
+    assert error.raw_request == %{"model" => "gpt-4.1", "input" => []}
   end
 end
