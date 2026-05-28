@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
 
   import Plug.Conn
 
+  alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Responses.Api
 
   @base_opts %{
@@ -143,6 +144,122 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
            ]
   end
 
+  test "prefers assembled stream output when terminal response output is partial" do
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.output_item.added",
+             "output_index" => 0,
+             "item" => %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "in_progress",
+               "content" => []
+             }
+           },
+           %{
+             "type" => "response.output_text.delta",
+             "item_id" => "msg_1",
+             "output_index" => 0,
+             "content_index" => 0,
+             "delta" => "Full "
+           },
+           %{
+             "type" => "response.output_text.delta",
+             "item_id" => "msg_1",
+             "output_index" => 0,
+             "content_index" => 0,
+             "delta" => "answer."
+           },
+           %{
+             "type" => "response.output_text.done",
+             "item_id" => "msg_1",
+             "output_index" => 0,
+             "content_index" => 0,
+             "text" => "Full answer."
+           },
+           %{
+             "type" => "response.output_item.done",
+             "output_index" => 0,
+             "item" => %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "Full answer.",
+                   "annotations" => []
+                 }
+               ]
+             }
+           },
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp_1",
+               "object" => "response",
+               "model" => "gpt-4.1",
+               "status" => "completed",
+               "output" => [
+                 %{
+                   "id" => "msg_1",
+                   "type" => "message",
+                   "role" => "assistant",
+                   "status" => "completed",
+                   "content" => [
+                     %{
+                       "type" => "output_text",
+                       "text" => "Full",
+                       "annotations" => []
+                     }
+                   ]
+                 }
+               ]
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    events =
+      run_and_capture_events!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        model_name: "gpt-4.1",
+        request_payload: %{
+          "model" => "gpt-4.1",
+          "input" => [],
+          "instructions" => ""
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    meta =
+      Enum.find_value(events, fn
+        {:response_complete, meta} -> meta
+        _other -> nil
+      end)
+
+    assert get_in(meta.raw_response, ["output", Access.at(0), "content", Access.at(0), "text"]) ==
+             "Full answer."
+
+    runtime_step =
+      Enum.reduce(events, RuntimeTrace.new_step(), fn
+        {:trace, trace_event}, step -> RuntimeTrace.apply_event(step, trace_event)
+        _event, step -> step
+      end)
+
+    assert RuntimeTrace.text_for_item_type(runtime_step, :answer) == "Full answer."
+  end
+
   test "marks overloaded streamed provider errors as retryable" do
     scripts = %{
       "/responses" => [
@@ -263,6 +380,25 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
 
     assert_receive {:provider_event, {:response_error, error}}, 2_000
     error
+  end
+
+  defp run_and_capture_events!(opts) when is_map(opts) do
+    parent = self()
+
+    :ok =
+      Api.stream_generate(opts, fn event ->
+        send(parent, {:provider_event, event})
+      end)
+
+    drain_provider_events([])
+  end
+
+  defp drain_provider_events(acc) do
+    receive do
+      {:provider_event, event} -> drain_provider_events([event | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
   defp start_scripted_server!(scripts) when is_map(scripts) do

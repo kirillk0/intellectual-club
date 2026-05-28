@@ -147,6 +147,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
       current_event: nil,
       data_lines: [],
       output_items: %{},
+      output_item_updates: MapSet.new(),
       tool_calls: %{},
       done?: false
     }
@@ -366,6 +367,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
 
         state
         |> put_output_item(idx, item_map)
+        |> mark_output_item_updated(idx)
         |> maybe_store_tool_call_state(item_type, item_id, item_map)
 
       _ ->
@@ -402,7 +404,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :append
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -437,7 +439,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :replace
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -467,7 +469,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :append
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -497,7 +499,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :replace
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -532,7 +534,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :append
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -567,7 +569,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :replace
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -606,7 +608,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :append
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -645,7 +647,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           :replace
         )
 
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -683,7 +685,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
         end)
 
       emit.({:trace, {:set_opaque, item_id, :tool_call, @opaque_sequence, tool_call}})
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -721,7 +723,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
         end)
 
       emit.({:trace, {:set_opaque, item_id, :tool_call, @opaque_sequence, tool_call}})
-      state
+      mark_output_item_updated(state, output_index)
     else
       state
     end
@@ -843,6 +845,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
       assembled_output == [] ->
         response
 
+      stream_output_updated?(state) ->
+        Map.put(response, "output", merge_completed_output(existing_output, state))
+
       is_list(existing_output) and existing_output != [] ->
         response
 
@@ -854,16 +859,87 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   defp hydrate_response_output(response, _state), do: response
 
   defp assembled_output_items(state) when is_map(state) do
+    state
+    |> assembled_output_item_entries()
+    |> Enum.map(fn {_index, item} -> item end)
+  end
+
+  defp assembled_output_items(_state), do: []
+
+  defp assembled_output_item_entries(state) when is_map(state) do
     tool_calls = Map.get(state, :tool_calls, %{})
 
     state
     |> Map.get(:output_items, %{})
     |> Enum.sort_by(fn {index, _item} -> index end)
-    |> Enum.map(fn {_index, item} -> finalize_output_item(item, tool_calls) end)
-    |> Enum.filter(&(is_map(&1) and map_size(&1) > 0))
+    |> Enum.map(fn {index, item} -> {index, finalize_output_item(item, tool_calls)} end)
+    |> Enum.filter(fn {_index, item} -> is_map(item) and map_size(item) > 0 end)
   end
 
-  defp assembled_output_items(_state), do: []
+  defp assembled_output_item_entries(_state), do: []
+
+  defp stream_output_updated?(state) when is_map(state) do
+    state
+    |> Map.get(:output_item_updates, MapSet.new())
+    |> MapSet.size()
+    |> Kernel.>(0)
+  end
+
+  defp stream_output_updated?(_state), do: false
+
+  defp merge_completed_output(existing_output, state) when is_map(state) do
+    stream_items_by_index =
+      state
+      |> assembled_output_item_entries()
+      |> Map.new()
+
+    existing_items_by_index =
+      case existing_output do
+        items when is_list(items) ->
+          items
+          |> Enum.with_index()
+          |> Map.new(fn {item, index} -> {index, item} end)
+
+        _other ->
+          %{}
+      end
+
+    updated_indexes = Map.get(state, :output_item_updates, MapSet.new())
+
+    max_index =
+      [
+        stream_items_by_index |> Map.keys() |> Enum.max(fn -> -1 end),
+        existing_items_by_index |> Map.keys() |> Enum.max(fn -> -1 end)
+      ]
+      |> Enum.max()
+
+    if max_index < 0 do
+      []
+    else
+      0..max_index
+      |> Enum.map(fn index ->
+        stream_item = Map.get(stream_items_by_index, index)
+        existing_item = Map.get(existing_items_by_index, index)
+
+        cond do
+          MapSet.member?(updated_indexes, index) and is_map(stream_item) ->
+            merge_output_item_preserving_accumulated(stream_item, existing_item)
+
+          is_map(existing_item) ->
+            Map.new(existing_item)
+
+          is_map(stream_item) ->
+            stream_item
+
+          true ->
+            nil
+        end
+      end)
+      |> Enum.filter(&is_map/1)
+    end
+  end
+
+  defp merge_completed_output(_existing_output, _state), do: []
 
   defp finalize_output_item(%{} = item, tool_calls) when is_map(tool_calls) do
     case {Map.get(item, "type"), Map.get(item, "id")} do
@@ -892,10 +968,172 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
 
   defp put_output_item(state, output_index, item_map)
        when is_map(state) and is_integer(output_index) and is_map(item_map) do
-    %{state | output_items: Map.put(state.output_items, output_index, Map.new(item_map))}
+    current = Map.get(state.output_items, output_index, %{})
+
+    %{
+      state
+      | output_items:
+          Map.put(state.output_items, output_index, merge_output_item(current, item_map))
+    }
   end
 
   defp put_output_item(state, _output_index, _item_map), do: state
+
+  defp mark_output_item_updated(state, output_index)
+       when is_map(state) and is_integer(output_index) do
+    updates =
+      state
+      |> Map.get(:output_item_updates, MapSet.new())
+      |> MapSet.put(output_index)
+
+    %{state | output_item_updates: updates}
+  end
+
+  defp mark_output_item_updated(state, _output_index), do: state
+
+  defp merge_output_item(accumulated, incoming) when is_map(accumulated) and is_map(incoming) do
+    merge_output_item(accumulated, incoming, :best)
+  end
+
+  defp merge_output_item(accumulated, _incoming) when is_map(accumulated),
+    do: Map.new(accumulated)
+
+  defp merge_output_item(_accumulated, incoming) when is_map(incoming), do: Map.new(incoming)
+  defp merge_output_item(_accumulated, _incoming), do: %{}
+
+  defp merge_output_item_preserving_accumulated(accumulated, incoming)
+       when is_map(accumulated) and is_map(incoming) do
+    merge_output_item(accumulated, incoming, :accumulated)
+  end
+
+  defp merge_output_item_preserving_accumulated(accumulated, _incoming)
+       when is_map(accumulated),
+       do: Map.new(accumulated)
+
+  defp merge_output_item_preserving_accumulated(_accumulated, incoming)
+       when is_map(incoming),
+       do: Map.new(incoming)
+
+  defp merge_output_item_preserving_accumulated(_accumulated, _incoming), do: %{}
+
+  defp merge_output_item(accumulated, incoming, string_merge_mode)
+       when is_map(accumulated) and is_map(incoming) do
+    accumulated = Map.new(accumulated)
+    incoming = Map.new(incoming)
+
+    accumulated
+    |> Map.merge(incoming)
+    |> merge_output_item_container("content", accumulated, incoming, string_merge_mode)
+    |> merge_output_item_container("summary", accumulated, incoming, string_merge_mode)
+    |> put_merged_string_field("arguments", accumulated, incoming, string_merge_mode)
+  end
+
+  defp merge_output_item(accumulated, _incoming, _string_merge_mode) when is_map(accumulated),
+    do: Map.new(accumulated)
+
+  defp merge_output_item(_accumulated, incoming, _string_merge_mode) when is_map(incoming),
+    do: Map.new(incoming)
+
+  defp merge_output_item(_accumulated, _incoming, _string_merge_mode), do: %{}
+
+  defp merge_output_item_container(item, key, accumulated, incoming, string_merge_mode)
+       when is_map(item) and is_binary(key) and is_map(accumulated) and is_map(incoming) do
+    accumulated_parts = Map.get(accumulated, key)
+    incoming_parts = Map.get(incoming, key)
+
+    cond do
+      is_list(accumulated_parts) and is_list(incoming_parts) ->
+        Map.put(
+          item,
+          key,
+          merge_content_parts(accumulated_parts, incoming_parts, string_merge_mode)
+        )
+
+      is_list(accumulated_parts) and accumulated_parts != [] ->
+        Map.put(item, key, accumulated_parts)
+
+      is_list(incoming_parts) ->
+        Map.put(item, key, incoming_parts)
+
+      true ->
+        item
+    end
+  end
+
+  defp merge_content_parts(accumulated_parts, incoming_parts, string_merge_mode)
+       when is_list(accumulated_parts) and is_list(incoming_parts) do
+    max_length = max(length(accumulated_parts), length(incoming_parts))
+
+    if max_length == 0 do
+      []
+    else
+      0..(max_length - 1)
+      |> Enum.map(fn index ->
+        accumulated = Enum.at(accumulated_parts, index)
+        incoming = Enum.at(incoming_parts, index)
+        merge_content_part(accumulated, incoming, string_merge_mode)
+      end)
+      |> Enum.reject(&is_nil/1)
+    end
+  end
+
+  defp merge_content_part(accumulated, incoming, string_merge_mode)
+       when is_map(accumulated) and is_map(incoming) do
+    accumulated
+    |> Map.merge(incoming)
+    |> put_merged_string_field("text", accumulated, incoming, string_merge_mode)
+    |> put_merged_string_field("refusal", accumulated, incoming, string_merge_mode)
+  end
+
+  defp merge_content_part(accumulated, _incoming, _string_merge_mode) when is_map(accumulated),
+    do: Map.new(accumulated)
+
+  defp merge_content_part(_accumulated, incoming, _string_merge_mode) when is_map(incoming),
+    do: Map.new(incoming)
+
+  defp merge_content_part(accumulated, _incoming, _string_merge_mode)
+       when not is_nil(accumulated),
+       do: accumulated
+
+  defp merge_content_part(_accumulated, incoming, _string_merge_mode), do: incoming
+
+  defp put_merged_string_field(map, key, accumulated, incoming, string_merge_mode)
+       when is_map(map) and is_binary(key) and is_map(accumulated) and is_map(incoming) do
+    accumulated_value = Map.get(accumulated, key)
+    incoming_value = Map.get(incoming, key)
+
+    cond do
+      non_empty_string?(accumulated_value) and non_empty_string?(incoming_value) ->
+        Map.put(
+          map,
+          key,
+          merged_string_value(accumulated_value, incoming_value, string_merge_mode)
+        )
+
+      non_empty_string?(accumulated_value) ->
+        Map.put(map, key, accumulated_value)
+
+      non_empty_string?(incoming_value) ->
+        Map.put(map, key, incoming_value)
+
+      true ->
+        map
+    end
+  end
+
+  defp put_merged_string_field(map, _key, _accumulated, _incoming, _string_merge_mode), do: map
+
+  defp merged_string_value(accumulated_value, _incoming_value, :accumulated),
+    do: accumulated_value
+
+  defp merged_string_value(accumulated_value, incoming_value, _mode) do
+    if String.length(accumulated_value) >= String.length(incoming_value),
+      do: accumulated_value,
+      else: incoming_value
+  end
+
+  defp non_empty_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_empty_string?(_value), do: false
 
   defp update_output_item(state, output_index, item_id, fun)
        when is_map(state) and is_integer(output_index) and is_function(fun, 1) do
