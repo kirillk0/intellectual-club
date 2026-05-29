@@ -189,6 +189,10 @@ defmodule IntellectualClubWeb.Router do
     get "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :show
     post "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :update
     delete "/knowledge-blocks/:id/image", KnowledgeBlockImagesController, :delete
+    get "/knowledge-blocks/:id/files", KnowledgeBlockFilesController, :index
+    post "/knowledge-blocks/:id/files", KnowledgeBlockFilesController, :create
+    get "/knowledge-blocks/:id/files/:attachment_id", KnowledgeBlockFilesController, :show
+    delete "/knowledge-blocks/:id/files/:attachment_id", KnowledgeBlockFilesController, :delete
 
     post "/knowledge-blocks/markdown-export", KnowledgeBlocksMarkdownController, :export
   end

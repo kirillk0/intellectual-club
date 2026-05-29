@@ -11,8 +11,10 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Files
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Knowledge.KnowledgeBlockFile
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
@@ -54,6 +56,17 @@ defmodule IntellectualClub.Generation.ContextTest do
         actor: actor
       )
       |> Ash.create!()
+
+    {:ok, first_block_file} =
+      Files.create_from_binary("first-context.txt", "text/plain", "first block file")
+
+    KnowledgeBlockFile
+    |> Ash.Changeset.for_create(
+      :create,
+      %{knowledge_block_id: first_block.id, file_id: first_block_file.id, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
 
     bot =
       Bot
@@ -118,7 +131,14 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.system_prompt != ""
     assert Regex.match?(~r/# First block.*# Second block/s, context.system_prompt)
     assert String.contains?(context.system_prompt, "First content")
+
+    assert String.contains?(
+             context.system_prompt,
+             "[Attached file file_id=#{first_block_file.external_id}"
+           )
+
     assert String.contains?(context.system_prompt, "Second content")
+    assert first_block_file.external_id in context.available_file_external_ids
 
     assert Enum.at(context.messages, 0) == %{
              "role" => "system",

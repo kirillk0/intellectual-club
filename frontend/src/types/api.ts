@@ -46,6 +46,18 @@ export type ImageAsset = {
   sha256: string;
 };
 
+export type KnowledgeBlockAttachment = {
+  id: number;
+  external_id: string;
+  file_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  sequence: number;
+  url: string;
+};
+
 export type Bot = {
   id: number;
   name: string;

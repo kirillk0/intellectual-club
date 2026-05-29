@@ -173,6 +173,63 @@
             <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading an image.</div>
           </div>
 
+          <div class="stack">
+            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+              <div class="stack" style="gap: 2px">
+                <strong>Files</strong>
+                <div class="muted" style="font-size: 0.85rem">
+                  Attached files are visible to the model as file_id placeholders.
+                </div>
+              </div>
+              <button
+                type="button"
+                :disabled="isNew || saving || sharedReadonly || filesUploading"
+                @click="triggerFilesUpload"
+              >
+                {{ filesUploading ? 'Uploading…' : 'Upload files' }}
+              </button>
+            </div>
+
+            <input ref="filesInput" type="file" multiple style="display: none" @change="handleFilesSelected" />
+
+            <p v-if="filesLoading" class="muted">Loading…</p>
+            <p v-else-if="filesError" class="error-text">{{ filesError }}</p>
+
+            <div v-else class="list">
+              <div v-for="attachment in fileAttachments" :key="attachment.id" class="row knowledge-block-file-row">
+                <div class="knowledge-block-file-row__main">
+                  <a
+                    class="knowledge-block-file-row__name"
+                    :href="attachment.url"
+                    target="_blank"
+                    rel="noopener"
+                    title="Download file"
+                  >
+                    {{ attachment.filename }}
+                  </a>
+                  <div class="knowledge-block-file-row__meta">
+                    {{ attachment.mime_type || 'application/octet-stream' }} · {{ formatBytes(attachment.size_bytes) }}
+                  </div>
+                  <div class="knowledge-block-file-row__id">
+                    <span class="muted">File ID</span>
+                    <code>{{ attachment.file_id }}</code>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="danger"
+                  :disabled="saving || sharedReadonly"
+                  @click="removeAttachment(attachment)"
+                >
+                  Remove
+                </button>
+              </div>
+
+              <p v-if="!fileAttachments.length" class="muted">No files attached.</p>
+            </div>
+            <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading files.</div>
+          </div>
+
           <div class="muted">External ID</div>
           <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px">
             {{ form.external_id || '(generated on save)' }}
@@ -206,6 +263,11 @@ import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/images';
+import {
+  deleteKnowledgeBlockFile,
+  listKnowledgeBlockFiles,
+  uploadKnowledgeBlockFiles,
+} from '@/api/knowledgeBlockFiles';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
@@ -222,7 +284,7 @@ import {
   type JsonApiResource,
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
-import type { ImageAsset } from '@/types/api';
+import type { ImageAsset, KnowledgeBlockAttachment } from '@/types/api';
 
 type KnowledgeBlockForm = {
   name: string;
@@ -389,6 +451,11 @@ const loaded = editor.loaded;
 const loading = editor.loading;
 const loadError = editor.loadError;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
+const filesInput = ref<HTMLInputElement | null>(null);
+const fileAttachments = ref<KnowledgeBlockAttachment[]>([]);
+const filesLoading = ref(false);
+const filesUploading = ref(false);
+const filesError = ref<string | null>(null);
 
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
@@ -546,7 +613,7 @@ const attachedTags = computed(() => {
   return uniqueInOrder.map((id) => tagById.value.get(id) || { id, name: `Tag #${id}`, full_name: '', parent_id: null });
 });
 
-const saving = computed(() => editor.saving.value || linking.value);
+const saving = computed(() => editor.saving.value || linking.value || filesUploading.value);
 const dirty = computed(() => editor.dirty.value || tagsDirty.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
@@ -787,6 +854,7 @@ const goList = editor.goList;
 const imageInput = ref<HTMLInputElement | null>(null);
 
 const triggerImageUpload = () => imageInput.value?.click();
+const triggerFilesUpload = () => filesInput.value?.click();
 
 const formatBytes = (value: number) => {
   const n = Number(value || 0);
@@ -822,6 +890,77 @@ const removeImage = async () => {
   } catch (error) {
     console.error(error);
     alert('Failed to remove image.');
+  }
+};
+
+async function loadBlockFiles(blockId = editor.numericId.value) {
+  if (!blockId || isNew.value) {
+    fileAttachments.value = [];
+    filesError.value = null;
+    return;
+  }
+
+  filesLoading.value = true;
+  filesError.value = null;
+
+  try {
+    const response = await listKnowledgeBlockFiles(blockId);
+    fileAttachments.value = response.attachments || [];
+  } catch (error) {
+    console.error(error);
+    fileAttachments.value = [];
+    filesError.value = getApiErrorMessage(error, 'Failed to load files.');
+  } finally {
+    filesLoading.value = false;
+  }
+}
+
+watch(
+  () => [editor.numericId.value, loaded.value, isNew.value] as const,
+  ([blockId, isLoaded, newRecord]) => {
+    if (!isLoaded) return;
+    if (newRecord || !blockId) {
+      fileAttachments.value = [];
+      filesError.value = null;
+      return;
+    }
+
+    void loadBlockFiles(blockId);
+  },
+  { immediate: true }
+);
+
+const handleFilesSelected = async (event: Event) => {
+  const target = event.target as HTMLInputElement | null;
+  const files = Array.from(target?.files || []);
+  if (target) target.value = '';
+  if (!files.length || isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
+
+  filesUploading.value = true;
+  filesError.value = null;
+
+  try {
+    const response = await uploadKnowledgeBlockFiles(editor.numericId.value, files);
+    fileAttachments.value = response.attachments || [];
+  } catch (error) {
+    console.error(error);
+    filesError.value = getApiErrorMessage(error, 'Failed to upload file.');
+    await loadBlockFiles(editor.numericId.value);
+  } finally {
+    filesUploading.value = false;
+  }
+};
+
+const removeAttachment = async (attachment: KnowledgeBlockAttachment) => {
+  if (isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
+  if (!window.confirm('Remove file?')) return;
+
+  try {
+    const response = await deleteKnowledgeBlockFile(editor.numericId.value, attachment.id);
+    fileAttachments.value = response.attachments || [];
+  } catch (error) {
+    console.error(error);
+    alert(getApiErrorMessage(error, 'Failed to remove file.'));
   }
 };
 </script>
@@ -955,6 +1094,45 @@ const removeImage = async () => {
 
 :deep(.knowledge-block-preview__content math) {
   max-width: 100%;
+}
+
+.knowledge-block-file-row {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.knowledge-block-file-row__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.knowledge-block-file-row__name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-block-file-row__meta {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.knowledge-block-file-row__id {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.78rem;
+}
+
+.knowledge-block-file-row__id code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .knowledge-block-content-editor {

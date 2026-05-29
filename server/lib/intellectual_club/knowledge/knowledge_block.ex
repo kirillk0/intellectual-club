@@ -59,6 +59,35 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
 
   defp maybe_attach_duplicated_image(duplicated, _image_file_id, _actor), do: {:ok, duplicated}
 
+  defp duplicate_file_bindings(source_id, duplicated, actor) when is_integer(source_id) do
+    IntellectualClub.Knowledge.KnowledgeBlockFile
+    |> Ash.Query.filter(knowledge_block_id == ^source_id)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.Query.select([:id, :knowledge_block_id, :file_id, :sequence])
+    |> Ash.read!(actor: actor)
+    |> Enum.reduce_while({:ok, duplicated}, fn binding, {:ok, duplicated} ->
+      with {:ok, duplicated_file} <- Files.duplicate_file(binding.file_id),
+           {:ok, _binding} <-
+             IntellectualClub.Knowledge.KnowledgeBlockFile
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 knowledge_block_id: duplicated.id,
+                 file_id: duplicated_file.id,
+                 sequence: binding.sequence || 0
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor) do
+        {:cont, {:ok, duplicated}}
+      else
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp duplicate_file_bindings(_source_id, duplicated, _actor), do: {:ok, duplicated}
+
   sqlite do
     table("knowledge_blocks")
     repo(IntellectualClub.Repo)
@@ -139,6 +168,11 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       destination_attribute(:knowledge_block_id)
     end
 
+    has_many :file_bindings, IntellectualClub.Knowledge.KnowledgeBlockFile do
+      destination_attribute(:knowledge_block_id)
+      public?(true)
+    end
+
     many_to_many :tags, IntellectualClub.Knowledge.KnowledgeTag do
       through(IntellectualClub.Knowledge.KnowledgeBlockTag)
       source_attribute_on_join_resource(:knowledge_block_id)
@@ -211,6 +245,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       change(cascade_destroy(:bot_bindings, after_action?: false))
       change(cascade_destroy(:llm_configuration_bindings, after_action?: false))
       change(cascade_destroy(:chat_bindings, after_action?: false))
+      change(cascade_destroy(:file_bindings, after_action?: false))
       change({DeleteAssociatedFile, field: :image_file_id})
     end
 
@@ -316,11 +351,15 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
           end)
           |> case do
             {:ok, duplicated} ->
-              maybe_attach_duplicated_image(
-                duplicated,
-                changeset.context[:duplicate_image_file_id],
-                actor
-              )
+              with {:ok, duplicated} <- duplicate_file_bindings(source.id, duplicated, actor),
+                   {:ok, duplicated} <-
+                     maybe_attach_duplicated_image(
+                       duplicated,
+                       changeset.context[:duplicate_image_file_id],
+                       actor
+                     ) do
+                {:ok, duplicated}
+              end
 
             {:error, error} ->
               {:error, error}

@@ -19,6 +19,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Tools.BindingResolver
+  alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
 
   require Ash.Query
 
@@ -52,6 +53,7 @@ defmodule IntellectualClub.Generation.Context do
     :chunk_delay_ms,
     :tools_payload,
     :tool_instances_by_alias,
+    :available_file_external_ids,
     :max_tool_rounds,
     :context_soft_limit_percent,
     :cache_control_enabled,
@@ -91,7 +93,8 @@ defmodule IntellectualClub.Generation.Context do
     %{
       prompt_sources: prompt_sources,
       prompt_blocks: prompt_blocks,
-      system_prompt: system_prompt
+      system_prompt: system_prompt,
+      available_file_external_ids: available_file_external_ids(prompt_blocks, tool_resolution)
     }
   end
 
@@ -114,6 +117,9 @@ defmodule IntellectualClub.Generation.Context do
 
       tools_payload =
         maybe_disable_tools_for_retry(request_payload, tool_resolution.tools_payload)
+
+      available_file_external_ids =
+        available_file_external_ids_for_chat(chat, actor, tool_resolution)
 
       provider = llm_configuration && Map.get(llm_configuration, :provider)
 
@@ -183,6 +189,7 @@ defmodule IntellectualClub.Generation.Context do
         request_payload: request_payload,
         tools_payload: tools_payload,
         tool_instances_by_alias: tool_instances_by_alias,
+        available_file_external_ids: available_file_external_ids,
         max_tool_rounds: max_tool_rounds_for_chat(chat),
         context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
         cache_control_enabled: cache_control_enabled,
@@ -246,6 +253,7 @@ defmodule IntellectualClub.Generation.Context do
     tool_instances_by_alias = tool_resolution.tool_instances_by_alias
     prompt_snapshot = prompt_snapshot!(chat, actor: actor, tool_resolution: tool_resolution)
     system_prompt = prompt_snapshot.system_prompt
+    available_file_external_ids = prompt_snapshot.available_file_external_ids
 
     supports_image_input =
       bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
@@ -358,6 +366,7 @@ defmodule IntellectualClub.Generation.Context do
       request_payload: request_payload,
       tools_payload: tools_payload,
       tool_instances_by_alias: tool_instances_by_alias,
+      available_file_external_ids: available_file_external_ids,
       max_tool_rounds: max_tool_rounds_for_chat(chat),
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
@@ -936,7 +945,14 @@ defmodule IntellectualClub.Generation.Context do
       :image,
       :can_edit,
       :shared_incoming,
-      :shared_outgoing
+      :shared_outgoing,
+      file_bindings: [
+        :id,
+        :external_id,
+        :sequence,
+        :file_id,
+        file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
+      ]
     ]
   end
 
@@ -1000,6 +1016,82 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp prompt_block_entries(_bindings, _source), do: []
+
+  defp available_file_external_ids_for_chat(chat, actor, tool_resolution) do
+    chat
+    |> load_prompt_sources(actor)
+    |> ordered_prompt_blocks()
+    |> available_file_external_ids(tool_resolution)
+  end
+
+  defp available_file_external_ids(prompt_blocks, tool_resolution) do
+    (prompt_block_file_external_ids(prompt_blocks) ++ library_file_external_ids(tool_resolution))
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp prompt_block_file_external_ids(prompt_blocks) when is_list(prompt_blocks) do
+    Enum.flat_map(prompt_blocks, fn
+      %{knowledge_block: block} -> block_file_external_ids(block)
+      _other -> []
+    end)
+  end
+
+  defp prompt_block_file_external_ids(_prompt_blocks), do: []
+
+  defp block_file_external_ids(block) when is_map(block) do
+    block
+    |> Map.get(:file_bindings, [])
+    |> case do
+      %Ash.NotLoaded{} -> []
+      bindings when is_list(bindings) -> bindings
+      _other -> []
+    end
+    |> Enum.flat_map(&file_external_id_from_binding/1)
+  end
+
+  defp block_file_external_ids(_block), do: []
+
+  defp file_external_id_from_binding(binding) when is_map(binding) do
+    case Map.get(binding, :file) do
+      %Ash.NotLoaded{} ->
+        []
+
+      %{external_id: external_id} when is_binary(external_id) ->
+        [external_id]
+
+      _other ->
+        []
+    end
+  end
+
+  defp file_external_id_from_binding(_binding), do: []
+
+  defp library_file_external_ids(%{active_tool_instances: tool_instances})
+       when is_list(tool_instances) do
+    Enum.flat_map(tool_instances, fn
+      %{type: type} = tool_instance when is_binary(type) ->
+        if type == NativeKnowledgeLibrary.type() do
+          NativeKnowledgeLibrary.available_file_external_ids(tool_instance)
+        else
+          []
+        end
+
+      %{type: type} = tool_instance when is_atom(type) ->
+        if Atom.to_string(type) == NativeKnowledgeLibrary.type() do
+          NativeKnowledgeLibrary.available_file_external_ids(tool_instance)
+        else
+          []
+        end
+
+      _other ->
+        []
+    end)
+  end
+
+  defp library_file_external_ids(_tool_resolution), do: []
 
   defp prompt_block_selection(:config, binding), do: binding_selection(binding)
   defp prompt_block_selection(_source, _binding), do: nil

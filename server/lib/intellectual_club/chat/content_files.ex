@@ -23,11 +23,22 @@ defmodule IntellectualClub.Chat.ContentFiles do
   end
 
   @spec load_payload_for_execution(String.t(), ExecutionContext.t()) ::
-          {:ok, {ChatMessageContent.t(), StoredFile.t(), binary()}} | {:error, term()}
+          {:ok, {ChatMessageContent.t() | nil, StoredFile.t(), binary()}} | {:error, term()}
   def load_payload_for_execution(file_external_id, %ExecutionContext{} = context)
       when is_binary(file_external_id) do
-    with {:ok, normalized_external_id} <- normalize_external_id(file_external_id),
-         {:ok, %ChatMessageContent{} = content} <-
+    with {:ok, normalized_external_id} <- normalize_external_id(file_external_id) do
+      case load_chat_content_payload(normalized_external_id, context) do
+        {:ok, {_content, _file, _payload}} = ok -> ok
+        {:error, :not_found} -> load_available_file_payload(normalized_external_id, context)
+        {:error, error} -> {:error, error}
+      end
+    end
+  end
+
+  def load_payload_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
+
+  defp load_chat_content_payload(normalized_external_id, %ExecutionContext{} = context) do
+    with {:ok, %ChatMessageContent{} = content} <-
            find_content_for_file(normalized_external_id, context),
          %StoredFile{} = file <- Map.get(content, :file),
          {:ok, {_stored_file, payload}} <- Files.load_payload(file.id) do
@@ -38,7 +49,15 @@ defmodule IntellectualClub.Chat.ContentFiles do
     end
   end
 
-  def load_payload_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
+  defp load_available_file_payload(normalized_external_id, %ExecutionContext{} = context) do
+    if available_file_external_id?(normalized_external_id, context) do
+      with {:ok, {file, payload}} <- Files.load_payload_by_external_id(normalized_external_id) do
+        {:ok, {nil, file, payload}}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
 
   defp find_content_for_file(normalized_external_id, %ExecutionContext{} = context)
        when is_binary(normalized_external_id) do
@@ -69,4 +88,24 @@ defmodule IntellectualClub.Chat.ContentFiles do
       :error -> {:error, :invalid_request}
     end
   end
+
+  defp available_file_external_id?(normalized_external_id, %ExecutionContext{} = context)
+       when is_binary(normalized_external_id) do
+    context
+    |> Map.get(:available_file_external_ids, [])
+    |> normalize_available_file_external_ids()
+    |> MapSet.member?(normalized_external_id)
+  end
+
+  defp normalize_available_file_external_ids(%MapSet{} = ids), do: ids
+
+  defp normalize_available_file_external_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> MapSet.new()
+  end
+
+  defp normalize_available_file_external_ids(_ids), do: MapSet.new()
 end

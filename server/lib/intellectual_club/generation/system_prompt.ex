@@ -37,7 +37,10 @@ defmodule IntellectualClub.Generation.SystemPrompt do
 
     rendered_blocks =
       ordered_blocks
-      |> Enum.map_join("\n", &format_block(&1, merged_vars_for_block(&1, base_vars)))
+      |> Enum.map_join(
+        "\n",
+        &PromptContent.render_block(&1, merged_vars_for_block(&1, base_vars))
+      )
 
     [rendered_blocks, format_raw_section(tool_context)]
     |> Enum.reject(&(String.trim(&1) == ""))
@@ -51,30 +54,6 @@ defmodule IntellectualClub.Generation.SystemPrompt do
   def from_bot_blocks(blocks) when is_list(blocks) do
     build(bot_blocks: blocks)
   end
-
-  defp format_block(nil, _vars), do: ""
-
-  defp format_block(block, vars) do
-    title = String.trim(block.name || "")
-
-    body =
-      block.content
-      |> PromptContent.strip_comments()
-      |> PromptVariables.render(vars)
-
-    parts =
-      []
-      |> maybe_append("# #{title}", title != "")
-      |> maybe_append(body, body != "")
-
-    case Enum.join(parts, "\n") do
-      "" -> ""
-      rendered -> rendered <> "\n\n---\n"
-    end
-  end
-
-  defp maybe_append(parts, value, true), do: parts ++ [value]
-  defp maybe_append(parts, _value, false), do: parts
 
   defp format_raw_section(nil), do: ""
 

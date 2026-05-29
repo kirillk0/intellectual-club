@@ -3,13 +3,17 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotShare
+  alias IntellectualClub.Chat.ContentFiles
+  alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Knowledge.KnowledgeBlockFile
   alias IntellectualClub.Knowledge.KnowledgeBlockTag
   alias IntellectualClub.Knowledge.KnowledgeTag
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
   alias IntellectualClub.Tools.Executor
+  alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -23,6 +27,9 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     root_block =
       create_block!(owner, "Root Block", "v1", "Visible root text\n//// hidden root note")
+
+    attached_file =
+      create_attachment!(owner, root_block, "root.txt", "text/plain", "root file payload")
 
     child_block = create_block!(owner, "Child Block", "v2", "Visible child text")
     other_block = create_block!(owner, "Other Block", "v3", "Other text")
@@ -43,6 +50,7 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     assert list_text =~ "Root Block"
     assert list_text =~ "Child Block"
     refute list_text =~ "Other Block"
+    refute list_text =~ attached_file.external_id
 
     assert Enum.map(list_raw["blocks"], & &1["block_id"]) |> Enum.sort() ==
              Enum.sort([child_block.id, duplicate_a.id, duplicate_b.id, root_block.id])
@@ -55,6 +63,10 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     assert page_zero_raw["page"] == 1
     assert page_zero_text =~ "Visible root text"
+    assert page_zero_text =~ "Attached files:"
+    assert page_zero_text =~ "[Attached file file_id=#{attached_file.external_id}"
+    assert [%{"file_id" => file_id, "filename" => "root.txt"}] = page_zero_raw["attachments"]
+    assert file_id == attached_file.external_id
     refute page_zero_text =~ "hidden root note"
 
     assert {:error, "Page out of range:" <> _} =
@@ -73,6 +85,7 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
              })
 
     assert search_text =~ "Matches: 1"
+    refute search_text =~ attached_file.external_id
     assert length(search_raw["snippets"]) == 1
 
     assert {:ok, {hidden_search_text, hidden_search_raw}} =
@@ -92,6 +105,8 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     assert context =~ "Knowledge tag: Library"
     assert context =~ "The list is truncated"
+
+    assert NativeKnowledgeLibrary.available_file_external_ids(tool) == [attached_file.external_id]
   end
 
   test "search distributes limited snippets across matching blocks before filling extras" do
@@ -150,6 +165,10 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     tag = create_tag!(owner, "Shared Library")
     block = create_block!(owner, "Shared Block", "v1", "Owner-only library text")
+
+    attached_file =
+      create_attachment!(owner, block, "shared.txt", "text/plain", "shared file payload")
+
     attach_tag!(owner, block, tag)
 
     tool = create_library_tool!(owner, tag.id)
@@ -172,6 +191,22 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     assert result.raw["isError"] != true
     assert result.text =~ "Owner-only library text"
+    assert result.text =~ "[Attached file file_id=#{attached_file.external_id}"
+
+    allowed_ids = NativeKnowledgeLibrary.available_file_external_ids(tool)
+    assert attached_file.external_id in allowed_ids
+
+    context = %ExecutionContext{
+      owner_id: recipient.id,
+      chat_id: -1,
+      available_file_external_ids: allowed_ids
+    }
+
+    assert {:ok, {nil, loaded_file, payload}} =
+             ContentFiles.load_payload_for_execution(attached_file.external_id, context)
+
+    assert loaded_file.id == attached_file.id
+    assert payload == "shared file payload"
   end
 
   test "duplication preserves owner config and clears shared recipient tag config" do
@@ -250,6 +285,20 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp create_attachment!(actor, block, filename, mime_type, payload) do
+    {:ok, file} = Files.create_from_binary(filename, mime_type, payload)
+
+    KnowledgeBlockFile
+    |> Ash.Changeset.for_create(
+      :create,
+      %{knowledge_block_id: block.id, file_id: file.id, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    file
   end
 
   defp create_library_tool!(actor, tag_id, config_overrides \\ %{}) do

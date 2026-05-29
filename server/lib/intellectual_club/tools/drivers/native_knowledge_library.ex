@@ -96,6 +96,26 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   @impl true
   def secrets_schema, do: nil
 
+  @spec available_file_external_ids(ToolInstance.t()) :: [String.t()]
+  def available_file_external_ids(%ToolInstance{} = tool_instance) do
+    cfg = config_from_tool(tool_instance)
+
+    with {:ok, tag_id} <- configured_tag_id(cfg),
+         owner_actor <- owner_actor(tool_instance, nil),
+         {:ok, _tag} <- fetch_tag(tag_id, owner_actor),
+         {:ok, blocks} <- list_collection_blocks(tag_id, owner_actor) do
+      blocks
+      |> Enum.flat_map(&block_attachments_raw/1)
+      |> Enum.map(&Map.get(&1, "file_id"))
+      |> Enum.reject(&(to_string(&1 || "") == ""))
+      |> Enum.uniq()
+    else
+      _other -> []
+    end
+  end
+
+  def available_file_external_ids(_tool_instance), do: []
+
   @impl true
   def normalize_config(config) when is_map(config) do
     config
@@ -344,13 +364,17 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
       cond do
         total_pages <= 0 ->
+          attachment_section = block_attachment_section(block)
+
           text =
             [
               "Knowledge block: #{block.name} (id: #{block.id})",
               "Cached: #{if(cached, do: "true", else: "false")}",
-              "Error: block has no readable content."
+              "Error: block has no readable content.",
+              attachment_section
             ]
             |> Enum.join("\n")
+            |> String.trim()
             |> Kernel.<>("\n")
 
           {:ok,
@@ -359,7 +383,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
               "block_id" => block.id,
               "cached" => cached,
               "page" => used_page,
-              "pages_total" => total_pages
+              "pages_total" => total_pages,
+              "attachments" => block_attachments_raw(block)
             }}}
 
         used_page < 1 or used_page > total_pages ->
@@ -368,6 +393,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
         true ->
           case DocumentReader.read_page_text(doc_dir, used_page) do
             {:ok, page_text} ->
+              attachment_section = block_attachment_section(block)
+
               text =
                 [
                   "Knowledge block: #{format_block_ref(block)}",
@@ -376,7 +403,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
                   "",
                   "---",
                   "",
-                  String.trim(page_text)
+                  String.trim(page_text),
+                  attachment_section
                 ]
                 |> Enum.join("\n")
                 |> String.trim()
@@ -389,6 +417,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
                   "cached" => cached,
                   "page" => used_page,
                   "pages_total" => total_pages,
+                  "attachments" => block_attachments_raw(block),
                   "config" => config_raw(cfg)
                 })
 
@@ -490,6 +519,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
         KnowledgeBlock
         |> Ash.Query.filter(exists(tags, id in ^tag_ids))
         |> Ash.Query.sort(name: :asc, id: :asc)
+        |> Ash.Query.load(block_file_bindings_load(), strict?: true)
         |> Ash.read!(actor: actor)
 
       {:ok, blocks}
@@ -668,6 +698,18 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     }
   end
 
+  defp block_file_bindings_load do
+    [
+      file_bindings: [
+        :id,
+        :external_id,
+        :sequence,
+        :file_id,
+        file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
+      ]
+    ]
+  end
+
   defp ensure_block_cache_ready(%ToolInstance{} = tool_instance, %KnowledgeBlock{} = block, cfg)
        when is_map(cfg) do
     cache_root = cache_root(tool_instance)
@@ -740,6 +782,55 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       "token_count" => block.token_count || 0
     }
   end
+
+  defp block_attachment_section(%KnowledgeBlock{} = block) do
+    case PromptContent.attachment_placeholders(block) do
+      "" -> ""
+      placeholders -> "Attached files:\n" <> placeholders
+    end
+  end
+
+  defp block_attachments_raw(%KnowledgeBlock{} = block) do
+    block
+    |> Map.get(:file_bindings, [])
+    |> case do
+      %Ash.NotLoaded{} -> []
+      bindings when is_list(bindings) -> bindings
+      _other -> []
+    end
+    |> Enum.sort_by(fn binding ->
+      {Map.get(binding, :sequence) || 0, Map.get(binding, :id) || 0}
+    end)
+    |> Enum.flat_map(&attachment_raw/1)
+  end
+
+  defp block_attachments_raw(_block), do: []
+
+  defp attachment_raw(binding) when is_map(binding) do
+    case Map.get(binding, :file) do
+      %Ash.NotLoaded{} ->
+        []
+
+      %{} = file ->
+        [
+          %{
+            "id" => Map.get(binding, :id),
+            "external_id" => Map.get(binding, :external_id),
+            "file_id" => Map.get(file, :external_id),
+            "filename" => Map.get(file, :filename),
+            "mime_type" => Map.get(file, :mime_type),
+            "size_bytes" => Map.get(file, :size_bytes),
+            "sha256" => Map.get(file, :sha256),
+            "sequence" => Map.get(binding, :sequence) || 0
+          }
+        ]
+
+      _other ->
+        []
+    end
+  end
+
+  defp attachment_raw(_binding), do: []
 
   defp tag_display_name(%KnowledgeTag{} = tag) do
     tag.full_name

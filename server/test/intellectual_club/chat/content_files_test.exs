@@ -89,6 +89,23 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
              ContentFiles.load_payload_for_execution(file.external_id, context)
   end
 
+  test "load_payload_for_execution accepts explicitly available stored file external_id" do
+    %{user: actor} = user_fixture()
+    {:ok, file} = Files.create_from_binary("knowledge.txt", "text/plain", sample_payload())
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: -1,
+      available_file_external_ids: [file.external_id]
+    }
+
+    assert {:ok, {nil, loaded_file, payload}} =
+             ContentFiles.load_payload_for_execution(file.external_id, context)
+
+    assert loaded_file.id == file.id
+    assert payload == sample_payload()
+  end
+
   test "load_payload_for_execution rejects invalid external_id values" do
     context = %ExecutionContext{owner_id: 1, chat_id: 1}
 

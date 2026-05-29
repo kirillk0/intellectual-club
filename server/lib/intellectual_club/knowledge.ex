@@ -7,6 +7,7 @@ defmodule IntellectualClub.Knowledge do
 
   resources do
     resource(IntellectualClub.Knowledge.KnowledgeBlock)
+    resource(IntellectualClub.Knowledge.KnowledgeBlockFile)
     resource(IntellectualClub.Knowledge.KnowledgeBlockTag)
     resource(IntellectualClub.Knowledge.KnowledgeTag)
   end
