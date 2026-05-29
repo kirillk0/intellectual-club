@@ -84,10 +84,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
       create_tool!(recipient, "Recipient tool", "https://example.com/recipient", "personal_tool")
 
     bot =
-      create_bot!(owner, "Shared bot",
-        supports_file_processing: true,
-        max_file_size_bytes: 42 * 1024 * 1024
-      )
+      create_bot!(owner, "Shared bot", max_file_size_bytes: 42 * 1024 * 1024)
 
     block_binding =
       BotKnowledgeBlock
@@ -178,7 +175,12 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
 
     assert relationship_ids(response, "knowledge_block_bindings") == [block_binding.id]
     assert relationship_ids(response, "compatible_configuration_tag_bindings") == [tag_binding.id]
-    assert get_in(response, ["data", "attributes", "supports_file_processing"]) == true
+
+    refute Map.has_key?(
+             get_in(response, ["data", "attributes"]) || %{},
+             "supports_file_processing"
+           )
+
     assert get_in(response, ["data", "attributes", "max_file_size_bytes"]) == 42 * 1024 * 1024
 
     assert relationship_ids(response, "tool_bindings") ==
@@ -406,7 +408,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotCompatibleConfigurationTagsManagemen
         variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
-        supports_file_processing: false,
         max_file_size_bytes: 500 * 1024 * 1024,
         history_mode: :chat
       }

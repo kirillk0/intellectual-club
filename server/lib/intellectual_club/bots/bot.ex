@@ -153,12 +153,6 @@ defmodule IntellectualClub.Bots.Bot do
       constraints(min: 1, max: 100)
     end
 
-    attribute :supports_file_processing, :boolean do
-      allow_nil?(false)
-      public?(true)
-      default(false)
-    end
-
     attribute :max_file_size_bytes, :integer do
       allow_nil?(false)
       public?(true)
@@ -300,7 +294,6 @@ defmodule IntellectualClub.Bots.Bot do
         :variables,
         :max_tool_rounds,
         :context_soft_limit_percent,
-        :supports_file_processing,
         :max_file_size_bytes,
         :history_mode,
         :default_llm_configuration_id
@@ -410,7 +403,6 @@ defmodule IntellectualClub.Bots.Bot do
           variables: source.variables,
           max_tool_rounds: source.max_tool_rounds,
           context_soft_limit_percent: source.context_soft_limit_percent,
-          supports_file_processing: source.supports_file_processing,
           max_file_size_bytes: source.max_file_size_bytes,
           history_mode: source.history_mode,
           default_llm_configuration_id: source.default_llm_configuration_id
@@ -509,7 +501,6 @@ defmodule IntellectualClub.Bots.Bot do
         :variables,
         :max_tool_rounds,
         :context_soft_limit_percent,
-        :supports_file_processing,
         :max_file_size_bytes,
         :history_mode,
         :default_llm_configuration_id

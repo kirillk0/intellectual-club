@@ -87,6 +87,7 @@ export function useChatViewModel() {
   const llmConfigurations = ref<LlmConfiguration[]>([]);
   const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
   const toolLibrary = ref<ToolInstanceOption[]>([]);
+  const artifactToolsAvailable = ref(false);
 
   const activeGenerationId = ref<number | null>(null);
   const cancelingGenerationId = ref<number | null>(null);
@@ -131,6 +132,7 @@ export function useChatViewModel() {
     bots,
     noBotSortActivityAt,
     llmConfigurations,
+    artifactToolsAvailable,
     activeGenerationId,
     menuOpen: ui.menuOpen,
     deleting: ui.deleting,
@@ -238,6 +240,7 @@ export function useChatViewModel() {
     llmConfigurations.value = payload.options?.llm_configurations || [];
     knowledgeBlocks.value = payload.options?.knowledge_blocks || [];
     toolLibrary.value = payload.options?.tool_instances || [];
+    artifactToolsAvailable.value = payload.artifact_tools_available === true;
 
     headerControls.hydrate({
       selectedConfig: chat.value?.llm_configuration_id ?? '',
@@ -270,6 +273,7 @@ export function useChatViewModel() {
       composerRuntime.stopPolling();
       activeGenerationId.value = null;
       cancelingGenerationId.value = null;
+      artifactToolsAvailable.value = false;
     }
 
     loadError.value = '';
@@ -537,6 +541,7 @@ export function useChatViewModel() {
       if (!chatId.value) return;
       stopChatIdlePolling();
       chatIdleRevision.value = null;
+      artifactToolsAvailable.value = false;
       contextPanel.resetForChatChange();
       void (async () => {
         await loadChatSafe();

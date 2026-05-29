@@ -21,6 +21,7 @@ type Params = {
   bots: Ref<Bot[]>;
   noBotSortActivityAt: Ref<string | null>;
   llmConfigurations: Ref<LlmConfiguration[]>;
+  artifactToolsAvailable: Ref<boolean>;
   activeGenerationId: Ref<number | null>;
   menuOpen: Ref<boolean>;
   deleting: Ref<boolean>;
@@ -135,7 +136,7 @@ export function useChatHeaderControls(params: Params) {
     return (params.llmConfigurations.value || []).filter((config) => !selectableIds.has(config.id));
   });
   const fileUploadPolicy = computed(() =>
-    resolveChatUploadPolicy(currentBotInfo.value, currentConfig.value)
+    resolveChatUploadPolicy(currentBotInfo.value, currentConfig.value, params.artifactToolsAvailable.value)
   );
   const selectedDisabledConfigReason = computed<'disabled' | 'incompatible' | null>(() => {
     if (!selectedConfig.value) return null;

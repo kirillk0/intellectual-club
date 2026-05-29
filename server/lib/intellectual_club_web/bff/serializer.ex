@@ -128,7 +128,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       compatible_configuration_tag_names:
         loaded_names(Map.get(bot, :compatible_configuration_tags)),
       context_soft_limit_percent: bot.context_soft_limit_percent,
-      supports_file_processing: bot.supports_file_processing,
       max_file_size_bytes: bot.max_file_size_bytes,
       can_edit: loaded_value(Map.get(bot, :can_edit)),
       shared_incoming: loaded_value(Map.get(bot, :shared_incoming)),

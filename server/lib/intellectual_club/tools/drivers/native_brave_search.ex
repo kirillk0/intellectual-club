@@ -31,6 +31,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
   def supports_discovery?, do: false
 
   @impl true
+  def supports_artifacts?, do: false
+
+  @impl true
   def default_config do
     %{
       "api_base_url" => @default_api_base_url,

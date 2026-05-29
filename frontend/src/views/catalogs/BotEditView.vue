@@ -263,14 +263,6 @@
             </div>
           </label>
 
-          <div class="stack" style="gap: 6px">
-            <label style="display: flex; align-items: center; gap: 10px">
-              <input v-model="form.supports_file_processing" type="checkbox" :disabled="sharedReadonly" />
-              Supports file processing
-            </label>
-            <div class="muted">Allow any file types in chats for this bot.</div>
-          </div>
-
           <label :class="{ 'field-error': errors.hasField('max_file_size_bytes') }">
             Max file size (MB)
             <input
@@ -412,7 +404,6 @@ type BotForm = {
   default_llm_configuration_id: number | null;
   max_tool_rounds: number;
   context_soft_limit_percent: number;
-  supports_file_processing: boolean;
   max_file_size_mb: number;
   can_edit: boolean;
   shared_incoming: boolean;
@@ -465,7 +456,6 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
       typeof attrs.context_soft_limit_percent === 'number'
         ? attrs.context_soft_limit_percent
         : Number(attrs.context_soft_limit_percent || 80),
-    supports_file_processing: Boolean(attrs.supports_file_processing),
     max_file_size_mb:
       typeof attrs.max_file_size_bytes === 'number'
         ? Math.max(1, Math.round(attrs.max_file_size_bytes / (1024 * 1024)))
@@ -563,7 +553,6 @@ const editor = useCrudEditor<BotForm>({
     default_llm_configuration_id: null,
     max_tool_rounds: 300,
     context_soft_limit_percent: 80,
-    supports_file_processing: false,
     max_file_size_mb: 500,
     can_edit: true,
     shared_incoming: false,
@@ -577,7 +566,6 @@ const editor = useCrudEditor<BotForm>({
     default_llm_configuration_id: form.default_llm_configuration_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
-    supports_file_processing: form.supports_file_processing,
     max_file_size_bytes: Math.max(1, Number(form.max_file_size_mb || 500)) * 1024 * 1024,
     ...(compatibleTagBindingsPayload.value === undefined
       ? {}
@@ -592,7 +580,6 @@ const editor = useCrudEditor<BotForm>({
     default_llm_configuration_id: form.default_llm_configuration_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
-    supports_file_processing: form.supports_file_processing,
     max_file_size_mb: form.max_file_size_mb,
     can_edit: form.can_edit,
     shared_incoming: form.shared_incoming,

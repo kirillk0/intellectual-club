@@ -130,14 +130,15 @@ export const overallPendingUploadProgress = (files: PendingChatFile[]) => {
 
 export const resolveChatUploadPolicy = (
   bot?: Bot | null,
-  configuration?: LlmConfiguration | null
+  configuration?: LlmConfiguration | null,
+  artifactToolsAvailable = false
 ): ChatUploadPolicy => {
   const maxFileSizeBytes =
     typeof bot?.max_file_size_bytes === 'number' && bot.max_file_size_bytes > 0
       ? bot.max_file_size_bytes
       : DEFAULT_MAX_FILE_SIZE_BYTES;
 
-  const allowsAnyFiles = Boolean(bot?.supports_file_processing);
+  const allowsAnyFiles = Boolean(artifactToolsAvailable);
   const allowsImages = allowsAnyFiles || Boolean(configuration?.supports_image_input);
 
   return {

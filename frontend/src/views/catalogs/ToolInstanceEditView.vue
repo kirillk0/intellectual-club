@@ -494,6 +494,7 @@ type ToolDriverMeta = {
   description: string;
   functions_mode: string;
   supports_discovery: boolean;
+  supports_artifacts: boolean;
   config_schema: JsonSchema;
   secrets_schema: JsonSchema | null;
   default_config: Record<string, unknown>;

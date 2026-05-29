@@ -54,7 +54,6 @@ export type Bot = {
   compatible_configuration_tag_ids?: number[];
   compatible_configuration_tag_names?: string[];
   context_soft_limit_percent?: number | null;
-  supports_file_processing?: boolean | null;
   max_file_size_bytes?: number | null;
   can_edit?: boolean;
   shared_incoming?: boolean;

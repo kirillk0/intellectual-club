@@ -14,6 +14,7 @@ defmodule IntellectualClub.Tools.Driver do
 
   @callback functions_mode() :: functions_mode()
   @callback supports_discovery?() :: boolean()
+  @callback supports_artifacts?() :: boolean()
 
   @callback config_schema() :: map()
   @callback secrets_schema() :: map() | nil

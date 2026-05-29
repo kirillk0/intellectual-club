@@ -499,11 +499,11 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "mcp-http",
+          type: "native-artifact-reader",
           name: "Chat tool",
           alias: "web",
-          config: %{"server_url" => "https://example.com/chat"},
-          secrets: %{"bearer_token" => "chat"}
+          config: %{},
+          secrets: %{}
         },
         actor: actor
       )
@@ -553,6 +553,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> json_response(200)
 
     assert get_in(payload, ["missing_required_per_user_tool_aliases"]) == []
+    assert get_in(payload, ["artifact_tools_available"]) == true
 
     assert Enum.map(get_in(payload, ["chat_tool_bindings"]) || [], fn item ->
              {item["alias"], item["tool_instance_id"], item["enabled"], item["sequence"]}

@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
 
   test "POST /api/bff/chats/:chat_id/uploads rejects files above the bot size limit", %{
     conn: conn
@@ -15,10 +16,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
     conn = sign_in_conn(conn, actor.username, password)
 
     bot =
-      create_bot!(actor, "Tiny upload bot",
-        supports_file_processing: true,
-        max_file_size_bytes: 4
-      )
+      create_artifact_bot!(actor, "Tiny upload bot", max_file_size_bytes: 4)
 
     chat =
       Chat
@@ -43,7 +41,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
   test "chunk upload tracks progress and rejects wrong offsets", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
-    bot = create_bot!(actor, "Chunk bot", supports_file_processing: true)
+    bot = create_artifact_bot!(actor, "Chunk bot")
 
     chat =
       Chat
@@ -92,7 +90,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
   test "oversized chunk is rejected without advancing upload progress", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
-    bot = create_bot!(actor, "Oversized chunk bot", supports_file_processing: true)
+    bot = create_artifact_bot!(actor, "Oversized chunk bot")
 
     chat =
       Chat
@@ -139,6 +137,13 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
     json_response(conn, 200)["upload"]
   end
 
+  defp create_artifact_bot!(actor, name, attrs \\ []) do
+    bot = create_bot!(actor, name, attrs)
+    tool = create_artifact_tool!(actor, "#{name} Artifact Reader")
+    bind_tool_to_bot!(actor, bot, tool)
+    bot
+  end
+
   defp create_bot!(actor, name, attrs) do
     Bot
     |> Ash.Changeset.for_create(
@@ -150,8 +155,40 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat,
-        supports_file_processing: Keyword.get(attrs, :supports_file_processing, false),
         max_file_size_bytes: Keyword.get(attrs, :max_file_size_bytes, 500 * 1024 * 1024)
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_artifact_tool!(actor, name) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-artifact-reader",
+        name: name,
+        alias: "artifacts",
+        config: %{},
+        secrets: %{},
+        max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp bind_tool_to_bot!(actor, bot, tool) do
+    BotToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        bot_id: bot.id,
+        tool_instance_id: tool.id,
+        sharing_mode: :shared,
+        enabled: true,
+        sequence: 0
       },
       actor: actor
     )

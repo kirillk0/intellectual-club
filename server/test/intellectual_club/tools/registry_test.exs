@@ -2,6 +2,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
   use ExUnit.Case, async: true
 
   alias IntellectualClub.Tools.Drivers.McpHttp
+  alias IntellectualClub.Tools.DriverMetadata
   alias IntellectualClub.Tools.Registry
 
   test "lists canonical MCP HTTP tool type" do
@@ -15,5 +16,32 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
   test "resolves legacy MCP HTTP tool type for existing data" do
     assert Registry.driver_for_type!("mcp_http") == McpHttp
+  end
+
+  test "reports artifact support for known driver types" do
+    artifact_types = ["native-artifact-reader", "ssh", "outlet"]
+
+    non_artifact_types = [
+      "mcp-http",
+      "native-brave-search",
+      "native-knowledge-library",
+      "native-web-reader"
+    ]
+
+    assert Enum.all?(artifact_types, &Registry.supports_artifacts?/1)
+    refute Enum.any?(non_artifact_types, &Registry.supports_artifacts?/1)
+    refute Registry.supports_artifacts?("unknown")
+  end
+
+  test "driver metadata exposes artifact support" do
+    by_type = DriverMetadata.list() |> Map.new(&{&1["type"], &1["supports_artifacts"]})
+
+    assert by_type["native-artifact-reader"] == true
+    assert by_type["ssh"] == true
+    assert by_type["outlet"] == true
+    assert by_type["mcp-http"] == false
+    assert by_type["native-brave-search"] == false
+    assert by_type["native-knowledge-library"] == false
+    assert by_type["native-web-reader"] == false
   end
 end

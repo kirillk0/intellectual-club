@@ -31,6 +31,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
 
     missing_aliases = missing_per_user_aliases(bot_bindings, entries)
     tool_groups = build_tool_groups(entries, actor)
+    artifact_tools_available = artifact_tools_available?(tool_groups)
 
     %{
       ordered_alias_entries: alias_entries(entries),
@@ -40,6 +41,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
       tool_context: render_tool_context(tool_groups),
       tool_groups: tool_groups,
       missing_aliases: missing_aliases,
+      artifact_tools_available: artifact_tools_available,
       active_tool_instances: unique_tool_instances(entries)
     }
   end
@@ -53,6 +55,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
       tool_context: "",
       tool_groups: [],
       missing_aliases: [],
+      artifact_tools_available: false,
       active_tool_instances: []
     }
   end
@@ -189,6 +192,15 @@ defmodule IntellectualClub.Tools.BindingResolver do
   end
 
   defp build_tool_groups(_other, _actor), do: []
+
+  defp artifact_tools_available?(groups) when is_list(groups) do
+    Enum.any?(groups, fn
+      %{type: type} -> Registry.supports_artifacts?(type)
+      _other -> false
+    end)
+  end
+
+  defp artifact_tools_available?(_other), do: false
 
   defp tools_payload_from_groups(groups) when is_list(groups) do
     Enum.flat_map(groups, fn %{alias: alias_value, functions: functions} ->

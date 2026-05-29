@@ -46,6 +46,7 @@ defmodule IntellectualClub.Tools.DriverMetadata do
       "description" => driver.description(),
       "functions_mode" => Atom.to_string(driver.functions_mode()),
       "supports_discovery" => driver.supports_discovery?(),
+      "supports_artifacts" => driver.supports_artifacts?(),
       "config_schema" => config_schema,
       "secrets_schema" => secrets_schema,
       "default_config" => default_config,

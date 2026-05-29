@@ -730,6 +730,124 @@ defmodule IntellectualClub.Generation.ContextTest do
            ]
   end
 
+  test "binding resolver reports artifact tools for effective bot and chat tools" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Artifact bot")
+    bot_tool = create_artifact_context_tool!(actor, "Bot Artifact Reader", "files")
+    create_bot_tool_binding!(actor, bot, bot_tool, :shared, 10)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Bot artifact tools", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert BindingResolver.resolve_for_chat(chat, actor).artifact_tools_available == true
+
+    chat_tool = create_artifact_context_tool!(actor, "Chat Artifact Reader", "chat_files")
+    create_chat_tool_binding!(actor, chat, chat_tool, 0)
+
+    assert BindingResolver.resolve_for_chat(chat, actor).artifact_tools_available == true
+  end
+
+  test "binding resolver ignores disabled, shadowed, and functionless artifact tools" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "Shadowed artifact bot")
+    artifact_tool = create_artifact_context_tool!(actor, "Shadowed Artifact Reader", "web")
+    search_tool = create_context_tool!(actor, "Chat Search", "web")
+
+    create_bot_tool_binding!(actor, bot, artifact_tool, :shared, 10)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Shadowed artifact tools", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    create_chat_tool_binding!(actor, chat, search_tool, 0)
+
+    assert BindingResolver.resolve_for_chat(chat, actor).artifact_tools_available == false
+
+    disabled_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Disabled artifact tools", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    disabled_tool = create_artifact_context_tool!(actor, "Disabled Artifact Reader", "files")
+
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_id: disabled_chat.id,
+        tool_instance_id: disabled_tool.id,
+        enabled: false,
+        sequence: 0
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    assert BindingResolver.resolve_for_chat(disabled_chat, actor).artifact_tools_available ==
+             false
+
+    functionless_chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Functionless artifact tools", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    functionless_tool =
+      create_artifact_context_tool!(actor, "Functionless Artifact Reader", "files")
+
+    disable_all_artifact_reader_functions!(actor, functionless_tool)
+    create_chat_tool_binding!(actor, functionless_chat, functionless_tool, 0)
+
+    assert BindingResolver.resolve_for_chat(functionless_chat, actor).artifact_tools_available ==
+             false
+  end
+
+  test "binding resolver reports artifact tools from user overrides" do
+    %{user: actor} = user_fixture()
+    bot = create_tool_context_bot!(actor, "User artifact bot")
+    placeholder_tool = create_context_tool!(actor, "Placeholder Search", "files")
+    user_tool = create_artifact_context_tool!(actor, "User Artifact Reader", "files")
+
+    create_bot_tool_binding!(actor, bot, placeholder_tool, :per_user, 10)
+
+    BotUserToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{bot_id: bot.id, tool_instance_id: user_tool.id, enabled: true, sequence: 1},
+      actor: actor
+    )
+    |> Ash.create!()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "User artifact override", bot_id: bot.id, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert BindingResolver.resolve_for_chat(chat, actor).artifact_tools_available == true
+  end
+
   test "builds context up to selected parent when parent_id is provided" do
     %{user: actor} = user_fixture()
 
@@ -2547,6 +2665,42 @@ defmodule IntellectualClub.Generation.ContextTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp create_artifact_context_tool!(actor, name, alias_value) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-artifact-reader",
+        name: name,
+        alias: alias_value,
+        config: %{},
+        secrets: %{}
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp disable_all_artifact_reader_functions!(actor, tool) do
+    ["read_file", "search_file", "read_image", "upload_file"]
+    |> Enum.each(fn name ->
+      ToolFunction
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          tool_instance_id: tool.id,
+          name: name,
+          description: "",
+          parameters_schema: %{},
+          enabled: false,
+          discovered_at: DateTime.utc_now()
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+    end)
   end
 
   defp create_bot_tool_binding!(actor, bot, tool, sharing_mode, sequence) do

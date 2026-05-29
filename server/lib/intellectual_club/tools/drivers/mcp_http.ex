@@ -27,6 +27,9 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   def supports_discovery?, do: true
 
   @impl true
+  def supports_artifacts?, do: false
+
+  @impl true
   def default_config do
     %{"server_url" => ""}
   end

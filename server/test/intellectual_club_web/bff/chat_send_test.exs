@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.{Chat, Threads}
   alias IntellectualClub.Llm.{LlmConfiguration, LlmProvider}
+  alias IntellectualClub.Tools.{BotToolBinding, ChatToolBinding, ToolInstance}
 
   test "POST /api/bff/chats/:id/send treats whitespace-only content as user message", %{
     conn: conn
@@ -65,7 +66,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    bot = create_bot!(actor, "File bot", supports_file_processing: true)
+    bot = create_artifact_bot!(actor, "File bot")
     chat = create_chat!(actor, "File send chat", %{bot_id: bot.id})
     upload = temp_upload("attached.png", "image/png", image_payload())
 
@@ -96,7 +97,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    bot = create_bot!(actor, "Chunk send bot", supports_file_processing: true)
+    bot = create_artifact_bot!(actor, "Chunk send bot")
     chat = create_chat!(actor, "Chunk send chat", %{bot_id: bot.id})
 
     upload =
@@ -154,6 +155,34 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     assert payload["error"] == "File uploads are disabled for the current bot and configuration."
   end
 
+  test "POST /api/bff/chats/:id/send allows files when chat has an artifact tool", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Chat tool file send")
+    tool = create_artifact_tool!(actor, "Chat Artifact Reader", "chat_artifacts")
+    bind_tool_to_chat!(actor, chat, tool)
+    upload = temp_upload("attached.txt", "text/plain", "hello from chat tool")
+
+    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    payload = json_response(conn, 200)
+    generation_id = get_in(payload, ["generation", "message_id"])
+    assert is_integer(generation_id)
+
+    branch = payload["branch"] || []
+    user_messages = Enum.filter(branch, &(&1["role"] == "user"))
+    assert length(user_messages) == 1
+
+    [user_message] = user_messages
+    [media_content] = media_contents(user_message)
+    assert get_in(media_content, ["media", "filename"]) == "attached.txt"
+    assert get_in(media_content, ["media", "mime_type"]) == "text/plain"
+
+    wait_for_generation_to_finish(conn, generation_id)
+  end
+
   test "POST /api/bff/chats/:id/send allows images when configuration supports image input", %{
     conn: conn
   } do
@@ -185,10 +214,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     conn = sign_in_conn(conn, actor.username, password)
 
     bot =
-      create_bot!(actor, "Small limit bot",
-        supports_file_processing: true,
-        max_file_size_bytes: 4
-      )
+      create_artifact_bot!(actor, "Small limit bot", max_file_size_bytes: 4)
 
     chat = create_chat!(actor, "Small limit chat", %{bot_id: bot.id})
     upload = temp_upload("attached.txt", "text/plain", "hello")
@@ -240,7 +266,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    bot = create_bot!(actor, "Copy bot", supports_file_processing: true)
+    bot = create_artifact_bot!(actor, "Copy bot")
     chat = create_chat!(actor, "Copy chat", %{bot_id: bot.id})
     original_file = create_file!("spec.txt", "text/plain", "copied attachment")
 
@@ -354,6 +380,13 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     |> Ash.create!(actor: actor)
   end
 
+  defp create_artifact_bot!(actor, name, attrs \\ []) do
+    bot = create_bot!(actor, name, attrs)
+    tool = create_artifact_tool!(actor, "#{name} Artifact Reader", "artifacts")
+    bind_tool_to_bot!(actor, bot, tool)
+    bot
+  end
+
   defp create_bot!(actor, name, attrs) do
     Bot
     |> Ash.Changeset.for_create(
@@ -365,9 +398,51 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat,
-        supports_file_processing: Keyword.get(attrs, :supports_file_processing, false),
         max_file_size_bytes: Keyword.get(attrs, :max_file_size_bytes, 500 * 1024 * 1024)
       },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_artifact_tool!(actor, name, alias_value) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-artifact-reader",
+        name: name,
+        alias: alias_value,
+        config: %{},
+        secrets: %{},
+        max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp bind_tool_to_bot!(actor, bot, tool) do
+    BotToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        bot_id: bot.id,
+        tool_instance_id: tool.id,
+        sharing_mode: :shared,
+        enabled: true,
+        sequence: 0
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp bind_tool_to_chat!(actor, chat, tool) do
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: tool.id, enabled: true, sequence: 0},
       actor: actor
     )
     |> Ash.create!(actor: actor)

@@ -49,6 +49,9 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   def supports_discovery?, do: false
 
   @impl true
+  def supports_artifacts?, do: true
+
+  @impl true
   def default_config do
     %{
       "host" => "",

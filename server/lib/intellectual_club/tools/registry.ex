@@ -28,6 +28,23 @@ defmodule IntellectualClub.Tools.Registry do
     end
   end
 
+  @spec supports_artifacts?(String.t() | map() | nil) :: boolean()
+  def supports_artifacts?(%{type: type}), do: supports_artifacts?(type)
+
+  def supports_artifacts?(tool_type) when is_binary(tool_type) do
+    tool_type
+    |> driver_for_type!()
+    |> apply(:supports_artifacts?, [])
+    |> case do
+      true -> true
+      _other -> false
+    end
+  rescue
+    _exception -> false
+  end
+
+  def supports_artifacts?(_other), do: false
+
   @spec list_types() :: list(String.t())
   def list_types do
     [

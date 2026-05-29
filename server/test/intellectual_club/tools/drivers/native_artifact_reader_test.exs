@@ -34,6 +34,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
     assert metadata["type"] == "native-artifact-reader"
     assert metadata["title"] == "Artifact Reader"
     assert metadata["functions_mode"] == "fixed"
+    assert metadata["supports_artifacts"] == true
     assert metadata["default_config"]["chunk_size_tokens"] == 5_000
 
     assert metadata["fixed_functions"]

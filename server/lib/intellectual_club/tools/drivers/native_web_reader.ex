@@ -34,6 +34,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   def supports_discovery?, do: false
 
   @impl true
+  def supports_artifacts?, do: false
+
+  @impl true
   def default_config do
     %{
       "chunk_size_tokens" => DocumentReader.default_chunk_size_tokens(),

@@ -7,6 +7,7 @@ defmodule IntellectualClub.Chat.UploadPolicy do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Tools.BindingResolver
 
   @default_max_file_size_bytes 500 * 1024 * 1024
 
@@ -28,11 +29,15 @@ defmodule IntellectualClub.Chat.UploadPolicy do
         strict?: true
       )
 
-    from_chat(chat)
+    tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+    from_chat(chat, artifact_tools_available: tool_resolution.artifact_tools_available)
   end
 
-  @spec from_chat(Chat.t()) :: t()
-  def from_chat(%Chat{} = chat) do
+  @spec from_chat(Chat.t(), keyword()) :: t()
+  def from_chat(chat, opts \\ [])
+
+  def from_chat(%Chat{} = chat, opts) when is_list(opts) do
     bot =
       case Map.get(chat, :bot) do
         %Bot{} = bot -> bot
@@ -45,7 +50,7 @@ defmodule IntellectualClub.Chat.UploadPolicy do
         _other -> nil
       end
 
-    allow_any_files = bool_true?(bot && bot.supports_file_processing)
+    allow_any_files = bool_true?(Keyword.get(opts, :artifact_tools_available, false))
 
     allow_images =
       allow_any_files or bool_true?(configuration && configuration.supports_image_input)

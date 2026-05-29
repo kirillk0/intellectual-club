@@ -29,6 +29,9 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   def supports_discovery?, do: true
 
   @impl true
+  def supports_artifacts?, do: true
+
+  @impl true
   def instance_prompt_context(%ToolInstance{} = tool_instance) do
     metadata = Runtime.runner_metadata(tool_instance)
 

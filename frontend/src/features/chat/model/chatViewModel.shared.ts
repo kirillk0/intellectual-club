@@ -59,6 +59,7 @@ export type ChatSettingsStatePayload = {
   counters: Counters;
   active_tool_instances: ActiveToolInstance[];
   active_tool_bindings: ActiveToolBinding[];
+  artifact_tools_available: boolean;
   missing_required_per_user_tool_aliases: string[];
   options: {
     no_bot_last_activity_at?: string | null;
