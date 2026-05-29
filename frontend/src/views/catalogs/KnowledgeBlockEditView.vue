@@ -60,6 +60,9 @@
             Variables
           </button>
           <button class="tab" :class="{ active: blockTab === 'tags' }" type="button" @click="blockTab = 'tags'">Tags</button>
+          <button class="tab" :class="{ active: blockTab === 'files' }" type="button" @click="blockTab = 'files'">
+            Files ({{ filesTabCount }})
+          </button>
           <button
             class="tab"
             :class="{ active: blockTab === 'details' }"
@@ -143,6 +146,54 @@
           <p v-if="tagsDirty" class="muted">Tag changes will be saved when you save the block.</p>
         </div>
 
+        <div v-else-if="blockTab === 'files'" class="stack">
+          <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+            <div class="stack" style="gap: 2px">
+              <strong>Files</strong>
+              <div class="muted" style="font-size: 0.85rem">
+                Attached files are visible to the model as file_id placeholders.
+              </div>
+            </div>
+            <button type="button" :disabled="isNew || saving || sharedReadonly || filesUploading" @click="triggerFilesUpload">
+              {{ filesUploading ? 'Uploading…' : 'Upload files' }}
+            </button>
+          </div>
+
+          <input ref="filesInput" type="file" multiple style="display: none" @change="handleFilesSelected" />
+
+          <p v-if="filesLoading" class="muted">Loading…</p>
+          <p v-else-if="filesError" class="error-text">{{ filesError }}</p>
+
+          <div v-else class="list">
+            <div v-for="attachment in fileAttachments" :key="attachment.id" class="row knowledge-block-file-row">
+              <div class="knowledge-block-file-row__main">
+                <a
+                  class="knowledge-block-file-row__name"
+                  :href="attachment.url"
+                  target="_blank"
+                  rel="noopener"
+                  title="Download file"
+                >
+                  {{ attachment.filename }}
+                </a>
+                <div class="knowledge-block-file-row__meta">
+                  {{ attachment.mime_type || 'application/octet-stream' }} · {{ formatBytes(attachment.size_bytes) }}
+                </div>
+                <div class="knowledge-block-file-row__id">
+                  <span class="muted">File ID</span>
+                  <code>{{ attachment.file_id }}</code>
+                </div>
+              </div>
+              <button type="button" class="danger" :disabled="saving || sharedReadonly" @click="removeAttachment(attachment)">
+                Remove
+              </button>
+            </div>
+
+            <p v-if="!fileAttachments.length" class="muted">No files attached.</p>
+          </div>
+          <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading files.</div>
+        </div>
+
         <div v-else class="stack">
           <div style="font-weight: 700">Details</div>
           <div class="stack">
@@ -171,63 +222,6 @@
             </div>
             <div v-else class="muted">No image uploaded.</div>
             <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading an image.</div>
-          </div>
-
-          <div class="stack">
-            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-              <div class="stack" style="gap: 2px">
-                <strong>Files</strong>
-                <div class="muted" style="font-size: 0.85rem">
-                  Attached files are visible to the model as file_id placeholders.
-                </div>
-              </div>
-              <button
-                type="button"
-                :disabled="isNew || saving || sharedReadonly || filesUploading"
-                @click="triggerFilesUpload"
-              >
-                {{ filesUploading ? 'Uploading…' : 'Upload files' }}
-              </button>
-            </div>
-
-            <input ref="filesInput" type="file" multiple style="display: none" @change="handleFilesSelected" />
-
-            <p v-if="filesLoading" class="muted">Loading…</p>
-            <p v-else-if="filesError" class="error-text">{{ filesError }}</p>
-
-            <div v-else class="list">
-              <div v-for="attachment in fileAttachments" :key="attachment.id" class="row knowledge-block-file-row">
-                <div class="knowledge-block-file-row__main">
-                  <a
-                    class="knowledge-block-file-row__name"
-                    :href="attachment.url"
-                    target="_blank"
-                    rel="noopener"
-                    title="Download file"
-                  >
-                    {{ attachment.filename }}
-                  </a>
-                  <div class="knowledge-block-file-row__meta">
-                    {{ attachment.mime_type || 'application/octet-stream' }} · {{ formatBytes(attachment.size_bytes) }}
-                  </div>
-                  <div class="knowledge-block-file-row__id">
-                    <span class="muted">File ID</span>
-                    <code>{{ attachment.file_id }}</code>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  class="danger"
-                  :disabled="saving || sharedReadonly"
-                  @click="removeAttachment(attachment)"
-                >
-                  Remove
-                </button>
-              </div>
-
-              <p v-if="!fileAttachments.length" class="muted">No files attached.</p>
-            </div>
-            <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading files.</div>
           </div>
 
           <div class="muted">External ID</div>
@@ -462,7 +456,7 @@ const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
-const blockTab = ref<'preview' | 'edit' | 'variables' | 'tags' | 'details'>('preview');
+const blockTab = ref<'preview' | 'edit' | 'variables' | 'tags' | 'files' | 'details'>('preview');
 const initializedTabForId = ref<string | null>(null);
 
 function getInitialBlockTab() {
@@ -612,6 +606,8 @@ const attachedTags = computed(() => {
 
   return uniqueInOrder.map((id) => tagById.value.get(id) || { id, name: `Tag #${id}`, full_name: '', parent_id: null });
 });
+
+const filesTabCount = computed(() => fileAttachments.value.length);
 
 const saving = computed(() => editor.saving.value || linking.value || filesUploading.value);
 const dirty = computed(() => editor.dirty.value || tagsDirty.value);
