@@ -364,6 +364,200 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert usage_records == []
   end
 
+  test "ChatMessageItem requires a canonical tool call link for new tool result items" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Tool result validation")
+    step = create_step!(assistant_message.id, 1, actor)
+    answer_item = create_item!(step.id, 1, :answer, actor)
+    tool_call_item = create_item!(step.id, 2, :tool_call, actor)
+
+    assert {:error, _error} =
+             ChatMessageItem
+             |> Ash.Changeset.for_create(
+               :create,
+               %{chat_message_step_id: step.id, sequence: 3, type: :tool_result},
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+
+    assert {:error, _error} =
+             ChatMessageItem
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 chat_message_step_id: step.id,
+                 sequence: 3,
+                 type: :tool_result,
+                 tool_call_item_id: answer_item.id
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+
+    assert {:ok, result_item} =
+             ChatMessageItem
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 chat_message_step_id: step.id,
+                 sequence: 3,
+                 type: :tool_result,
+                 tool_call_item_id: tool_call_item.id
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+
+    assert result_item.tool_call_item_id == tool_call_item.id
+  end
+
+  test "ChatMessageItem rejects tool result links to another step" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Tool result step validation")
+    step_1 = create_step!(assistant_message.id, 1, actor)
+    step_2 = create_step!(assistant_message.id, 2, actor)
+    other_step_call = create_item!(step_2.id, 1, :tool_call, actor)
+
+    assert {:error, _error} =
+             ChatMessageItem
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 chat_message_step_id: step_1.id,
+                 sequence: 1,
+                 type: :tool_result,
+                 tool_call_item_id: other_step_call.id
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+  end
+
+  test "persist_provider_completed! stores provider rows and replaces stale step items" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Provider complete")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    first_runtime_step =
+      tool_call_runtime_step(step_id, "call_1", "demo__first", %{"value" => 1})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_1"}})
+
+    first = Persistence.persist_provider_completed!(assistant_message.id, first_runtime_step)
+    [first_call] = first.tool_calls
+
+    assert first.step.status == :waiting_tools
+    assert first.step.raw_response == %{"id" => "resp_1"}
+    assert first_call.call_id == "call_1"
+    assert is_integer(first_call.item_id)
+
+    second_runtime_step =
+      tool_call_runtime_step(step_id, "call_2", "demo__second", %{"value" => 2})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_2"}})
+
+    second = Persistence.persist_provider_completed!(assistant_message.id, second_runtime_step)
+    [second_call] = second.tool_calls
+
+    assert second.step.raw_response == %{"id" => "resp_2"}
+    assert second_call.call_id == "call_2"
+    assert second_call.item_id != first_call.item_id
+    assert {:error, _error} = Ash.get(ChatMessageItem, first_call.item_id, actor: actor)
+  end
+
+  test "persist_tool_result! links results idempotently and list_missing_tool_calls! uses persisted links" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Tool result persistence")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    runtime_step =
+      tool_call_runtime_step(step_id, "call_1", "demo__echo", %{"value" => "one"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_1"}})
+
+    %{tool_calls: [call]} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    assert [missing] = Persistence.list_missing_tool_calls!(step_id)
+    assert missing.item_id == call.item_id
+
+    result = %{
+      text: "tool output",
+      result_raw: %{"ok" => true},
+      media_contents: [],
+      artifact_contents: []
+    }
+
+    persisted_result =
+      Persistence.persist_tool_result!(assistant_message.id, step_id, call, result)
+
+    retry_result = Persistence.persist_tool_result!(assistant_message.id, step_id, call, result)
+
+    assert persisted_result.item_id == retry_result.item_id
+    assert persisted_result.tool_call_item_id == call.item_id
+    assert persisted_result.responses_item["id"] == retry_result.responses_item["id"]
+    assert Persistence.list_missing_tool_calls!(step_id) == []
+  end
+
+  test "persist_tool_result! gives parallel tool results non-conflicting stable sequences" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Parallel tool results")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        id: step_id,
+        sequence: 1,
+        raw_request: %{"model" => "demo-model", "messages" => []}
+      )
+      |> add_tool_call_to_runtime_step("call_1", "demo__one", %{"value" => 1}, 1)
+      |> add_tool_call_to_runtime_step("call_2", "demo__two", %{"value" => 2}, 2)
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_1"}})
+
+    %{tool_calls: tool_calls} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    results =
+      tool_calls
+      |> Task.async_stream(
+        fn call ->
+          Persistence.persist_tool_result!(assistant_message.id, step_id, call, %{
+            text: "tool output #{call.call_id}",
+            result_raw: %{"ok" => true},
+            media_contents: [],
+            artifact_contents: []
+          })
+        end,
+        max_concurrency: 2,
+        timeout: :infinity
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.map(results, & &1.tool_call_item_id) |> Enum.sort() ==
+             Enum.map(tool_calls, & &1.item_id) |> Enum.sort()
+
+    assert results |> Enum.map(& &1.sequence) |> Enum.uniq() |> length() == 2
+    assert Persistence.list_missing_tool_calls!(step_id) == []
+  end
+
   defp create_step!(message_id, sequence, actor) do
     ChatMessageStep
     |> Ash.Changeset.for_create(
@@ -410,6 +604,66 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> Ash.create!(actor: actor)
 
     {item, content}
+  end
+
+  defp create_generating_assistant_message!(actor, title) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: title, note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    ChatMessage
+    |> Ash.Changeset.for_create(
+      :create_generating_assistant,
+      %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_item!(step_id, sequence, type, actor) do
+    ChatMessageItem
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_message_step_id: step_id, sequence: sequence, type: type},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp tool_call_runtime_step(step_id, call_id, name, args) do
+    RuntimeTrace.new_step(
+      id: step_id,
+      sequence: 1,
+      raw_request: %{"model" => "demo-model", "messages" => []}
+    )
+    |> add_tool_call_to_runtime_step(call_id, name, args, 1)
+  end
+
+  defp add_tool_call_to_runtime_step(runtime_step, call_id, name, args, sequence) do
+    args_json = Jason.encode!(args)
+
+    runtime_step
+    |> RuntimeTrace.apply_event({:ensure_item, "tc:" <> call_id, :tool_call, sequence})
+    |> RuntimeTrace.apply_event(
+      {:set_opaque, "tc:" <> call_id, :tool_call, 10_000,
+       %{
+         "tool_call_id" => call_id,
+         "call_id" => call_id,
+         "name" => name,
+         "raw" => %{
+           "id" => call_id,
+           "type" => "function",
+           "function" => %{"name" => name, "arguments" => args_json}
+         }
+       }}
+    )
   end
 
   defp create_provider!(actor, name) do

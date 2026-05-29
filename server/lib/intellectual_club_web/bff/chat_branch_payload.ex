@@ -130,7 +130,14 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       |> Enum.flat_map(fn chunk ->
         ChatMessageItem
         |> Ash.Query.filter(chat_message_step_id in ^chunk and type in ^@display_item_types)
-        |> Ash.Query.select([:id, :chat_message_step_id, :sequence, :created_at, :type])
+        |> Ash.Query.select([
+          :id,
+          :chat_message_step_id,
+          :sequence,
+          :created_at,
+          :type,
+          :tool_call_item_id
+        ])
         |> Ash.read!(actor: actor)
       end)
 
@@ -377,6 +384,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
           :sequence,
           :created_at,
           :type,
+          :tool_call_item_id,
           contents: [
             :id,
             :external_id,

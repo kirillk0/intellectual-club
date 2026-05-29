@@ -111,6 +111,29 @@ defmodule IntellectualClub.Generation.Worker do
         _other -> 1
       end
 
+    {runtime_step, continue} =
+      case {Map.get(context, :initial_step_status), context.step_id} do
+        {:waiting_tools, step_id} when is_integer(step_id) ->
+          followup = Persistence.load_step_for_followup!(step_id)
+          {followup.runtime_step, :resume_waiting_tools}
+
+        {"waiting_tools", step_id} when is_integer(step_id) ->
+          followup = Persistence.load_step_for_followup!(step_id)
+          {followup.runtime_step, :resume_waiting_tools}
+
+        _other ->
+          {
+            RuntimeTrace.new_step(
+              id: context.step_id,
+              sequence: initial_step_sequence,
+              started_at: started_at,
+              status: :waiting_provider,
+              raw_request: context.request_payload || %{}
+            ),
+            :start_stream
+          }
+      end
+
     state = %__MODULE__{
       context: context,
       adapter: adapter,
@@ -120,25 +143,33 @@ defmodule IntellectualClub.Generation.Worker do
       tool_round: 0,
       refusal_round: 0,
       tools_disabled: false,
-      runtime_step:
-        RuntimeTrace.new_step(
-          id: context.step_id,
-          sequence: initial_step_sequence,
-          started_at: started_at,
-          status: :waiting_provider,
-          raw_request: context.request_payload || %{}
-        ),
+      runtime_step: runtime_step,
       stream_task: nil,
       retry_timer_ref: nil
     }
 
-    {:ok, state, {:continue, :start_stream}}
+    {:ok, state, {:continue, continue}}
   end
 
   @impl true
   def handle_continue(:start_stream, state) do
     state = start_stream_task(state)
     {:noreply, state}
+  end
+
+  def handle_continue(:resume_waiting_tools, state) do
+    case safe_persist_value(state.context.message_id, :resume_waiting_tools, fn ->
+           Persistence.list_missing_tool_calls!(state.runtime_step.id)
+         end) do
+      {:ok, []} ->
+        handle_tool_results(state, [], persist_results?: false)
+
+      {:ok, tool_calls} ->
+        {:noreply, start_tool_task(state, tool_calls)}
+
+      {:error, reason} ->
+        finalize_error(state, "Failed to resume waiting tools: #{inspect(reason)}", %{})
+    end
   end
 
   defp start_stream_task(state) do
@@ -204,46 +235,21 @@ defmodule IntellectualClub.Generation.Worker do
           finalize_error(state, error_text, error_meta)
       end
     else
-      tool_calls = tool_calls_from_runtime_step(runtime_step)
+      case safe_persist_value(state.context.message_id, :provider_completed, fn ->
+             Persistence.persist_provider_completed!(state.context.message_id, runtime_step)
+           end) do
+        {:error, reason} ->
+          finalize_error(state, "Failed to persist provider step: #{inspect(reason)}", %{})
 
-      if tool_calls == [] do
-        finalize_done(state)
-      else
-        max_tool_rounds = max_tool_rounds(state)
+        {:ok, %{step: persisted_step, tool_calls: tool_calls}} ->
+          runtime_step = %{runtime_step | id: persisted_step.id, status: persisted_step.status}
+          state = %{state | runtime_step: runtime_step}
 
-        {context_limit_reached, total_tokens, length, soft_limit} =
-          context_soft_limit_reached(state)
-
-        cond do
-          can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
-            runtime_step = %{state.runtime_step | status: :waiting_tools}
-            state = %{state | runtime_step: runtime_step}
-
-            _ =
-              safe_persist(state.context.message_id, :waiting_tools, fn ->
-                Persistence.persist_step_waiting_tools!(state.context.message_id, runtime_step)
-              end)
-
-            state = start_tool_task(state, tool_calls)
-
-            {:noreply, state}
-
-          state.refusal_round + 1 > @max_refusal_rounds ->
-            finalize_tool_loop_exhausted(state, max_tool_rounds)
-
-          true ->
-            refusal =
-              refusal_result_payload(
-                state,
-                max_tool_rounds,
-                context_limit_reached,
-                total_tokens,
-                length,
-                soft_limit
-              )
-
-            soft_refuse_tool_calls(state, tool_calls, refusal)
-        end
+          if tool_calls == [] do
+            finalize_done_from_step(state, persisted_step.id)
+          else
+            handle_persisted_tool_calls(state, tool_calls)
+          end
       end
     end
   end
@@ -318,6 +324,39 @@ defmodule IntellectualClub.Generation.Worker do
     {:noreply, state}
   end
 
+  defp handle_persisted_tool_calls(state, tool_calls) when is_list(tool_calls) do
+    max_tool_rounds = max_tool_rounds(state)
+
+    {context_limit_reached, total_tokens, length, soft_limit} =
+      context_soft_limit_reached(state)
+
+    cond do
+      can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
+        runtime_step = %{state.runtime_step | status: :waiting_tools}
+        state = %{state | runtime_step: runtime_step}
+
+        state = start_tool_task(state, tool_calls)
+
+        {:noreply, state}
+
+      state.refusal_round + 1 > @max_refusal_rounds ->
+        finalize_tool_loop_exhausted(state, max_tool_rounds)
+
+      true ->
+        refusal =
+          refusal_result_payload(
+            state,
+            max_tool_rounds,
+            context_limit_reached,
+            total_tokens,
+            length,
+            soft_limit
+          )
+
+        soft_refuse_tool_calls(state, tool_calls, refusal)
+    end
+  end
+
   @impl true
   def handle_cast(:cancel, state) do
     state = cancel_tasks(state)
@@ -349,11 +388,9 @@ defmodule IntellectualClub.Generation.Worker do
      }, state}
   end
 
-  defp finalize_done(state) do
-    runtime_step = state.runtime_step
-
+  defp finalize_done_from_step(state, step_id) when is_integer(step_id) do
     case safe_persist(state.context.message_id, :done, fn ->
-           Persistence.persist_completed!(state.context.message_id, runtime_step)
+           Persistence.persist_completed_from_step!(state.context.message_id, step_id)
          end) do
       :ok ->
         broadcast(state, {:done, state.context.message_id})
@@ -380,16 +417,31 @@ defmodule IntellectualClub.Generation.Worker do
 
     _ =
       safe_persist(state.context.message_id, :error, fn ->
-        Persistence.persist_error!(
-          state.context.message_id,
-          runtime_step,
-          error_text
-        )
+        if durable_waiting_tools_step?(runtime_step) do
+          Persistence.persist_error_from_step!(
+            state.context.message_id,
+            runtime_step.id,
+            error_text
+          )
+        else
+          Persistence.persist_error!(
+            state.context.message_id,
+            runtime_step,
+            error_text
+          )
+        end
       end)
 
     broadcast(state, {:error, state.context.message_id, error_text})
     {:stop, :normal, %{state | status: :error}}
   end
+
+  defp durable_waiting_tools_step?(%RuntimeTrace.Step{id: step_id, status: status})
+       when is_integer(step_id) do
+    status in [:waiting_tools, "waiting_tools"]
+  end
+
+  defp durable_waiting_tools_step?(_runtime_step), do: false
 
   defp maybe_retry_current_step(state, meta) when is_map(meta) do
     max_retries = auto_retry_max_retries()
@@ -666,6 +718,27 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
+  defp safe_persist_value(message_id, status, fun)
+       when is_integer(message_id) and is_function(fun, 0) do
+    try do
+      {:ok, fun.()}
+    rescue
+      exception ->
+        Logger.warning(
+          "Generation persistence failed (message_id=#{message_id}, status=#{status}): #{Exception.message(exception)}"
+        )
+
+        {:error, exception}
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "Generation persistence exited (message_id=#{message_id}, status=#{status}): #{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
+  end
+
   defp broadcast(state, message) do
     Phoenix.PubSub.broadcast(IntellectualClub.PubSub, "chat:#{state.context.chat_id}", message)
   end
@@ -765,15 +838,14 @@ defmodule IntellectualClub.Generation.Worker do
     refusal_raw = Map.get(refusal, :raw) || Map.get(refusal, "raw") || %{}
 
     Enum.map(tool_calls, fn call ->
-      %{
-        call_id: call.call_id,
-        name: call.name,
-        raw: call.raw,
+      call
+      |> tool_call_to_map()
+      |> Map.merge(%{
         text: refusal_text,
         result_raw: refusal_raw,
         media_contents: [],
         artifact_contents: []
-      }
+      })
     end)
   end
 
@@ -797,215 +869,64 @@ defmodule IntellectualClub.Generation.Worker do
     finalize_error(state, error_text, %{})
   end
 
-  defp tool_calls_from_runtime_step(%RuntimeTrace.Step{} = runtime_step) do
-    runtime_step.items_by_key
-    |> Map.values()
-    |> Enum.filter(&match?(%RuntimeTrace.Item{type: :tool_call}, &1))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.flat_map(&tool_call_from_runtime_item/1)
-  end
-
-  defp tool_calls_from_runtime_step(_other), do: []
-
-  defp tool_call_from_runtime_item(%RuntimeTrace.Item{} = item) do
-    opaque = latest_opaque_content(item)
-    raw = tool_call_raw_from_opaque(opaque)
-
-    call_id =
-      [
-        Map.get(opaque, "tool_call_id"),
-        Map.get(opaque, "call_id"),
-        Map.get(raw, "call_id"),
-        Map.get(raw, "id"),
-        tool_call_id_from_item_key(item.key)
-      ]
-      |> Enum.find("", &present_string?/1)
-      |> to_string()
-      |> String.trim()
-
-    name =
-      [
-        Map.get(opaque, "name"),
-        Map.get(raw, "name"),
-        get_in(raw, ["function", "name"])
-      ]
-      |> Enum.find("", &present_string?/1)
-      |> to_string()
-      |> String.trim()
-
-    args_value =
-      Map.get(raw, "arguments") ||
-        get_in(raw, ["function", "arguments"]) ||
-        Map.get(opaque, "arguments")
-
-    args = parse_tool_args(args_value)
-
-    if call_id != "" and name != "" do
-      [
-        %{
-          call_id: call_id,
-          name: name,
-          args: args,
-          raw: ensure_tool_call_raw(raw, call_id, name, args_value, args)
-        }
-      ]
-    else
-      []
-    end
-  end
-
-  defp tool_call_from_runtime_item(_other), do: []
-
-  defp parse_tool_args(%{} = args), do: args
-
-  defp parse_tool_args(args) when is_binary(args) do
-    text = String.trim(args)
-
-    if text == "" do
-      %{}
-    else
-      case Jason.decode(text) do
-        {:ok, %{} = obj} -> obj
-        _ -> %{}
-      end
-    end
-  end
-
-  defp parse_tool_args(_other), do: %{}
-
-  defp latest_opaque_content(%RuntimeTrace.Item{} = item) do
-    item.contents_by_sequence
-    |> Map.values()
-    |> Enum.sort_by(& &1.sequence, :desc)
-    |> Enum.find_value(%{}, fn
-      %{kind: :opaque, content_json: %{} = json} -> normalize_tool_call_map(json)
-      _other -> nil
-    end)
-  end
-
-  defp latest_opaque_content(_other), do: %{}
-
-  defp tool_call_raw_from_opaque(%{} = opaque) do
-    opaque
-    |> Map.get("raw")
-    |> case do
-      %{} = raw ->
-        normalize_tool_call_map(raw)
-
-      _other ->
-        opaque
-        |> Map.get("responses_item")
-        |> case do
-          %{} = raw -> normalize_tool_call_map(raw)
-          _ -> normalize_tool_call_map(opaque)
-        end
-    end
-  end
-
-  defp tool_call_raw_from_opaque(_other), do: %{}
-
-  defp tool_call_id_from_item_key("tc:" <> call_id), do: call_id
-  defp tool_call_id_from_item_key(_other), do: ""
-
-  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present_string?(_other), do: false
-
-  defp ensure_tool_call_raw(raw, call_id, name, args_value, args)
-       when is_binary(call_id) and is_binary(name) do
-    raw = normalize_tool_call_map(raw)
-    arguments = tool_call_arguments_text(args_value, args)
-
-    cond do
-      is_map(Map.get(raw, "function")) or Map.get(raw, "type") == "function" ->
-        function =
-          raw
-          |> Map.get("function", %{})
-          |> normalize_tool_call_map()
-          |> Map.put("name", name)
-          |> Map.put("arguments", arguments)
-
-        raw
-        |> Map.put("id", call_id)
-        |> Map.put("type", "function")
-        |> Map.put("function", function)
-
-      present_string?(Map.get(raw, "call_id")) or present_string?(Map.get(raw, "name")) or
-          Map.get(raw, "type") == "function_call" ->
-        raw
-        |> Map.put("id", Map.get(raw, "id") || call_id)
-        |> Map.put("type", "function_call")
-        |> Map.put("call_id", call_id)
-        |> Map.put("name", name)
-        |> Map.put("arguments", arguments)
-
-      true ->
-        %{
-          "id" => call_id,
-          "type" => "function_call",
-          "call_id" => call_id,
-          "name" => name,
-          "arguments" => arguments
-        }
-    end
-  end
-
-  defp ensure_tool_call_raw(_raw, call_id, name, args_value, args) do
-    ensure_tool_call_raw(%{}, call_id, name, args_value, args)
-  end
-
-  defp tool_call_arguments_text(value, %{} = args) do
-    cond do
-      is_binary(value) and String.trim(value) != "" ->
-        value
-
-      is_map(value) and map_size(value) > 0 ->
-        Jason.encode!(value)
-
-      map_size(args) > 0 ->
-        Jason.encode!(args)
-
-      true ->
-        "{}"
-    end
-  end
-
-  defp tool_call_arguments_text(value, _args) when is_binary(value) do
-    if String.trim(value) != "" do
-      value
-    else
-      "{}"
-    end
-  end
-
-  defp tool_call_arguments_text(%{} = value, _args), do: Jason.encode!(value)
-  defp tool_call_arguments_text(_value, _args), do: "{}"
-
-  defp normalize_tool_call_map(%{} = value) do
-    Map.new(value, fn {key, nested} ->
-      {to_string(key), normalize_tool_call_value(nested)}
-    end)
-  end
-
-  defp normalize_tool_call_map(_other), do: %{}
-
-  defp normalize_tool_call_value(%{} = value), do: normalize_tool_call_map(value)
-
-  defp normalize_tool_call_value(list) when is_list(list),
-    do: Enum.map(list, &normalize_tool_call_value/1)
-
-  defp normalize_tool_call_value(value), do: value
-
   defp start_tool_task(state, tool_calls) when is_list(tool_calls) do
     tool_instances_by_alias = state.context.tool_instances_by_alias || %{}
     execution_context = tool_execution_context(state)
+    message_id = state.context.message_id
+    step_id = state.runtime_step.id
 
     task =
       Task.async(fn ->
         {:tool_results,
-         execute_tool_calls(tool_calls, tool_instances_by_alias, execution_context)}
+         execute_and_persist_tool_calls(
+           message_id,
+           step_id,
+           tool_calls,
+           tool_instances_by_alias,
+           execution_context
+         )}
       end)
 
     %{state | tool_task: task}
+  end
+
+  defp execute_and_persist_tool_calls(
+         message_id,
+         step_id,
+         tool_calls,
+         tool_instances_by_alias,
+         execution_context
+       )
+       when is_integer(message_id) and is_integer(step_id) and is_list(tool_calls) do
+    max_concurrency =
+      tool_calls
+      |> length()
+      |> min(@max_parallel_tool_calls)
+      |> max(1)
+
+    tool_calls
+    |> Task.async_stream(
+      fn call ->
+        result =
+          Executor.execute_llm_tool(
+            tool_instances_by_alias,
+            call.name,
+            call.args || %{},
+            execution_context
+          )
+
+        result = decorate_tool_result(call, result)
+        Persistence.persist_tool_result!(message_id, step_id, call, result)
+        result
+      end,
+      max_concurrency: max_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      {:exit, reason} -> exit(reason)
+    end)
   end
 
   defp handle_tool_results(state, results) when is_list(results) do
@@ -1016,51 +937,77 @@ defmodule IntellectualClub.Generation.Worker do
     tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
     next_state = %{state | tools_disabled: tools_disabled}
 
-    followup =
-      state.adapter.build_followup_request(%{
-        context: next_state.context,
-        runtime_step: state.runtime_step,
-        results: results,
-        tools: current_tools_payload(next_state)
-      })
-
-    runtime_step = followup.runtime_step
-
-    case safe_persist(state.context.message_id, :step_done, fn ->
-           Persistence.persist_step_trace_only!(state.context.message_id, runtime_step)
+    case safe_persist_value(state.context.message_id, :tool_results, fn ->
+           maybe_persist_tool_results(state, results, opts)
+           Persistence.load_step_for_followup!(state.runtime_step.id)
          end) do
-      :ok ->
-        {raw_request, step_id} = start_next_step_metadata(next_state, followup.raw_request)
+      {:ok, persisted} ->
+        followup =
+          state.adapter.build_followup_request(%{
+            context: next_state.context,
+            runtime_step: persisted.runtime_step,
+            results: persisted.results,
+            tools: current_tools_payload(next_state)
+          })
 
-        runtime_step =
-          RuntimeTrace.new_step(
-            id: step_id,
-            sequence: state.step_sequence + 1,
-            started_at: DateTime.utc_now(),
-            status: :waiting_provider,
-            raw_request: raw_request
-          )
+        case safe_persist(state.context.message_id, :step_done, fn ->
+               Persistence.mark_step_done!(state.runtime_step.id)
+             end) do
+          :ok ->
+            continue_after_tool_step(next_state, followup, opts)
 
-        state =
-          state
-          |> Map.put(:runtime_step, runtime_step)
-          |> Map.put(:step_sequence, state.step_sequence + 1)
-          |> Map.put(:step_attempt, 1)
-          |> Map.put(:tool_round, state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
-          |> Map.put(
-            :refusal_round,
-            state.refusal_round + Keyword.get(opts, :refusal_round_delta, 0)
-          )
-          |> Map.put(:tools_disabled, tools_disabled)
-          |> Map.put(:retry_timer_ref, nil)
-          |> Map.put(:stream_task, nil)
-
-        state = start_stream_task(state)
-        {:noreply, state}
+          {:error, reason} ->
+            finalize_error(state, "Failed to mark tool step done: #{inspect(reason)}", %{})
+        end
 
       {:error, reason} ->
-        finalize_error(state, "Failed to persist tool step: #{inspect(reason)}", %{})
+        finalize_error(state, "Failed to persist tool results: #{inspect(reason)}", %{})
     end
+  end
+
+  defp maybe_persist_tool_results(state, results, opts) do
+    if Keyword.get(opts, :persist_results?, true) == false do
+      :ok
+    else
+      step_id = state.runtime_step.id
+
+      Enum.each(results, fn result ->
+        call = tool_call_from_result(result)
+
+        if is_integer(step_id) and not is_nil(call) do
+          Persistence.persist_tool_result!(state.context.message_id, step_id, call, result)
+        end
+      end)
+    end
+  end
+
+  defp continue_after_tool_step(next_state, followup, opts) do
+    {raw_request, step_id} = start_next_step_metadata(next_state, followup.raw_request)
+    next_sequence = next_state.step_sequence + 1
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        id: step_id,
+        sequence: next_sequence,
+        started_at: DateTime.utc_now(),
+        status: :waiting_provider,
+        raw_request: raw_request
+      )
+
+    state =
+      next_state
+      |> Map.put(:runtime_step, runtime_step)
+      |> Map.put(:step_sequence, next_sequence)
+      |> Map.put(:step_attempt, 1)
+      |> Map.put(:tool_round, next_state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
+      |> Map.put(
+        :refusal_round,
+        next_state.refusal_round + Keyword.get(opts, :refusal_round_delta, 0)
+      )
+      |> Map.put(:retry_timer_ref, nil)
+      |> Map.put(:stream_task, nil)
+
+    {:noreply, start_stream_task(state)}
   end
 
   defp start_next_step_metadata(state, raw_request)
@@ -1107,14 +1054,38 @@ defmodule IntellectualClub.Generation.Worker do
         end
       end)
 
-    Map.merge(call, %{
+    call
+    |> tool_call_to_map()
+    |> Map.merge(%{
       text: result.text,
       result_raw: result.raw,
       media_contents: media_contents,
       artifact_contents: artifact_contents,
-      raw: call.raw
+      raw: Map.get(tool_call_to_map(call), :raw, %{})
     })
   end
+
+  defp tool_call_from_result(result) when is_map(result) do
+    call = tool_call_to_map(result)
+
+    if is_integer(Map.get(call, :item_id)) do
+      %IntellectualClub.Generation.ToolCall{
+        item_id: Map.get(call, :item_id),
+        step_id: Map.get(call, :step_id),
+        sequence: Map.get(call, :sequence),
+        call_id: to_string(Map.get(call, :call_id) || ""),
+        name: to_string(Map.get(call, :name) || ""),
+        args: Map.get(call, :args) || %{},
+        raw: Map.get(call, :raw) || %{}
+      }
+    else
+      nil
+    end
+  end
+
+  defp tool_call_to_map(%_struct{} = call), do: Map.from_struct(call)
+  defp tool_call_to_map(%{} = call), do: Map.new(call)
+  defp tool_call_to_map(_call), do: %{}
 
   defp normalize_media_content(media, sequence) when is_map(media) and is_integer(sequence) do
     file_id = Map.get(media, :file_id, Map.get(media, "file_id"))

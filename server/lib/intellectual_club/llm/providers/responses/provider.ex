@@ -222,12 +222,18 @@ defmodule IntellectualClub.Llm.Providers.Responses do
        when is_list(results) do
     fco_items =
       Enum.map(results, fn result ->
-        %{
-          "type" => "function_call_output",
-          "id" => "fco_" <> Ash.UUID.generate(),
-          "call_id" => result.call_id,
-          "output" => result.text
-        }
+        case result_value(result, :responses_item) do
+          %{} = responses_item ->
+            RequestPayload.stringify_keys(responses_item)
+
+          _other ->
+            %{
+              "type" => "function_call_output",
+              "id" => "fco_" <> Ash.UUID.generate(),
+              "call_id" => result_value(result, :call_id),
+              "output" => result_value(result, :text)
+            }
+        end
       end)
 
     runtime_step =
@@ -238,7 +244,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
         opaque = %{
           "responses_item" => fco_item,
-          "raw" => result.result_raw
+          "raw" => result_value(result, :result_raw)
         }
 
         step
@@ -250,13 +256,20 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         |> TraceHelpers.apply_media_contents_to_trace(
           item_id,
           :tool_result,
-          result.media_contents
+          result_value(result, :media_contents)
         )
         |> TraceHelpers.apply_artifacts_to_trace(result)
       end)
 
     {fco_items, runtime_step}
   end
+
+  defp result_value(%{} = result, key) when is_atom(key) do
+    Map.get(result, key, Map.get(result, Atom.to_string(key)))
+  end
+
+  defp result_value(_result, :media_contents), do: []
+  defp result_value(_result, _key), do: nil
 
   defp sanitize_responses_output_items(output_items, opts)
        when is_list(output_items) and is_list(opts) do

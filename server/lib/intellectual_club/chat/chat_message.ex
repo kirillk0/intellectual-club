@@ -191,6 +191,11 @@ defmodule IntellectualClub.Chat.ChatMessage do
       accept([:token_count])
       require_atomic?(false)
     end
+
+    update :set_generation_state do
+      accept([:status, :error_detail, :token_count, :finished_at])
+      require_atomic?(false)
+    end
   end
 
   policies do

@@ -11,7 +11,7 @@
 │  ┌──────────────────────────┐      ┌───────────────────────────────────┐ │
 │  │      MDM Subsystem       │◄────►│       Generation Subsystem        │ │
 │  │      (Ash Domain)        │      │ (GenServer workers + persistence) │ │
-│  │  Resources + Policies    │      │ chunks in memory, batch write     │ │
+│  │  Resources + Policies    │      │ Ash-staged durable generation     │ │
 │  └──────────────────────────┘      └───────────────────────────────────┘ │
 │                                                                          │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
@@ -43,29 +43,26 @@ SPA ───────────► BFF (Controllers) : aggregated endpoint
 SPA ───────────► AshJsonApi        : generic CRUD (JSON:API)
 BFF ───────────► MDM (Ash)         : Ash.read!/Ash.get!/Ash.create!/Ash.update!/Ash.destroy! (policies apply)
 BFF ───────────► Generation        : start/cancel/poll via Supervisor
-Generation ─────► MDM (Ash)        : Context.build!/authorize (single boundary)
-Generation ─────► Ecto (write)     : Persistence (batch writes)
+Generation ─────► MDM (Ash)        : Context.build!/authorize and durable persistence actions
+Generation ─────► Ash transactions : staged provider/tool/message commits
 Outlet ─────────► MDM (Ash)        : ToolInstance, OutletCall
-Oban ───────────► MDM (Ash)        : scheduled jobs
 ```
 
 ### 1.3 Key principles
 
 1. **Ash resources are the single source of truth** for the data model, validations, and access control.
 2. **Public data access goes only through APIs**: `/api/ash` (generic AshJsonApi) and `/api/bff` (UX-oriented BFF). The BFF reads and writes only through Ash actions, so policies and validations always apply.
-3. **Generation does not depend on Ash directly**. It only receives `Generation.Context` plus an explicit authorization check at startup.
-4. **Provider stream and client stream are fundamentally decoupled**:
+3. **Provider stream and client stream are fundamentally decoupled**:
    - the LLM provider streams into the server through a provider abstraction
    - the browser receives progress through polling on the BFF API
    - one transport or provider must not dictate the format of the other
-5. **The canonical trace boundary is at the provider edge**. Providers must normalize raw chunks into canonical events (`step` / `item` / `content`) so the rest of the code does not depend on provider-specific payload shapes.
-6. **Chunks stay in memory, the database is updated at completion**. The worker accumulates the runtime trace in memory, and persistence does a batch write when a step or message is finalized.
-7. **Polling-first streaming for the browser**:
+4. **The canonical trace boundary is at the provider edge**. Providers must normalize raw chunks into canonical events (`step` / `item` / `content`) so the rest of the code does not depend on provider-specific payload shapes.
+5. **Partial chunks are UI-only; durable rows are authoritative after provider completion**. The worker accumulates partial provider chunks in memory only to keep the UI responsive. Once the provider response completes, `Generation.Persistence` commits the provider step through Ash; persisted `chat_message_items` and raw provider output become the source of truth for tool execution, recovery, history, and finalization.
+6. **Polling-first streaming for the browser**:
    - for the runtime trace (the latest unfinished step), a full snapshot is preferred because structural deltas become complex and unstable when stream order is non-deterministic
    - old steps are never polled because they are immutable after finalization
-8. **The SPA is served by Phoenix**. There is one build pipeline (`mix assets.*`) and one dev watcher flow, without a separate Vite dev server.
-9. **Module calculations handle aggregates** and work the same way on SQLite and PostgreSQL.
-10. **Oban is used for scheduling** as a DB-backed scheduler without Redis or Celery.
+7. **The SPA is served by Phoenix**. There is one build pipeline (`mix assets.*`) and one dev watcher flow, without a separate Vite dev server.
+8. **Module calculations handle aggregates** and work the same way on SQLite and PostgreSQL.
 
 ### 1.4 Generation streaming model (trace-only)
 
@@ -78,13 +75,18 @@ Generation is described by two streaming layers and one canonical data format.
 - A step contains many **items**, and an item contains many **content blocks**.
 - Important: the order of provider events is not guaranteed to be deterministic. For example, reasoning and answer may stream in parallel.
 
-2) **Server runtime state (accumulation)**
+2) **Server runtime state and durable persistence**
 
 - `Generation.Worker` keeps in memory:
-  - the **runtime trace**: the latest unfinished step in canonical form (`items` / `contents`)
-- When the step or generation finishes, the worker performs **one** batch write to the database:
-  - `chat_message_steps/items/contents` (canonical trace; the only source of truth for message body, history, and UI)
-  - `chat_messages.token_count/status/error_detail` (message metadata)
+  - the **runtime trace**: the latest unfinished provider stream in canonical form (`items` / `contents`)
+- This runtime trace is not used for system decisions after `response_complete`; it is a UI cache for the latest partial step.
+- Persistence is staged through Ash actions and Ash transactions:
+  - `waiting_provider`: a step row is created before the provider call starts.
+  - `provider complete`: the provider step, raw response, and provider items are committed together. This committed snapshot replaces stale item/content rows for the step.
+  - `waiting_tools`: tools are selected only from persisted `tool_call` items. Tool results are committed one at a time as persisted `tool_result` items.
+  - `done` / `error` / `canceled`: final step and message metadata are committed after the provider/tool stage is durable.
+- If recovery finds a message in `waiting_tools`, it resumes from persisted calls/results and executes only calls that do not already have a linked result. If recovery finds `waiting_provider`, the unfinished provider attempt is rolled back and retried.
+- `tool_result` items link to their canonical `tool_call` item through `tool_call_item_id`; provider `call_id` remains stored in opaque JSON for provider-wire payloads and legacy fallback only.
 
 3) **Server -> Client (polling)**
 

@@ -2,8 +2,8 @@ defmodule IntellectualClub.Generation.Context do
   @moduledoc """
   Builds a self-contained context for generation.
 
-  This is the only module in the generation subsystem that depends on Ash
-  resources and queries.
+  This module builds the prompt and retry context boundary for generation using
+  Ash resources and queries.
   """
 
   alias IntellectualClub.Accounts.UserKnowledgeBlock
@@ -56,7 +56,8 @@ defmodule IntellectualClub.Generation.Context do
     :context_soft_limit_percent,
     :cache_control_enabled,
     :history_length,
-    :initial_step_sequence
+    :initial_step_sequence,
+    :initial_step_status
   ]
 
   def authorize_chat!(chat_id, actor) do
@@ -160,6 +161,7 @@ defmodule IntellectualClub.Generation.Context do
         chat_id: chat.id,
         bot_id: chat.bot_id,
         message_id: message.id,
+        step_id: retry_step.id,
         llm_configuration_id: llm_configuration && llm_configuration.id,
         history_mode: :agent,
         history: [],
@@ -186,6 +188,7 @@ defmodule IntellectualClub.Generation.Context do
         cache_control_enabled: cache_control_enabled,
         history_length: Map.get(request_snapshot, :history_length),
         initial_step_sequence: retry_step.sequence,
+        initial_step_status: retry_step.status,
         chunk_delay_ms:
           Keyword.get(
             opts,
@@ -520,7 +523,7 @@ defmodule IntellectualClub.Generation.Context do
   defp retry_step_query(message_id) when is_integer(message_id) and message_id > 0 do
     ChatMessageStep
     |> Ash.Query.filter(chat_message_id == ^message_id)
-    |> Ash.Query.select([:id, :chat_message_id, :sequence, :raw_request])
+    |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
   end
 
   defp read_retry_step(query, actor) do
@@ -668,8 +671,10 @@ defmodule IntellectualClub.Generation.Context do
         :status,
         :sequence,
         items: [
+          :id,
           :type,
           :sequence,
+          :tool_call_item_id,
           contents: [
             :external_id,
             :sequence,

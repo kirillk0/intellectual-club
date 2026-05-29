@@ -103,7 +103,16 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
     end
 
     create :create do
-      accept([:chat_message_item_id, :sequence, :kind, :content_text, :content_json, :file_id])
+      accept([
+        :chat_message_item_id,
+        :external_id,
+        :sequence,
+        :kind,
+        :content_text,
+        :content_json,
+        :file_id
+      ])
+
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:chat_message_item]})
     end

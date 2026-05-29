@@ -177,6 +177,7 @@ export type ChatMessageItem = {
   sequence: number;
   created_at?: string | null;
   type: string;
+  tool_call_item_id?: number | null;
   contents?: ChatMessageContent[] | null;
 };
 

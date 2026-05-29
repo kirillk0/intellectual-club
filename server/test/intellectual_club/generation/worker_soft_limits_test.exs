@@ -159,6 +159,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert refusal_text in tool_result_texts(message)
 
     [tool_step, final_step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert_soft_refusal_result_linked!(tool_step, refusal_text)
 
     assert tool_step.input_tokens == 12
     assert tool_step.output_tokens == 3
@@ -284,6 +285,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert refusal_text in tool_result_texts(message)
 
     [tool_step, final_step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert_soft_refusal_result_linked!(tool_step, refusal_text)
 
     assert tool_step.input_tokens == 4
     assert tool_step.output_tokens == 3
@@ -479,5 +481,24 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Enum.flat_map(&Map.get(&1, :contents, []))
     |> Enum.filter(&(&1.kind == :text))
     |> Enum.map(&(&1.content_text || ""))
+  end
+
+  defp assert_soft_refusal_result_linked!(step, refusal_text) do
+    items = Map.get(step, :items, [])
+    [tool_call] = Enum.filter(items, &(&1.type == :tool_call))
+    [tool_result] = Enum.filter(items, &(&1.type == :tool_result))
+
+    assert tool_result.tool_call_item_id == tool_call.id
+
+    assert tool_result
+           |> Map.get(:contents, [])
+           |> Enum.any?(&(&1.kind == :text and &1.content_text == refusal_text))
+
+    assert tool_result
+           |> Map.get(:contents, [])
+           |> Enum.any?(fn content ->
+             content.kind == :opaque and
+               get_in(content.content_json, ["tool_call_item_id"]) == tool_call.id
+           end)
   end
 end

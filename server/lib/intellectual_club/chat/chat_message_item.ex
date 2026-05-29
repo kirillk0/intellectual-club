@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
+  alias IntellectualClub.Chat.Changes.ValidateToolResultItemLink
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
   sqlite do
@@ -54,6 +55,15 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       allow_nil?: false,
       attribute_type: :integer
 
+    belongs_to :tool_call_item, __MODULE__,
+      allow_nil?: true,
+      attribute_type: :integer,
+      public?: true
+
+    has_many :tool_result_items, __MODULE__ do
+      destination_attribute(:tool_call_item_id)
+    end
+
     has_many :contents, IntellectualClub.Chat.ChatMessageContent do
       destination_attribute(:chat_message_item_id)
     end
@@ -76,14 +86,16 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
     end
 
     create :create do
-      accept([:chat_message_step_id, :sequence, :type])
+      accept([:chat_message_step_id, :sequence, :type, :tool_call_item_id])
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:chat_message_step]})
+      change({ValidateToolResultItemLink, []})
     end
 
     update :update do
-      accept([:sequence, :type])
+      accept([:sequence, :type, :tool_call_item_id])
       require_atomic?(false)
+      change({ValidateToolResultItemLink, []})
     end
   end
 

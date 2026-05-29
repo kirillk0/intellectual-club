@@ -117,7 +117,48 @@ defmodule IntellectualClub.Chat.Continuation do
       )
       |> Ash.create!()
 
-    Enum.each(ordered(step.items), &copy_item!(&1, copied, actor))
+    items = ordered(step.items)
+
+    {copied_items_by_source_id, copied_tool_call_ids_by_sequence} =
+      items
+      |> Enum.reject(&(item_type(&1) == :tool_result))
+      |> Enum.reduce({%{}, %{}}, fn item, {by_source_id, by_sequence} ->
+        copied_item = copy_item!(item, copied, actor, nil)
+
+        by_sequence =
+          if item_type(item) == :tool_call do
+            Map.put(by_sequence, item.sequence, copied_item.id)
+          else
+            by_sequence
+          end
+
+        {Map.put(by_source_id, item.id, copied_item), by_sequence}
+      end)
+
+    items
+    |> Enum.filter(&(item_type(&1) == :tool_result))
+    |> Enum.each(fn item ->
+      tool_call_item_id =
+        item
+        |> Map.get(:tool_call_item_id)
+        |> case do
+          source_id when is_integer(source_id) ->
+            case Map.get(copied_items_by_source_id, source_id) do
+              %ChatMessageItem{id: copied_id} -> copied_id
+              _other -> nil
+            end
+
+          _other ->
+            nil
+        end
+
+      tool_call_item_id =
+        tool_call_item_id || preceding_tool_call_item_id(item, copied_tool_call_ids_by_sequence)
+
+      if is_integer(tool_call_item_id) do
+        copy_item!(item, copied, actor, tool_call_item_id)
+      end
+    end)
   end
 
   defp copy_step_status(status) when status in [:waiting_provider, :waiting_tools],
@@ -130,7 +171,12 @@ defmodule IntellectualClub.Chat.Continuation do
   defp copy_step_status(status) when status in ["done", "canceled", "error"], do: status
   defp copy_step_status(_status), do: :done
 
-  defp copy_item!(%ChatMessageItem{} = item, %ChatMessageStep{} = copied_step, actor) do
+  defp copy_item!(
+         %ChatMessageItem{} = item,
+         %ChatMessageStep{} = copied_step,
+         actor,
+         tool_call_item_id
+       ) do
     copied =
       ChatMessageItem
       |> Ash.Changeset.for_create(
@@ -138,13 +184,27 @@ defmodule IntellectualClub.Chat.Continuation do
         %{
           chat_message_step_id: copied_step.id,
           sequence: item.sequence,
-          type: item.type
+          type: item.type,
+          tool_call_item_id: tool_call_item_id
         },
         actor: actor
       )
       |> Ash.create!()
 
     Enum.each(ordered(item.contents), &copy_content!(&1, copied, actor))
+    copied
+  end
+
+  defp item_type(%ChatMessageItem{type: type}), do: type
+
+  defp preceding_tool_call_item_id(%ChatMessageItem{} = item, copied_tool_call_ids_by_sequence) do
+    copied_tool_call_ids_by_sequence
+    |> Enum.filter(fn {sequence, _id} -> sequence < item.sequence end)
+    |> Enum.max_by(fn {sequence, _id} -> sequence end, fn -> nil end)
+    |> case do
+      {_sequence, id} -> id
+      nil -> nil
+    end
   end
 
   defp copy_content!(%ChatMessageContent{} = content, %ChatMessageItem{} = copied_item, actor) do
@@ -218,6 +278,7 @@ defmodule IntellectualClub.Chat.Continuation do
           :id,
           :sequence,
           :type,
+          :tool_call_item_id,
           contents: [
             :id,
             :sequence,

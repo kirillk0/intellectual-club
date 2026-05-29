@@ -42,11 +42,25 @@ defmodule IntellectualClubWeb.Bff.ChatToolResultPreviewTest do
     step = List.first(assistant_with_steps.steps || [])
     assert is_map(step)
 
+    tool_call_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: 99, type: :tool_call},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     item =
       ChatMessageItem
       |> Ash.Changeset.for_create(
         :create,
-        %{chat_message_step_id: step.id, sequence: 100, type: :tool_result},
+        %{
+          chat_message_step_id: step.id,
+          sequence: 100,
+          type: :tool_result,
+          tool_call_item_id: tool_call_item.id
+        },
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -98,7 +112,12 @@ defmodule IntellectualClubWeb.Bff.ChatToolResultPreviewTest do
       ChatMessageItem
       |> Ash.Changeset.for_create(
         :create,
-        %{chat_message_step_id: step.id, sequence: 101, type: :tool_result},
+        %{
+          chat_message_step_id: step.id,
+          sequence: 101,
+          type: :tool_result,
+          tool_call_item_id: tool_call_item.id
+        },
         actor: actor
       )
       |> Ash.create!(actor: actor)

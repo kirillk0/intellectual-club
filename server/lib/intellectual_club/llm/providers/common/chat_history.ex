@@ -122,7 +122,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
                 _other -> nil
               end
 
-            next_calls = if is_map(call), do: [call | calls_acc], else: calls_acc
+            next_calls = if is_map(call), do: [{item, call} | calls_acc], else: calls_acc
             {answers_acc, next_calls, results_acc}
 
           :tool_result ->
@@ -147,7 +147,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n\n")
 
-    tool_calls = Enum.reverse(tool_calls)
+    tool_calls_with_items = Enum.reverse(tool_calls)
+    tool_calls = Enum.map(tool_calls_with_items, fn {_item, call} -> call end)
     tool_results = Enum.reverse(tool_results)
 
     assistant_message =
@@ -156,12 +157,21 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
     tool_call_ids =
       tool_calls
-      |> Enum.map(fn call ->
-        call
-        |> get_any([{"id", :id}])
-        |> to_string()
-        |> String.trim()
+      |> Enum.map(&tool_call_id/1)
+
+    tool_call_ids_by_item_id =
+      tool_calls_with_items
+      |> Enum.flat_map(fn {item, call} ->
+        item_id = History.item_id(item)
+        call_id = tool_call_id(call)
+
+        if is_integer(item_id) and call_id != "" do
+          [{item_id, call_id}]
+        else
+          []
+        end
       end)
+      |> Map.new()
 
     tool_messages =
       tool_results
@@ -172,15 +182,24 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
           |> get_any([{"content", :content}, {"text", :text}])
           |> to_string()
 
-        call_id =
+        linked_call_id =
           result
-          |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
-          |> to_string()
-          |> String.trim()
+          |> get_any([{"tool_call_item_id", :tool_call_item_id}])
           |> case do
-            "" -> Enum.at(tool_call_ids, idx) |> to_string() |> String.trim()
-            value -> value
+            item_id when is_integer(item_id) -> Map.get(tool_call_ids_by_item_id, item_id)
+            _other -> nil
           end
+
+        call_id =
+          [
+            linked_call_id,
+            result
+            |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+            |> to_string()
+            |> String.trim(),
+            Enum.at(tool_call_ids, idx) |> to_string() |> String.trim()
+          ]
+          |> Enum.find("", &present_string?/1)
 
         text =
           if String.trim(text) == "" do
@@ -208,6 +227,15 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       [assistant_message | tool_messages]
     end
   end
+
+  defp tool_call_id(call) when is_map(call) do
+    call
+    |> get_any([{"id", :id}])
+    |> to_string()
+    |> String.trim()
+  end
+
+  defp tool_call_id(_call), do: ""
 
   defp tool_call_payload(item) do
     responses_item = extract_responses_item(item)
@@ -347,6 +375,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     %{
       "content" => text,
       "tool_call_id" => call_id,
+      "tool_call_item_id" => History.tool_call_item_id(item),
       "media_contents" => History.media_contents_for_item(item)
     }
   end
@@ -450,6 +479,9 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
   defp normalize_chat_role("assistant"), do: "assistant"
   defp normalize_chat_role("tool"), do: "tool"
   defp normalize_chat_role(_other), do: nil
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_other), do: false
 
   defp maybe_put(map, _key, _value, false), do: map
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)

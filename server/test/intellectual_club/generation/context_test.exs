@@ -2644,11 +2644,15 @@ defmodule IntellectualClub.Generation.ContextTest do
   end
 
   defp create_item_with_text!(step_id, sequence, item_type, text, actor) do
+    attrs =
+      %{chat_message_step_id: step_id, sequence: sequence, type: item_type}
+      |> maybe_put_tool_call_item_id(step_id, sequence, item_type, actor)
+
     item =
       ChatMessageItem
       |> Ash.Changeset.for_create(
         :create,
-        %{chat_message_step_id: step_id, sequence: sequence, type: item_type},
+        attrs,
         actor: actor
       )
       |> Ash.create!()
@@ -2667,6 +2671,25 @@ defmodule IntellectualClub.Generation.ContextTest do
     |> Ash.create!()
 
     item
+  end
+
+  defp maybe_put_tool_call_item_id(attrs, step_id, sequence, :tool_result, actor) do
+    case preceding_tool_call_item(step_id, sequence, actor) do
+      %ChatMessageItem{id: id} -> Map.put(attrs, :tool_call_item_id, id)
+      _other -> attrs
+    end
+  end
+
+  defp maybe_put_tool_call_item_id(attrs, _step_id, _sequence, _item_type, _actor), do: attrs
+
+  defp preceding_tool_call_item(step_id, sequence, actor) do
+    ChatMessageItem
+    |> Ash.Query.filter(
+      chat_message_step_id == ^step_id and type == :tool_call and sequence < ^sequence
+    )
+    |> Ash.Query.sort(sequence: :desc, id: :desc)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(actor: actor)
   end
 
   defp create_item_with_text_and_opaque!(step_id, sequence, item_type, text, opaque, actor) do

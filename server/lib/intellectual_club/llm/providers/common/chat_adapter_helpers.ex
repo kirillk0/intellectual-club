@@ -130,6 +130,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
 
       opaque = %{
         "tool_call_id" => result.call_id,
+        "tool_call_item_id" => Map.get(result, :tool_call_item_id),
         "name" => result.name,
         "raw" => result.result_raw
       }

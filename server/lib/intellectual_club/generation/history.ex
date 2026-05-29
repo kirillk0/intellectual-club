@@ -64,6 +64,24 @@ defmodule IntellectualClub.Generation.History do
   def items(_other), do: []
 
   @doc """
+  Returns a persisted trace item id.
+  """
+  def item_id(item) when is_map(item) do
+    Map.get(item, :id, Map.get(item, "id"))
+  end
+
+  def item_id(_other), do: nil
+
+  @doc """
+  Returns the canonical persisted tool result -> tool call link.
+  """
+  def tool_call_item_id(item) when is_map(item) do
+    Map.get(item, :tool_call_item_id, Map.get(item, "tool_call_item_id"))
+  end
+
+  def tool_call_item_id(_other), do: nil
+
+  @doc """
   Returns trace contents from a persisted item.
   """
   def contents(item) when is_map(item) do

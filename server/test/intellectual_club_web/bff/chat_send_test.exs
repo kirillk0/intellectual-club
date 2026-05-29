@@ -71,6 +71,8 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 200)
+    generation_id = get_in(payload, ["generation", "message_id"])
+    assert is_integer(generation_id)
 
     branch = payload["branch"] || []
     user_messages = Enum.filter(branch, &(&1["role"] == "user"))
@@ -85,6 +87,8 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     assert is_binary(get_in(media_content, ["media", "external_id"]))
     assert get_in(media_content, ["media", "filename"]) == "attached.png"
     assert get_in(media_content, ["media", "mime_type"]) == "image/png"
+
+    wait_for_generation_to_finish(conn, generation_id)
   end
 
   test "POST /api/bff/chats/:id/send with upload_ids creates user media content and consumes uploads",
@@ -112,6 +116,9 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
       })
 
     payload = json_response(conn, 200)
+    generation_id = get_in(payload, ["generation", "message_id"])
+    assert is_integer(generation_id)
+
     branch = payload["branch"] || []
     user_messages = Enum.filter(branch, &(&1["role"] == "user"))
 
@@ -127,6 +134,8 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     conn = get(conn, ~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}")
     assert json_response(conn, 404)["error"] == "Upload not found."
+
+    wait_for_generation_to_finish(conn, generation_id)
   end
 
   test "POST /api/bff/chats/:id/send rejects files when bot and configuration do not allow uploads",
@@ -161,10 +170,14 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 200)
+    generation_id = get_in(payload, ["generation", "message_id"])
+    assert is_integer(generation_id)
 
     branch = payload["branch"] || []
     user_messages = Enum.filter(branch, &(&1["role"] == "user"))
     assert length(user_messages) == 1
+
+    wait_for_generation_to_finish(conn, generation_id)
   end
 
   test "POST /api/bff/chats/:id/send rejects files above the bot size limit", %{conn: conn} do

@@ -141,7 +141,8 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :cached_input_tokens,
         :reasoning_tokens,
         :cost,
-        :first_token_at
+        :first_token_at,
+        :finished_at
       ])
 
       change(relate_actor(:owner))
@@ -161,7 +162,8 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :cached_input_tokens,
         :reasoning_tokens,
         :cost,
-        :first_token_at
+        :first_token_at,
+        :finished_at
       ])
 
       require_atomic?(false)

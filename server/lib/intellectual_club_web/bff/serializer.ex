@@ -510,6 +510,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       sequence: item.sequence,
       created_at: datetime_iso(item.created_at),
       type: type,
+      tool_call_item_id: item.tool_call_item_id,
       contents:
         contents
         |> Enum.filter(&content_visible_in_bff?(&1, type))

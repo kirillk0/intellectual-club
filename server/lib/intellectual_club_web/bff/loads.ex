@@ -26,6 +26,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
           :sequence,
           :created_at,
           :type,
+          :tool_call_item_id,
           contents: [
             :id,
             :external_id,

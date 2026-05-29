@@ -112,18 +112,23 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     with {:ok, context} <- Context.prepare_retry(message_id, resume_opts),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
-           Map.get(context, :initial_step_sequence),
-         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
-      step_id =
-        Persistence.ensure_step_started!(
-          context.message_id,
-          step_sequence,
-          context.request_payload || %{},
-          []
-        )
+           Map.get(context, :initial_step_sequence) do
+      if waiting_tools_status?(context.initial_step_status) and is_integer(context.step_id) do
+        start_worker(context)
+      else
+        :ok = Persistence.rollback_steps_for_retry!(context.message_id, step_sequence)
 
-      context = %{context | step_id: step_id}
-      start_worker(context)
+        step_id =
+          Persistence.ensure_step_started!(
+            context.message_id,
+            step_sequence,
+            context.request_payload || %{},
+            []
+          )
+
+        context = %{context | step_id: step_id}
+        start_worker(context)
+      end
     else
       nil ->
         {:error, :no_steps_to_retry}
@@ -135,6 +140,8 @@ defmodule IntellectualClub.Generation.Supervisor do
         {:error, :retry_failed}
     end
   end
+
+  defp waiting_tools_status?(status), do: status in [:waiting_tools, "waiting_tools"]
 
   def recover_orphaned_generations_async do
     Task.start(fn ->

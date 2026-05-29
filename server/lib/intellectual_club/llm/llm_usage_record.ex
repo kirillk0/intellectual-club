@@ -234,6 +234,42 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
         :raw_usage
       ])
     end
+
+    update :update do
+      accept([
+        :usage_user_id,
+        :usage_user_id_snapshot,
+        :usage_username_snapshot,
+        :configuration_owner_id,
+        :configuration_owner_id_snapshot,
+        :llm_configuration_id,
+        :llm_configuration_id_snapshot,
+        :llm_configuration_external_id_snapshot,
+        :llm_configuration_label_snapshot,
+        :provider_id,
+        :provider_id_snapshot,
+        :provider_name_snapshot,
+        :provider_type_snapshot,
+        :chat_id,
+        :chat_id_snapshot,
+        :chat_message_id,
+        :chat_message_id_snapshot,
+        :chat_message_step_id,
+        :chat_message_step_id_snapshot,
+        :step_sequence,
+        :status,
+        :response_final,
+        :occurred_at,
+        :input_tokens,
+        :output_tokens,
+        :cached_input_tokens,
+        :reasoning_tokens,
+        :cost,
+        :raw_usage
+      ])
+
+      require_atomic?(false)
+    end
   end
 
   policies do
@@ -244,6 +280,11 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
 
     policy action_type(:create) do
       authorize_if actor_present()
+    end
+
+    policy action_type(:update) do
+      authorize_if expr(usage_user_id_snapshot == ^actor(:id))
+      authorize_if expr(configuration_owner_id_snapshot == ^actor(:id))
     end
   end
 end

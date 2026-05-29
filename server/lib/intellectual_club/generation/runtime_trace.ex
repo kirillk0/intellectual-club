@@ -3,8 +3,10 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   In-memory accumulator for a single runtime `ChatMessageStep`.
 
   Provider adapters emit canonical trace events (step/item/content) and the
-  generation worker applies them to this structure. The worker later persists
-  the full step snapshot to the database in one batch.
+  generation worker applies them to this structure for streaming UI updates.
+  Once the provider response completes, the worker persists the provider step
+  and later tool results through `Generation.Persistence`; persisted rows become
+  the source of truth for system decisions and recovery.
   """
 
   alias IntellectualClub.Chat.StepMetrics
