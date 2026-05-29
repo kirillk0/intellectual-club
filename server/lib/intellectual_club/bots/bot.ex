@@ -143,7 +143,7 @@ defmodule IntellectualClub.Bots.Bot do
     attribute :max_tool_rounds, :integer do
       allow_nil?(false)
       public?(true)
-      default(100)
+      default(300)
     end
 
     attribute :context_soft_limit_percent, :integer do

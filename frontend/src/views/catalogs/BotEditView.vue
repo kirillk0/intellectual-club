@@ -460,7 +460,7 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
         ? attrs.default_llm_configuration_id
         : (toIntId(attrs.default_llm_configuration_id as any) ?? relationshipId(resource, 'default_llm_configuration')),
     max_tool_rounds:
-      typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 100),
+      typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 300),
     context_soft_limit_percent:
       typeof attrs.context_soft_limit_percent === 'number'
         ? attrs.context_soft_limit_percent
@@ -561,7 +561,7 @@ const editor = useCrudEditor<BotForm>({
     first_messages: [],
     variables: {},
     default_llm_configuration_id: null,
-    max_tool_rounds: 100,
+    max_tool_rounds: 300,
     context_soft_limit_percent: 80,
     supports_file_processing: false,
     max_file_size_mb: 500,
