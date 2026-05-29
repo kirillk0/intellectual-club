@@ -52,8 +52,8 @@
       class="dropdown floating-dropdown"
       :style="actionMenuStyle"
     >
-      <button class="menu-item" type="button" :disabled="actionsDisabled" @click="emitRename">
-        Rename
+      <button class="menu-item" type="button" :disabled="actionsDisabled" @click="emitEdit">
+        Edit
       </button>
       <button class="menu-item danger" type="button" :disabled="actionsDisabled" @click="emitDelete">
         Delete
@@ -98,7 +98,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'select', tagId: number): void;
   (e: 'select-no-tags'): void;
-  (e: 'rename', tagId: number): void;
+  (e: 'edit', tagId: number): void;
   (e: 'delete', tagId: number): void;
 }>();
 
@@ -191,9 +191,9 @@ function updateActionMenuPosition() {
   };
 }
 
-function emitRename() {
+function emitEdit() {
   if (!actionMenuTagId.value) return;
-  emit('rename', actionMenuTagId.value);
+  emit('edit', actionMenuTagId.value);
   closeActionMenu();
 }
 

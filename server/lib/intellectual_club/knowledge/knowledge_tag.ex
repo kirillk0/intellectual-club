@@ -10,6 +10,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeTag do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
   alias IntellectualClub.Knowledge.Changes.SetTagFullName
+  alias IntellectualClub.Knowledge.Changes.UpdateDescendantTagFullNames
   alias IntellectualClub.Knowledge.Validations.PreventTagCycles
 
   require Ash.Query
@@ -92,6 +93,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeTag do
       validate({PreventTagCycles, []}, where: [changing(:parent_id)])
       change({RequireRelatedOwnedByActor, relationships: [:parent], required?: false})
       change({SetTagFullName, []})
+      change({UpdateDescendantTagFullNames, []})
     end
   end
 

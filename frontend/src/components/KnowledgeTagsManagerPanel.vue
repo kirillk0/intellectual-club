@@ -74,18 +74,67 @@
       :actionsDisabled="mutationLoading"
       @select="emit('select', $event)"
       @select-no-tags="emit('select-no-tags')"
-      @rename="startRename"
+      @edit="openEditModal"
       @add-child="startCreateChild"
       @delete="deleteTag"
     />
 
     <p v-if="visibleTagsEmptyState" class="muted">{{ visibleTagsEmptyState }}</p>
   </section>
+
+  <ModalWindow
+    :open="editModalOpen"
+    modal-class="knowledge-tag-edit-modal"
+    aria-label="Edit tag"
+    :cancel-disabled="mutationLoading"
+    @cancel="cancelEditModal"
+  >
+    <form class="tag-edit-modal" @submit.prevent="submitEditModal">
+      <div class="tag-edit-modal__header">
+        <strong>Edit tag</strong>
+        <p v-if="currentEditTagPath" class="muted">{{ currentEditTagPath }}</p>
+      </div>
+
+      <label class="tag-edit-modal__field">
+        <span>Name</span>
+        <input
+          ref="editModalInputRef"
+          v-model="editModalName"
+          type="text"
+          class="full"
+          placeholder="Tag name"
+          :disabled="mutationLoading"
+          @input="editModalError = null"
+        />
+      </label>
+
+      <label class="tag-edit-modal__field">
+        <span>Parent</span>
+        <select v-model="editModalParentId" class="full" :disabled="mutationLoading" @change="editModalError = null">
+          <option :value="''">No parent (root)</option>
+          <option v-for="tag in editParentOptions" :key="tag.id" :value="tag.id">
+            {{ tag.full_name || tag.name || `Tag #${tag.id}` }}
+          </option>
+        </select>
+      </label>
+
+      <p v-if="editModalError" class="error-text">{{ editModalError }}</p>
+
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" :disabled="mutationLoading" @click="cancelEditModal">Cancel</button>
+        <button type="submit" class="primary" :disabled="editModalSubmitDisabled">
+          {{ mutationLoading ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    </form>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import {
   fieldErrorsFromJsonApiErrors,
   formErrorsFromJsonApiErrors,
@@ -99,7 +148,7 @@ import {
   type JsonApiResource,
 } from '@/api/jsonApi';
 
-type TagEditorMode = 'create-root' | 'rename' | 'create-child';
+type TagEditorMode = 'create-root' | 'create-child';
 
 const props = withDefaults(
   defineProps<{
@@ -141,6 +190,12 @@ const editorTagId = ref<number | null>(null);
 const editorName = ref('');
 const editorError = ref<string | null>(null);
 const editorInputRef = ref<HTMLInputElement | null>(null);
+const editModalOpen = ref(false);
+const editModalTagId = ref<number | null>(null);
+const editModalName = ref('');
+const editModalParentId = ref<number | ''>('');
+const editModalError = ref<string | null>(null);
+const editModalInputRef = ref<HTMLInputElement | null>(null);
 
 function normalizeTagFilter(value: string) {
   return value.trim().toLowerCase();
@@ -186,6 +241,12 @@ const currentEditorTag = computed(() => {
   return tags.value.find((tag) => tag.id === id) || null;
 });
 
+const currentEditTag = computed(() => {
+  const id = editModalTagId.value;
+  if (!id) return null;
+  return tags.value.find((tag) => tag.id === id) || null;
+});
+
 const hasTagFilter = computed(() => normalizeTagFilter(tagFilter.value).length > 0);
 const tagById = computed(() => {
   const map = new Map<number, KnowledgeTagTreeItem>();
@@ -204,6 +265,14 @@ const childrenByParent = computed(() => {
 
   return map;
 });
+
+function sortTagsByPath(list: KnowledgeTagTreeItem[]) {
+  return [...list].sort((a, b) => {
+    const left = (a.full_name || a.name || '').toLowerCase();
+    const right = (b.full_name || b.name || '').toLowerCase();
+    return left.localeCompare(right) || a.id - b.id;
+  });
+}
 
 function collectAncestorIds(tagId: number, byId: Map<number, KnowledgeTagTreeItem>, out: Set<number>) {
   const visited = new Set<number>();
@@ -236,6 +305,12 @@ function collectDescendantIds(tagId: number, byParent: Map<number | null, Knowle
   }
 }
 
+function descendantIdSet(tagId: number) {
+  const out = new Set<number>();
+  collectDescendantIds(tagId, childrenByParent.value, out);
+  return out;
+}
+
 const visibleTags = computed(() => {
   const filter = normalizeTagFilter(tagFilter.value);
   if (!filter) return tags.value;
@@ -262,13 +337,20 @@ const visibleTagsEmptyState = computed(() => {
   if (hasTagFilter.value) return visibleTags.value.length ? '' : 'No tags match the current filter.';
   return tags.value.length ? '' : 'No tags.';
 });
+const editParentOptions = computed(() => {
+  const tag = currentEditTag.value;
+  if (!tag) return [];
+
+  const descendants = descendantIdSet(tag.id);
+  return sortTagsByPath(tags.value.filter((item) => item.id !== tag.id && !descendants.has(item.id)));
+});
+
+const currentEditTagPath = computed(() => currentEditTag.value?.full_name || currentEditTag.value?.name || '');
 
 const editorTitle = computed(() => {
   switch (editorMode.value) {
     case 'create-root':
       return 'New tag';
-    case 'rename':
-      return 'Rename tag';
     case 'create-child':
       return 'Add child tag';
     default:
@@ -280,13 +362,13 @@ const editorContext = computed(() => {
   const tag = currentEditorTag.value;
   if (!tag) return '';
 
-  if (editorMode.value === 'rename') return tag.full_name || tag.name;
   if (editorMode.value === 'create-child') return `Parent: ${tag.full_name || tag.name}`;
   return '';
 });
 
-const editorSubmitLabel = computed(() => (editorMode.value === 'rename' ? 'Save' : 'Create'));
+const editorSubmitLabel = computed(() => 'Create');
 const submitDisabled = computed(() => mutationLoading.value || !editorName.value.trim());
+const editModalSubmitDisabled = computed(() => mutationLoading.value || !editModalName.value.trim() || !currentEditTag.value);
 
 async function focusEditorInput() {
   await nextTick();
@@ -301,8 +383,21 @@ function resetEditor() {
   editorError.value = null;
 }
 
+function resetEditModal() {
+  editModalOpen.value = false;
+  editModalTagId.value = null;
+  editModalName.value = '';
+  editModalParentId.value = '';
+  editModalError.value = null;
+}
+
 function cancelEditor() {
   resetEditor();
+}
+
+function cancelEditModal() {
+  if (mutationLoading.value) return;
+  resetEditModal();
 }
 
 function startCreateRoot() {
@@ -313,15 +408,23 @@ function startCreateRoot() {
   void focusEditorInput();
 }
 
-function startRename(tagId: number) {
+async function focusEditModalInput() {
+  await nextTick();
+  editModalInputRef.value?.focus();
+  editModalInputRef.value?.select();
+}
+
+function openEditModal(tagId: number) {
   const tag = tags.value.find((row) => row.id === tagId);
   if (!tag) return;
 
-  editorMode.value = 'rename';
-  editorTagId.value = tagId;
-  editorName.value = tag.name || '';
-  editorError.value = null;
-  void focusEditorInput();
+  resetEditor();
+  editModalTagId.value = tagId;
+  editModalName.value = tag.name || '';
+  editModalParentId.value = tag.parent_id ?? '';
+  editModalError.value = null;
+  editModalOpen.value = true;
+  void focusEditModalInput();
 }
 
 function startCreateChild(tagId: number) {
@@ -371,14 +474,6 @@ async function submitEditor() {
         name,
         parent_id: null,
       });
-    } else if (editorMode.value === 'rename') {
-      const tag = currentEditorTag.value;
-      if (!tag) throw new Error('Tag not found.');
-
-      await jsonApiUpdate('/api/ash/knowledge-tags', 'knowledge-tags', tag.id, {
-        name,
-        parent_id: tag.parent_id,
-      });
     } else if (editorMode.value === 'create-child') {
       if (!editorTagId.value) throw new Error('Parent tag not found.');
 
@@ -393,6 +488,41 @@ async function submitEditor() {
   } catch (error) {
     console.error(error);
     editorError.value = describeMutationError(error, 'Failed to save tag.');
+  } finally {
+    mutationLoading.value = false;
+  }
+}
+
+async function submitEditModal() {
+  const tag = currentEditTag.value;
+  if (!tag) {
+    editModalError.value = 'Tag not found.';
+    return;
+  }
+
+  const name = editModalName.value.trim();
+  if (!name) {
+    editModalError.value = 'Name is required.';
+    return;
+  }
+
+  const parentId = editModalParentId.value === '' ? null : Number(editModalParentId.value);
+
+  mutationLoading.value = true;
+  editModalError.value = null;
+  tagsError.value = null;
+
+  try {
+    await jsonApiUpdate('/api/ash/knowledge-tags', 'knowledge-tags', tag.id, {
+      name,
+      parent_id: parentId,
+    });
+
+    resetEditModal();
+    await loadTags();
+  } catch (error) {
+    console.error(error);
+    editModalError.value = describeMutationError(error, 'Failed to save tag.');
   } finally {
     mutationLoading.value = false;
   }
@@ -413,6 +543,7 @@ async function deleteTag(tagId: number) {
     await jsonApiDelete('/api/ash/knowledge-tags', tagId);
 
     if (editorTagId.value === tagId) resetEditor();
+    if (editModalTagId.value === tagId) resetEditModal();
 
     await loadTags();
 
@@ -490,5 +621,28 @@ onMounted(() => {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+}
+
+:global(.knowledge-tag-edit-modal) {
+  width: min(520px, 95vw);
+}
+
+.tag-edit-modal {
+  display: grid;
+  gap: 14px;
+}
+
+.tag-edit-modal__header {
+  display: grid;
+  gap: 4px;
+}
+
+.tag-edit-modal__header p {
+  margin: 0;
+}
+
+.tag-edit-modal__field {
+  display: grid;
+  gap: 6px;
 }
 </style>

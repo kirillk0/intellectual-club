@@ -162,6 +162,42 @@ defmodule IntellectualClub.Catalogs.CrudTest do
     assert updated.full_name == "Writing / Tone"
   end
 
+  test "knowledge tags update descendant full_name when a branch is moved" do
+    %{user: actor} = user_fixture()
+
+    source =
+      KnowledgeTag
+      |> Ash.Changeset.for_create(:create, %{name: "Writing"}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    target =
+      KnowledgeTag
+      |> Ash.Changeset.for_create(:create, %{name: "Library"}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    child =
+      KnowledgeTag
+      |> Ash.Changeset.for_create(:create, %{name: "Style", parent_id: source.id}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    grandchild =
+      KnowledgeTag
+      |> Ash.Changeset.for_create(:create, %{name: "Tone", parent_id: child.id}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    moved =
+      child
+      |> Ash.Changeset.for_update(:update, %{name: child.name, parent_id: target.id},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    reloaded_grandchild = Ash.get!(KnowledgeTag, grandchild.id, actor: actor)
+
+    assert moved.full_name == "Library / Style"
+    assert reloaded_grandchild.full_name == "Library / Style / Tone"
+  end
+
   test "bots, providers, configurations, and bindings have basic CRUD" do
     %{user: actor} = user_fixture()
 

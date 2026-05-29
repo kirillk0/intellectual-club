@@ -58,17 +58,56 @@
       :actionsDisabled="mutationLoading"
       @select="emit('select', $event)"
       @select-no-tags="emit('select-no-tags')"
-      @rename="startRename"
+      @edit="openEditModal"
       @delete="deleteTag"
     />
 
     <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
   </section>
+
+  <ModalWindow
+    :open="editModalOpen"
+    modal-class="llm-config-tag-edit-modal"
+    aria-label="Edit tag"
+    :cancel-disabled="mutationLoading"
+    @cancel="cancelEditModal"
+  >
+    <form class="tag-edit-modal" @submit.prevent="submitEditModal">
+      <div class="tag-edit-modal__header">
+        <strong>Edit tag</strong>
+        <p v-if="currentEditTag?.name" class="muted">{{ currentEditTag.name }}</p>
+      </div>
+
+      <label class="tag-edit-modal__field">
+        <span>Name</span>
+        <input
+          ref="editModalInputRef"
+          v-model="editModalName"
+          type="text"
+          class="full"
+          placeholder="Tag name"
+          :disabled="mutationLoading"
+          @input="editModalError = null"
+        />
+      </label>
+
+      <p v-if="editModalError" class="error-text">{{ editModalError }}</p>
+
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" :disabled="mutationLoading" @click="cancelEditModal">Cancel</button>
+        <button type="submit" class="primary" :disabled="editModalSubmitDisabled">
+          {{ mutationLoading ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    </form>
+  </ModalWindow>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
 import LlmConfigurationTagsList, { type LlmConfigurationTagListItem } from '@/components/LlmConfigurationTagsList.vue';
+import ModalWindow from '@/components/ModalWindow.vue';
 import {
   fieldErrorsFromJsonApiErrors,
   formErrorsFromJsonApiErrors,
@@ -81,7 +120,7 @@ import {
   type JsonApiResource,
 } from '@/api/jsonApi';
 
-type EditorMode = 'create' | 'rename';
+type EditorMode = 'create';
 
 const props = withDefaults(
   defineProps<{
@@ -119,6 +158,11 @@ const editorTagId = ref<number | null>(null);
 const editorName = ref('');
 const editorError = ref<string | null>(null);
 const editorInputRef = ref<HTMLInputElement | null>(null);
+const editModalOpen = ref(false);
+const editModalTagId = ref<number | null>(null);
+const editModalName = ref('');
+const editModalError = ref<string | null>(null);
+const editModalInputRef = ref<HTMLInputElement | null>(null);
 
 function parseTagRow(resource: JsonApiResource): LlmConfigurationTagListItem | null {
   const id = toIntId(resource.id);
@@ -152,10 +196,17 @@ const currentEditorTag = computed(() => {
   return tags.value.find((tag) => tag.id === id) || null;
 });
 
-const editorTitle = computed(() => (editorMode.value === 'rename' ? 'Rename tag' : 'New tag'));
+const currentEditTag = computed(() => {
+  const id = editModalTagId.value;
+  if (!id) return null;
+  return tags.value.find((tag) => tag.id === id) || null;
+});
+
+const editorTitle = computed(() => 'New tag');
 const editorContext = computed(() => currentEditorTag.value?.name || '');
-const editorSubmitLabel = computed(() => (editorMode.value === 'rename' ? 'Save' : 'Create'));
+const editorSubmitLabel = computed(() => 'Create');
 const submitDisabled = computed(() => mutationLoading.value || !editorName.value.trim());
+const editModalSubmitDisabled = computed(() => mutationLoading.value || !editModalName.value.trim() || !currentEditTag.value);
 
 async function focusEditorInput() {
   await nextTick();
@@ -170,8 +221,20 @@ function resetEditor() {
   editorError.value = null;
 }
 
+function resetEditModal() {
+  editModalOpen.value = false;
+  editModalTagId.value = null;
+  editModalName.value = '';
+  editModalError.value = null;
+}
+
 function cancelEditor() {
   resetEditor();
+}
+
+function cancelEditModal() {
+  if (mutationLoading.value) return;
+  resetEditModal();
 }
 
 function startCreate() {
@@ -182,15 +245,22 @@ function startCreate() {
   void focusEditorInput();
 }
 
-function startRename(tagId: number) {
+async function focusEditModalInput() {
+  await nextTick();
+  editModalInputRef.value?.focus();
+  editModalInputRef.value?.select();
+}
+
+function openEditModal(tagId: number) {
   const tag = tags.value.find((row) => row.id === tagId);
   if (!tag) return;
 
-  editorMode.value = 'rename';
-  editorTagId.value = tagId;
-  editorName.value = tag.name || '';
-  editorError.value = null;
-  void focusEditorInput();
+  resetEditor();
+  editModalTagId.value = tagId;
+  editModalName.value = tag.name || '';
+  editModalError.value = null;
+  editModalOpen.value = true;
+  void focusEditModalInput();
 }
 
 async function loadTags() {
@@ -226,13 +296,7 @@ async function submitEditor() {
   tagsError.value = null;
 
   try {
-    if (editorMode.value === 'rename') {
-      const tag = currentEditorTag.value;
-      if (!tag) throw new Error('Tag not found.');
-      await jsonApiUpdate('/api/ash/llm-configuration-tags', 'llm-configuration-tags', tag.id, { name });
-    } else {
-      await jsonApiCreate('/api/ash/llm-configuration-tags', 'llm-configuration-tags', { name });
-    }
+    await jsonApiCreate('/api/ash/llm-configuration-tags', 'llm-configuration-tags', { name });
 
     resetEditor();
     await loadTags();
@@ -240,6 +304,37 @@ async function submitEditor() {
   } catch (error) {
     console.error(error);
     editorError.value = describeMutationError(error, 'Failed to save tag.');
+  } finally {
+    mutationLoading.value = false;
+  }
+}
+
+async function submitEditModal() {
+  const tag = currentEditTag.value;
+  if (!tag) {
+    editModalError.value = 'Tag not found.';
+    return;
+  }
+
+  const name = editModalName.value.trim();
+  if (!name) {
+    editModalError.value = 'Name is required.';
+    return;
+  }
+
+  mutationLoading.value = true;
+  editModalError.value = null;
+  tagsError.value = null;
+
+  try {
+    await jsonApiUpdate('/api/ash/llm-configuration-tags', 'llm-configuration-tags', tag.id, { name });
+
+    resetEditModal();
+    await loadTags();
+    emit('changed');
+  } catch (error) {
+    console.error(error);
+    editModalError.value = describeMutationError(error, 'Failed to save tag.');
   } finally {
     mutationLoading.value = false;
   }
@@ -259,6 +354,7 @@ async function deleteTag(tagId: number) {
     await jsonApiDelete('/api/ash/llm-configuration-tags', tagId);
 
     if (editorTagId.value === tagId) resetEditor();
+    if (editModalTagId.value === tagId) resetEditModal();
 
     await loadTags();
     emit('changed');
@@ -329,5 +425,28 @@ onMounted(() => {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+}
+
+:global(.llm-config-tag-edit-modal) {
+  width: min(520px, 95vw);
+}
+
+.tag-edit-modal {
+  display: grid;
+  gap: 14px;
+}
+
+.tag-edit-modal__header {
+  display: grid;
+  gap: 4px;
+}
+
+.tag-edit-modal__header p {
+  margin: 0;
+}
+
+.tag-edit-modal__field {
+  display: grid;
+  gap: 6px;
 }
 </style>
