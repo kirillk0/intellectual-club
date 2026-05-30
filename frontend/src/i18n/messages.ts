@@ -183,6 +183,7 @@ export const ruMessages: Record<string, string> = {
   'Filtering by tag…': 'Фильтрация по тегу…',
   'First messages': 'Первые сообщения',
   'Fix JSON errors before saving.': 'Исправьте ошибки JSON перед сохранением.',
+  'Fix role alteration': 'Исправлять чередование ролей',
   'File ID': 'ID файла',
   'Files': 'Файлы',
   'Forbidden': 'Недостаточно прав',

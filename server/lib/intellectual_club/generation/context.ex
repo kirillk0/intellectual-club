@@ -48,6 +48,7 @@ defmodule IntellectualClub.Generation.Context do
     :timeout_ms,
     :context_length,
     :supports_image_input,
+    :fix_role_alteration,
     :messages,
     :request_payload,
     :chunk_delay_ms,
@@ -185,6 +186,8 @@ defmodule IntellectualClub.Generation.Context do
         context_length: configuration_context_length(llm_configuration),
         supports_image_input:
           bool_true?(llm_configuration && llm_configuration.supports_image_input),
+        fix_role_alteration:
+          bool_true?(llm_configuration && llm_configuration.fix_role_alteration),
         messages: request_snapshot.model_input,
         request_payload: request_payload,
         tools_payload: tools_payload,
@@ -275,6 +278,7 @@ defmodule IntellectualClub.Generation.Context do
               tools: tools_payload,
               supports_image_input: supports_image_input,
               provider_type: provider_type,
+              fix_role_alteration: false,
               cache_control_enabled: false
             })
 
@@ -308,6 +312,7 @@ defmodule IntellectualClub.Generation.Context do
               tools: tools_payload,
               supports_image_input: supports_image_input,
               provider_type: provider_type,
+              fix_role_alteration: bool_true?(Map.get(configuration, :fix_role_alteration)),
               cache_control_enabled: cache_control_enabled
             })
 
@@ -362,6 +367,10 @@ defmodule IntellectualClub.Generation.Context do
       timeout_ms: timeout_ms,
       context_length: configuration_context_length(chat.llm_configuration),
       supports_image_input: supports_image_input,
+      fix_role_alteration:
+        bool_true?(
+          chat.llm_configuration && Map.get(chat.llm_configuration, :fix_role_alteration)
+        ),
       messages: messages,
       request_payload: request_payload,
       tools_payload: tools_payload,

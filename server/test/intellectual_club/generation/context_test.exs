@@ -172,6 +172,70 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.messages == [%{"role" => "user", "content" => "Only history"}]
   end
 
+  test "passes fix role alteration from llm configuration into initial provider request" do
+    %{user: actor} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "OpenRouter role fix",
+          type: :openrouter_chat_completion,
+          base_url: "https://openrouter.ai/api/v1",
+          api_key: "provider-key"
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "openai/gpt-5-mini",
+          parameters: %{},
+          enabled: true,
+          timeout_seconds: 30,
+          fix_role_alteration: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Role fix chat",
+          llm_configuration_id: configuration.id,
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _assistant} =
+      Threads.add_message_to_end(chat, :assistant, "Synthetic first turn",
+        actor: actor,
+        llm_configuration_id: configuration.id
+      )
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.fix_role_alteration == true
+
+    assert context.request_payload["messages"] == [
+             %{"role" => "user", "content" => ""},
+             %{"role" => "assistant", "content" => "Synthetic first turn"},
+             %{"role" => "user", "content" => ""}
+           ]
+  end
+
   test "includes fixed driver functions in tools payload without discovery" do
     %{user: actor} = user_fixture()
 

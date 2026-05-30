@@ -58,6 +58,7 @@ defmodule IntellectualClub.Llm do
             :enabled,
             :context_length,
             :supports_image_input,
+            :fix_role_alteration,
             :can_edit,
             :shared_incoming,
             :shared_outgoing
@@ -75,6 +76,7 @@ defmodule IntellectualClub.Llm do
             :context_length,
             :supports_cache_control,
             :supports_image_input,
+            :fix_role_alteration,
             :created_at,
             :updated_at,
             :can_edit,

@@ -125,6 +125,12 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       default(false)
     end
 
+    attribute :fix_role_alteration, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -219,7 +225,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :timeout_seconds,
         :context_length,
         :supports_cache_control,
-        :supports_image_input
+        :supports_image_input,
+        :fix_role_alteration
       ])
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -288,7 +295,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
           timeout_seconds: source.timeout_seconds,
           context_length: source.context_length,
           supports_cache_control: source.supports_cache_control,
-          supports_image_input: source.supports_image_input
+          supports_image_input: source.supports_image_input,
+          fix_role_alteration: source.fix_role_alteration
         })
         |> Ash.Changeset.manage_relationship(
           :tag_bindings,
@@ -323,7 +331,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :timeout_seconds,
         :context_length,
         :supports_cache_control,
-        :supports_image_input
+        :supports_image_input,
+        :fix_role_alteration
       ])
 
       require_atomic?(false)

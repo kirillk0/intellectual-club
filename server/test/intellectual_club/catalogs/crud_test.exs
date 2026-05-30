@@ -338,6 +338,7 @@ defmodule IntellectualClub.Catalogs.CrudTest do
 
     assert config.timeout_seconds == 300
     assert is_nil(config.context_length)
+    assert config.fix_role_alteration == false
   end
 
   test "llm provider defaults to openrouter type" do

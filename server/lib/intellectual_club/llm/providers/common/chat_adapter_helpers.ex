@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
 
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
+  alias IntellectualClub.Llm.Providers.Common.RoleAlterationFix
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Generation.CacheControl
   alias IntellectualClub.Generation.RequestPayload
@@ -16,6 +17,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     provider_type = Map.get(opts, :provider_type)
     system_prompt = Map.get(opts, :system_prompt, "")
     cache_control_enabled = Map.get(opts, :cache_control_enabled, false)
+    fix_role_alteration = Map.get(opts, :fix_role_alteration, false)
 
     history_messages =
       ChatHistory.build_messages(history,
@@ -23,7 +25,11 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
         provider_type: provider_type
       )
 
-    messages = prepend_system_prompt(history_messages, system_prompt)
+    messages =
+      history_messages
+      |> prepend_system_prompt(system_prompt)
+      |> maybe_fix_role_alteration(fix_role_alteration)
+
     history_length = length(messages)
 
     if cache_control_enabled == true do
@@ -81,6 +87,12 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
       [%{"role" => "system", "content" => prompt} | messages]
     end
   end
+
+  defp maybe_fix_role_alteration(messages, true) when is_list(messages) do
+    RoleAlterationFix.fix_chat_messages(messages)
+  end
+
+  defp maybe_fix_role_alteration(messages, _fix_role_alteration), do: messages
 
   defp maybe_apply_cache_control(messages, opts) when is_list(messages) and is_map(opts) do
     cache_control_enabled = Map.get(opts, :cache_control_enabled, false)

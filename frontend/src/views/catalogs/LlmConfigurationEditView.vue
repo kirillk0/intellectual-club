@@ -145,6 +145,11 @@
             <input v-model="form.supports_image_input" type="checkbox" :disabled="sharedReadonly" />
             Supports image input
           </label>
+
+          <label style="display: flex; align-items: center; gap: 10px">
+            <input v-model="form.fix_role_alteration" type="checkbox" :disabled="sharedReadonly" />
+            Fix role alteration
+          </label>
         </div>
 
         <div v-else-if="configTab === 'parameters'" class="stack">
@@ -312,6 +317,7 @@ type ConfigurationForm = {
   context_length: number | null;
   supports_cache_control: boolean;
   supports_image_input: boolean;
+  fix_role_alteration: boolean;
   can_edit: boolean;
   shared_incoming: boolean;
   shared_outgoing: boolean;
@@ -368,6 +374,7 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
       typeof attrs.context_length === 'number' ? attrs.context_length : toIntId(attrs.context_length as any),
     supports_cache_control: Boolean(attrs.supports_cache_control),
     supports_image_input: Boolean(attrs.supports_image_input),
+    fix_role_alteration: Boolean(attrs.fix_role_alteration),
     can_edit: attrs.can_edit !== false,
     shared_incoming: Boolean(attrs.shared_incoming),
     shared_outgoing: Boolean(attrs.shared_outgoing),
@@ -472,6 +479,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: null,
     supports_cache_control: false,
     supports_image_input: false,
+    fix_role_alteration: false,
     can_edit: true,
     shared_incoming: false,
     shared_outgoing: false,
@@ -487,6 +495,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: form.context_length,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
+    fix_role_alteration: form.fix_role_alteration,
     ...(tagBindingsPayload.value === undefined ? {} : { tag_bindings: tagBindingsPayload.value }),
     ...(bindings.payload.value === undefined ? {} : { knowledge_block_bindings: bindings.payload.value }),
   }),
@@ -500,6 +509,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: form.context_length,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
+    fix_role_alteration: form.fix_role_alteration,
     can_edit: form.can_edit,
     shared_incoming: form.shared_incoming,
     shared_outgoing: form.shared_outgoing,

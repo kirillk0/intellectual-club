@@ -50,6 +50,29 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.history_length == 2
   end
 
+  test "openrouter provider fixes role alteration when requested" do
+    result =
+      OpenRouterChatCompletion.build_initial_request(%{
+        history: [
+          %{role: "assistant", content: "First"},
+          %{role: "assistant", content: "Second"}
+        ],
+        system_prompt: "System",
+        model_name: "openai/gpt-5-mini",
+        parameters: %{},
+        tools: [],
+        supports_image_input: false,
+        fix_role_alteration: true
+      })
+
+    assert result.raw_request["messages"] == [
+             %{"role" => "system", "content" => "System"},
+             %{"role" => "user", "content" => ""},
+             %{"role" => "assistant", "content" => "First\n\nSecond"},
+             %{"role" => "user", "content" => ""}
+           ]
+  end
+
   test "responses provider builds initial request and snapshot from canonical history" do
     result =
       Responses.build_initial_request(%{
@@ -82,6 +105,45 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.request_snapshot.model_input == result.raw_request["input"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
+  end
+
+  test "responses provider fixes role alteration when requested" do
+    result =
+      Responses.build_initial_request(%{
+        history: [
+          %{role: "assistant", content: "First"},
+          %{role: "assistant", content: "Second"}
+        ],
+        system_prompt: "System",
+        model_name: "gpt-5",
+        parameters: %{},
+        tools: [],
+        supports_image_input: false,
+        fix_role_alteration: true
+      })
+
+    assert result.raw_request["input"] == [
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => ""}]
+             },
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "content" => [
+                 %{"type" => "output_text", "text" => "First", "annotations" => []},
+                 %{"type" => "output_text", "text" => "\n\n", "annotations" => []},
+                 %{"type" => "output_text", "text" => "Second", "annotations" => []}
+               ]
+             },
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => ""}]
+             }
+           ]
   end
 
   test "anthropic provider builds initial messages request from canonical chat history" do
@@ -130,6 +192,31 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.request_snapshot.model_input == result.raw_request["messages"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
+  end
+
+  test "anthropic provider preserves its own merge behavior and uses empty user guards when requested" do
+    result =
+      AnthropicMessages.build_initial_request(%{
+        history: [
+          %{role: "assistant", content: "First"},
+          %{role: "assistant", content: "Second"}
+        ],
+        system_prompt: "System",
+        model_name: "claude-sonnet-4-20250514",
+        parameters: %{"max_tokens" => 200},
+        tools: [],
+        supports_image_input: false,
+        fix_role_alteration: true
+      })
+
+    assert result.raw_request["messages"] == [
+             %{"role" => "user", "content" => [%{"type" => "text", "text" => ""}]},
+             %{
+               "role" => "assistant",
+               "content" => [%{"type" => "text", "text" => "First\n\nSecond"}]
+             },
+             %{"role" => "user", "content" => [%{"type" => "text", "text" => ""}]}
+           ]
   end
 
   test "anthropic provider uses 32k max tokens by default" do

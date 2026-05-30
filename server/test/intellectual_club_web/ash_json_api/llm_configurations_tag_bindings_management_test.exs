@@ -38,6 +38,13 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     |> patch(path, body)
   end
 
+  defp json_api_post(conn, path, body) do
+    conn
+    |> put_req_header("accept", "application/vnd.api+json")
+    |> put_req_header("content-type", "application/vnd.api+json")
+    |> post(path, body)
+  end
+
   defp relationship_ids(%{"data" => %{"relationships" => relationships}}, rel_name) do
     case relationships |> Map.get(rel_name, %{}) |> Map.get("data") do
       data when is_list(data) ->
@@ -65,6 +72,76 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
   end
 
   defp ids_from_included(_resp, _type), do: []
+
+  test "POST GET and PATCH /api/ash/llm-configurations handle fix_role_alteration", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Provider role fix",
+          type: :demo,
+          auth_method: :api_key,
+          base_url: "http://localhost",
+          api_key: "test"
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    conn =
+      conn
+      |> recycle()
+      |> sign_in_conn(actor.username, password)
+
+    create_response =
+      conn
+      |> json_api_post("/api/ash/llm-configurations", %{
+        "data" => %{
+          "type" => "llm-configurations",
+          "attributes" => %{
+            "provider_id" => provider.id,
+            "model_name" => "role-fix-model",
+            "parameters" => %{},
+            "enabled" => true,
+            "timeout_seconds" => 300,
+            "fix_role_alteration" => true
+          }
+        }
+      })
+      |> json_response(201)
+
+    configuration_id = create_response["data"]["id"]
+
+    assert get_in(create_response, ["data", "attributes", "fix_role_alteration"]) == true
+
+    get_response =
+      conn
+      |> json_api_get("/api/ash/llm-configurations/#{configuration_id}")
+      |> json_response(200)
+
+    assert get_in(get_response, ["data", "attributes", "fix_role_alteration"]) == true
+
+    patch_response =
+      conn
+      |> json_api_patch("/api/ash/llm-configurations/#{configuration_id}", %{
+        "data" => %{
+          "type" => "llm-configurations",
+          "id" => configuration_id,
+          "attributes" => %{"fix_role_alteration" => false}
+        }
+      })
+      |> json_response(200)
+
+    assert get_in(patch_response, ["data", "attributes", "fix_role_alteration"]) == false
+
+    configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
+    assert configuration.fix_role_alteration == false
+  end
 
   test "GET /api/ash/llm-configurations/:id includes provider, tags, and knowledge blocks", %{
     conn: conn
