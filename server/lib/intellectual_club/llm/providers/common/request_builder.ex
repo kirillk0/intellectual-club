@@ -161,11 +161,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
 
   defp maybe_put_include(payload, include) when is_map(payload) and is_list(include) do
     include =
-      include
-      |> Enum.map(&to_string/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
+      payload
+      |> Map.get("include", Map.get(payload, :include, []))
+      |> normalize_include()
+      |> Kernel.++(normalize_include(include))
       |> Enum.uniq()
+
+    payload =
+      payload
+      |> Map.delete("include")
+      |> Map.delete(:include)
 
     if include == [] do
       payload
@@ -175,6 +180,15 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   end
 
   defp maybe_put_include(payload, _other), do: payload
+
+  defp normalize_include(include) when is_list(include) do
+    include
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_include(_include), do: []
 
   defp maybe_put_tools(payload, tools) when is_map(payload) and is_list(tools) do
     tools =
@@ -209,50 +223,174 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
     end
   end
 
-  defp maybe_put_responses_tools(payload, tools) when is_map(payload) and is_list(tools) do
-    normalized =
-      tools
-      |> Enum.filter(&is_map/1)
-      |> Enum.flat_map(fn tool ->
-        tool = Map.new(tool)
+  defp maybe_put_responses_tools(payload, tools) when is_map(payload) do
+    {payload, configured_tools} = pop_responses_tools(payload)
+    {requested_provider_tools, generated_tools} = split_requested_responses_tools(tools)
+    merged = merge_responses_tools(configured_tools ++ requested_provider_tools, generated_tools)
 
-        case {Map.get(tool, "type"), Map.get(tool, "function")} do
-          {"function", %{} = fn_spec} ->
-            name = fn_spec |> Map.get("name") |> to_string() |> String.trim()
-
-            if name == "" do
-              []
-            else
-              description = fn_spec |> Map.get("description") |> to_string()
-
-              parameters =
-                case Map.get(fn_spec, "parameters") do
-                  %{} = schema -> schema
-                  _ -> %{"type" => "object", "properties" => %{}}
-                end
-
-              [
-                %{
-                  "type" => "function",
-                  "name" => name,
-                  "description" => description,
-                  "parameters" => parameters,
-                  "strict" => nil
-                }
-              ]
-            end
-
-          _other ->
-            []
-        end
-      end)
-
-    if normalized == [] do
+    if merged == [] do
       payload
     else
-      Map.put(payload, "tools", normalized)
+      Map.put(payload, "tools", merged)
     end
   end
 
-  defp maybe_put_responses_tools(payload, _other), do: payload
+  defp pop_responses_tools(payload) when is_map(payload) do
+    tools =
+      payload
+      |> Map.get("tools", Map.get(payload, :tools, []))
+      |> normalize_configured_responses_tools()
+
+    payload =
+      payload
+      |> Map.delete("tools")
+      |> Map.delete(:tools)
+
+    {payload, tools}
+  end
+
+  defp normalize_configured_responses_tools(tools) when is_list(tools) do
+    tools
+    |> Enum.filter(&is_map/1)
+    |> Enum.flat_map(&normalize_configured_responses_tool/1)
+  end
+
+  defp normalize_configured_responses_tools(_tools), do: []
+
+  defp normalize_configured_responses_tool(tool) when is_map(tool) do
+    tool = stringify_keys(tool)
+    type = tool |> Map.get("type") |> to_string() |> String.trim()
+    name = tool |> Map.get("name") |> to_string() |> String.trim()
+
+    cond do
+      type == "" ->
+        []
+
+      type == "function" and name != "" ->
+        [Map.put(tool, "name", name)]
+
+      type == "function" and is_map(Map.get(tool, "function")) ->
+        normalize_generated_responses_function(Map.get(tool, "function"))
+
+      type == "function" ->
+        []
+
+      true ->
+        [Map.put(tool, "type", type)]
+    end
+  end
+
+  defp split_requested_responses_tools(tools) when is_list(tools) do
+    Enum.reduce(tools, {[], []}, fn
+      tool, {provider_acc, generated_acc} when is_map(tool) ->
+        tool = stringify_keys(tool)
+
+        case {Map.get(tool, "type"), Map.get(tool, "function")} do
+          {"function", %{} = fn_spec} ->
+            {provider_acc, generated_acc ++ normalize_generated_responses_function(fn_spec)}
+
+          _other ->
+            {provider_acc ++ normalize_configured_responses_tool(tool), generated_acc}
+        end
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp split_requested_responses_tools(_tools), do: {[], []}
+
+  defp normalize_generated_responses_function(fn_spec) when is_map(fn_spec) do
+    fn_spec = stringify_keys(fn_spec)
+    name = fn_spec |> Map.get("name") |> to_string() |> String.trim()
+
+    if name == "" do
+      []
+    else
+      description = fn_spec |> Map.get("description") |> to_string()
+
+      parameters =
+        case Map.get(fn_spec, "parameters") do
+          %{} = schema -> schema
+          _ -> %{"type" => "object", "properties" => %{}}
+        end
+
+      [
+        %{
+          "type" => "function",
+          "name" => name,
+          "description" => description,
+          "parameters" => parameters,
+          "strict" => nil
+        }
+      ]
+    end
+  end
+
+  defp normalize_generated_responses_function(_fn_spec), do: []
+
+  defp merge_responses_tools(configured_tools, generated_tools)
+       when is_list(configured_tools) and is_list(generated_tools) do
+    generated_function_names =
+      generated_tools
+      |> Enum.map(&responses_tool_function_name/1)
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    configured_tools =
+      Enum.reject(configured_tools, fn tool ->
+        function_name = responses_tool_function_name(tool)
+        function_name != "" and MapSet.member?(generated_function_names, function_name)
+      end)
+
+    {tools, _function_names, _provider_tools} =
+      Enum.reduce(configured_tools ++ generated_tools, {[], MapSet.new(), MapSet.new()}, fn
+        tool, {tools, function_names, provider_tools} when is_map(tool) ->
+          function_name = responses_tool_function_name(tool)
+
+          cond do
+            function_name != "" and MapSet.member?(function_names, function_name) ->
+              {tools, function_names, provider_tools}
+
+            function_name != "" ->
+              {tools ++ [tool], MapSet.put(function_names, function_name), provider_tools}
+
+            MapSet.member?(provider_tools, tool) ->
+              {tools, function_names, provider_tools}
+
+            true ->
+              {tools ++ [tool], function_names, MapSet.put(provider_tools, tool)}
+          end
+
+        _tool, acc ->
+          acc
+      end)
+
+    tools
+  end
+
+  defp responses_tool_function_name(%{} = tool) do
+    tool = stringify_keys(tool)
+    type = tool |> Map.get("type") |> to_string() |> String.trim()
+
+    if type == "function" do
+      tool
+      |> Map.get("name")
+      |> to_string()
+      |> String.trim()
+    else
+      ""
+    end
+  end
+
+  defp responses_tool_function_name(_tool), do: ""
+
+  defp stringify_keys(%{} = value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), stringify_keys(nested_value)}
+    end)
+  end
+
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(value), do: value
 end

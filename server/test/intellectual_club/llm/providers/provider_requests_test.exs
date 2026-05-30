@@ -107,6 +107,69 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.system_prompt == "Use tools when needed."
   end
 
+  test "responses provider merges configured hosted tools with generated function tools" do
+    hosted_tool = %{
+      "type" => "web_search",
+      "filters" => %{"allowed_domains" => ["openai.com"]},
+      "external_web_access" => false
+    }
+
+    result =
+      Responses.build_initial_request(%{
+        history: [%{role: "user", content: "Search"}],
+        system_prompt: "Use tools when needed.",
+        model_name: "gpt-5",
+        parameters: %{
+          "tools" => [
+            hosted_tool,
+            %{
+              "type" => "function",
+              "name" => "weather__get",
+              "description" => "Stale configured function",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"stale" => %{"type" => "string"}}
+              }
+            }
+          ],
+          "include" => ["web_search_call.action.sources"]
+        },
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Get weather",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"city" => %{"type" => "string"}}
+              }
+            }
+          }
+        ],
+        supports_image_input: false
+      })
+
+    assert result.raw_request["include"] == [
+             "web_search_call.action.sources",
+             "reasoning.encrypted_content"
+           ]
+
+    assert result.raw_request["tools"] == [
+             hosted_tool,
+             %{
+               "type" => "function",
+               "name" => "weather__get",
+               "description" => "Get weather",
+               "parameters" => %{
+                 "type" => "object",
+                 "properties" => %{"city" => %{"type" => "string"}}
+               },
+               "strict" => nil
+             }
+           ]
+  end
+
   test "responses provider fixes role alteration when requested" do
     result =
       Responses.build_initial_request(%{
@@ -462,6 +525,115 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})
+  end
+
+  test "responses provider preserves hosted tools when building followup requests" do
+    hosted_tool = %{
+      "type" => "web_search",
+      "filters" => %{"allowed_domains" => ["openai.com"]},
+      "external_web_access" => false
+    }
+
+    initial =
+      Responses.build_initial_request(%{
+        history: [%{role: "user", content: "Weather in Paris?"}],
+        system_prompt: "System",
+        model_name: "gpt-5",
+        parameters: %{
+          "tools" => [hosted_tool],
+          "include" => ["web_search_call.action.sources"]
+        },
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Old weather tool",
+              "parameters" => %{"type" => "object", "properties" => %{}}
+            }
+          }
+        ],
+        supports_image_input: false
+      })
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: initial.raw_request,
+        raw_response: %{
+          "output" => [
+            %{
+              "type" => "function_call",
+              "id" => "fc_1",
+              "call_id" => "call_1",
+              "name" => "weather__get",
+              "arguments" => ~s({"city":"Paris"})
+            }
+          ]
+        }
+      )
+
+    results = [
+      %{
+        call_id: "call_1",
+        name: "weather__get",
+        raw: %{
+          "id" => "fc_1",
+          "type" => "function_call",
+          "call_id" => "call_1",
+          "name" => "weather__get",
+          "arguments" => ~s({"city":"Paris"})
+        },
+        text: ~s({"temperature":18.5}),
+        result_raw: %{"temperature" => 18.5},
+        media_contents: [],
+        artifact_contents: []
+      }
+    ]
+
+    followup =
+      Responses.build_followup_request(%{
+        context: %{
+          provider_base_url: "https://api.openai.com/v1",
+          model_name: "gpt-5",
+          parameters: %{},
+          system_prompt: "System",
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: results,
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Current weather tool",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"city" => %{"type" => "string"}}
+              }
+            }
+          }
+        ]
+      })
+
+    assert followup.raw_request["include"] == [
+             "web_search_call.action.sources",
+             "reasoning.encrypted_content"
+           ]
+
+    assert followup.raw_request["tools"] == [
+             hosted_tool,
+             %{
+               "type" => "function",
+               "name" => "weather__get",
+               "description" => "Current weather tool",
+               "parameters" => %{
+                 "type" => "object",
+                 "properties" => %{"city" => %{"type" => "string"}}
+               },
+               "strict" => nil
+             }
+           ]
   end
 
   test "anthropic provider rebuilds followup request with tool result blocks" do
