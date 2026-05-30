@@ -20,8 +20,8 @@
             :selectedId="selectionMode === 'single' ? activeId : null"
             :selectedIds="draftSelectedTagIds"
             :disabledIds="disabledTagIds"
-            storageKey="ic.knowledge_tags.tree.open_state.v1"
-            :defaultExpandDepth="2"
+            storageKey="ic.knowledge_tags.tree.open_state.v3"
+            :defaultExpandDepth="1"
             @select="handleSelect"
           />
         </div>

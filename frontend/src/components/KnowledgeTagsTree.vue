@@ -121,8 +121,8 @@ const props = withDefaults(
     showNoTagsOption: false,
     noTagsSelected: false,
     noTagsLabel: 'No tags',
-    storageKey: 'ic.knowledge_tags.tree.open_state.v1',
-    defaultExpandDepth: 2,
+    storageKey: 'ic.knowledge_tags.tree.open_state.v3',
+    defaultExpandDepth: 1,
     indentPx: 14,
     expandAll: false,
     showItemActions: false,
@@ -278,7 +278,7 @@ function isOpen(id: number, depth: number) {
   const persisted = openState.value[String(id)];
   if (typeof persisted === 'boolean') return persisted;
 
-  return depth < (props.defaultExpandDepth ?? 0);
+  return depth + 1 <= (props.defaultExpandDepth ?? 0);
 }
 
 const rows = computed<TreeRow[]>(() => {

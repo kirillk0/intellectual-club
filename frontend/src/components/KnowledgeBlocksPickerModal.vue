@@ -34,8 +34,8 @@
                     :showNoTagsOption="true"
                     :noTagsSelected="selectedNoTags"
                     noTagsLabel="No tags"
-                    storageKey="ic.knowledge_tags.tree.open_state.v1"
-                    :defaultExpandDepth="2"
+                    storageKey="ic.knowledge_tags.tree.open_state.v3"
+                    :defaultExpandDepth="1"
                     @select="selectTag"
                     @select-no-tags="selectNoTags"
                   />
@@ -141,8 +141,8 @@
                 :showNoTagsOption="true"
                 :noTagsSelected="selectedNoTags"
                 noTagsLabel="No tags"
-                storageKey="ic.knowledge_tags.tree.open_state.v1"
-                :defaultExpandDepth="2"
+                storageKey="ic.knowledge_tags.tree.open_state.v3"
+                :defaultExpandDepth="1"
                 @select="selectTag"
                 @select-no-tags="selectNoTags"
               />

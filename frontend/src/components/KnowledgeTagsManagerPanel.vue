@@ -168,8 +168,8 @@ const props = withDefaults(
     hasActiveFilter: false,
     showNoTagsOption: true,
     noTagsLabel: 'No tags',
-    storageKey: 'ic.knowledge_tags.tree.open_state.v1',
-    defaultExpandDepth: 2,
+    storageKey: 'ic.knowledge_tags.tree.open_state.v3',
+    defaultExpandDepth: 1,
   }
 );
 
