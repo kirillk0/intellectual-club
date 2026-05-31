@@ -50,7 +50,7 @@
               <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
               <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
             </div>
-            <div class="catalog-row__subtitle">{{ blocksLabel(b.blocks_count) }}</div>
+            <div class="catalog-row__subtitle">{{ resourcesLabel(b) }}</div>
           </div>
           <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
           <div class="catalog-row__meta">
@@ -81,6 +81,7 @@ type BotRow = {
   name: string;
   image: ImageAsset | null;
   blocks_count: number;
+  tools_count: number;
   shared_incoming: boolean;
   shared_outgoing: boolean;
   created_at?: string | null;
@@ -144,6 +145,7 @@ function parseRow(resource: JsonApiResource): BotRow | null {
     name: String(attrs.name || '').trim(),
     image: parseImageAsset(attrs.image),
     blocks_count: parseCount(attrs.blocks_count),
+    tools_count: parseCount(attrs.tools_count),
     shared_incoming: Boolean(attrs.shared_incoming),
     shared_outgoing: Boolean(attrs.shared_outgoing),
     created_at: typeof attrs.created_at === 'string' ? attrs.created_at : null,
@@ -157,6 +159,15 @@ function blocksLabel(count: number) {
   return `${count} blocks`;
 }
 
+function toolsLabel(count: number) {
+  if (count === 1) return '1 tool';
+  return `${count} tools`;
+}
+
+function resourcesLabel(bot: BotRow) {
+  return `${blocksLabel(bot.blocks_count)} · ${toolsLabel(bot.tools_count)}`;
+}
+
 function toggleBotSortMode() {
   botSortModeValue.value = botSortModeValue.value === 'recent_activity' ? 'name' : 'recent_activity';
 }
@@ -165,7 +176,7 @@ const visibleBots = computed(() => {
   const q = normalize(search.value);
   const filtered = !q
     ? bots.value
-    : bots.value.filter((b) => normalize(`${b.name} ${blocksLabel(b.blocks_count)}`).includes(q));
+    : bots.value.filter((b) => normalize(`${b.name} ${resourcesLabel(b)}`).includes(q));
   return sortBotsByPreference(filtered, botSortMode.value);
 });
 
@@ -189,7 +200,7 @@ async function loadBots() {
     botsParams.set('sort', 'name');
     botsParams.set(
       'fields[bots]',
-      'name,blocks_count,sort_activity_at,image,shared_incoming,shared_outgoing'
+      'name,blocks_count,tools_count,sort_activity_at,image,shared_incoming,shared_outgoing'
     );
 
     const botsPayload = await jsonApiList('/api/ash/bots', botsParams);

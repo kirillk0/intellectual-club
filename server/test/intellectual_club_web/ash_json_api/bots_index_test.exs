@@ -7,23 +7,28 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsIndexTest do
 
   alias IntellectualClub.Bots.{Bot, BotKnowledgeBlock}
   alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
 
-  test "GET /api/ash/bots exposes blocks_count", %{conn: conn} do
+  test "GET /api/ash/bots exposes blocks_count and tools_count", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
 
-    bot_with_blocks = create_bot!(actor, "Bot with blocks")
+    bot_with_blocks = create_bot!(actor, "Bot with resources")
     empty_bot = create_bot!(actor, "Empty bot")
     block_one = create_block!(actor, "Block one")
     block_two = create_block!(actor, "Block two")
+    tool_one = create_tool!(actor, "Tool one", "tool_one")
+    tool_two = create_tool!(actor, "Tool two", "tool_two")
 
     create_binding!(actor, bot_with_blocks.id, block_one.id, 0)
     create_binding!(actor, bot_with_blocks.id, block_two.id, 1)
+    create_tool_binding!(actor, bot_with_blocks.id, tool_one.id, 0)
+    create_tool_binding!(actor, bot_with_blocks.id, tool_two.id, 1)
 
     response =
       conn
       |> recycle()
       |> sign_in_conn(actor.username, password)
-      |> json_api_get("/api/ash/bots?fields[bots]=name,blocks_count")
+      |> json_api_get("/api/ash/bots?fields[bots]=name,blocks_count,tools_count")
       |> json_response(200)
 
     bots_by_id =
@@ -32,7 +37,9 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsIndexTest do
       end)
 
     assert get_in(bots_by_id, ["#{bot_with_blocks.id}", "attributes", "blocks_count"]) == 2
+    assert get_in(bots_by_id, ["#{bot_with_blocks.id}", "attributes", "tools_count"]) == 2
     assert get_in(bots_by_id, ["#{empty_bot.id}", "attributes", "blocks_count"]) == 0
+    assert get_in(bots_by_id, ["#{empty_bot.id}", "attributes", "tools_count"]) == 0
   end
 
   defp json_api_get(conn, path) do
@@ -69,11 +76,37 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsIndexTest do
     |> Ash.create!(actor: actor)
   end
 
+  defp create_tool!(actor, name, alias_value) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "mcp-http",
+        name: name,
+        alias: alias_value,
+        config: %{"server_url" => "https://example.com/mcp"},
+        secrets: %{"bearer_token" => "secret"}
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
   defp create_binding!(actor, bot_id, block_id, sequence) do
     BotKnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
       %{bot_id: bot_id, knowledge_block_id: block_id, enabled: true, sequence: sequence},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_tool_binding!(actor, bot_id, tool_id, sequence) do
+    BotToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{bot_id: bot_id, tool_instance_id: tool_id, enabled: true, sequence: sequence},
       actor: actor
     )
     |> Ash.create!(actor: actor)

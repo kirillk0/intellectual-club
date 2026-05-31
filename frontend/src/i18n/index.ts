@@ -99,6 +99,21 @@ const translatePatternRu = (key: string): string | null => {
     return 'участников';
   };
 
+  const resourceLabel = (value: string, forms: [string, string, string]) => {
+    const number = Number(value);
+    const absolute = Math.abs(number);
+    const lastTwo = absolute % 100;
+    const lastOne = absolute % 10;
+
+    if (lastTwo >= 11 && lastTwo <= 14) return forms[2];
+    if (lastOne === 1) return forms[0];
+    if (lastOne >= 2 && lastOne <= 4) return forms[1];
+    return forms[2];
+  };
+
+  const blockLabel = (value: string) => resourceLabel(value, ['блок', 'блока', 'блоков']);
+  const toolLabel = (value: string) => resourceLabel(value, ['инструмент', 'инструмента', 'инструментов']);
+
   const patterns: Array<[RegExp, (match: RegExpExecArray) => string]> = [
     [/^Add \((\d+)\)$/u, (match) => `${ruMessages.Add ?? 'Add'} (${match[1]})`],
     [/^(Blocks|Tools|Config tags|Variables|Files|First messages) \((\d+)\)$/u, (match) =>
@@ -109,6 +124,10 @@ const translatePatternRu = (key: string): string | null => {
       `${match[1]}${ruMessages[match[2]] ?? match[2]} ${match[3]}`],
     [/^(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]} ${tokenLabel(match[1])}`],
     [/^(\d+) members?$/u, (match) => `${match[1]} ${memberLabel(match[1])}`],
+    [/^(\d+) blocks? · (\d+) tools?$/u, (match) =>
+      `${match[1]} ${blockLabel(match[1])} · ${match[2]} ${toolLabel(match[2])}`],
+    [/^(\d+) blocks?$/u, (match) => `${match[1]} ${blockLabel(match[1])}`],
+    [/^(\d+) tools?$/u, (match) => `${match[1]} ${toolLabel(match[1])}`],
     [/^Delete tag "(.+)"\?$/u, (match) => `Удалить тег "${match[1]}"?`],
     [/^Delete user "(.+)"\?$/u, (match) => `Удалить пользователя "${match[1]}"?`],
     [/^Delete group "(.+)"\?$/u, (match) => `Удалить группу "${match[1]}"?`],

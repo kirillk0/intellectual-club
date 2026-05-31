@@ -236,6 +236,12 @@ defmodule IntellectualClub.Bots.Bot do
       public?(true)
     end
 
+    calculate :tools_count,
+              :integer,
+              {IntellectualClub.Bots.Calculations.ToolsCount, []} do
+      public?(true)
+    end
+
     calculate :image,
               :map,
               {IntellectualClub.Files.Calculations.PublicImage, route_prefix: "/api/bff/bots"} do
