@@ -37,7 +37,8 @@ defmodule IntellectualClub.Generation.Worker do
     :step_sequence,
     :tool_round,
     :refusal_round,
-    :tools_disabled
+    :tools_disabled,
+    :tools_limited_to_handoff
   ]
 
   def start_link(opts) do
@@ -143,6 +144,7 @@ defmodule IntellectualClub.Generation.Worker do
       tool_round: 0,
       refusal_round: 0,
       tools_disabled: false,
+      tools_limited_to_handoff: false,
       runtime_step: runtime_step,
       stream_task: nil,
       retry_timer_ref: nil
@@ -353,7 +355,7 @@ defmodule IntellectualClub.Generation.Worker do
             soft_limit
           )
 
-        soft_refuse_tool_calls(state, tool_calls, refusal)
+        soft_refuse_tool_calls(state, tool_calls, refusal, allow_handoff?: context_limit_reached)
     end
   end
 
@@ -754,11 +756,22 @@ defmodule IntellectualClub.Generation.Worker do
   defp maybe_broadcast_text_delta(_state, _event), do: :ok
 
   defp current_tools_payload(state) do
-    if state.tools_disabled do
-      []
-    else
-      state.context.tools_payload || []
+    cond do
+      state.tools_disabled ->
+        []
+
+      state.tools_limited_to_handoff ->
+        handoff_tools_payload(state)
+
+      true ->
+        state.context.tools_payload || []
     end
+  end
+
+  defp handoff_tools_payload(state) do
+    state.context.tools_payload
+    |> List.wrap()
+    |> Enum.filter(&handoff_tool_payload?(state, &1))
   end
 
   defp max_tool_rounds(state) do
@@ -849,15 +862,81 @@ defmodule IntellectualClub.Generation.Worker do
     end)
   end
 
-  defp soft_refuse_tool_calls(state, tool_calls, refusal)
-       when is_list(tool_calls) and is_map(refusal) do
-    results = build_refusal_results(tool_calls, refusal)
+  defp handoff_tool_payload?(state, payload) when is_map(payload) do
+    name =
+      case map_get(payload, "function") do
+        %{} = function -> map_get(function, "name")
+        _other -> map_get(payload, "name")
+      end
 
-    handle_tool_results(state, results,
-      tool_round_delta: 0,
-      refusal_round_delta: 1,
-      disable_tools: true
-    )
+    handoff_tool_name?(state, name)
+  end
+
+  defp handoff_tool_payload?(_state, _payload), do: false
+
+  defp handoff_tool_call?(state, call) do
+    call
+    |> tool_call_to_map()
+    |> map_get("name")
+    |> then(&handoff_tool_name?(state, &1))
+  end
+
+  defp handoff_tool_name?(state, name) when is_binary(name) do
+    with {alias_value, "handoff"} <- split_tool_name(name),
+         %{} = tool_instance <- Map.get(state.context.tool_instances_by_alias || %{}, alias_value),
+         "native-agent-management" <- tool_instance_type(tool_instance) do
+      true
+    else
+      _other -> false
+    end
+  end
+
+  defp handoff_tool_name?(_state, _name), do: false
+
+  defp split_tool_name(name) when is_binary(name) do
+    case String.split(name, "__", parts: 2) do
+      [alias_value, function_name] when alias_value != "" and function_name != "" ->
+        {alias_value, function_name}
+
+      _other ->
+        nil
+    end
+  end
+
+  defp tool_instance_type(tool_instance) when is_map(tool_instance) do
+    tool_instance
+    |> map_get("type")
+    |> to_string()
+    |> String.trim()
+  end
+
+  defp tool_instance_type(_tool_instance), do: ""
+
+  defp soft_refuse_tool_calls(state, tool_calls, refusal, opts)
+       when is_list(tool_calls) and is_map(refusal) and is_list(opts) do
+    if Keyword.get(opts, :allow_handoff?, false) do
+      {handoff_calls, refused_calls} = Enum.split_with(tool_calls, &handoff_tool_call?(state, &1))
+      refusal_results = build_refusal_results(refused_calls, refusal)
+
+      if handoff_calls == [] do
+        handle_tool_results(state, refusal_results,
+          tool_round_delta: 0,
+          refusal_round_delta: 1,
+          handoff_only_tools?: true
+        )
+      else
+        state = start_tool_task(state, handoff_calls, refusal_results)
+        {:noreply, state}
+      end
+    else
+      results = build_refusal_results(tool_calls, refusal)
+
+      handle_tool_results(state, results,
+        tool_round_delta: 0,
+        refusal_round_delta: 1,
+        disable_tools: true
+      )
+    end
   end
 
   defp finalize_tool_loop_exhausted(state, max_tool_rounds) when is_integer(max_tool_rounds) do
@@ -870,6 +949,11 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp start_tool_task(state, tool_calls) when is_list(tool_calls) do
+    start_tool_task(state, tool_calls, [])
+  end
+
+  defp start_tool_task(state, tool_calls, prebuilt_results)
+       when is_list(tool_calls) and is_list(prebuilt_results) do
     tool_instances_by_alias = state.context.tool_instances_by_alias || %{}
     execution_context = tool_execution_context(state)
     message_id = state.context.message_id
@@ -884,7 +968,9 @@ defmodule IntellectualClub.Generation.Worker do
            tool_calls,
            tool_instances_by_alias,
            execution_context
-         )}
+         )
+         |> Kernel.++(prebuilt_results)
+         |> order_tool_results()}
       end)
 
     %{state | tool_task: task}
@@ -929,35 +1015,59 @@ defmodule IntellectualClub.Generation.Worker do
     end)
   end
 
+  defp order_tool_results(results) when is_list(results) do
+    Enum.sort_by(results, fn result ->
+      map = tool_call_to_map(result)
+      sequence = map_get(map, "sequence")
+      name = map_get(map, "name") || ""
+      {if(is_integer(sequence), do: sequence, else: 0), to_string(name)}
+    end)
+  end
+
   defp handle_tool_results(state, results) when is_list(results) do
     handle_tool_results(state, results, [])
   end
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
     tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
-    next_state = %{state | tools_disabled: tools_disabled}
+
+    tools_limited_to_handoff =
+      not tools_disabled and
+        (state.tools_limited_to_handoff or Keyword.get(opts, :handoff_only_tools?, false))
+
+    next_state = %{
+      state
+      | tools_disabled: tools_disabled,
+        tools_limited_to_handoff: tools_limited_to_handoff
+    }
 
     case safe_persist_value(state.context.message_id, :tool_results, fn ->
            maybe_persist_tool_results(state, results, opts)
            Persistence.load_step_for_followup!(state.runtime_step.id)
          end) do
       {:ok, persisted} ->
-        followup =
-          state.adapter.build_followup_request(%{
-            context: next_state.context,
-            runtime_step: persisted.runtime_step,
-            results: persisted.results,
-            tools: current_tools_payload(next_state)
-          })
+        case handoff_payload(persisted.results) do
+          %{} = payload ->
+            finalize_handoff_tool_step(next_state, payload)
 
-        case safe_persist(state.context.message_id, :step_done, fn ->
-               Persistence.mark_step_done!(state.runtime_step.id)
-             end) do
-          :ok ->
-            continue_after_tool_step(next_state, followup, opts)
+          nil ->
+            followup =
+              state.adapter.build_followup_request(%{
+                context: next_state.context,
+                runtime_step: persisted.runtime_step,
+                results: persisted.results,
+                tools: current_tools_payload(next_state)
+              })
 
-          {:error, reason} ->
-            finalize_error(state, "Failed to mark tool step done: #{inspect(reason)}", %{})
+            case safe_persist(state.context.message_id, :step_done, fn ->
+                   Persistence.mark_step_done!(state.runtime_step.id)
+                 end) do
+              :ok ->
+                continue_after_tool_step(next_state, followup, opts)
+
+              {:error, reason} ->
+                finalize_error(state, "Failed to mark tool step done: #{inspect(reason)}", %{})
+            end
         end
 
       {:error, reason} ->
@@ -980,6 +1090,75 @@ defmodule IntellectualClub.Generation.Worker do
       end)
     end
   end
+
+  defp finalize_handoff_tool_step(state, payload) when is_map(payload) do
+    case safe_persist(state.context.message_id, :handoff_done, fn ->
+           Persistence.mark_step_done!(state.runtime_step.id)
+
+           runtime_step =
+             state
+             |> synthetic_handoff_runtime_step(payload)
+             |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+           Persistence.persist_completed!(state.context.message_id, runtime_step)
+         end) do
+      :ok ->
+        broadcast(state, {:done, state.context.message_id})
+        {:stop, :normal, %{state | status: :done}}
+
+      {:error, reason} ->
+        finalize_error(state, "Failed to finalize handoff: #{inspect(reason)}", %{})
+    end
+  end
+
+  defp synthetic_handoff_runtime_step(state, payload) when is_map(payload) do
+    chat_id = map_get(payload, "chat_id")
+    url = map_get(payload, "url") || if(is_integer(chat_id), do: "/chats/#{chat_id}", else: nil)
+    label = if(is_integer(chat_id), do: "chat ##{chat_id}", else: "a new chat")
+
+    text =
+      if is_binary(url) and url != "" do
+        "Generation continued in [#{label}](#{url})."
+      else
+        "Generation continued in #{label}."
+      end
+
+    RuntimeTrace.new_step(
+      sequence: state.step_sequence + 1,
+      started_at: DateTime.utc_now(),
+      status: :done,
+      raw_request: %{"synthetic" => "handoff", "handoff" => payload},
+      raw_response: %{"synthetic" => "handoff", "handoff" => payload},
+      response_final: true
+    )
+    |> RuntimeTrace.apply_event({:ensure_item, "handoff", :answer, 1})
+    |> RuntimeTrace.apply_event({:set_text, "handoff", :answer, 1, text})
+  end
+
+  defp handoff_payload(results) when is_list(results) do
+    Enum.find_value(results, fn result ->
+      raw =
+        result
+        |> tool_call_to_map()
+        |> Map.get(:result_raw, Map.get(result, "result_raw", %{}))
+
+      handoff_payload_from_raw(raw)
+    end)
+  end
+
+  defp handoff_payload(_results), do: nil
+
+  defp handoff_payload_from_raw(%{"handoff" => %{} = payload}), do: payload
+  defp handoff_payload_from_raw(%{handoff: %{} = payload}), do: payload
+  defp handoff_payload_from_raw(_raw), do: nil
+
+  defp map_get(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> Map.get(map, key)
+  end
+
+  defp map_get(_map, _key), do: nil
 
   defp continue_after_tool_step(next_state, followup, opts) do
     {raw_request, step_id} = start_next_step_metadata(next_state, followup.raw_request)

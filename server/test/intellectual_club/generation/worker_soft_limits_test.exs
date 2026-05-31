@@ -311,6 +311,111 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
            end)
   end
 
+  test "responses api keeps handoff available after context soft limit refusal" do
+    tool_call = %{
+      "id" => "fc_1",
+      "type" => "function_call",
+      "call_id" => "call_web_1",
+      "name" => "web__read_url",
+      "arguments" => Jason.encode!(%{"url" => "https://example.com"})
+    }
+
+    refusal_text =
+      "[tool error] Context limit reached (7/10 > 5). " <>
+        "Please proceed to the final answer using the information already available."
+
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp-tool",
+               "object" => "response",
+               "model" => "test-responses-model",
+               "output" => [tool_call],
+               "usage" => %{
+                 "input_tokens" => 4,
+                 "output_tokens" => 3
+               }
+             }
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp-final",
+               "object" => "response",
+               "model" => "test-responses-model",
+               "output" => [
+                 %{
+                   "id" => "msg_1",
+                   "type" => "message",
+                   "role" => "assistant",
+                   "status" => "completed",
+                   "content" => [
+                     %{
+                       "type" => "output_text",
+                       "text" => "Use handoff if more work is needed.",
+                       "annotations" => []
+                     }
+                   ]
+                 }
+               ],
+               "usage" => %{
+                 "input_tokens" => 5,
+                 "output_tokens" => 4
+               }
+             }
+           }
+         ])}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, agent} = start_scripted_server!(scripts)
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :responses,
+        max_tool_rounds: 5,
+        context_length: 10,
+        context_soft_limit_percent: 50,
+        handoff_tool?: true
+      )
+
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Need a web lookup", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    message_id = context.message_id
+    assert_receive {:done, ^message_id}, 2_000
+
+    message =
+      wait_for_message!(message_id, actor, fn msg ->
+        msg.status == :done and length(msg.steps) == 2
+      end)
+
+    assert message.status == :done
+    assert message_answer_text(message) == "Use handoff if more work is needed."
+    assert refusal_text in tool_result_texts(message)
+
+    requests = Agent.get(agent, & &1.requests)
+    responses_requests = Map.get(requests, "/responses", [])
+    assert length(responses_requests) == 2
+
+    [first_request, second_request] = responses_requests
+    assert "web__read_url" in request_tool_names(first_request)
+    assert "agent_management__handoff" in request_tool_names(first_request)
+    assert request_tool_names(second_request) == ["agent_management__handoff"]
+  end
+
   defp start_scripted_server!(scripts) when is_map(scripts) do
     {:ok, agent} =
       start_supervised(
@@ -397,6 +502,8 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         %{
           type: "native-web-reader",
           name: "Web reader",
+          alias: "web",
+          description: "",
           config: %{},
           secrets: %{},
           max_output_tokens: 20_000
@@ -421,6 +528,40 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
       )
       |> Ash.create!()
 
+    if Keyword.get(opts, :handoff_tool?, false) do
+      handoff_tool_instance =
+        ToolInstance
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            type: "native-agent-management",
+            name: "Agent management",
+            alias: "agent_management",
+            description: "",
+            config: %{},
+            secrets: %{},
+            max_output_tokens: 20_000
+          },
+          actor: actor
+        )
+        |> Ash.create!()
+
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: bot.id,
+          tool_instance_id: handoff_tool_instance.id,
+          alias: "agent_management",
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 1
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+    end
+
     Chat
     |> Ash.Changeset.for_create(
       :create,
@@ -434,6 +575,17 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp request_tool_names(request) when is_map(request) do
+    request
+    |> Map.get("tools", [])
+    |> List.wrap()
+    |> Enum.map(fn tool ->
+      get_in(tool, ["function", "name"]) || tool["name"]
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort()
   end
 
   defp wait_for_message!(message_id, actor, predicate, timeout_ms \\ 2_000)

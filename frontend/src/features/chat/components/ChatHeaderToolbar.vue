@@ -86,6 +86,16 @@
             <button v-if="canEdit" class="menu-item" type="button" @click="emit('open-share')">
               Share…
             </button>
+            <button
+              v-if="canEdit"
+              class="menu-item"
+              type="button"
+              @click="emit('handoff')"
+              :disabled="handoffDisabled"
+              :title="handoffDisabled ? handoffDisabledTitle : undefined"
+            >
+              {{ handoffPending ? 'Handing off…' : 'Handoff' }}
+            </button>
             <div class="menu-divider" aria-hidden="true"></div>
             <div
               class="menu-item"
@@ -203,6 +213,8 @@ interface Props {
   creatingChat: boolean;
   deleting: boolean;
   canEdit: boolean;
+  handoffPending: boolean;
+  handoffDisabled: boolean;
   showMissingToolsBanner: boolean;
   missingRequiredPerUserToolAliases: string[];
   setMenuRef: (el: Element | null) => void;
@@ -228,6 +240,12 @@ const configSelectorTitle = computed(() => {
   return undefined;
 });
 
+const handoffDisabledTitle = computed(() => {
+  if (props.isGenerating) return 'Cannot handoff while generating or syncing configuration';
+  if (props.configSyncStatus === 'pending') return 'Cannot handoff while generating or syncing configuration';
+  return undefined;
+});
+
 const emit = defineEmits<{
   (e: 'update:selectedConfig', value: number | ''): void;
   (e: 'change-config'): void;
@@ -238,6 +256,7 @@ const emit = defineEmits<{
   (e: 'open-bot-modal'): void;
   (e: 'open-note-modal'): void;
   (e: 'open-share'): void;
+  (e: 'handoff'): void;
   (e: 'delete-chat'): void;
   (e: 'open-bot-tools'): void;
   (e: 'dismiss-missing-tools-banner'): void;

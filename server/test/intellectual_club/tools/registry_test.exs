@@ -14,6 +14,10 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert "native-artifact-reader" in Registry.list_types()
   end
 
+  test "lists native agent management tool type" do
+    assert "native-agent-management" in Registry.list_types()
+  end
+
   test "resolves legacy MCP HTTP tool type for existing data" do
     assert Registry.driver_for_type!("mcp_http") == McpHttp
   end
@@ -23,6 +27,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
     non_artifact_types = [
       "mcp-http",
+      "native-agent-management",
       "native-brave-search",
       "native-knowledge-library",
       "native-web-reader"
@@ -40,8 +45,23 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert by_type["ssh"] == true
     assert by_type["outlet"] == true
     assert by_type["mcp-http"] == false
+    assert by_type["native-agent-management"] == false
     assert by_type["native-brave-search"] == false
     assert by_type["native-knowledge-library"] == false
     assert by_type["native-web-reader"] == false
+  end
+
+  test "driver metadata exposes fixed handoff function" do
+    metadata = DriverMetadata.for_type("native-agent-management")
+
+    assert metadata["functions_mode"] == "fixed"
+    assert metadata["supports_discovery"] == false
+    assert metadata["supports_artifacts"] == false
+
+    assert %{"parameters_schema" => schema} =
+             Enum.find(metadata["fixed_functions"], &(&1["name"] == "handoff"))
+
+    assert schema["required"] == ["summary"]
+    assert schema["properties"]["summary"]["type"] == "string"
   end
 end

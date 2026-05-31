@@ -60,6 +60,7 @@
                 :title="chatLabel(c)"
                 :config-label="c.llm_configuration_label || null"
                 :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
+                :secondary-meta="relationMeta(c)"
                 :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
                 :preview-role="!hasChatSearch ? c.first_message_role : null"
                 :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
@@ -77,6 +78,10 @@
                   </span>
                   <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
                     {{ matchBadgeLabel(c.match_type) }}
+                  </span>
+                  <span v-if="c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
+                  <span v-if="Number(c.child_handoff_count || 0) > 0" class="badge">
+                    {{ continuationCountLabel(c.child_handoff_count || 0) }}
                   </span>
                 </template>
               </ChatListRow>
@@ -162,6 +167,7 @@ import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { parseImageAsset } from '@/features/media/image';
+import { translate } from '@/i18n';
 import type { Bot, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -174,6 +180,10 @@ type ChatSummary = {
   bot_name: string;
   llm_configuration_label?: string | null;
   active_generation_message_id?: number | null;
+  parent_chat_id?: number | null;
+  parent_message_id?: number | null;
+  parent_relation_kind?: string | null;
+  child_handoff_count?: number | null;
   created_at: string | null;
   last_activity_at: string | null;
   message_count?: number | null;
@@ -453,6 +463,18 @@ function chatLabel(chat: ChatSummary) {
 function generationStateForChat(chat: ChatSummary): GenerationState | null {
   if (chat.active_generation_message_id) return 'generating';
   return generationCompleteChatIds.value.has(chat.id) ? 'done' : null;
+}
+
+function continuationCountLabel(count: number) {
+  return count === 1 ? translate('1 continuation') : translate('{count} continuations', { count });
+}
+
+function relationMeta(chat: ChatSummary) {
+  const count = Number(chat.child_handoff_count || 0);
+  const parts: string[] = [];
+  if (chat.parent_relation_kind === 'handoff') parts.push('Continuation');
+  if (count > 0) parts.push(continuationCountLabel(count));
+  return parts.length ? parts.join(' · ') : null;
 }
 
 function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {

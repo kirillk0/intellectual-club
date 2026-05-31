@@ -26,6 +26,8 @@ import type {
   Bot,
   Chat,
   ChatBranchMessage,
+  ChatRelationSummary,
+  ChatRelations,
   Group,
   KnowledgeBlock,
   LlmConfiguration,
@@ -48,6 +50,12 @@ const CHAT_IDLE_POLL_DELAY_MS = 30_000;
 const CHAT_IDLE_POLL_RETRY_DELAY_MS = 30_000;
 const CHAT_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
+const emptyChatRelations = (): ChatRelations => ({
+  parent: null,
+  children_by_message_id: {},
+  children_without_message: [],
+});
+
 export function useChatViewModel() {
   const route = useRoute();
   const router = useRouter();
@@ -66,6 +74,7 @@ export function useChatViewModel() {
   const canEdit = computed(() => chat.value?.can_edit !== false);
   const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
   const branch = ref<ChatBranchMessage[]>([]);
+  const relations = ref<ChatRelations>(emptyChatRelations());
   const counters = ref<Counters>({
     prompt_token_count: 0,
     history_token_count: 0,
@@ -93,6 +102,13 @@ export function useChatViewModel() {
   const cancelingGenerationId = ref<number | null>(null);
   const chatIdleRevision = ref<string | null>(null);
   const continuingConversation = ref(false);
+  const handoffPending = ref(false);
+  const parentRelation = computed(() => relations.value.parent || null);
+  const fallbackChildRelations = computed(() => relations.value.children_without_message || []);
+  const childRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] => {
+    if (!messageId) return [];
+    return relations.value.children_by_message_id?.[String(messageId)] || [];
+  };
 
   const shareModalOpen = ref(false);
   const shareGroups = ref<Group[]>([]);
@@ -143,6 +159,13 @@ export function useChatViewModel() {
     reloadChat: () => loadChat({ mode: 'soft' }),
     refreshPromptContext: () => refreshPromptContextFromServer(),
   });
+  const handoffDisabled = computed(
+    () =>
+      !canEdit.value ||
+      Boolean(activeGenerationId.value) ||
+      headerControls.isConfigSyncPending.value ||
+      handoffPending.value
+  );
   const chatDocumentTitle = computed(() => {
     if (!chat.value || chatUnavailable.value) return 'Chat';
     return headerControls.chatFullTitle.value || 'Chat';
@@ -293,6 +316,7 @@ export function useChatViewModel() {
     chat.value = payload.chat;
     chatNote.value = payload.chat?.note || '';
     branch.value = payload.branch || [];
+    relations.value = payload.relations || emptyChatRelations();
     if (settingsPayload) applySettingsState(settingsPayload);
     chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
@@ -310,6 +334,7 @@ export function useChatViewModel() {
     } catch (error) {
       chat.value = null;
       branch.value = [];
+      relations.value = emptyChatRelations();
       chatIdleRevision.value = null;
       if (isHttpError(error) && (error.status === 403 || error.status === 404)) {
         chatUnavailable.value = true;
@@ -525,6 +550,27 @@ export function useChatViewModel() {
     }
   };
 
+  const handoffChat = async () => {
+    if (!chatId.value || handoffDisabled.value) return;
+    handoffPending.value = true;
+    ui.closeMenu();
+
+    try {
+      const payload = await api.post<{ chat: Chat; relation?: ChatRelationSummary }>(
+        `/api/bff/chats/${chatId.value}/handoff`,
+        {}
+      );
+      const nextId = payload.chat?.id;
+      if (!nextId) throw new Error('Missing chat id');
+      await router.push(`/chats/${nextId}`);
+    } catch (error) {
+      console.error(error);
+      window.alert(getApiErrorMessage(error, 'Failed to handoff chat.'));
+    } finally {
+      handoffPending.value = false;
+    }
+  };
+
   const backToChats = async () => {
     await router.push('/chats');
   };
@@ -614,6 +660,9 @@ export function useChatViewModel() {
     canEdit,
     sharedReadonly,
     branch,
+    parentRelation,
+    fallbackChildRelations,
+    childRelationsForMessage,
     counters,
     bots,
     llmConfigurations,
@@ -667,6 +716,9 @@ export function useChatViewModel() {
     saveShareGroups,
     continuingConversation,
     continueConversation,
+    handoffPending,
+    handoffDisabled,
+    handoffChat,
     backToChats,
     closeOverlays: ui.closeOverlays,
     promptTokenCount: contextPanel.promptTokenCount,

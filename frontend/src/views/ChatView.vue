@@ -37,6 +37,8 @@
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
         :can-edit="vm.canEdit"
+        :handoff-pending="vm.handoffPending"
+        :handoff-disabled="vm.handoffDisabled"
         :show-missing-tools-banner="vm.showMissingToolsBanner"
         :missing-required-per-user-tool-aliases="vm.missingRequiredPerUserToolAliases"
         :set-menu-ref="vm.setMenuRef"
@@ -51,6 +53,7 @@
         @open-bot-modal="vm.openBotModal"
         @open-note-modal="vm.openNoteModal"
         @open-share="vm.openShareModal"
+        @handoff="vm.handoffChat"
         @delete-chat="vm.removeChat"
         @open-bot-tools="vm.openBotTools"
         @dismiss-missing-tools-banner="vm.dismissMissingToolsBanner"
@@ -109,44 +112,94 @@
 
         <section class="card chat-window" :style="getChatWindowGridStyle()" :ref="chatWindowRefEl">
           <div class="message-list">
-            <ChatMessageBubble
-              v-for="(msg, idx) in vm.branch"
-              :key="msg.id ?? idx"
-              :message="msg"
-              :index="idx"
-              :meta-label="vm.messageMetaLabel(msg) || '—'"
-              :copied="vm.copiedMessageId === msg.id"
-              :retrying="vm.retryingMessageId === msg.id"
-              :bookmarking="vm.isBookmarkingMessage(msg.id)"
-              :readonly="vm.sharedReadonly"
-              :branching-assistant-id="vm.branchingAssistantId"
-              :working-open="vm.isWorkingOpen(msg.id)"
-              :working-state="vm.workingStateFor(msg.id)"
-              :can-delete="vm.canDeleteMessage(msg, idx)"
-              :delete-title="vm.deleteMessageTitle(msg, idx)"
-              :register-ref="(el) => vm.setMessageRef(msg.id, el as HTMLElement | null)"
-              @toggle-working="vm.toggleWorking(msg.id)"
-              @working-step-select="(stepId) => vm.selectWorkingStep(msg.id, stepId)"
-              @copy="vm.copyMessage(msg)"
-              @toggle-bookmark="vm.toggleBookmark(msg)"
-              @edit="vm.startEdit(msg)"
-              @branch="vm.startBranch(msg)"
-              @retry="vm.retryLastStep(msg)"
-              @delete="vm.confirmAndDeleteMessage(msg, idx)"
-              @switch-branch="(direction) => vm.switchBranchHandler(msg.id!, direction)"
-              @step-info="
-                (step) =>
-                  msg.id &&
-                  vm.openStepDetails({
-                    messageId: msg.id,
-                    messageStatus: msg.status,
-                    step,
-                    closed: msg.status !== 'generating' || Boolean(step.response_final),
-                  })
-              "
-              @content-open="vm.openContentFull"
-              @attachment-open="vm.openAttachmentPreview"
-            />
+            <RouterLink
+              v-if="vm.parentRelation"
+              class="chat-relation-banner chat-relation-banner--parent"
+              :to="`/chats/${vm.parentRelation.chat_id}`"
+            >
+              <span>Continuation of</span>
+              <strong>{{ relationTitle(vm.parentRelation) }}</strong>
+            </RouterLink>
+
+            <template v-for="(msg, idx) in vm.branch" :key="msg.id ?? idx">
+              <ChatMessageBubble
+                :message="msg"
+                :index="idx"
+                :meta-label="vm.messageMetaLabel(msg) || '—'"
+                :copied="vm.copiedMessageId === msg.id"
+                :retrying="vm.retryingMessageId === msg.id"
+                :bookmarking="vm.isBookmarkingMessage(msg.id)"
+                :readonly="vm.sharedReadonly"
+                :branching-assistant-id="vm.branchingAssistantId"
+                :working-open="vm.isWorkingOpen(msg.id)"
+                :working-state="vm.workingStateFor(msg.id)"
+                :can-delete="vm.canDeleteMessage(msg, idx)"
+                :delete-title="vm.deleteMessageTitle(msg, idx)"
+                :register-ref="(el) => vm.setMessageRef(msg.id, el as HTMLElement | null)"
+                @toggle-working="vm.toggleWorking(msg.id)"
+                @working-step-select="(stepId) => vm.selectWorkingStep(msg.id, stepId)"
+                @copy="vm.copyMessage(msg)"
+                @toggle-bookmark="vm.toggleBookmark(msg)"
+                @edit="vm.startEdit(msg)"
+                @branch="vm.startBranch(msg)"
+                @retry="vm.retryLastStep(msg)"
+                @delete="vm.confirmAndDeleteMessage(msg, idx)"
+                @switch-branch="(direction) => vm.switchBranchHandler(msg.id!, direction)"
+                @step-info="
+                  (step) =>
+                    msg.id &&
+                    vm.openStepDetails({
+                      messageId: msg.id,
+                      messageStatus: msg.status,
+                      step,
+                      closed: msg.status !== 'generating' || Boolean(step.response_final),
+                    })
+                "
+                @content-open="vm.openContentFull"
+                @attachment-open="vm.openAttachmentPreview"
+              />
+              <RouterLink
+                v-for="relation in vm.childRelationsForMessage(msg.id)"
+                :key="`handoff-${msg.id}-${relation.chat_id}`"
+                class="chat-relation-banner chat-relation-banner--child"
+                :to="`/chats/${relation.chat_id}`"
+              >
+                <span>Continued in</span>
+                <strong>{{ relationTitle(relation) }}</strong>
+              </RouterLink>
+              <div
+                v-if="vm.handoffPending && idx === vm.branch.length - 1"
+                :ref="setHandoffPendingBannerRef"
+                class="chat-relation-banner chat-relation-banner--child chat-relation-banner--pending"
+                role="status"
+                aria-live="polite"
+              >
+                <span class="chat-relation-banner__spinner" aria-hidden="true"></span>
+                <strong>Creating continuation…</strong>
+              </div>
+            </template>
+
+            <div v-if="vm.fallbackChildRelations.length" class="chat-relation-fallback">
+              <RouterLink
+                v-for="relation in vm.fallbackChildRelations"
+                :key="`handoff-fallback-${relation.chat_id}`"
+                class="chat-relation-banner chat-relation-banner--child"
+                :to="`/chats/${relation.chat_id}`"
+              >
+                <span>Continued in</span>
+                <strong>{{ relationTitle(relation) }}</strong>
+              </RouterLink>
+            </div>
+            <div
+              v-if="vm.handoffPending && !vm.branch.length"
+              :ref="setHandoffPendingBannerRef"
+              class="chat-relation-banner chat-relation-banner--child chat-relation-banner--pending"
+              role="status"
+              aria-live="polite"
+            >
+              <span class="chat-relation-banner__spinner" aria-hidden="true"></span>
+              <strong>Creating continuation…</strong>
+            </div>
           </div>
           <div v-if="vm.sharedReadonly" class="chat-readonly-panel">
             <div>
@@ -471,7 +524,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, Teleport } from 'vue';
+import { nextTick, reactive, ref, Teleport, watch } from 'vue';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -497,6 +550,7 @@ import {
   pendingFileProgressPercent,
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
+import type { ChatRelationSummary } from '@/types/api';
 
 const vm = reactive(useChatViewModel());
 
@@ -511,6 +565,21 @@ const getLibraryGridStyle = (): Record<string, string> =>
 const chatWindowRefEl = (el: Element | null) => {
   vm.chatWindowRef = el as HTMLElement | null;
 };
+
+const handoffPendingBannerRef = ref<HTMLElement | null>(null);
+
+const setHandoffPendingBannerRef = (el: Element | null) => {
+  handoffPendingBannerRef.value = el as HTMLElement | null;
+};
+
+watch(
+  () => vm.handoffPending,
+  async (pending) => {
+    if (!pending) return;
+    await nextTick();
+    handoffPendingBannerRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+);
 
 const handleContextSwitchBranchTarget = (messageId: number, targetId: number) => {
   if (vm.sharedReadonly) return;
@@ -532,6 +601,9 @@ const handleAttachInputChange = (event: Event) => {
 const formatPendingFileSize = (size: number) => formatFileBytes(size);
 const describePendingFileStatus = describePendingFileUploadStatus;
 const pendingFileProgress = pendingFileProgressPercent;
+
+const relationTitle = (relation: ChatRelationSummary) =>
+  String(relation.note || relation.title || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
 
 const handleDragEnter = () => {
   if (!vm.canAttachFiles) return;
@@ -656,6 +728,80 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 .chat-page .chat-readonly-panel p {
   margin: 3px 0 0;
+}
+
+.chat-page .chat-relation-banner {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 8px;
+  padding: 8px 10px;
+  border: 1px solid #dbe4ee;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #1f2937;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.chat-page .chat-relation-banner:hover {
+  border-color: #b8c9dd;
+  background: #f3f7fc;
+}
+
+.chat-page .chat-relation-banner span {
+  flex: 0 0 auto;
+  color: #6b7280;
+}
+
+.chat-page .chat-relation-banner strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.chat-page .chat-relation-banner--parent {
+  margin-bottom: 6px;
+}
+
+.chat-page .chat-relation-banner--child {
+  margin-top: -4px;
+  margin-bottom: 6px;
+}
+
+.chat-page .chat-relation-banner--pending {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.chat-page .chat-relation-banner--pending:hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.chat-page .chat-relation-banner__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 999px;
+  animation: chat-relation-spin 0.8s linear infinite;
+}
+
+.chat-page .chat-relation-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@keyframes chat-relation-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .chat-unavailable {

@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Continuation
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
@@ -70,6 +71,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         load_active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
 
       sidebar_stats = ListingStats.sidebar(actor)
+      child_handoff_counts = child_handoff_counts(Enum.map(chats, & &1.id), actor)
 
       payload =
         Enum.map(chats, fn chat ->
@@ -79,7 +81,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
           {first_message_preview, first_message_role} =
             Map.get(first_message_previews, chat.id, {nil, nil})
 
-          Serializer.chat_summary(chat, activity_at: activity_at)
+          Serializer.chat_summary(chat,
+            activity_at: activity_at,
+            child_handoff_count: Map.get(child_handoff_counts, chat.id, 0)
+          )
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
@@ -586,6 +591,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       json(conn, %{
         chat: Serializer.chat_detail(chat),
         branch: serialize_branch(messages, branch_meta_by_id, actor),
+        relations: chat_relations(chat, messages, actor),
         active_generation_message_id: generating_message_id,
         idle_revision: chat_idle_revision(chat)
       })
@@ -689,6 +695,23 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
          {:ok, chat_id} <- parse_resource_id(id),
          {:ok, chat} <- Continuation.continue_chat(chat_id, actor) do
       json(conn, %{chat: Serializer.chat_detail(chat)})
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
+  def handoff(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         {:ok, %{chat: chat}} <- Handoff.manual_handoff(chat_id, actor) do
+      json(conn, %{
+        chat: Serializer.chat_detail(chat),
+        relation: Serializer.chat_relation_summary(chat)
+      })
     else
       {:error, %Plug.Conn{} = conn} ->
         conn
@@ -1055,6 +1078,35 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
+  defp child_handoff_counts(chat_ids, actor) when is_list(chat_ids) do
+    ids =
+      chat_ids
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+
+    if ids == [] do
+      %{}
+    else
+      relation_kind = Handoff.relation_kind()
+
+      Chat
+      |> Ash.Query.filter(parent_chat_id in ^ids and parent_relation_kind == ^relation_kind)
+      |> Ash.Query.select([:id, :parent_chat_id])
+      |> Ash.read(actor: actor)
+      |> case do
+        {:ok, children} ->
+          Enum.reduce(children, %{}, fn child, acc ->
+            Map.update(acc, child.parent_chat_id, 1, &(&1 + 1))
+          end)
+
+        _other ->
+          %{}
+      end
+    end
+  end
+
+  defp child_handoff_counts(_chat_ids, _actor), do: %{}
+
   defp read_chat_list_page(actor, bot_filter, pagination, loads) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
@@ -1239,6 +1291,76 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
   defp serialize_branch(messages, branch_meta_by_id, actor) do
     ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
+  end
+
+  defp chat_relations(%Chat{} = chat, messages, actor) when is_list(messages) do
+    active_message_ids = MapSet.new(messages, & &1.id)
+    children = load_child_handoff_chats(chat.id, actor)
+
+    {children_by_message_id, children_without_message} =
+      Enum.reduce(children, {%{}, []}, fn child, {by_message_id, without_message} ->
+        summary = Serializer.chat_relation_summary(child)
+        message_id = child.parent_message_id
+
+        if is_integer(message_id) and MapSet.member?(active_message_ids, message_id) do
+          key = Integer.to_string(message_id)
+          {Map.update(by_message_id, key, [summary], &[summary | &1]), without_message}
+        else
+          {by_message_id, [summary | without_message]}
+        end
+      end)
+
+    children_by_message_id =
+      Map.new(children_by_message_id, fn {message_id, summaries} ->
+        {message_id, Enum.reverse(summaries)}
+      end)
+
+    %{
+      parent: load_parent_relation(chat, actor),
+      children_by_message_id: children_by_message_id,
+      children_without_message: Enum.reverse(children_without_message)
+    }
+  end
+
+  defp load_parent_relation(%Chat{parent_chat_id: parent_chat_id} = chat, actor)
+       when is_integer(parent_chat_id) do
+    Chat
+    |> Ash.Query.filter(id == ^parent_chat_id)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load(chat_relation_load(), strict?: true)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, [%Chat{} = parent]} ->
+        Serializer.chat_relation_summary(parent,
+          kind: chat.parent_relation_kind,
+          message_id: chat.parent_message_id
+        )
+
+      _other ->
+        nil
+    end
+  end
+
+  defp load_parent_relation(_chat, _actor), do: nil
+
+  defp load_child_handoff_chats(chat_id, actor) when is_integer(chat_id) do
+    relation_kind = Handoff.relation_kind()
+
+    Chat
+    |> Ash.Query.filter(parent_chat_id == ^chat_id and parent_relation_kind == ^relation_kind)
+    |> Ash.Query.sort(created_at: :asc, id: :asc)
+    |> Ash.Query.load(chat_relation_load(), strict?: true)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, children} when is_list(children) -> children
+      _other -> []
+    end
+  end
+
+  defp load_child_handoff_chats(_chat_id, _actor), do: []
+
+  defp chat_relation_load do
+    [:bot, :last_message]
   end
 
   defp load_chat_blocks(chat_id, actor) do
@@ -1483,6 +1605,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: Exception.message(error)})
+  end
+
+  defp render_access_error(conn, error) when is_binary(error) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: error})
   end
 
   defp render_access_error(conn, error) do

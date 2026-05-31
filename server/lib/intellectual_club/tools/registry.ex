@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.Registry do
   """
 
   alias IntellectualClub.Tools.Drivers.McpHttp
+  alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.Drivers.NativeArtifactReader
   alias IntellectualClub.Tools.Drivers.NativeBraveSearch
   alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
@@ -18,6 +19,7 @@ defmodule IntellectualClub.Tools.Registry do
     case String.trim(tool_type) do
       "mcp-http" -> McpHttp
       "mcp_http" -> McpHttp
+      "native-agent-management" -> NativeAgentManagement
       "native-artifact-reader" -> NativeArtifactReader
       "native-brave-search" -> NativeBraveSearch
       "native-knowledge-library" -> NativeKnowledgeLibrary
@@ -49,6 +51,7 @@ defmodule IntellectualClub.Tools.Registry do
   def list_types do
     [
       "mcp-http",
+      "native-agent-management",
       "native-artifact-reader",
       "native-brave-search",
       "native-knowledge-library",

@@ -5,6 +5,7 @@ import type {
   ChatMessageStep,
   ChatToolBinding,
   ChatVariable,
+  ChatRelations,
   Bot,
   KnowledgeBlock,
   LlmConfiguration,
@@ -41,6 +42,7 @@ export type PromptBlock = {
 export type ChatStatePayload = {
   chat: Chat;
   branch: ChatBranchMessage[];
+  relations?: ChatRelations;
   active_generation_message_id: number | null;
   idle_revision?: string | null;
 };

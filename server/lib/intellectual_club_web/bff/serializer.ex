@@ -167,27 +167,19 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   def chat_summary(%Chat{} = chat, opts \\ []) do
-    bot_name =
-      case Map.get(chat, :bot) do
-        %{name: name} when is_binary(name) and name != "" -> name
-        _ -> "No bot"
-      end
-
-    llm_configuration_label =
-      case Map.get(chat, :llm_configuration) do
-        %LlmConfiguration{} = configuration -> configuration_display_label(configuration)
-        _ -> nil
-      end
-
     %{
       id: chat.id,
       title: chat.title,
       note: chat.note,
       bot_id: chat.bot_id,
-      bot_name: bot_name,
+      bot_name: chat_bot_name(chat),
       llm_configuration_id: chat.llm_configuration_id,
-      llm_configuration_label: llm_configuration_label,
+      llm_configuration_label: chat_llm_configuration_label(chat),
       active_generation_message_id: active_generation_message_id(chat),
+      parent_chat_id: chat.parent_chat_id,
+      parent_message_id: chat.parent_message_id,
+      parent_relation_kind: relation_kind_string(chat.parent_relation_kind),
+      child_handoff_count: Keyword.get(opts, :child_handoff_count, 0),
       can_edit: loaded_value(Map.get(chat, :can_edit)),
       shared_incoming: loaded_value(Map.get(chat, :shared_incoming)),
       shared_outgoing: loaded_value(Map.get(chat, :shared_outgoing)),
@@ -227,9 +219,29 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       bot_id: chat.bot_id,
       llm_configuration_id: chat.llm_configuration_id,
       variables: variable_entries_from_map(chat.variables || %{}),
+      parent_chat_id: chat.parent_chat_id,
+      parent_message_id: chat.parent_message_id,
+      parent_relation_kind: relation_kind_string(chat.parent_relation_kind),
       can_edit: loaded_value(Map.get(chat, :can_edit)),
       shared_incoming: loaded_value(Map.get(chat, :shared_incoming)),
       shared_outgoing: loaded_value(Map.get(chat, :shared_outgoing)),
+      created_at: datetime_iso(chat.created_at),
+      updated_at: datetime_iso(chat.updated_at)
+    }
+  end
+
+  def chat_relation_summary(%Chat{} = chat, opts \\ []) do
+    %{
+      chat_id: chat.id,
+      message_id: Keyword.get(opts, :message_id, chat.parent_message_id),
+      parent_chat_id: Keyword.get(opts, :parent_chat_id, chat.parent_chat_id),
+      parent_message_id: Keyword.get(opts, :parent_message_id, chat.parent_message_id),
+      kind: relation_kind_string(Keyword.get(opts, :kind, chat.parent_relation_kind)),
+      title: chat.title,
+      note: chat.note,
+      bot_id: chat.bot_id,
+      bot_name: chat_bot_name(chat),
+      active_generation_message_id: active_generation_message_id(chat),
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at)
     }
@@ -611,6 +623,24 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       _ -> nil
     end
   end
+
+  defp chat_bot_name(%Chat{} = chat) do
+    case Map.get(chat, :bot) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _ -> "No bot"
+    end
+  end
+
+  defp chat_llm_configuration_label(%Chat{} = chat) do
+    case Map.get(chat, :llm_configuration) do
+      %LlmConfiguration{} = configuration -> configuration_display_label(configuration)
+      _ -> nil
+    end
+  end
+
+  defp relation_kind_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp relation_kind_string(value) when is_binary(value), do: value
+  defp relation_kind_string(_value), do: nil
 
   defp latest_step_summary([]), do: nil
 

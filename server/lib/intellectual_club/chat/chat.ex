@@ -90,6 +90,12 @@ defmodule IntellectualClub.Chat.Chat do
       default(%{})
     end
 
+    attribute :parent_relation_kind, :atom do
+      allow_nil?(true)
+      public?(true)
+      constraints(one_of: [:handoff])
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -110,6 +116,18 @@ defmodule IntellectualClub.Chat.Chat do
     belongs_to :last_message, IntellectualClub.Chat.ChatMessage,
       allow_nil?: true,
       attribute_type: :integer
+
+    belongs_to :parent_chat, __MODULE__,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    belongs_to :parent_message, IntellectualClub.Chat.ChatMessage,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    has_many :child_chats, __MODULE__ do
+      destination_attribute(:parent_chat_id)
+    end
 
     has_many :messages, IntellectualClub.Chat.ChatMessage
 
@@ -183,7 +201,16 @@ defmodule IntellectualClub.Chat.Chat do
     end
 
     create :create do
-      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+      accept([
+        :title,
+        :bot_id,
+        :llm_configuration_id,
+        :note,
+        :variables,
+        :parent_chat_id,
+        :parent_message_id,
+        :parent_relation_kind
+      ])
 
       argument :knowledge_block_bindings, {:array, :map} do
         allow_nil?(true)
@@ -202,14 +229,25 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         access: :readable,
+         required?: false}
       )
 
       change({CreateFirstMessages, []})
     end
 
     create :create_empty do
-      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+      accept([
+        :title,
+        :bot_id,
+        :llm_configuration_id,
+        :note,
+        :variables,
+        :parent_chat_id,
+        :parent_message_id,
+        :parent_relation_kind
+      ])
 
       argument :knowledge_block_bindings, {:array, :map} do
         allow_nil?(true)
@@ -228,12 +266,24 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         access: :readable,
+         required?: false}
       )
     end
 
     update :update do
-      accept([:title, :bot_id, :llm_configuration_id, :note, :variables])
+      accept([
+        :title,
+        :bot_id,
+        :llm_configuration_id,
+        :note,
+        :variables,
+        :parent_chat_id,
+        :parent_message_id,
+        :parent_relation_kind
+      ])
+
       require_atomic?(false)
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -252,7 +302,9 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration], access: :readable, required?: false}
+         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         access: :readable,
+         required?: false}
       )
 
       change({DeleteChatSharesOnAccessBoundaryChange, []})

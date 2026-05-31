@@ -99,6 +99,42 @@ defmodule IntellectualClub.Generation.Context do
     }
   end
 
+  @doc """
+  Builds the model-visible active branch history without creating generation records.
+  """
+  def history_for_generation!(chat_or_id, opts \\ []) do
+    actor = Keyword.get(opts, :actor)
+    chat = load_history_chat!(chat_or_id, actor)
+
+    target_parent_id =
+      case Keyword.fetch(opts, :parent_id) do
+        {:ok, parent_id} when is_integer(parent_id) -> parent_id
+        _other -> chat.last_message_id
+      end
+
+    source_branch =
+      if is_integer(target_parent_id) do
+        case Threads.branch_to_message(chat, target_parent_id, actor,
+               load: generation_history_load(),
+               strict?: true
+             ) do
+          {:ok, branch} -> branch
+          {:error, :message_not_found} -> raise ArgumentError, "Parent message not found in chat"
+        end
+      else
+        []
+      end
+
+    source_branch
+    |> history_branch_for_generation()
+    |> Enum.map(fn message ->
+      %{
+        role: history_message_role(message),
+        content: project_history_message_text(message)
+      }
+    end)
+  end
+
   def prepare_retry(message_id, opts \\ []) when is_integer(message_id) and is_list(opts) do
     actor = Keyword.get(opts, :actor)
 
@@ -876,6 +912,14 @@ defmodule IntellectualClub.Generation.Context do
 
   defp load_prompt_snapshot_chat!(chat_id, actor) when is_integer(chat_id) do
     Ash.get!(Chat, chat_id, actor: actor, load: [:bot])
+  end
+
+  defp load_history_chat!(%Chat{} = chat, actor) do
+    Ash.load!(chat, [:last_message], actor: actor, strict?: true)
+  end
+
+  defp load_history_chat!(chat_id, actor) when is_integer(chat_id) do
+    Ash.get!(Chat, chat_id, actor: actor, load: [:last_message])
   end
 
   defp load_prompt_sources(chat, actor) do

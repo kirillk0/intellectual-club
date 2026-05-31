@@ -130,11 +130,35 @@ export type Chat = {
   bot_id: number | null;
   llm_configuration_id: number | null;
   variables: ChatVariable[];
+  parent_chat_id?: number | null;
+  parent_message_id?: number | null;
+  parent_relation_kind?: string | null;
   can_edit?: boolean | null;
   shared_incoming?: boolean | null;
   shared_outgoing?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type ChatRelationSummary = {
+  chat_id: number;
+  message_id?: number | null;
+  parent_chat_id?: number | null;
+  parent_message_id?: number | null;
+  kind?: string | null;
+  title?: string | null;
+  note?: string | null;
+  bot_id?: number | null;
+  bot_name?: string | null;
+  active_generation_message_id?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ChatRelations = {
+  parent: ChatRelationSummary | null;
+  children_by_message_id: Record<string, ChatRelationSummary[]>;
+  children_without_message: ChatRelationSummary[];
 };
 
 export type ChatKnowledgeBlock = {

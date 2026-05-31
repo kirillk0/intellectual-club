@@ -124,6 +124,7 @@ defmodule IntellectualClubWeb.Router do
     get "/chats/:id/shares", ChatsController, :shares
     put "/chats/:id/shares", ChatsController, :update_shares
     post "/chats/:id/continue", ChatsController, :continue_conversation
+    post "/chats/:id/handoff", ChatsController, :handoff
     patch "/chats/:id", ChatsController, :update
     delete "/chats/:id", ChatsController, :delete
     post "/chats/:chat_id/uploads", ChatUploadsController, :create
