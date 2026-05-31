@@ -250,6 +250,8 @@ const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
 const CHAT_LIST_IDLE_POLL_DELAY_MS = 30_000;
 const CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS = 30_000;
 const CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
+const CHAT_SEARCH_DEBOUNCE_MS = 600;
+const CHAT_SEARCH_MIN_LENGTH = 2;
 
 const router = useRouter();
 
@@ -292,7 +294,7 @@ const isCompact = ref(false);
 const filterOpen = ref(false);
 const previewLength = computed(() => (isCompact.value ? 100 : 200));
 
-const hasChatSearch = computed(() => chatSearchTerm.value.trim().length > 0);
+const hasChatSearch = computed(() => chatSearchTerm.value.trim().length >= CHAT_SEARCH_MIN_LENGTH);
 const hasActiveBotFilter = computed(() => String(botFilter.value || '').trim().length > 0);
 
 function openFilter() {
@@ -683,9 +685,21 @@ function handleChatListReset() {
 
 let chatSearchTimer: number | null = null;
 let chatSearchSeq = 0;
+let chatSearchAbortController: AbortController | null = null;
+
+function abortActiveChatSearch() {
+  if (!chatSearchAbortController) return;
+  chatSearchAbortController.abort();
+  chatSearchAbortController = null;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
 
 function resetChatSearch() {
   chatSearchSeq += 1;
+  abortActiveChatSearch();
   chatSearchResults.value = [];
   chatSearchLoading.value = false;
   chatSearchError.value = '';
@@ -696,6 +710,20 @@ async function runChatSearch(
   opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
 ) {
   const seq = ++chatSearchSeq;
+  abortActiveChatSearch();
+
+  const controller = new AbortController();
+  chatSearchAbortController = controller;
+  const externalSignal = opts.signal;
+  let abortFromExternalSignal: (() => void) | null = null;
+
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else if (externalSignal) {
+    abortFromExternalSignal = () => controller.abort();
+    externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
+
   const silent = Boolean(opts.silent);
   if (!silent) {
     chatSearchLoading.value = true;
@@ -710,12 +738,13 @@ async function runChatSearch(
     if (bot) params.set('bot', bot);
     const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chats/search?${params.toString()}`, {
       showErrorBanner: opts.showErrorBanner ?? true,
-      signal: opts.signal,
+      signal: controller.signal,
     });
     if (seq !== chatSearchSeq) return;
     chatSearchResults.value = payload.chats || [];
     syncVisibleGenerationState(visibleChats.value);
   } catch (e) {
+    if (isAbortError(e)) return;
     if (seq !== chatSearchSeq) return;
     if (!silent) {
       console.error(e);
@@ -725,6 +754,12 @@ async function runChatSearch(
     }
     console.warn('Failed to refresh chat search results while polling generation state.', e);
   } finally {
+    if (abortFromExternalSignal && externalSignal) {
+      externalSignal.removeEventListener('abort', abortFromExternalSignal);
+    }
+    if (chatSearchAbortController === controller) {
+      chatSearchAbortController = null;
+    }
     if (!silent && seq === chatSearchSeq) chatSearchLoading.value = false;
   }
 }
@@ -980,7 +1015,7 @@ watch(
   (value) => {
     chatListIdleRevision.value = null;
     const term = value.trim();
-    if (!term) {
+    if (term.length < CHAT_SEARCH_MIN_LENGTH) {
       if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
       chatSearchTimer = null;
       resetChatSearch();
@@ -990,7 +1025,7 @@ watch(
     if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
     chatSearchTimer = window.setTimeout(() => {
       runChatSearch(term);
-    }, 250);
+    }, CHAT_SEARCH_DEBOUNCE_MS);
   }
 );
 
@@ -1073,6 +1108,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pageshow', handleChatListPageShow);
   window.removeEventListener('focus', handleChatListFocus);
   if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+  abortActiveChatSearch();
   stopChatListPolling();
   stopChatListIdlePolling();
 });

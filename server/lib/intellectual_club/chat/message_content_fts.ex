@@ -14,6 +14,7 @@ defmodule IntellectualClub.Chat.MessageContentFts do
         }
 
   @token_regex ~r/[\p{L}\p{N}_]+/u
+  @searchable_item_types ["input", "answer"]
 
   @spec build(String.t() | nil) :: t() | nil
   def build(term) when is_binary(term) do
@@ -69,33 +70,36 @@ defmodule IntellectualClub.Chat.MessageContentFts do
     case Ash.Query.get_argument(ash_query, :fts_match) do
       match when is_binary(match) and match != "" ->
         {:ok,
-         where(
-           data_layer_query,
-           [message],
-           fragment(
-             """
-             EXISTS (
-               SELECT 1
-               FROM chat_message_steps AS step
-               JOIN chat_message_items AS item
-                 ON item.chat_message_step_id = step.id
-               JOIN chat_message_contents AS content
-                 ON content.chat_message_item_id = item.id
-               WHERE
-                 step.chat_message_id = ?
-                 AND item.type IN ('input', 'answer')
-                 AND content.kind = 'text'
-                 AND content.id IN (
-                   SELECT rowid
-                   FROM chat_message_contents_fts
-                   WHERE chat_message_contents_fts MATCH ?
-                 )
+         data_layer_query
+         |> join(:inner, [message, ...], step in "chat_message_steps",
+           as: :message_content_fts_step,
+           on: field(step, :chat_message_id) == message.id
+         )
+         |> join(:inner, [message_content_fts_step: step], item in "chat_message_items",
+           as: :message_content_fts_item,
+           on: field(item, :chat_message_step_id) == field(step, :id)
+         )
+         |> join(:inner, [message_content_fts_item: item], content in "chat_message_contents",
+           as: :message_content_fts_content,
+           on: field(content, :chat_message_item_id) == field(item, :id)
+         )
+         |> where(
+           [message_content_fts_item: item, message_content_fts_content: content],
+           field(item, :type) in ^@searchable_item_types and
+             field(content, :kind) == "text" and
+             fragment(
+               """
+               ? IN (
+                 SELECT rowid
+                 FROM chat_message_contents_fts
+                 WHERE chat_message_contents_fts MATCH ?
+               )
+               """,
+               field(content, :id),
+               ^match
              )
-             """,
-             message.id,
-             ^match
-           )
-         )}
+         )
+         |> distinct(true)}
 
       _other ->
         {:ok, data_layer_query}
