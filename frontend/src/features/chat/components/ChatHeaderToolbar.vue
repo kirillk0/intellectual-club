@@ -2,7 +2,7 @@
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
       <div class="chat-toolbar__left">
-        <RouterLink to="/" class="icon-button chat-toolbar__nav-button" aria-label="Back to chats" title="Back to chats">
+        <RouterLink :to="backTo" class="icon-button chat-toolbar__nav-button" aria-label="Back to chats" title="Back to chats">
           ←
         </RouterLink>
         <button
@@ -190,6 +190,7 @@ import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
 import type { LlmConfiguration } from '@/types/api';
 
 interface Props {
+  backTo?: string;
   selectedConfig: number | '';
   appliedConfig: number | '';
   selectableConfigs: LlmConfiguration[];
@@ -223,6 +224,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  backTo: '/chats',
   selectableConfigs: () => [],
   defaultConfig: null,
   regularSelectableConfigs: () => [],

@@ -50,6 +50,29 @@ const CHAT_IDLE_POLL_DELAY_MS = 30_000;
 const CHAT_IDLE_POLL_RETRY_DELAY_MS = 30_000;
 const CHAT_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
+function getQueryString(value: unknown) {
+  if (Array.isArray(value)) {
+    const firstString = value.find((item) => typeof item === 'string');
+    return firstString || '';
+  }
+  return typeof value === 'string' ? value : '';
+}
+
+function readChatListReturnTarget(value: unknown) {
+  const raw = getQueryString(value).trim();
+  if (
+    raw === '/' ||
+    raw === '/chats' ||
+    raw.startsWith('/?') ||
+    raw.startsWith('/#') ||
+    raw.startsWith('/chats?') ||
+    raw.startsWith('/chats#')
+  ) {
+    return raw;
+  }
+  return '/chats';
+}
+
 const emptyChatRelations = (): ChatRelations => ({
   parent: null,
   children_by_message_id: {},
@@ -62,6 +85,11 @@ export function useChatViewModel() {
   const stackNav = useStackNavigation();
   const stack = useNavigationStack();
   const chatId = computed(() => Number(route.params.id));
+  const chatsReturnTarget = computed(() => readChatListReturnTarget(route.query.returnTo));
+  const chatRouteTarget = (id: number) => ({
+    path: `/chats/${id}`,
+    query: { returnTo: chatsReturnTarget.value },
+  });
 
   const ui = useChatUiChrome();
 
@@ -155,7 +183,11 @@ export function useChatViewModel() {
     toggleMenu: ui.toggleMenu,
     closeMenu: ui.closeMenu,
     stackOpen: stackNav.open,
-    pushRoute: (path) => router.push(path),
+    pushRoute: (path) => {
+      if (path === '/') return router.push(chatsReturnTarget.value);
+      if (path.startsWith('/chats/')) return router.push({ path, query: { returnTo: chatsReturnTarget.value } });
+      return router.push(path);
+    },
     reloadChat: () => loadChat({ mode: 'soft' }),
     refreshPromptContext: () => refreshPromptContextFromServer(),
   });
@@ -541,7 +573,7 @@ export function useChatViewModel() {
       const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chats/${chatId.value}/continue`, {});
       const nextId = payload.chat?.id;
       if (!nextId) throw new Error('Missing chat id');
-      await router.push(`/chats/${nextId}`);
+      await router.push(chatRouteTarget(nextId));
     } catch (error) {
       console.error(error);
       window.alert(getApiErrorMessage(error, 'Failed to continue conversation.'));
@@ -562,7 +594,7 @@ export function useChatViewModel() {
       );
       const nextId = payload.chat?.id;
       if (!nextId) throw new Error('Missing chat id');
-      await router.push(`/chats/${nextId}`);
+      await router.push(chatRouteTarget(nextId));
     } catch (error) {
       console.error(error);
       window.alert(getApiErrorMessage(error, 'Failed to handoff chat.'));
@@ -572,7 +604,7 @@ export function useChatViewModel() {
   };
 
   const backToChats = async () => {
-    await router.push('/chats');
+    await router.push(chatsReturnTarget.value);
   };
 
   watch(
@@ -719,6 +751,7 @@ export function useChatViewModel() {
     handoffPending,
     handoffDisabled,
     handoffChat,
+    chatsReturnTarget,
     backToChats,
     closeOverlays: ui.closeOverlays,
     promptTokenCount: contextPanel.promptTokenCount,

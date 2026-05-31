@@ -158,7 +158,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -253,24 +253,49 @@ const CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 const CHAT_SEARCH_DEBOUNCE_MS = 600;
 const CHAT_SEARCH_MIN_LENGTH = 2;
 
+const route = useRoute();
 const router = useRouter();
+
+function getQueryString(value: unknown) {
+  if (Array.isArray(value)) {
+    const firstString = value.find((item) => typeof item === 'string');
+    return firstString || '';
+  }
+  return typeof value === 'string' ? value : '';
+}
+
+function readChatListPageQuery(value: unknown) {
+  const page = Number(getQueryString(value));
+  return Number.isInteger(page) && page > 0 ? page : 1;
+}
+
+function readBotFilterQuery(value: unknown) {
+  const raw = getQueryString(value).trim();
+  if (raw === 'none') return raw;
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? String(id) : '';
+}
+
+function sameQueryValue(current: unknown, next: string | undefined) {
+  return getQueryString(current) === (next ?? '');
+}
 
 const loading = ref(true);
 const creating = ref(false);
 const loadingBots = ref(false);
 const error = ref<string | null>(null);
 const chats = ref<ChatSummary[]>([]);
-const pageNumber = ref(1);
+const pageNumber = ref(readChatListPageQuery(route.query.page));
 const perPage = ref(20);
 const totalChats = ref(0);
 const hasNextPage = ref(false);
-const chatSearchTerm = ref('');
+const chatSearchTerm = ref(getQueryString(route.query.q));
 const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
 const chatListIdleRevision = ref<string | null>(null);
 const generationCompleteChatIds = ref(new Set<number>());
-const botFilter = ref<string>('');
+const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
 const botSearchTerm = ref('');
 const bots = ref<Bot[]>([]);
 const chatListStats = ref<ChatListStats>({
@@ -296,6 +321,57 @@ const previewLength = computed(() => (isCompact.value ? 100 : 200));
 
 const hasChatSearch = computed(() => chatSearchTerm.value.trim().length >= CHAT_SEARCH_MIN_LENGTH);
 const hasActiveBotFilter = computed(() => String(botFilter.value || '').trim().length > 0);
+
+function syncChatListRouteQuery() {
+  const q = chatSearchTerm.value.trim();
+  const bot = String(botFilter.value || '').trim();
+  const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
+  const next = { ...route.query };
+
+  if (q) next.q = q;
+  else delete (next as Record<string, unknown>).q;
+
+  if (bot) next.bot = bot;
+  else delete (next as Record<string, unknown>).bot;
+
+  if (page) next.page = page;
+  else delete (next as Record<string, unknown>).page;
+
+  if (
+    sameQueryValue(route.query.q, q || undefined) &&
+    sameQueryValue(route.query.bot, bot || undefined) &&
+    sameQueryValue(route.query.page, page)
+  ) {
+    return;
+  }
+
+  router.replace({ query: next }).catch(() => {});
+}
+
+watch(
+  () => [route.query.q, route.query.bot, route.query.page],
+  ([q, bot, page]) => {
+    const nextQ = getQueryString(q);
+    const nextBot = readBotFilterQuery(bot);
+    const nextPage = readChatListPageQuery(page);
+    const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage;
+
+    if (chatSearchTerm.value !== nextQ) chatSearchTerm.value = nextQ;
+    if (botFilter.value !== nextBot) botFilter.value = nextBot;
+    if (pageNumber.value !== nextPage) pageNumber.value = nextPage;
+
+    if (shouldLoadChats && !hasChatSearch.value) {
+      void loadChats();
+    }
+  }
+);
+
+watch(
+  () => [chatSearchTerm.value, botFilter.value, pageNumber.value],
+  () => {
+    syncChatListRouteQuery();
+  }
+);
 
 function openFilter() {
   filterOpen.value = true;
@@ -511,9 +587,10 @@ function chatResultRole(chat: ChatSummary | ChatSearchResult) {
 
 function chatResultLink(chat: ChatSummary | ChatSearchResult) {
   const path = `/chats/${chat.id}`;
-  if (!isSearchResult(chat)) return path;
-  if (!chat.message_id || chat.match_type === 'meta') return path;
-  const query: Record<string, string> = { focusMessage: String(chat.message_id) };
+  const query: Record<string, string> = { returnTo: route.fullPath || '/chats' };
+  if (!isSearchResult(chat)) return { path, query };
+  if (!chat.message_id || chat.match_type === 'meta') return { path, query };
+  query.focusMessage = String(chat.message_id);
   if (chat.match_type === 'inactive_message') {
     query.focusInactive = '1';
   }
@@ -1012,13 +1089,15 @@ async function loadBots(opts: { showError?: boolean } = {}) {
 
 watch(
   () => chatSearchTerm.value,
-  (value) => {
+  (value, previousValue) => {
     chatListIdleRevision.value = null;
     const term = value.trim();
     if (term.length < CHAT_SEARCH_MIN_LENGTH) {
+      const hadChatSearch = previousValue.trim().length >= CHAT_SEARCH_MIN_LENGTH;
       if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
       chatSearchTimer = null;
       resetChatSearch();
+      if (hadChatSearch) void loadChats();
       return;
     }
 
@@ -1082,7 +1161,7 @@ async function createChat(selectedBotId: number | '' = '') {
     const id = payload.chat?.id;
     if (!id) throw new Error('Missing chat id');
     botModalOpen.value = false;
-    await router.push(`/chats/${id}`);
+    await router.push({ path: `/chats/${id}`, query: { returnTo: route.fullPath || '/chats' } });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create chat.';
   } finally {
@@ -1094,6 +1173,9 @@ onMounted(() => {
   updateIsMobile();
   void loadChats();
   void loadBots();
+  if (hasChatSearch.value) {
+    void runChatSearch(chatSearchTerm.value.trim());
+  }
   window.addEventListener('resize', updateIsMobile);
   window.addEventListener(CHAT_LIST_RESET_EVENT, handleChatListReset);
   document.addEventListener('visibilitychange', handleChatListVisibilityChange);

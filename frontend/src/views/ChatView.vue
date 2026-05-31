@@ -14,6 +14,7 @@
   <div class="stack chat-page" v-else-if="vm.loaded && vm.chat">
     <StackToolbarTeleport>
       <ChatHeaderToolbar
+        :back-to="vm.chatsReturnTarget"
         :selected-config="vm.selectedConfig"
         :applied-config="vm.appliedConfig"
         :selectable-configs="vm.selectableConfigs"
@@ -115,7 +116,7 @@
             <RouterLink
               v-if="vm.parentRelation"
               class="chat-relation-banner chat-relation-banner--parent"
-              :to="`/chats/${vm.parentRelation.chat_id}`"
+              :to="chatRoute(vm.parentRelation.chat_id)"
             >
               <span>Continuation of</span>
               <strong>{{ relationTitle(vm.parentRelation) }}</strong>
@@ -162,7 +163,7 @@
                 v-for="relation in vm.childRelationsForMessage(msg.id)"
                 :key="`handoff-${msg.id}-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
-                :to="`/chats/${relation.chat_id}`"
+                :to="chatRoute(relation.chat_id)"
               >
                 <span>Continued in</span>
                 <strong>{{ relationTitle(relation) }}</strong>
@@ -184,7 +185,7 @@
                 v-for="relation in vm.fallbackChildRelations"
                 :key="`handoff-fallback-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
-                :to="`/chats/${relation.chat_id}`"
+                :to="chatRoute(relation.chat_id)"
               >
                 <span>Continued in</span>
                 <strong>{{ relationTitle(relation) }}</strong>
@@ -604,6 +605,11 @@ const pendingFileProgress = pendingFileProgressPercent;
 
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || relation.title || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
+
+const chatRoute = (chatId: number) => ({
+  path: `/chats/${chatId}`,
+  query: { returnTo: vm.chatsReturnTarget },
+});
 
 const handleDragEnter = () => {
   if (!vm.canAttachFiles) return;
