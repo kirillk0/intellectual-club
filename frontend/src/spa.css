@@ -1584,6 +1584,16 @@ select.full {
   animation-delay: 0.4s;
 }
 
+.reconnect-indicator {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #d6d3d1;
+  border-top-color: #b45309;
+  border-radius: 999px;
+  animation: reconnect-spin 0.9s linear infinite;
+}
+
 @keyframes typing-bounce {
   0%,
   60%,
@@ -1594,6 +1604,12 @@ select.full {
   30% {
     transform: translateY(-6px);
     opacity: 0.9;
+  }
+}
+
+@keyframes reconnect-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

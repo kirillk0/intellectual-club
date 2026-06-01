@@ -41,7 +41,14 @@
         @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
-      <div v-if="msg.status === 'generating'" class="typing-indicator" aria-label="Assistant is typing">
+      <div
+        v-if="msg.status === 'generating' && pollReconnecting"
+        class="reconnect-indicator"
+        role="status"
+        aria-label="Reconnecting"
+        title="Reconnecting"
+      ></div>
+      <div v-else-if="msg.status === 'generating'" class="typing-indicator" aria-label="Assistant is typing">
         <span></span><span></span><span></span>
       </div>
 
@@ -163,6 +170,7 @@ interface Props {
   retrying?: boolean;
   bookmarking?: boolean;
   branchingAssistantId?: number | null;
+  pollReconnecting?: boolean;
   workingOpen?: boolean;
   workingState?: OpenWorkingState | null;
   canDelete?: boolean;
@@ -177,6 +185,7 @@ const props = withDefaults(defineProps<Props>(), {
   retrying: false,
   bookmarking: false,
   branchingAssistantId: null,
+  pollReconnecting: false,
   workingOpen: false,
   workingState: null,
   canDelete: false,

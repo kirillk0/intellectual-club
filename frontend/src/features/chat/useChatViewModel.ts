@@ -814,6 +814,7 @@ export function useChatViewModel() {
     sendButtonLabel: composerRuntime.sendButtonLabel,
     activeGenerationId,
     cancelingGenerationId,
+    generationPollReconnecting: composerRuntime.generationPollReconnecting,
     handleCancelPointerDown: composerRuntime.handleCancelPointerDown,
     send: composerRuntime.send,
     cancelActiveGeneration: composerRuntime.cancelActiveGeneration,

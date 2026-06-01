@@ -242,7 +242,7 @@ type ChatListIdleStatePayload = {
   active_generation_message_id?: number | null;
 };
 
-type GenerationState = 'generating' | 'done';
+type GenerationState = 'generating' | 'reconnecting' | 'done';
 
 const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
@@ -294,6 +294,7 @@ const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
 const chatListIdleRevision = ref<string | null>(null);
+const chatListGenerationPollReconnecting = ref(false);
 const generationCompleteChatIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
 const botSearchTerm = ref('');
@@ -539,7 +540,9 @@ function chatLabel(chat: ChatSummary) {
 }
 
 function generationStateForChat(chat: ChatSummary): GenerationState | null {
-  if (chat.active_generation_message_id) return 'generating';
+  if (chat.active_generation_message_id) {
+    return chatListGenerationPollReconnecting.value ? 'reconnecting' : 'generating';
+  }
   return generationCompleteChatIds.value.has(chat.id) ? 'done' : null;
 }
 
@@ -685,7 +688,7 @@ function syncVisibleGenerationState(nextChats: ChatSummary[]) {
 }
 
 async function loadChats(
-  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean } = {}
 ) {
   const seq = ++chatListLoadSeq;
   const silent = Boolean(opts.silent);
@@ -734,6 +737,7 @@ async function loadChats(
       error.value = e instanceof Error ? e.message : 'Failed to load chats.';
       return;
     }
+    if (opts.rethrowSilent) throw e;
     console.warn('Failed to refresh chats list while polling generation state.', e);
   } finally {
     if (!silent && seq === chatListLoadSeq) {
@@ -784,7 +788,7 @@ function resetChatSearch() {
 
 async function runChatSearch(
   term: string,
-  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal } = {}
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean } = {}
 ) {
   const seq = ++chatSearchSeq;
   abortActiveChatSearch();
@@ -829,6 +833,7 @@ async function runChatSearch(
       chatSearchResults.value = [];
       return;
     }
+    if (opts.rethrowSilent) throw e;
     console.warn('Failed to refresh chat search results while polling generation state.', e);
   } finally {
     if (abortFromExternalSignal && externalSignal) {
@@ -853,6 +858,7 @@ let chatListIdleLastImmediateAt = 0;
 
 function stopChatListPolling() {
   chatListPollingActive = false;
+  chatListGenerationPollReconnecting.value = false;
   chatListPollToken += 1;
 
   if (chatListPollTimer != null) {
@@ -885,11 +891,11 @@ async function refreshVisibleChatsForGeneration(signal: AbortSignal) {
   if (hasChatSearch.value) {
     const term = chatSearchTerm.value.trim();
     if (!term) return;
-    await runChatSearch(term, { silent: true, showErrorBanner: false, signal });
+    await runChatSearch(term, { silent: true, showErrorBanner: false, signal, rethrowSilent: true });
     return;
   }
 
-  await loadChats({ silent: true, showErrorBanner: false, signal });
+  await loadChats({ silent: true, showErrorBanner: false, signal, rethrowSilent: true });
 }
 
 function chatListIdleProbeParams() {
@@ -1006,6 +1012,7 @@ function startChatListPolling(opts: { immediate?: boolean } = {}) {
     try {
       await refreshVisibleChatsForGeneration(controller.signal);
       if (!chatListPollingActive || chatListPollToken !== token) return;
+      chatListGenerationPollReconnecting.value = false;
 
       if (!hasVisibleGeneratingChat.value) {
         stopChatListPolling();
@@ -1016,6 +1023,8 @@ function startChatListPolling(opts: { immediate?: boolean } = {}) {
     } catch (error) {
       if (!chatListPollingActive || chatListPollToken !== token) return;
       if (error instanceof DOMException && error.name === 'AbortError') return;
+      console.warn('Failed to refresh chats list while polling generation state.', error);
+      chatListGenerationPollReconnecting.value = true;
       scheduleNext(CHAT_LIST_POLL_RETRY_DELAY_MS);
     } finally {
       if (chatListPollAbortController === controller) {

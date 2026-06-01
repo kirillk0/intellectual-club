@@ -131,6 +131,7 @@
                 :retrying="vm.retryingMessageId === msg.id"
                 :bookmarking="vm.isBookmarkingMessage(msg.id)"
                 :readonly="vm.sharedReadonly"
+                :poll-reconnecting="vm.generationPollReconnecting && msg.id === vm.activeGenerationId"
                 :branching-assistant-id="vm.branchingAssistantId"
                 :working-open="vm.isWorkingOpen(msg.id)"
                 :working-state="vm.workingStateFor(msg.id)"

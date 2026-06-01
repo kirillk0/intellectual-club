@@ -14,8 +14,11 @@
           :aria-label="generationStateLabel"
           :title="generationStateLabel"
         >
-          <span class="typing-indicator" aria-hidden="true"><span></span><span></span><span></span></span>
-          <SvgIcon v-if="generationState === 'done'" name="check" size="14" />
+          <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
+          <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
         </span>
       </div>
       <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
@@ -40,7 +43,7 @@ import { computed } from 'vue';
 import { RouterLink, type RouteLocationRaw } from 'vue-router';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
-type GenerationState = 'generating' | 'done';
+type GenerationState = 'generating' | 'reconnecting' | 'done';
 
 interface Props {
   to: RouteLocationRaw;
@@ -75,9 +78,11 @@ const previewToneClass = computed(() => ({
   'chat-preview--assistant': props.previewRole === 'assistant',
 }));
 
-const generationStateLabel = computed(() =>
-  props.generationState === 'done' ? 'Generation complete' : 'Generating'
-);
+const generationStateLabel = computed(() => {
+  if (props.generationState === 'done') return 'Generation complete';
+  if (props.generationState === 'reconnecting') return 'Reconnecting';
+  return 'Generating';
+});
 </script>
 
 <style scoped>
@@ -112,8 +117,13 @@ const generationStateLabel = computed(() =>
   color: #15803d;
 }
 
-.chat-result-generation-state--done .typing-indicator {
-  display: none;
+.chat-result-generation-state--reconnecting {
+  color: #b45309;
+}
+
+.chat-result-generation-state--reconnecting .reconnect-indicator {
+  width: 14px;
+  height: 14px;
 }
 
 .chat-result-name {

@@ -48,6 +48,7 @@ export function useChatComposerRuntime(params: Params) {
   const pendingFiles = ref<PendingChatFile[]>([]);
   const draft = ref('');
   const sending = ref(false);
+  const generationPollReconnecting = ref(false);
 
   const sendButtonLabel = computed(() => {
     if (params.activeGenerationId.value) {
@@ -453,7 +454,8 @@ export function useChatComposerRuntime(params: Params) {
   let pollAbortController: AbortController | null = null;
   let lastResumeSyncAt = 0;
 
-  const stopPolling = () => {
+  const stopPolling = (opts: { resetConnectionState?: boolean } = {}) => {
+    const resetConnectionState = opts.resetConnectionState ?? true;
     pollingToken += 1;
     if (pollTimer != null) {
       window.clearTimeout(pollTimer);
@@ -463,6 +465,8 @@ export function useChatComposerRuntime(params: Params) {
       pollAbortController.abort();
       pollAbortController = null;
     }
+
+    if (resetConnectionState) generationPollReconnecting.value = false;
   };
 
   const updateBranchMessage = (messageId: number, patch: Partial<ChatBranchMessage>) => {
@@ -475,7 +479,11 @@ export function useChatComposerRuntime(params: Params) {
     const controller = new AbortController();
     pollAbortController = controller;
 
-    const timeoutHandle = window.setTimeout(() => controller.abort(), 25_000);
+    let didTimeout = false;
+    const timeoutHandle = window.setTimeout(() => {
+      didTimeout = true;
+      controller.abort();
+    }, 25_000);
 
     try {
       const searchParams = new URLSearchParams();
@@ -489,6 +497,7 @@ export function useChatComposerRuntime(params: Params) {
       });
 
       if (pollingToken !== token) return false;
+      generationPollReconnecting.value = false;
 
       const current = params.branch.value.find((item) => item.id === messageId) || null;
       const shouldKeepPageAtBottom = current ? isPageScrolledToBottom() : false;
@@ -524,6 +533,12 @@ export function useChatComposerRuntime(params: Params) {
       }
 
       return true;
+    } catch (error) {
+      if (didTimeout && error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Generation poll timed out.');
+      }
+
+      throw error;
     } finally {
       window.clearTimeout(timeoutHandle);
       if (pollAbortController === controller) pollAbortController = null;
@@ -531,7 +546,8 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const startPolling = async (messageId: number) => {
-    stopPolling();
+    const sameGeneration = params.activeGenerationId.value === messageId;
+    stopPolling({ resetConnectionState: !sameGeneration });
     params.activeGenerationId.value = messageId;
 
     const token = pollingToken;
@@ -547,6 +563,7 @@ export function useChatComposerRuntime(params: Params) {
         if (pollingToken !== token) return;
         if (error instanceof DOMException && error.name === 'AbortError') return;
         console.warn(error);
+        generationPollReconnecting.value = true;
         if (params.activeGenerationId.value === messageId && pollingToken === token) {
           pollTimer = window.setTimeout(tick, 1500);
         }
@@ -713,6 +730,7 @@ export function useChatComposerRuntime(params: Params) {
     cancelingGenerationId: params.cancelingGenerationId,
     draft,
     sending,
+    generationPollReconnecting,
     sendButtonLabel,
     findPendingFile,
     ensurePendingFilesUploaded,
