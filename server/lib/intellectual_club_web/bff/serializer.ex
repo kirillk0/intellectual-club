@@ -430,7 +430,12 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       step_count: length(summaries),
       latest_step_id: if(latest, do: Map.get(latest, :id), else: nil),
       latest_step_sequence: if(latest, do: Map.get(latest, :sequence), else: nil),
-      latest_step_status: if(latest, do: Map.get(latest, :status), else: nil)
+      latest_step_status: if(latest, do: Map.get(latest, :status), else: nil),
+      completed_step_duration_ms: completed_step_duration_ms(summaries),
+      active_step_started_at:
+        summaries
+        |> latest_active_step_summary()
+        |> active_step_started_at()
     }
   end
 
@@ -647,6 +652,57 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp latest_step_summary(summaries) when is_list(summaries) do
     Enum.max_by(summaries, &{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || 0}, fn -> nil end)
   end
+
+  defp latest_active_step_summary(summaries) when is_list(summaries) do
+    summaries
+    |> Enum.filter(&active_step_summary?/1)
+    |> latest_step_summary()
+  end
+
+  defp active_step_summary?(summary) when is_map(summary) do
+    is_nil(Map.get(summary, :finished_at)) and active_step_status?(Map.get(summary, :status))
+  end
+
+  defp active_step_summary?(_summary), do: false
+
+  defp active_step_status?(status) when status in [:waiting_provider, :waiting_tools], do: true
+  defp active_step_status?(status) when status in ["waiting_provider", "waiting_tools"], do: true
+  defp active_step_status?(_status), do: false
+
+  defp active_step_started_at(nil), do: nil
+  defp active_step_started_at(summary), do: Map.get(summary, :created_at)
+
+  defp completed_step_duration_ms(summaries) when is_list(summaries) do
+    Enum.reduce(summaries, 0, fn summary, total -> total + step_duration_ms(summary) end)
+  end
+
+  defp step_duration_ms(summary) when is_map(summary) do
+    with %DateTime{} = started_at <- summary_datetime(Map.get(summary, :created_at)),
+         %DateTime{} = finished_at <- summary_datetime(Map.get(summary, :finished_at)) do
+      finished_at
+      |> DateTime.diff(started_at, :millisecond)
+      |> max(0)
+    else
+      _other -> 0
+    end
+  end
+
+  defp step_duration_ms(_summary), do: 0
+
+  defp summary_datetime(%DateTime{} = value), do: value
+
+  defp summary_datetime(%NaiveDateTime{} = value) do
+    DateTime.from_naive!(value, "Etc/UTC")
+  end
+
+  defp summary_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _other -> nil
+    end
+  end
+
+  defp summary_datetime(_value), do: nil
 
   defp latest_step_with_usage_summary(summaries) when is_list(summaries) do
     summaries_with_usage = Enum.filter(summaries, &step_has_token_usage?/1)

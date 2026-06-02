@@ -10,6 +10,14 @@
       Working<span v-if="lastStepNumber != null && lastStepNumber > 1" class="working-toggle-count">
         ({{ lastStepNumber }})
       </span>
+      <span
+        v-if="workingElapsedTime"
+        class="working-toggle-time"
+        title="Working elapsed time"
+        aria-label="Working elapsed time"
+      >
+        · {{ workingElapsedTime }}
+      </span>
       <span v-if="loading && !open" class="working-toggle-status" role="status" aria-live="polite">
         Loading…
       </span>
@@ -77,7 +85,14 @@
                 Step {{ currentStepNumber }}
               </button>
               <span v-else class="working-step-number">Step {{ currentStepNumber }}</span>
-              <span v-if="currentStepTime" class="working-step-time">{{ currentStepTime }}</span>
+              <span
+                v-if="currentStepTime"
+                class="working-step-time"
+                title="Step duration"
+                aria-label="Step duration"
+              >
+                {{ currentStepTime }}
+              </span>
             </div>
 
             <div v-for="item in providerItems(currentStep)" :key="item.id" class="working-item">
@@ -165,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type {
@@ -176,7 +191,6 @@ import type {
 } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
-import { displayTimestampIso, formatTimeOfDay } from '@/utils/dates';
 
 interface Props {
   messageId: number | null;
@@ -221,6 +235,10 @@ const steps = computed(() => (props.stepIndex || []).slice().sort(sortBySequence
 const open = computed(() => Boolean(props.open));
 const loading = computed(() => Boolean(props.loading));
 const error = computed(() => props.error || '');
+const isMessageGenerating = computed(() => props.messageStatus === 'generating');
+
+const nowMs = ref(Date.now());
+let nowTimer: number | null = null;
 
 const hasWorking = computed(() => {
   if (!props.messageId) return false;
@@ -252,7 +270,28 @@ const currentStepNumber = computed(() => {
   if (!currentStep.value) return null;
   return stepNumber(currentStep.value, currentStepIndex.value);
 });
-const currentStepTime = computed(() => formatTimeOfDay(displayTimestampIso(currentStep.value)));
+
+const activeStepStartedAtMs = computed(() => parseIsoMs(props.summary?.active_step_started_at));
+const completedWorkingDurationMs = computed(() => {
+  const value = Number(props.summary?.completed_step_duration_ms ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+});
+const activeWorkingDurationMs = computed(() => {
+  if (!isMessageGenerating.value) return 0;
+  const startedAt = activeStepStartedAtMs.value;
+  if (startedAt == null) return 0;
+  return clampDurationMs(nowMs.value - startedAt);
+});
+const totalWorkingDurationMs = computed(() => {
+  if (props.summary?.completed_step_duration_ms == null && activeStepStartedAtMs.value == null) return null;
+  return completedWorkingDurationMs.value + activeWorkingDurationMs.value;
+});
+const workingElapsedTime = computed(() => formatDurationTimer(totalWorkingDurationMs.value));
+const currentStepTime = computed(() => {
+  const durationMs = currentStepDurationMs(currentStep.value);
+  return formatDurationTimer(durationMs);
+});
+const shouldTick = computed(() => isMessageGenerating.value && activeStepStartedAtMs.value != null);
 
 const stepOptions = computed(() =>
   steps.value.map((step, index) => ({
@@ -317,6 +356,74 @@ const isMessageFinished = computed(
   () => Boolean(props.messageStatus) && props.messageStatus !== 'generating'
 );
 const isStepClosed = (step: ChatMessageStep) => isResponseFinal(step) || isMessageFinished.value;
+
+const parseIsoMs = (iso?: string | null): number | null => {
+  if (!iso) return null;
+  const timestamp = Date.parse(iso);
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const clampDurationMs = (durationMs: number) =>
+  Number.isFinite(durationMs) && durationMs > 0 ? Math.floor(durationMs) : 0;
+
+const formatDurationTimer = (durationMs: number | null) => {
+  if (durationMs == null) return '';
+  const totalSeconds = Math.floor(clampDurationMs(durationMs) / 1000);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const pad2 = (value: number) => String(value).padStart(2, '0');
+
+  if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
+  return `${totalMinutes}:${pad2(seconds)}`;
+};
+
+const isActiveStep = (step: ChatMessageStep) => {
+  if (step.finished_at) return false;
+  return step.status === 'waiting_provider' || step.status === 'waiting_tools';
+};
+
+const currentStepDurationMs = (step: ChatMessageStep | null) => {
+  if (!step) return null;
+
+  const startedAt = parseIsoMs(step.created_at);
+  if (startedAt == null) return null;
+
+  const finishedAt = parseIsoMs(step.finished_at);
+  if (finishedAt != null) return clampDurationMs(finishedAt - startedAt);
+
+  if (isMessageGenerating.value && isActiveStep(step)) {
+    return clampDurationMs(nowMs.value - startedAt);
+  }
+
+  return null;
+};
+
+const stopNowTimer = () => {
+  if (nowTimer == null) return;
+  window.clearInterval(nowTimer);
+  nowTimer = null;
+};
+
+watch(
+  shouldTick,
+  (enabled) => {
+    if (!enabled) {
+      stopNowTimer();
+      return;
+    }
+
+    nowMs.value = Date.now();
+    if (nowTimer != null) return;
+    nowTimer = window.setInterval(() => {
+      nowMs.value = Date.now();
+    }, 1000);
+  },
+  { immediate: true }
+);
+
+onUnmounted(stopNowTimer);
 
 const renderCache = new Map<string, string>();
 const renderHtml = (text: string) => {
@@ -465,6 +572,14 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 .working-toggle-count {
   color: #6b7280;
+}
+
+.working-toggle-time {
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .working-toggle-status {

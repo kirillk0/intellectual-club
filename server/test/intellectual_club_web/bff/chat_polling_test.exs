@@ -49,6 +49,8 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
     refute Map.has_key?(payload, "steps")
     assert is_map(payload["content"])
     assert get_in(payload, ["working", "step_count"]) >= 1
+    assert is_integer(get_in(payload, ["working", "completed_step_duration_ms"]))
+    assert is_binary(get_in(payload, ["working", "active_step_started_at"]))
     assert is_binary(answer1)
 
     open_payload =

@@ -95,6 +95,46 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert_in_delta serialized.tokens_per_second, 10.0, 0.0001
   end
 
+  test "working summary includes completed duration and active step start" do
+    step_1_started_at = ~U[2026-04-16 10:00:00.000000Z]
+    step_1_finished_at = ~U[2026-04-16 10:00:02.250000Z]
+    step_2_started_at = ~U[2026-04-16 10:00:03.000000Z]
+    step_2_finished_at = ~U[2026-04-16 10:00:04.000000Z]
+    active_started_at = ~U[2026-04-16 10:00:05.000000Z]
+
+    summary =
+      Serializer.working_summary([
+        %{
+          id: 101,
+          sequence: 1,
+          created_at: DateTime.to_iso8601(step_1_started_at),
+          finished_at: DateTime.to_iso8601(step_1_finished_at),
+          status: "done"
+        },
+        %{
+          id: 102,
+          sequence: 2,
+          created_at: DateTime.to_iso8601(step_2_started_at),
+          finished_at: DateTime.to_iso8601(step_2_finished_at),
+          status: "done"
+        },
+        %{
+          id: 103,
+          sequence: 3,
+          created_at: DateTime.to_iso8601(active_started_at),
+          finished_at: nil,
+          status: "waiting_tools"
+        }
+      ])
+
+    assert summary.step_count == 3
+    assert summary.latest_step_id == 103
+    assert summary.latest_step_sequence == 3
+    assert summary.latest_step_status == "waiting_tools"
+    assert summary.completed_step_duration_ms == 3250
+    assert summary.active_step_started_at == DateTime.to_iso8601(active_started_at)
+  end
+
   test "usage summary keeps the latest step with token usage" do
     usage =
       Serializer.usage_summary([
