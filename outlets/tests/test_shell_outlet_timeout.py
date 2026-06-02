@@ -53,8 +53,8 @@ class ShellOutletRunCommandTimeoutTest(unittest.IsolatedAsyncioTestCase):
             new=mock.AsyncMock(),
         ) as terminate_mock:
             outlet = ShellOutlet()
-            _text, raw = await outlet.run_command(command="sleep 100", timeout_seconds=1)
+            text, raw = await outlet.run_command(command="sleep 100", timeout_seconds=1)
 
+        self.assertEqual(text, "[timeout] Command exceeded timeout of 1 second.")
         self.assertTrue(bool(raw.get("timed_out")))
         terminate_mock.assert_awaited_once_with(proc, grace_seconds=2.0)
-

@@ -524,10 +524,12 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
           stderr = decode_chunks(command_result.stderr_chunks)
 
           summary =
-            [stdout, stderr]
-            |> Enum.reject(&(String.trim(&1) == ""))
-            |> Enum.join("\n")
-            |> String.trim()
+            format_run_command_text(
+              stdout,
+              stderr,
+              command_result.timed_out,
+              request.timeout_seconds
+            )
 
           auth_method = if elem(auth, 0) == :private_key, do: "private_key", else: "password"
 
@@ -605,6 +607,39 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
 
   def sftp_channel_options(timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0,
     do: [timeout: timeout_ms]
+
+  @doc false
+  @spec format_run_command_text(String.t(), String.t(), boolean(), non_neg_integer() | nil) ::
+          String.t()
+  def format_run_command_text(stdout, stderr, timed_out, timeout_seconds) do
+    [stdout, stderr]
+    |> Enum.reject(&(String.trim(to_string(&1 || "")) == ""))
+    |> Enum.join("\n")
+    |> String.trim()
+    |> maybe_append_command_timeout_notice(timed_out, timeout_seconds)
+  end
+
+  defp maybe_append_command_timeout_notice(text, true, timeout_seconds) do
+    notice = command_timeout_notice(timeout_seconds)
+    text = String.trim(to_string(text || ""))
+
+    if text == "" do
+      notice
+    else
+      text <> "\n\n" <> notice
+    end
+  end
+
+  defp maybe_append_command_timeout_notice(text, _timed_out, _timeout_seconds),
+    do: String.trim(to_string(text || ""))
+
+  defp command_timeout_notice(timeout_seconds)
+       when is_integer(timeout_seconds) and timeout_seconds > 0 do
+    unit = if timeout_seconds == 1, do: "second", else: "seconds"
+    "[timeout] Command exceeded timeout of #{timeout_seconds} #{unit}."
+  end
+
+  defp command_timeout_notice(_timeout_seconds), do: "[timeout] Command exceeded timeout."
 
   defp sftp_read_file(channel, remote_path) do
     try do

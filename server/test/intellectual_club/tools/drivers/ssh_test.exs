@@ -150,6 +150,16 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     assert [timeout: :infinity] = Ssh.sftp_channel_options(:infinity)
   end
 
+  test "format_run_command_text includes timeout notice for model-visible text" do
+    assert Ssh.format_run_command_text("", "", true, 1) ==
+             "[timeout] Command exceeded timeout of 1 second."
+
+    assert Ssh.format_run_command_text("partial stdout", "partial stderr", true, 2) ==
+             "partial stdout\npartial stderr\n\n[timeout] Command exceeded timeout of 2 seconds."
+
+    assert Ssh.format_run_command_text("ok\n", "", false, 1) == "ok"
+  end
+
   defp create_tool_instance!(actor, attrs) when is_map(attrs) do
     ToolInstance
     |> Ash.Changeset.for_create(

@@ -118,6 +118,22 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[: max_chars - 3] + "...", True
 
 
+def _command_timeout_notice(timeout_seconds: int | None) -> str:
+    if timeout_seconds and timeout_seconds > 0:
+        seconds = int(timeout_seconds)
+        unit = "second" if seconds == 1 else "seconds"
+        return f"[timeout] Command exceeded timeout of {seconds} {unit}."
+    return "[timeout] Command exceeded timeout."
+
+
+def _append_command_timeout_notice(text: str, timeout_seconds: int | None) -> str:
+    notice = _command_timeout_notice(timeout_seconds)
+    text = text.strip()
+    if not text:
+        return notice
+    return f"{text}\n\n{notice}"
+
+
 def _resolve_executable(candidate: str) -> str | None:
     candidate = str(candidate or "").strip()
     if not candidate:
@@ -407,6 +423,8 @@ class ShellOutlet:
             summary = (summary + "\n" + stderr_text).strip()
         summary = summary.strip()
         summary, summary_truncated = _truncate_text(summary, max_summary_chars)
+        if timed_out:
+            summary = _append_command_timeout_notice(summary, timeout_seconds)
 
         raw = {
             "argv": argv or [],
