@@ -33,6 +33,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   def supports_artifacts?, do: false
 
   @impl true
+  def supports_handoff?, do: true
+
+  @impl true
   def default_config, do: %{}
 
   @impl true

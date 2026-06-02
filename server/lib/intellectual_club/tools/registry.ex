@@ -47,6 +47,27 @@ defmodule IntellectualClub.Tools.Registry do
 
   def supports_artifacts?(_other), do: false
 
+  @spec supports_handoff?(String.t() | map() | nil) :: boolean()
+  def supports_handoff?(%{type: type}), do: supports_handoff?(type)
+  def supports_handoff?(%{"type" => type}), do: supports_handoff?(type)
+
+  def supports_handoff?(tool_type) when is_binary(tool_type) do
+    driver = driver_for_type!(tool_type)
+
+    if function_exported?(driver, :supports_handoff?, 0) do
+      case apply(driver, :supports_handoff?, []) do
+        true -> true
+        _other -> false
+      end
+    else
+      false
+    end
+  rescue
+    _exception -> false
+  end
+
+  def supports_handoff?(_other), do: false
+
   @spec list_types() :: list(String.t())
   def list_types do
     [

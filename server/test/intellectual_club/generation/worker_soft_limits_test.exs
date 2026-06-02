@@ -285,7 +285,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert refusal_text in tool_result_texts(message)
 
     [tool_step, final_step] = Enum.sort_by(message.steps, & &1.sequence)
-    assert_soft_refusal_result_linked!(tool_step, refusal_text)
+    assert_soft_refusal_result_linked!(tool_step, refusal_text, handoff_available: false)
 
     assert tool_step.input_tokens == 4
     assert tool_step.output_tokens == 3
@@ -320,9 +320,14 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
       "arguments" => Jason.encode!(%{"url" => "https://example.com"})
     }
 
+    old_final_instruction =
+      "Please proceed to the final answer using the information already available."
+
     refusal_text =
       "[tool error] Context limit reached (7/10 > 5). " <>
-        "Please proceed to the final answer using the information already available."
+        "Non-handoff tools are no longer available. " <>
+        "If more work is needed, call the available handoff tool with a continuation summary; " <>
+        "otherwise provide the final answer using the information already available."
 
     scripts = %{
       "/responses" => [
@@ -405,6 +410,10 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert message.status == :done
     assert message_answer_text(message) == "Use handoff if more work is needed."
     assert refusal_text in tool_result_texts(message)
+    refute old_final_instruction in tool_result_texts(message)
+
+    [tool_step, _final_step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert_soft_refusal_result_linked!(tool_step, refusal_text, handoff_available: true)
 
     requests = Agent.get(agent, & &1.requests)
     responses_requests = Map.get(requests, "/responses", [])
@@ -414,6 +423,16 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert "web__read_url" in request_tool_names(first_request)
     assert "agent_management__handoff" in request_tool_names(first_request)
     assert request_tool_names(second_request) == ["agent_management__handoff"]
+
+    assert Enum.any?(List.wrap(second_request["input"]), fn item ->
+             item["type"] == "function_call_output" and item["call_id"] == "call_web_1" and
+               item["output"] == refusal_text
+           end)
+
+    refute Enum.any?(List.wrap(second_request["input"]), fn item ->
+             item["type"] == "function_call_output" and
+               String.contains?(to_string(item["output"] || ""), old_final_instruction)
+           end)
   end
 
   defp start_scripted_server!(scripts) when is_map(scripts) do
@@ -635,7 +654,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Enum.map(&(&1.content_text || ""))
   end
 
-  defp assert_soft_refusal_result_linked!(step, refusal_text) do
+  defp assert_soft_refusal_result_linked!(step, refusal_text, opts \\ []) do
     items = Map.get(step, :items, [])
     [tool_call] = Enum.filter(items, &(&1.type == :tool_call))
     [tool_result] = Enum.filter(items, &(&1.type == :tool_result))
@@ -652,5 +671,18 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
              content.kind == :opaque and
                get_in(content.content_json, ["tool_call_item_id"]) == tool_call.id
            end)
+
+    case Keyword.fetch(opts, :handoff_available) do
+      {:ok, expected} ->
+        assert tool_result
+               |> Map.get(:contents, [])
+               |> Enum.any?(fn content ->
+                 content.kind == :opaque and
+                   get_in(content.content_json, ["raw", "handoff_available"]) == expected
+               end)
+
+      :error ->
+        :ok
+    end
   end
 end

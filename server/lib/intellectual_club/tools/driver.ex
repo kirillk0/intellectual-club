@@ -15,6 +15,7 @@ defmodule IntellectualClub.Tools.Driver do
   @callback functions_mode() :: functions_mode()
   @callback supports_discovery?() :: boolean()
   @callback supports_artifacts?() :: boolean()
+  @callback supports_handoff?() :: boolean()
 
   @callback config_schema() :: map()
   @callback secrets_schema() :: map() | nil
@@ -44,5 +45,6 @@ defmodule IntellectualClub.Tools.Driver do
   @optional_callbacks fixed_functions: 1,
                       instance_prompt_context: 1,
                       normalize_config: 1,
+                      supports_handoff?: 0,
                       validate_config: 3
 end

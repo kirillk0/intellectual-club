@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
+  alias IntellectualClub.Tools.Registry, as: ToolRegistry
 
   @default_auto_retry_backoff_ms [500, 1_500, 5_000, 5_000, 5_000, 5_000, 5_000]
   @default_auto_retry_jitter_ratio 0.2
@@ -803,6 +804,16 @@ defmodule IntellectualClub.Generation.Worker do
     not state.tools_disabled and state.tool_round < max_tool_rounds and not context_limit_reached
   end
 
+  defp context_limit_refusal_instruction(true) do
+    "Non-handoff tools are no longer available. " <>
+      "If more work is needed, call the available handoff tool with a continuation summary; " <>
+      "otherwise provide the final answer using the information already available."
+  end
+
+  defp context_limit_refusal_instruction(_handoff_available) do
+    "Please proceed to the final answer using the information already available."
+  end
+
   defp refusal_result_payload(
          state,
          max_tool_rounds,
@@ -812,15 +823,18 @@ defmodule IntellectualClub.Generation.Worker do
          soft_limit
        )
        when is_integer(max_tool_rounds) do
+    handoff_available = handoff_tools_payload(state) != []
+
     %{
       text:
         "[tool error] Context limit reached (#{total_tokens}/#{length} > #{soft_limit}). " <>
-          "Please proceed to the final answer using the information already available.",
+          context_limit_refusal_instruction(handoff_available),
       raw: %{
         "error" => "context_limit_reached",
         "context_length" => length,
         "context_soft_limit" => soft_limit,
         "context_soft_limit_percent" => state.context.context_soft_limit_percent,
+        "handoff_available" => handoff_available,
         "total_tokens" => total_tokens
       }
     }
@@ -884,7 +898,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp handoff_tool_name?(state, name) when is_binary(name) do
     with {alias_value, "handoff"} <- split_tool_name(name),
          %{} = tool_instance <- Map.get(state.context.tool_instances_by_alias || %{}, alias_value),
-         "native-agent-management" <- tool_instance_type(tool_instance) do
+         true <- ToolRegistry.supports_handoff?(tool_instance) do
       true
     else
       _other -> false
@@ -902,15 +916,6 @@ defmodule IntellectualClub.Generation.Worker do
         nil
     end
   end
-
-  defp tool_instance_type(tool_instance) when is_map(tool_instance) do
-    tool_instance
-    |> map_get("type")
-    |> to_string()
-    |> String.trim()
-  end
-
-  defp tool_instance_type(_tool_instance), do: ""
 
   defp soft_refuse_tool_calls(state, tool_calls, refusal, opts)
        when is_list(tool_calls) and is_map(refusal) and is_list(opts) do

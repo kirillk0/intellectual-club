@@ -38,6 +38,24 @@ defmodule IntellectualClub.Tools.RegistryTest do
     refute Registry.supports_artifacts?("unknown")
   end
 
+  test "reports handoff support for known driver types" do
+    non_handoff_types = [
+      "mcp-http",
+      "native-artifact-reader",
+      "native-brave-search",
+      "native-knowledge-library",
+      "native-web-reader",
+      "outlet",
+      "ssh"
+    ]
+
+    assert Registry.supports_handoff?("native-agent-management")
+    assert Registry.supports_handoff?(%{type: "native-agent-management"})
+    assert Registry.supports_handoff?(%{"type" => "native-agent-management"})
+    refute Enum.any?(non_handoff_types, &Registry.supports_handoff?/1)
+    refute Registry.supports_handoff?("unknown")
+  end
+
   test "driver metadata exposes artifact support" do
     by_type = DriverMetadata.list() |> Map.new(&{&1["type"], &1["supports_artifacts"]})
 
@@ -57,6 +75,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert metadata["functions_mode"] == "fixed"
     assert metadata["supports_discovery"] == false
     assert metadata["supports_artifacts"] == false
+    assert metadata["supports_handoff"] == true
 
     assert %{"parameters_schema" => schema} =
              Enum.find(metadata["fixed_functions"], &(&1["name"] == "handoff"))
