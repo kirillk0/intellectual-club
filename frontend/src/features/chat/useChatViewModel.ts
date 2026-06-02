@@ -264,7 +264,7 @@ export function useChatViewModel() {
   const inspectors = useChatInspectors({
     compiledPromptText,
     loadError,
-    branch,
+    replaceBranch: messageActions.replaceBranch,
     branchMessageById: messageActions.branchMessageById,
     retryConfigurationWarning: messageActions.retryConfigurationWarning,
     startPolling: composerRuntime.startPolling,

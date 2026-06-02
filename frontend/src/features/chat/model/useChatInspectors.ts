@@ -30,7 +30,7 @@ type ScrollToLastMessage = (opts?: {
 type Params = {
   compiledPromptText: Ref<string>;
   loadError: Ref<string>;
-  branch: Ref<ChatBranchMessage[]>;
+  replaceBranch: (nextBranch: ChatBranchMessage[] | null | undefined) => void;
   branchMessageById: (messageId: number | null | undefined) => ChatBranchMessage | null;
   retryConfigurationWarning: (message: ChatBranchMessage | null | undefined) => string;
   startPolling: (messageId: number) => Promise<void>;
@@ -260,7 +260,7 @@ export function useChatInspectors(params: Params) {
         {}
       );
 
-      params.branch.value = payload.branch || [];
+      params.replaceBranch(payload.branch);
       const generationId = payload.generation?.message_id;
       closeStepDetails();
 

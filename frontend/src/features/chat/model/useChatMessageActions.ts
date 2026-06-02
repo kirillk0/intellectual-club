@@ -316,7 +316,11 @@ export function useChatMessageActions(params: Params) {
   };
 
   const applyWorkingPoll = (messageId: number, payload: PollResponse['working_open']) => {
-    if (!payload || openWorking.value?.messageId !== messageId) return;
+    if (!payload) {
+      if (openWorking.value?.messageId === messageId) clearWorking();
+      return;
+    }
+    if (openWorking.value?.messageId !== messageId) return;
     if (!openWorking.value.open) return;
     if (openWorking.value.loading) return;
 
@@ -645,6 +649,7 @@ export function useChatMessageActions(params: Params) {
     copyMessage,
     toggleBookmark,
     branchMessageById,
+    replaceBranch,
     retryConfigurationWarning,
     canDeleteMessage,
     deleteMessageTitle,
