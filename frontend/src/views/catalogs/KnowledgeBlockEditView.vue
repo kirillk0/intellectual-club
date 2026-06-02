@@ -151,7 +151,7 @@
             <div class="stack" style="gap: 2px">
               <strong>Files</strong>
               <div class="muted" style="font-size: 0.85rem">
-                Attached files are visible to the model as file_id placeholders.
+                Only enabled files are visible to the model as file_id placeholders.
               </div>
             </div>
             <button type="button" :disabled="isNew || saving || sharedReadonly || filesUploading" @click="triggerFilesUpload">
@@ -165,7 +165,23 @@
           <p v-else-if="filesError" class="error-text">{{ filesError }}</p>
 
           <div v-else class="list">
-            <div v-for="attachment in fileAttachments" :key="attachment.id" class="row knowledge-block-file-row">
+            <div
+              v-for="attachment in fileAttachments"
+              :key="attachment.id"
+              class="row knowledge-block-file-row"
+              :class="{ 'knowledge-block-file-row--disabled': attachment.enabled === false }"
+            >
+              <label class="knowledge-block-file-row__enabled">
+                <input
+                  type="checkbox"
+                  :checked="attachment.enabled !== false"
+                  :disabled="saving || sharedReadonly || isAttachmentSaving(attachment.id)"
+                  aria-label="Enabled"
+                  title="Enabled"
+                  @change="toggleAttachmentEnabled(attachment, $event)"
+                />
+                <span>Enabled</span>
+              </label>
               <div class="knowledge-block-file-row__main">
                 <a
                   class="knowledge-block-file-row__name"
@@ -184,7 +200,12 @@
                   <code>{{ attachment.file_id }}</code>
                 </div>
               </div>
-              <button type="button" class="danger" :disabled="saving || sharedReadonly" @click="removeAttachment(attachment)">
+              <button
+                type="button"
+                class="danger"
+                :disabled="saving || sharedReadonly || isAttachmentSaving(attachment.id)"
+                @click="removeAttachment(attachment)"
+              >
                 Remove
               </button>
             </div>
@@ -260,6 +281,7 @@ import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/imag
 import {
   deleteKnowledgeBlockFile,
   listKnowledgeBlockFiles,
+  updateKnowledgeBlockFile,
   uploadKnowledgeBlockFiles,
 } from '@/api/knowledgeBlockFiles';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
@@ -450,6 +472,7 @@ const fileAttachments = ref<KnowledgeBlockAttachment[]>([]);
 const filesLoading = ref(false);
 const filesUploading = ref(false);
 const filesError = ref<string | null>(null);
+const savingAttachmentIds = ref<Set<number>>(new Set());
 
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
@@ -608,6 +631,23 @@ const attachedTags = computed(() => {
 });
 
 const filesTabCount = computed(() => fileAttachments.value.length);
+
+const normalizeAttachment = (attachment: KnowledgeBlockAttachment): KnowledgeBlockAttachment => ({
+  ...attachment,
+  enabled: attachment.enabled !== false,
+});
+
+const normalizeAttachments = (attachments: KnowledgeBlockAttachment[] | null | undefined) =>
+  (attachments || []).map(normalizeAttachment);
+
+const isAttachmentSaving = (id: number) => savingAttachmentIds.value.has(id);
+
+function setAttachmentSaving(id: number, saving: boolean) {
+  const next = new Set(savingAttachmentIds.value);
+  if (saving) next.add(id);
+  else next.delete(id);
+  savingAttachmentIds.value = next;
+}
 
 const saving = computed(() => editor.saving.value || linking.value || filesUploading.value);
 const dirty = computed(() => editor.dirty.value || tagsDirty.value);
@@ -901,7 +941,7 @@ async function loadBlockFiles(blockId = editor.numericId.value) {
 
   try {
     const response = await listKnowledgeBlockFiles(blockId);
-    fileAttachments.value = response.attachments || [];
+    fileAttachments.value = normalizeAttachments(response.attachments);
   } catch (error) {
     console.error(error);
     fileAttachments.value = [];
@@ -937,7 +977,7 @@ const handleFilesSelected = async (event: Event) => {
 
   try {
     const response = await uploadKnowledgeBlockFiles(editor.numericId.value, files);
-    fileAttachments.value = response.attachments || [];
+    fileAttachments.value = normalizeAttachments(response.attachments);
   } catch (error) {
     console.error(error);
     filesError.value = getApiErrorMessage(error, 'Failed to upload file.');
@@ -953,12 +993,43 @@ const removeAttachment = async (attachment: KnowledgeBlockAttachment) => {
 
   try {
     const response = await deleteKnowledgeBlockFile(editor.numericId.value, attachment.id);
-    fileAttachments.value = response.attachments || [];
+    fileAttachments.value = normalizeAttachments(response.attachments);
   } catch (error) {
     console.error(error);
     alert(getApiErrorMessage(error, 'Failed to remove file.'));
   }
 };
+
+async function toggleAttachmentEnabled(attachment: KnowledgeBlockAttachment, event: Event) {
+  if (isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+
+  const previousEnabled = attachment.enabled !== false;
+  const nextEnabled = Boolean(target.checked);
+  if (previousEnabled === nextEnabled) return;
+
+  setAttachmentSaving(attachment.id, true);
+  fileAttachments.value = fileAttachments.value.map((row) =>
+    row.id === attachment.id ? { ...row, enabled: nextEnabled } : row
+  );
+
+  try {
+    const response = await updateKnowledgeBlockFile(editor.numericId.value, attachment.id, {
+      enabled: nextEnabled,
+    });
+    fileAttachments.value = normalizeAttachments(response.attachments);
+  } catch (error) {
+    console.error(error);
+    target.checked = previousEnabled;
+    fileAttachments.value = fileAttachments.value.map((row) =>
+      row.id === attachment.id ? { ...row, enabled: previousEnabled } : row
+    );
+    alert(getApiErrorMessage(error, 'Failed to update file binding.'));
+  } finally {
+    setAttachmentSaving(attachment.id, false);
+  }
+}
 </script>
 
 <style scoped>
@@ -1096,6 +1167,26 @@ const removeAttachment = async (attachment: KnowledgeBlockAttachment) => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.knowledge-block-file-row--disabled .knowledge-block-file-row__main {
+  opacity: 0.58;
+}
+
+.knowledge-block-file-row__enabled {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.knowledge-block-file-row__enabled input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 .knowledge-block-file-row__main {

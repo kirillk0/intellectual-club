@@ -31,6 +31,16 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     attached_file =
       create_attachment!(owner, root_block, "root.txt", "text/plain", "root file payload")
 
+    disabled_file =
+      create_attachment!(
+        owner,
+        root_block,
+        "disabled.txt",
+        "text/plain",
+        "disabled file payload",
+        false
+      )
+
     child_block = create_block!(owner, "Child Block", "v2", "Visible child text")
     other_block = create_block!(owner, "Other Block", "v3", "Other text")
     duplicate_a = create_block!(owner, "Duplicate", "a", "First duplicate text")
@@ -65,8 +75,10 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     assert page_zero_text =~ "Visible root text"
     assert page_zero_text =~ "Attached files:"
     assert page_zero_text =~ "[Attached file file_id=#{attached_file.external_id}"
+    refute page_zero_text =~ disabled_file.external_id
     assert [%{"file_id" => file_id, "filename" => "root.txt"}] = page_zero_raw["attachments"]
     assert file_id == attached_file.external_id
+    refute Enum.any?(page_zero_raw["attachments"], &(&1["file_id"] == disabled_file.external_id))
     refute page_zero_text =~ "hidden root note"
 
     assert {:error, "Page out of range:" <> _} =
@@ -287,13 +299,13 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     |> Ash.create!()
   end
 
-  defp create_attachment!(actor, block, filename, mime_type, payload) do
+  defp create_attachment!(actor, block, filename, mime_type, payload, enabled \\ true) do
     {:ok, file} = Files.create_from_binary(filename, mime_type, payload)
 
     KnowledgeBlockFile
     |> Ash.Changeset.for_create(
       :create,
-      %{knowledge_block_id: block.id, file_id: file.id, sequence: 0},
+      %{knowledge_block_id: block.id, file_id: file.id, enabled: enabled, sequence: 0},
       actor: actor
     )
     |> Ash.create!(actor: actor)

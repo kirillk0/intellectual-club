@@ -68,6 +68,22 @@ defmodule IntellectualClub.Generation.ContextTest do
     )
     |> Ash.create!(actor: actor)
 
+    {:ok, disabled_block_file} =
+      Files.create_from_binary("disabled-context.txt", "text/plain", "disabled block file")
+
+    KnowledgeBlockFile
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        knowledge_block_id: first_block.id,
+        file_id: disabled_block_file.id,
+        enabled: false,
+        sequence: 1
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
     bot =
       Bot
       |> Ash.Changeset.for_create(
@@ -137,8 +153,10 @@ defmodule IntellectualClub.Generation.ContextTest do
              "[Attached file file_id=#{first_block_file.external_id}"
            )
 
+    refute String.contains?(context.system_prompt, disabled_block_file.external_id)
     assert String.contains?(context.system_prompt, "Second content")
     assert first_block_file.external_id in context.available_file_external_ids
+    refute disabled_block_file.external_id in context.available_file_external_ids
 
     assert Enum.at(context.messages, 0) == %{
              "role" => "system",

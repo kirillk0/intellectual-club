@@ -704,6 +704,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
         :id,
         :external_id,
         :sequence,
+        :enabled,
         :file_id,
         file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
       ]
@@ -798,6 +799,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       bindings when is_list(bindings) -> bindings
       _other -> []
     end
+    |> Enum.filter(&attachment_binding_enabled?/1)
     |> Enum.sort_by(fn binding ->
       {Map.get(binding, :sequence) || 0, Map.get(binding, :id) || 0}
     end)
@@ -805,6 +807,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   defp block_attachments_raw(_block), do: []
+
+  defp attachment_binding_enabled?(binding) when is_map(binding),
+    do: Map.get(binding, :enabled, true) != false
+
+  defp attachment_binding_enabled?(_binding), do: false
 
   defp attachment_raw(binding) when is_map(binding) do
     case Map.get(binding, :file) do
@@ -821,7 +828,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
             "mime_type" => Map.get(file, :mime_type),
             "size_bytes" => Map.get(file, :size_bytes),
             "sha256" => Map.get(file, :sha256),
-            "sequence" => Map.get(binding, :sequence) || 0
+            "sequence" => Map.get(binding, :sequence) || 0,
+            "enabled" => Map.get(binding, :enabled, true) != false
           }
         ]
 

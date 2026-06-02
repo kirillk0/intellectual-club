@@ -36,3 +36,7 @@ export async function uploadKnowledgeBlockFiles(id: number, files: File[]) {
 export function deleteKnowledgeBlockFile(id: number, attachmentId: number) {
   return api.del<KnowledgeBlockFilesResponse>(`/api/bff/knowledge-blocks/${id}/files/${attachmentId}`);
 }
+
+export function updateKnowledgeBlockFile(id: number, attachmentId: number, attrs: { enabled: boolean }) {
+  return api.patch<KnowledgeBlockFilesResponse>(`/api/bff/knowledge-blocks/${id}/files/${attachmentId}`, attrs);
+}

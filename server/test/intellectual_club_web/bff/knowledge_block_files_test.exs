@@ -66,8 +66,23 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     assert first["mime_type"] == "text/plain"
     assert first["size_bytes"] == byte_size("first payload")
     assert first["sequence"] == 0
+    assert first["enabled"] == true
     assert first["url"] == "/api/bff/knowledge-blocks/#{block.id}/files/#{first["id"]}"
     assert {:ok, first_file} = Files.get_by_external_id(first["file_id"])
+
+    disabled_conn =
+      conn
+      |> recycle()
+      |> sign_in_conn(actor.username, password)
+      |> patch("/api/bff/knowledge-blocks/#{block.id}/files/#{first["id"]}", %{
+        "enabled" => false
+      })
+
+    assert %{"attachment" => disabled_first, "attachments" => [disabled_first]} =
+             json_response(disabled_conn, 200)
+
+    assert disabled_first["id"] == first["id"]
+    assert disabled_first["enabled"] == false
 
     second_conn =
       conn
@@ -78,9 +93,11 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       })
 
     assert %{"attachments" => [listed_first, second]} = json_response(second_conn, 200)
-    assert listed_first["id"] == first["id"]
+    assert listed_first["id"] == disabled_first["id"]
+    assert listed_first["enabled"] == false
     assert second["filename"] == "second.txt"
     assert second["sequence"] == 1
+    assert second["enabled"] == true
 
     list_conn =
       conn
@@ -136,7 +153,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     KnowledgeBlockFile
     |> Ash.Changeset.for_create(
       :create,
-      %{knowledge_block_id: block.id, file_id: file.id, sequence: 0},
+      %{knowledge_block_id: block.id, file_id: file.id, enabled: false, sequence: 0},
       actor: actor
     )
     |> Ash.create!(actor: actor)
@@ -160,6 +177,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
     assert duplicate_binding.file_id != source_binding.file_id
     assert duplicate_binding.sequence == source_binding.sequence
+    assert duplicate_binding.enabled == false
     assert duplicate_binding.file.sha256 == source_binding.file.sha256
     assert file_count(file.sha256) == 2
     assert payload_count(file.sha256) == 1

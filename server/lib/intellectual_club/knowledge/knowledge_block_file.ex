@@ -36,6 +36,12 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
       default(0)
     end
 
+    attribute :enabled, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(true)
+    end
+
     create_timestamp(:created_at, public?: true)
     update_timestamp(:updated_at, public?: true)
   end
@@ -69,9 +75,13 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
     defaults([:read])
 
     create :create do
-      accept([:knowledge_block_id, :file_id, :sequence])
+      accept([:knowledge_block_id, :file_id, :sequence, :enabled])
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:knowledge_block]})
+    end
+
+    update :update do
+      accept([:enabled, :sequence])
     end
 
     destroy :destroy do
@@ -86,22 +96,24 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
       authorize_if relates_to_actor_via(:owner)
 
       authorize_if expr(
-                     exists(
-                       knowledge_block.bot_bindings,
-                       enabled == true and
-                         exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
-                     )
+                     enabled == true and
+                       exists(
+                         knowledge_block.bot_bindings,
+                         enabled == true and
+                           exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
+                       )
                    )
 
       authorize_if expr(
-                     exists(
-                       knowledge_block.llm_configuration_bindings,
-                       enabled == true and
-                         exists(
-                           llm_configuration.shares.user_group.memberships,
-                           user_id == ^actor(:id)
-                         )
-                     )
+                     enabled == true and
+                       exists(
+                         knowledge_block.llm_configuration_bindings,
+                         enabled == true and
+                           exists(
+                             llm_configuration.shares.user_group.memberships,
+                             user_id == ^actor(:id)
+                           )
+                       )
                    )
     end
 
@@ -110,6 +122,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
     end
 
     policy action_type(:destroy) do
+      authorize_if relates_to_actor_via(:owner)
+    end
+
+    policy action_type(:update) do
       authorize_if relates_to_actor_via(:owner)
     end
   end

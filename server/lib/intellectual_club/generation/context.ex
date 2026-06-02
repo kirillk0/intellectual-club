@@ -1003,6 +1003,7 @@ defmodule IntellectualClub.Generation.Context do
         :id,
         :external_id,
         :sequence,
+        :enabled,
         :file_id,
         file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
       ]
@@ -1102,10 +1103,16 @@ defmodule IntellectualClub.Generation.Context do
       bindings when is_list(bindings) -> bindings
       _other -> []
     end
+    |> Enum.filter(&file_binding_enabled?/1)
     |> Enum.flat_map(&file_external_id_from_binding/1)
   end
 
   defp block_file_external_ids(_block), do: []
+
+  defp file_binding_enabled?(binding) when is_map(binding),
+    do: Map.get(binding, :enabled, true) != false
+
+  defp file_binding_enabled?(_binding), do: false
 
   defp file_external_id_from_binding(binding) when is_map(binding) do
     case Map.get(binding, :file) do

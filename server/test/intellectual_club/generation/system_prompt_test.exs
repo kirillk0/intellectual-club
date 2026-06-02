@@ -26,6 +26,7 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
 
   test "appends chat-style file placeholders after rendered knowledge block text" do
     file_external_id = Ash.UUID.generate()
+    disabled_file_external_id = Ash.UUID.generate()
 
     prompt =
       SystemPrompt.build(
@@ -48,6 +49,21 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
                   size_bytes: 42,
                   sha256: String.duplicate("a", 64)
                 }
+              },
+              %{
+                id: 2,
+                external_id: Ash.UUID.generate(),
+                enabled: false,
+                sequence: 1,
+                file_id: 11,
+                file: %{
+                  id: 11,
+                  external_id: disabled_file_external_id,
+                  filename: "disabled.pdf",
+                  mime_type: "application/pdf",
+                  size_bytes: 84,
+                  sha256: String.duplicate("c", 64)
+                }
               }
             ]
           }
@@ -58,6 +74,7 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
     assert prompt =~
              "Visible Alice\n[Attached file file_id=#{file_external_id} filename=\"report.pdf\" mime_type=\"application/pdf\" size_bytes=42]"
 
+    refute prompt =~ disabled_file_external_id
     refute prompt =~ "hidden note"
   end
 

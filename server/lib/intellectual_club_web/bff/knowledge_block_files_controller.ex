@@ -18,7 +18,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          block_id when is_integer(block_id) <- Helpers.parse_optional_integer(id),
          {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
-         {:ok, attachments} <- list_attachments(block.id) do
+         {:ok, attachments} <- list_attachments(block, actor) do
       json(conn, %{attachments: Enum.map(attachments, &serialize_attachment(&1, block.id))})
     else
       {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
          {:ok, upload_attrs} <- validate_file_upload(Map.get(params, "file")),
          {:ok, file} <- Files.create_from_upload(upload_attrs),
          {:ok, attachment} <- create_attachment(block, file, actor),
-         {:ok, attachments} <- list_attachments(block.id) do
+         {:ok, attachments} <- list_attachments(block, actor) do
       json(conn, %{
         attachment: serialize_attachment(attachment, block.id),
         attachments: Enum.map(attachments, &serialize_attachment(&1, block.id))
@@ -72,7 +72,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
          attachment_id when is_integer(attachment_id) <-
            Helpers.parse_optional_integer(attachment_id),
          {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
-         {:ok, attachment} <- get_attachment(block.id, attachment_id),
+         {:ok, attachment} <- get_attachment(block.id, attachment_id, owner?(block, actor)),
          {:ok, {file, payload}} <- Files.load_payload(attachment.file_id) do
       ImageControllerHelpers.send_loaded_file(conn, file, payload)
     else
@@ -87,6 +87,42 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
     end
   end
 
+  def update(conn, %{"id" => id, "attachment_id" => attachment_id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         block_id when is_integer(block_id) <- Helpers.parse_optional_integer(id),
+         attachment_id when is_integer(attachment_id) <-
+           Helpers.parse_optional_integer(attachment_id),
+         {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
+         :ok <- require_owner(block, actor),
+         {:ok, enabled} <- validate_enabled(params),
+         {:ok, attachment} <- get_attachment(block.id, attachment_id, true),
+         {:ok, attachment} <- update_attachment(attachment, enabled, actor),
+         {:ok, attachments} <- list_attachments(block, actor) do
+      json(conn, %{
+        attachment: serialize_attachment(attachment, block.id),
+        attachments: Enum.map(attachments, &serialize_attachment(&1, block.id))
+      })
+    else
+      {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
+        ImageControllerHelpers.render_not_found(conn)
+
+      {:error, :forbidden} ->
+        render_forbidden(conn)
+
+      {:error, message} when is_binary(message) ->
+        ImageControllerHelpers.render_validation_error(conn, message)
+
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ImageControllerHelpers.render_action_error(conn, error)
+
+      _other ->
+        ImageControllerHelpers.render_not_found(conn)
+    end
+  end
+
   def delete(conn, %{"id" => id, "attachment_id" => attachment_id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          block_id when is_integer(block_id) <- Helpers.parse_optional_integer(id),
@@ -94,9 +130,9 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
            Helpers.parse_optional_integer(attachment_id),
          {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
          :ok <- require_owner(block, actor),
-         {:ok, attachment} <- get_attachment(block.id, attachment_id),
+         {:ok, attachment} <- get_attachment(block.id, attachment_id, true),
          :ok <- destroy_attachment(attachment, actor),
-         {:ok, attachments} <- list_attachments(block.id) do
+         {:ok, attachments} <- list_attachments(block, actor) do
       json(conn, %{attachments: Enum.map(attachments, &serialize_attachment(&1, block.id))})
     else
       {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
@@ -121,6 +157,17 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
        do: :ok
 
   defp require_owner(_block, _actor), do: {:error, :forbidden}
+
+  defp owner?(%KnowledgeBlock{owner_id: owner_id}, %{id: actor_id})
+       when is_integer(owner_id) and owner_id == actor_id,
+       do: true
+
+  defp owner?(_block, _actor), do: false
+
+  defp validate_enabled(%{"enabled" => enabled}) when is_boolean(enabled), do: {:ok, enabled}
+  defp validate_enabled(%{"enabled" => "true"}), do: {:ok, true}
+  defp validate_enabled(%{"enabled" => "false"}), do: {:ok, false}
+  defp validate_enabled(_params), do: {:error, "Enabled must be true or false."}
 
   defp validate_file_upload(nil), do: {:error, "File is required."}
 
@@ -197,10 +244,30 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
     end
   end
 
-  defp get_attachment(block_id, attachment_id)
+  defp update_attachment(%KnowledgeBlockFile{} = attachment, enabled, actor)
+       when is_boolean(enabled) do
+    attachment
+    |> Ash.Changeset.for_update(:update, %{enabled: enabled}, actor: actor)
+    |> Ash.update(
+      actor: actor,
+      load: [file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]]
+    )
+  end
+
+  defp get_attachment(block_id, attachment_id, include_disabled?)
        when is_integer(block_id) and is_integer(attachment_id) do
-    KnowledgeBlockFile
-    |> Ash.Query.filter(id == ^attachment_id and knowledge_block_id == ^block_id)
+    query =
+      KnowledgeBlockFile
+      |> Ash.Query.filter(id == ^attachment_id and knowledge_block_id == ^block_id)
+
+    query =
+      if include_disabled? do
+        query
+      else
+        Ash.Query.filter(query, enabled == true)
+      end
+
+    query
     |> Ash.Query.load([file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]],
       strict?: true
     )
@@ -212,12 +279,22 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
     end
   end
 
-  defp get_attachment(_block_id, _attachment_id), do: {:error, :not_found}
+  defp get_attachment(_block_id, _attachment_id, _include_disabled?), do: {:error, :not_found}
 
-  defp list_attachments(block_id) when is_integer(block_id) do
-    attachments =
+  defp list_attachments(%KnowledgeBlock{id: block_id} = block, actor) when is_integer(block_id) do
+    query =
       KnowledgeBlockFile
       |> Ash.Query.filter(knowledge_block_id == ^block_id)
+
+    query =
+      if owner?(block, actor) do
+        query
+      else
+        Ash.Query.filter(query, enabled == true)
+      end
+
+    attachments =
+      query
       |> Ash.Query.sort(sequence: :asc, id: :asc)
       |> Ash.Query.load([file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]],
         strict?: true
@@ -252,6 +329,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
       size_bytes: file && Map.get(file, :size_bytes),
       sha256: file && Map.get(file, :sha256),
       sequence: attachment.sequence || 0,
+      enabled: attachment.enabled != false,
       url: "/api/bff/knowledge-blocks/#{block_id}/files/#{attachment.id}"
     }
   end

@@ -55,6 +55,7 @@ defmodule IntellectualClub.Knowledge.PromptContent do
     block
     |> Map.get(:file_bindings, [])
     |> normalize_bindings()
+    |> Enum.filter(&binding_enabled?/1)
     |> Enum.sort_by(&binding_sort_key/1)
     |> Enum.flat_map(&placeholder_for_binding/1)
     |> Enum.join("\n")
@@ -71,6 +72,11 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   defp normalize_bindings(%Ash.NotLoaded{}), do: []
   defp normalize_bindings(bindings) when is_list(bindings), do: bindings
   defp normalize_bindings(_bindings), do: []
+
+  defp binding_enabled?(binding) when is_map(binding),
+    do: Map.get(binding, :enabled, true) != false
+
+  defp binding_enabled?(_binding), do: false
 
   defp binding_sort_key(binding) when is_map(binding) do
     {Map.get(binding, :sequence) || 0, Map.get(binding, :id) || 0}

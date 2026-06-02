@@ -63,7 +63,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     IntellectualClub.Knowledge.KnowledgeBlockFile
     |> Ash.Query.filter(knowledge_block_id == ^source_id)
     |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.Query.select([:id, :knowledge_block_id, :file_id, :sequence])
+    |> Ash.Query.select([:id, :knowledge_block_id, :file_id, :sequence, :enabled])
     |> Ash.read!(actor: actor)
     |> Enum.reduce_while({:ok, duplicated}, fn binding, {:ok, duplicated} ->
       with {:ok, duplicated_file} <- Files.duplicate_file(binding.file_id),
@@ -74,7 +74,8 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
                %{
                  knowledge_block_id: duplicated.id,
                  file_id: duplicated_file.id,
-                 sequence: binding.sequence || 0
+                 sequence: binding.sequence || 0,
+                 enabled: binding.enabled != false
                },
                actor: actor
              )

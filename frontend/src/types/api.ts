@@ -55,6 +55,7 @@ export type KnowledgeBlockAttachment = {
   size_bytes: number;
   sha256: string;
   sequence: number;
+  enabled: boolean;
   url: string;
 };
 
