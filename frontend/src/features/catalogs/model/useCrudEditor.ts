@@ -182,7 +182,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   };
 
   const save = async () => {
-    if (saving.value) return;
+    if (saving.value) return false;
     errors.clear();
     loadError.value = null;
     saving.value = true;
@@ -202,7 +202,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
           await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
         }
       } else {
-        if (numericId.value === undefined) return;
+        if (numericId.value === undefined) return false;
         const updated = await jsonApiUpdate(
           options.basePath,
           options.type,
@@ -214,10 +214,13 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         base.value = deepClone(form);
         handleDocument(updated, 'save');
       }
+
+      return true;
     } catch (error) {
-      if (errors.setFromApiError(error)) return;
+      if (errors.setFromApiError(error)) return false;
       console.error(error);
       alert('Failed to save record.');
+      return false;
     } finally {
       saving.value = false;
     }

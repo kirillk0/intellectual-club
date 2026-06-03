@@ -154,8 +154,8 @@
                 Only enabled files are visible to the model as file_id placeholders.
               </div>
             </div>
-            <button type="button" :disabled="isNew || saving || sharedReadonly || filesUploading" @click="triggerFilesUpload">
-              {{ filesUploading ? 'Uploading…' : 'Upload files' }}
+            <button type="button" :disabled="filesActionDisabled" @click="triggerFilesUpload">
+              Attach files
             </button>
           </div>
 
@@ -169,13 +169,16 @@
               v-for="attachment in fileAttachments"
               :key="attachment.id"
               class="row knowledge-block-file-row"
-              :class="{ 'knowledge-block-file-row--disabled': attachment.enabled === false }"
+              :class="{
+                'knowledge-block-file-row--disabled': attachment.enabled === false,
+                'knowledge-block-file-row--pending': isPendingAttachment(attachment),
+              }"
             >
               <label class="knowledge-block-file-row__enabled">
                 <input
                   type="checkbox"
                   :checked="attachment.enabled !== false"
-                  :disabled="saving || sharedReadonly || isAttachmentSaving(attachment.id)"
+                  :disabled="saving || sharedReadonly"
                   aria-label="Enabled"
                   title="Enabled"
                   @change="toggleAttachmentEnabled(attachment, $event)"
@@ -184,6 +187,7 @@
               </label>
               <div class="knowledge-block-file-row__main">
                 <a
+                  v-if="!isPendingAttachment(attachment)"
                   class="knowledge-block-file-row__name"
                   :href="attachment.url"
                   target="_blank"
@@ -192,18 +196,21 @@
                 >
                   {{ attachment.filename }}
                 </a>
+                <span v-else class="knowledge-block-file-row__name">{{ attachment.filename }}</span>
                 <div class="knowledge-block-file-row__meta">
                   {{ attachment.mime_type || 'application/octet-stream' }} · {{ formatBytes(attachment.size_bytes) }}
+                  <span v-if="isPendingAttachment(attachment)"> · <span>Pending upload</span></span>
                 </div>
                 <div class="knowledge-block-file-row__id">
                   <span class="muted">File ID</span>
-                  <code>{{ attachment.file_id }}</code>
+                  <code v-if="attachment.file_id">{{ attachment.file_id }}</code>
+                  <span v-else class="muted">Available after save</span>
                 </div>
               </div>
               <button
                 type="button"
                 class="danger"
-                :disabled="saving || sharedReadonly || isAttachmentSaving(attachment.id)"
+                :disabled="saving || sharedReadonly"
                 @click="removeAttachment(attachment)"
               >
                 Remove
@@ -212,7 +219,12 @@
 
             <p v-if="!fileAttachments.length" class="muted">No files attached.</p>
           </div>
-          <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the block before uploading files.</div>
+          <div v-if="isNew" class="muted" style="font-size: 0.85rem">
+            Files will be uploaded when you save the block.
+          </div>
+          <div v-else-if="filesDirty" class="muted" style="font-size: 0.85rem">
+            File changes will be saved when you save the block.
+          </div>
         </div>
 
         <div v-else class="stack">
@@ -278,13 +290,12 @@ import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/images';
-import {
-  deleteKnowledgeBlockFile,
-  listKnowledgeBlockFiles,
-  updateKnowledgeBlockFile,
-  uploadKnowledgeBlockFiles,
-} from '@/api/knowledgeBlockFiles';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import {
+  isPendingKnowledgeBlockFile,
+  useKnowledgeBlockFileBindingsDraft,
+  type KnowledgeBlockFileDraftItem,
+} from '@/features/catalogs/model/useKnowledgeBlockFileBindingsDraft';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
 import { renderChatMessageHtml } from '@/utils/chatMarkdown';
@@ -300,7 +311,7 @@ import {
   type JsonApiResource,
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
-import type { ImageAsset, KnowledgeBlockAttachment } from '@/types/api';
+import type { ImageAsset } from '@/types/api';
 
 type KnowledgeBlockForm = {
   name: string;
@@ -468,11 +479,12 @@ const loading = editor.loading;
 const loadError = editor.loadError;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const filesInput = ref<HTMLInputElement | null>(null);
-const fileAttachments = ref<KnowledgeBlockAttachment[]>([]);
-const filesLoading = ref(false);
-const filesUploading = ref(false);
-const filesError = ref<string | null>(null);
-const savingAttachmentIds = ref<Set<number>>(new Set());
+const fileBindings = useKnowledgeBlockFileBindingsDraft();
+const fileAttachments = fileBindings.draft;
+const filesLoading = fileBindings.loading;
+const filesError = fileBindings.error;
+const filesDirty = fileBindings.dirty;
+const suppressFilesAutoLoad = ref(false);
 
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
@@ -631,26 +643,16 @@ const attachedTags = computed(() => {
 });
 
 const filesTabCount = computed(() => fileAttachments.value.length);
+const filesActionDisabled = computed(
+  () =>
+    saving.value ||
+    sharedReadonly.value ||
+    filesLoading.value ||
+    (!isNew.value && !fileBindings.loaded.value)
+);
 
-const normalizeAttachment = (attachment: KnowledgeBlockAttachment): KnowledgeBlockAttachment => ({
-  ...attachment,
-  enabled: attachment.enabled !== false,
-});
-
-const normalizeAttachments = (attachments: KnowledgeBlockAttachment[] | null | undefined) =>
-  (attachments || []).map(normalizeAttachment);
-
-const isAttachmentSaving = (id: number) => savingAttachmentIds.value.has(id);
-
-function setAttachmentSaving(id: number, saving: boolean) {
-  const next = new Set(savingAttachmentIds.value);
-  if (saving) next.add(id);
-  else next.delete(id);
-  savingAttachmentIds.value = next;
-}
-
-const saving = computed(() => editor.saving.value || linking.value || filesUploading.value);
-const dirty = computed(() => editor.dirty.value || tagsDirty.value);
+const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
+const dirty = computed(() => editor.dirty.value || tagsDirty.value || filesDirty.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 useUnsavedChangesGuard(guardDirty);
@@ -868,20 +870,44 @@ function toggleTag(tagId: number) {
 }
 
 const save = async () => {
+  if (saving.value) return;
   const spec = linkSpec.value;
   const wasNew = editor.isNew.value;
   const shouldLinkOwner = wasNew && Boolean(spec) && !linkedAfterCreate.value;
-  await editor.save();
+  const shouldSyncFiles = fileBindings.loaded.value && fileBindings.dirty.value && !sharedReadonly.value;
+
+  if (shouldSyncFiles) suppressFilesAutoLoad.value = true;
+
+  const saved = await editor.save();
+  if (!saved) {
+    suppressFilesAutoLoad.value = false;
+    return;
+  }
 
   if (shouldLinkOwner && spec) {
     const newId = editor.numericId.value;
     if (newId) await linkToOwner(spec, newId);
+  }
+
+  try {
+    if (shouldSyncFiles) {
+      const blockId = editor.numericId.value;
+      if (!blockId) throw new Error('Saved knowledge block id is missing.');
+      await fileBindings.sync(blockId);
+    }
+  } catch (error) {
+    console.error(error);
+    blockTab.value = 'files';
+    alert(getApiErrorMessage(error, 'Failed to save file changes.'));
+  } finally {
+    suppressFilesAutoLoad.value = false;
   }
 };
 
 const cancelChanges = () => {
   editor.reset();
   draftTagBindings.value = (originalTagBindings.value || []).map((b) => ({ ...b }));
+  fileBindings.reset();
 };
 const remove = editor.remove;
 const duplicate = editor.duplicate;
@@ -929,107 +955,45 @@ const removeImage = async () => {
   }
 };
 
-async function loadBlockFiles(blockId = editor.numericId.value) {
-  if (!blockId || isNew.value) {
-    fileAttachments.value = [];
-    filesError.value = null;
-    return;
-  }
-
-  filesLoading.value = true;
-  filesError.value = null;
-
-  try {
-    const response = await listKnowledgeBlockFiles(blockId);
-    fileAttachments.value = normalizeAttachments(response.attachments);
-  } catch (error) {
-    console.error(error);
-    fileAttachments.value = [];
-    filesError.value = getApiErrorMessage(error, 'Failed to load files.');
-  } finally {
-    filesLoading.value = false;
-  }
-}
-
 watch(
   () => [editor.numericId.value, loaded.value, isNew.value] as const,
   ([blockId, isLoaded, newRecord]) => {
     if (!isLoaded) return;
+    if (suppressFilesAutoLoad.value) return;
+
     if (newRecord || !blockId) {
-      fileAttachments.value = [];
-      filesError.value = null;
+      fileBindings.hydrate([]);
       return;
     }
 
-    void loadBlockFiles(blockId);
+    void fileBindings.load(blockId);
   },
   { immediate: true }
 );
 
-const handleFilesSelected = async (event: Event) => {
+const handleFilesSelected = (event: Event) => {
   const target = event.target as HTMLInputElement | null;
   const files = Array.from(target?.files || []);
   if (target) target.value = '';
-  if (!files.length || isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
+  if (!files.length || sharedReadonly.value || filesActionDisabled.value) return;
 
-  filesUploading.value = true;
-  filesError.value = null;
-
-  try {
-    const response = await uploadKnowledgeBlockFiles(editor.numericId.value, files);
-    fileAttachments.value = normalizeAttachments(response.attachments);
-  } catch (error) {
-    console.error(error);
-    filesError.value = getApiErrorMessage(error, 'Failed to upload file.');
-    await loadBlockFiles(editor.numericId.value);
-  } finally {
-    filesUploading.value = false;
-  }
+  fileBindings.addFiles(files);
 };
 
-const removeAttachment = async (attachment: KnowledgeBlockAttachment) => {
-  if (isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
-  if (!window.confirm('Remove file?')) return;
-
-  try {
-    const response = await deleteKnowledgeBlockFile(editor.numericId.value, attachment.id);
-    fileAttachments.value = normalizeAttachments(response.attachments);
-  } catch (error) {
-    console.error(error);
-    alert(getApiErrorMessage(error, 'Failed to remove file.'));
-  }
+const removeAttachment = (attachment: KnowledgeBlockFileDraftItem) => {
+  if (sharedReadonly.value) return;
+  fileBindings.remove(attachment.id);
 };
 
-async function toggleAttachmentEnabled(attachment: KnowledgeBlockAttachment, event: Event) {
-  if (isNew.value || editor.numericId.value == null || sharedReadonly.value) return;
+function toggleAttachmentEnabled(attachment: KnowledgeBlockFileDraftItem, event: Event) {
+  if (sharedReadonly.value) return;
   const target = event.target as HTMLInputElement | null;
   if (!target) return;
 
-  const previousEnabled = attachment.enabled !== false;
-  const nextEnabled = Boolean(target.checked);
-  if (previousEnabled === nextEnabled) return;
-
-  setAttachmentSaving(attachment.id, true);
-  fileAttachments.value = fileAttachments.value.map((row) =>
-    row.id === attachment.id ? { ...row, enabled: nextEnabled } : row
-  );
-
-  try {
-    const response = await updateKnowledgeBlockFile(editor.numericId.value, attachment.id, {
-      enabled: nextEnabled,
-    });
-    fileAttachments.value = normalizeAttachments(response.attachments);
-  } catch (error) {
-    console.error(error);
-    target.checked = previousEnabled;
-    fileAttachments.value = fileAttachments.value.map((row) =>
-      row.id === attachment.id ? { ...row, enabled: previousEnabled } : row
-    );
-    alert(getApiErrorMessage(error, 'Failed to update file binding.'));
-  } finally {
-    setAttachmentSaving(attachment.id, false);
-  }
+  fileBindings.setEnabled(attachment.id, Boolean(target.checked));
 }
+
+const isPendingAttachment = isPendingKnowledgeBlockFile;
 </script>
 
 <style scoped>
@@ -1171,6 +1135,11 @@ async function toggleAttachmentEnabled(attachment: KnowledgeBlockAttachment, eve
 
 .knowledge-block-file-row--disabled .knowledge-block-file-row__main {
   opacity: 0.58;
+}
+
+.knowledge-block-file-row--pending {
+  border-style: dashed;
+  background: #fbfcff;
 }
 
 .knowledge-block-file-row__enabled {

@@ -38,8 +38,9 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
          {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
          :ok <- require_owner(block, actor),
          {:ok, upload_attrs} <- validate_file_upload(Map.get(params, "file")),
+         {:ok, enabled} <- validate_optional_enabled(params),
          {:ok, file} <- Files.create_from_upload(upload_attrs),
-         {:ok, attachment} <- create_attachment(block, file, actor),
+         {:ok, attachment} <- create_attachment(block, file, actor, enabled),
          {:ok, attachments} <- list_attachments(block, actor) do
       json(conn, %{
         attachment: serialize_attachment(attachment, block.id),
@@ -169,6 +170,9 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
   defp validate_enabled(%{"enabled" => "false"}), do: {:ok, false}
   defp validate_enabled(_params), do: {:error, "Enabled must be true or false."}
 
+  defp validate_optional_enabled(%{"enabled" => _enabled} = params), do: validate_enabled(params)
+  defp validate_optional_enabled(_params), do: {:ok, true}
+
   defp validate_file_upload(nil), do: {:error, "File is required."}
 
   defp validate_file_upload(%Plug.Upload{} = upload) do
@@ -208,14 +212,14 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
 
   defp validate_size(_filename, _size, _max_bytes), do: :ok
 
-  defp create_attachment(%KnowledgeBlock{} = block, file, actor) do
+  defp create_attachment(%KnowledgeBlock{} = block, file, actor, enabled) do
     sequence = next_sequence(block.id)
 
     result =
       KnowledgeBlockFile
       |> Ash.Changeset.for_create(
         :create,
-        %{knowledge_block_id: block.id, file_id: file.id, sequence: sequence},
+        %{knowledge_block_id: block.id, file_id: file.id, sequence: sequence, enabled: enabled},
         actor: actor
       )
       |> Ash.create(

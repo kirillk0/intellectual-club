@@ -6,9 +6,14 @@ export type KnowledgeBlockFilesResponse = {
   attachments: KnowledgeBlockAttachment[];
 };
 
-function buildFileFormData(file: File) {
+type UploadKnowledgeBlockFileOptions = {
+  enabled?: boolean;
+};
+
+function buildFileFormData(file: File, options: UploadKnowledgeBlockFileOptions = {}) {
   const formData = new FormData();
   formData.append('file', file);
+  if (typeof options.enabled === 'boolean') formData.append('enabled', String(options.enabled));
   return formData;
 }
 
@@ -16,18 +21,22 @@ export function listKnowledgeBlockFiles(id: number) {
   return api.get<KnowledgeBlockFilesResponse>(`/api/bff/knowledge-blocks/${id}/files`);
 }
 
-export function uploadKnowledgeBlockFile(id: number, file: File) {
+export function uploadKnowledgeBlockFile(id: number, file: File, options: UploadKnowledgeBlockFileOptions = {}) {
   return api.post<KnowledgeBlockFilesResponse>(
     `/api/bff/knowledge-blocks/${id}/files`,
-    buildFileFormData(file)
+    buildFileFormData(file, options)
   );
 }
 
-export async function uploadKnowledgeBlockFiles(id: number, files: File[]) {
+export async function uploadKnowledgeBlockFiles(
+  id: number,
+  files: File[],
+  options: UploadKnowledgeBlockFileOptions = {}
+) {
   let response: KnowledgeBlockFilesResponse | null = null;
 
   for (const file of files) {
-    response = await uploadKnowledgeBlockFile(id, file);
+    response = await uploadKnowledgeBlockFile(id, file, options);
   }
 
   return response ?? listKnowledgeBlockFiles(id);

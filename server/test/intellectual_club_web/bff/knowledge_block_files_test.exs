@@ -183,6 +183,26 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     assert payload_count(file.sha256) == 1
   end
 
+  test "upload can create a disabled knowledge block file binding", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    block = create_block!(actor)
+
+    upload_conn =
+      conn
+      |> recycle()
+      |> sign_in_conn(actor.username, password)
+      |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
+        "enabled" => "false",
+        "file" => upload_fixture("disabled.txt", "text/plain", "disabled payload")
+      })
+
+    assert %{"attachment" => attachment, "attachments" => [attachment]} =
+             json_response(upload_conn, 200)
+
+    assert attachment["filename"] == "disabled.txt"
+    assert attachment["enabled"] == false
+  end
+
   defp create_block!(actor) do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
