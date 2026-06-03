@@ -450,6 +450,40 @@ const addCodeCopyButtons = (root: HTMLElement) => {
   });
 };
 
+const isExternalHref = (href: string) => {
+  try {
+    const url = new URL(href, window.location.href);
+
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return url.origin !== window.location.origin;
+    }
+
+    return url.protocol !== window.location.protocol;
+  } catch (_error) {
+    return false;
+  }
+};
+
+const addSafeExternalLinkTargets = (root: HTMLElement) => {
+  root.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
+    const href = anchor.getAttribute('href') || '';
+    if (!isExternalHref(href)) return;
+
+    const relValues = new Set(
+      (anchor.getAttribute('rel') || '')
+        .split(/\s+/u)
+        .map((value) => value.trim())
+        .filter(Boolean)
+    );
+
+    relValues.add('noopener');
+    relValues.add('noreferrer');
+
+    anchor.setAttribute('target', '_blank');
+    anchor.setAttribute('rel', Array.from(relValues).join(' '));
+  });
+};
+
 export const renderChatMessageHtml = (
   content: string | null | undefined,
   options?: { highlightCode?: boolean; codeCopyButtons?: boolean }
@@ -473,5 +507,8 @@ export const renderChatMessageHtml = (
   }
 
   const sanitized = DOMPurify.sanitize(wrapper.innerHTML, SANITIZE_OPTIONS);
-  return wrapTables(sanitized);
+  const sanitizedWrapper = document.createElement('div');
+  sanitizedWrapper.innerHTML = sanitized;
+  addSafeExternalLinkTargets(sanitizedWrapper);
+  return wrapTables(sanitizedWrapper.innerHTML);
 };
