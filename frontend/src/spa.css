@@ -69,7 +69,7 @@ html {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --color-bg: #101318;
+    --color-bg: #0c0f14;
     --color-surface: #171b22;
     --color-surface-elevated: #1d232d;
     --color-surface-muted: #202631;
@@ -86,7 +86,7 @@ html {
     --color-focus: #7aa7ff;
     --color-primary: #f8fafc;
     --color-primary-hover: #dbe3ef;
-    --color-primary-contrast: #101318;
+    --color-primary-contrast: #0c0f14;
     --color-link: #8bb7ff;
     --color-danger: #ff8e86;
     --color-danger-text: #ffb1ab;
@@ -120,7 +120,7 @@ html {
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --color-bg: #101318;
+  --color-bg: #0c0f14;
   --color-surface: #171b22;
   --color-surface-elevated: #1d232d;
   --color-surface-muted: #202631;
@@ -137,7 +137,7 @@ html {
   --color-focus: #7aa7ff;
   --color-primary: #f8fafc;
   --color-primary-hover: #dbe3ef;
-  --color-primary-contrast: #101318;
+  --color-primary-contrast: #0c0f14;
   --color-link: #8bb7ff;
   --color-danger: #ff8e86;
   --color-danger-text: #ffb1ab;
@@ -178,7 +178,7 @@ html {
 
 body {
   margin: 0;
-  background: var(--color-surface);
+  background: var(--color-bg);
   color: var(--color-text);
 }
 
@@ -598,7 +598,7 @@ fieldset {
 }
 
 .stack-nav--active {
-  background: var(--color-surface);
+  background: var(--color-bg);
 }
 
 .stack-layer {
@@ -616,7 +616,7 @@ fieldset {
 
 .stack-layer--active {
   z-index: 200;
-  background: var(--color-surface);
+  background: var(--color-bg);
 }
 
 .stack-nav--active .stack-layer--active {

@@ -48,7 +48,7 @@ export const effectiveTheme = computed<EffectiveTheme>(() =>
 const setThemeColorMeta = (theme: EffectiveTheme) => {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   if (!meta) return;
-  meta.content = theme === 'dark' ? '#101318' : '#ffffff';
+  meta.content = theme === 'dark' ? '#0c0f14' : '#ffffff';
 };
 
 const applyDocumentTheme = (theme: EffectiveTheme, preferred: PreferredTheme) => {
