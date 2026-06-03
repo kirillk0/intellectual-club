@@ -106,8 +106,8 @@ html {
     --color-info-text: #9cc7ff;
     --color-chat-user-bg: linear-gradient(135deg, #173152, #182636);
     --color-chat-user-border: #315b8a;
-    --color-chat-assistant-bg: #1d232d;
-    --color-chat-assistant-border: #303846;
+    --color-chat-assistant-bg: #151b23;
+    --color-chat-assistant-border: #2b3340;
     --color-code-bg: #0b0f14;
     --color-code-text: #e7eaf0;
     --shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.28);
@@ -157,8 +157,8 @@ html {
   --color-info-text: #9cc7ff;
   --color-chat-user-bg: linear-gradient(135deg, #173152, #182636);
   --color-chat-user-border: #315b8a;
-  --color-chat-assistant-bg: #1d232d;
-  --color-chat-assistant-border: #303846;
+  --color-chat-assistant-bg: #151b23;
+  --color-chat-assistant-border: #2b3340;
   --color-code-bg: #0b0f14;
   --color-code-text: #e7eaf0;
   --shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.28);
