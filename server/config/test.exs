@@ -2,6 +2,7 @@ import Config
 
 data_dir = Path.expand("../../data", __DIR__)
 File.mkdir_p!(data_dir)
+test_partition = System.get_env("MIX_TEST_PARTITION") || ""
 
 # Configure your database
 #
@@ -9,8 +10,10 @@ File.mkdir_p!(data_dir)
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :intellectual_club, IntellectualClub.Repo,
-  database: Path.join(data_dir, "intellectual_club_test.db"),
-  pool_size: 5,
+  database: Path.join(data_dir, "intellectual_club_test#{test_partition}.db"),
+  pool_size: 1,
+  default_transaction_mode: :immediate,
+  busy_timeout: 15_000,
   pool: Ecto.Adapters.SQL.Sandbox
 
 # We don't run a server during test. If one is required,
@@ -39,6 +42,7 @@ config :phoenix,
 
 config :intellectual_club,
   demo_chunk_delay_ms: 0,
+  recover_orphaned_generations_on_startup: false,
   token_signing_secret: "test-token-signing-secret",
   openai_oauth_req_options: [
     plug: {Req.Test, IntellectualClub.Llm.Auth.OpenAIOAuth}

@@ -33,7 +33,10 @@ defmodule IntellectualClub.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        _ = IntellectualClub.Generation.Supervisor.recover_orphaned_generations_async()
+        if Application.get_env(:intellectual_club, :recover_orphaned_generations_on_startup, true) do
+          _ = IntellectualClub.Generation.Supervisor.recover_orphaned_generations_async()
+        end
+
         {:ok, pid}
 
       other ->

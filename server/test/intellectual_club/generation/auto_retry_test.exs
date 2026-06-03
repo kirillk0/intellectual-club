@@ -198,6 +198,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       )
 
     if message.status in wanted do
+      wait_for_generation_worker_to_stop!(message_id)
       message
     else
       if System.monotonic_time(:millisecond) < deadline do
@@ -207,6 +208,24 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         do_wait_for_status(message_id, actor, wanted, deadline)
       else
         flunk("Generation did not reach expected status")
+      end
+    end
+  end
+
+  defp wait_for_generation_worker_to_stop!(message_id) do
+    deadline = System.monotonic_time(:millisecond) + 2_000
+    do_wait_for_generation_worker_to_stop!(message_id, deadline)
+  end
+
+  defp do_wait_for_generation_worker_to_stop!(message_id, deadline) do
+    if GenerationSupervisor.get_generation_state(message_id) == :not_found do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(20)
+        do_wait_for_generation_worker_to_stop!(message_id, deadline)
+      else
+        flunk("Generation worker did not stop before timeout")
       end
     end
   end

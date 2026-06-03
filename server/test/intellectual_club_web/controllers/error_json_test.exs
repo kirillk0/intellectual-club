@@ -1,5 +1,5 @@
 defmodule IntellectualClubWeb.ErrorJSONTest do
-  use IntellectualClubWeb.ConnCase, async: true
+  use ExUnit.Case, async: true
 
   test "renders 404" do
     assert IntellectualClubWeb.ErrorJSON.render("404.json", %{}) == %{

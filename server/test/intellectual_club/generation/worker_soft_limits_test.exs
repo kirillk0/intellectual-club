@@ -621,6 +621,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
       )
 
     if predicate.(message) do
+      maybe_wait_for_generation_worker_to_stop!(message_id, message)
       message
     else
       if System.monotonic_time(:millisecond) < deadline do
@@ -628,6 +629,31 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         do_wait_for_message(message_id, actor, predicate, deadline)
       else
         flunk("Condition was not met before timeout")
+      end
+    end
+  end
+
+  defp maybe_wait_for_generation_worker_to_stop!(message_id, %{status: status})
+       when status in [:done, :error, :canceled, "done", "error", "canceled"] do
+    wait_for_generation_worker_to_stop!(message_id)
+  end
+
+  defp maybe_wait_for_generation_worker_to_stop!(_message_id, _message), do: :ok
+
+  defp wait_for_generation_worker_to_stop!(message_id) do
+    deadline = System.monotonic_time(:millisecond) + 2_000
+    do_wait_for_generation_worker_to_stop!(message_id, deadline)
+  end
+
+  defp do_wait_for_generation_worker_to_stop!(message_id, deadline) do
+    if GenerationSupervisor.get_generation_state(message_id) == :not_found do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(20)
+        do_wait_for_generation_worker_to_stop!(message_id, deadline)
+      else
+        flunk("Generation worker did not stop before timeout")
       end
     end
   end

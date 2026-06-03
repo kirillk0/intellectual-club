@@ -9,9 +9,9 @@ defmodule IntellectualClub.DataCase do
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
   are reverted at the end of every test. If you are using
-  PostgreSQL, you can even run database tests asynchronously
-  by setting `use IntellectualClub.DataCase, async: true`, although
-  this option is not recommended for other databases.
+  PostgreSQL, you can run database tests asynchronously by setting
+  `use IntellectualClub.DataCase, async: true`. SQLite tests must keep
+  `async: false` because SQLite only supports one writer at a time.
   """
 
   use ExUnit.CaseTemplate
@@ -37,6 +37,14 @@ defmodule IntellectualClub.DataCase do
   Sets up the sandbox based on the test tags.
   """
   def setup_sandbox(tags) do
+    if tags[:async] && IntellectualClub.Db.sqlite?() do
+      raise """
+      SQLite tests cannot run asynchronously with Ecto SQL Sandbox.
+
+      Use async: false for tests that use IntellectualClub.DataCase or IntellectualClubWeb.ConnCase.
+      """
+    end
+
     pid =
       Ecto.Adapters.SQL.Sandbox.start_owner!(IntellectualClub.Db.repo(), shared: not tags[:async])
 

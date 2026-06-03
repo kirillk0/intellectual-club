@@ -1,5 +1,5 @@
 defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
-  use IntellectualClub.DataCase, async: true
+  use IntellectualClub.DataCase, async: false
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat

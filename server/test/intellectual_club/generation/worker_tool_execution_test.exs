@@ -8,6 +8,8 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
   defmodule ConcurrentMcpPlug do
     import Plug.Conn
 
+    @tool_call_release_timeout_ms 10_000
+
     def init(opts), do: opts
 
     def call(conn, opts) do
@@ -35,7 +37,7 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
           receive do
             :release_tool_call -> :ok
           after
-            2_000 -> send(test_pid, {:tool_call_wait_timeout, tool_name})
+            @tool_call_release_timeout_ms -> send(test_pid, {:tool_call_wait_timeout, tool_name})
           end
 
           response = %{
@@ -99,7 +101,7 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
           {:tool_call_entered, pid, tool_name} -> {pid, tool_name}
           {:tool_call_wait_timeout, tool_name} -> flunk("Tool call timed out: #{tool_name}")
         after
-          3_000 -> flunk("Expected both tool calls to enter execution concurrently")
+          5_000 -> flunk("Expected both tool calls to enter execution concurrently")
         end
       end)
 
@@ -107,7 +109,7 @@ defmodule IntellectualClub.Generation.WorkerToolExecutionTest do
 
     Enum.each(entered, fn {pid, _tool_name} -> send(pid, :release_tool_call) end)
 
-    results = Task.await(task, 2_000)
+    results = Task.await(task, 5_000)
 
     assert Enum.map(results, & &1.call_id) == ["call_second", "call_first"]
     assert Enum.map(results, & &1.text) == ["result second", "result first"]

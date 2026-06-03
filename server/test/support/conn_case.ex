@@ -10,9 +10,9 @@ defmodule IntellectualClubWeb.ConnCase do
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
   are reverted at the end of every test. If you are using
-  PostgreSQL, you can even run database tests asynchronously
-  by setting `use IntellectualClubWeb.ConnCase, async: true`, although
-  this option is not recommended for other databases.
+  PostgreSQL, you can run database tests asynchronously by setting
+  `use IntellectualClubWeb.ConnCase, async: true`. SQLite tests must keep
+  `async: false` because SQLite only supports one writer at a time.
   """
 
   use ExUnit.CaseTemplate
@@ -71,10 +71,24 @@ defmodule IntellectualClubWeb.ConnCase do
       |> Phoenix.ConnTest.json_response(200)
 
     if payload["status"] in ["done", "canceled", "error"] do
+      wait_for_generation_worker_to_stop(message_id, attempts_left, interval_ms)
       payload
     else
       Process.sleep(interval_ms)
       do_wait_for_generation_to_finish(conn, message_id, attempts_left - 1, interval_ms)
+    end
+  end
+
+  defp wait_for_generation_worker_to_stop(_message_id, 0, _interval_ms) do
+    ExUnit.Assertions.flunk("Generation worker did not stop within timeout")
+  end
+
+  defp wait_for_generation_worker_to_stop(message_id, attempts_left, interval_ms) do
+    if IntellectualClub.Generation.Supervisor.get_generation_state(message_id) == :not_found do
+      :ok
+    else
+      Process.sleep(interval_ms)
+      wait_for_generation_worker_to_stop(message_id, attempts_left - 1, interval_ms)
     end
   end
 end
