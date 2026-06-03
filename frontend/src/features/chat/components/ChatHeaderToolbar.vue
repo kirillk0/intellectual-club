@@ -99,7 +99,7 @@
             <div class="menu-divider" aria-hidden="true"></div>
             <div
               class="menu-item"
-              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid #f0f0f0"
+              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid var(--color-border);"
             >
               <div style="font-weight: 600; font-size: 0.95rem">Bot</div>
               <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.93rem">
@@ -134,7 +134,7 @@
             </div>
             <div
               class="menu-item"
-              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid #f0f0f0"
+              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid var(--color-border);"
             >
               <div style="font-weight: 600; font-size: 0.95rem">Note</div>
               <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.93rem">
@@ -316,7 +316,7 @@ const setMenuButtonRef = (el: Element | null) => {
 }
 
 .chat-toolbar__nav-button {
-  color: #111827;
+  color: var(--color-text);
   text-decoration: none;
   font-size: 18px;
 }
@@ -356,7 +356,7 @@ const setMenuButtonRef = (el: Element | null) => {
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 14px;
 }
 

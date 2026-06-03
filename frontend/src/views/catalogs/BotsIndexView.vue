@@ -247,24 +247,24 @@ onMounted(() => {
   min-width: 34px;
   height: 34px;
   border-radius: 10px;
-  border: 1px solid #d2d8e2;
-  background: #fff;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #4b5563;
+  color: var(--color-text-muted);
   padding: 0;
   line-height: 1;
 }
 
 .sort-toggle:hover {
-  border-color: #b7c5dc;
+  border-color: var(--color-info-border-strong);
 }
 
 .sort-toggle.active {
-  background: #f1f7ff;
-  border-color: #b8d6ff;
-  color: #1d4ed8;
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border-strong);
+  color: var(--color-info-text);
 }
 
 @media (max-width: 720px) {

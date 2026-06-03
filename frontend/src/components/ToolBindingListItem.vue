@@ -134,7 +134,7 @@ const emitOpen = () => {
 }
 
 .tool-binding-list-item__body--openable:focus-visible {
-  outline: 2px solid #4c8dff;
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
   border-radius: 6px;
 }

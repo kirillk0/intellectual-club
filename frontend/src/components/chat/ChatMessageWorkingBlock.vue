@@ -545,9 +545,9 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 <style scoped>
 .working-block {
   margin-bottom: 8px;
-  border: 1px solid #d0d7de;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  background: #f2f4f8;
+  background: var(--color-surface-muted);
   overflow: hidden;
   width: 100%;
 }
@@ -556,7 +556,7 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   width: 100%;
   text-align: left;
   border: none;
-  background: #f2f4f8;
+  background: var(--color-surface-muted);
   padding: 10px 12px;
   font-weight: 400;
   display: flex;
@@ -571,11 +571,11 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 }
 
 .working-toggle-count {
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .working-toggle-time {
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 0.85rem;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
@@ -584,14 +584,14 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 .working-toggle-status {
   margin-left: auto;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 0.85rem;
   font-weight: 400;
   white-space: nowrap;
 }
 
 .working-toggle-status.error-text {
-  color: #c0392b;
+  color: var(--color-danger);
 }
 
 .working-toggle-status + .chevron {
@@ -599,9 +599,9 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 }
 
 .working-body {
-  border-top: 1px solid #d0d7de;
+  border-top: 1px solid var(--color-border-strong);
   padding: 10px 12px;
-  background: #f2f4f8;
+  background: var(--color-surface-muted);
 }
 
 .working-nav {
@@ -624,11 +624,11 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   align-items: center;
   gap: 8px;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .working-nav-loading {
-  color: #6b7280;
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 
@@ -653,13 +653,13 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 .working-step-number {
   font-size: 0.78rem;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .working-step-time {
   margin-left: auto;
   font-size: 0.78rem;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -667,7 +667,7 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #6b7280;
+  color: var(--color-text-muted);
   margin-bottom: 4px;
 }
 
@@ -709,7 +709,7 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 .working-step-sep {
   height: 1px;
   width: 100%;
-  background: #d0d7de;
+  background: var(--color-border-strong);
 }
 
 .info-link {

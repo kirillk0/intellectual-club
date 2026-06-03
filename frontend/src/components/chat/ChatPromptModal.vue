@@ -93,7 +93,7 @@ watch(
 .prompt-modal__view-toggle {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #ddd;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -101,10 +101,10 @@ watch(
 .prompt-modal__view-toggle button {
   min-width: 86px;
   border: 0;
-  border-right: 1px solid #ddd;
+  border-right: 1px solid var(--color-border-strong);
   border-radius: 0;
-  background: #fff;
-  color: #111827;
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 .prompt-modal__view-toggle button:last-child {
@@ -112,8 +112,8 @@ watch(
 }
 
 .prompt-modal__view-toggle button.active {
-  background: #111;
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
 }
 
 .prompt-modal__markdown {

@@ -157,10 +157,10 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 4px;
   padding: 6px;
-  border: 1px solid #d0d7de;
+  border: 1px solid var(--color-border-strong);
   border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
 }
 
 .combo-box__option {
@@ -177,7 +177,7 @@ onBeforeUnmount(() => {
 .combo-box__option:hover,
 .combo-box__option:focus-visible,
 .combo-box__option.active {
-  background: #eef4ff;
+  background: var(--color-info-bg-strong);
   outline: none;
 }
 </style>

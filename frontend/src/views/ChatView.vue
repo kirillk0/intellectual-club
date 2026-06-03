@@ -670,12 +670,12 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   font-size: 0.74rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .chat-page .branch-item--inactive {
   border-style: dashed;
-  background: #fff7f7;
+  background: var(--color-danger-bg);
 }
 
 .chat-page .row.clickable {
@@ -683,12 +683,12 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-page .row.clickable:hover {
-  background: #f8f9fb;
-  border-color: #e5e7eb;
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-strong);
 }
 
 .chat-page .row.clickable:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
@@ -696,9 +696,9 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   display: flex;
   gap: 6px;
   padding: 4px;
-  background: #f5f6f8;
+  background: var(--color-surface-muted);
   border-radius: 10px;
-  border: 1px solid #eceff3;
+  border: 1px solid var(--color-border);
 }
 
 .chat-page .panel-tab {
@@ -709,17 +709,17 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   border-radius: 8px;
   font-size: 0.9rem;
   cursor: pointer;
-  color: #333;
+  color: var(--color-text-muted);
 }
 
 .chat-page .panel-tab.active {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  box-shadow: var(--shadow-soft);
 }
 
 .chat-page .panel-tab:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
@@ -729,8 +729,8 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  border-top: 1px solid #e5e7eb;
-  background: #f8fafc;
+  border-top: 1px solid var(--color-border-strong);
+  background: var(--color-surface-muted);
 }
 
 .chat-page .chat-readonly-panel p {
@@ -745,22 +745,22 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   min-width: 0;
   margin: 0 8px;
   padding: 8px 10px;
-  border: 1px solid #dbe4ee;
+  border: 1px solid var(--color-info-border);
   border-radius: 8px;
-  background: #f8fbff;
-  color: #1f2937;
+  background: var(--color-info-bg);
+  color: var(--color-text);
   font-size: 0.9rem;
   text-decoration: none;
 }
 
 .chat-page .chat-relation-banner:hover {
-  border-color: #b8c9dd;
-  background: #f3f7fc;
+  border-color: var(--color-info-border-strong);
+  background: var(--color-info-bg-strong);
 }
 
 .chat-page .chat-relation-banner span {
   flex: 0 0 auto;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .chat-page .chat-relation-banner strong {
@@ -781,20 +781,20 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-page .chat-relation-banner--pending {
-  border-color: #bfdbfe;
-  background: #eff6ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .chat-page .chat-relation-banner--pending:hover {
-  border-color: #bfdbfe;
-  background: #eff6ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .chat-page .chat-relation-banner__spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid #bfdbfe;
-  border-top-color: #2563eb;
+  border: 2px solid var(--color-info-border);
+  border-top-color: var(--color-focus);
   border-radius: 999px;
   animation: chat-relation-spin 0.8s linear infinite;
 }
@@ -816,7 +816,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: #fafafa;
+  background: var(--color-bg);
 }
 
 .chat-unavailable__panel {
@@ -825,9 +825,9 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   justify-items: center;
   gap: 16px;
   padding: 28px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  background: #fff;
+  background: var(--color-surface);
   text-align: center;
 }
 
@@ -837,8 +837,8 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: #f3f4f6;
-  color: #4b5563;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
   font-size: 22px;
 }
 
@@ -855,7 +855,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 .chat-unavailable__copy p {
   margin: 0;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 @media (max-width: 720px) {
@@ -911,17 +911,17 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   width: 100%;
   height: 10px;
   border-radius: 999px;
-  background: #eef2f7;
+  background: var(--color-surface-muted);
   overflow: hidden;
 }
 
 .chat-page .context-usage-fill {
   height: 100%;
-  background: #2563eb;
+  background: var(--color-focus);
 }
 
 .chat-page .context-usage-fill.warn {
-  background: #d97706;
+  background: var(--color-warning-text);
 }
 
 .chat-input-form {
@@ -937,8 +937,8 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-input-form--dragging {
-  border-color: #2563eb;
-  background: rgba(219, 234, 254, 0.32);
+  border-color: var(--color-focus);
+  background: color-mix(in srgb, var(--color-info-bg) 70%, transparent);
 }
 
 .pending-files {
@@ -961,12 +961,12 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .pending-file:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--color-surface-muted);
 }
 
 .pending-file:focus-visible {
-  background: rgba(219, 234, 254, 0.5);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
+  background: var(--color-info-bg);
+  box-shadow: inset 0 0 0 1px var(--color-focus);
 }
 
 .pending-file__icon {
@@ -982,7 +982,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #1a1a1a;
+  color: var(--color-text);
 }
 
 .pending-file__meta {
@@ -995,7 +995,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 .pending-file__status {
   font-size: 0.73rem;
-  color: #667085;
+  color: var(--color-text-muted);
   line-height: 1.25;
 }
 
@@ -1027,30 +1027,30 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #999;
+  color: var(--color-text-subtle);
   font-size: 0.75rem;
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
 .pending-file__remove:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: #c0392b;
+  background: var(--color-surface-hover);
+  color: var(--color-danger);
 }
 
 /* --- Unified chat composer --- */
 .chat-composer {
   display: flex;
   flex-direction: column;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
-  background: #fff;
+  background: var(--color-surface);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .chat-composer:focus-within {
-  border-color: #a0aec0;
-  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.08);
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 18%, transparent);
 }
 
 .chat-composer__textarea {
@@ -1072,13 +1072,13 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   justify-content: flex-end;
   gap: 6px;
   padding: 6px 10px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--color-border-strong);
   border-radius: 0 0 12px 12px;
 }
 
 .chat-composer__send {
-  background: #111;
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
   border: none;
   border-radius: 8px;
   padding: 6px 16px;
@@ -1089,23 +1089,23 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-composer__send:hover {
-  background: #333;
+  background: var(--color-primary-hover);
 }
 
 .chat-composer__send:disabled {
-  background: #6b7280;
+  background: var(--color-text-muted);
   opacity: 0.45;
   cursor: not-allowed;
 }
 
 .chat-composer__send:disabled:hover {
-  background: #6b7280;
+  background: var(--color-text-muted);
 }
 
 .chat-composer__attach {
-  background: #f5f5f5;
-  color: #444;
-  border: 1px solid #e0e0e0;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   padding: 6px 14px;
   font-size: 0.88rem;
@@ -1115,13 +1115,13 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 }
 
 .chat-composer__attach:hover {
-  background: #eaeaea;
-  border-color: #ccc;
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
 }
 
 .drop-hint {
   font-size: 0.86rem;
-  color: #1d4ed8;
+  color: var(--color-link);
   padding: 2px 4px 0;
 }
 

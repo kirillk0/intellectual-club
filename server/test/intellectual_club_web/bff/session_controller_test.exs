@@ -20,6 +20,7 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "username"]) == user.username
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
     assert get_in(response, ["user", "preferred_locale"]) == nil
+    assert get_in(response, ["user", "preferred_theme"]) == "system"
   end
 
   test "POST /api/bff/auth/login returns 401 for invalid credentials", %{conn: conn} do
@@ -73,6 +74,7 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "username"]) == user.username
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
     assert get_in(response, ["user", "preferred_locale"]) == nil
+    assert get_in(response, ["user", "preferred_theme"]) == "system"
   end
 
   test "POST /api/bff/auth/logout clears authenticated session", %{conn: conn} do

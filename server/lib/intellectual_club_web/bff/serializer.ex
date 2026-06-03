@@ -71,7 +71,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       id: user.id,
       username: user.username,
       is_admin: user.is_admin,
-      preferred_locale: user.preferred_locale
+      preferred_locale: user.preferred_locale,
+      preferred_theme: user.preferred_theme || "system"
     }
   end
 

@@ -11,6 +11,14 @@ defmodule IntellectualClubWeb.Layouts do
   # and other static content.
   embed_templates "layouts/*"
 
+  defp spa_preferred_theme(%{preferred_theme: theme}) when theme in ["system", "light", "dark"],
+    do: theme
+
+  defp spa_preferred_theme(_user), do: "system"
+
+  defp spa_effective_theme(%{preferred_theme: theme}) when theme in ["light", "dark"], do: theme
+  defp spa_effective_theme(_user), do: nil
+
   @doc """
   Renders your app layout.
 

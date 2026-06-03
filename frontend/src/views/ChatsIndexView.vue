@@ -1224,20 +1224,20 @@ onBeforeUnmount(() => {
 }
 
 .badge-muted {
-  border-color: #f1c1c1;
-  color: #9a3f3f;
-  background: #fff7f7;
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
 }
 
 .badge-accent {
-  border-color: #bcd9ff;
-  background: #f2f8ff;
-  color: #2563eb;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
+  color: var(--color-link);
 }
 
 .share-indicator {
   display: inline-flex;
   align-items: center;
-  color: #2563eb;
+  color: var(--color-link);
 }
 </style>

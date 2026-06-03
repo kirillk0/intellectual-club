@@ -3,6 +3,7 @@ export type SessionUser = {
   username: string;
   is_admin: boolean;
   preferred_locale: 'en' | 'ru' | null;
+  preferred_theme: 'system' | 'light' | 'dark';
 };
 
 export type AdminUser = {

@@ -520,12 +520,12 @@ const goList = editor.goList;
   display: flex;
   gap: 8px;
   align-items: center;
-  border-color: #bfd6f6;
-  background: #f5f9ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .warning-banner {
-  border-color: #f2c46d;
-  background: #fff8e8;
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-bg);
 }
 </style>

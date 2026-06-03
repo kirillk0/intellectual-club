@@ -7,7 +7,7 @@ defmodule IntellectualClubWeb.Bff.MeControllerTest do
 
   alias IntellectualClub.Accounts.User
 
-  test "GET /api/bff/me returns current user with nullable preferred locale", %{conn: conn} do
+  test "GET /api/bff/me returns current user settings", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -18,35 +18,39 @@ defmodule IntellectualClubWeb.Bff.MeControllerTest do
 
     assert get_in(response, ["user", "id"]) == actor.id
     assert get_in(response, ["user", "preferred_locale"]) == nil
+    assert get_in(response, ["user", "preferred_theme"]) == "system"
   end
 
-  test "PATCH /api/bff/me updates preferred locale", %{conn: conn} do
+  test "PATCH /api/bff/me updates preferred locale and theme", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
     response =
       conn
-      |> patch("/api/bff/me", %{"preferred_locale" => "ru"})
+      |> patch("/api/bff/me", %{"preferred_locale" => "ru", "preferred_theme" => "dark"})
       |> json_response(200)
 
     assert get_in(response, ["user", "preferred_locale"]) == "ru"
+    assert get_in(response, ["user", "preferred_theme"]) == "dark"
 
     response =
       conn
-      |> patch("/api/bff/me", %{"preferred_locale" => "en"})
+      |> patch("/api/bff/me", %{"preferred_locale" => "en", "preferred_theme" => "light"})
       |> json_response(200)
 
     assert get_in(response, ["user", "preferred_locale"]) == "en"
+    assert get_in(response, ["user", "preferred_theme"]) == "light"
 
     response =
       conn
-      |> patch("/api/bff/me", %{"preferred_locale" => nil})
+      |> patch("/api/bff/me", %{"preferred_locale" => nil, "preferred_theme" => nil})
       |> json_response(200)
 
     assert get_in(response, ["user", "preferred_locale"]) == nil
+    assert get_in(response, ["user", "preferred_theme"]) == "system"
   end
 
-  test "PATCH /api/bff/me rejects unsupported preferred locale", %{conn: conn} do
+  test "PATCH /api/bff/me rejects unsupported preferred locale and theme", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -57,6 +61,14 @@ defmodule IntellectualClubWeb.Bff.MeControllerTest do
 
     assert response["detail"] == "Validation failed"
     assert get_in(response, ["errors", "preferred_locale"])
+
+    response =
+      conn
+      |> patch("/api/bff/me", %{"preferred_theme" => "sepia"})
+      |> json_response(422)
+
+    assert response["detail"] == "Validation failed"
+    assert get_in(response, ["errors", "preferred_theme"])
   end
 
   test "update_settings cannot update another user", _context do
@@ -65,7 +77,9 @@ defmodule IntellectualClubWeb.Bff.MeControllerTest do
 
     assert {:error, %Ash.Error.Forbidden{}} =
              other_user
-             |> Ash.Changeset.for_update(:update_settings, %{preferred_locale: "ru"},
+             |> Ash.Changeset.for_update(
+               :update_settings,
+               %{preferred_locale: "ru", preferred_theme: "dark"},
                actor: actor
              )
              |> Ash.update()
@@ -78,11 +92,12 @@ defmodule IntellectualClubWeb.Bff.MeControllerTest do
     response =
       conn
       |> put_req_header("x-ui-locale", "ru")
-      |> patch("/api/bff/me", %{"preferred_locale" => "de"})
+      |> patch("/api/bff/me", %{"preferred_locale" => "de", "preferred_theme" => "sepia"})
       |> json_response(422)
 
     assert response["detail"] == translated("ru", "Validation failed")
     assert get_in(response, ["errors", "preferred_locale"])
+    assert get_in(response, ["errors", "preferred_theme"])
   end
 
   test "POST /api/bff/me/change-password updates password", %{conn: conn} do

@@ -239,8 +239,8 @@ watch(
 }
 
 .llm-config-tags-list__row--active {
-  border-color: #cfe1ff;
-  background: #f3f8ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .llm-config-tags-list__row--disabled {
@@ -293,19 +293,19 @@ watch(
 }
 
 .llm-config-tags-list__action-button:hover {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
 }
 
 .llm-config-tags-list__row--active .llm-config-tags-list__action-button,
 .llm-config-tags-list__row--actions-open .llm-config-tags-list__action-button {
-  color: #111;
+  color: var(--color-text);
 }
 
 .llm-config-tags-list__row--active .llm-config-tags-list__action-button:hover,
 .llm-config-tags-list__row--actions-open .llm-config-tags-list__action-button,
 .llm-config-tags-list__row--actions-open .llm-config-tags-list__action-button:hover {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
 }
 </style>

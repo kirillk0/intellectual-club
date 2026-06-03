@@ -28,6 +28,18 @@
       </section>
 
       <section class="card stack">
+        <h3 style="margin: 0">Appearance</h3>
+        <label>
+          Theme preference
+          <select v-model="preferredThemeDraft" class="full" :disabled="saving">
+            <option value="system">System</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="card stack">
         <KnowledgeBlockLinksCard
           title="Knowledge blocks"
           :items="cardItems"
@@ -130,6 +142,7 @@ import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
+import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { parseImageAsset } from '@/features/media/image';
 import {
   jsonApiCreate,
@@ -151,6 +164,7 @@ type UserKnowledgeBlockLink = {
   sequence: number;
 };
 type LocaleDraft = '' | 'en' | 'ru';
+type ThemeDraft = PreferredTheme;
 
 const router = useRouter();
 const route = useRoute();
@@ -170,6 +184,8 @@ let nextTempId = -1;
 const baseBlocksSnapshot = ref('');
 const preferredLocaleDraft = ref<LocaleDraft>('');
 const basePreferredLocaleDraft = ref<LocaleDraft>('');
+const preferredThemeDraft = ref<ThemeDraft>('system');
+const basePreferredThemeDraft = ref<ThemeDraft>('system');
 
 const passwordForm = reactive({
   current_password: '',
@@ -198,7 +214,9 @@ const snapshotUserBlocks = (rows: UserKnowledgeBlock[]) => JSON.stringify(normal
 
 const blocksDirty = computed(() => snapshotUserBlocks(userBlocks.value) !== baseBlocksSnapshot.value);
 const languageDirty = computed(() => preferredLocaleDraft.value !== basePreferredLocaleDraft.value);
-const dirty = computed(() => blocksDirty.value || languageDirty.value);
+const themeDirty = computed(() => preferredThemeDraft.value !== basePreferredThemeDraft.value);
+const settingsDirty = computed(() => languageDirty.value || themeDirty.value);
+const dirty = computed(() => blocksDirty.value || settingsDirty.value);
 
 const sortedUserBlocks = computed(() => [...(userBlocks.value || [])].sort((a, b) => a.sequence - b.sequence));
 
@@ -257,10 +275,19 @@ const localeDraftFromUser = (user: SessionUser | null | undefined): LocaleDraft 
   return locale === 'en' || locale === 'ru' ? locale : '';
 };
 
+const themeDraftFromUser = (user: SessionUser | null | undefined): ThemeDraft =>
+  normalizePreferredTheme(user?.preferred_theme);
+
 const resetLocaleDraft = () => {
   const draft = localeDraftFromUser(currentUser.value);
   preferredLocaleDraft.value = draft;
   basePreferredLocaleDraft.value = draft;
+};
+
+const resetThemeDraft = () => {
+  const draft = themeDraftFromUser(currentUser.value);
+  preferredThemeDraft.value = draft;
+  basePreferredThemeDraft.value = draft;
 };
 
 const pushPasswordError = (field: PasswordField, message: string) => {
@@ -440,13 +467,16 @@ const saveAll = async () => {
       baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
     }
 
-    if (languageDirty.value) {
+    if (settingsDirty.value) {
       const payload = await api.patch<{ user: SessionUser }>('/api/bff/me', {
         preferred_locale: preferredLocaleDraft.value || null,
+        preferred_theme: preferredThemeDraft.value,
       });
       applySessionUser(payload.user);
       preferredLocaleDraft.value = localeDraftFromUser(payload.user);
       basePreferredLocaleDraft.value = preferredLocaleDraft.value;
+      preferredThemeDraft.value = themeDraftFromUser(payload.user);
+      basePreferredThemeDraft.value = preferredThemeDraft.value;
     }
   } catch (error) {
     console.error(error);
@@ -542,6 +572,7 @@ const loadSettings = async () => {
 
     baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
     resetLocaleDraft();
+    resetThemeDraft();
   } catch (error) {
     console.error(error);
     loadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';
@@ -558,6 +589,13 @@ watch(
   () => currentUser.value?.preferred_locale,
   () => {
     if (!languageDirty.value) resetLocaleDraft();
+  }
+);
+
+watch(
+  () => currentUser.value?.preferred_theme,
+  () => {
+    if (!themeDirty.value) resetThemeDraft();
   }
 );
 </script>

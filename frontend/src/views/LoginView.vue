@@ -110,11 +110,11 @@ const submit = async () => {
 
 .login-card {
   width: min(420px, 100%);
-  border: 1px solid #e6e6e6;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
-  background: #fff;
+  background: var(--color-surface);
   padding: 18px;
-  box-shadow: 0 8px 26px rgba(17, 24, 39, 0.06);
+  box-shadow: var(--shadow-card);
 }
 
 .login-card h1 {
@@ -147,7 +147,7 @@ const submit = async () => {
 
 .error-text {
   margin: 0;
-  color: #b42318;
+  color: var(--color-danger);
   font-size: 0.92rem;
 }
 </style>

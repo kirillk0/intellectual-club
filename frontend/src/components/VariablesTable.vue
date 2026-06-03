@@ -101,12 +101,12 @@ const remove = (idx: number) => {
 
 .vars-grid th,
 .vars-grid td {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--color-border-strong);
   padding: 4px;
 }
 
 .vars-grid th {
-  background: #f7f7f7;
+  background: var(--color-surface-muted);
   font-weight: 600;
   text-align: left;
 }
@@ -125,8 +125,8 @@ const remove = (idx: number) => {
 }
 
 .cell-remove {
-  border: 1px solid #dcdcdc;
-  background: #fff;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 12px;
@@ -141,7 +141,7 @@ const remove = (idx: number) => {
 .link-btn {
   border: none;
   background: none;
-  color: #0b63ce;
+  color: var(--color-link);
   cursor: pointer;
   padding: 0;
   font-size: 13px;

@@ -78,7 +78,7 @@ const fileIcon = (content: ChatMessageContent): string =>
 }
 
 .chat-media-item:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--color-surface-hover);
 }
 
 .chat-media-item__icon {
@@ -96,13 +96,13 @@ const fileIcon = (content: ChatMessageContent): string =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #1a1a1a;
+  color: var(--color-text);
 }
 
 .chat-media-item__size {
   flex: 0 0 auto;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--color-text-subtle);
   white-space: nowrap;
 }
 

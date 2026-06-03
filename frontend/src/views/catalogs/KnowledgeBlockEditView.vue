@@ -1001,8 +1001,8 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   display: flex;
   gap: 8px;
   align-items: center;
-  border-color: #bfd6f6;
-  background: #f5f9ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .knowledge-block-preview {
@@ -1011,19 +1011,19 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 
 .knowledge-block-preview__content {
   min-height: 280px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border-strong);
   border-radius: 6px;
   padding: 14px 16px;
-  background: #fff;
+  background: var(--color-surface);
   overflow: auto;
 }
 
 .knowledge-block-preview__empty {
   min-height: 280px;
-  border: 1px dashed #d1d5db;
+  border: 1px dashed var(--color-border-strong);
   border-radius: 6px;
   padding: 14px 16px;
-  background: #fafafa;
+  background: var(--color-surface-subtle);
 }
 
 :deep(.knowledge-block-preview__content :where(h1, h2, h3, h4, h5, h6)) {
@@ -1070,12 +1070,12 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 :deep(.knowledge-block-preview__content blockquote) {
   margin: 0 0 8px;
   padding-left: 12px;
-  border-left: 3px solid #e5e7eb;
-  color: #4b5563;
+  border-left: 3px solid var(--color-border-strong);
+  color: var(--color-text-muted);
 }
 
 :deep(.knowledge-block-preview__content code) {
-  background: #eee;
+  background: var(--color-surface-hover);
   border-radius: 6px;
   padding: 2px 6px;
   font-size: 0.95em;
@@ -1089,8 +1089,8 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   padding: 10px;
   overflow-x: auto;
   border-radius: 10px;
-  background: #111;
-  color: #f5f5f5;
+  background: var(--color-code-bg);
+  color: var(--color-code-text);
   font-size: 0.82rem;
   line-height: 1.4;
 }
@@ -1112,7 +1112,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 
 :deep(.knowledge-block-preview__content th),
 :deep(.knowledge-block-preview__content td) {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border-strong);
   padding: 6px 8px;
   text-align: left;
 }
@@ -1139,7 +1139,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 
 .knowledge-block-file-row--pending {
   border-style: dashed;
-  background: #fbfcff;
+  background: var(--color-info-bg);
 }
 
 .knowledge-block-file-row__enabled {
@@ -1173,7 +1173,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 }
 
 .knowledge-block-file-row__meta {
-  color: #666;
+  color: var(--color-text-muted);
   font-size: 0.85rem;
 }
 
@@ -1193,16 +1193,16 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 
 .knowledge-block-content-editor {
   position: relative;
-  border: 1px solid #ddd;
+  border: 1px solid var(--color-border-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--color-surface);
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .knowledge-block-content-editor--error {
-  border-color: #c0392b;
-  box-shadow: 0 0 0 1px rgba(192, 57, 43, 0.12);
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 22%, transparent);
 }
 
 .knowledge-block-content-editor__mirror {
@@ -1233,8 +1233,8 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   border-radius: 0;
   background: transparent;
   color: transparent;
-  text-shadow: 0 0 0 #111;
-  caret-color: #111;
+  text-shadow: 0 0 0 var(--color-text);
+  caret-color: var(--color-text);
   -webkit-text-fill-color: transparent;
   resize: vertical;
   min-height: 280px;
@@ -1252,8 +1252,8 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 }
 
 .knowledge-block-content-editor__textarea::placeholder {
-  color: #9ca3af;
-  -webkit-text-fill-color: #9ca3af;
+  color: var(--color-text-subtle);
+  -webkit-text-fill-color: var(--color-text-subtle);
 }
 
 .knowledge-block-content-editor__hint {
@@ -1261,7 +1261,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 }
 
 :deep(.knowledge-block-content-editor__comment) {
-  color: #8f96a3;
+  color: var(--color-text-subtle);
 }
 
 :deep(.knowledge-block-content-editor__plain) {

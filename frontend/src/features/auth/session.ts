@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
 import { api, isHttpError } from '@/api/client';
+import { normalizePreferredTheme, setPreferredTheme } from '@/features/app/theme';
 import { normalizePreferredLocale, setPreferredLocale } from '@/i18n';
 import type { SessionUser } from '@/types/api';
 
@@ -18,15 +19,17 @@ const parseInitialUserFromDom = (): SessionUser | null => {
   const isAdminRaw = String(host.dataset.currentUserIsAdmin || '').trim();
   const isAdmin = isAdminRaw === 'true';
   const preferredLocale = normalizePreferredLocale(host.dataset.currentUserPreferredLocale || null);
+  const preferredTheme = normalizePreferredTheme(host.dataset.currentUserPreferredTheme || null);
 
   if (!Number.isFinite(id) || id <= 0 || username === '') return null;
 
-  return { id, username, is_admin: isAdmin, preferred_locale: preferredLocale };
+  return { id, username, is_admin: isAdmin, preferred_locale: preferredLocale, preferred_theme: preferredTheme };
 };
 
 export const applySessionUser = (user: SessionUser | null) => {
   currentUser.value = user;
   setPreferredLocale(user?.preferred_locale ?? null);
+  setPreferredTheme(user?.preferred_theme ?? 'system');
 };
 
 export const ensureAuthInitialized = () => {

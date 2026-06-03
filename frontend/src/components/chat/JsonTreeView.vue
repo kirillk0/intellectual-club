@@ -120,15 +120,15 @@ onBeforeUnmount(() => {
 }
 
 .json-viewer-summary {
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 0.82rem;
 }
 
 .json-viewer-toggle {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--color-border-strong);
   border-radius: 999px;
-  background: #fff;
-  color: #334155;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
   font-size: 0.8rem;
   line-height: 1.2;
   padding: 4px 10px;
@@ -136,12 +136,12 @@ onBeforeUnmount(() => {
 }
 
 .json-viewer-toggle:hover {
-  border-color: #94a3b8;
-  color: #0f172a;
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
 }
 
 .json-viewer-download {
-  color: #0f766e;
+  color: var(--color-success);
   text-decoration: none;
   font-size: 0.82rem;
 }

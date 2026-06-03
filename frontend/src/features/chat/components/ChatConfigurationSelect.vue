@@ -376,10 +376,10 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 34px;
   padding: 6px 30px 6px 10px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--color-border-strong);
   border-radius: 6px;
-  background: #fff;
-  color: #111827;
+  background: var(--color-surface);
+  color: var(--color-text);
   cursor: pointer;
   position: relative;
 }
@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 0.8rem;
 }
 
@@ -414,10 +414,10 @@ onBeforeUnmount(() => {
 .config-select__submenu-menu {
   min-width: 220px;
   max-width: min(320px, 82vw);
-  border: 1px solid #eee;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
   padding: 6px 0;
   z-index: 2200;
 }
@@ -434,7 +434,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   border: none;
   background: transparent;
-  color: #111827;
+  color: var(--color-text);
   text-align: left;
   padding: 9px 12px;
   border-radius: 0;
@@ -445,7 +445,7 @@ onBeforeUnmount(() => {
 
 .config-select__item:hover,
 .config-select__item:focus-visible {
-  background: #f6f6f6;
+  background: var(--color-surface-muted);
 }
 
 .config-select__submenu {

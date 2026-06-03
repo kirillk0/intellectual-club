@@ -523,7 +523,7 @@ onBeforeUnmount(() => {
 .type-filter-option:hover,
 .type-filter-option:focus-visible,
 .type-filter-option.active {
-  background: #eef4ff;
+  background: var(--color-info-bg-strong);
   outline: none;
 }
 
@@ -545,7 +545,7 @@ onBeforeUnmount(() => {
 .type-filter-option__count {
   flex: 0 0 auto;
   min-width: 1.5em;
-  color: #777;
+  color: var(--color-text-subtle);
   font-size: 0.85rem;
   text-align: right;
 }

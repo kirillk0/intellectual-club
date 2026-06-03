@@ -430,13 +430,13 @@ function emitDelete() {
 }
 
 .tag-tree__action-button:hover {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.12);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
 }
 
 .tag-tree__row.selected .tag-tree__action-button,
 .tag-tree__row.actions-open .tag-tree__action-button {
-  color: #fff;
+  color: var(--color-primary-contrast);
 }
 
 .tag-tree__row.selected .tag-tree__action-button:hover,

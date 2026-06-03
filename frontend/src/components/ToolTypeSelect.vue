@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 42px;
   text-align: left;
-  background: #fff;
+  background: var(--color-surface);
 }
 
 .tool-type-select__trigger:disabled {
@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
 
 .tool-type-select__chevron {
   flex: 0 0 auto;
-  color: #666;
+  color: var(--color-text-muted);
   font-size: 0.8rem;
 }
 
@@ -166,10 +166,10 @@ onBeforeUnmount(() => {
   max-height: min(320px, 48vh);
   overflow: auto;
   padding: 6px;
-  border: 1px solid #d8d8d8;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
 }
 
 .tool-type-select__option {
@@ -191,12 +191,12 @@ onBeforeUnmount(() => {
 .tool-type-select__option:hover,
 .tool-type-select__option:focus-visible,
 .tool-type-select__option.active {
-  background: #eef4ff;
+  background: var(--color-info-bg-strong);
   outline: none;
 }
 
 .tool-type-select__check {
-  color: #1f6feb;
+  color: var(--color-link);
   font-weight: 700;
   text-align: center;
 }

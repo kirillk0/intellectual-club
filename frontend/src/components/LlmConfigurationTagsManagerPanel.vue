@@ -402,9 +402,9 @@ onMounted(() => {
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px solid #e9e9e9;
+  border: 1px solid var(--color-border);
   border-radius: 12px;
-  background: #fafafa;
+  background: var(--color-surface-subtle);
 }
 
 .llm-config-tags-panel__editor-title {

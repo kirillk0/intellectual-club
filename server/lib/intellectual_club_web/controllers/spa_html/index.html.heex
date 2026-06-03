@@ -6,6 +6,9 @@
   data-current-user-preferred-locale={
     if @current_user, do: @current_user.preferred_locale || "", else: ""
   }
+  data-current-user-preferred-theme={
+    if @current_user, do: @current_user.preferred_theme || "system", else: "system"
+  }
 >
   <p class="muted" style="padding: 16px">Loading…</p>
 </div>

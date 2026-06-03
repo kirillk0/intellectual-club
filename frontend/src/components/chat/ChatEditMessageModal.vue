@@ -527,8 +527,8 @@ const handleDrop = (event: DragEvent) => {
 }
 
 :global(.edit-message-modal--dragging) {
-  border-color: #2563eb;
-  background: rgba(219, 234, 254, 0.24);
+  border-color: var(--color-link);
+  background: color-mix(in srgb, var(--color-info-bg) 70%, transparent);
 }
 
 .edit-message-modal__body {
@@ -571,7 +571,7 @@ const handleDrop = (event: DragEvent) => {
 
 .message-edit-label {
   font-size: 0.78rem;
-  color: #6b7280;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -634,20 +634,20 @@ const handleDrop = (event: DragEvent) => {
   padding: 4px 7px;
   border-radius: 6px;
   min-width: 0;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
   cursor: pointer;
   outline: none;
   transition: background-color 0.12s ease;
 }
 
 .attachment-row:hover {
-  background: rgba(241, 245, 249, 1);
+  background: var(--color-surface-hover);
 }
 
 .attachment-row:focus-visible {
-  background: rgba(219, 234, 254, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
+  background: var(--color-info-bg);
+  box-shadow: inset 0 0 0 1px var(--color-focus);
 }
 
 .attachment-row__icon {
@@ -663,7 +663,7 @@ const handleDrop = (event: DragEvent) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #1a1a1a;
+  color: var(--color-text);
 }
 
 .attachment-row__meta {
@@ -677,13 +677,13 @@ const handleDrop = (event: DragEvent) => {
 .attachment-row__size {
   flex: 0 0 auto;
   font-size: 0.72rem;
-  color: #888;
+  color: var(--color-text-subtle);
   white-space: nowrap;
 }
 
 .attachment-row__status {
   font-size: 0.72rem;
-  color: #667085;
+  color: var(--color-text-muted);
   line-height: 1.25;
 }
 
@@ -715,15 +715,15 @@ const handleDrop = (event: DragEvent) => {
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #999;
+  color: var(--color-text-subtle);
   font-size: 0.75rem;
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
 .attachment-row__remove:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: #c0392b;
+  background: var(--color-surface-hover);
+  color: var(--color-danger);
 }
 
 .attachment-actions {
@@ -743,7 +743,7 @@ const handleDrop = (event: DragEvent) => {
 
 .drop-hint {
   font-size: 0.86rem;
-  color: #1d4ed8;
+  color: var(--color-info-text);
   pointer-events: none;
 }
 
@@ -761,7 +761,7 @@ const handleDrop = (event: DragEvent) => {
 .edit-message-modal--compact .modal-actions {
   position: sticky;
   bottom: 0;
-  background: #fff;
+  background: var(--color-surface);
   padding-top: 8px;
 }
 

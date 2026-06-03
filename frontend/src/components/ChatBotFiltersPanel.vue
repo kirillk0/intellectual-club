@@ -131,24 +131,24 @@ function emitSearchInput(event: Event) {
   min-width: 34px;
   height: 34px;
   border-radius: 10px;
-  border: 1px solid #d2d8e2;
-  background: #fff;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #4b5563;
+  color: var(--color-text-muted);
   padding: 0;
   line-height: 1;
 }
 
 .chat-bot-filters-panel__sort-toggle:hover {
-  border-color: #b7c5dc;
+  border-color: var(--color-info-border-strong);
 }
 
 .chat-bot-filters-panel__sort-toggle.active {
-  background: #f1f7ff;
-  border-color: #b8d6ff;
-  color: #1d4ed8;
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border-strong);
+  color: var(--color-info-text);
 }
 
 .chat-bot-filters-panel__list {
@@ -158,14 +158,14 @@ function emitSearchInput(event: Event) {
 .chat-bot-filters-panel__item {
   cursor: pointer;
   text-align: left;
-  background: #fff;
+  background: var(--color-surface);
   padding: 8px 10px;
   justify-content: flex-start;
 }
 
 .chat-bot-filters-panel__item.active {
-  background: #f1f7ff;
-  border-color: #b8d6ff;
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border-strong);
 }
 
 .chat-bot-filters-panel__name {

@@ -253,16 +253,16 @@ onMounted(() => {
 .segmented-control {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #ddd;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   overflow: hidden;
 }
 
 .segmented-control button {
   border: 0;
-  border-right: 1px solid #ddd;
+  border-right: 1px solid var(--color-border-strong);
   border-radius: 0;
-  background: #fff;
+  background: var(--color-surface);
   min-width: 76px;
 }
 
@@ -271,8 +271,8 @@ onMounted(() => {
 }
 
 .segmented-control button.active {
-  background: #111;
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
 }
 
 .usage-date-fields {
@@ -300,13 +300,13 @@ onMounted(() => {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
-  color: #666;
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
 
 .usage-table-wrap {
   overflow: auto;
-  border: 1px solid #eee;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
 }
 
@@ -320,18 +320,18 @@ onMounted(() => {
 
 .usage-table th,
 .usage-table td {
-  border-bottom: 1px solid #eee;
-  border-right: 1px solid #eee;
+  border-bottom: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
   padding: 10px 12px;
   vertical-align: top;
-  background: #fff;
+  background: var(--color-surface);
 }
 
 .usage-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #fafafa;
+  background: var(--color-surface-subtle);
   font-weight: 600;
 }
 
@@ -372,18 +372,18 @@ onMounted(() => {
 .usage-cell {
   display: grid;
   gap: 2px;
-  color: #444;
+  color: var(--color-text-muted);
   font-size: 0.92rem;
   line-height: 1.35;
 }
 
 .usage-cell span:last-child {
-  color: #111;
+  color: var(--color-text);
   font-weight: 600;
 }
 
 .usage-cell span.usage-cell__empty {
-  color: #444;
+  color: var(--color-text-muted);
   font-weight: 400;
 }
 

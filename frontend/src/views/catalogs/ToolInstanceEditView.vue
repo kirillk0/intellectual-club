@@ -1460,7 +1460,7 @@ onMounted(() => {
 }
 
 .tool-type-field {
-  color: #444;
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
 
@@ -1469,12 +1469,12 @@ onMounted(() => {
 }
 
 .field-error :deep(.tool-type-select__trigger) {
-  border-color: #c0392b;
-  box-shadow: 0 0 0 1px rgba(192, 57, 43, 0.12);
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 22%, transparent);
 }
 
 .required-marker {
-  color: #b42318;
+  color: var(--color-danger);
   font-weight: 700;
 }
 
@@ -1482,8 +1482,8 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
-  border-color: #bfd6f6;
-  background: #f5f9ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .tool-tab-indicator {

@@ -51,6 +51,13 @@ defmodule IntellectualClub.Accounts.User do
       constraints(trim?: true, allow_empty?: false)
     end
 
+    attribute :preferred_theme, :string do
+      allow_nil?(false)
+      public?(true)
+      default("system")
+      constraints(trim?: true, allow_empty?: false)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -206,10 +213,11 @@ defmodule IntellectualClub.Accounts.User do
 
     update :update_settings do
       description("Update settings for the current user")
-      accept([:preferred_locale])
+      accept([:preferred_locale, :preferred_theme])
       require_atomic?(false)
 
       validate(attribute_in(:preferred_locale, [nil, "en", "ru"]))
+      validate(attribute_in(:preferred_theme, ["system", "light", "dark"]))
     end
 
     destroy :destroy do

@@ -84,7 +84,16 @@ defmodule IntellectualClubWeb.Bff.MeController do
 
   defp update_user_settings(%User{} = user, params, actor) do
     payload = %{
-      preferred_locale: normalize_preferred_locale(Map.get(params, "preferred_locale"))
+      preferred_locale:
+        if(Map.has_key?(params, "preferred_locale"),
+          do: normalize_preferred_locale(Map.get(params, "preferred_locale")),
+          else: user.preferred_locale
+        ),
+      preferred_theme:
+        if(Map.has_key?(params, "preferred_theme"),
+          do: normalize_preferred_theme(Map.get(params, "preferred_theme")),
+          else: user.preferred_theme || "system"
+        )
     }
 
     user
@@ -112,6 +121,17 @@ defmodule IntellectualClubWeb.Bff.MeController do
   end
 
   defp normalize_preferred_locale(value), do: value
+
+  defp normalize_preferred_theme(nil), do: "system"
+  defp normalize_preferred_theme(""), do: "system"
+
+  defp normalize_preferred_theme(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_preferred_theme(value), do: value
 
   defp change_user_password(%User{} = user, params, actor) do
     payload = %{
@@ -155,6 +175,7 @@ defmodule IntellectualClubWeb.Bff.MeController do
   defp map_error_field(:password_confirmation), do: "new_password_confirm"
   defp map_error_field(:current_password), do: "current_password"
   defp map_error_field(:preferred_locale), do: "preferred_locale"
+  defp map_error_field(:preferred_theme), do: "preferred_theme"
   defp map_error_field(nil), do: "_form"
 
   defp map_error_field(field) when is_atom(field), do: Atom.to_string(field)

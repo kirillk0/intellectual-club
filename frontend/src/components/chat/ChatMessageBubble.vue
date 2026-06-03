@@ -340,7 +340,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 
 .message-answer-divider {
   border: 0;
-  border-top: 1px solid #d0d7de;
+  border-top: 1px solid var(--color-border-strong);
   margin: 10px 0;
 }
 
@@ -350,7 +350,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   margin-bottom: 4px;
   font-size: 0.78rem;
   line-height: 1.5;
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

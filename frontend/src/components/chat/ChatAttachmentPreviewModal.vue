@@ -183,7 +183,7 @@ const handleImageClick = () => {
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: #4b5563;
+  color: var(--color-text-muted);
   cursor: pointer;
   transition:
     background-color 0.12s ease,
@@ -191,8 +191,8 @@ const handleImageClick = () => {
 }
 
 .attachment-preview-action:hover {
-  background: #f1f5f9;
-  color: #111827;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
 }
 
 .attachment-preview-action--close {
@@ -208,9 +208,9 @@ const handleImageClick = () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
-  background: #f8fafc;
+  background: var(--color-surface-muted);
   min-height: 320px;
   max-height: 70vh;
   overflow: auto;
@@ -233,10 +233,10 @@ const handleImageClick = () => {
   word-break: break-word;
   max-height: 70vh;
   overflow: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
   padding: 14px 16px;
-  background: #f8fafc;
+  background: var(--color-surface-muted);
 }
 
 .attachment-preview-markdown {

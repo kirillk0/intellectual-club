@@ -114,11 +114,11 @@ const generationStateLabel = computed(() => {
 }
 
 .chat-result-generation-state--done {
-  color: #15803d;
+  color: var(--color-success);
 }
 
 .chat-result-generation-state--reconnecting {
-  color: #b45309;
+  color: var(--color-warning-text);
 }
 
 .chat-result-generation-state--reconnecting .reconnect-indicator {
@@ -131,7 +131,7 @@ const generationStateLabel = computed(() => {
 }
 
 .chat-result-config {
-  color: #6b7280;
+  color: var(--color-text-muted);
   font-size: 0.85rem;
 }
 
@@ -145,7 +145,7 @@ const generationStateLabel = computed(() => {
 
 .chat-search-snippet {
   margin-top: 4px;
-  color: #1f2933;
+  color: var(--color-text);
   font-size: 0.9rem;
   line-height: 1.35;
 }
@@ -159,19 +159,19 @@ const generationStateLabel = computed(() => {
   max-width: 100%;
   padding: 6px 10px;
   border-radius: 12px;
-  background: #eef2f7;
-  color: #1f2933;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
   font-size: 0.9rem;
   line-height: 1.35;
   text-decoration: none;
 }
 
 .chat-first-preview-bubble.chat-preview--user {
-  background: linear-gradient(135deg, #e7f1ff, #f5f9ff);
+  background: var(--color-chat-user-bg);
 }
 
 .chat-first-preview-bubble.chat-preview--assistant {
-  background: #f9f9fb;
+  background: var(--color-chat-assistant-bg);
 }
 
 .chat-list-row:hover .chat-first-preview-bubble {
@@ -179,12 +179,12 @@ const generationStateLabel = computed(() => {
 }
 
 .chat-list-row--user {
-  background: linear-gradient(135deg, #e7f1ff, #f5f9ff);
-  border-color: #d7e6ff;
+  background: var(--color-chat-user-bg);
+  border-color: var(--color-chat-user-border);
 }
 
 .chat-list-row--assistant {
-  background: #f9f9fb;
-  border-color: #ececf3;
+  background: var(--color-chat-assistant-bg);
+  border-color: var(--color-chat-assistant-border);
 }
 </style>

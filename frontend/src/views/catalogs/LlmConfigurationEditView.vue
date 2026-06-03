@@ -1075,8 +1075,8 @@ async function saveSharing(groupIds: number[]) {
   display: flex;
   gap: 8px;
   align-items: center;
-  border-color: #bfd6f6;
-  background: #f5f9ff;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .kb-placement-toggle {

@@ -216,10 +216,10 @@ const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetr
 }
 
 .step-tab {
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  background: #f8fafc;
-  color: #334155;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
   padding: 5px 10px;
   font-size: 0.88rem;
   line-height: 1.2;
@@ -227,9 +227,9 @@ const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetr
 }
 
 .step-tab.active {
-  background: #ffffff;
-  border-color: #94a3b8;
-  color: #111827;
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
 }
 
 .step-panel {
@@ -258,7 +258,7 @@ const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetr
   gap: 12px;
   font-size: 0.95em;
   padding: 6px 0;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .step-info-row:last-child {
@@ -266,7 +266,7 @@ const showUnavailableNote = computed(() => !showGeneratingNote.value && !canRetr
 }
 
 .step-info-label {
-  color: #64748b;
+  color: var(--color-text-muted);
 }
 
 .step-payload {

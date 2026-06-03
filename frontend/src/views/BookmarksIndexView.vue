@@ -169,8 +169,8 @@ onMounted(() => {
 }
 
 .badge-muted {
-  border-color: #f1c1c1;
-  color: #9a3f3f;
-  background: #fff7f7;
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
 }
 </style>
