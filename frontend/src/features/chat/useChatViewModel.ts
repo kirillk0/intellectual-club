@@ -236,6 +236,7 @@ export function useChatViewModel() {
     waitForConfigSync: headerControls.waitForConfigSync,
     activeGenerationId,
     cancelingGenerationId,
+    draftReady: computed(() => loaded.value && Boolean(chat.value)),
     scrollToLastMessage: contextPanel.scrollToLastMessage,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),

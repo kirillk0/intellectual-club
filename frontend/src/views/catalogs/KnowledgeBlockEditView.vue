@@ -282,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, toRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
@@ -290,6 +290,7 @@ import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/images';
+import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import {
   isPendingKnowledgeBlockFile,
@@ -324,6 +325,8 @@ type KnowledgeBlockForm = {
   can_edit: boolean;
   shared_incoming: boolean;
   shared_outgoing: boolean;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 function fromApi(resource: JsonApiResource): Partial<KnowledgeBlockForm> {
@@ -343,6 +346,8 @@ function fromApi(resource: JsonApiResource): Partial<KnowledgeBlockForm> {
     can_edit: attrs.can_edit !== false,
     shared_incoming: Boolean(attrs.shared_incoming),
     shared_outgoing: Boolean(attrs.shared_outgoing),
+    created_at: typeof attrs.created_at === 'string' ? attrs.created_at : null,
+    updated_at: typeof attrs.updated_at === 'string' ? attrs.updated_at : null,
   };
 }
 
@@ -441,6 +446,8 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
     can_edit: true,
     shared_incoming: false,
     shared_outgoing: false,
+    created_at: null,
+    updated_at: null,
   }),
   fromApi,
   toAttributes: (form) => ({
@@ -472,6 +479,7 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
 });
 
 const form = editor.form;
+const contentDraftValue = toRef(form, 'content');
 const errors = editor.errors;
 const isNew = editor.isNew;
 const loaded = editor.loaded;
@@ -652,6 +660,36 @@ const filesActionDisabled = computed(
 );
 
 const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
+const knowledgeBlockContentDraftStorageKey = computed(() => {
+  if (isNew.value) {
+    const linkTo = String(route.query.linkTo || '').trim();
+    const linkId = String(route.query.linkId || '').trim();
+    const tagId = defaultTagId.value ? String(defaultTagId.value) : '';
+    return `ic.draft.knowledge_block.content.new.${linkTo}.${linkId}.${tagId}`;
+  }
+
+  const blockId = editor.numericId.value;
+  return blockId ? `ic.draft.knowledge_block.content.${blockId}` : null;
+});
+const knowledgeBlockContentDraftRevision = computed(() => {
+  if (isNew.value) {
+    const linkTo = String(route.query.linkTo || '').trim();
+    const linkId = String(route.query.linkId || '').trim();
+    const tagId = defaultTagId.value ? String(defaultTagId.value) : '';
+    return `new:${linkTo}:${linkId}:${tagId}`;
+  }
+
+  const blockId = editor.numericId.value;
+  if (!blockId) return null;
+  return form.updated_at || form.created_at || String(blockId);
+});
+const knowledgeBlockContentDraft = useLocalTextDraft({
+  storageKey: knowledgeBlockContentDraftStorageKey,
+  revision: knowledgeBlockContentDraftRevision,
+  value: contentDraftValue,
+  enabled: computed(() => loaded.value && !loading.value && !saving.value && !sharedReadonly.value),
+  isDraft: computed(() => form.content !== editor.base.value.content && !sharedReadonly.value),
+});
 const dirty = computed(() => editor.dirty.value || tagsDirty.value || filesDirty.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
@@ -871,6 +909,7 @@ function toggleTag(tagId: number) {
 
 const save = async () => {
   if (saving.value) return;
+  const contentDraftKeyBeforeSave = knowledgeBlockContentDraftStorageKey.value;
   const spec = linkSpec.value;
   const wasNew = editor.isNew.value;
   const shouldLinkOwner = wasNew && Boolean(spec) && !linkedAfterCreate.value;
@@ -883,6 +922,8 @@ const save = async () => {
     suppressFilesAutoLoad.value = false;
     return;
   }
+
+  knowledgeBlockContentDraft.clear(contentDraftKeyBeforeSave);
 
   if (shouldLinkOwner && spec) {
     const newId = editor.numericId.value;

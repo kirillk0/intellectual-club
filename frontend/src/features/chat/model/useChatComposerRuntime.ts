@@ -21,6 +21,7 @@ import {
   buildSendPayload,
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
+import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { translate } from '@/i18n';
 import type { ChatBranchMessage } from '@/types/api';
 
@@ -38,6 +39,7 @@ type Params = {
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
+  draftReady?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
   getOpenWorkingPollRequest?: (messageId: number) => string | null;
   applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
@@ -49,6 +51,25 @@ export function useChatComposerRuntime(params: Params) {
   const draft = ref('');
   const sending = ref(false);
   const generationPollReconnecting = ref(false);
+  const draftReady = computed(() => params.draftReady?.value ?? true);
+  const chatDraftStorageKey = computed(() => {
+    const chatId = params.chatId.value;
+    return chatId ? `ic.draft.chat.composer.${chatId}` : null;
+  });
+  const chatDraftRevision = computed(() => {
+    if (!draftReady.value || !params.chatId.value) return null;
+    return (params.branch.value || [])
+      .map((message) => `${message.id}:${message.created_at || ''}`)
+      .join('|') || 'empty';
+  });
+  const chatTextDraft = useLocalTextDraft({
+    storageKey: chatDraftStorageKey,
+    revision: chatDraftRevision,
+    value: draft,
+    enabled: computed(() => draftReady.value && Boolean(params.chatId.value) && !params.readOnly.value),
+    isDraft: computed(() => draft.value !== '' && !params.readOnly.value && Boolean(params.chatId.value)),
+    clearValueOnInvalidation: true,
+  });
 
   const sendButtonLabel = computed(() => {
     if (params.activeGenerationId.value) {
@@ -617,6 +638,7 @@ export function useChatComposerRuntime(params: Params) {
     if (!params.chatId.value || sending.value) return;
     if (params.activeGenerationId.value) return;
 
+    const draftStorageKeyBeforeSend = chatDraftStorageKey.value;
     sending.value = true;
     params.loadError.value = '';
 
@@ -644,8 +666,9 @@ export function useChatComposerRuntime(params: Params) {
             );
 
       params.branch.value = payload.branch || [];
-      if (hasUserText) draft.value = '';
+      draft.value = '';
       if (hasPendingFiles) pendingFiles.value = [];
+      chatTextDraft.clear(draftStorageKeyBeforeSend);
 
       const messageId = payload.generation?.message_id;
       if (messageId) {
