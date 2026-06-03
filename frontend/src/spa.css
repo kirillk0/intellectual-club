@@ -547,12 +547,6 @@ fieldset {
       calc(6px + var(--app-safe-area-left));
   }
 
-  .app-main.app-main--chat .chat-window.card {
-    border: none;
-    padding: 0;
-    background: transparent;
-  }
-
   .stack-nav--active .stack-layer--active {
     padding: 0;
   }
@@ -587,6 +581,12 @@ fieldset {
     calc(12px + var(--app-safe-area-right))
     calc(12px + var(--app-safe-area-bottom))
     calc(12px + var(--app-safe-area-left));
+}
+
+.app-main.app-main--chat .chat-window.card {
+  border: none;
+  padding: 0;
+  background: transparent;
 }
 
 .stack-nav {
