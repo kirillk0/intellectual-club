@@ -707,10 +707,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   def handoff(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- parse_resource_id(id),
-         {:ok, %{chat: chat}} <- Handoff.manual_handoff(chat_id, actor) do
+         {:ok, context} <- Handoff.manual_handoff(chat_id, actor) do
+      {messages, branch_meta_by_id} = load_branch(chat_id, actor)
+
       json(conn, %{
-        chat: Serializer.chat_detail(chat),
-        relation: Serializer.chat_relation_summary(chat)
+        branch: serialize_branch(messages, branch_meta_by_id, actor),
+        generation: %{message_id: context.message_id}
       })
     else
       {:error, %Plug.Conn{} = conn} ->

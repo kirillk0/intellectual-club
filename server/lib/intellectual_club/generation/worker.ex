@@ -11,6 +11,8 @@ defmodule IntellectualClub.Generation.Worker do
 
   require Logger
 
+  alias IntellectualClub.Accounts.User
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
@@ -396,8 +398,7 @@ defmodule IntellectualClub.Generation.Worker do
            Persistence.persist_completed_from_step!(state.context.message_id, step_id)
          end) do
       :ok ->
-        broadcast(state, {:done, state.context.message_id})
-        {:stop, :normal, %{state | status: :done}}
+        finalize_completion_effect(state, step_id)
 
       {:error, reason} ->
         error_text = "Failed to persist final generation state: #{inspect(reason)}"
@@ -405,6 +406,44 @@ defmodule IntellectualClub.Generation.Worker do
         {:stop, :normal, %{state | status: :error}}
     end
   end
+
+  defp finalize_completion_effect(state, step_id) when is_integer(step_id) do
+    case run_completion_effect(state) do
+      :ok ->
+        broadcast(state, {:done, state.context.message_id})
+        {:stop, :normal, %{state | status: :done}}
+
+      {:error, error_text} ->
+        _ =
+          safe_persist(state.context.message_id, :completion_effect_error, fn ->
+            Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
+          end)
+
+        broadcast(state, {:error, state.context.message_id, error_text})
+        {:stop, :normal, %{state | status: :error}}
+    end
+  end
+
+  defp run_completion_effect(%{context: %{completion_effect: :manual_handoff}} = state) do
+    actor = %User{id: state.context.owner_id}
+
+    case Handoff.complete_manual_generation(state.context.message_id, actor) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, "Failed to complete manual handoff: #{inspect(reason)}"}
+    end
+  end
+
+  defp run_completion_effect(%{context: %{completion_effect: "manual_handoff"}} = state) do
+    run_completion_effect(%{
+      state
+      | context: %{state.context | completion_effect: :manual_handoff}
+    })
+  end
+
+  defp run_completion_effect(_state), do: :ok
 
   defp finalize_error(state, error_text) do
     finalize_error(state, error_text, %{})
@@ -1096,48 +1135,8 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp finalize_handoff_tool_step(state, payload) when is_map(payload) do
-    case safe_persist(state.context.message_id, :handoff_done, fn ->
-           Persistence.mark_step_done!(state.runtime_step.id)
-
-           runtime_step =
-             state
-             |> synthetic_handoff_runtime_step(payload)
-             |> RuntimeTrace.apply_event({:set_step_response_final, true})
-
-           Persistence.persist_completed!(state.context.message_id, runtime_step)
-         end) do
-      :ok ->
-        broadcast(state, {:done, state.context.message_id})
-        {:stop, :normal, %{state | status: :done}}
-
-      {:error, reason} ->
-        finalize_error(state, "Failed to finalize handoff: #{inspect(reason)}", %{})
-    end
-  end
-
-  defp synthetic_handoff_runtime_step(state, payload) when is_map(payload) do
-    chat_id = map_get(payload, "chat_id")
-    url = map_get(payload, "url") || if(is_integer(chat_id), do: "/chats/#{chat_id}", else: nil)
-    label = if(is_integer(chat_id), do: "chat ##{chat_id}", else: "a new chat")
-
-    text =
-      if is_binary(url) and url != "" do
-        "Generation continued in [#{label}](#{url})."
-      else
-        "Generation continued in #{label}."
-      end
-
-    RuntimeTrace.new_step(
-      sequence: state.step_sequence + 1,
-      started_at: DateTime.utc_now(),
-      status: :done,
-      raw_request: %{"synthetic" => "handoff", "handoff" => payload},
-      raw_response: %{"synthetic" => "handoff", "handoff" => payload},
-      response_final: true
-    )
-    |> RuntimeTrace.apply_event({:ensure_item, "handoff", :answer, 1})
-    |> RuntimeTrace.apply_event({:set_text, "handoff", :answer, 1, text})
+  defp finalize_handoff_tool_step(state, _payload) do
+    finalize_done_from_step(state, state.runtime_step.id)
   end
 
   defp handoff_payload(results) when is_list(results) do

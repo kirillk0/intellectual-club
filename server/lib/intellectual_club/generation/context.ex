@@ -60,7 +60,8 @@ defmodule IntellectualClub.Generation.Context do
     :cache_control_enabled,
     :history_length,
     :initial_step_sequence,
-    :initial_step_status
+    :initial_step_status,
+    :completion_effect
   ]
 
   def authorize_chat!(chat_id, actor) do
@@ -280,7 +281,7 @@ defmodule IntellectualClub.Generation.Context do
       end)
 
     tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
-    tools_payload = tool_resolution.tools_payload
+    tools_payload = generation_tools_payload(tool_resolution, opts)
     tool_instances_by_alias = tool_resolution.tool_instances_by_alias
     prompt_snapshot = prompt_snapshot!(chat, actor: actor, tool_resolution: tool_resolution)
     system_prompt = prompt_snapshot.system_prompt
@@ -408,6 +409,7 @@ defmodule IntellectualClub.Generation.Context do
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
       history_length: history_length,
+      completion_effect: Keyword.get(opts, :completion_effect),
       chunk_delay_ms:
         Keyword.get(
           opts,
@@ -710,6 +712,17 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp maybe_disable_tools_for_retry(_request_payload, _tools_payload), do: []
+
+  defp generation_tools_payload(tool_resolution, opts) when is_map(tool_resolution) do
+    case Keyword.fetch(opts, :tools_payload_override) do
+      {:ok, tools} when is_list(tools) -> tools
+      {:ok, nil} -> []
+      {:ok, _other} -> []
+      :error -> Map.get(tool_resolution, :tools_payload, [])
+    end
+  end
+
+  defp generation_tools_payload(_tool_resolution, _opts), do: []
 
   defp generation_history_load do
     [

@@ -589,13 +589,15 @@ export function useChatViewModel() {
     ui.closeMenu();
 
     try {
-      const payload = await api.post<{ chat: Chat; relation?: ChatRelationSummary }>(
+      const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
         `/api/bff/chats/${chatId.value}/handoff`,
         {}
       );
-      const nextId = payload.chat?.id;
-      if (!nextId) throw new Error('Missing chat id');
-      await router.push(chatRouteTarget(nextId));
+      branch.value = payload.branch || [];
+      const messageId = payload.generation?.message_id;
+      if (!messageId) throw new Error('Missing generation message id');
+      await composerRuntime.startPolling(messageId);
+      await loadChatSafe({ mode: 'soft', includeSettings: false });
     } catch (error) {
       console.error(error);
       window.alert(getApiErrorMessage(error, 'Failed to handoff chat.'));

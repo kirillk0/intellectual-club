@@ -6,12 +6,15 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.ToolInstance
+
+  require Ash.Query
 
   defmodule ScriptedSSEPlug do
     import Plug.Conn
@@ -435,6 +438,118 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
            end)
   end
 
+  test "handoff tool finalizes parent message with the tool step only" do
+    handoff_summary = "Continue from the handoff tool summary."
+
+    handoff_call = %{
+      "id" => "call_handoff_1",
+      "type" => "function",
+      "function" => %{
+        "name" => "agent_management__handoff",
+        "arguments" => Jason.encode!(%{"summary" => handoff_summary})
+      }
+    }
+
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-handoff-tool",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "",
+                   "tool_calls" => [handoff_call]
+                 },
+                 "finish_reason" => "tool_calls"
+               }
+             ]
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-child",
+             "object" => "chat.completion",
+             "created" => 2,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "Child generation started."
+                 },
+                 "finish_reason" => "stop"
+               }
+             ]
+           }
+         ])}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, agent} = start_scripted_server!(scripts)
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :openrouter_chat_completion, handoff_tool?: true)
+
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Hand off this work", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    message_id = context.message_id
+    assert_receive {:done, ^message_id}, 2_000
+
+    message =
+      wait_for_message!(message_id, actor, fn msg ->
+        msg.status == :done and length(msg.steps) == 1
+      end)
+
+    assert message_answer_text(message) == ""
+
+    [step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert step.status == :done
+    assert Enum.count(step.items || [], &(&1.type == :tool_call)) == 1
+    assert Enum.count(step.items || [], &(&1.type == :tool_result)) == 1
+    refute Enum.any?(step.items || [], &(&1.type == :answer))
+
+    [handoff_payload] = handoff_payloads(message)
+    target_id = handoff_payload["chat_id"]
+    child_generation_message_id = handoff_payload["generation_message_id"]
+    assert is_integer(target_id)
+    assert is_integer(child_generation_message_id)
+
+    target =
+      Chat
+      |> Ash.get!(target_id, actor: actor, load: [:last_message])
+
+    assert target.parent_chat_id == chat.id
+    assert target.parent_message_id == message_id
+    assert target.parent_relation_kind == Handoff.relation_kind()
+
+    child_messages = messages_for_chat!(target_id, actor)
+    assert hd(child_messages).role == :user
+    assert message_answer_text(hd(child_messages)) == ""
+    assert user_message_text(hd(child_messages)) == handoff_summary
+
+    assert wait_for_message!(child_generation_message_id, actor, &(&1.status == :done)).status ==
+             :done
+
+    requests = Agent.get(agent, & &1.requests)
+    assert length(Map.get(requests, "/chat/completions", [])) == 2
+  end
+
   defp start_scripted_server!(scripts) when is_map(scripts) do
     {:ok, agent} =
       start_supervised(
@@ -670,6 +785,18 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Enum.map_join("", fn content -> content.content_text || "" end)
   end
 
+  defp user_message_text(message) do
+    message
+    |> Map.get(:steps, [])
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.flat_map(&Map.get(&1, :items, []))
+    |> Enum.filter(&(&1.type == :input))
+    |> Enum.flat_map(&Map.get(&1, :contents, []))
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.map_join("", fn content -> content.content_text || "" end)
+  end
+
   defp tool_result_texts(message) do
     message
     |> Map.get(:steps, [])
@@ -678,6 +805,29 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Enum.flat_map(&Map.get(&1, :contents, []))
     |> Enum.filter(&(&1.kind == :text))
     |> Enum.map(&(&1.content_text || ""))
+  end
+
+  defp handoff_payloads(message) do
+    message
+    |> Map.get(:steps, [])
+    |> Enum.flat_map(&Map.get(&1, :items, []))
+    |> Enum.filter(&(&1.type == :tool_result))
+    |> Enum.flat_map(&Map.get(&1, :contents, []))
+    |> Enum.filter(&(&1.kind == :opaque))
+    |> Enum.flat_map(fn content ->
+      case get_in(content.content_json || %{}, ["raw", "handoff"]) do
+        %{} = payload -> [payload]
+        _other -> []
+      end
+    end)
+  end
+
+  defp messages_for_chat!(chat_id, actor) do
+    ChatMessage
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.load(steps: [items: [:contents]])
+    |> Ash.read!(actor: actor)
   end
 
   defp assert_soft_refusal_result_linked!(step, refusal_text, opts \\ []) do

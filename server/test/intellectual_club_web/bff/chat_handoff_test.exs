@@ -110,13 +110,40 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert tool_id == tool.id
   end
 
-  test "POST /api/bff/chats/:id/handoff creates child chat without starting generation", %{
-    conn: conn
-  } do
+  test "POST /api/bff/chats/:id/handoff persists summary as assistant message and creates child chat",
+       %{
+         conn: conn
+       } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    source = create_chat!(actor, "Manual source")
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-manual-handoff",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "Manual handoff summary."
+                 },
+                 "finish_reason" => "stop"
+               }
+             ]
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    configuration = create_llm_configuration!(actor, base_url)
+    source = create_chat!(actor, "Manual source", llm_configuration_id: configuration.id)
 
     {:ok, source_message} =
       Threads.add_message_to_end(source, :user, "Summarize me", actor: actor)
@@ -124,20 +151,65 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     conn = post(conn, ~p"/api/bff/chats/#{source.id}/handoff", %{})
     payload = json_response(conn, 200)
 
-    target_id = payload["chat"]["id"]
+    generation_message_id = payload["generation"]["message_id"]
+    assert is_integer(generation_message_id)
+    assert List.last(payload["branch"])["id"] == generation_message_id
+    assert List.last(payload["branch"])["role"] == "assistant"
+    assert Enum.at(payload["branch"], -2)["role"] == "user"
+
+    generation_payload = wait_for_generation_to_finish(conn, generation_message_id)
+    assert generation_payload["status"] == "done"
+
+    [original_message, handoff_prompt_message, summary_message] =
+      messages_for_chat!(source.id, actor)
+
+    assert original_message.id == source_message.id
+    assert handoff_prompt_message.parent_id == source_message.id
+    assert handoff_prompt_message.role == :user
+    assert handoff_prompt_message.status == :done
+
+    assert String.contains?(
+             message_text(handoff_prompt_message),
+             "You are preparing a handoff summary"
+           )
+
+    assert summary_message.parent_id == handoff_prompt_message.id
+    assert summary_message.role == :assistant
+    assert summary_message.status == :done
+    assert summary_message.id == generation_message_id
+    assert message_text(summary_message) == "Manual handoff summary."
+
+    source_conn =
+      get(
+        build_conn() |> sign_in_conn(actor.username, password),
+        ~p"/api/bff/chats/#{source.id}/state"
+      )
+
+    source_payload = json_response(source_conn, 200)
+
+    children =
+      source_payload["relations"]["children_by_message_id"][
+        Integer.to_string(generation_message_id)
+      ]
+
+    assert [%{"chat_id" => target_id, "kind" => "handoff"}] = children
     assert is_integer(target_id)
-    assert payload["chat"]["parent_chat_id"] == source.id
-    assert payload["chat"]["parent_message_id"] == source_message.id
-    assert payload["chat"]["parent_relation_kind"] == "handoff"
-    assert payload["relation"]["chat_id"] == target_id
-    assert payload["relation"]["kind"] == "handoff"
 
-    messages = messages_for_chat!(target_id, actor)
-    assert length(messages) == 1
-    assert hd(messages).role == :user
-    assert hd(messages).status == :done
+    target =
+      Chat
+      |> Ash.get!(target_id, actor: actor, load: [:last_message])
 
-    refute Enum.any?(messages, &(&1.status == :generating))
+    assert target.parent_chat_id == source.id
+    assert target.parent_message_id == generation_message_id
+    assert target.parent_relation_kind == :handoff
+
+    target_messages = messages_for_chat!(target_id, actor)
+    assert length(target_messages) == 1
+    assert hd(target_messages).role == :user
+    assert hd(target_messages).status == :done
+    assert message_text(hd(target_messages)) == "Manual handoff summary."
+
+    refute Enum.any?(target_messages, &(&1.status == :generating))
   end
 
   test "POST /api/bff/chats/:id/handoff rejects non-owner", %{conn: conn} do
@@ -152,8 +224,10 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert conn.status in [403, 404]
   end
 
-  test "manual summarize sends summary prompt as a new user turn with chat system prefix" do
-    %{user: actor} = user_fixture()
+  test "manual handoff generation sends persisted summary prompt with chat system prefix",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
 
     scripts = %{
       "/chat/completions" => [
@@ -188,7 +262,23 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     {:ok, _source_message} =
       Threads.add_message_to_end(source, :user, "Original user context", actor: actor)
 
-    assert {:ok, "Summary from same prompt prefix."} = Handoff.summarize_chat(source, actor)
+    assert {:ok, context} = Handoff.manual_handoff(source.id, actor)
+    generation_payload = wait_for_generation_to_finish(conn, context.message_id)
+    assert generation_payload["status"] == "done"
+
+    [_original_message, handoff_prompt_message, summary_message] =
+      messages_for_chat!(source.id, actor)
+
+    assert handoff_prompt_message.role == :user
+
+    assert String.contains?(
+             message_text(handoff_prompt_message),
+             "You are preparing a handoff summary"
+           )
+
+    assert summary_message.parent_id == handoff_prompt_message.id
+    assert summary_message.id == context.message_id
+    assert message_text(summary_message) == "Summary from same prompt prefix."
 
     requests = Agent.get(agent, & &1.requests)
     [request] = Map.get(requests, "/chat/completions", [])

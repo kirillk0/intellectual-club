@@ -5,10 +5,10 @@ defmodule IntellectualClub.Chat.Handoff do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
+  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Db
-  alias IntellectualClub.Generation.Context
-  alias IntellectualClub.Generation.OneShot
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Tools.ChatToolBinding
 
@@ -35,10 +35,17 @@ defmodule IntellectualClub.Chat.Handoff do
   @spec manual_handoff(integer(), map()) :: {:ok, map()} | {:error, term()}
   def manual_handoff(source_chat_id, actor) when is_integer(source_chat_id) do
     with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_id, actor),
-         {:ok, summary} <- summarize_chat(source, actor) do
-      create_handoff_chat(source, actor, summary,
-        source_message_id: source.last_message_id,
-        start_generation?: false
+         {:ok, prompt_message} <-
+           Threads.add_message(source, :user, @summary_request,
+             actor: actor,
+             parent_id: source.last_message_id,
+             status: :done
+           ) do
+      GenerationSupervisor.start_generation(source.id,
+        actor: actor,
+        parent_id: prompt_message.id,
+        tools_payload_override: [],
+        completion_effect: :manual_handoff
       )
     end
   end
@@ -80,21 +87,26 @@ defmodule IntellectualClub.Chat.Handoff do
   def create_handoff_chat(_source_chat_or_id, _actor, _summary, _opts),
     do: {:error, :invalid_summary}
 
-  @spec summarize_chat(Chat.t() | integer(), map()) :: {:ok, String.t()} | {:error, term()}
-  def summarize_chat(source_chat_or_id, actor) do
-    with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_or_id, actor) do
-      source = Ash.load!(source, [llm_configuration: [:provider]], actor: actor)
-      prompt_snapshot = Context.prompt_snapshot!(source, actor: actor)
-
-      history =
-        Context.history_for_generation!(source.id, actor: actor) ++
-          [%{role: :user, content: @summary_request}]
-
-      OneShot.generate(source.llm_configuration, history, prompt_snapshot.system_prompt)
+  @spec complete_manual_generation(integer(), map()) :: {:ok, map()} | {:error, term()}
+  def complete_manual_generation(message_id, actor) when is_integer(message_id) do
+    with {:ok, %ChatMessage{} = message} <- fetch_handoff_summary_message(message_id, actor),
+         {:ok, summary} <- summary_from_message(message),
+         %Chat{id: source_chat_id} when is_integer(source_chat_id) <- Map.get(message, :chat) do
+      create_handoff_chat(source_chat_id, actor, summary,
+        source_message_id: message.id,
+        start_generation?: false
+      )
+    else
+      nil -> {:error, :chat_not_loaded}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :chat_not_loaded}
     end
   end
 
+  def complete_manual_generation(_message_id, _actor), do: {:error, :invalid_message_id}
+
   def relation_kind, do: @relation_kind
+  def summary_request, do: @summary_request
 
   defp create_target_with_summary(source, actor, summary, source_message_id) do
     Db.repo().transaction(fn ->
@@ -207,6 +219,21 @@ defmodule IntellectualClub.Chat.Handoff do
 
   defp fetch_owned_chat(_chat_id, _actor), do: {:error, :invalid_chat_id}
 
+  defp fetch_handoff_summary_message(message_id, actor) when is_integer(message_id) do
+    ChatMessage
+    |> Ash.Query.filter(id == ^message_id and role == :assistant)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load([:chat, steps: [items: [:contents]]])
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, [%ChatMessage{} = message]} -> {:ok, message}
+      {:ok, []} -> {:error, :not_found}
+      {:error, %Ash.Error.Query.NotFound{}} -> {:error, :not_found}
+      {:error, %Ash.Error.Forbidden{}} -> {:error, :forbidden}
+      {:error, error} -> {:error, error}
+    end
+  end
+
   defp normalize_summary(summary) when is_binary(summary) do
     case String.trim(summary) do
       "" -> {:error, :empty_summary}
@@ -219,6 +246,12 @@ defmodule IntellectualClub.Chat.Handoff do
 
   defp normalize_source_message_id(_message_id, %Chat{last_message_id: id}), do: id
   defp normalize_source_message_id(_message_id, _source), do: nil
+
+  defp summary_from_message(%ChatMessage{} = message) do
+    message
+    |> History.project_text_for_item_type(:answer)
+    |> normalize_summary()
+  end
 
   defp unwrap_transaction({:ok, %{chat: %Chat{}} = result}), do: {:ok, result}
   defp unwrap_transaction({:error, error}), do: {:error, error}
