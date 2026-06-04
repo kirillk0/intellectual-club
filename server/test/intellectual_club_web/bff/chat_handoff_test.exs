@@ -1,6 +1,7 @@
 defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
@@ -297,6 +298,88 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     refute Map.has_key?(request, "tools")
   end
 
+  test "manual handoff uses bot handoff message block content as summary prompt", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-custom-handoff",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "Summary from custom handoff prompt."
+                 },
+                 "finish_reason" => "stop"
+               }
+             ]
+           }
+         ])}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    configuration = create_llm_configuration!(actor, base_url)
+
+    handoff_block =
+      create_knowledge_block!(
+        actor,
+        "Handoff block title",
+        "Custom handoff prompt body.\nUse only the useful continuation state."
+      )
+
+    bot = create_bot!(actor, "Custom handoff bot", handoff_message_block_id: handoff_block.id)
+
+    source =
+      create_chat!(actor, "Manual source",
+        bot_id: bot.id,
+        llm_configuration_id: configuration.id
+      )
+
+    {:ok, _source_message} =
+      Threads.add_message_to_end(source, :user, "Original user context", actor: actor)
+
+    assert {:ok, context} = Handoff.manual_handoff(source.id, actor)
+    generation_payload = wait_for_generation_to_finish(conn, context.message_id)
+    assert generation_payload["status"] == "done"
+
+    [_original_message, handoff_prompt_message, summary_message] =
+      messages_for_chat!(source.id, actor)
+
+    prompt_text = message_text(handoff_prompt_message)
+
+    assert prompt_text == "Custom handoff prompt body.\nUse only the useful continuation state."
+    refute String.contains?(prompt_text, "Handoff block title")
+    refute String.contains?(prompt_text, "You are preparing a handoff summary")
+
+    assert summary_message.parent_id == handoff_prompt_message.id
+    assert summary_message.id == context.message_id
+    assert message_text(summary_message) == "Summary from custom handoff prompt."
+
+    requests = Agent.get(agent, & &1.requests)
+    [request] = Map.get(requests, "/chat/completions", [])
+
+    assert %{
+             "role" => "user",
+             "content" => "Custom handoff prompt body.\nUse only the useful continuation state."
+           } = List.last(request["messages"])
+
+    refute Enum.any?(request["messages"], fn message ->
+             String.contains?(
+               to_string(message["content"] || ""),
+               "You are preparing a handoff summary"
+             )
+           end)
+  end
+
   test "GET /api/bff/chats/:id/state includes parent and child handoff relations", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -373,6 +456,26 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     |> Ash.Changeset.for_create(
       :create,
       %{name: name, version: "v1", content: content, variables: %{}},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_bot!(actor, name, attrs) do
+    Bot
+    |> Ash.Changeset.for_create(
+      :create,
+      Map.merge(
+        %{
+          name: name,
+          first_messages: [],
+          variables: %{},
+          max_tool_rounds: 20,
+          context_soft_limit_percent: 80,
+          history_mode: :chat
+        },
+        Map.new(attrs)
+      ),
       actor: actor
     )
     |> Ash.create!(actor: actor)

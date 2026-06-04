@@ -14,6 +14,7 @@ defmodule IntellectualClub.Bots.Bot do
   alias IntellectualClub.Duplication
   alias IntellectualClub.Files
   alias IntellectualClub.Files.Changes.{DeleteAssociatedFile, SetImageFile}
+  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
   alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding}
 
@@ -185,6 +186,11 @@ defmodule IntellectualClub.Bots.Bot do
       attribute_type: :integer,
       public?: true
 
+    belongs_to :handoff_message_block, KnowledgeBlock,
+      allow_nil?: true,
+      attribute_type: :integer,
+      public?: true
+
     has_many :knowledge_block_bindings, IntellectualClub.Bots.BotKnowledgeBlock do
       destination_attribute(:bot_id)
       public?(true)
@@ -277,6 +283,7 @@ defmodule IntellectualClub.Bots.Bot do
       {:knowledge_block_bindings, [:knowledge_block]},
       {:compatible_configuration_tag_bindings, [:llm_configuration_tag]},
       :default_llm_configuration,
+      :handoff_message_block,
       {:tool_bindings, [:tool_instance]},
       {:user_tool_bindings, [:tool_instance]}
     ])
@@ -302,7 +309,8 @@ defmodule IntellectualClub.Bots.Bot do
         :context_soft_limit_percent,
         :max_file_size_bytes,
         :history_mode,
-        :default_llm_configuration_id
+        :default_llm_configuration_id,
+        :handoff_message_block_id
       ])
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -325,6 +333,11 @@ defmodule IntellectualClub.Bots.Bot do
       change(
         {RequireRelatedAccessByActor,
          relationships: [:default_llm_configuration], access: :readable, required?: false}
+      )
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:handoff_message_block], access: :readable, required?: false}
       )
 
       change(&maybe_manage_knowledge_block_bindings/2)
@@ -411,7 +424,8 @@ defmodule IntellectualClub.Bots.Bot do
           context_soft_limit_percent: source.context_soft_limit_percent,
           max_file_size_bytes: source.max_file_size_bytes,
           history_mode: source.history_mode,
-          default_llm_configuration_id: source.default_llm_configuration_id
+          default_llm_configuration_id: source.default_llm_configuration_id,
+          handoff_message_block_id: source.handoff_message_block_id
         })
         |> Ash.Changeset.manage_relationship(
           :compatible_configuration_tag_bindings,
@@ -509,7 +523,8 @@ defmodule IntellectualClub.Bots.Bot do
         :context_soft_limit_percent,
         :max_file_size_bytes,
         :history_mode,
-        :default_llm_configuration_id
+        :default_llm_configuration_id,
+        :handoff_message_block_id
       ])
 
       require_atomic?(false)
@@ -536,6 +551,11 @@ defmodule IntellectualClub.Bots.Bot do
       change(
         {RequireRelatedAccessByActor,
          relationships: [:default_llm_configuration], access: :readable, required?: false}
+      )
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:handoff_message_block], access: :readable, required?: false}
       )
     end
 

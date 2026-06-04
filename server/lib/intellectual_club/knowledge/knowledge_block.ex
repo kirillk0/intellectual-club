@@ -161,6 +161,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       destination_attribute(:knowledge_block_id)
     end
 
+    has_many :handoff_message_bots, IntellectualClub.Bots.Bot do
+      destination_attribute(:handoff_message_block_id)
+    end
+
     has_many :llm_configuration_bindings, IntellectualClub.Llm.LlmConfigurationKnowledgeBlock do
       destination_attribute(:knowledge_block_id)
     end
@@ -207,6 +211,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
                        exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
                    ) or
                      exists(
+                       handoff_message_bots,
+                       exists(shares.user_group.memberships, user_id == ^actor(:id))
+                     ) or
+                     exists(
                        llm_configuration_bindings,
                        enabled == true and
                          exists(
@@ -222,6 +230,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
               :boolean,
               expr(
                 exists(bot_bindings, enabled == true and bot.exists(shares)) or
+                  exists(handoff_message_bots, exists(shares)) or
                   exists(
                     llm_configuration_bindings,
                     enabled == true and llm_configuration.exists(shares)
@@ -457,6 +466,13 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
                        bot_bindings,
                        enabled == true and
                          exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
+                     )
+                   )
+
+      authorize_if expr(
+                     exists(
+                       handoff_message_bots,
+                       exists(shares.user_group.memberships, user_id == ^actor(:id))
                      )
                    )
 

@@ -43,6 +43,15 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       )
       |> Ash.create!(actor: actor)
 
+    handoff_block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Handoff Prompt", version: "v1", content: "Handoff instructions"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     tag_a =
       LlmConfigurationTag
       |> Ash.Changeset.for_create(:create, %{name: "Tag A"}, actor: actor)
@@ -59,6 +68,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         :create,
         %{
           name: "Knowledge bot",
+          handoff_message_block_id: handoff_block.id,
           compatible_configuration_tag_bindings: [
             %{llm_configuration_tag_id: tag_a.id},
             %{llm_configuration_tag_id: tag_b.id}
@@ -85,6 +95,9 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
       |> json_response(201)
 
     duplicated_bot_id = String.to_integer(response["data"]["id"])
+    duplicated_bot = Ash.get!(Bot, duplicated_bot_id, actor: actor)
+
+    assert duplicated_bot.handoff_message_block_id == handoff_block.id
 
     duplicated_bindings =
       BotKnowledgeBlock

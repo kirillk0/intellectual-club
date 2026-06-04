@@ -42,6 +42,8 @@ defmodule IntellectualClub.Bots do
             :context_soft_limit_percent,
             :max_file_size_bytes,
             :history_mode,
+            :default_llm_configuration_id,
+            :handoff_message_block_id,
             :created_at,
             :updated_at,
             :sort_activity_at

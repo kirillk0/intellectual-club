@@ -65,6 +65,7 @@ export type Bot = {
   name: string;
   image?: ImageAsset | null;
   default_llm_configuration_id?: number | null;
+  handoff_message_block_id?: number | null;
   compatible_configuration_tag_ids?: number[];
   compatible_configuration_tag_names?: string[];
   context_soft_limit_percent?: number | null;

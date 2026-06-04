@@ -3,6 +3,7 @@ defmodule IntellectualClub.Chat.Handoff do
   Creates explicit continuation chats from existing chat work.
   """
 
+  alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
@@ -10,6 +11,7 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Db
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Tools.ChatToolBinding
 
   require Ash.Query
@@ -35,8 +37,9 @@ defmodule IntellectualClub.Chat.Handoff do
   @spec manual_handoff(integer(), map()) :: {:ok, map()} | {:error, term()}
   def manual_handoff(source_chat_id, actor) when is_integer(source_chat_id) do
     with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_id, actor),
+         {:ok, handoff_prompt} <- handoff_prompt(source, actor),
          {:ok, prompt_message} <-
-           Threads.add_message(source, :user, @summary_request,
+           Threads.add_message(source, :user, handoff_prompt,
              actor: actor,
              parent_id: source.last_message_id,
              status: :done
@@ -192,6 +195,22 @@ defmodule IntellectualClub.Chat.Handoff do
         sequence: binding.sequence
       }
     end)
+  end
+
+  defp handoff_prompt(%Chat{} = source, actor) do
+    case Ash.load(source, [bot: [:handoff_message_block]], actor: actor) do
+      {:ok, %Chat{bot: %Bot{handoff_message_block: %KnowledgeBlock{content: content}}}} ->
+        {:ok, to_string(content || "")}
+
+      {:ok, %Chat{}} ->
+        {:ok, @summary_request}
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        {:error, :forbidden}
+
+      {:error, error} ->
+        {:error, error}
+    end
   end
 
   defp fetch_owned_chat(%Chat{owner_id: owner_id} = chat, %{id: actor_id})

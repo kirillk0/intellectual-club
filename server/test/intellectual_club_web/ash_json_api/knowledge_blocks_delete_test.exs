@@ -58,7 +58,8 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
           variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
-          history_mode: :chat
+          history_mode: :chat,
+          handoff_message_block_id: block.id
         },
         actor: actor
       )
@@ -125,6 +126,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
     assert remaining_chat_bindings == []
 
     assert Ash.get!(Bot, bot.id, actor: actor).id == bot.id
+    assert Ash.get!(Bot, bot.id, actor: actor).handoff_message_block_id == nil
     assert Ash.get!(Chat, chat.id, actor: actor).id == chat.id
   end
 

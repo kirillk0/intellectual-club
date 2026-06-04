@@ -232,6 +232,45 @@
           <p v-if="llmConfigurationsLoading" class="muted">Loading configurations…</p>
           <p v-else-if="llmConfigurationsError" class="error-text">{{ llmConfigurationsError }}</p>
 
+          <div :class="['stack', errors.hasField('handoff_message_block_id') && 'field-error']">
+            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+              <div class="stack" style="gap: 2px">
+                <strong>Handoff message block</strong>
+                <div class="muted" style="font-size: 0.85rem">
+                  Only the block content is used as the prompt. The title is ignored.
+                </div>
+              </div>
+              <div class="flex" style="gap: 8px">
+                <button type="button" :disabled="sharedReadonly" @click="openHandoffBlockPicker">
+                  {{ form.handoff_message_block_id ? 'Change' : 'Select' }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="sharedReadonly || !form.handoff_message_block_id"
+                  @click="clearHandoffMessageBlock"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div v-if="selectedHandoffBlock" class="list">
+              <KnowledgeBlockListItem
+                :name="selectedHandoffBlock.name"
+                :image="selectedHandoffBlock.image"
+                :version="selectedHandoffBlock.version"
+                :meta="`${selectedHandoffBlock.token_count ?? 0} tokens`"
+                :openable="true"
+                @open="openBlockEditor(selectedHandoffBlock.id)"
+              />
+            </div>
+            <p v-else class="muted">Use default handoff prompt</p>
+
+            <div v-if="errors.hasField('handoff_message_block_id')" class="error-text">
+              {{ errors.messageFor('handoff_message_block_id') }}
+            </div>
+          </div>
+
           <label :class="{ 'field-error': errors.hasField('max_tool_rounds') }">
             Max tool rounds
             <input
@@ -333,6 +372,16 @@
       @toggle="toggleCompatibleTag"
     />
 
+    <KnowledgeBlocksPickerModal
+      v-model:open="handoffBlockPickerOpen"
+      v-model:selected="handoffBlockPickerSelected"
+      title="Select handoff message block"
+      :blocks="knowledgeBlocks"
+      selectionMode="single"
+      confirmLabel="Select"
+      @confirm="setHandoffMessageBlock"
+    />
+
     <BotShareWizardModal
       v-model:open="shareModalOpen"
       :groups="shareGroups"
@@ -353,6 +402,8 @@ import { useRoute } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
 import BotShareWizardModal, { type BotShareToolBinding } from '@/components/BotShareWizardModal.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
+import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
+import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import VariablesTable from '@/components/VariablesTable.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
@@ -402,6 +453,7 @@ type BotForm = {
   first_messages: string[];
   variables: Record<string, string>;
   default_llm_configuration_id: number | null;
+  handoff_message_block_id: number | null;
   max_tool_rounds: number;
   context_soft_limit_percent: number;
   max_file_size_mb: number;
@@ -425,6 +477,7 @@ const stack = useNavigationStack();
 
 const BOT_DOCUMENT_INCLUDE = [
   'knowledge_block_bindings.knowledge_block',
+  'handoff_message_block',
   'compatible_configuration_tag_bindings.llm_configuration_tag',
   'tool_bindings.tool_instance',
   'user_tool_bindings.tool_instance',
@@ -450,6 +503,10 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
       typeof attrs.default_llm_configuration_id === 'number'
         ? attrs.default_llm_configuration_id
         : (toIntId(attrs.default_llm_configuration_id as any) ?? relationshipId(resource, 'default_llm_configuration')),
+    handoff_message_block_id:
+      typeof attrs.handoff_message_block_id === 'number'
+        ? attrs.handoff_message_block_id
+        : (toIntId(attrs.handoff_message_block_id as any) ?? relationshipId(resource, 'handoff_message_block')),
     max_tool_rounds:
       typeof attrs.max_tool_rounds === 'number' ? attrs.max_tool_rounds : Number(attrs.max_tool_rounds || 300),
     context_soft_limit_percent:
@@ -551,6 +608,7 @@ const editor = useCrudEditor<BotForm>({
     first_messages: [],
     variables: {},
     default_llm_configuration_id: null,
+    handoff_message_block_id: null,
     max_tool_rounds: 300,
     context_soft_limit_percent: 80,
     max_file_size_mb: 500,
@@ -564,6 +622,7 @@ const editor = useCrudEditor<BotForm>({
     first_messages: (form.first_messages || []).map((m) => String(m || '').trim()).filter((m) => m !== ''),
     variables: form.variables || {},
     default_llm_configuration_id: form.default_llm_configuration_id,
+    handoff_message_block_id: form.handoff_message_block_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
     max_file_size_bytes: Math.max(1, Number(form.max_file_size_mb || 500)) * 1024 * 1024,
@@ -578,6 +637,7 @@ const editor = useCrudEditor<BotForm>({
     first_messages: form.first_messages,
     variables: form.variables,
     default_llm_configuration_id: form.default_llm_configuration_id,
+    handoff_message_block_id: form.handoff_message_block_id,
     max_tool_rounds: form.max_tool_rounds,
     context_soft_limit_percent: form.context_soft_limit_percent,
     max_file_size_mb: form.max_file_size_mb,
@@ -740,6 +800,9 @@ function applyBotDocument(payload: JsonApiSingleResponse) {
       .map((resource) => parseKnowledgeBlockOption(relatedResource(resource, 'knowledge_block', includedIndex)))
       .filter((block): block is KnowledgeBlock => Boolean(block))
   );
+
+  const handoffMessageBlock = parseKnowledgeBlockOption(relatedResource(root, 'handoff_message_block', includedIndex));
+  if (handoffMessageBlock) mergeKnowledgeBlocks([handoffMessageBlock]);
 
   const tagBindingResources = relatedResources(root, 'compatible_configuration_tag_bindings', includedIndex);
   mergeConfigurationTags(
@@ -965,11 +1028,35 @@ const blocksById = computed(() => {
 const blockName = (id: number) => blocksById.value.get(id)?.name || `Block #${id}`;
 const blockImage = (id: number) => blocksById.value.get(id)?.image || null;
 const blockVersion = (id: number) => blocksById.value.get(id)?.version || '';
+const selectedHandoffBlock = computed(() =>
+  form.handoff_message_block_id ? blocksById.value.get(form.handoff_message_block_id) || null : null
+);
+const handoffBlockPickerOpen = ref(false);
+const handoffBlockPickerSelected = ref<number[]>([]);
+
+function openHandoffBlockPicker() {
+  if (sharedReadonly.value) return;
+  handoffBlockPickerSelected.value = form.handoff_message_block_id ? [form.handoff_message_block_id] : [];
+  handoffBlockPickerOpen.value = true;
+}
+
+function setHandoffMessageBlock(blockIds: number[]) {
+  const blockId = blockIds.find((id) => typeof id === 'number' && id > 0) ?? null;
+  form.handoff_message_block_id = blockId;
+  errors.clearField('handoff_message_block_id');
+}
+
+function clearHandoffMessageBlock() {
+  form.handoff_message_block_id = null;
+  handoffBlockPickerSelected.value = [];
+  errors.clearField('handoff_message_block_id');
+}
 
 watch(
   () => editor.idParam.value,
   () => {
     compatibleTagsPickerOpen.value = false;
+    handoffBlockPickerOpen.value = false;
   }
 );
 
