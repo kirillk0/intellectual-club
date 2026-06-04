@@ -858,8 +858,12 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   def generate(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       chat_id = String.to_integer(id)
-      parent_id = Helpers.parse_optional_integer(Map.get(params, "parent_id"))
-      generation_opts = maybe_put_parent_id([actor: actor], parent_id)
+      raw_parent_id = Map.get(params, "parent_id")
+      explicit_parent? = Map.has_key?(params, "parent_id")
+      parent_id = Helpers.parse_optional_integer(raw_parent_id)
+
+      generation_opts =
+        maybe_put_parent_id([actor: actor], raw_parent_id, parent_id, explicit_parent?)
 
       with {:ok, _chat} <- fetch_owned_chat(chat_id, actor) do
         case GenerationSupervisor.start_generation(chat_id, generation_opts) do
@@ -882,11 +886,16 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
-  defp maybe_put_parent_id(opts, parent_id) when is_integer(parent_id) do
+  defp maybe_put_parent_id(opts, _raw_parent_id, parent_id, true) when is_integer(parent_id) do
     Keyword.put(opts, :parent_id, parent_id)
   end
 
-  defp maybe_put_parent_id(opts, _parent_id), do: opts
+  defp maybe_put_parent_id(opts, raw_parent_id, _parent_id, true)
+       when is_nil(raw_parent_id) or raw_parent_id == "" do
+    Keyword.put(opts, :parent_id, nil)
+  end
+
+  defp maybe_put_parent_id(opts, _raw_parent_id, _parent_id, _explicit_parent?), do: opts
 
   def switch_branch(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do

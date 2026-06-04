@@ -106,11 +106,7 @@ defmodule IntellectualClub.Generation.Context do
     actor = Keyword.get(opts, :actor)
     chat = load_history_chat!(chat_or_id, actor)
 
-    target_parent_id =
-      case Keyword.fetch(opts, :parent_id) do
-        {:ok, parent_id} when is_integer(parent_id) -> parent_id
-        _other -> chat.last_message_id
-      end
+    target_parent_id = generation_parent_id(opts, chat)
 
     source_branch =
       if is_integer(target_parent_id) do
@@ -256,11 +252,7 @@ defmodule IntellectualClub.Generation.Context do
         load: [:bot, :last_message, llm_configuration: [:provider]]
       )
 
-    target_parent_id =
-      case Keyword.fetch(opts, :parent_id) do
-        {:ok, parent_id} when is_integer(parent_id) -> parent_id
-        _other -> chat.last_message_id
-      end
+    target_parent_id = generation_parent_id(opts, chat)
 
     source_branch =
       if is_integer(target_parent_id) do
@@ -920,6 +912,15 @@ defmodule IntellectualClub.Generation.Context do
 
   defp load_history_chat!(chat_id, actor) when is_integer(chat_id) do
     Ash.get!(Chat, chat_id, actor: actor, load: [:last_message])
+  end
+
+  defp generation_parent_id(opts, chat) do
+    case Keyword.fetch(opts, :parent_id) do
+      {:ok, parent_id} when is_integer(parent_id) -> parent_id
+      {:ok, nil} -> nil
+      :error -> chat.last_message_id
+      {:ok, _other} -> chat.last_message_id
+    end
   end
 
   defp load_prompt_sources(chat, actor) do

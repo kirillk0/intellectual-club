@@ -465,17 +465,10 @@ export function useChatMessageActions(params: Params) {
       return;
     }
 
-    const parentId = msg.parent_id ?? null;
-    if (!parentId) {
-      branchingAssistantId.value = null;
-      alert('Cannot branch: missing parent message.');
-      return;
-    }
-
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
         `/api/bff/chats/${params.chatId.value}/generate`,
-        { parent_id: parentId }
+        { parent_id: msg.parent_id ?? null }
       );
       replaceBranch(payload.branch);
       const messageId = payload.generation?.message_id;

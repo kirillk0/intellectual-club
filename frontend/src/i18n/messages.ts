@@ -546,7 +546,6 @@ export const ruMessages: Record<string, string> = {
   'This tool is read-only. Duplicate it to create an editable copy.': 'Этот инструмент доступен только для чтения. Дублируйте его, чтобы создать редактируемую копию.',
   'This tool provides fixed functions and does not use discovery.': 'Этот инструмент предоставляет фиксированные функции и не использует обнаружение.',
   'This tool type does not require credentials.': 'Этот тип инструмента не требует учетных данных.',
-  'Cannot branch: missing parent message.': 'Нельзя создать ветку: отсутствует родительское сообщение.',
   'Cannot change configuration while generating a response.': 'Нельзя менять конфигурацию во время генерации ответа.',
   'Configuration change is still syncing. Please wait before starting a new generation.': 'Изменение конфигурации еще синхронизируется. Подождите перед запуском новой генерации.',
   'Time to first token': 'Время до первого токена',
