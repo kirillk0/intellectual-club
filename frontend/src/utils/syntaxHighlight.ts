@@ -44,6 +44,8 @@ const getCodeBlockLanguage = (codeEl: Element) => {
   return null;
 };
 
+const highlightedSources = new WeakMap<Element, string>();
+
 export const highlightCodeBlocks = (root: ParentNode, options?: { highlightedAttr?: string }) => {
   const highlightedAttr = options?.highlightedAttr ?? 'data-code-highlighted';
 
@@ -52,7 +54,6 @@ export const highlightCodeBlocks = (root: ParentNode, options?: { highlightedAtt
   );
 
   blocks.forEach((codeEl) => {
-    if (codeEl.getAttribute(highlightedAttr) === 'true') return;
     const rawLanguage = getCodeBlockLanguage(codeEl);
     if (!rawLanguage) return;
 
@@ -61,13 +62,17 @@ export const highlightCodeBlocks = (root: ParentNode, options?: { highlightedAtt
     if (!grammar) return;
 
     const code = codeEl.textContent ?? '';
+    if (codeEl.getAttribute(highlightedAttr) === 'true' && highlightedSources.get(codeEl) === code) {
+      return;
+    }
+
     const highlighted = Prism.highlight(code, grammar, language);
     codeEl.innerHTML = highlighted;
     codeEl.setAttribute(highlightedAttr, 'true');
+    highlightedSources.set(codeEl, code);
 
     if (language !== rawLanguage) {
       codeEl.classList.add(`language-${language}`);
     }
   });
 };
-

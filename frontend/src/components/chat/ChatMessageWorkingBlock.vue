@@ -1,5 +1,5 @@
 <template>
-  <div v-if="hasWorking" class="working-block">
+  <div v-if="hasWorking" ref="workingBlockEl" class="working-block">
     <button
       class="working-toggle"
       type="button"
@@ -110,9 +110,9 @@
                 </div>
                 <div v-if="toolCallInfo(item).arguments !== null">
                   <div class="muted" style="margin-bottom: 4px">Arguments</div>
-                  <pre class="code-block" style="white-space: pre-wrap; word-break: break-word">{{
+                  <pre class="code-block working-json-block"><code class="language-json">{{
                     formatJson(toolCallInfo(item).arguments)
-                  }}</pre>
+                  }}</code></pre>
                 </div>
               </div>
 
@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type {
@@ -191,6 +191,7 @@ import type {
 } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 
 interface Props {
   messageId: number | null;
@@ -238,6 +239,7 @@ const error = computed(() => props.error || '');
 const isMessageGenerating = computed(() => props.messageStatus === 'generating');
 
 const nowMs = ref(Date.now());
+const workingBlockEl = ref<HTMLElement | null>(null);
 let nowTimer: number | null = null;
 
 const hasWorking = computed(() => {
@@ -424,6 +426,19 @@ watch(
 );
 
 onUnmounted(stopNowTimer);
+
+const highlightWorkingJsonBlocks = () => {
+  const root = workingBlockEl.value;
+  if (!root) return;
+  highlightCodeBlocks(root);
+};
+
+const scheduleHighlightWorkingJsonBlocks = () => {
+  void nextTick(highlightWorkingJsonBlocks);
+};
+
+onMounted(scheduleHighlightWorkingJsonBlocks);
+onUpdated(scheduleHighlightWorkingJsonBlocks);
 
 const renderCache = new Map<string, string>();
 const renderHtml = (text: string) => {
@@ -678,6 +693,11 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 .working-tool-result {
   max-height: 240px;
   overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.working-json-block {
   white-space: pre-wrap;
   word-break: break-word;
 }
