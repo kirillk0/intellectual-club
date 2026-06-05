@@ -169,6 +169,112 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload_page_2["page"]["has_next"] == false
   end
 
+  test "GET /api/bff/chats keeps message activity order after chat metadata changes", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    older_chat = create_chat!(actor, "Older activity")
+    {:ok, _older_message} = Threads.add_message_to_end(older_chat, :user, "Older", actor: actor)
+
+    Process.sleep(20)
+
+    newer_chat = create_chat!(actor, "Newer activity")
+    {:ok, _newer_message} = Threads.add_message_to_end(newer_chat, :user, "Newer", actor: actor)
+
+    Process.sleep(20)
+
+    conn
+    |> patch(~p"/api/bff/chats/#{older_chat.id}", %{"note" => "Renamed older chat"})
+    |> json_response(200)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats")
+      |> json_response(200)
+
+    idle_payload =
+      conn
+      |> get(~p"/api/bff/chats/idle-state")
+      |> json_response(200)
+
+    assert chat_ids(payload) == [newer_chat.id, older_chat.id]
+    assert is_binary(idle_payload["revision"])
+  end
+
+  test "GET /api/bff/chats sorts empty chats by creation after chat metadata changes", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    older_chat = create_chat!(actor, "Older empty")
+
+    Process.sleep(20)
+
+    newer_chat = create_chat!(actor, "Newer empty")
+
+    Process.sleep(20)
+
+    conn
+    |> patch(~p"/api/bff/chats/#{older_chat.id}", %{"note" => "Renamed older empty"})
+    |> json_response(200)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats")
+      |> json_response(200)
+
+    newer_payload = chat_payload(payload, newer_chat.id)
+
+    assert is_map(newer_payload)
+    assert chat_ids(payload) == [newer_chat.id, older_chat.id]
+    assert newer_payload["last_activity_at"] == newer_payload["created_at"]
+    assert payload["stats"]["no_bot_last_activity_at"] == newer_payload["last_activity_at"]
+  end
+
+  test "GET /api/bff/chats sorts by active branch leaf instead of newer inactive messages", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    branched_chat = create_chat!(actor, "Branched inactive")
+    {:ok, root} = Threads.add_message_to_end(branched_chat, :user, "Root", actor: actor)
+
+    {:ok, active_leaf} =
+      Threads.add_message(branched_chat, :assistant, "Active", actor: actor, parent_id: root.id)
+
+    Process.sleep(20)
+
+    newer_active_chat = create_chat!(actor, "Newer active")
+
+    {:ok, _newer_active_message} =
+      Threads.add_message_to_end(newer_active_chat, :user, "Newer active", actor: actor)
+
+    Process.sleep(20)
+
+    {:ok, _inactive_leaf} =
+      Threads.add_message(branched_chat, :assistant, "Inactive newer",
+        actor: actor,
+        parent_id: root.id
+      )
+
+    {:ok, _branch_meta} = Threads.activate_branch(branched_chat, active_leaf.id, actor)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chats")
+      |> json_response(200)
+
+    branched_payload = chat_payload(payload, branched_chat.id)
+
+    assert is_map(branched_payload)
+    assert chat_ids(payload) == [newer_active_chat.id, branched_chat.id]
+    assert branched_payload["message_count"] == 2
+  end
+
   test "GET /api/bff/chats returns sidebar stats independent from pagination and filter", %{
     conn: conn
   } do
@@ -236,6 +342,28 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
              %{"bot_id" => bot_a.id, "bot_name" => "Bot A", "chat_count" => 1},
              %{"bot_id" => bot_b.id, "bot_name" => "Bot B", "chat_count" => 2}
            ]
+  end
+
+  defp chat_ids(payload) do
+    payload
+    |> Map.get("chats", [])
+    |> Enum.map(& &1["id"])
+  end
+
+  defp chat_payload(payload, chat_id) do
+    payload
+    |> Map.get("chats", [])
+    |> Enum.find(fn item -> item["id"] == chat_id end)
+  end
+
+  defp create_chat!(actor, title, attrs \\ %{}) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create,
+      Map.merge(%{title: title, note: "", variables: %{}}, attrs),
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 
   defp create_bot!(actor, name) do

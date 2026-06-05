@@ -75,16 +75,25 @@ defmodule IntellectualClub.Chat.ListingStats do
   def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id))
-    |> Ash.Query.sort(updated_at: :desc, id: :desc)
+    |> Ash.Query.sort(last_activity_at: :desc, id: :desc)
+    |> Ash.Query.load(:last_activity_at)
     |> Ash.Query.limit(1)
     |> Ash.read!(actor: actor)
     |> case do
-      [%Chat{} = chat] -> chat.updated_at || chat.created_at
+      [%Chat{} = chat] -> chat_activity_at(chat)
       _ -> nil
     end
   end
 
   def no_bot_last_activity_at(_actor), do: nil
+
+  defp chat_activity_at(%Chat{} = chat) do
+    case Map.get(chat, :last_activity_at) do
+      %DateTime{} = activity_at -> activity_at
+      %NaiveDateTime{} = activity_at -> activity_at
+      _ -> chat.created_at
+    end
+  end
 
   defp empty_sidebar_stats do
     %{

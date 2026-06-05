@@ -46,10 +46,11 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         Chat
         |> Ash.Query.filter(owner_id == ^actor.id)
         |> maybe_apply_chat_bot_filter(bot_filter)
-        |> Ash.Query.sort(updated_at: :desc, id: :desc)
+        |> apply_chat_list_sort()
         |> Ash.Query.load([
           :bot,
           :last_message,
+          :last_activity_at,
           :can_edit,
           :shared_incoming,
           :shared_outgoing,
@@ -1077,15 +1078,24 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   end
 
   defp chat_activity_at(chat) do
-    case Map.get(chat, :last_message) do
-      %{created_at: %DateTime{} = created_at} ->
-        created_at
+    case Map.get(chat, :last_activity_at) do
+      %DateTime{} = activity_at ->
+        activity_at
 
-      %{created_at: %NaiveDateTime{} = created_at} ->
-        created_at
+      %NaiveDateTime{} = activity_at ->
+        activity_at
 
       _ ->
-        chat.updated_at || chat.created_at
+        case Map.get(chat, :last_message) do
+          %{created_at: %DateTime{} = created_at} ->
+            created_at
+
+          %{created_at: %NaiveDateTime{} = created_at} ->
+            created_at
+
+          _ ->
+            chat.created_at
+        end
     end
   end
 
@@ -1122,7 +1132,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> maybe_apply_chat_bot_filter(bot_filter)
-    |> Ash.Query.sort(updated_at: :desc, id: :desc)
+    |> apply_chat_list_sort()
     |> Ash.Query.load(loads, strict?: true)
     |> Ash.Query.page(
       limit: pagination.per_page,
@@ -1130,6 +1140,10 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       count: true
     )
     |> Ash.read!(actor: actor)
+  end
+
+  defp apply_chat_list_sort(query) do
+    Ash.Query.sort(query, last_activity_at: :desc, id: :desc)
   end
 
   defp chat_list_idle_revision(pagination, bot_filter, page, chats) when is_list(chats) do

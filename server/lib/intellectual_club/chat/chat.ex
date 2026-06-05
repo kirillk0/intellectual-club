@@ -169,6 +169,12 @@ defmodule IntellectualClub.Chat.Chat do
       public?(true)
     end
 
+    calculate :last_activity_at,
+              :utc_datetime_usec,
+              expr(last_message.created_at || created_at) do
+      public?(false)
+    end
+
     calculate :message_count, :integer, {IntellectualClub.Chat.Calculations.MessageCount, []} do
       public?(true)
     end
