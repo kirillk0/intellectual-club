@@ -341,8 +341,8 @@
           @move-chat-tool-binding="vm.moveChatToolBinding"
           @remove-chat-block="vm.removeChatBlock"
           @remove-chat-tool-binding="vm.removeChatToolBinding"
+          @set-chat-block-enabled="vm.setChatBlockEnabled"
           @set-chat-tool-binding-enabled="vm.setChatToolBindingEnabled"
-          @touch-chat-blocks="vm.touchChatBlocks"
           @update:chatVariables="(value) => (vm.chatVariables = value)"
           @add-variable-row="vm.addVariableRow"
         />

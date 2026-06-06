@@ -44,7 +44,7 @@
             @open="(blockId) => emit('open-chat-block-editor', blockId)"
             @move="(block, delta) => emit('move-chat-block', block, delta)"
             @remove="(id) => emit('remove-chat-block', id)"
-            @toggle="emit('touch-chat-blocks')"
+            @toggle="(block, enabled) => emit('set-chat-block-enabled', block.id, enabled)"
           />
         </div>
 
@@ -165,7 +165,7 @@ const emit = defineEmits<{
   (e: 'open-chat-block-editor', blockId: number): void;
   (e: 'move-chat-block', block: ChatBlockLink, delta: number): void;
   (e: 'remove-chat-block', blockId: number): void;
-  (e: 'touch-chat-blocks'): void;
+  (e: 'set-chat-block-enabled', blockId: number, enabled: boolean): void;
   (e: 'update:newChatToolInstanceIds', value: number[]): void;
   (e: 'add-chat-tool-binding', value: number[]): void;
   (e: 'open-chat-tool-editor', toolInstanceId: number): void;

@@ -15,7 +15,7 @@
       @open="(blockId) => emit('open-block-editor', blockId)"
       @move="(item, delta) => emit('move', item.id, delta)"
       @remove="(id) => emit('remove', id)"
-      @toggle="(item) => emit('set-enabled', item.id, item.enabled)"
+      @toggle="(item, enabled) => emit('set-enabled', item.id, enabled)"
     >
       <template #note>
         <div v-if="bindingsLoading" class="muted" style="margin-top: 6px">Loading…</div>

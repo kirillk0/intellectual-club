@@ -31,11 +31,11 @@
           <input
             class="kb-enabled"
             type="checkbox"
-            v-model="item.enabled"
+            :checked="item.enabled"
             :disabled="readonly"
             aria-label="Enabled"
             title="Enabled"
-            @change="emit('toggle', item)"
+            @change="handleToggle(item, $event)"
           />
         </template>
 
@@ -136,7 +136,7 @@ const emit = defineEmits<{
   (e: 'open', blockId: number): void;
   (e: 'move', item: LinkItem, delta: number): void;
   (e: 'remove', id: number): void;
-  (e: 'toggle', item: LinkItem): void;
+  (e: 'toggle', item: LinkItem, enabled: boolean): void;
 }>();
 
 const sortedItems = computed(() => [...(props.items || [])].sort((a, b) => a.sequence - b.sequence));
@@ -152,6 +152,11 @@ const blockVersionText = (item: LinkItem) => {
 const handleOpen = (blockId: number) => {
   if (!props.openable) return;
   emit('open', blockId);
+};
+
+const handleToggle = (item: LinkItem, event: Event) => {
+  const enabled = (event.target as HTMLInputElement | null)?.checked === true;
+  emit('toggle', { ...item, enabled }, enabled);
 };
 </script>
 

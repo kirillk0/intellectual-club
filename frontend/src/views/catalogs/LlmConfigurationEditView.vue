@@ -214,7 +214,7 @@
             @open="openBlockEditor"
             @move="(item, delta) => bindings.move(item.id, delta)"
             @remove="(id) => bindings.remove(id)"
-            @toggle="(item) => bindings.setEnabled(item.id, item.enabled)"
+            @toggle="(item, enabled) => bindings.setEnabled(item.id, enabled)"
           >
             <template #item-secondary-actions="{ item }">
               <button

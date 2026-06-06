@@ -416,9 +416,9 @@ const remove = (id: number) => {
   userBlocks.value = userBlocks.value.filter((row) => row.id !== id);
 };
 
-const toggle = (item: UserKnowledgeBlockLink) => {
+const toggle = (item: UserKnowledgeBlockLink, enabled: boolean) => {
   userBlocks.value = userBlocks.value.map((row) =>
-    row.id === item.id ? { ...row, enabled: item.enabled } : row
+    row.id === item.id ? { ...row, enabled } : row
   );
 };
 
