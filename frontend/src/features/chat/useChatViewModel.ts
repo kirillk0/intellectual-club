@@ -256,6 +256,9 @@ export function useChatViewModel() {
     ensurePendingFilesUploaded: composerRuntime.ensurePendingFilesUploaded,
     removePendingFileFromCollection: composerRuntime.removePendingFileFromCollection,
     clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
+    pushChatRoute: async (id) => {
+      await router.push(chatRouteTarget(id));
+    },
     afterBranchSwitched: contextPanel.rerunBranchSearch,
   });
 
@@ -795,6 +798,7 @@ export function useChatViewModel() {
     copiedMessageId: messageActions.copiedMessageId,
     retryingMessageId: messageActions.retryingMessageId,
     branchingAssistantId: messageActions.branchingAssistantId,
+    branchingNewChatMessageId: messageActions.branchingNewChatMessageId,
     isBookmarkingMessage: messageActions.isBookmarkingMessage,
     isWorkingOpen: messageActions.isWorkingOpen,
     workingStateFor: messageActions.workingStateFor,
@@ -806,6 +810,7 @@ export function useChatViewModel() {
     toggleBookmark: messageActions.toggleBookmark,
     startEdit: messageActions.startEdit,
     startBranch: messageActions.startBranch,
+    startBranchToNewChat: messageActions.startBranchToNewChat,
     retryLastStep: messageActions.retryLastStep,
     confirmAndDeleteMessage: messageActions.confirmAndDeleteMessage,
     draft: composerRuntime.draft,

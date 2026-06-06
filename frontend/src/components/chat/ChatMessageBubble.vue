@@ -165,6 +165,20 @@
             <span class="message-actions-menu__label">Edit</span>
           </button>
           <button
+            class="menu-item message-actions-menu__item"
+            type="button"
+            role="menuitem"
+            :disabled="branchToNewChatDisabled"
+            :aria-label="`Branch message ${index + 1} to new chat`"
+            title="Branch to new chat"
+            @click="emitBranchNewChat"
+          >
+            <span class="message-actions-menu__icon">
+              <SvgIcon name="branch" size="16" />
+            </span>
+            <span class="message-actions-menu__label">Branch to new chat</span>
+          </button>
+          <button
             class="menu-item message-actions-menu__item danger"
             type="button"
             role="menuitem"
@@ -204,6 +218,7 @@ interface Props {
   retrying?: boolean;
   bookmarking?: boolean;
   branchingAssistantId?: number | null;
+  branchingNewChatMessageId?: number | null;
   pollReconnecting?: boolean;
   workingOpen?: boolean;
   workingState?: OpenWorkingState | null;
@@ -219,6 +234,7 @@ const props = withDefaults(defineProps<Props>(), {
   retrying: false,
   bookmarking: false,
   branchingAssistantId: null,
+  branchingNewChatMessageId: null,
   pollReconnecting: false,
   workingOpen: false,
   workingState: null,
@@ -233,6 +249,7 @@ const emit = defineEmits<{
   (e: 'toggle-bookmark'): void;
   (e: 'edit'): void;
   (e: 'branch'): void;
+  (e: 'branch-new-chat'): void;
   (e: 'retry'): void;
   (e: 'delete'): void;
   (e: 'switch-branch', direction: 'prev' | 'next'): void;
@@ -312,6 +329,13 @@ const branchDisabled = computed(() => {
   if (props.readonly) return true;
   if (props.branchingAssistantId == null) return false;
   return props.branchingAssistantId === messageId.value;
+});
+
+const branchToNewChatDisabled = computed(() => {
+  if (!messageId.value) return true;
+  if (props.readonly) return true;
+  if (props.branchingNewChatMessageId == null) return false;
+  return true;
 });
 
 const updateMoreMenuPosition = () => {
@@ -415,6 +439,12 @@ const emitEdit = () => {
   if (!messageId.value || msg.value.status === 'generating') return;
   closeMoreMenu();
   emit('edit');
+};
+
+const emitBranchNewChat = () => {
+  if (branchToNewChatDisabled.value) return;
+  closeMoreMenu();
+  emit('branch-new-chat');
 };
 
 const emitDelete = () => {

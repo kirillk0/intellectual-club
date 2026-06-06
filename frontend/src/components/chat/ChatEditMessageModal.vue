@@ -176,7 +176,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 interface Props {
   open: boolean;
-  mode: 'edit' | 'branch';
+  mode: 'edit' | 'branch' | 'branch_new_chat';
   modelValue: string[];
   existingAttachments?: ExistingChatAttachment[];
   pendingFiles?: PendingChatFile[];
@@ -265,7 +265,9 @@ const updateAt = (idx: number, value: string) => {
 
 const saving = computed(() => Boolean(props.saving));
 const errorText = computed(() => (props.error || '').trim());
-const showAttachments = computed(() => props.mode === 'edit' || props.mode === 'branch');
+const showAttachments = computed(
+  () => props.mode === 'edit' || props.mode === 'branch' || props.mode === 'branch_new_chat'
+);
 const attachmentsEnabled = computed(() => Boolean(props.attachmentsEnabled));
 const hasAttachments = computed(
   () => existingAttachments.value.length > 0 || pendingFiles.value.length > 0
@@ -275,10 +277,11 @@ const attachmentHelpText = computed(() => (props.attachmentHelp || '').trim());
 const attachmentDropHint = computed(() =>
   attachmentAccept.value === 'image/*' ? 'Drop images to attach' : 'Drop files to attach'
 );
-const title = computed(() => (props.mode === 'branch' ? 'Branch message' : 'Edit message'));
+const title = computed(() => (props.mode === 'edit' ? 'Edit message' : 'Branch message'));
 const confirmLabel = computed(() => {
   if ((props.saveLabel || '').trim() !== '') return props.saveLabel || '';
-  if (saving.value) return props.mode === 'branch' ? 'Branching…' : 'Saving…';
+  if (saving.value) return props.mode === 'edit' ? 'Saving…' : 'Branching…';
+  if (props.mode === 'branch_new_chat') return 'Branch to new chat';
   return props.mode === 'branch' ? 'Branch' : 'Save';
 });
 const describePendingFileStatus = describePendingFileUploadStatus;

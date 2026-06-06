@@ -38,8 +38,11 @@ type Params = {
   ensurePendingFilesUploaded: (filesRef: Ref<PendingChatFile[]>) => Promise<string[]>;
   removePendingFileFromCollection: (filesRef: Ref<PendingChatFile[]>, id: string) => Promise<void>;
   clearPendingFilesCollection: (filesRef: Ref<PendingChatFile[]>) => Promise<void>;
+  pushChatRoute: (chatId: number) => Promise<void> | void;
   afterBranchSwitched?: () => void;
 };
+
+type EditModalMode = 'edit' | 'branch' | 'branch_new_chat';
 
 export type OpenWorkingState = {
   messageId: number;
@@ -55,13 +58,14 @@ export function useChatMessageActions(params: Params) {
   const copiedMessageId = ref<number | null>(null);
   const retryingMessageId = ref<number | null>(null);
   const branchingAssistantId = ref<number | null>(null);
+  const branchingNewChatMessageId = ref<number | null>(null);
   const deletingMessageId = ref<number | null>(null);
   const bookmarkingMessageIds = ref<Set<number>>(new Set());
   const openWorking = ref<OpenWorkingState | null>(null);
   let workingLoadVersion = 0;
 
   const editingMessage = ref<ChatBranchMessage | null>(null);
-  const modalMode = ref<'edit' | 'branch'>('edit');
+  const modalMode = ref<EditModalMode>('edit');
   const editContentIds = ref<number[]>([]);
   const editContents = ref<string[]>([]);
   const editExistingAttachments = ref<ExistingChatAttachment[]>([]);
@@ -71,13 +75,17 @@ export function useChatMessageActions(params: Params) {
   const savingEdit = ref(false);
 
   const editSaveLabel = computed(() => {
-    if (!savingEdit.value) return modalMode.value === 'branch' ? 'Branch' : 'Save';
+    if (!savingEdit.value) {
+      if (modalMode.value === 'branch_new_chat') return 'Branch to new chat';
+      return modalMode.value === 'branch' ? 'Branch' : 'Save';
+    }
 
     const uploadProgress = overallPendingUploadProgress(editPendingFiles.value);
     if (uploadProgress.active) {
       return `Uploading… ${Math.max(1, Math.round(uploadProgress.progress * 100))}%`;
     }
 
+    if (modalMode.value === 'branch_new_chat') return 'Branching to new chat…';
     return modalMode.value === 'branch' ? 'Branching…' : 'Saving…';
   });
 
@@ -483,24 +491,70 @@ export function useChatMessageActions(params: Params) {
     }
   };
 
+  const openBranchModal = (msg: ChatBranchMessage, mode: Extract<EditModalMode, 'branch' | 'branch_new_chat'>) => {
+    if (params.readOnly.value) return;
+    if (!msg.id) return;
+    void params.clearPendingFilesCollection(editPendingFiles);
+    const attachments = extractEditableMediaContents(msg);
+    editingMessage.value = msg;
+    modalMode.value = mode;
+    editContentIds.value = [];
+    editContents.value = [messagePrimaryText(msg)];
+    editExistingAttachments.value = attachments;
+    editRemovedAttachmentIds.value = [];
+    editPendingFiles.value = [];
+    editError.value = '';
+  };
+
   const startBranch = (msg: ChatBranchMessage) => {
     if (params.readOnly.value) return;
     if (!msg.id) return;
     if (msg.role === 'user') {
-      void params.clearPendingFilesCollection(editPendingFiles);
-      const attachments = extractEditableMediaContents(msg);
-      editingMessage.value = msg;
-      modalMode.value = 'branch';
-      editContentIds.value = [];
-      editContents.value = [messagePrimaryText(msg)];
-      editExistingAttachments.value = attachments;
-      editRemovedAttachmentIds.value = [];
-      editPendingFiles.value = [];
-      editError.value = '';
+      openBranchModal(msg, 'branch');
       return;
     }
 
     void branchFromAssistant(msg);
+  };
+
+  const branchAssistantToNewChat = async (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
+    if (!msg.id || !params.chatId.value) return;
+    if (branchingNewChatMessageId.value != null) return;
+    branchingNewChatMessageId.value = msg.id;
+
+    const configReady = await params.waitForConfigSync();
+    if (!configReady) {
+      branchingNewChatMessageId.value = null;
+      alert('Configuration change is still syncing. Please wait before starting a new generation.');
+      return;
+    }
+
+    try {
+      const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+        `/api/bff/chats/${params.chatId.value}/branch-to-new-chat`,
+        { message_id: msg.id }
+      );
+      const nextChatId = payload.chat?.id;
+      if (!nextChatId) throw new Error('Missing chat id');
+      await params.pushChatRoute(nextChatId);
+    } catch (error) {
+      console.error(error);
+      alert(errorMessage(error, 'Failed to branch to new chat.'));
+    } finally {
+      if (branchingNewChatMessageId.value === msg.id) branchingNewChatMessageId.value = null;
+    }
+  };
+
+  const startBranchToNewChat = (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
+    if (!msg.id) return;
+    if (msg.role === 'user') {
+      openBranchModal(msg, 'branch_new_chat');
+      return;
+    }
+
+    void branchAssistantToNewChat(msg);
   };
 
   const resetEditState = () => {
@@ -542,6 +596,7 @@ export function useChatMessageActions(params: Params) {
   const saveEdit = async () => {
     if (params.readOnly.value) return;
     if (!editingMessage.value?.id || savingEdit.value) return;
+    const savingMessageId = editingMessage.value.id;
     savingEdit.value = true;
     editError.value = '';
 
@@ -569,6 +624,9 @@ export function useChatMessageActions(params: Params) {
         replaceBranch(payload.branch);
         resetEditState();
       } else {
+        const branchMode = modalMode.value;
+        const editingMessageId = savingMessageId;
+
         const configReady = await params.waitForConfigSync();
         if (!configReady) {
           alert('Configuration change is still syncing. Please wait before starting a new generation.');
@@ -579,17 +637,31 @@ export function useChatMessageActions(params: Params) {
         const uploadIds =
           editPendingFiles.value.length > 0 ? await params.ensurePendingFilesUploaded(editPendingFiles) : [];
         const hasBranchFiles = editExistingAttachments.value.length > 0 || uploadIds.length > 0;
+        const content = editContents.value[0] ?? '';
+
+        if (branchMode === 'branch_new_chat') {
+          branchingNewChatMessageId.value = editingMessageId;
+          const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+            `/api/bff/chats/${params.chatId.value}/branch-to-new-chat`,
+            {
+              message_id: editingMessageId,
+              ...(hasBranchFiles
+                ? buildSendPayload(content, uploadIds, editExistingAttachments.value)
+                : { content }),
+            }
+          );
+          const nextChatId = payload.chat?.id;
+          if (!nextChatId) throw new Error('Missing chat id');
+          resetEditState();
+          await params.pushChatRoute(nextChatId);
+          return;
+        }
 
         const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
           `/api/bff/chats/${params.chatId.value}/send`,
           hasBranchFiles
-            ? buildSendPayload(
-                editContents.value[0] ?? '',
-                uploadIds,
-                editExistingAttachments.value,
-                parentId
-              )
-            : { content: editContents.value[0] ?? '', parent_id: parentId }
+            ? buildSendPayload(content, uploadIds, editExistingAttachments.value, parentId)
+            : { content, parent_id: parentId }
         );
         replaceBranch(payload.branch);
         resetEditState();
@@ -604,9 +676,12 @@ export function useChatMessageActions(params: Params) {
       editError.value =
         modalMode.value === 'edit'
           ? errorMessage(error, 'Failed to save the message.')
-          : errorMessage(error, 'Failed to branch.');
+          : modalMode.value === 'branch_new_chat'
+            ? errorMessage(error, 'Failed to branch to new chat.')
+            : errorMessage(error, 'Failed to branch.');
       alert(editError.value);
     } finally {
+      if (branchingNewChatMessageId.value === savingMessageId) branchingNewChatMessageId.value = null;
       savingEdit.value = false;
     }
   };
@@ -629,6 +704,7 @@ export function useChatMessageActions(params: Params) {
     copiedMessageId,
     retryingMessageId,
     branchingAssistantId,
+    branchingNewChatMessageId,
     isBookmarkingMessage,
     editingMessage,
     modalMode,
@@ -657,6 +733,7 @@ export function useChatMessageActions(params: Params) {
     switchBranchHandler,
     startEdit,
     startBranch,
+    startBranchToNewChat,
     cancelEdit,
     removeEditExistingAttachment,
     addEditPendingFiles,

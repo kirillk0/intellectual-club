@@ -4,6 +4,7 @@ defmodule IntellectualClub.Chat.Continuation do
   """
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
@@ -12,6 +13,9 @@ defmodule IntellectualClub.Chat.Continuation do
   alias IntellectualClub.Db
   alias IntellectualClub.Files
   alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Tools.ChatToolBinding
+
+  require Ash.Query
 
   @spec continue_chat(integer(), map()) :: {:ok, Chat.t()} | {:error, term()}
   def continue_chat(source_chat_id, actor) when is_integer(source_chat_id) do
@@ -26,6 +30,35 @@ defmodule IntellectualClub.Chat.Continuation do
   end
 
   def continue_chat(_source_chat_id, _actor), do: {:error, :invalid_chat_id}
+
+  @spec create_branch_chat(Chat.t() | integer(), integer(), map(), keyword()) ::
+          {:ok, Chat.t()} | {:error, term()}
+  def create_branch_chat(source_chat_or_id, message_id, actor, opts \\ [])
+
+  def create_branch_chat(source_chat_or_id, message_id, actor, opts)
+      when is_integer(message_id) and is_list(opts) do
+    with {:ok, %Chat{} = source} <- fetch_source_chat(source_chat_or_id, actor),
+         {:ok, selected, prefix} <- active_prefix_before_message(source, message_id, actor),
+         {:ok, replacement_contents} <- replacement_contents(selected, opts) do
+      Db.repo().transaction(fn ->
+        target = create_branch_target_chat!(source, actor)
+        copy_knowledge_block_bindings!(source.id, target.id, actor)
+        copy_tool_bindings!(source.id, target.id, actor)
+
+        copied_ids = copy_messages!(prefix, target, actor)
+
+        if user_message?(selected) do
+          add_replacement_user_message!(replacement_contents, selected, target, copied_ids, actor)
+        end
+
+        Ash.get!(Chat, target.id, actor: actor, load: [:last_message])
+      end)
+      |> unwrap_transaction()
+    end
+  end
+
+  def create_branch_chat(_source_chat_or_id, _message_id, _actor, _opts),
+    do: {:error, :invalid_message_id}
 
   defp create_target_chat!(%Chat{} = source, actor) do
     Chat
@@ -43,12 +76,148 @@ defmodule IntellectualClub.Chat.Continuation do
     |> Ash.create!()
   end
 
+  defp create_branch_target_chat!(%Chat{} = source, actor) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        title: source.title,
+        note: branch_note(source.note),
+        bot_id: source.bot_id,
+        llm_configuration_id: source.llm_configuration_id,
+        variables: source.variables || %{}
+      },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp branch_note(nil), do: ""
+  defp branch_note(""), do: ""
+  defp branch_note(note), do: to_string(note) <> " (branch)"
+
   defp copy_active_branch!(%Chat{} = source, %Chat{} = target, actor) do
     source
     |> Threads.active_branch(actor, load: copy_message_tree_load(), strict?: true)
-    |> Enum.reduce(%{}, fn message, copied_ids ->
+    |> copy_messages!(target, actor)
+  end
+
+  defp copy_messages!(messages, %Chat{} = target, actor) when is_list(messages) do
+    Enum.reduce(messages, %{}, fn message, copied_ids ->
       copied = copy_message!(message, target, copied_ids, actor)
       Map.put(copied_ids, message.id, copied.id)
+    end)
+  end
+
+  defp fetch_source_chat(%Chat{id: id}, actor) when is_integer(id) do
+    Ash.get(Chat, id, actor: actor)
+  end
+
+  defp fetch_source_chat(chat_id, actor) when is_integer(chat_id) do
+    Ash.get(Chat, chat_id, actor: actor)
+  end
+
+  defp fetch_source_chat(_source_chat_or_id, _actor), do: {:error, :invalid_chat_id}
+
+  defp active_prefix_before_message(%Chat{} = source, message_id, actor) do
+    branch =
+      Threads.active_branch(source, actor,
+        load: copy_message_tree_load(),
+        strict?: true
+      )
+
+    index = Enum.find_index(branch, &(&1.id == message_id))
+
+    if is_integer(index) do
+      {:ok, Enum.at(branch, index), Enum.take(branch, index)}
+    else
+      {:error, :message_not_in_active_branch}
+    end
+  end
+
+  defp user_message?(%ChatMessage{role: role}), do: role in [:user, "user"]
+
+  defp replacement_contents(%ChatMessage{} = selected, opts) do
+    if user_message?(selected) do
+      user_replacement_contents(opts)
+    else
+      {:ok, []}
+    end
+  end
+
+  defp user_replacement_contents(opts) do
+    contents = Keyword.get(opts, :replacement_contents, [])
+
+    if contents == [] do
+      {:error, :empty_user_message}
+    else
+      {:ok, contents}
+    end
+  end
+
+  defp add_replacement_user_message!(
+         contents,
+         %ChatMessage{} = selected,
+         %Chat{} = target,
+         copied_ids,
+         actor
+       ) do
+    {:ok, _message} =
+      Threads.add_message(target, :user, "",
+        actor: actor,
+        parent_id: mapped_parent_id(selected.parent_id, copied_ids),
+        contents: contents,
+        status: :done
+      )
+
+    :ok
+  end
+
+  defp copy_knowledge_block_bindings!(source_chat_id, target_chat_id, actor) do
+    source_chat_id
+    |> copy_knowledge_block_bindings(actor)
+    |> Enum.each(fn attrs ->
+      ChatKnowledgeBlock
+      |> Ash.Changeset.for_create(:create, Map.put(attrs, :chat_id, target_chat_id), actor: actor)
+      |> Ash.create!(actor: actor)
+    end)
+  end
+
+  defp copy_tool_bindings!(source_chat_id, target_chat_id, actor) do
+    source_chat_id
+    |> copy_tool_bindings(actor)
+    |> Enum.each(fn attrs ->
+      ChatToolBinding
+      |> Ash.Changeset.for_create(:create, Map.put(attrs, :chat_id, target_chat_id), actor: actor)
+      |> Ash.create!(actor: actor)
+    end)
+  end
+
+  defp copy_knowledge_block_bindings(chat_id, actor) do
+    ChatKnowledgeBlock
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(fn binding ->
+      %{
+        knowledge_block_id: binding.knowledge_block_id,
+        enabled: binding.enabled,
+        sequence: binding.sequence
+      }
+    end)
+  end
+
+  defp copy_tool_bindings(chat_id, actor) do
+    ChatToolBinding
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(fn binding ->
+      %{
+        tool_instance_id: binding.tool_instance_id,
+        enabled: binding.enabled,
+        sequence: binding.sequence
+      }
     end)
   end
 

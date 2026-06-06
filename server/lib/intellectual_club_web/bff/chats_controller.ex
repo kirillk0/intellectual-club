@@ -705,6 +705,59 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
+  def branch_to_new_chat(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- parse_resource_id(id),
+         message_id when is_integer(message_id) <-
+           Helpers.parse_optional_integer(Map.get(params, "message_id")),
+         {:ok, %Chat{} = source} <- fetch_owned_chat(chat_id, actor) do
+      with {:ok, selected} <- active_branch_message(source, message_id, actor),
+           {:ok, %Chat{} = target} <-
+             create_branch_target_chat(source, selected, params, actor),
+           {:ok, context} <- start_branch_generation(target, actor) do
+        {messages, branch_meta_by_id} = load_branch(target.id, actor)
+
+        json(conn, %{
+          chat: Serializer.chat_detail(target),
+          branch: serialize_branch(messages, branch_meta_by_id, actor),
+          generation: %{message_id: context.message_id}
+        })
+      else
+        {:error, :message_not_in_active_branch} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Message is not in the active branch."})
+
+        {:error, :empty_user_message} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "User branch message cannot be empty."})
+
+        {:error, error_message} when is_binary(error_message) ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: error_message})
+
+        {:error, %Plug.Conn{} = conn} ->
+          conn
+
+        {:error, error} ->
+          render_access_error(conn, error)
+      end
+    else
+      nil ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "message_id is required"})
+
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
   def handoff(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- parse_resource_id(id),
@@ -723,6 +776,89 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         render_access_error(conn, error)
     end
   end
+
+  defp active_branch_message(%Chat{} = source, message_id, actor) when is_integer(message_id) do
+    source
+    |> Threads.active_branch(actor)
+    |> Enum.find(&(&1.id == message_id))
+    |> case do
+      %ChatMessage{} = message -> {:ok, message}
+      nil -> {:error, :message_not_in_active_branch}
+    end
+  end
+
+  defp create_branch_target_chat(%Chat{} = source, %ChatMessage{} = selected, params, actor) do
+    if user_message?(selected) do
+      create_user_branch_target_chat(source, selected, params, actor)
+    else
+      Continuation.create_branch_chat(source, selected.id, actor)
+    end
+  end
+
+  defp create_user_branch_target_chat(%Chat{} = source, %ChatMessage{} = selected, params, actor) do
+    upload_policy = ChatUploadPolicy.load_for_chat(source.id, actor)
+
+    with {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params) do
+      ChatAttachments.with_prepared_file_ids(
+        source.id,
+        actor,
+        upload_policy,
+        prepared_uploads,
+        fn file_ids ->
+          contents = branch_user_replacement_contents(params, file_ids)
+
+          if contents == [] do
+            {:error, :empty_user_message}
+          else
+            Continuation.create_branch_chat(source, selected.id, actor,
+              replacement_contents: contents
+            )
+          end
+        end
+      )
+    end
+  end
+
+  defp branch_user_replacement_contents(params, file_ids) do
+    content = params |> Map.get("content", "") |> to_string()
+
+    text_contents =
+      case content do
+        "" -> []
+        text -> [%{kind: :text, content_text: text}]
+      end
+
+    media_contents = Enum.map(file_ids, &%{kind: :media, file_id: &1})
+    text_contents ++ media_contents
+  end
+
+  defp start_branch_generation(%Chat{} = target, actor) do
+    try do
+      case GenerationSupervisor.start_generation(target.id, actor: actor) do
+        {:ok, context} ->
+          {:ok, context}
+
+        {:error, reason} ->
+          cleanup_branch_target_chat(target, actor)
+          {:error, "Failed to start generation: #{inspect(reason)}"}
+      end
+    rescue
+      error ->
+        cleanup_branch_target_chat(target, actor)
+        {:error, "Failed to start generation: #{Exception.message(error)}"}
+    catch
+      kind, reason ->
+        cleanup_branch_target_chat(target, actor)
+        {:error, "Failed to start generation: #{kind}: #{inspect(reason)}"}
+    end
+  end
+
+  defp cleanup_branch_target_chat(%Chat{} = target, actor) do
+    _ = Ash.destroy(target, actor: actor)
+    :ok
+  end
+
+  defp user_message?(%ChatMessage{role: role}), do: role in [:user, "user"]
 
   def prompt_context(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
@@ -1576,7 +1712,21 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       {:ok, nil} -> {:error, :not_found}
       {:error, %Ash.Error.Query.NotFound{}} -> {:error, :not_found}
       {:error, %Ash.Error.Forbidden{}} -> {:error, :forbidden}
+      {:error, %Ash.Error.Invalid{} = error} -> {:error, normalize_invalid_access_error(error)}
       {:error, error} -> {:error, error}
+    end
+  end
+
+  defp normalize_invalid_access_error(%Ash.Error.Invalid{errors: errors} = error) do
+    cond do
+      Enum.any?(errors, &match?(%Ash.Error.Forbidden{}, &1)) ->
+        :forbidden
+
+      Enum.any?(errors, &match?(%Ash.Error.Query.NotFound{}, &1)) ->
+        :not_found
+
+      true ->
+        error
     end
   end
 
