@@ -16,6 +16,7 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     anthropic = Enum.find(types, &(&1["type"] == "anthropic_messages"))
     openrouter = Enum.find(types, &(&1["type"] == "openrouter_chat_completion"))
     responses = Enum.find(types, &(&1["type"] == "responses"))
+    responses_wss = Enum.find(types, &(&1["type"] == "responses_wss"))
 
     assert anthropic["default_auth_method"] == "api_key"
 
@@ -34,6 +35,13 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
              method["value"] == "openai_oauth_refresh_token" and
                method["credential"] == "oauth_refresh_token"
            end)
+
+    assert responses_wss["label"] == "Responses API (WSS)"
+    assert responses_wss["default_auth_method"] == responses["default_auth_method"]
+    assert responses_wss["auth_methods"] == responses["auth_methods"]
+    assert responses_wss["base_url_options"] == responses["base_url_options"]
+    assert responses_wss["default_base_url"] == responses["default_base_url"]
+    assert responses_wss["supports_model_discovery"] == responses["supports_model_discovery"]
   end
 
   test "GET /api/bff/llm-providers/:id/models loads OpenRouter tool-capable models", %{
@@ -183,6 +191,47 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
 
     {base_url, agent} = start_scripted_server!(scripts)
     provider = create_provider!(actor, base_url, :responses)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> get("/api/bff/llm-providers/#{provider.id}/models")
+      |> json_response(200)
+
+    assert response["models"] == [
+             %{
+               "id" => "gpt-5.5",
+               "label" => "gpt-5.5",
+               "context_length" => 272_000,
+               "supports_image_input" => true
+             }
+           ]
+
+    [request] = requests_for(agent, "/models")
+    assert request.query_string == "client_version=1.0.0"
+  end
+
+  test "GET /api/bff/llm-providers/:id/models delegates responses_wss discovery to Responses",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    scripts = %{
+      "/models" => [
+        {200,
+         %{
+           "data" => [
+             %{
+               "id" => "gpt-5.5",
+               "context_length" => 272_000,
+               "architecture" => %{"input_modalities" => ["text", "image"]}
+             }
+           ]
+         }}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    provider = create_provider!(actor, base_url, :responses_wss)
 
     response =
       conn

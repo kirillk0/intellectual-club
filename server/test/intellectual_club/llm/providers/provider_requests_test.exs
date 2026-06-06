@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses
+  alias IntellectualClub.Llm.Providers.ResponsesWss
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
 
@@ -107,6 +108,35 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.request_snapshot.model_input == result.raw_request["input"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
+  end
+
+  test "responses_wss provider metadata and request building delegate to responses provider" do
+    responses_metadata = Responses.metadata()
+    responses_wss_metadata = ResponsesWss.metadata()
+
+    assert responses_wss_metadata.type == "responses_wss"
+    assert responses_wss_metadata.label == "Responses API (WSS)"
+    assert responses_wss_metadata.default_auth_method == responses_metadata.default_auth_method
+    assert responses_wss_metadata.auth_methods == responses_metadata.auth_methods
+    assert responses_wss_metadata.base_url_options == responses_metadata.base_url_options
+    assert responses_wss_metadata.default_base_url == responses_metadata.default_base_url
+
+    assert responses_wss_metadata.supports_model_discovery ==
+             responses_metadata.supports_model_discovery
+
+    opts = %{
+      history: [%{role: "user", content: "Hello"}],
+      system_prompt: "Use tools when needed.",
+      model_name: "gpt-5",
+      parameters: %{"max_tokens" => 200},
+      tools: [],
+      supports_image_input: false
+    }
+
+    assert ResponsesWss.build_initial_request(opts) == Responses.build_initial_request(opts)
+
+    raw_request = %{"model" => "gpt-5", "input" => [], "instructions" => "System"}
+    assert ResponsesWss.request_snapshot(raw_request) == Responses.request_snapshot(raw_request)
   end
 
   test "responses provider merges configured hosted tools with generated function tools" do

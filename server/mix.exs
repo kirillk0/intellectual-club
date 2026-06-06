@@ -76,6 +76,7 @@ defmodule IntellectualClub.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:req, "~> 0.4"},
+      {:mint_web_socket, "~> 1.0"},
       {:ex_image_info, "~> 1.0"},
       {:extractous_ex, "~> 0.2.1"},
       {:dns_cluster, "~> 0.2.0"},

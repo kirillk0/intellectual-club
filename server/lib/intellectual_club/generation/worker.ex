@@ -41,7 +41,8 @@ defmodule IntellectualClub.Generation.Worker do
     :tool_round,
     :refusal_round,
     :tools_disabled,
-    :tools_limited_to_handoff
+    :tools_limited_to_handoff,
+    :provider_session
   ]
 
   def start_link(opts) do
@@ -109,6 +110,8 @@ defmodule IntellectualClub.Generation.Worker do
       Map.get(context, :adapter_module) ||
         ProviderRegistry.fetch_or_missing(Map.get(context, :provider_type))
 
+    provider_session = start_provider_session(adapter, context)
+
     initial_step_sequence =
       case Map.get(context, :initial_step_sequence) do
         value when is_integer(value) and value > 0 -> value
@@ -150,10 +153,17 @@ defmodule IntellectualClub.Generation.Worker do
       tools_limited_to_handoff: false,
       runtime_step: runtime_step,
       stream_task: nil,
-      retry_timer_ref: nil
+      retry_timer_ref: nil,
+      provider_session: provider_session
     }
 
     {:ok, state, {:continue, continue}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    _ = stop_provider_session(state)
+    :ok
   end
 
   @impl true
@@ -189,7 +199,8 @@ defmodule IntellectualClub.Generation.Worker do
             context: state.context,
             request_payload: state.runtime_step.raw_request,
             timeout_ms: state.context.timeout_ms || 300_000,
-            chunk_delay_ms: state.context.chunk_delay_ms
+            chunk_delay_ms: state.context.chunk_delay_ms,
+            provider_session: state.provider_session
           },
           emit
         )
@@ -365,6 +376,7 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def handle_cast(:cancel, state) do
     state = cancel_tasks(state)
+    state = stop_provider_session(state)
 
     _ =
       safe_persist(state.context.message_id, :canceled, fn ->
@@ -736,6 +748,62 @@ defmodule IntellectualClub.Generation.Worker do
   defp cancel_tool_task(%{tool_task: task} = state) do
     _ = Task.shutdown(task, :brutal_kill)
     %{state | tool_task: nil}
+  end
+
+  defp start_provider_session(adapter, context) do
+    if function_exported?(adapter, :start_session, 1) do
+      case adapter.start_session(context) do
+        {:ok, session} ->
+          session
+
+        :ignore ->
+          nil
+
+        {:error, reason} ->
+          Logger.warning(
+            "Provider session start failed provider=#{inspect(Map.get(context, :provider_type))} " <>
+              "reason=#{inspect(reason)}"
+          )
+
+          nil
+      end
+    else
+      nil
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Provider session start failed provider=#{inspect(Map.get(context, :provider_type))} " <>
+          "error=#{Exception.message(exception)}"
+      )
+
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Provider session start exited provider=#{inspect(Map.get(context, :provider_type))} " <>
+          "reason=#{inspect(reason)}"
+      )
+
+      nil
+  end
+
+  defp stop_provider_session(%{provider_session: nil} = state), do: state
+
+  defp stop_provider_session(%{adapter: adapter, provider_session: session} = state) do
+    if function_exported?(adapter, :stop_session, 1) do
+      adapter.stop_session(session)
+    end
+
+    %{state | provider_session: nil}
+  rescue
+    exception ->
+      Logger.warning("Provider session stop failed error=#{Exception.message(exception)}")
+      %{state | provider_session: nil}
+  catch
+    :exit, reason ->
+      Logger.warning("Provider session stop exited reason=#{inspect(reason)}")
+      %{state | provider_session: nil}
   end
 
   defp safe_persist(message_id, status, fun)

@@ -442,6 +442,7 @@ export const ruMessages: Record<string, string> = {
   'Retry from this step is available after generation stops.': 'Повтор с этого шага доступен после остановки генерации.',
   'Retry anyway?': 'Все равно повторить?',
   'Retrying…': 'Повтор…',
+  'Responses API (WSS)': 'Responses API (WSS)',
   'RPS limit': 'Лимит RPS',
   'Russian': 'Русский',
   'Save': 'Сохранить',
