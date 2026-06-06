@@ -6,6 +6,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   @default_separator "\n\n"
   @assistant_user_roles ["user", "assistant"]
   @leading_roles ["system", "developer"]
+  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
 
   @spec fix_chat_messages([term()], keyword()) :: [term()]
   def fix_chat_messages(messages, opts \\ []) when is_list(messages) and is_list(opts) do
@@ -13,7 +14,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
     messages
     |> merge_adjacent(&chat_role/1, &merge_chat_message(&1, &2, &3, separator))
-    |> ensure_user_boundaries(&chat_role/1, &empty_chat_user_message/0)
+    |> ensure_user_boundaries(&chat_role/1, &placeholder_chat_user_message/0)
   end
 
   @spec fix_responses_input_items([term()], keyword()) :: [term()]
@@ -22,7 +23,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
     items
     |> merge_adjacent(&responses_message_role/1, &merge_responses_message(&1, &2, &3, separator))
-    |> ensure_user_boundaries(&responses_message_role/1, &empty_responses_user_item/0)
+    |> ensure_user_boundaries(&responses_message_role/1, &placeholder_responses_user_item/0)
   end
 
   defp merge_adjacent(items, role_fun, merge_fun) do
@@ -275,13 +276,14 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     %{"type" => "output_text", "text" => text, "annotations" => []}
   end
 
-  defp empty_chat_user_message, do: %{"role" => "user", "content" => ""}
+  defp placeholder_chat_user_message,
+    do: %{"role" => "user", "content" => @missing_user_message_placeholder}
 
-  defp empty_responses_user_item do
+  defp placeholder_responses_user_item do
     %{
       "type" => "message",
       "role" => "user",
-      "content" => [%{"type" => "input_text", "text" => ""}]
+      "content" => [%{"type" => "input_text", "text" => @missing_user_message_placeholder}]
     }
   end
 end

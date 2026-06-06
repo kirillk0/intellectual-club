@@ -3,24 +3,26 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
 
   alias IntellectualClub.Llm.Providers.Common.RoleAlterationFix
 
-  test "inserts empty user around assistant-only chat history after leading system messages" do
+  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
+
+  test "inserts placeholder user around assistant-only chat history after leading system messages" do
     assert RoleAlterationFix.fix_chat_messages([
              %{"role" => "system", "content" => "System"},
              %{"role" => "assistant", "content" => "Hello"}
            ]) == [
              %{"role" => "system", "content" => "System"},
-             %{"role" => "user", "content" => ""},
+             %{"role" => "user", "content" => @missing_user_message_placeholder},
              %{"role" => "assistant", "content" => "Hello"},
-             %{"role" => "user", "content" => ""}
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end
 
-  test "inserts empty user when chat history has only leading system messages" do
+  test "inserts placeholder user when chat history has only leading system messages" do
     assert RoleAlterationFix.fix_chat_messages([
              %{"role" => "system", "content" => "System"}
            ]) == [
              %{"role" => "system", "content" => "System"},
-             %{"role" => "user", "content" => ""}
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end
 
@@ -58,9 +60,9 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
     assert RoleAlterationFix.fix_chat_messages([
              %{"role" => "tool", "tool_call_id" => "call_1", "content" => "tool output"}
            ]) == [
-             %{"role" => "user", "content" => ""},
+             %{"role" => "user", "content" => @missing_user_message_placeholder},
              %{"role" => "tool", "tool_call_id" => "call_1", "content" => "tool output"},
-             %{"role" => "user", "content" => ""}
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end
 
@@ -77,13 +79,17 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
              %{
                "type" => "message",
                "role" => "user",
-               "content" => [%{"type" => "input_text", "text" => ""}]
+               "content" => [
+                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
+               ]
              },
              function_call,
              %{
                "type" => "message",
                "role" => "user",
-               "content" => [%{"type" => "input_text", "text" => ""}]
+               "content" => [
+                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
+               ]
              }
            ]
   end

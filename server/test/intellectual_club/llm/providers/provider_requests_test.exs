@@ -7,6 +7,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
 
+  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
+
   test "openrouter provider builds initial request and snapshot from canonical chat history" do
     result =
       OpenRouterChatCompletion.build_initial_request(%{
@@ -67,9 +69,9 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.raw_request["messages"] == [
              %{"role" => "system", "content" => "System"},
-             %{"role" => "user", "content" => ""},
+             %{"role" => "user", "content" => @missing_user_message_placeholder},
              %{"role" => "assistant", "content" => "First\n\nSecond"},
-             %{"role" => "user", "content" => ""}
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end
 
@@ -189,7 +191,9 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              %{
                "type" => "message",
                "role" => "user",
-               "content" => [%{"type" => "input_text", "text" => ""}]
+               "content" => [
+                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
+               ]
              },
              %{
                "type" => "message",
@@ -204,7 +208,9 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              %{
                "type" => "message",
                "role" => "user",
-               "content" => [%{"type" => "input_text", "text" => ""}]
+               "content" => [
+                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
+               ]
              }
            ]
   end
@@ -257,7 +263,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.system_prompt == "Use tools when needed."
   end
 
-  test "anthropic provider preserves its own merge behavior and uses empty user guards when requested" do
+  test "anthropic provider preserves its own merge behavior and uses placeholder user guards when requested" do
     result =
       AnthropicMessages.build_initial_request(%{
         history: [
@@ -273,12 +279,18 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       })
 
     assert result.raw_request["messages"] == [
-             %{"role" => "user", "content" => [%{"type" => "text", "text" => ""}]},
+             %{
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             },
              %{
                "role" => "assistant",
                "content" => [%{"type" => "text", "text" => "First\n\nSecond"}]
              },
-             %{"role" => "user", "content" => [%{"type" => "text", "text" => ""}]}
+             %{
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             }
            ]
   end
 

@@ -28,6 +28,8 @@ defmodule IntellectualClub.Generation.ContextTest do
 
   require Ash.Query
 
+  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
+
   test "builds system prompt from bot blocks and prepends it to chat history" do
     %{user: actor} = user_fixture()
 
@@ -248,9 +250,9 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.fix_role_alteration == true
 
     assert context.request_payload["messages"] == [
-             %{"role" => "user", "content" => ""},
+             %{"role" => "user", "content" => @missing_user_message_placeholder},
              %{"role" => "assistant", "content" => "Synthetic first turn"},
-             %{"role" => "user", "content" => ""}
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end
 
