@@ -96,7 +96,20 @@
             </div>
 
             <div v-for="item in providerItems(currentStep)" :key="item.id" class="working-item">
-              <div class="working-item-title">{{ itemTitle(item.type) }}</div>
+              <div class="working-item-title-row">
+                <div class="working-item-title">{{ itemTitle(item.type) }}</div>
+                <button
+                  v-if="canCopyThinking(item)"
+                  type="button"
+                  class="working-copy-button"
+                  :class="{ copied: copiedThinkingItemId === item.id }"
+                  :aria-label="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
+                  :title="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
+                  @click.stop.prevent="copyThinking(item)"
+                >
+                  <SvgIcon name="copy" size="16" />
+                </button>
+              </div>
 
               <div
                 v-if="item.type === 'reasoning' && itemText(item).trim()"
@@ -183,6 +196,8 @@
 import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
+import { translate } from '@/i18n';
 import type {
   ChatMessageContent,
   ChatMessageItem,
@@ -191,6 +206,7 @@ import type {
 } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
 import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { copyTextWithFallback } from '@/utils/clipboard';
 import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 
 interface Props {
@@ -240,7 +256,9 @@ const isMessageGenerating = computed(() => props.messageStatus === 'generating')
 
 const nowMs = ref(Date.now());
 const workingBlockEl = ref<HTMLElement | null>(null);
+const copiedThinkingItemId = ref<number | null>(null);
 let nowTimer: number | null = null;
+let copiedThinkingTimer: number | null = null;
 
 const hasWorking = computed(() => {
   if (!props.messageId) return false;
@@ -408,6 +426,12 @@ const stopNowTimer = () => {
   nowTimer = null;
 };
 
+const stopCopiedThinkingTimer = () => {
+  if (copiedThinkingTimer == null) return;
+  window.clearTimeout(copiedThinkingTimer);
+  copiedThinkingTimer = null;
+};
+
 watch(
   shouldTick,
   (enabled) => {
@@ -425,7 +449,10 @@ watch(
   { immediate: true }
 );
 
-onUnmounted(stopNowTimer);
+onUnmounted(() => {
+  stopNowTimer();
+  stopCopiedThinkingTimer();
+});
 
 const highlightWorkingJsonBlocks = () => {
   const root = workingBlockEl.value;
@@ -476,6 +503,24 @@ const artifactItems = (step: ChatMessageStep) => {
 
 const itemText = (item: Pick<ChatMessageItem, 'type' | 'contents'>) =>
   joinItemTextContents(item.type, item.contents);
+
+const canCopyThinking = (item: Pick<ChatMessageItem, 'id' | 'type' | 'contents'>) =>
+  item.type === 'reasoning' && itemText(item).trim() !== '';
+
+const copyThinking = async (item: Pick<ChatMessageItem, 'id' | 'type' | 'contents'>) => {
+  const text = itemText(item);
+  if (!text.trim()) return;
+
+  const copied = await copyTextWithFallback(text, { promptLabel: translate('Copy the thinking manually:') });
+  if (!copied) return;
+
+  copiedThinkingItemId.value = item.id;
+  stopCopiedThinkingTimer();
+  copiedThinkingTimer = window.setTimeout(() => {
+    copiedThinkingItemId.value = null;
+    copiedThinkingTimer = null;
+  }, 1200);
+};
 
 const toolItemMedia = (item: Pick<ChatMessageItem, 'contents'>) =>
   ((item.contents || []).slice().sort(sortBySequence) as ChatMessageContent[]).filter(
@@ -678,12 +723,49 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   font-variant-numeric: tabular-nums;
 }
 
+.working-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 .working-item-title {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-text-muted);
-  margin-bottom: 4px;
+}
+
+.working-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  line-height: 1;
+}
+
+.working-copy-button :deep(.svg-icon) {
+  stroke-width: 1.5;
+}
+
+.working-copy-button:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.working-copy-button.copied {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-success);
 }
 
 .working-item-body {
