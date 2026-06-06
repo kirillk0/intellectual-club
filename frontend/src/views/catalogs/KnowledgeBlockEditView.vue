@@ -45,11 +45,11 @@
 
       <div class="card stack">
         <div class="tabs">
-          <button class="tab" :class="{ active: blockTab === 'preview' }" type="button" @click="blockTab = 'preview'">
-            Preview
+          <button class="tab" :class="{ active: blockTab === 'visual' }" type="button" @click="blockTab = 'visual'">
+            Visual
           </button>
-          <button class="tab" :class="{ active: blockTab === 'edit' }" type="button" @click="blockTab = 'edit'">
-            Edit
+          <button class="tab" :class="{ active: blockTab === 'code' }" type="button" @click="blockTab = 'code'">
+            Code
           </button>
           <button
             class="tab"
@@ -73,12 +73,89 @@
           </button>
         </div>
 
-        <div v-if="blockTab === 'preview'" class="stack knowledge-block-preview">
-          <div v-if="previewMarkdownSource.trim()" class="knowledge-block-preview__content" v-html="previewHtml"></div>
-          <div v-else class="muted knowledge-block-preview__empty">Nothing to preview.</div>
+        <div v-if="blockTab === 'visual'" class="stack knowledge-block-visual">
+          <div
+            v-if="visualBlocks.length"
+            :class="[
+              'knowledge-block-visual__surface',
+              errors.hasField('content') && 'knowledge-block-visual__surface--error',
+            ]"
+          >
+            <template v-for="block in visualBlocks" :key="block.key">
+              <div v-if="block.kind === 'blank'" class="knowledge-block-visual__blank" aria-hidden="true"></div>
+              <section
+                v-else
+                :class="[
+                  'knowledge-block-visual__block',
+                  `knowledge-block-visual__block--${block.kind}`,
+                  isActiveVisualBlock(block) && 'knowledge-block-visual__block--active',
+                  !visualEditingDisabled && 'knowledge-block-visual__block--editable',
+                ]"
+                :tabindex="visualEditingDisabled || isActiveVisualBlock(block) ? undefined : 0"
+                :role="visualEditingDisabled || isActiveVisualBlock(block) ? undefined : 'button'"
+                @click="handleVisualBlockClick(block, $event)"
+                @keydown="handleVisualBlockKeydown(block, $event)"
+              >
+                <div v-if="isActiveVisualBlock(block)" class="knowledge-block-visual__block-toolbar">
+                  <span class="knowledge-block-visual__block-kind">
+                    {{ block.kind === 'comment' ? 'Comment' : 'Markdown' }}
+                  </span>
+                  <div class="knowledge-block-visual__block-actions">
+                    <button
+                      type="button"
+                      class="knowledge-block-visual__source-button"
+                      @pointerdown.prevent.stop
+                      @click.stop="openCodeAtBlock(block)"
+                    >
+                      Edit source
+                    </button>
+                    <button
+                      type="button"
+                      class="knowledge-block-visual__source-button"
+                      @pointerdown.prevent.stop
+                      @click.stop="finishVisualEditing"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  v-if="isActiveVisualBlock(block)"
+                  ref="visualTextareaRef"
+                  :class="[
+                    'knowledge-block-visual__textarea',
+                    block.kind === 'comment' && 'knowledge-block-visual__textarea--comment',
+                  ]"
+                  :value="activeVisualEdit?.value || ''"
+                  spellcheck="false"
+                  @input="updateActiveVisualBlock"
+                  @keydown.escape.prevent="finishVisualEditing"
+                  @keydown.ctrl.enter.prevent="finishVisualEditing"
+                  @keydown.meta.enter.prevent="finishVisualEditing"
+                  @click.stop
+                  @blur="finishVisualEditing"
+                ></textarea>
+                <div
+                  v-else-if="block.kind === 'comment'"
+                  class="knowledge-block-visual__comment-body"
+                  data-i18n-ignore
+                >
+                  {{ commentBodyFromSource(block.source) }}
+                </div>
+                <div
+                  v-else
+                  class="knowledge-block-visual__rendered"
+                  data-i18n-ignore
+                  v-html="renderVisualMarkdownBlock(block)"
+                ></div>
+              </section>
+            </template>
+          </div>
+          <div v-else class="muted knowledge-block-visual__empty">Nothing to preview.</div>
+          <div v-if="errors.hasField('content')" class="error-text">{{ errors.messageFor('content') }}</div>
         </div>
 
-        <div v-else-if="blockTab === 'edit'" class="stack">
+        <div v-else-if="blockTab === 'code'" class="stack">
           <label>
             Content
             <div
@@ -282,7 +359,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from 'vue';
+import { computed, nextTick, ref, toRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
@@ -297,6 +374,15 @@ import {
   useKnowledgeBlockFileBindingsDraft,
   type KnowledgeBlockFileDraftItem,
 } from '@/features/catalogs/model/useKnowledgeBlockFileBindingsDraft';
+import {
+  COMMENT_PREFIX,
+  commentBodyFromSource,
+  commentSourceFromBody,
+  parseKnowledgeBlockMarkdownBlocks,
+  replaceKnowledgeBlockRange,
+  stripKnowledgeBlockComments,
+  type KnowledgeBlockMarkdownBlock,
+} from '@/features/catalogs/model/knowledgeBlockMarkdownBlocks';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
 import { renderChatMessageHtml } from '@/utils/chatMarkdown';
@@ -499,11 +585,11 @@ const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
-const blockTab = ref<'preview' | 'edit' | 'variables' | 'tags' | 'files' | 'details'>('preview');
+const blockTab = ref<'visual' | 'code' | 'variables' | 'tags' | 'files' | 'details'>('visual');
 const initializedTabForId = ref<string | null>(null);
 
 function getInitialBlockTab() {
-  return isNew.value || !stripKnowledgeBlockComments(form.content).trim() ? 'edit' : 'preview';
+  return isNew.value || !stripKnowledgeBlockComments(form.content).trim() ? 'code' : 'visual';
 }
 
 type KnowledgeTagRow = {
@@ -534,6 +620,7 @@ watch(
     initializedTabForId.value = null;
     tagModalOpen.value = false;
     linkedAfterCreate.value = false;
+    activeVisualEdit.value = null;
     contentScrollTop.value = 0;
     contentScrollLeft.value = 0;
     if (contentTextareaRef.value) {
@@ -695,20 +782,364 @@ const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 useUnsavedChangesGuard(guardDirty);
 
-const COMMENT_PREFIX = '//// ';
 const contentTextareaRef = ref<HTMLTextAreaElement | null>(null);
+const visualTextareaRef = ref<HTMLTextAreaElement | HTMLTextAreaElement[] | null>(null);
 const contentScrollTop = ref(0);
 const contentScrollLeft = ref(0);
 
-function stripKnowledgeBlockComments(content: string) {
-  return String(content || '')
-    .split(/\r?\n/)
-    .filter((line) => !line.startsWith(COMMENT_PREFIX))
-    .join('\n');
+type ActiveVisualEdit = {
+  kind: 'markdown' | 'comment';
+  start: number;
+  end: number;
+  value: string;
+  trailingLineBreaks: string;
+};
+
+type ScrollSnapshot = {
+  windowX: number;
+  windowY: number;
+  elements: Array<{
+    element: HTMLElement;
+    scrollLeft: number;
+    scrollTop: number;
+  }>;
+};
+
+const activeVisualEdit = ref<ActiveVisualEdit | null>(null);
+const visualBlocks = computed(() => parseKnowledgeBlockMarkdownBlocks(form.content));
+const visualEditingDisabled = computed(
+  () => loading.value || saving.value || Boolean(loadError.value) || sharedReadonly.value
+);
+
+function trailingLineBreaks(source: string) {
+  return source.match(/(?:\r\n|\n|\r)+$/u)?.[0] || '';
 }
 
-const previewMarkdownSource = computed(() => stripKnowledgeBlockComments(form.content));
-const previewHtml = computed(() => renderChatMessageHtml(previewMarkdownSource.value, { highlightCode: true }));
+function lineBreakTokens(source: string) {
+  return source.match(/\r\n|\n|\r/gu) || [];
+}
+
+function ensureTrailingLineBreaks(source: string, requiredSuffix: string) {
+  if (!source || !requiredSuffix) return source;
+
+  const required = lineBreakTokens(requiredSuffix);
+  const existing = lineBreakTokens(trailingLineBreaks(source));
+  if (existing.length >= required.length) return source;
+
+  return `${source}${required.slice(existing.length).join('')}`;
+}
+
+function editableMarkdownSource(source: string) {
+  const suffix = trailingLineBreaks(source);
+  const tokens = lineBreakTokens(suffix);
+  if (tokens.length <= 1) return source;
+
+  return `${source.slice(0, source.length - suffix.length)}${tokens[0]}`;
+}
+
+function isActiveVisualBlock(block: KnowledgeBlockMarkdownBlock) {
+  return Boolean(
+    activeVisualEdit.value &&
+      block.kind === activeVisualEdit.value.kind &&
+      block.start === activeVisualEdit.value.start
+  );
+}
+
+function renderVisualMarkdownBlock(block: KnowledgeBlockMarkdownBlock) {
+  return renderChatMessageHtml(block.source, { highlightCode: true });
+}
+
+async function startVisualEdit(block: KnowledgeBlockMarkdownBlock, sourceElement?: HTMLElement | null) {
+  if (visualEditingDisabled.value || block.kind === 'blank') return;
+
+  const scrollSnapshot = captureScrollSnapshot(sourceElement);
+  const editableSource =
+    block.kind === 'comment'
+      ? commentBodyFromSource(block.source)
+      : editableMarkdownSource(block.source);
+
+  activeVisualEdit.value = {
+    kind: block.kind,
+    start: block.start,
+    end: block.kind === 'comment' ? block.end : block.start + editableSource.length,
+    value: editableSource,
+    trailingLineBreaks:
+      block.kind === 'comment'
+        ? trailingLineBreaks(block.source)
+        : trailingLineBreaks(editableSource),
+  };
+
+  await nextTick();
+  const textarea = getVisualTextareaElement();
+  if (!textarea) return;
+
+  resizeVisualTextarea(textarea);
+  restoreScrollSnapshot(scrollSnapshot);
+  focusVisualTextarea(textarea, scrollSnapshot);
+  resizeVisualTextareaSoon(textarea, scrollSnapshot);
+}
+
+function handleVisualBlockClick(block: KnowledgeBlockMarkdownBlock, event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('button, textarea')) return;
+
+  event.preventDefault();
+  void startVisualEdit(block, event.currentTarget as HTMLElement | null);
+}
+
+function handleVisualBlockKeydown(block: KnowledgeBlockMarkdownBlock, event: KeyboardEvent) {
+  if (event.target !== event.currentTarget) return;
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+
+  event.preventDefault();
+  void startVisualEdit(block, event.currentTarget as HTMLElement | null);
+}
+
+function updateActiveVisualBlock(event: Event) {
+  const active = activeVisualEdit.value;
+  const target = event.target as HTMLTextAreaElement | null;
+  if (!active || !target) return;
+
+  const nextValue = target.value;
+  let nextSource = active.kind === 'comment' ? commentSourceFromBody(nextValue) : nextValue;
+  const currentContent = form.content;
+  const removedSource = currentContent.slice(active.start, active.end);
+  const requiredTrailingLineBreaks = trailingLineBreaks(removedSource) || active.trailingLineBreaks;
+
+  nextSource = ensureTrailingLineBreaks(nextSource, requiredTrailingLineBreaks);
+
+  form.content = replaceKnowledgeBlockRange(currentContent, active.start, active.end, nextSource);
+  errors.clearField('content');
+
+  if (active.kind === 'comment' && !nextSource) {
+    activeVisualEdit.value = null;
+    return;
+  }
+
+  activeVisualEdit.value = {
+    ...active,
+    end: active.start + nextSource.length,
+    value: nextValue,
+  };
+  resizeVisualTextareaSoon(target);
+}
+
+function finishVisualEditing() {
+  activeVisualEdit.value = null;
+}
+
+function getVisualTextareaElement() {
+  const textarea = visualTextareaRef.value;
+  return Array.isArray(textarea) ? textarea[0] ?? null : textarea;
+}
+
+function resizeVisualTextareaSoon(textarea?: HTMLTextAreaElement | null, scrollSnapshot?: ScrollSnapshot | null) {
+  const initialSelectionStart = textarea?.selectionStart;
+  const initialSelectionEnd = textarea?.selectionEnd;
+  const resize = () => {
+    const element = textarea && document.body.contains(textarea) ? textarea : getVisualTextareaElement();
+    if (!element) return;
+
+    resizeVisualTextarea(element);
+    if (
+      scrollSnapshot &&
+      document.activeElement === element &&
+      element.selectionStart === initialSelectionStart &&
+      element.selectionEnd === initialSelectionEnd
+    ) {
+      restoreScrollSnapshot(scrollSnapshot);
+    }
+  };
+
+  resize();
+  window.requestAnimationFrame(resize);
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(resize);
+  });
+  window.setTimeout(resize, 120);
+}
+
+function resizeVisualTextarea(textarea: HTMLTextAreaElement) {
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 14;
+  const lineHeight = getResolvedLineHeight(style, fontSize);
+  const paddingY = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+  const borderY = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+  const minHeight = Math.ceil(lineHeight + paddingY + borderY);
+  const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
+  const maxHeight = Math.max(minHeight, Math.min(720, viewportHeight * 0.68));
+
+  textarea.style.height = 'auto';
+
+  const contentHeight = textarea.scrollHeight + (style.boxSizing === 'border-box' ? borderY : 0);
+  const nextHeight = Math.ceil(Math.max(minHeight, Math.min(maxHeight, contentHeight)));
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+}
+
+function focusVisualTextarea(textarea: HTMLTextAreaElement, scrollSnapshot: ScrollSnapshot) {
+  try {
+    textarea.focus({ preventScroll: true });
+  } catch {
+    textarea.focus();
+  }
+
+  restoreScrollSnapshot(scrollSnapshot);
+  window.requestAnimationFrame(() => {
+    if (document.activeElement === textarea) restoreScrollSnapshot(scrollSnapshot);
+  });
+}
+
+function captureScrollSnapshot(anchor?: HTMLElement | null): ScrollSnapshot {
+  const elements: ScrollSnapshot['elements'] = [];
+  const seen = new Set<HTMLElement>();
+  let element = anchor?.parentElement ?? null;
+
+  while (element && element !== document.body) {
+    if (
+      !seen.has(element) &&
+      (element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth)
+    ) {
+      elements.push({
+        element,
+        scrollLeft: element.scrollLeft,
+        scrollTop: element.scrollTop,
+      });
+      seen.add(element);
+    }
+    element = element.parentElement;
+  }
+
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    elements,
+  };
+}
+
+function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
+  for (const item of snapshot.elements) {
+    if (!document.body.contains(item.element)) continue;
+    item.element.scrollLeft = item.scrollLeft;
+    item.element.scrollTop = item.scrollTop;
+  }
+  window.scrollTo(snapshot.windowX, snapshot.windowY);
+}
+
+async function openCodeAtBlock(block: KnowledgeBlockMarkdownBlock) {
+  activeVisualEdit.value = null;
+  blockTab.value = 'code';
+
+  await nextTick();
+  const textarea = contentTextareaRef.value;
+  if (!textarea) return;
+
+  const position = Math.max(0, Math.min(String(form.content || '').length, block.start));
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(position, position);
+  scrollCodeEditorToPosition(textarea, position);
+}
+
+watch(blockTab, (tab) => {
+  if (tab !== 'visual') finishVisualEditing();
+});
+
+function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: number) {
+  const applyScroll = () => {
+    if (!document.body.contains(textarea)) return;
+    if (document.activeElement !== textarea) return;
+    if (textarea.selectionStart !== position || textarea.selectionEnd !== position) return;
+
+    applyCodeEditorScroll(textarea, getTextareaScrollTopForPosition(textarea, position));
+  };
+
+  applyScroll();
+  window.requestAnimationFrame(applyScroll);
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(applyScroll);
+  });
+  window.setTimeout(applyScroll, 120);
+  window.setTimeout(applyScroll, 320);
+  window.setTimeout(applyScroll, 640);
+}
+
+function applyCodeEditorScroll(textarea: HTMLTextAreaElement, scrollTop: number) {
+  textarea.scrollTop = scrollTop;
+  contentScrollTop.value = textarea.scrollTop;
+  contentScrollLeft.value = textarea.scrollLeft;
+}
+
+function getTextareaScrollTopForPosition(textarea: HTMLTextAreaElement, position: number) {
+  const targetTop = measureTextareaPositionTop(textarea, position) ?? estimateTextareaPositionTop(textarea, position);
+  const maxScrollTop = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+  return Math.max(0, Math.min(maxScrollTop, targetTop - textarea.clientHeight * 0.35));
+}
+
+function estimateTextareaPositionTop(textarea: HTMLTextAreaElement, position: number) {
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 14;
+  const lineHeight = getResolvedLineHeight(style, fontSize);
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const lineIndex = String(form.content || '').slice(0, position).split('\n').length - 1;
+  return paddingTop + lineIndex * lineHeight;
+}
+
+function measureTextareaPositionTop(textarea: HTMLTextAreaElement, position: number) {
+  const value = String(form.content || '');
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 14;
+  const lineHeight = getResolvedLineHeight(style, fontSize);
+  const resolvedLineHeight = `${lineHeight}px`;
+  const overflowWrap = style.getPropertyValue('overflow-wrap');
+  const mirror = document.createElement('div');
+  const marker = document.createElement('span');
+
+  Object.assign(mirror.style, {
+    position: 'absolute',
+    visibility: 'hidden',
+    overflow: 'hidden',
+    top: '0',
+    left: '-9999px',
+    width: `${textarea.clientWidth}px`,
+    boxSizing: 'border-box',
+    paddingTop: style.paddingTop,
+    paddingRight: style.paddingRight,
+    paddingBottom: style.paddingBottom,
+    paddingLeft: style.paddingLeft,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontStyle: style.fontStyle,
+    fontVariant: style.fontVariant,
+    fontWeight: style.fontWeight,
+    letterSpacing: style.letterSpacing,
+    lineHeight: resolvedLineHeight,
+    textTransform: style.textTransform,
+    whiteSpace: 'pre-wrap',
+    overflowWrap: !overflowWrap || overflowWrap === 'normal' ? 'break-word' : overflowWrap,
+    wordBreak: style.wordBreak,
+    tabSize: style.getPropertyValue('tab-size') || '8',
+  });
+
+  Object.assign(marker.style, {
+    display: 'inline-block',
+    width: '1px',
+    height: resolvedLineHeight,
+    lineHeight: resolvedLineHeight,
+  });
+
+  marker.textContent = '\u200b';
+  mirror.append(document.createTextNode(value.slice(0, position)), marker);
+  document.body.append(mirror);
+
+  const top = marker.offsetTop;
+  mirror.remove();
+  return Number.isFinite(top) ? top : null;
+}
+
+function getResolvedLineHeight(style: CSSStyleDeclaration, fontSize: number) {
+  return Number.parseFloat(style.lineHeight) || fontSize * 1.5;
+}
 
 function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -946,6 +1377,7 @@ const save = async () => {
 };
 
 const cancelChanges = () => {
+  activeVisualEdit.value = null;
   editor.reset();
   draftTagBindings.value = (originalTagBindings.value || []).map((b) => ({ ...b }));
   fileBindings.reset();
@@ -1046,20 +1478,25 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   background: var(--color-info-bg);
 }
 
-.knowledge-block-preview {
+.knowledge-block-visual {
   min-height: 280px;
 }
 
-.knowledge-block-preview__content {
+.knowledge-block-visual__surface {
   min-height: 280px;
   border: 1px solid var(--color-border-strong);
   border-radius: 6px;
-  padding: 14px 16px;
+  padding: 8px;
   background: var(--color-surface);
   overflow: auto;
 }
 
-.knowledge-block-preview__empty {
+.knowledge-block-visual__surface--error {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 22%, transparent);
+}
+
+.knowledge-block-visual__empty {
   min-height: 280px;
   border: 1px dashed var(--color-border-strong);
   border-radius: 6px;
@@ -1067,62 +1504,143 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   background: var(--color-surface-subtle);
 }
 
-:deep(.knowledge-block-preview__content :where(h1, h2, h3, h4, h5, h6)) {
+.knowledge-block-visual__block {
+  position: relative;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.knowledge-block-visual__block--editable {
+  cursor: text;
+}
+
+.knowledge-block-visual__block--editable:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface-subtle);
+}
+
+.knowledge-block-visual__block--active {
+  border-color: var(--color-focus);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-focus) 22%, transparent);
+}
+
+.knowledge-block-visual__block--comment {
+  color: var(--color-text-subtle);
+  background: var(--color-surface-subtle);
+}
+
+.knowledge-block-visual__blank {
+  height: 10px;
+}
+
+.knowledge-block-visual__block-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.knowledge-block-visual__block-kind {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.knowledge-block-visual__block-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.knowledge-block-visual__source-button {
+  padding: 3px 7px;
+  font-size: 0.78rem;
+}
+
+.knowledge-block-visual__textarea {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  overflow-anchor: none;
+  resize: vertical;
+  overflow-y: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.knowledge-block-visual__textarea--comment {
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+}
+
+.knowledge-block-visual__comment-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:deep(.knowledge-block-visual__rendered :where(h1, h2, h3, h4, h5, h6)) {
   margin: 10px 0 8px;
   font-weight: 650;
   line-height: 1.25;
 }
 
-:deep(.knowledge-block-preview__content h1) {
+:deep(.knowledge-block-visual__rendered h1) {
   font-size: 1.25rem;
 }
 
-:deep(.knowledge-block-preview__content h2) {
+:deep(.knowledge-block-visual__rendered h2) {
   font-size: 1.15rem;
 }
 
-:deep(.knowledge-block-preview__content h3) {
+:deep(.knowledge-block-visual__rendered h3) {
   font-size: 1.05rem;
 }
 
-:deep(.knowledge-block-preview__content :where(h4, h5, h6)) {
+:deep(.knowledge-block-visual__rendered :where(h4, h5, h6)) {
   font-size: 1rem;
 }
 
-:deep(.knowledge-block-preview__content :where(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th)) {
+:deep(.knowledge-block-visual__rendered :where(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th)) {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-:deep(.knowledge-block-preview__content p) {
+:deep(.knowledge-block-visual__rendered p) {
   margin: 0 0 8px;
 }
 
-:deep(.knowledge-block-preview__content p:last-child) {
+:deep(.knowledge-block-visual__rendered p:last-child) {
   margin-bottom: 0;
 }
 
-:deep(.knowledge-block-preview__content ul),
-:deep(.knowledge-block-preview__content ol) {
+:deep(.knowledge-block-visual__rendered ul),
+:deep(.knowledge-block-visual__rendered ol) {
   margin: 0 0 8px 18px;
   padding: 0;
 }
 
-:deep(.knowledge-block-preview__content blockquote) {
+:deep(.knowledge-block-visual__rendered blockquote) {
   margin: 0 0 8px;
   padding-left: 12px;
   border-left: 3px solid var(--color-border-strong);
   color: var(--color-text-muted);
 }
 
-:deep(.knowledge-block-preview__content code) {
+:deep(.knowledge-block-visual__rendered code) {
   background: var(--color-surface-hover);
   border-radius: 6px;
   padding: 2px 6px;
   font-size: 0.95em;
 }
 
-:deep(.knowledge-block-preview__content pre) {
+:deep(.knowledge-block-visual__rendered pre) {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -1136,7 +1654,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   line-height: 1.4;
 }
 
-:deep(.knowledge-block-preview__content pre code) {
+:deep(.knowledge-block-visual__rendered pre code) {
   display: block;
   padding: 0;
   border-radius: 0;
@@ -1146,25 +1664,25 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   line-height: inherit;
 }
 
-:deep(.knowledge-block-preview__content table) {
+:deep(.knowledge-block-visual__rendered table) {
   width: 100%;
   border-collapse: collapse;
 }
 
-:deep(.knowledge-block-preview__content th),
-:deep(.knowledge-block-preview__content td) {
+:deep(.knowledge-block-visual__rendered th),
+:deep(.knowledge-block-visual__rendered td) {
   border: 1px solid var(--color-border-strong);
   padding: 6px 8px;
   text-align: left;
 }
 
-:deep(.knowledge-block-preview__content math.tml-display) {
+:deep(.knowledge-block-visual__rendered math.tml-display) {
   margin: 0 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
 }
 
-:deep(.knowledge-block-preview__content math) {
+:deep(.knowledge-block-visual__rendered math) {
   max-width: 100%;
 }
 
@@ -1299,6 +1817,12 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 
 .knowledge-block-content-editor__hint {
   margin-top: 6px;
+}
+
+@media (max-width: 640px) {
+  .knowledge-block-content-editor {
+    font-size: 1rem;
+  }
 }
 
 :deep(.knowledge-block-content-editor__comment) {
