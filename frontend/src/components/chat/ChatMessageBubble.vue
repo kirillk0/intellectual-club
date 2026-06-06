@@ -91,30 +91,6 @@
           <button
             v-if="!readonly"
             class="icon-button message-action"
-            :class="{ active: Boolean(msg.bookmarked) }"
-            type="button"
-            :disabled="!messageId || bookmarking"
-            :aria-label="bookmarkLabel"
-            :aria-pressed="bookmarkPressed"
-            :title="bookmarkTitle"
-            @click="emit('toggle-bookmark')"
-          >
-            <SvgIcon name="bookmark" />
-          </button>
-          <button
-            v-if="!readonly"
-            class="icon-button message-action"
-            type="button"
-            :disabled="!messageId || msg.status === 'generating'"
-            @click="emit('edit')"
-            :aria-label="`Edit message ${index + 1}`"
-            title="Edit"
-          >
-            <SvgIcon name="edit" />
-          </button>
-          <button
-            v-if="!readonly"
-            class="icon-button message-action"
             type="button"
             :disabled="branchDisabled"
             @click="emit('branch')"
@@ -122,17 +98,6 @@
             title="Branch"
           >
             <SvgIcon name="branch" />
-          </button>
-          <button
-            v-if="!readonly"
-            class="icon-button message-action"
-            type="button"
-            :disabled="!canDelete"
-            @click="emit('delete')"
-            :aria-label="`Delete message ${index + 1}`"
-            :title="deleteTitle"
-          >
-            <SvgIcon name="delete" />
           </button>
           <button
             v-if="!readonly && msg.next_sibling_id"
@@ -144,14 +109,83 @@
           >
             <SvgIcon name="chevron-right" />
           </button>
+          <button
+            v-if="showMoreActions"
+            ref="moreMenuButtonRef"
+            class="icon-button message-action"
+            type="button"
+            aria-haspopup="menu"
+            :aria-expanded="String(moreMenuOpen)"
+            :aria-label="`More actions for message ${index + 1}`"
+            title="More actions"
+            @click.stop="toggleMoreMenu"
+          >
+            <SvgIcon name="more-horizontal" />
+          </button>
         </div>
       </div>
+
+      <Teleport to="body">
+        <div
+          v-if="moreMenuOpen"
+          ref="moreMenuRef"
+          class="dropdown floating-dropdown message-actions-menu"
+          role="menu"
+          :style="moreMenuStyle"
+        >
+          <button
+            class="menu-item message-actions-menu__item"
+            :class="{ 'message-actions-menu__item--active': Boolean(msg.bookmarked) }"
+            type="button"
+            role="menuitemcheckbox"
+            :disabled="!messageId || bookmarking"
+            :aria-label="bookmarkLabel"
+            :aria-checked="bookmarkPressed"
+            @click="emitBookmark"
+          >
+            <span
+              class="message-actions-menu__icon"
+              :class="{ 'message-actions-menu__icon--active': Boolean(msg.bookmarked) }"
+            >
+              <SvgIcon name="bookmark" size="16" />
+            </span>
+            <span class="message-actions-menu__label">Bookmark</span>
+          </button>
+          <button
+            class="menu-item message-actions-menu__item"
+            type="button"
+            role="menuitem"
+            :disabled="!messageId || msg.status === 'generating'"
+            :aria-label="`Edit message ${index + 1}`"
+            @click="emitEdit"
+          >
+            <span class="message-actions-menu__icon">
+              <SvgIcon name="edit" size="16" />
+            </span>
+            <span class="message-actions-menu__label">Edit</span>
+          </button>
+          <button
+            class="menu-item message-actions-menu__item danger"
+            type="button"
+            role="menuitem"
+            :disabled="!canDelete"
+            :aria-label="`Delete message ${index + 1}`"
+            :title="deleteTitle"
+            @click="emitDelete"
+          >
+            <span class="message-actions-menu__icon">
+              <SvgIcon name="delete" size="16" />
+            </span>
+            <span class="message-actions-menu__label">Delete</span>
+          </button>
+        </div>
+      </Teleport>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
@@ -211,10 +245,14 @@ const emit = defineEmits<{
 const msg = computed(() => props.message);
 const messageId = computed(() => msg.value.id ?? null);
 const bookmarkPressed = computed(() => String(Boolean(msg.value.bookmarked)));
-const bookmarkTitle = computed(() => (msg.value.bookmarked ? 'Remove bookmark' : 'Add bookmark'));
 const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
 );
+const showMoreActions = computed(() => !props.readonly);
+const moreMenuOpen = ref(false);
+const moreMenuRef = ref<HTMLElement | null>(null);
+const moreMenuButtonRef = ref<HTMLElement | null>(null);
+const moreMenuStyle = ref<Record<string, string>>({});
 
 const canRetry = computed(
   () => !props.readonly && Boolean(messageId.value) && (msg.value.working?.step_count || 0) > 0
@@ -274,6 +312,127 @@ const branchDisabled = computed(() => {
   if (props.readonly) return true;
   if (props.branchingAssistantId == null) return false;
   return props.branchingAssistantId === messageId.value;
+});
+
+const updateMoreMenuPosition = () => {
+  if (!moreMenuOpen.value) return;
+
+  const button = moreMenuButtonRef.value;
+  if (!button) return;
+
+  const rect = button.getBoundingClientRect();
+  const viewportPadding = 8;
+  const gap = 6;
+  const preferredWidth = 190;
+  const minWidth = 170;
+  const maxWidth = Math.max(minWidth, window.innerWidth - viewportPadding * 2);
+  const width = Math.min(preferredWidth, maxWidth);
+  const menuHeight = moreMenuRef.value?.scrollHeight ?? 0;
+  const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gap - viewportPadding);
+  const spaceAbove = Math.max(0, rect.top - gap - viewportPadding);
+  const openAbove = menuHeight > spaceBelow && spaceAbove > spaceBelow;
+  const availableHeight = Math.max(120, openAbove ? spaceAbove : spaceBelow);
+  const clampedHeight = menuHeight > 0 ? Math.min(menuHeight, availableHeight) : availableHeight;
+  const top = openAbove
+    ? Math.max(viewportPadding, rect.top - gap - clampedHeight)
+    : Math.min(rect.bottom + gap, window.innerHeight - viewportPadding - clampedHeight);
+  const left = Math.min(
+    Math.max(viewportPadding, rect.right - width),
+    Math.max(viewportPadding, window.innerWidth - width - viewportPadding)
+  );
+
+  moreMenuStyle.value = {
+    position: 'fixed',
+    top: `${top}px`,
+    left: `${left}px`,
+    right: 'auto',
+    width: `${width}px`,
+    maxWidth: `${maxWidth}px`,
+    maxHeight: `${availableHeight}px`,
+    overflowY: 'auto',
+    zIndex: '2000',
+  };
+};
+
+const handleMoreMenuClickOutside = (event: MouseEvent) => {
+  const target = event.target as Node | null;
+  if (!target) return;
+  if (moreMenuRef.value?.contains(target)) return;
+  if (moreMenuButtonRef.value?.contains(target)) return;
+  closeMoreMenu();
+};
+
+const handleMoreMenuKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'Escape') return;
+  closeMoreMenu();
+};
+
+const addMoreMenuListeners = () => {
+  document.addEventListener('click', handleMoreMenuClickOutside, true);
+  window.addEventListener('keydown', handleMoreMenuKeydown);
+  window.addEventListener('resize', updateMoreMenuPosition);
+  window.addEventListener('scroll', updateMoreMenuPosition, true);
+};
+
+const removeMoreMenuListeners = () => {
+  document.removeEventListener('click', handleMoreMenuClickOutside, true);
+  window.removeEventListener('keydown', handleMoreMenuKeydown);
+  window.removeEventListener('resize', updateMoreMenuPosition);
+  window.removeEventListener('scroll', updateMoreMenuPosition, true);
+};
+
+const closeMoreMenu = () => {
+  if (!moreMenuOpen.value) return;
+  moreMenuOpen.value = false;
+  moreMenuStyle.value = {};
+  removeMoreMenuListeners();
+};
+
+const openMoreMenu = async () => {
+  if (!showMoreActions.value) return;
+  moreMenuOpen.value = true;
+  addMoreMenuListeners();
+  await nextTick();
+  updateMoreMenuPosition();
+};
+
+const toggleMoreMenu = async () => {
+  if (moreMenuOpen.value) {
+    closeMoreMenu();
+    return;
+  }
+
+  await openMoreMenu();
+};
+
+const emitBookmark = () => {
+  if (!messageId.value || props.bookmarking) return;
+  closeMoreMenu();
+  emit('toggle-bookmark');
+};
+
+const emitEdit = () => {
+  if (!messageId.value || msg.value.status === 'generating') return;
+  closeMoreMenu();
+  emit('edit');
+};
+
+const emitDelete = () => {
+  if (!props.canDelete) return;
+  closeMoreMenu();
+  emit('delete');
+};
+
+watch(showMoreActions, (visible) => {
+  if (!visible) closeMoreMenu();
+});
+
+watch(messageId, () => {
+  closeMoreMenu();
+});
+
+onBeforeUnmount(() => {
+  removeMoreMenuListeners();
 });
 
 const totalCostLabel = computed(() => {
@@ -352,6 +511,64 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   line-height: 1.5;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.message-actions-menu {
+  min-width: 170px;
+}
+
+.message-actions-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.2;
+  color: var(--color-text);
+}
+
+.message-actions-menu__icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.message-actions-menu__icon :deep(.svg-icon) {
+  flex: 0 0 auto;
+  stroke-width: 1.4;
+}
+
+.message-actions-menu__icon--active {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+}
+
+.message-actions-menu__icon--active :deep(.svg-icon) {
+  stroke-width: 1.8;
+}
+
+.message-actions-menu__item.danger {
+  color: var(--color-danger);
+}
+
+.message-actions-menu__item.danger .message-actions-menu__icon {
+  color: var(--color-danger);
+}
+
+.message-actions-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.message-actions-menu__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 </style>
