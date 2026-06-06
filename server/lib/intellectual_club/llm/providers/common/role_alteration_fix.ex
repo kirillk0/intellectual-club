@@ -14,6 +14,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
     messages
     |> merge_adjacent(&chat_role/1, &merge_chat_message(&1, &2, &3, separator))
+    |> replace_empty_user_messages(&chat_role/1, &put_placeholder_chat_user_content/1)
     |> ensure_user_boundaries(&chat_role/1, &placeholder_chat_user_message/0)
   end
 
@@ -23,6 +24,10 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
     items
     |> merge_adjacent(&responses_message_role/1, &merge_responses_message(&1, &2, &3, separator))
+    |> replace_empty_user_messages(
+      &responses_message_role/1,
+      &put_placeholder_responses_user_content/1
+    )
     |> ensure_user_boundaries(&responses_message_role/1, &placeholder_responses_user_item/0)
   end
 
@@ -63,6 +68,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
       nil -> [empty_user_fun.()]
       last -> if role_fun.(last) == "user", do: fixed, else: fixed ++ [empty_user_fun.()]
     end
+  end
+
+  defp replace_empty_user_messages(items, role_fun, replace_fun) do
+    Enum.map(items, fn item ->
+      if role_fun.(item) == "user" and user_content_empty?(content_of(item)) do
+        replace_fun.(item)
+      else
+        item
+      end
+    end)
   end
 
   defp merge_chat_message(left, right, role, separator) do
@@ -235,6 +250,60 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   defp content_of(%{} = message), do: Map.get(message, "content", Map.get(message, :content))
   defp content_of(_message), do: nil
 
+  defp user_content_empty?(nil), do: true
+
+  defp user_content_empty?(content) when is_binary(content) do
+    String.trim(content) == ""
+  end
+
+  defp user_content_empty?(content) when is_list(content) do
+    Enum.all?(content, &content_part_empty?/1)
+  end
+
+  defp user_content_empty?(%{} = content), do: content_part_empty?(content)
+
+  defp user_content_empty?(content) do
+    content |> to_string() |> String.trim() == ""
+  end
+
+  defp content_part_empty?(nil), do: true
+
+  defp content_part_empty?(content) when is_binary(content) do
+    String.trim(content) == ""
+  end
+
+  defp content_part_empty?(%{} = block) do
+    cond do
+      has_text_key?(block) ->
+        block |> text_value() |> user_content_empty?()
+
+      has_content_key?(block) ->
+        block |> nested_content_value() |> user_content_empty?()
+
+      true ->
+        false
+    end
+  end
+
+  defp content_part_empty?(content) do
+    content |> to_string() |> String.trim() == ""
+  end
+
+  defp has_text_key?(%{} = block), do: Map.has_key?(block, "text") or Map.has_key?(block, :text)
+
+  defp has_content_key?(%{} = block),
+    do: Map.has_key?(block, "content") or Map.has_key?(block, :content)
+
+  defp text_value(%{} = block) do
+    if Map.has_key?(block, "text"), do: Map.get(block, "text"), else: Map.get(block, :text)
+  end
+
+  defp nested_content_value(%{} = block) do
+    if Map.has_key?(block, "content"),
+      do: Map.get(block, "content"),
+      else: Map.get(block, :content)
+  end
+
   defp tool_calls_of(%{} = message) do
     case Map.get(message, "tool_calls", Map.get(message, :tool_calls)) do
       calls when is_list(calls) -> calls
@@ -279,6 +348,17 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   defp placeholder_chat_user_message,
     do: %{"role" => "user", "content" => @missing_user_message_placeholder}
 
+  defp put_placeholder_chat_user_content(%{} = message) do
+    key = content_key(message, %{})
+
+    message
+    |> Map.delete("content")
+    |> Map.delete(:content)
+    |> Map.put(key, @missing_user_message_placeholder)
+  end
+
+  defp put_placeholder_chat_user_content(_message), do: placeholder_chat_user_message()
+
   defp placeholder_responses_user_item do
     %{
       "type" => "message",
@@ -286,4 +366,15 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
       "content" => [%{"type" => "input_text", "text" => @missing_user_message_placeholder}]
     }
   end
+
+  defp put_placeholder_responses_user_content(%{} = item) do
+    key = content_key(item, %{})
+
+    item
+    |> Map.delete("content")
+    |> Map.delete(:content)
+    |> Map.put(key, [%{"type" => "input_text", "text" => @missing_user_message_placeholder}])
+  end
+
+  defp put_placeholder_responses_user_content(_item), do: placeholder_responses_user_item()
 end

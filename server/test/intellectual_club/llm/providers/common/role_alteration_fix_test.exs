@@ -35,6 +35,37 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
            ]
   end
 
+  test "replaces whitespace-only chat user messages with placeholder content" do
+    assert RoleAlterationFix.fix_chat_messages([
+             %{"role" => "user", "content" => " \n\t "}
+           ]) == [
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
+           ]
+  end
+
+  test "replaces whitespace-only rich chat user text blocks with placeholder content" do
+    assert RoleAlterationFix.fix_chat_messages([
+             %{
+               "role" => "user",
+               "content" => [
+                 %{"type" => "text", "text" => " \n"},
+                 ""
+               ]
+             }
+           ]) == [
+             %{"role" => "user", "content" => @missing_user_message_placeholder}
+           ]
+  end
+
+  test "keeps chat user messages with non-text content" do
+    message = %{
+      "role" => "user",
+      "content" => [%{"type" => "image_url", "image_url" => %{"url" => "file://image.png"}}]
+    }
+
+    assert RoleAlterationFix.fix_chat_messages([message]) == [message]
+  end
+
   test "preserves rich chat content and inserts a separator block" do
     assert RoleAlterationFix.fix_chat_messages([
              %{"role" => "user", "content" => [%{"type" => "text", "text" => "First"}]},
@@ -51,6 +82,26 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
                  %{"type" => "text", "text" => "First"},
                  %{"type" => "text", "text" => "\n\n"},
                  %{"type" => "image_url", "image_url" => %{"url" => "file://image.png"}}
+               ]
+             }
+           ]
+  end
+
+  test "replaces whitespace-only responses user messages with placeholder content" do
+    assert RoleAlterationFix.fix_responses_input_items([
+             %{
+               "type" => "message",
+               "role" => "user",
+               "id" => "msg_1",
+               "content" => [%{"type" => "input_text", "text" => " \n\t"}]
+             }
+           ]) == [
+             %{
+               "type" => "message",
+               "role" => "user",
+               "id" => "msg_1",
+               "content" => [
+                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
                ]
              }
            ]
