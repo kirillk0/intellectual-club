@@ -81,7 +81,7 @@
               errors.hasField('content') && 'knowledge-block-visual__surface--error',
             ]"
           >
-            <template v-for="block in visualBlocks" :key="block.key">
+            <template v-for="block in visualBlocks" :key="visualBlockKey(block)">
               <div v-if="block.kind === 'blank'" class="knowledge-block-visual__blank" aria-hidden="true"></div>
               <section
                 v-else
@@ -791,6 +791,7 @@ type ActiveVisualEdit = {
   kind: 'markdown' | 'comment';
   start: number;
   end: number;
+  key: string;
   value: string;
   trailingLineBreaks: string;
 };
@@ -845,6 +846,10 @@ function isActiveVisualBlock(block: KnowledgeBlockMarkdownBlock) {
   );
 }
 
+function visualBlockKey(block: KnowledgeBlockMarkdownBlock) {
+  return isActiveVisualBlock(block) ? activeVisualEdit.value?.key || block.key : block.key;
+}
+
 function renderVisualMarkdownBlock(block: KnowledgeBlockMarkdownBlock) {
   return renderChatMessageHtml(block.source, { highlightCode: true });
 }
@@ -862,6 +867,7 @@ async function startVisualEdit(block: KnowledgeBlockMarkdownBlock, sourceElement
     kind: block.kind,
     start: block.start,
     end: block.kind === 'comment' ? block.end : block.start + editableSource.length,
+    key: block.key,
     value: editableSource,
     trailingLineBreaks:
       block.kind === 'comment'
