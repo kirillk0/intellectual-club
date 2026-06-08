@@ -61,6 +61,7 @@ defmodule IntellectualClub.Generation.Context do
     :history_length,
     :initial_step_sequence,
     :initial_step_status,
+    :initial_resume_mode,
     :completion_effect
   ]
 

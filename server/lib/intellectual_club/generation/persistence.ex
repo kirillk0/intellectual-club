@@ -345,6 +345,18 @@ defmodule IntellectualClub.Generation.Persistence do
     }
   end
 
+  def step_tool_resume_state!(step_id) when is_integer(step_id) do
+    actor = actor_for_step!(step_id)
+    step = load_step_with_items!(step_id, actor)
+    tool_calls = persisted_tool_calls_by_item_id(step) |> Map.values()
+    missing_tool_calls = missing_tool_calls(step)
+
+    %{
+      tool_call_count: length(tool_calls),
+      missing_tool_call_count: length(missing_tool_calls)
+    }
+  end
+
   def list_generating_messages_for_resume! do
     ChatMessage
     |> Ash.Query.filter(status == :generating)

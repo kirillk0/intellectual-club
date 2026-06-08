@@ -119,12 +119,21 @@ defmodule IntellectualClub.Generation.Worker do
       end
 
     {runtime_step, continue} =
-      case {Map.get(context, :initial_step_status), context.step_id} do
-        {:waiting_tools, step_id} when is_integer(step_id) ->
+      case {Map.get(context, :initial_resume_mode), Map.get(context, :initial_step_status),
+            context.step_id} do
+        {:completed_tool_step, _status, step_id} when is_integer(step_id) ->
+          followup = Persistence.load_step_for_followup!(step_id)
+          {followup.runtime_step, :resume_completed_tool_step}
+
+        {:waiting_tools, _status, step_id} when is_integer(step_id) ->
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_waiting_tools}
 
-        {"waiting_tools", step_id} when is_integer(step_id) ->
+        {_mode, :waiting_tools, step_id} when is_integer(step_id) ->
+          followup = Persistence.load_step_for_followup!(step_id)
+          {followup.runtime_step, :resume_waiting_tools}
+
+        {_mode, "waiting_tools", step_id} when is_integer(step_id) ->
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_waiting_tools}
 
@@ -185,6 +194,10 @@ defmodule IntellectualClub.Generation.Worker do
       {:error, reason} ->
         finalize_error(state, "Failed to resume waiting tools: #{inspect(reason)}", %{})
     end
+  end
+
+  def handle_continue(:resume_completed_tool_step, state) do
+    handle_tool_results(state, [], persist_results?: false)
   end
 
   defp start_stream_task(state) do

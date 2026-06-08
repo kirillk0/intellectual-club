@@ -113,21 +113,30 @@ defmodule IntellectualClub.Generation.Supervisor do
     with {:ok, context} <- Context.prepare_retry(message_id, resume_opts),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence) do
-      if waiting_tools_status?(context.initial_step_status) and is_integer(context.step_id) do
-        start_worker(context)
-      else
-        :ok = Persistence.rollback_steps_for_retry!(context.message_id, step_sequence)
+      case orphaned_resume_strategy(context) do
+        :resume_waiting_tools ->
+          start_worker(%{context | initial_resume_mode: :waiting_tools})
 
-        step_id =
-          Persistence.ensure_step_started!(
-            context.message_id,
-            step_sequence,
-            context.request_payload || %{},
-            []
-          )
+        :resume_completed_tool_step ->
+          start_worker(%{context | initial_resume_mode: :completed_tool_step})
 
-        context = %{context | step_id: step_id}
-        start_worker(context)
+        :finalize_completed_step ->
+          :ok = Persistence.persist_completed_from_step!(context.message_id, context.step_id)
+          {:ok, context}
+
+        :restart_step ->
+          :ok = Persistence.rollback_steps_for_retry!(context.message_id, step_sequence)
+
+          step_id =
+            Persistence.ensure_step_started!(
+              context.message_id,
+              step_sequence,
+              context.request_payload || %{},
+              []
+            )
+
+          context = %{context | step_id: step_id}
+          start_worker(context)
       end
     else
       nil ->
@@ -142,6 +151,34 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   defp waiting_tools_status?(status), do: status in [:waiting_tools, "waiting_tools"]
+
+  defp completed_step_status?(status), do: status in [:done, "done"]
+
+  defp orphaned_resume_strategy(context) when is_map(context) do
+    cond do
+      waiting_tools_status?(context.initial_step_status) and is_integer(context.step_id) ->
+        :resume_waiting_tools
+
+      completed_step_status?(context.initial_step_status) and is_integer(context.step_id) ->
+        completed_step_resume_strategy(context.step_id)
+
+      true ->
+        :restart_step
+    end
+  end
+
+  defp completed_step_resume_strategy(step_id) when is_integer(step_id) do
+    case Persistence.step_tool_resume_state!(step_id) do
+      %{tool_call_count: 0} ->
+        :finalize_completed_step
+
+      %{missing_tool_call_count: 0} ->
+        :resume_completed_tool_step
+
+      _other ->
+        :resume_waiting_tools
+    end
+  end
 
   def recover_orphaned_generations_async do
     Task.start(fn ->
