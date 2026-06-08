@@ -136,6 +136,14 @@
                 <div class="error-text" v-html="renderHtml(itemText(item))"></div>
               </div>
 
+              <div v-else-if="unknownContentValue(item) !== null" class="working-item-body working-item-json">
+                <JsonTreeView
+                  :value="unknownContentValue(item)"
+                  :download-filename="unknownContentDownloadFilename(item)"
+                  preserve-expanded-on-value-change
+                />
+              </div>
+
               <div v-else class="working-item-body muted">No data</div>
             </div>
 
@@ -196,6 +204,7 @@
 import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
+import JsonTreeView from '@/components/chat/JsonTreeView.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { translate } from '@/i18n';
 import type {
@@ -527,6 +536,52 @@ const toolItemMedia = (item: Pick<ChatMessageItem, 'contents'>) =>
     (content) => content.kind === 'media' && content.media
   );
 
+const unknownContentPayload = (content: ChatMessageContent): unknown | null => {
+  if (content.kind === 'opaque' && content.content_json != null) return content.content_json;
+
+  if (content.kind === 'media' && content.media) {
+    return {
+      kind: content.kind,
+      media: content.media,
+    };
+  }
+
+  const text = String(content.content_text ?? '');
+  if (text.trim()) {
+    return {
+      kind: content.kind,
+      content_text: text,
+    };
+  }
+
+  if (content.content_json != null) {
+    return {
+      kind: content.kind,
+      content_json: content.content_json,
+    };
+  }
+
+  return null;
+};
+
+const unknownContentValue = (item: Pick<ChatMessageItem, 'contents'>): unknown | null => {
+  const payloads = ((item.contents || []).slice().sort(sortBySequence) as ChatMessageContent[])
+    .map(unknownContentPayload)
+    .filter((payload): payload is unknown => payload !== null);
+
+  if (payloads.length === 0) return null;
+  if (payloads.length === 1) return payloads[0];
+  return payloads;
+};
+
+const unknownContentDownloadFilename = (
+  item: Pick<ChatMessageItem, 'id' | 'sequence' | 'type'>
+) => {
+  const type = String(item.type || 'item').replace(/[^a-z0-9_-]+/giu, '-').replace(/^-|-$/gu, '');
+  const id = typeof item.id === 'number' && item.id > 0 ? item.id : item.sequence || 'unknown';
+  return `${type || 'item'}-${id}-content.json`;
+};
+
 const firstTruncatedTextContentId = (item: ChatMessageItem): number | null => {
   const contents = (item.contents || []).slice().sort(sortBySequence);
   for (const content of contents) {
@@ -770,6 +825,18 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 .working-item-body {
   font-size: 0.95em;
+}
+
+.working-item-json {
+  width: 100%;
+}
+
+.working-item-json :deep(.json-viewer-body) {
+  max-height: 32vh;
+}
+
+.working-item-json :deep(.json-viewer-raw) {
+  max-height: 22vh;
 }
 
 .working-tool-result {

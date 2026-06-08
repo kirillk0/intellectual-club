@@ -224,6 +224,7 @@ export const ruMessages: Record<string, string> = {
   'Hide bots filter': 'Скрыть фильтр ботов',
   'Hide context': 'Скрыть контекст',
   'Hide library': 'Скрыть библиотеку',
+  'Hide raw text': 'Скрыть сырой текст',
   'Hide tags filter': 'Скрыть фильтр тегов',
   'Hide type filter': 'Скрыть фильтр типов',
   'I understand that shared tools will run using my credentials.': 'Я понимаю, что общие инструменты будут запускаться с моими учетными данными.',

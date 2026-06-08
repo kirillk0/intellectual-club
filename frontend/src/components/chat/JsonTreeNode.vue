@@ -32,6 +32,7 @@
           :label-kind="entry.labelKind"
           :value="entry.value"
           :depth="depth + 1"
+          :preserve-expanded-on-value-change="preserveExpandedOnValueChange"
         />
 
         <div class="json-line" :style="lineStyle">
@@ -86,6 +87,7 @@ interface Props {
   labelKind?: LabelKind | null;
   value: unknown;
   depth?: number;
+  preserveExpandedOnValueChange?: boolean;
 }
 
 type ContainerEntry = {
@@ -99,6 +101,7 @@ const props = withDefaults(defineProps<Props>(), {
   label: null,
   labelKind: null,
   depth: 0,
+  preserveExpandedOnValueChange: false,
 });
 
 const INDENT_PX = 18;
@@ -116,6 +119,7 @@ const isObject = computed(
 );
 const isContainer = computed(() => isArray.value || isObject.value);
 const hasLabel = computed(() => Boolean(props.label));
+const preserveExpandedOnValueChange = computed(() => Boolean(props.preserveExpandedOnValueChange));
 
 const formatKeyLabel = (value: string) => JSON.stringify(value);
 const formatIndexLabel = (value: string) => `[${value}]`;
@@ -195,6 +199,13 @@ const isLongString = computed(() => {
   );
 });
 
+const nodeKind = computed(() => {
+  if (isArray.value) return 'array';
+  if (isObject.value) return 'object';
+  if (isLongString.value) return 'long-string';
+  return 'primitive';
+});
+
 const initialExpanded = computed(() => {
   if (depth.value === 0) return true;
   if (isContainer.value) return false;
@@ -203,8 +214,16 @@ const initialExpanded = computed(() => {
 
 const expanded = ref(initialExpanded.value);
 
+const resetSignature = computed(() => [
+  props.label,
+  props.labelKind,
+  depth.value,
+  nodeKind.value,
+  preserveExpandedOnValueChange.value ? null : props.value,
+]);
+
 watch(
-  () => [props.value, props.label, props.labelKind, depth.value],
+  resetSignature,
   () => {
     expanded.value = initialExpanded.value;
   }

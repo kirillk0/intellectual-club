@@ -20,7 +20,10 @@
     <div v-if="showRawText" class="code-block json-viewer-raw">{{ serializedJson || 'null' }}</div>
 
     <div class="code-block json-viewer-body">
-      <JsonTreeNode :value="normalizedValue" />
+      <JsonTreeNode
+        :value="normalizedValue"
+        :preserve-expanded-on-value-change="preserveExpandedOnValueChange"
+      />
     </div>
   </div>
 </template>
@@ -33,12 +36,16 @@ import JsonTreeNode from '@/components/chat/JsonTreeNode.vue';
 interface Props {
   value?: unknown;
   downloadFilename?: string;
+  preserveExpandedOnValueChange?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   value: null,
   downloadFilename: 'payload.json',
+  preserveExpandedOnValueChange: false,
 });
+
+const preserveExpandedOnValueChange = computed(() => Boolean(props.preserveExpandedOnValueChange));
 
 const normalizedValue = computed(() => (props.value === undefined ? null : props.value));
 
