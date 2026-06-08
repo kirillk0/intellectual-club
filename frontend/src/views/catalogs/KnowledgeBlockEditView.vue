@@ -176,10 +176,9 @@
                   'knowledge-block-content-editor__textarea',
                   !form.content && 'knowledge-block-content-editor__textarea--empty',
                 ]"
-                rows="14"
                 placeholder="Write the knowledge block content..."
                 spellcheck="false"
-                @input="errors.clearField('content')"
+                @input="handleContentEditorInput"
                 @scroll="syncContentEditorScroll"
               ></textarea>
             </div>
@@ -359,7 +358,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, toRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
@@ -627,6 +626,7 @@ watch(
       contentTextareaRef.value.scrollTop = 0;
       contentTextareaRef.value.scrollLeft = 0;
     }
+    resizeContentEditorSoon();
   }
 );
 
@@ -786,6 +786,8 @@ const contentTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const visualTextareaRef = ref<HTMLTextAreaElement | HTMLTextAreaElement[] | null>(null);
 const contentScrollTop = ref(0);
 const contentScrollLeft = ref(0);
+let contentResizeRafId: number | null = null;
+let contentResizeTimeoutId: number | null = null;
 
 type ActiveVisualEdit = {
   kind: 'markdown' | 'comment';
@@ -1049,6 +1051,9 @@ async function openCodeAtBlock(block: KnowledgeBlockMarkdownBlock) {
 
 watch(blockTab, (tab) => {
   if (tab !== 'visual') finishVisualEditing();
+  if (tab === 'code') {
+    void nextTick(() => resizeContentEditorSoon());
+  }
 });
 
 function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: number) {
@@ -1057,7 +1062,8 @@ function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: num
     if (document.activeElement !== textarea) return;
     if (textarea.selectionStart !== position || textarea.selectionEnd !== position) return;
 
-    applyCodeEditorScroll(textarea, getTextareaScrollTopForPosition(textarea, position));
+    resizeContentEditorTextarea(textarea);
+    scrollPageToCodeEditorPosition(textarea, position);
   };
 
   applyScroll();
@@ -1070,16 +1076,19 @@ function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: num
   window.setTimeout(applyScroll, 640);
 }
 
-function applyCodeEditorScroll(textarea: HTMLTextAreaElement, scrollTop: number) {
-  textarea.scrollTop = scrollTop;
-  contentScrollTop.value = textarea.scrollTop;
-  contentScrollLeft.value = textarea.scrollLeft;
-}
-
-function getTextareaScrollTopForPosition(textarea: HTMLTextAreaElement, position: number) {
+function scrollPageToCodeEditorPosition(textarea: HTMLTextAreaElement, position: number) {
   const targetTop = measureTextareaPositionTop(textarea, position) ?? estimateTextareaPositionTop(textarea, position);
-  const maxScrollTop = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
-  return Math.max(0, Math.min(maxScrollTop, targetTop - textarea.clientHeight * 0.35));
+  const rect = textarea.getBoundingClientRect();
+  const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
+  const headerHeight = getAppHeaderHeight();
+  const targetPageTop = window.scrollY + rect.top + targetTop;
+  const viewportOffset = Math.max(80, (viewportHeight - headerHeight) * 0.35);
+
+  window.scrollTo({
+    top: Math.max(0, targetPageTop - headerHeight - viewportOffset),
+    left: window.scrollX,
+    behavior: 'auto',
+  });
 }
 
 function estimateTextareaPositionTop(textarea: HTMLTextAreaElement, position: number) {
@@ -1147,6 +1156,12 @@ function getResolvedLineHeight(style: CSSStyleDeclaration, fontSize: number) {
   return Number.parseFloat(style.lineHeight) || fontSize * 1.5;
 }
 
+function getAppHeaderHeight() {
+  const raw = window.getComputedStyle(document.documentElement).getPropertyValue('--app-header-height');
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
@@ -1178,6 +1193,101 @@ function syncContentEditorScroll(event: Event) {
   contentScrollTop.value = target.scrollTop;
   contentScrollLeft.value = target.scrollLeft;
 }
+
+function handleContentEditorInput(event: Event) {
+  errors.clearField('content');
+
+  const target = event.target as HTMLTextAreaElement | null;
+  if (!target) return;
+
+  resizeContentEditorSoon(target);
+  syncContentEditorScroll(event);
+}
+
+function resizeContentEditorSoon(textarea?: HTMLTextAreaElement | null) {
+  const resize = () => {
+    const element = textarea && document.body.contains(textarea) ? textarea : contentTextareaRef.value;
+    if (!element) return;
+
+    resizeContentEditorTextarea(element);
+  };
+
+  resize();
+
+  if (contentResizeRafId !== null) {
+    window.cancelAnimationFrame(contentResizeRafId);
+  }
+
+  contentResizeRafId = window.requestAnimationFrame(() => {
+    contentResizeRafId = null;
+    resize();
+    window.requestAnimationFrame(resize);
+  });
+
+  if (contentResizeTimeoutId !== null) {
+    window.clearTimeout(contentResizeTimeoutId);
+  }
+
+  contentResizeTimeoutId = window.setTimeout(() => {
+    contentResizeTimeoutId = null;
+    resize();
+  }, 120);
+}
+
+function resizeContentEditorTextarea(textarea: HTMLTextAreaElement) {
+  const style = window.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(style.fontSize) || 14;
+  const lineHeight = getResolvedLineHeight(style, fontSize);
+  const paddingY = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+  const borderY = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+  const cssMinHeight = Number.parseFloat(style.minHeight) || 0;
+  const minHeight = Math.ceil(Math.max(cssMinHeight, lineHeight + paddingY + borderY));
+  const previousScrollLeft = textarea.scrollLeft;
+
+  textarea.style.height = 'auto';
+
+  const contentHeight = textarea.scrollHeight + (style.boxSizing === 'border-box' ? borderY : 0);
+  const nextHeight = Math.ceil(Math.max(minHeight, contentHeight));
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = 'hidden';
+  textarea.scrollTop = 0;
+  textarea.scrollLeft = previousScrollLeft;
+  contentScrollTop.value = 0;
+  contentScrollLeft.value = textarea.scrollLeft;
+}
+
+function handleContentEditorViewportResize() {
+  if (blockTab.value !== 'code') return;
+  resizeContentEditorSoon();
+}
+
+watch(
+  () => form.content,
+  () => {
+    if (blockTab.value !== 'code') return;
+    void nextTick(() => resizeContentEditorSoon());
+  },
+  { flush: 'post' }
+);
+
+onMounted(() => {
+  window.addEventListener('resize', handleContentEditorViewportResize);
+});
+
+onBeforeUnmount(() => {
+  if (contentResizeRafId !== null) {
+    window.cancelAnimationFrame(contentResizeRafId);
+    contentResizeRafId = null;
+  }
+
+  if (contentResizeTimeoutId !== null) {
+    window.clearTimeout(contentResizeTimeoutId);
+    contentResizeTimeoutId = null;
+  }
+
+  window.removeEventListener('resize', handleContentEditorViewportResize);
+});
 
 type VarRow = { key: string; value: string };
 
@@ -1792,6 +1902,7 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
 }
 
 .knowledge-block-content-editor__textarea {
+  display: block;
   position: relative;
   z-index: 1;
   border: 0;
@@ -1801,8 +1912,13 @@ const isPendingAttachment = isPendingKnowledgeBlockFile;
   text-shadow: 0 0 0 var(--color-text);
   caret-color: var(--color-text);
   -webkit-text-fill-color: transparent;
-  resize: vertical;
   min-height: 280px;
+  overflow-y: hidden;
+  overflow-anchor: none;
+  resize: none;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .knowledge-block-content-editor__textarea:focus {
