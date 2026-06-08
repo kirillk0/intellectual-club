@@ -28,7 +28,7 @@ type Params = {
   toggleMenu: () => void;
   closeMenu: () => void;
   stackOpen: (payload: { path: string; query?: Record<string, string> }) => void;
-  pushRoute: (path: string) => Promise<unknown>;
+  pushRoute: (path: string, query?: Record<string, string>) => Promise<unknown>;
   reloadChat: () => Promise<void>;
   refreshPromptContext: () => Promise<void>;
 };
@@ -316,7 +316,7 @@ export function useChatHeaderControls(params: Params) {
       const id = payload.chat?.id;
       if (!id) throw new Error('Missing chat id');
       newChatModalOpen.value = false;
-      await params.pushRoute(`/chats/${id}`);
+      await params.pushRoute(`/chats/${id}`, { focusComposer: '1' });
     } finally {
       creatingChat.value = false;
     }

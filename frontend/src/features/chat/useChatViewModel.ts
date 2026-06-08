@@ -86,9 +86,9 @@ export function useChatViewModel() {
   const stack = useNavigationStack();
   const chatId = computed(() => Number(route.params.id));
   const chatsReturnTarget = computed(() => readChatListReturnTarget(route.query.returnTo));
-  const chatRouteTarget = (id: number) => ({
+  const chatRouteTarget = (id: number, query: Record<string, string> = {}) => ({
     path: `/chats/${id}`,
-    query: { returnTo: chatsReturnTarget.value },
+    query: { returnTo: chatsReturnTarget.value, ...query },
   });
 
   const ui = useChatUiChrome();
@@ -183,10 +183,12 @@ export function useChatViewModel() {
     toggleMenu: ui.toggleMenu,
     closeMenu: ui.closeMenu,
     stackOpen: stackNav.open,
-    pushRoute: (path) => {
+    pushRoute: (path, query = {}) => {
       if (path === '/') return router.push(chatsReturnTarget.value);
-      if (path.startsWith('/chats/')) return router.push({ path, query: { returnTo: chatsReturnTarget.value } });
-      return router.push(path);
+      if (path.startsWith('/chats/')) {
+        return router.push({ path, query: { returnTo: chatsReturnTarget.value, ...query } });
+      }
+      return Object.keys(query).length ? router.push({ path, query }) : router.push(path);
     },
     reloadChat: () => loadChat({ mode: 'soft' }),
     refreshPromptContext: () => refreshPromptContextFromServer(),
@@ -577,7 +579,7 @@ export function useChatViewModel() {
       const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chats/${chatId.value}/continue`, {});
       const nextId = payload.chat?.id;
       if (!nextId) throw new Error('Missing chat id');
-      await router.push(chatRouteTarget(nextId));
+      await router.push(chatRouteTarget(nextId, { focusComposer: '1' }));
     } catch (error) {
       console.error(error);
       window.alert(getApiErrorMessage(error, 'Failed to continue conversation.'));

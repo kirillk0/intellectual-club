@@ -1170,7 +1170,10 @@ async function createChat(selectedBotId: number | '' = '') {
     const id = payload.chat?.id;
     if (!id) throw new Error('Missing chat id');
     botModalOpen.value = false;
-    await router.push({ path: `/chats/${id}`, query: { returnTo: route.fullPath || '/chats' } });
+    await router.push({
+      path: `/chats/${id}`,
+      query: { returnTo: route.fullPath || '/chats', focusComposer: '1' },
+    });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create chat.';
   } finally {

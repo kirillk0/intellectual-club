@@ -264,6 +264,7 @@
             </div>
             <div class="chat-composer">
               <textarea
+                ref="composerTextareaRef"
                 class="chat-composer__textarea"
                 v-model="vm.draft"
                 placeholder="Type your message"
@@ -529,6 +530,7 @@
 
 <script setup lang="ts">
 import { nextTick, reactive, ref, Teleport, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -557,6 +559,44 @@ import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import type { ChatRelationSummary } from '@/types/api';
 
 const vm = reactive(useChatViewModel());
+const route = useRoute();
+const router = useRouter();
+const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
+
+const FOCUS_COMPOSER_QUERY_PARAM = 'focusComposer';
+
+function isFocusComposerQueryEnabled(value: unknown) {
+  if (Array.isArray(value)) return value.some(isFocusComposerQueryEnabled);
+  return value === '1' || value === 'true';
+}
+
+async function clearFocusComposerQuery() {
+  const query = { ...route.query };
+  delete query[FOCUS_COMPOSER_QUERY_PARAM];
+  await router.replace({ path: route.path, query, hash: route.hash }).catch(() => {});
+}
+
+async function focusComposerFromRouteQuery() {
+  if (!isFocusComposerQueryEnabled(route.query[FOCUS_COMPOSER_QUERY_PARAM])) return;
+  if (!vm.loaded || !vm.chat || vm.sharedReadonly) return;
+
+  await nextTick();
+  composerTextareaRef.value?.focus({ preventScroll: true });
+  await clearFocusComposerQuery();
+}
+
+watch(
+  () => [
+    route.query[FOCUS_COMPOSER_QUERY_PARAM],
+    vm.loaded,
+    vm.chat?.id,
+    vm.sharedReadonly,
+  ],
+  () => {
+    void focusComposerFromRouteQuery();
+  },
+  { immediate: true }
+);
 
 const getContextGridStyle = (): Record<string, string> => (vm.isMobile ? {} : { gridColumn: '1' });
 
