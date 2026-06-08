@@ -54,7 +54,9 @@
             ]"
             :value="activeVisualEdit?.value || ''"
             spellcheck="false"
+            @beforeinput="captureVisualInputScroll"
             @input="updateActiveVisualBlock"
+            @keydown="captureVisualInputScroll"
             @keydown.escape.prevent="finishVisualEditing"
             @keydown.ctrl.enter.prevent="finishVisualEditing"
             @keydown.meta.enter.prevent="finishVisualEditing"
@@ -124,6 +126,7 @@ type ScrollSnapshot = {
 const visualTextareaRef = ref<HTMLTextAreaElement | HTMLTextAreaElement[] | null>(null);
 const activeVisualEdit = ref<ActiveVisualEdit | null>(null);
 const visualBlocks = computed(() => parseKnowledgeBlockMarkdownBlocks(props.content));
+let visualInputScrollSnapshot: ScrollSnapshot | null = null;
 
 function trailingLineBreaks(source: string) {
   return source.match(/(?:\r\n|\n|\r)+$/u)?.[0] || '';
@@ -214,11 +217,25 @@ function handleVisualBlockKeydown(block: KnowledgeBlockMarkdownBlock, event: Key
   void startVisualEdit(block, event.currentTarget as HTMLElement | null);
 }
 
+function captureVisualInputScroll(event: Event) {
+  const target = event.target as HTMLTextAreaElement | null;
+  if (!target) return;
+  if (event instanceof KeyboardEvent && !isTextEditingKey(event)) return;
+  visualInputScrollSnapshot = captureScrollSnapshot(target);
+}
+
+function isTextEditingKey(event: KeyboardEvent) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  return event.key.length === 1 || event.key === 'Enter' || event.key === 'Backspace' || event.key === 'Delete';
+}
+
 function updateActiveVisualBlock(event: Event) {
   const active = activeVisualEdit.value;
   const target = event.target as HTMLTextAreaElement | null;
   if (!active || !target) return;
 
+  const scrollSnapshot = visualInputScrollSnapshot ?? captureScrollSnapshot(target);
+  visualInputScrollSnapshot = null;
   const nextValue = target.value;
   let nextSource = active.kind === 'comment' ? commentSourceFromBody(nextValue) : nextValue;
   const currentContent = props.content;
@@ -240,7 +257,7 @@ function updateActiveVisualBlock(event: Event) {
     end: active.start + nextSource.length,
     value: nextValue,
   };
-  resizeVisualTextareaSoon(target);
+  resizeVisualTextareaSoon(target, scrollSnapshot);
 }
 
 function finishVisualEditing() {
@@ -263,6 +280,17 @@ function resizeVisualTextareaSoon(textarea?: HTMLTextAreaElement | null, scrollS
   const resize = () => {
     const element = textarea && document.body.contains(textarea) ? textarea : getVisualTextareaElement();
     if (!element) return;
+    if (
+      scrollSnapshot &&
+      document.activeElement === element &&
+      initialSelectionStart !== null &&
+      initialSelectionStart !== undefined &&
+      initialSelectionEnd !== null &&
+      initialSelectionEnd !== undefined &&
+      (element.selectionStart !== initialSelectionStart || element.selectionEnd !== initialSelectionEnd)
+    ) {
+      return;
+    }
 
     resizeVisualTextarea(element);
     if (
@@ -292,6 +320,9 @@ function resizeVisualTextarea(textarea: HTMLTextAreaElement) {
   const minHeight = Math.ceil(lineHeight + paddingY + borderY);
   const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
   const maxHeight = Math.max(minHeight, Math.min(720, viewportHeight * 0.68));
+  const previousScrollTop = textarea.scrollTop;
+  const previousScrollLeft = textarea.scrollLeft;
+  const scrollSnapshot = document.activeElement === textarea ? captureScrollSnapshot(textarea) : null;
 
   textarea.style.height = 'auto';
 
@@ -300,6 +331,10 @@ function resizeVisualTextarea(textarea: HTMLTextAreaElement) {
 
   textarea.style.height = `${nextHeight}px`;
   textarea.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+  textarea.scrollTop = Math.min(previousScrollTop, Math.max(0, textarea.scrollHeight - textarea.clientHeight));
+  textarea.scrollLeft = previousScrollLeft;
+
+  if (scrollSnapshot) restoreScrollSnapshot(scrollSnapshot);
 }
 
 function focusVisualTextarea(textarea: HTMLTextAreaElement, scrollSnapshot: ScrollSnapshot) {
@@ -576,4 +611,3 @@ defineExpose({
   max-width: 100%;
 }
 </style>
-

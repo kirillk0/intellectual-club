@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 
 import { COMMENT_PREFIX } from '@/features/catalogs/model/knowledgeBlockMarkdownBlocks';
 
@@ -52,8 +52,6 @@ const emit = defineEmits<{
 const contentTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const contentScrollTop = ref(0);
 const contentScrollLeft = ref(0);
-let contentResizeRafId: number | null = null;
-let contentResizeTimeoutId: number | null = null;
 
 function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -83,8 +81,7 @@ const contentMirrorStyle = computed(() => ({
 function syncContentEditorScroll(event: Event) {
   const target = event.target as HTMLTextAreaElement | null;
   if (!target) return;
-  contentScrollTop.value = target.scrollTop;
-  contentScrollLeft.value = target.scrollLeft;
+  syncContentEditorScrollFromTextarea(target);
 }
 
 function handleContentEditorInput(event: Event) {
@@ -94,65 +91,12 @@ function handleContentEditorInput(event: Event) {
   if (!target) return;
 
   emit('update:content', target.value);
-  resizeContentEditorSoon(target);
   syncContentEditorScroll(event);
 }
 
-function resizeContentEditorSoon(textarea?: HTMLTextAreaElement | null) {
-  const resize = () => {
-    const element = textarea && document.body.contains(textarea) ? textarea : contentTextareaRef.value;
-    if (!element) return;
-
-    resizeContentEditorTextarea(element);
-  };
-
-  resize();
-
-  if (contentResizeRafId !== null) {
-    window.cancelAnimationFrame(contentResizeRafId);
-  }
-
-  contentResizeRafId = window.requestAnimationFrame(() => {
-    contentResizeRafId = null;
-    resize();
-    window.requestAnimationFrame(resize);
-  });
-
-  if (contentResizeTimeoutId !== null) {
-    window.clearTimeout(contentResizeTimeoutId);
-  }
-
-  contentResizeTimeoutId = window.setTimeout(() => {
-    contentResizeTimeoutId = null;
-    resize();
-  }, 120);
-}
-
-function resizeContentEditorTextarea(textarea: HTMLTextAreaElement) {
-  const style = window.getComputedStyle(textarea);
-  const fontSize = Number.parseFloat(style.fontSize) || 14;
-  const lineHeight = getResolvedLineHeight(style, fontSize);
-  const paddingY = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
-  const borderY = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
-  const cssMinHeight = Number.parseFloat(style.minHeight) || 0;
-  const minHeight = Math.ceil(Math.max(cssMinHeight, lineHeight + paddingY + borderY));
-  const previousScrollLeft = textarea.scrollLeft;
-
-  textarea.style.height = 'auto';
-
-  const contentHeight = textarea.scrollHeight + (style.boxSizing === 'border-box' ? borderY : 0);
-  const nextHeight = Math.ceil(Math.max(minHeight, contentHeight));
-
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = 'hidden';
-  textarea.scrollTop = 0;
-  textarea.scrollLeft = previousScrollLeft;
-  contentScrollTop.value = 0;
+function syncContentEditorScrollFromTextarea(textarea: HTMLTextAreaElement) {
+  contentScrollTop.value = textarea.scrollTop;
   contentScrollLeft.value = textarea.scrollLeft;
-}
-
-function handleContentEditorViewportResize() {
-  resizeContentEditorSoon();
 }
 
 function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: number) {
@@ -161,8 +105,8 @@ function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: num
     if (document.activeElement !== textarea) return;
     if (textarea.selectionStart !== position || textarea.selectionEnd !== position) return;
 
-    resizeContentEditorTextarea(textarea);
-    scrollPageToCodeEditorPosition(textarea, position);
+    scrollTextareaToPosition(textarea, position);
+    scrollCodeEditorIntoView(textarea);
   };
 
   applyScroll();
@@ -175,16 +119,33 @@ function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: num
   window.setTimeout(applyScroll, 640);
 }
 
-function scrollPageToCodeEditorPosition(textarea: HTMLTextAreaElement, position: number) {
+function scrollTextareaToPosition(textarea: HTMLTextAreaElement, position: number) {
   const targetTop = measureTextareaPositionTop(textarea, position) ?? estimateTextareaPositionTop(textarea, position);
+  const viewportOffset = Math.max(24, textarea.clientHeight * 0.35);
+  const maxScrollTop = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+
+  textarea.scrollTop = Math.max(0, Math.min(maxScrollTop, targetTop - viewportOffset));
+  syncContentEditorScrollFromTextarea(textarea);
+}
+
+function scrollCodeEditorIntoView(textarea: HTMLTextAreaElement) {
   const rect = textarea.getBoundingClientRect();
   const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
   const headerHeight = getAppHeaderHeight();
-  const targetPageTop = window.scrollY + rect.top + targetTop;
-  const viewportOffset = Math.max(80, (viewportHeight - headerHeight) * 0.35);
+  const topLimit = headerHeight + 16;
+  const bottomLimit = viewportHeight - 24;
+  let nextTop: number | null = null;
+
+  if (rect.top < topLimit) {
+    nextTop = window.scrollY + rect.top - topLimit;
+  } else if (rect.bottom > bottomLimit) {
+    nextTop = window.scrollY + rect.bottom - bottomLimit;
+  }
+
+  if (nextTop === null) return;
 
   window.scrollTo({
-    top: Math.max(0, targetPageTop - headerHeight - viewportOffset),
+    top: Math.max(0, nextTop),
     left: window.scrollX,
     behavior: 'auto',
   });
@@ -279,35 +240,8 @@ function resetScroll() {
   if (!textarea) return;
   textarea.scrollTop = 0;
   textarea.scrollLeft = 0;
-  resizeContentEditorSoon(textarea);
+  syncContentEditorScrollFromTextarea(textarea);
 }
-
-watch(
-  () => props.content,
-  () => {
-    void nextTick(() => resizeContentEditorSoon());
-  },
-  { flush: 'post' }
-);
-
-onMounted(() => {
-  window.addEventListener('resize', handleContentEditorViewportResize);
-  resizeContentEditorSoon();
-});
-
-onBeforeUnmount(() => {
-  if (contentResizeRafId !== null) {
-    window.cancelAnimationFrame(contentResizeRafId);
-    contentResizeRafId = null;
-  }
-
-  if (contentResizeTimeoutId !== null) {
-    window.clearTimeout(contentResizeTimeoutId);
-    contentResizeTimeoutId = null;
-  }
-
-  window.removeEventListener('resize', handleContentEditorViewportResize);
-});
 
 defineExpose({
   focusAtPosition,
@@ -318,6 +252,7 @@ defineExpose({
 <style scoped>
 .knowledge-block-content-editor {
   position: relative;
+  height: clamp(360px, calc(var(--app-vh, 1vh) * 68), 640px);
   border: 1px solid var(--color-border-strong);
   border-radius: 6px;
   background: var(--color-surface);
@@ -362,9 +297,12 @@ defineExpose({
   text-shadow: 0 0 0 var(--color-text);
   caret-color: var(--color-text);
   -webkit-text-fill-color: transparent;
-  min-height: 280px;
-  overflow-y: hidden;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
   overflow-anchor: none;
+  overscroll-behavior: contain;
   resize: none;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -405,4 +343,3 @@ defineExpose({
   color: transparent;
 }
 </style>
-
