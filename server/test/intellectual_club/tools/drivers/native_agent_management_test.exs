@@ -11,14 +11,24 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
   require Ash.Query
 
-  test "exposes fixed handoff function" do
+  test "exposes fixed management functions" do
     %{user: actor} = user_fixture()
     tool_instance = create_tool_instance!(actor)
 
     functions = NativeAgentManagement.fixed_functions(tool_instance)
 
-    assert [%{"name" => "handoff", "schema" => schema}] = functions
-    assert schema["required"] == ["summary"]
+    assert Enum.map(functions, & &1["name"]) == ["handoff", "sleep"]
+
+    assert %{"schema" => handoff_schema} =
+             Enum.find(functions, &(&1["name"] == "handoff"))
+
+    assert handoff_schema["required"] == ["summary"]
+
+    assert %{"schema" => sleep_schema} =
+             Enum.find(functions, &(&1["name"] == "sleep"))
+
+    assert sleep_schema["required"] == ["seconds"]
+    assert sleep_schema["properties"]["seconds"]["type"] == "number"
   end
 
   test "handoff creates child chat and starts generation" do
@@ -76,6 +86,37 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     assert {:error, "Handoff requires generation execution context."} =
              NativeAgentManagement.execute(tool_instance, "handoff", %{"summary" => "ok"}, nil)
+  end
+
+  test "sleep pauses without execution context" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok, %ExecutionResult{} = result} =
+             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.02}, nil)
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms >= 15
+    assert result.text == "Paused for 0.02 seconds."
+    assert result.raw["sleep"]["seconds"] == 0.02
+    assert result.raw["sleep"]["milliseconds"] == 20
+  end
+
+  test "sleep validates duration" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    assert {:error, message} =
+             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => -1}, nil)
+
+    assert String.contains?(message, "seconds")
+
+    assert {:error, message} =
+             NativeAgentManagement.execute(tool_instance, "sleep", %{}, nil)
+
+    assert String.contains?(message, "seconds")
   end
 
   defp create_chat!(actor, title) do

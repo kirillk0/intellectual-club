@@ -72,6 +72,26 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "additionalProperties" => false
         },
         "enabled" => true
+      },
+      %{
+        "name" => "sleep",
+        "description" =>
+          "Pause agent execution for the requested number of seconds before continuing. " <>
+            "Use this when waiting for time to pass.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "seconds" => %{
+              "type" => "number",
+              "description" =>
+                "Non-negative pause duration in seconds. Fractional seconds are allowed.",
+              "minimum" => 0
+            }
+          },
+          "required" => ["seconds"],
+          "additionalProperties" => false
+        },
+        "enabled" => true
       }
     ]
   end
@@ -124,6 +144,26 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     {:error, "Handoff requires generation execution context."}
   end
 
+  def execute(%ToolInstance{} = _tool_instance, "sleep", args, _context) when is_map(args) do
+    with {:ok, seconds, timeout_ms} <- read_sleep_seconds(args) do
+      Process.sleep(timeout_ms)
+
+      {:ok,
+       %ExecutionResult{
+         text: "Paused for #{format_seconds(seconds)}.",
+         raw: %{"sleep" => %{"seconds" => seconds, "milliseconds" => timeout_ms}},
+         media: [],
+         artifacts: []
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "sleep", _args, _context) do
+    {:error, "Sleep arguments must be an object."}
+  end
+
   def execute(%ToolInstance{} = _tool_instance, function_name, _args, _context)
       when is_binary(function_name) do
     {:error, "Unknown function: #{function_name}"}
@@ -143,6 +183,26 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   defp required_integer(value, _field) when is_integer(value) and value > 0, do: {:ok, value}
 
   defp required_integer(_value, field), do: {:error, "#{field} is required"}
+
+  defp read_sleep_seconds(args) when is_map(args) do
+    case Map.get(args, "seconds", Map.get(args, :seconds)) do
+      value when is_integer(value) and value >= 0 ->
+        {:ok, value, value * 1000}
+
+      value when is_float(value) and value >= 0 ->
+        milliseconds = value |> Kernel.*(1000) |> Float.ceil() |> trunc()
+        {:ok, value, milliseconds}
+
+      _other ->
+        {:error, "Argument `seconds` must be a non-negative number."}
+    end
+  end
+
+  defp format_seconds(seconds) when is_integer(seconds), do: "#{seconds} seconds"
+
+  defp format_seconds(seconds) when is_float(seconds) do
+    "#{:erlang.float_to_binary(seconds, [:compact, decimals: 6])} seconds"
+  end
 
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(reason) when is_atom(reason), do: Atom.to_string(reason)

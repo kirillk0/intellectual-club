@@ -69,7 +69,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert by_type["native-web-reader"] == false
   end
 
-  test "driver metadata exposes fixed handoff function" do
+  test "driver metadata exposes fixed agent management functions" do
     metadata = DriverMetadata.for_type("native-agent-management")
 
     assert metadata["functions_mode"] == "fixed"
@@ -82,5 +82,11 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
     assert schema["required"] == ["summary"]
     assert schema["properties"]["summary"]["type"] == "string"
+
+    assert %{"parameters_schema" => schema} =
+             Enum.find(metadata["fixed_functions"], &(&1["name"] == "sleep"))
+
+    assert schema["required"] == ["seconds"]
+    assert schema["properties"]["seconds"]["type"] == "number"
   end
 end
