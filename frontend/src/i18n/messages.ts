@@ -1,6 +1,8 @@
 export const ruMessages: Record<string, string> = {
   '. Use Advanced JSON editor below.': '. Используйте расширенный JSON-редактор ниже.',
   '(disabled)': '(отключено)',
+  '(calculated on save)': '(рассчитывается при сохранении)',
+  '(generated on save)': '(генерируется при сохранении)',
   '+ Add variable': '+ Добавить переменную',
   '< previous': '< предыдущая',
   '<< first': '<< первая',
