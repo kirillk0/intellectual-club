@@ -21,7 +21,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Registry, as: ToolRegistry
 
-  @default_auto_retry_backoff_ms [500, 1_500, 5_000, 5_000, 5_000, 5_000, 5_000]
+  @default_auto_retry_backoff_ms [500, 1_500, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000]
   @default_auto_retry_jitter_ratio 0.2
   @auto_retry_http_status_codes MapSet.new([429, 502, 503])
   @auto_retry_error_kinds MapSet.new(["network", "timeout", "transport"])
@@ -154,7 +154,7 @@ defmodule IntellectualClub.Generation.Worker do
       context: context,
       adapter: adapter,
       status: :generating,
-      step_attempt: 1,
+      step_attempt: initial_step_attempt(context, initial_step_sequence),
       step_sequence: initial_step_sequence,
       tool_round: 0,
       refusal_round: 0,
@@ -512,9 +512,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp durable_waiting_tools_step?(_runtime_step), do: false
 
   defp maybe_retry_current_step(state, meta) when is_map(meta) do
-    max_retries = auto_retry_max_retries()
-
-    if retryable_provider_error?(meta) and state.step_attempt <= max_retries do
+    if retryable_provider_error?(meta) do
       attempt = state.step_attempt
       delay_ms = backoff_delay_ms(attempt)
       status_code = status_code_from_meta(meta)
@@ -523,7 +521,7 @@ defmodule IntellectualClub.Generation.Worker do
 
       Logger.warning(
         "generation step auto-retry message_id=#{state.context.message_id} " <>
-          "step_id=#{inspect(step_id)} attempt=#{attempt} max_retries=#{max_retries} " <>
+          "step_id=#{inspect(step_id)} attempt=#{attempt} " <>
           "status_code=#{inspect(status_code)} delay_ms=#{delay_ms}"
       )
 
@@ -621,18 +619,6 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp retryable_provider_error?(_meta), do: false
 
-  defp auto_retry_max_retries do
-    configured = Application.get_env(:intellectual_club, :generation_auto_retry_max_retries)
-
-    cond do
-      is_integer(configured) and configured >= 0 ->
-        configured
-
-      true ->
-        auto_retry_backoff_values() |> length()
-    end
-  end
-
   defp auto_retry_backoff_values do
     configured = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
 
@@ -660,6 +646,16 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp backoff_delay_ms(_attempt), do: 0
+
+  defp initial_step_attempt(context, initial_step_sequence)
+       when is_map(context) and is_integer(initial_step_sequence) and initial_step_sequence > 1 do
+    case Persistence.retry_attempt_before_step!(context.message_id, initial_step_sequence) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
+      _other -> 1
+    end
+  end
+
+  defp initial_step_attempt(_context, _initial_step_sequence), do: 1
 
   defp add_retry_jitter(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
     jitter_limit = round(delay_ms * auto_retry_jitter_ratio())

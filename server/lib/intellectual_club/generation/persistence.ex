@@ -379,6 +379,23 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
+  def retry_attempt_before_step!(message_id, step_sequence)
+      when is_integer(message_id) and is_integer(step_sequence) and step_sequence > 1 do
+    actor = actor_for_message!(message_id)
+
+    case get_step_by_sequence(message_id, step_sequence - 1, actor) do
+      %ChatMessageStep{} = step ->
+        step
+        |> load_step_with_items!(actor)
+        |> retry_attempt_from_step()
+
+      nil ->
+        nil
+    end
+  end
+
+  def retry_attempt_before_step!(_message_id, _step_sequence), do: nil
+
   def mark_step_done!(step_id) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
     now = DateTime.utc_now()
@@ -880,6 +897,32 @@ defmodule IntellectualClub.Generation.Persistence do
   defp maybe_put_metadata(map, _key, nil), do: map
   defp maybe_put_metadata(map, _key, value) when is_binary(value) and value == "", do: map
   defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
+
+  defp retry_attempt_from_step(%ChatMessageStep{} = step) do
+    step.items
+    |> List.wrap()
+    |> ordered_by_sequence()
+    |> Enum.filter(&(&1.type == :error))
+    |> Enum.flat_map(fn item ->
+      item.contents
+      |> List.wrap()
+      |> ordered_by_sequence()
+      |> Enum.filter(&(&1.kind == :opaque))
+      |> Enum.map(&Map.get(&1, :content_json))
+    end)
+    |> Enum.find_value(&retry_attempt_from_metadata/1)
+  end
+
+  defp retry_attempt_from_metadata(%{} = metadata) do
+    if Map.get(metadata, "retryable") == true do
+      case Map.get(metadata, "attempt") do
+        attempt when is_integer(attempt) and attempt > 0 -> attempt
+        _other -> nil
+      end
+    end
+  end
+
+  defp retry_attempt_from_metadata(_metadata), do: nil
 
   defp create_contents!(%ChatMessageItem{} = item, contents, actor) when is_list(contents) do
     contents
