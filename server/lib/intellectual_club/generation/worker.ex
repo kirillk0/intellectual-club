@@ -252,6 +252,7 @@ defmodule IntellectualClub.Generation.Worker do
         retryable:
           is_integer(status_code) and MapSet.member?(@auto_retry_http_status_codes, status_code),
         error_kind: "provider",
+        error_text: error_text,
         raw_request: runtime_step.raw_request || %{},
         raw_response: raw_response
       }
@@ -518,6 +519,7 @@ defmodule IntellectualClub.Generation.Worker do
       delay_ms = backoff_delay_ms(attempt)
       status_code = status_code_from_meta(meta)
       step_id = state.runtime_step.id
+      error_text = error_text_from_meta(meta)
 
       Logger.warning(
         "generation step auto-retry message_id=#{state.context.message_id} " <>
@@ -525,7 +527,7 @@ defmodule IntellectualClub.Generation.Worker do
           "status_code=#{inspect(status_code)} delay_ms=#{delay_ms}"
       )
 
-      case rollback_and_restart_current_step(state) do
+      case persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
         {:ok, state} ->
           timer_ref = Process.send_after(self(), :retry_current_step, delay_ms)
 
@@ -534,7 +536,7 @@ defmodule IntellectualClub.Generation.Worker do
 
         {:error, reason} ->
           Logger.warning(
-            "generation step auto-retry rollback failed message_id=#{state.context.message_id} " <>
+            "generation step auto-retry persistence failed message_id=#{state.context.message_id} " <>
               "step_sequence=#{state.step_sequence} reason=#{inspect(reason)}"
           )
 
@@ -547,32 +549,41 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp maybe_retry_current_step(_state, _meta), do: :no_retry
 
-  defp rollback_and_restart_current_step(state) do
+  defp persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
     try do
-      :ok =
-        Persistence.rollback_last_step_for_retry!(state.context.message_id, state.step_sequence)
-
-      started_at = DateTime.utc_now()
       raw_request = state.runtime_step.raw_request || %{}
 
-      step_id =
-        Persistence.ensure_step_started!(
+      retry_step =
+        Persistence.persist_retry_error_and_start_next_step!(
           state.context.message_id,
-          state.step_sequence,
+          state.runtime_step.id,
           raw_request,
-          started_at: started_at
+          error_text,
+          attempt: attempt,
+          retry_delay_ms: delay_ms,
+          status_code: status_code_from_meta(meta),
+          error_kind: string_value(meta, :error_kind),
+          retryable: true
         )
 
       runtime_step =
         RuntimeTrace.new_step(
-          id: step_id,
-          sequence: state.step_sequence,
-          started_at: started_at,
+          id: retry_step.step_id,
+          sequence: retry_step.step_sequence,
+          started_at: retry_step.started_at,
           status: :waiting_provider,
-          raw_request: raw_request
+          raw_request: retry_step.raw_request || raw_request
         )
 
-      {:ok, %{state | runtime_step: runtime_step}}
+      context = %{state.context | step_id: retry_step.step_id}
+
+      {:ok,
+       %{
+         state
+         | context: context,
+           runtime_step: runtime_step,
+           step_sequence: retry_step.step_sequence
+       }}
     rescue
       exception ->
         {:error, exception}
@@ -581,6 +592,22 @@ defmodule IntellectualClub.Generation.Worker do
         {:error, reason}
     end
   end
+
+  defp error_text_from_meta(meta) when is_map(meta) do
+    [
+      Map.get(meta, :error_text),
+      Map.get(meta, "error_text"),
+      Map.get(meta, :message),
+      Map.get(meta, "message"),
+      "Provider error"
+    ]
+    |> Enum.find("Provider error", fn value ->
+      is_binary(value) and String.trim(value) != ""
+    end)
+    |> to_string()
+  end
+
+  defp error_text_from_meta(_meta), do: "Provider error"
 
   defp retryable_provider_error?(meta) when is_map(meta) do
     retryable_hint = bool_value(meta, :retryable)

@@ -1559,12 +1559,20 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!(actor: actor)
 
-    {:ok, _user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
+    {:ok, user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
 
-    {:ok, assistant} =
-      Threads.add_message_to_end(chat, :assistant, "",
-        actor: actor,
-        llm_configuration_id: configuration.id
+    assistant =
+      create_assistant_message!(chat, user_1, actor, llm_configuration_id: configuration.id)
+
+    retry_step = create_step!(assistant.id, 1, actor, %{status: :error})
+
+    _ =
+      create_item_with_text!(
+        retry_step.id,
+        1,
+        :error,
+        "Transient provider error on attempt 1. Retrying.\n\nTemporary network outage",
+        actor
       )
 
     step = create_step!(assistant.id, 2, actor)
@@ -1636,6 +1644,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assistant_history = Enum.at(context.messages, 1)
     refute Map.has_key?(assistant_history, "reasoning")
     refute Map.has_key?(assistant_history, "reasoning_details")
+    refute inspect(context.messages) =~ "Transient provider error"
   end
 
   test "uses missing provider adapter for provider types unavailable in the application build" do
@@ -2186,12 +2195,20 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!(actor: actor)
 
-    {:ok, _user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
+    {:ok, user_1} = Threads.add_message_to_end(chat, :user, "What's the weather?", actor: actor)
 
-    {:ok, assistant} =
-      Threads.add_message_to_end(chat, :assistant, "",
-        actor: actor,
-        llm_configuration_id: configuration.id
+    assistant =
+      create_assistant_message!(chat, user_1, actor, llm_configuration_id: configuration.id)
+
+    retry_step = create_step!(assistant.id, 1, actor, %{status: :error})
+
+    _ =
+      create_item_with_text!(
+        retry_step.id,
+        1,
+        :error,
+        "Transient provider error on attempt 1. Retrying.\n\nTemporary network outage",
+        actor
       )
 
     step = create_step!(assistant.id, 2, actor)
@@ -2251,6 +2268,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert is_list(context.messages)
     assert Enum.all?(context.messages, &is_map/1)
     refute Enum.any?(context.messages, &(Map.get(&1, "type") == "reasoning"))
+    refute inspect(context.messages) =~ "Transient provider error"
 
     assert context.messages == [
              %{

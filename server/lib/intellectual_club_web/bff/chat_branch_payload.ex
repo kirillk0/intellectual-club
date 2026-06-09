@@ -22,6 +22,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
     steps = read_steps_for_messages(message_ids, actor)
     display = read_display_payload(steps, actor)
+    retry_errors_by_message_id = read_retry_error_payload(steps, actor)
     steps_by_message_id = Enum.group_by(steps, & &1.chat_message_id)
 
     bookmarked_message_ids = Bookmarking.bookmarked_message_id_set(message_ids, actor)
@@ -34,6 +35,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
           message,
           Map.get(steps_by_message_id, message.id, []),
           display,
+          Map.get(retry_errors_by_message_id, message.id, []),
           runtime_step
         )
 
@@ -70,7 +72,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     end
   end
 
-  defp extras_for_message(%ChatMessage{} = message, steps, display, runtime_step) do
+  defp extras_for_message(%ChatMessage{} = message, steps, display, retry_errors, runtime_step) do
     steps = sort_by_sequence(steps)
     persisted_summaries = Enum.map(steps, &Serializer.working_step_summary/1)
 
@@ -86,7 +88,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     %{
       content: content,
       usage: Serializer.usage_summary(summaries),
-      working: Serializer.working_summary(summaries)
+      working: Serializer.working_summary(summaries, retry_errors)
     }
   end
 
@@ -168,6 +170,98 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       contents_by_item_id: Enum.group_by(contents, & &1.chat_message_item_id)
     }
   end
+
+  defp read_retry_error_payload([], _actor), do: %{}
+
+  defp read_retry_error_payload(steps, actor) when is_list(steps) do
+    step_by_id =
+      steps
+      |> Enum.filter(
+        &(is_integer(Map.get(&1, :id)) and is_integer(Map.get(&1, :chat_message_id)))
+      )
+      |> Map.new(&{&1.id, &1})
+
+    step_ids = Map.keys(step_by_id)
+
+    items =
+      step_ids
+      |> chunk_ids()
+      |> Enum.flat_map(fn chunk ->
+        ChatMessageItem
+        |> Ash.Query.filter(chat_message_step_id in ^chunk and type == :error)
+        |> Ash.Query.select([:id, :chat_message_step_id, :sequence, :created_at, :type])
+        |> Ash.read!(actor: actor)
+      end)
+
+    item_ids = items |> Enum.map(& &1.id) |> Enum.filter(&is_integer/1) |> Enum.uniq()
+
+    contents_by_item_id =
+      item_ids
+      |> chunk_ids()
+      |> Enum.flat_map(fn chunk ->
+        ChatMessageContent
+        |> Ash.Query.filter(chat_message_item_id in ^chunk and kind in [:text, :opaque])
+        |> Ash.Query.select([
+          :id,
+          :chat_message_item_id,
+          :sequence,
+          :kind,
+          :content_text,
+          :content_json
+        ])
+        |> Ash.read!(actor: actor)
+      end)
+      |> Enum.group_by(& &1.chat_message_item_id)
+
+    items
+    |> Enum.flat_map(fn item ->
+      step = Map.get(step_by_id, item.chat_message_step_id)
+      text = retry_error_item_text(item, contents_by_item_id)
+      metadata = retry_error_item_metadata(item, contents_by_item_id)
+
+      if is_nil(step) or String.trim(text) == "" or not retry_error_diagnostic_metadata?(metadata) do
+        []
+      else
+        [
+          %{
+            message_id: step.chat_message_id,
+            step_id: step.id,
+            step_sequence: step.sequence,
+            item_id: item.id,
+            item_sequence: item.sequence,
+            text: text,
+            created_at: item.created_at || step.created_at
+          }
+        ]
+      end
+    end)
+    |> Enum.group_by(&Map.get(&1, :message_id))
+  end
+
+  defp retry_error_item_text(%ChatMessageItem{} = item, contents_by_item_id)
+       when is_map(contents_by_item_id) do
+    contents_by_item_id
+    |> Map.get(item.id, [])
+    |> sort_by_sequence()
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.map_join("", &to_string(Map.get(&1, :content_text) || ""))
+  end
+
+  defp retry_error_item_metadata(%ChatMessageItem{} = item, contents_by_item_id)
+       when is_map(contents_by_item_id) do
+    contents_by_item_id
+    |> Map.get(item.id, [])
+    |> sort_by_sequence()
+    |> Enum.filter(&(&1.kind == :opaque))
+    |> Enum.map(&Map.get(&1, :content_json))
+    |> Enum.find(%{}, &retry_error_diagnostic_metadata?/1)
+  end
+
+  defp retry_error_diagnostic_metadata?(%{} = metadata) do
+    Map.get(metadata, "retryable") == true and is_integer(Map.get(metadata, "attempt"))
+  end
+
+  defp retry_error_diagnostic_metadata?(_metadata), do: false
 
   defp display_content_for_message(%ChatMessage{} = message, steps, display) do
     role = atom_to_string(message.role)

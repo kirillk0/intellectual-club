@@ -30,6 +30,15 @@
       >
         Failed to load
       </span>
+      <span
+        v-else-if="!open && retryStatusLabel"
+        class="working-toggle-status working-toggle-status--retry"
+        role="status"
+        aria-live="polite"
+        :title="retryStatusTitle"
+      >
+        {{ retryStatusLabel }}
+      </span>
       <span class="chevron">{{ open ? '▲' : '▼' }}</span>
     </button>
 
@@ -73,6 +82,17 @@
             Loading step…
           </div>
           <div v-if="error" class="working-inline-state error-text" role="alert">{{ error }}</div>
+          <div
+            v-if="showRetryNotice"
+            class="working-retry-notice"
+            :title="latestRetryErrorText"
+          >
+            <span class="working-retry-notice__label">{{ translate('Latest transient error') }}</span>
+            <span v-if="latestRetryStepSequence != null" class="working-retry-notice__step">
+              · {{ translate('Step') }} {{ latestRetryStepSequence }}
+            </span>
+            <span class="working-retry-notice__text">{{ latestRetryErrorPreview }}</span>
+          </div>
 
           <div class="working-step">
             <div class="working-step-links">
@@ -262,6 +282,50 @@ const open = computed(() => Boolean(props.open));
 const loading = computed(() => Boolean(props.loading));
 const error = computed(() => props.error || '');
 const isMessageGenerating = computed(() => props.messageStatus === 'generating');
+const retryErrorCount = computed(() => {
+  const value = Number(props.summary?.retry_error_count ?? 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+});
+const latestRetryErrorText = computed(() => String(props.summary?.latest_retry_error_text || '').trim());
+const latestRetryStepSequence = computed(() => {
+  const value = Number(props.summary?.latest_retry_error_step_sequence);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+});
+const latestWorkingStepSequence = computed(() => {
+  const value = Number(props.summary?.latest_step_sequence);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+});
+const latestWorkingStepStatus = computed(() => String(props.summary?.latest_step_status || ''));
+const retryChainResolvedSuccessfully = computed(
+  () =>
+    props.messageStatus === 'done' &&
+    latestWorkingStepStatus.value === 'done' &&
+    latestWorkingStepSequence.value != null &&
+    latestRetryStepSequence.value != null &&
+    latestWorkingStepSequence.value > latestRetryStepSequence.value
+);
+const showProminentRetryDiagnostics = computed(
+  () => retryErrorCount.value > 0 && !retryChainResolvedSuccessfully.value
+);
+const latestRetryErrorPreview = computed(() => firstMeaningfulLine(latestRetryErrorText.value));
+const retryStatusLabel = computed(() => {
+  const count = retryErrorCount.value;
+  if (count <= 0 || !showProminentRetryDiagnostics.value) return '';
+
+  if (isMessageGenerating.value) {
+    return count === 1
+      ? translate('Retrying after transient error')
+      : translate('Retrying after {count} transient errors', { count });
+  }
+
+  return count === 1
+    ? translate('Transient retry error')
+    : translate('{count} transient retry errors', { count });
+});
+const retryStatusTitle = computed(() => latestRetryErrorText.value || retryStatusLabel.value);
+const showRetryNotice = computed(
+  () => showProminentRetryDiagnostics.value && latestRetryErrorPreview.value !== ''
+);
 
 const nowMs = ref(Date.now());
 const workingBlockEl = ref<HTMLElement | null>(null);
@@ -406,6 +470,16 @@ const formatDurationTimer = (durationMs: number | null) => {
 
   if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
   return `${totalMinutes}:${pad2(seconds)}`;
+};
+
+const firstMeaningfulLine = (value: string) => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const line = text
+    .split(/\r?\n/u)
+    .map((part) => part.trim())
+    .find((part) => part !== '');
+  return line || text;
 };
 
 const isActiveStep = (step: ChatMessageStep) => {
@@ -709,6 +783,10 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   color: var(--color-danger);
 }
 
+.working-toggle-status--retry {
+  color: var(--color-warning-text);
+}
+
 .working-toggle-status + .chevron {
   margin-left: 0;
 }
@@ -758,6 +836,38 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 .working-inline-state {
   margin-bottom: 10px;
   font-size: 0.85rem;
+}
+
+.working-retry-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 6px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.working-retry-notice__label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.working-retry-notice__step {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.working-retry-notice__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .working-step {

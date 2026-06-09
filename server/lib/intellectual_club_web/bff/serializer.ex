@@ -423,21 +423,25 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     })
   end
 
-  def working_summary(steps) when is_list(steps) do
+  def working_summary(steps, retry_errors \\ []) when is_list(steps) and is_list(retry_errors) do
     summaries = Enum.map(steps, &working_step_summary/1)
     latest = latest_step_summary(summaries)
+    retry_error_summary = retry_error_summary(retry_errors)
 
-    %{
-      step_count: length(summaries),
-      latest_step_id: if(latest, do: Map.get(latest, :id), else: nil),
-      latest_step_sequence: if(latest, do: Map.get(latest, :sequence), else: nil),
-      latest_step_status: if(latest, do: Map.get(latest, :status), else: nil),
-      completed_step_duration_ms: completed_step_duration_ms(summaries),
-      active_step_started_at:
-        summaries
-        |> latest_active_step_summary()
-        |> active_step_started_at()
-    }
+    Map.merge(
+      %{
+        step_count: length(summaries),
+        latest_step_id: if(latest, do: Map.get(latest, :id), else: nil),
+        latest_step_sequence: if(latest, do: Map.get(latest, :sequence), else: nil),
+        latest_step_status: if(latest, do: Map.get(latest, :status), else: nil),
+        completed_step_duration_ms: completed_step_duration_ms(summaries),
+        active_step_started_at:
+          summaries
+          |> latest_active_step_summary()
+          |> active_step_started_at()
+      },
+      retry_error_summary
+    )
   end
 
   def working_step_summary(%ChatMessageStep{} = step) do
@@ -658,6 +662,42 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     summaries
     |> Enum.filter(&active_step_summary?/1)
     |> latest_step_summary()
+  end
+
+  defp retry_error_summary(retry_errors) when is_list(retry_errors) do
+    errors =
+      retry_errors
+      |> Enum.filter(&retry_error_entry?/1)
+      |> Enum.sort_by(&retry_error_sort_key/1)
+
+    latest = List.last(errors)
+
+    %{
+      retry_error_count: length(errors),
+      latest_retry_error_text: if(latest, do: Map.get(latest, :text), else: nil),
+      latest_retry_error_at:
+        if(latest, do: normalize_datetime_value(Map.get(latest, :created_at)), else: nil),
+      latest_retry_error_step_sequence: if(latest, do: Map.get(latest, :step_sequence), else: nil)
+    }
+  end
+
+  defp retry_error_entry?(entry) when is_map(entry) do
+    entry
+    |> Map.get(:text)
+    |> case do
+      value when is_binary(value) -> String.trim(value) != ""
+      _other -> false
+    end
+  end
+
+  defp retry_error_entry?(_entry), do: false
+
+  defp retry_error_sort_key(entry) when is_map(entry) do
+    {
+      Map.get(entry, :step_sequence) || 0,
+      Map.get(entry, :item_sequence) || 0,
+      Map.get(entry, :item_id) || 0
+    }
   end
 
   defp active_step_summary?(summary) when is_map(summary) do

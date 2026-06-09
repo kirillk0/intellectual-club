@@ -262,6 +262,10 @@ export type ChatMessageWorkingSummary = {
   latest_step_status?: string | null;
   completed_step_duration_ms: number;
   active_step_started_at?: string | null;
+  retry_error_count?: number | null;
+  latest_retry_error_text?: string | null;
+  latest_retry_error_at?: string | null;
+  latest_retry_error_step_sequence?: number | null;
 };
 
 export type ChatMessageContentSnapshot = {

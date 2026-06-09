@@ -135,6 +135,49 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert summary.active_step_started_at == DateTime.to_iso8601(active_started_at)
   end
 
+  test "working summary includes retry error diagnostics" do
+    latest_retry_at = ~U[2026-04-16 10:00:03.000000Z]
+
+    summary =
+      Serializer.working_summary(
+        [
+          %{
+            id: 101,
+            sequence: 1,
+            created_at: "2026-04-16T10:00:00Z",
+            finished_at: "2026-04-16T10:00:01Z",
+            status: "error"
+          },
+          %{
+            id: 102,
+            sequence: 2,
+            created_at: "2026-04-16T10:00:02Z",
+            finished_at: nil,
+            status: "waiting_provider"
+          }
+        ],
+        [
+          %{
+            step_sequence: 1,
+            item_sequence: 1,
+            text: "Transient provider error on attempt 1.",
+            created_at: ~U[2026-04-16 10:00:01.000000Z]
+          },
+          %{
+            step_sequence: 1,
+            item_sequence: 2,
+            text: "Transient provider error on attempt 2.",
+            created_at: latest_retry_at
+          }
+        ]
+      )
+
+    assert summary.retry_error_count == 2
+    assert summary.latest_retry_error_text == "Transient provider error on attempt 2."
+    assert summary.latest_retry_error_at == DateTime.to_iso8601(latest_retry_at)
+    assert summary.latest_retry_error_step_sequence == 1
+  end
+
   test "usage summary keeps the latest step with token usage" do
     usage =
       Serializer.usage_summary([

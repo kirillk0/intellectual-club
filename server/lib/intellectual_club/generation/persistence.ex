@@ -260,6 +260,125 @@ defmodule IntellectualClub.Generation.Persistence do
     :ok
   end
 
+  def persist_retry_error_and_start_next_step!(
+        message_id,
+        step_id,
+        raw_request,
+        error_text,
+        opts \\ []
+      )
+      when is_integer(message_id) and is_integer(step_id) and is_list(opts) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+
+      if step.chat_message_id != message_id do
+        raise ArgumentError, "Step does not belong to message"
+      end
+
+      now = DateTime.utc_now()
+      next_sequence = step.sequence + 1
+
+      raw_request =
+        case raw_request do
+          value when is_map(value) and map_size(value) > 0 -> normalize_json_map(value)
+          _other -> normalize_json_map(step.raw_request || %{})
+        end
+
+      replace_step_items!(step, [], actor)
+
+      step =
+        step
+        |> update_step!(
+          %{
+            status: :error,
+            raw_response: nil,
+            response_final: false,
+            input_tokens: nil,
+            output_tokens: nil,
+            cached_input_tokens: nil,
+            reasoning_tokens: nil,
+            cost: nil,
+            first_token_at: nil,
+            finished_at: now
+          },
+          actor
+        )
+        |> load_step_with_items!(actor)
+
+      create_retry_error_item!(
+        step,
+        retry_error_text(error_text, opts),
+        retry_error_metadata(opts),
+        actor
+      )
+
+      next_step =
+        case get_step_by_sequence(message_id, next_sequence, actor) do
+          nil ->
+            create_step!(
+              %{
+                chat_message_id: message_id,
+                sequence: next_sequence,
+                status: :waiting_provider,
+                raw_request: raw_request,
+                raw_response: nil,
+                response_final: false,
+                input_tokens: nil,
+                output_tokens: nil,
+                cached_input_tokens: nil,
+                reasoning_tokens: nil,
+                cost: nil,
+                first_token_at: nil,
+                finished_at: nil
+              },
+              actor
+            )
+
+          %ChatMessageStep{} = next_step ->
+            replace_step_items!(next_step, [], actor)
+
+            update_step!(
+              next_step,
+              %{
+                status: :waiting_provider,
+                raw_request: raw_request,
+                raw_response: nil,
+                response_final: false,
+                input_tokens: nil,
+                output_tokens: nil,
+                cached_input_tokens: nil,
+                reasoning_tokens: nil,
+                cost: nil,
+                first_token_at: nil,
+                finished_at: nil
+              },
+              actor
+            )
+        end
+
+      message_id
+      |> load_message!(actor)
+      |> update_message!(
+        %{
+          status: :generating,
+          error_detail: nil,
+          token_count: 0,
+          finished_at: nil
+        },
+        actor
+      )
+
+      %{
+        step_id: next_step.id,
+        step_sequence: next_step.sequence,
+        started_at: next_step.created_at,
+        raw_request: raw_request
+      }
+    end)
+  end
+
   def mark_step_done!(step_id) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
     now = DateTime.utc_now()
@@ -665,6 +784,102 @@ defmodule IntellectualClub.Generation.Persistence do
       )
     end
   end
+
+  defp create_retry_error_item!(%ChatMessageStep{} = step, text, metadata, actor) do
+    item =
+      create_item!(
+        %{
+          chat_message_step_id: step.id,
+          sequence: next_item_sequence(step.items || []),
+          type: :error,
+          tool_call_item_id: nil
+        },
+        actor
+      )
+
+    contents = [
+      %{
+        sequence: 1,
+        kind: :text,
+        content_text: to_string(text || "")
+      }
+    ]
+
+    contents =
+      if map_size(metadata) > 0 do
+        contents ++
+          [
+            %{
+              sequence: @opaque_sequence,
+              kind: :opaque,
+              content_json: metadata
+            }
+          ]
+      else
+        contents
+      end
+
+    create_contents!(item, contents, actor)
+  end
+
+  defp retry_error_text(error_text, opts) when is_list(opts) do
+    attempt = Keyword.get(opts, :attempt)
+    delay_ms = Keyword.get(opts, :retry_delay_ms)
+    retry_in = retry_delay_text(delay_ms)
+    detail = error_text |> to_string() |> String.trim()
+
+    prefix =
+      case attempt do
+        value when is_integer(value) and value > 0 ->
+          "Transient provider error on attempt #{value}."
+
+        _other ->
+          "Transient provider error."
+      end
+
+    suffix =
+      case retry_in do
+        "" -> " Retrying."
+        value -> " Retrying in #{value}."
+      end
+
+    if detail == "" do
+      prefix <> suffix
+    else
+      prefix <> suffix <> "\n\n" <> detail
+    end
+  end
+
+  defp retry_delay_text(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    cond do
+      delay_ms < 1000 ->
+        "#{delay_ms} ms"
+
+      rem(delay_ms, 1000) == 0 ->
+        seconds = div(delay_ms, 1000)
+        unit = if seconds == 1, do: "second", else: "seconds"
+        "#{seconds} #{unit}"
+
+      true ->
+        seconds = Float.round(delay_ms / 1000.0, 1)
+        "#{seconds} seconds"
+    end
+  end
+
+  defp retry_delay_text(_delay_ms), do: ""
+
+  defp retry_error_metadata(opts) when is_list(opts) do
+    %{}
+    |> maybe_put_metadata("attempt", Keyword.get(opts, :attempt))
+    |> maybe_put_metadata("retry_delay_ms", Keyword.get(opts, :retry_delay_ms))
+    |> maybe_put_metadata("status_code", Keyword.get(opts, :status_code))
+    |> maybe_put_metadata("error_kind", Keyword.get(opts, :error_kind))
+    |> maybe_put_metadata("retryable", Keyword.get(opts, :retryable))
+  end
+
+  defp maybe_put_metadata(map, _key, nil), do: map
+  defp maybe_put_metadata(map, _key, value) when is_binary(value) and value == "", do: map
+  defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
 
   defp create_contents!(%ChatMessageItem{} = item, contents, actor) when is_list(contents) do
     contents

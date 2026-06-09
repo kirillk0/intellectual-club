@@ -4,9 +4,49 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+
+  defmodule FlakyAdapter do
+    @moduledoc false
+
+    def stream_generate(%{context: context, request_payload: request_payload}, emit) do
+      attempt = Agent.get_and_update(context.attempts, fn value -> {value + 1, value + 1} end)
+
+      if attempt == 1 do
+        emit.(
+          {:trace, {:set_text, "answer", :answer, 1, "Partial text that must not be persisted."}}
+        )
+
+        emit.(
+          {:response_error,
+           %{
+             retryable: true,
+             error_kind: "network",
+             status_code: 503,
+             error_text: "Temporary network outage",
+             raw_request: request_payload
+           }}
+        )
+      else
+        emit.({:trace, {:set_text, "answer", :answer, 1, "Recovered answer."}})
+
+        emit.(
+          {:response_complete,
+           %{
+             raw_request: request_payload,
+             raw_response: %{"id" => "resp_retry_success", "output" => []},
+             usage: %{"input_tokens" => 12, "output_tokens" => 3}
+           }}
+        )
+      end
+
+      :ok
+    end
+  end
 
   setup do
     previous_max_retries =
@@ -34,7 +74,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     :ok
   end
 
-  test "generation retries transient provider errors by recreating the step" do
+  test "generation preserves transient provider retry failures as durable error steps" do
     %{user: actor} = user_fixture()
 
     provider =
@@ -88,13 +128,20 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
     message = wait_for_status!(context.message_id, actor, [:error], 12_000)
 
-    step =
-      message.steps
-      |> List.wrap()
-      |> Enum.max_by(& &1.sequence)
+    steps = ordered_steps(message)
+    retry_error_texts = Enum.map(Enum.take(steps, 2), &single_error_item_text!/1)
+    latest_step = List.last(steps)
 
-    assert step.sequence == 1
-    assert step.id != context.step_id
+    assert Enum.map(steps, & &1.sequence) == [1, 2, 3]
+    assert Enum.map(steps, & &1.status) == [:error, :error, :error]
+    assert Enum.map(steps, & &1.raw_request) == List.duplicate(context.request_payload, 3)
+
+    assert Enum.at(retry_error_texts, 0) =~ "Transient provider error on attempt 1."
+    assert Enum.at(retry_error_texts, 0) =~ "Retrying."
+    assert Enum.at(retry_error_texts, 1) =~ "Transient provider error on attempt 2."
+    assert Enum.at(retry_error_texts, 1) =~ "Retrying."
+    assert String.trim(single_error_item_text!(latest_step)) != ""
+    assert latest_step.id != context.step_id
     assert message.status == :error
   end
 
@@ -173,15 +220,88 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
     message = wait_for_status!(context.message_id, actor, [:error], 12_000)
 
-    step =
-      message.steps
-      |> List.wrap()
-      |> Enum.max_by(& &1.sequence)
+    steps = ordered_steps(message)
+    retry_error_texts = Enum.map(Enum.take(steps, 2), &single_error_item_text!/1)
 
-    assert step.sequence == 1
+    assert Enum.map(steps, & &1.sequence) == [1, 2, 3]
+    assert Enum.map(steps, & &1.status) == [:error, :error, :error]
     assert Agent.get(attempts, & &1) == 3
+    assert Enum.at(retry_error_texts, 0) =~ "Transient provider error on attempt 1."
+    assert Enum.at(retry_error_texts, 0) =~ "OAuth token refresh failed"
+    assert Enum.at(retry_error_texts, 1) =~ "Transient provider error on attempt 2."
+    assert Enum.at(retry_error_texts, 1) =~ "OAuth token refresh failed"
     assert message.error_detail =~ "OAuth token refresh failed"
     assert message.status == :error
+  end
+
+  test "generation keeps retry error step when a later attempt succeeds" do
+    %{user: actor} = user_fixture()
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          title: "Auto retry success",
+          note: "",
+          variables: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} =
+      Threads.add_message_to_end(chat, :user, "Please recover after retry", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "test-model",
+      "messages" => [%{"role" => "user", "content" => "Please recover after retry"}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
+
+    context = %{
+      owner_id: actor.id,
+      chat_id: chat.id,
+      message_id: assistant_message.id,
+      step_id: step_id,
+      provider_type: "test",
+      adapter_module: FlakyAdapter,
+      request_payload: raw_request,
+      timeout_ms: 1_000,
+      chunk_delay_ms: 0,
+      attempts: attempts
+    }
+
+    {:ok, _pid} = Worker.start_link(%{context: context})
+
+    message = wait_for_status!(assistant_message.id, actor, [:done], 12_000)
+    steps = ordered_steps(message)
+
+    assert Agent.get(attempts, & &1) == 2
+    assert message.status == :done
+    assert message.error_detail == nil
+    assert Enum.map(steps, & &1.sequence) == [1, 2]
+    assert Enum.map(steps, & &1.status) == [:error, :done]
+
+    retry_text = single_error_item_text!(Enum.at(steps, 0))
+    final_answer_text = answer_item_text(Enum.at(steps, 1))
+
+    assert retry_text =~ "Transient provider error on attempt 1."
+    assert retry_text =~ "Temporary network outage"
+    refute retry_text =~ "Partial text that must not be persisted."
+    assert final_answer_text == "Recovered answer."
   end
 
   defp wait_for_status!(message_id, actor, wanted, timeout_ms)
@@ -232,4 +352,35 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
   defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
+
+  defp ordered_steps(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.sort_by(& &1.sequence)
+  end
+
+  defp single_error_item_text!(step) do
+    step.items
+    |> List.wrap()
+    |> Enum.filter(&(&1.type == :error))
+    |> case do
+      [item] -> item_text(item)
+      other -> flunk("Expected exactly one error item, got #{length(other)}")
+    end
+  end
+
+  defp answer_item_text(step) do
+    step.items
+    |> List.wrap()
+    |> Enum.filter(&(&1.type == :answer))
+    |> Enum.map_join("\n\n", &item_text/1)
+  end
+
+  defp item_text(item) do
+    item.contents
+    |> List.wrap()
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.map_join("", &to_string(&1.content_text || ""))
+  end
 end

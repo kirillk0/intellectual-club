@@ -11,6 +11,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Accounts.UserKnowledgeBlock
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -96,6 +100,73 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert is_binary(get_in(assistant, ["usage", "latest_step", "finished_at"]))
 
     assert Enum.any?(all_text_contents(assistant), &String.contains?(&1, "TAIL"))
+  end
+
+  test "GET /api/bff/chats/:id/state includes retry error diagnostics in working summary", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Retry diagnostics chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hi", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    retry_step = create_chat_message_step!(assistant_message.id, 1, :error, actor)
+
+    retry_item =
+      create_chat_message_item!(retry_step.id, 1, :error, actor)
+
+    retry_text = "Transient provider error on attempt 1. Retrying.\n\nTemporary network outage"
+    create_chat_message_text_content!(retry_item.id, 1, retry_text, actor)
+
+    create_chat_message_opaque_content!(
+      retry_item.id,
+      10_000,
+      %{
+        "attempt" => 1,
+        "retry_delay_ms" => 0,
+        "error_kind" => "network",
+        "retryable" => true
+      },
+      actor
+    )
+
+    _active_step = create_chat_message_step!(assistant_message.id, 2, :waiting_provider, actor)
+
+    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    payload = json_response(conn, 200)
+
+    assistant =
+      payload
+      |> Map.get("branch", [])
+      |> Enum.find(fn message -> message["id"] == assistant_message.id end)
+
+    assert is_map(assistant)
+    refute Map.has_key?(assistant, "steps")
+    assert get_in(assistant, ["working", "step_count"]) == 2
+    assert get_in(assistant, ["working", "latest_step_sequence"]) == 2
+    assert get_in(assistant, ["working", "latest_step_status"]) == "waiting_provider"
+    assert get_in(assistant, ["working", "retry_error_count"]) == 1
+    assert get_in(assistant, ["working", "latest_retry_error_text"]) == retry_text
+    assert get_in(assistant, ["working", "latest_retry_error_step_sequence"]) == 1
+    assert is_binary(get_in(assistant, ["working", "latest_retry_error_at"]))
   end
 
   test "GET /api/bff/chats/:id/settings-state includes context settings in options", %{
@@ -737,6 +808,61 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     |> get_in(["content", "parts"])
     |> List.wrap()
     |> Enum.map(fn part -> Map.get(part, "text") || "" end)
+  end
+
+  defp create_chat_message_step!(message_id, sequence, status, actor) do
+    ChatMessageStep
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_id: message_id,
+        sequence: sequence,
+        status: status,
+        raw_request: %{"messages" => []}
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_message_item!(step_id, sequence, type, actor) do
+    ChatMessageItem
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_message_step_id: step_id, sequence: sequence, type: type},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_message_text_content!(item_id, sequence, text, actor) do
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: item_id,
+        sequence: sequence,
+        kind: :text,
+        content_text: text
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_message_opaque_content!(item_id, sequence, json, actor) do
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: item_id,
+        sequence: sequence,
+        kind: :opaque,
+        content_json: json
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 
   defp create_bot!(actor, name, context_soft_limit_percent) do
