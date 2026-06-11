@@ -15,6 +15,40 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   @default_max_download_bytes 100 * 1024 * 1024
   @default_http_timeout_seconds 30.0
   @default_user_agent "IntellectualClubWebReader/0.1"
+  @unsupported_url_suffixes ~w(
+    .7z
+    .bz2
+    .csv.gz
+    .gz
+    .gzip
+    .jsonl.gz
+    .ndjson.gz
+    .rar
+    .tar
+    .tar.bz2
+    .tar.gz
+    .tar.xz
+    .tar.zst
+    .tbz
+    .tgz
+    .tsv.gz
+    .txz
+    .xz
+    .zip
+    .zst
+  )
+  @unsupported_content_type_parts ~w(
+    application/gzip
+    application/zip
+    application/x-7z-compressed
+    application/x-bzip
+    application/x-bzip2
+    application/x-gzip
+    application/x-rar-compressed
+    application/x-tar
+    application/x-xz
+    application/zstd
+  )
 
   @impl true
   def type, do: "native-web-reader"
@@ -198,6 +232,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
     with {:ok, url} <- required_url(args),
          {:ok, normalized_url} <- normalize_url(url),
+         :ok <- reject_unsupported_download(normalized_url),
          {:ok, page} <- DocumentReader.parse_page(args),
          {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, normalized_url, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
@@ -268,6 +303,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
     with {:ok, url} <- required_url(args),
          {:ok, normalized_url} <- normalize_url(url),
+         :ok <- reject_unsupported_download(normalized_url),
          {:ok, regex_text} <- DocumentReader.required_regex(args),
          {:ok, regex} <-
            DocumentReader.compile_regex(
@@ -386,6 +422,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
         url: url,
         headers: headers,
         redirect: true,
+        decode_body: false,
         receive_timeout: timeout_ms
       )
 
@@ -395,24 +432,25 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
       {:error,
        "HTTP error while fetching URL: #{resp.status}. #{String.slice(body_text, 0, 500)}"}
     else
-      body = body_to_binary(resp.body)
+      content_type = first_header_value(resp.headers, "content-type")
 
-      if cfg.max_download_bytes > 0 and byte_size(body) > cfg.max_download_bytes do
-        {:error, "Download exceeds max_download_bytes limit."}
-      else
-        content_type = first_header_value(resp.headers, "content-type")
+      with :ok <- reject_unsupported_content_type(content_type),
+           body <- body_to_binary(resp.body) do
+        if cfg.max_download_bytes > 0 and byte_size(body) > cfg.max_download_bytes do
+          {:error, "Download exceeds max_download_bytes limit."}
+        else
+          meta = %{
+            "tool_type" => type(),
+            "url" => url,
+            "final_url" => url,
+            "content_type" => content_type,
+            "status_code" => resp.status,
+            "download_bytes" => byte_size(body),
+            "source_extension" => guess_extension(content_type, url)
+          }
 
-        meta = %{
-          "tool_type" => type(),
-          "url" => url,
-          "final_url" => url,
-          "content_type" => content_type,
-          "status_code" => resp.status,
-          "download_bytes" => byte_size(body),
-          "source_extension" => guess_extension(content_type, url)
-        }
-
-        {:ok, {body, meta}}
+          {:ok, {body, meta}}
+        end
       end
     end
   rescue
@@ -463,6 +501,38 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
   defp normalize_url(_other), do: {:error, "Argument `url` must be a string."}
 
+  defp reject_unsupported_download(url) when is_binary(url) do
+    path =
+      url
+      |> URI.parse()
+      |> Map.get(:path)
+      |> to_string()
+      |> String.downcase()
+
+    if Enum.any?(@unsupported_url_suffixes, &String.ends_with?(path, &1)) do
+      {:error, unsupported_download_message()}
+    else
+      :ok
+    end
+  end
+
+  defp reject_unsupported_content_type(content_type) do
+    normalized =
+      content_type
+      |> to_string()
+      |> String.downcase()
+
+    if Enum.any?(@unsupported_content_type_parts, &String.contains?(normalized, &1)) do
+      {:error, unsupported_download_message()}
+    else
+      :ok
+    end
+  end
+
+  defp unsupported_download_message do
+    "Web Reader does not support compressed archives or bulk data dumps. Use a smaller HTML, PDF, or text endpoint instead."
+  end
+
   defp guess_extension(content_type, url) do
     ct = content_type |> to_string() |> String.downcase()
     path = URI.parse(url).path |> to_string() |> String.downcase()
@@ -512,14 +582,45 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   end
 
   defp first_header_value(headers, key) when is_map(headers) and is_binary(key) do
-    case Map.get(headers, String.downcase(key)) || Map.get(headers, key) do
-      [value | _rest] -> to_string(value)
+    normalized_key = String.downcase(key)
+
+    headers
+    |> Enum.find_value(fn {header_key, value} ->
+      if String.downcase(to_string(header_key)) == normalized_key do
+        header_value_to_string(value)
+      end
+    end)
+    |> case do
+      value when is_binary(value) -> value
+      _ -> ""
+    end
+  end
+
+  defp first_header_value(headers, key) when is_list(headers) and is_binary(key) do
+    normalized_key = String.downcase(key)
+
+    headers
+    |> Enum.find_value(fn
+      {header_key, value} ->
+        if String.downcase(to_string(header_key)) == normalized_key do
+          header_value_to_string(value)
+        end
+
+      _other ->
+        nil
+    end)
+    |> case do
       value when is_binary(value) -> value
       _ -> ""
     end
   end
 
   defp first_header_value(_headers, _key), do: ""
+
+  defp header_value_to_string([value | _rest]), do: to_string(value)
+  defp header_value_to_string(value) when is_binary(value), do: value
+  defp header_value_to_string(value) when not is_nil(value), do: to_string(value)
+  defp header_value_to_string(_value), do: nil
 
   defp body_to_binary(body) when is_binary(body), do: body
   defp body_to_binary(body) when is_list(body), do: IO.iodata_to_binary(body)

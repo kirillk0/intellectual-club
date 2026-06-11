@@ -40,6 +40,38 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
              })
   end
 
+  test "read_url rejects compressed bulk downloads before fetching" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+
+    assert {:error, message} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:1/data/products.csv.gz"
+             })
+
+    assert message =~ "compressed archives"
+  end
+
+  test "read_url rejects compressed content types before extraction" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+
+    {:ok, server} = start_raw_http_server(200, "application/gzip", "not really gzip")
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:error, message} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/download"
+             })
+
+    assert message =~ "compressed archives"
+  end
+
   test "execute requires regex for search_url" do
     %{user: actor} = user_fixture()
 
