@@ -260,6 +260,7 @@ export type ChatMessageWorkingSummary = {
   latest_step_id?: number | null;
   latest_step_sequence?: number | null;
   latest_step_status?: string | null;
+  latest_successful_step_sequence?: number | null;
   completed_step_duration_ms: number;
   active_step_started_at?: string | null;
   retry_error_count?: number | null;

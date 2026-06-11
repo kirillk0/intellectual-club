@@ -426,6 +426,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def working_summary(steps, retry_errors \\ []) when is_list(steps) and is_list(retry_errors) do
     summaries = Enum.map(steps, &working_step_summary/1)
     latest = latest_step_summary(summaries)
+    latest_successful = latest_successful_step_summary(summaries)
     retry_error_summary = retry_error_summary(retry_errors)
 
     Map.merge(
@@ -434,6 +435,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
         latest_step_id: if(latest, do: Map.get(latest, :id), else: nil),
         latest_step_sequence: if(latest, do: Map.get(latest, :sequence), else: nil),
         latest_step_status: if(latest, do: Map.get(latest, :status), else: nil),
+        latest_successful_step_sequence:
+          if(latest_successful, do: Map.get(latest_successful, :sequence), else: nil),
         completed_step_duration_ms: completed_step_duration_ms(summaries),
         active_step_started_at:
           summaries
@@ -663,6 +666,18 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     |> Enum.filter(&active_step_summary?/1)
     |> latest_step_summary()
   end
+
+  defp latest_successful_step_summary(summaries) when is_list(summaries) do
+    summaries
+    |> Enum.filter(&successful_step_summary?/1)
+    |> latest_step_summary()
+  end
+
+  defp successful_step_summary?(summary) when is_map(summary) do
+    Map.get(summary, :status) in [:done, :waiting_tools, "done", "waiting_tools"]
+  end
+
+  defp successful_step_summary?(_summary), do: false
 
   defp retry_error_summary(retry_errors) when is_list(retry_errors) do
     errors =

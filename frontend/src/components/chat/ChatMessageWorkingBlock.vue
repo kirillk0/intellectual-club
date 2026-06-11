@@ -296,13 +296,19 @@ const latestWorkingStepSequence = computed(() => {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 });
 const latestWorkingStepStatus = computed(() => String(props.summary?.latest_step_status || ''));
+const latestSuccessfulStepSequence = computed(() => {
+  const explicitValue = Number(props.summary?.latest_successful_step_sequence);
+  if (Number.isFinite(explicitValue) && explicitValue > 0) return Math.floor(explicitValue);
+  if (['done', 'waiting_tools'].includes(latestWorkingStepStatus.value)) {
+    return latestWorkingStepSequence.value;
+  }
+  return null;
+});
 const retryChainResolvedSuccessfully = computed(
   () =>
-    props.messageStatus === 'done' &&
-    latestWorkingStepStatus.value === 'done' &&
-    latestWorkingStepSequence.value != null &&
+    latestSuccessfulStepSequence.value != null &&
     latestRetryStepSequence.value != null &&
-    latestWorkingStepSequence.value > latestRetryStepSequence.value
+    latestSuccessfulStepSequence.value > latestRetryStepSequence.value
 );
 const showProminentRetryDiagnostics = computed(
   () => retryErrorCount.value > 0 && !retryChainResolvedSuccessfully.value
