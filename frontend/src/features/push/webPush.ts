@@ -1,17 +1,9 @@
 import { api } from '@/api/client';
+import { isStandalonePwa } from '@/pwa';
 
 const SERVICE_WORKER_PATH = '/service-worker.js';
 const SERVICE_WORKER_SCOPE = '/';
 const LOCAL_KEY_REVISION = 'intellectual-club:web-push:key-revision';
-const DISPLAY_MODE_QUERIES = [
-  '(display-mode: standalone)',
-  '(display-mode: fullscreen)',
-  '(display-mode: minimal-ui)',
-] as const;
-
-type NavigatorWithStandalone = Navigator & {
-  standalone?: boolean;
-};
 
 export type WebPushClientConfig = {
   enabled: boolean;
@@ -36,10 +28,6 @@ type PushSubscriptionJson = {
   };
   expirationTime?: number | null;
 };
-
-export const isStandalonePwa = () =>
-  DISPLAY_MODE_QUERIES.some((query) => window.matchMedia(query).matches) ||
-  (navigator as NavigatorWithStandalone).standalone === true;
 
 const isIosLike = () => {
   const platform = navigator.platform || '';

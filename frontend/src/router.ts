@@ -1,6 +1,7 @@
 import { nextTick } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import { ensureAuthInitialized, useSessionAuth } from '@/features/auth/session';
+import { rememberPwaRoute, restorePwaRouteOnLaunch } from '@/features/pwa/lastRoute';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 
 import BotEditView from './views/catalogs/BotEditView.vue';
@@ -164,12 +165,18 @@ router.beforeEach((to) => {
     return { path: '/' };
   }
 
+  const restoredPwaRoute = restorePwaRouteOnLaunch(to);
+  if (restoredPwaRoute) return restoredPwaRoute;
+
   return true;
 });
 
 const getHistoryState = () => (router.options.history.state as any) ?? window.history.state;
 
 router.afterEach((to, from) => {
+  const { isAuthenticated } = useSessionAuth();
+  rememberPwaRoute(to, isAuthenticated.value);
+
   const stack = useNavigationStack();
 
   if (stack.pendingPush.value !== null) {

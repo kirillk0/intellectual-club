@@ -18,7 +18,7 @@ let initialRootTouchAction: string | null = null;
 let initialBodyTouchAction: string | null = null;
 let zoomBehaviorSetup = false;
 
-const isStandalonePwa = () =>
+export const isStandalonePwa = () =>
   DISPLAY_MODE_QUERIES.some((query) => window.matchMedia(query).matches) ||
   (navigator as NavigatorWithStandalone).standalone === true;
 
