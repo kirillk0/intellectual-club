@@ -99,6 +99,10 @@ defmodule IntellectualClubWeb.Router do
     post "/me/change-password", MeController, :change_password
     get "/bookmarks", BookmarksController, :index
 
+    get "/web-push/config", WebPushController, :config
+    post "/web-push/subscriptions", WebPushController, :upsert_subscription
+    delete "/web-push/subscriptions", WebPushController, :delete_subscription
+
     get "/admin/users", AdminUsersController, :index
     get "/admin/users/:id", AdminUsersController, :show
     post "/admin/users", AdminUsersController, :create
@@ -111,6 +115,13 @@ defmodule IntellectualClubWeb.Router do
     post "/admin/user-groups", AdminUserGroupsController, :create
     patch "/admin/user-groups/:id", AdminUserGroupsController, :update
     delete "/admin/user-groups/:id", AdminUserGroupsController, :delete
+
+    get "/admin/web-push-settings", AdminWebPushSettingsController, :show
+    patch "/admin/web-push-settings", AdminWebPushSettingsController, :update
+
+    post "/admin/web-push-settings/regenerate-keys",
+         AdminWebPushSettingsController,
+         :regenerate_keys
 
     get "/chats", ChatsController, :index
     get "/chats/search", ChatsController, :search

@@ -19,6 +19,7 @@ defmodule IntellectualClub.Application do
       {Phoenix.PubSub, name: IntellectualClub.PubSub},
       {IntellectualClub.Outlets.Runtime, []},
       {IntellectualClub.Tools.RateLimiter, []},
+      {IntellectualClub.Notifications.Dispatcher, []},
       {Registry, keys: :duplicate, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
       # Start a worker by calling: IntellectualClub.Worker.start_link(arg)

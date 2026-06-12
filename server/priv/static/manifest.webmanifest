@@ -1,6 +1,7 @@
 {
   "name": "Intellectual Club",
   "short_name": "Club",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

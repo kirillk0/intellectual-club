@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue';
 import { api, isHttpError } from '@/api/client';
 import { normalizePreferredTheme, setPreferredTheme } from '@/features/app/theme';
+import { cleanupWebPushForLogout } from '@/features/push/webPush';
 import { normalizePreferredLocale, setPreferredLocale } from '@/i18n';
 import type { SessionUser } from '@/types/api';
 
@@ -89,6 +90,9 @@ export const refreshSessionUser = async (): Promise<SessionUser | null> => {
 };
 
 export const signOut = async (): Promise<void> => {
+  await cleanupWebPushForLogout().catch((error) => {
+    console.warn('Failed to clean up Web Push subscription before sign out.', error);
+  });
   await api.post('/api/bff/auth/logout', {});
   applySessionUser(null);
   initialized.value = true;

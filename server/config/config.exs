@@ -19,6 +19,7 @@ config :intellectual_club,
     IntellectualClub.Files,
     IntellectualClub.Knowledge,
     IntellectualClub.Llm,
+    IntellectualClub.Notifications,
     IntellectualClub.Tools,
     IntellectualClub.Outlets
   ]

@@ -3,6 +3,7 @@
     <div class="tabs">
       <RouterLink class="tab" :class="{ active: usersActive }" to="/administration/users">Users</RouterLink>
       <RouterLink class="tab" :class="{ active: groupsActive }" to="/administration/user-groups">Groups</RouterLink>
+      <RouterLink class="tab" :class="{ active: webPushActive }" to="/administration/web-push">Web Push</RouterLink>
     </div>
   </section>
 </template>
@@ -22,6 +23,8 @@ const groupsActive = computed(() => {
   const name = String(route.name || '');
   return name === 'admin-user-groups' || name === 'admin-user-group';
 });
+
+const webPushActive = computed(() => String(route.name || '') === 'admin-web-push');
 </script>
 
 <style scoped>

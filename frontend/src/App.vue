@@ -90,6 +90,7 @@ import {
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
+import { syncExistingWebPushSubscription } from '@/features/push/webPush';
 import { effectiveLocale, translate } from '@/i18n';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
@@ -169,6 +170,7 @@ let headerObserver: ResizeObserver | null = null;
 let updateRafId: number | null = null;
 let lastHeaderHeight = '';
 let lastViewportUnit = '';
+let lastWebPushSyncUserId: number | null = null;
 
 const setRootVar = (name: string, nextValue: string) => {
   if (name === '--app-header-height') {
@@ -200,14 +202,58 @@ const scheduleCssVarUpdate = () => {
   });
 };
 
+const syncWebPushForCurrentUser = () => {
+  const userId = currentUser.value?.id ?? null;
+  if (!userId || lastWebPushSyncUserId === userId) return;
+  lastWebPushSyncUserId = userId;
+
+  void syncExistingWebPushSubscription().catch((error) => {
+    console.warn('Failed to sync Web Push subscription.', error);
+  });
+};
+
+const routeFromServiceWorkerUrl = (rawUrl: unknown) => {
+  if (typeof rawUrl !== 'string' || rawUrl.trim() === '') return;
+
+  let url: URL;
+
+  try {
+    url = new URL(rawUrl, window.location.origin);
+  } catch {
+    return;
+  }
+
+  if (url.origin !== window.location.origin) return;
+
+  const target = `${url.pathname}${url.search}${url.hash}`;
+  closeMenu();
+
+  if (router.currentRoute.value.fullPath === target) return;
+
+  void router.push(target).catch((error) => {
+    console.warn('Failed to route from Web Push notification click.', error);
+  });
+};
+
+const handleServiceWorkerMessage = (event: MessageEvent) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if ((data as { type?: unknown }).type !== 'web_push_notification_click') return;
+
+  routeFromServiceWorkerUrl((data as { url?: unknown }).url);
+};
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside);
+  navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
 
   if (currentUser.value) {
     void refreshSessionUser().catch((error) => {
       console.error('Failed to refresh session user.', error);
     });
   }
+
+  syncWebPushForCurrentUser();
 
   scheduleCssVarUpdate();
   window.addEventListener('resize', scheduleCssVarUpdate);
@@ -219,8 +265,16 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => currentUser.value?.id,
+  () => {
+    syncWebPushForCurrentUser();
+  }
+);
+
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside);
+  navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
   window.removeEventListener('resize', scheduleCssVarUpdate);
   window.removeEventListener('orientationchange', scheduleCssVarUpdate);
   if (updateRafId !== null) {

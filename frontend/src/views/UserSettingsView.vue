@@ -40,6 +40,39 @@
       </section>
 
       <section class="card stack">
+        <div class="flex user-notifications-header">
+          <h3 style="margin: 0">Notifications</h3>
+          <span class="badge" :class="{ success: pushSubscribed, danger: pushBlocked }">
+            {{ pushBadgeText }}
+          </span>
+        </div>
+
+        <p class="muted">{{ pushStatusText }}</p>
+        <p class="muted">
+          On iPhone or iPad, notifications work only from the installed Home Screen app and only after tapping Enable notifications.
+        </p>
+        <p v-if="pushError" class="error-text">{{ pushError }}</p>
+
+        <div class="flex user-notifications-actions">
+          <button
+            class="primary"
+            type="button"
+            :disabled="!canEnablePush || pushLoading"
+            @click="enableNotifications"
+          >
+            {{ pushLoading ? 'Updating…' : 'Enable notifications' }}
+          </button>
+          <button
+            type="button"
+            :disabled="!pushSubscribed || pushLoading"
+            @click="disableNotifications"
+          >
+            Disable notifications
+          </button>
+        </div>
+      </section>
+
+      <section class="card stack">
         <KnowledgeBlockLinksCard
           title="Knowledge blocks"
           :items="cardItems"
@@ -145,6 +178,15 @@ import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { parseImageAsset } from '@/features/media/image';
 import {
+  currentWebPushSubscription,
+  disableWebPush,
+  enableWebPush,
+  loadWebPushConfig,
+  webPushSupportState,
+  type WebPushClientConfig,
+  type WebPushSupportState,
+} from '@/features/push/webPush';
+import {
   jsonApiCreate,
   jsonApiDelete,
   jsonApiList,
@@ -174,6 +216,8 @@ const loading = ref(false);
 const saving = ref(false);
 const changingPassword = ref(false);
 const loadError = ref('');
+const pushLoading = ref(false);
+const pushError = ref('');
 
 const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
 const userBlocks = ref<UserKnowledgeBlock[]>([]);
@@ -186,6 +230,9 @@ const preferredLocaleDraft = ref<LocaleDraft>('');
 const basePreferredLocaleDraft = ref<LocaleDraft>('');
 const preferredThemeDraft = ref<ThemeDraft>('system');
 const basePreferredThemeDraft = ref<ThemeDraft>('system');
+const pushConfig = ref<WebPushClientConfig | null>(null);
+const pushSupport = ref<WebPushSupportState | null>(null);
+const pushSubscribed = ref(false);
 
 const passwordForm = reactive({
   current_password: '',
@@ -248,6 +295,41 @@ const canChangePassword = computed(
     passwordForm.new_password_confirm.length > 0 &&
     !passwordMismatch.value
 );
+
+const pushBlocked = computed(() => pushSupport.value?.permission === 'denied');
+
+const canEnablePush = computed(() => {
+  const support = pushSupport.value;
+  const config = pushConfig.value;
+
+  return Boolean(
+    support?.supported &&
+      support.permission !== 'denied' &&
+      config?.enabled &&
+      config.vapid_public_key &&
+      !pushSubscribed.value
+  );
+});
+
+const pushBadgeText = computed(() => {
+  if (pushSubscribed.value) return 'Enabled';
+  if (pushBlocked.value) return 'Blocked';
+  return 'Disabled';
+});
+
+const pushStatusText = computed(() => {
+  const support = pushSupport.value;
+  const config = pushConfig.value;
+
+  if (!support) return 'Checking notification support…';
+  if (!config?.enabled) return 'Notifications are disabled by the administrator.';
+  if (!config.vapid_public_key) return 'Notification keys are not configured.';
+  if (!support.supported) return support.reason || 'Push notifications are not supported in this browser.';
+  if (support.permission === 'denied') return 'Notification permission is blocked in this browser.';
+  if (pushSubscribed.value) return 'Notifications are enabled for this device.';
+  if (support.permission === 'granted') return 'Notifications are allowed but this device is not subscribed.';
+  return 'Notifications are available for this device.';
+});
 
 const hasPasswordFieldError = (field: PasswordField) => (passwordFormErrors.value[field] || []).length > 0;
 
@@ -548,6 +630,65 @@ const changePassword = async () => {
   }
 };
 
+const refreshWebPushStatus = async () => {
+  pushSupport.value = webPushSupportState();
+  pushError.value = '';
+
+  try {
+    pushConfig.value = await loadWebPushConfig();
+  } catch (error) {
+    console.error(error);
+    pushConfig.value = null;
+    pushError.value = 'Failed to load notification settings.';
+    return;
+  }
+
+  try {
+    pushSubscribed.value = pushSupport.value.supported
+      ? Boolean(await currentWebPushSubscription())
+      : false;
+  } catch (error) {
+    console.warn('Failed to read Web Push subscription.', error);
+    pushSubscribed.value = false;
+  } finally {
+    pushSupport.value = webPushSupportState();
+  }
+};
+
+const enableNotifications = async () => {
+  if (pushLoading.value || !canEnablePush.value) return;
+  pushLoading.value = true;
+  pushError.value = '';
+
+  try {
+    await enableWebPush();
+    await refreshWebPushStatus();
+  } catch (error) {
+    console.error(error);
+    pushError.value = error instanceof Error ? error.message : 'Failed to enable notifications.';
+    pushSupport.value = webPushSupportState();
+  } finally {
+    pushLoading.value = false;
+  }
+};
+
+const disableNotifications = async () => {
+  if (pushLoading.value || !pushSubscribed.value) return;
+  pushLoading.value = true;
+  pushError.value = '';
+
+  try {
+    await disableWebPush();
+    await refreshWebPushStatus();
+  } catch (error) {
+    console.error(error);
+    pushError.value = error instanceof Error ? error.message : 'Failed to disable notifications.';
+    pushSupport.value = webPushSupportState();
+  } finally {
+    pushLoading.value = false;
+  }
+};
+
 const loadSettings = async () => {
   loading.value = true;
   loadError.value = '';
@@ -583,6 +724,7 @@ const loadSettings = async () => {
 
 onMounted(() => {
   loadSettings();
+  refreshWebPushStatus();
 });
 
 watch(
@@ -599,3 +741,17 @@ watch(
   }
 );
 </script>
+
+<style scoped>
+.user-notifications-header,
+.user-notifications-actions {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.user-notifications-actions {
+  justify-content: flex-end;
+}
+</style>

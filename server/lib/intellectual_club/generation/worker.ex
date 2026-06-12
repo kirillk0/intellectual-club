@@ -16,6 +16,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
+  alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
   alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -428,6 +429,7 @@ defmodule IntellectualClub.Generation.Worker do
 
       {:error, reason} ->
         error_text = "Failed to persist final generation state: #{inspect(reason)}"
+        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
         broadcast(state, {:error, state.context.message_id, error_text})
         {:stop, :normal, %{state | status: :error}}
     end
@@ -436,6 +438,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp finalize_completion_effect(state, step_id) when is_integer(step_id) do
     case run_completion_effect(state) do
       :ok ->
+        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
         broadcast(state, {:done, state.context.message_id})
         {:stop, :normal, %{state | status: :done}}
 
@@ -445,6 +448,7 @@ defmodule IntellectualClub.Generation.Worker do
             Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
           end)
 
+        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
         broadcast(state, {:error, state.context.message_id, error_text})
         {:stop, :normal, %{state | status: :error}}
     end
@@ -500,6 +504,7 @@ defmodule IntellectualClub.Generation.Worker do
         end
       end)
 
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
     broadcast(state, {:error, state.context.message_id, error_text})
     {:stop, :normal, %{state | status: :error}}
   end
@@ -1240,6 +1245,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp finalize_handoff_tool_step(state, _payload) do
+    IntellectualClub.Notifications.suppress_generation_finished(state.context.message_id, :done)
     finalize_done_from_step(state, state.runtime_step.id)
   end
 

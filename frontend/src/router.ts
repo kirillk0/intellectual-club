@@ -59,6 +59,12 @@ export const router = createRouter({
       meta: { requiresAdmin: true, title: 'User Group' },
     },
     {
+      path: '/administration/web-push',
+      name: 'admin-web-push',
+      component: () => import('./views/administration/WebPushSettingsView.vue'),
+      meta: { requiresAdmin: true, title: 'Web Push' },
+    },
+    {
       path: '/outlets/connect',
       name: 'outlet-connect',
       component: () => import('./views/OutletConnectView.vue'),

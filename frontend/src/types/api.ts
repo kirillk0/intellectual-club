@@ -34,6 +34,16 @@ export type AdminUserGroup = {
   users?: AdminUserSummary[];
 };
 
+export type WebPushSettings = {
+  enabled: boolean;
+  public_origin: string | null;
+  vapid_subject: string | null;
+  vapid_public_key: string | null;
+  key_revision: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type Group = {
   id: number;
   name: string;
