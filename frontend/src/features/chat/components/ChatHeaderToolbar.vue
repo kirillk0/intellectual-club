@@ -183,7 +183,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, type ComponentPublicInstance } from 'vue';
 
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
@@ -218,10 +218,12 @@ interface Props {
   handoffDisabled: boolean;
   showMissingToolsBanner: boolean;
   missingRequiredPerUserToolAliases: string[];
-  setMenuRef: (el: Element | null) => void;
-  setMenuAnchorRef: (el: Element | null) => void;
-  setMenuButtonRef: (el: Element | null) => void;
+  setMenuRef: (el: TemplateRefValue) => void;
+  setMenuAnchorRef: (el: TemplateRefValue) => void;
+  setMenuButtonRef: (el: TemplateRefValue) => void;
 }
+
+type TemplateRefValue = Element | ComponentPublicInstance | null;
 
 const props = withDefaults(defineProps<Props>(), {
   backTo: '/chats',
@@ -275,15 +277,15 @@ const appliedConfigText = computed(() => {
   return hit ? props.configLabel(hit) : `Config #${id}`;
 });
 
-const setMenuRef = (el: Element | null) => {
+const setMenuRef = (el: TemplateRefValue) => {
   props.setMenuRef(el);
 };
 
-const setMenuAnchorRef = (el: Element | null) => {
+const setMenuAnchorRef = (el: TemplateRefValue) => {
   props.setMenuAnchorRef(el);
 };
 
-const setMenuButtonRef = (el: Element | null) => {
+const setMenuButtonRef = (el: TemplateRefValue) => {
   props.setMenuButtonRef(el);
 };
 </script>

@@ -23,7 +23,7 @@
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
 
       <div class="card stack">
-        <div v-if="saveErrors.formErrors.length" class="error-text">{{ saveErrors.formErrors.join(' ') }}</div>
+        <div v-if="saveFormErrors.length" class="error-text">{{ saveFormErrors.join(' ') }}</div>
 
         <label :class="{ 'field-error': saveErrors.hasField('username') }">
           Username
@@ -78,10 +78,10 @@
       <div class="card stack">
         <h3 style="margin: 0">{{ isNew ? 'Initial password' : 'Reset password' }}</h3>
         <div
-          v-if="(isNew ? saveErrors.formErrors : resetErrors.formErrors).length"
+          v-if="activePasswordFormErrors.length"
           class="error-text"
         >
-          {{ (isNew ? saveErrors.formErrors : resetErrors.formErrors).join(' ') }}
+          {{ activePasswordFormErrors.join(' ') }}
         </div>
 
         <label :class="{ 'field-error': activePasswordErrors.hasField('password') }">
@@ -327,6 +327,9 @@ const availableGroups = ref<AdminUserGroupSummary[]>([]);
 
 const saveErrors = createErrorState();
 const resetErrors = createErrorState();
+const saveFormErrors = computed(() => saveErrors.formErrors.value);
+const resetFormErrors = computed(() => resetErrors.formErrors.value);
+const activePasswordFormErrors = computed(() => (isNew.value ? saveFormErrors.value : resetFormErrors.value));
 
 const baseDirty = useJsonDirtyCompare(() => form, () => base.value);
 const dirty = computed(() => {

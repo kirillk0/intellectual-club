@@ -140,7 +140,7 @@ interface Props {
   readonly?: boolean;
   chatBlocks: ChatBlockLink[];
   chatToolBindings: ChatToolBindingLink[];
-  chatVariables: Partial<ChatVariable>[];
+  chatVariables: ChatVariable[];
   toolLibrary: ToolInstanceOption[];
   newChatToolInstanceIds: number[];
   chatBlockName: (blockId: number) => string;
@@ -172,7 +172,7 @@ const emit = defineEmits<{
   (e: 'move-chat-tool-binding', binding: ChatToolBindingLink, delta: number): void;
   (e: 'remove-chat-tool-binding', bindingId: number): void;
   (e: 'set-chat-tool-binding-enabled', bindingId: number, enabled: boolean): void;
-  (e: 'update:chatVariables', value: Partial<ChatVariable>[]): void;
+  (e: 'update:chatVariables', value: ChatVariable[]): void;
   (e: 'add-variable-row'): void;
 }>();
 

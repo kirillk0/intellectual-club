@@ -83,7 +83,7 @@
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends { id: number; block: number; enabled: boolean; sequence: number }">
 import { computed, useSlots } from 'vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -100,11 +100,11 @@ const props = withDefaults(
   defineProps<{
     title: string;
     showHeader?: boolean;
-    items: LinkItem[];
+    items: T[];
     blockName: (blockId: number) => string;
     blockImage?: (blockId: number) => ImageAsset | null;
     blockVersion?: (blockId: number) => string | undefined;
-    metaText?: (item: LinkItem) => string;
+    metaText?: (item: T) => string;
     emptyText?: string;
     addLabel?: string;
     addDisabled?: boolean;
@@ -114,7 +114,7 @@ const props = withDefaults(
     readonly?: boolean;
     showToggle?: boolean;
     showActions?: boolean;
-    itemKey?: (item: LinkItem, index: number) => string | number;
+    itemKey?: (item: T, index: number) => string | number;
   }>(),
   {
     showHeader: true,
@@ -134,17 +134,17 @@ const emit = defineEmits<{
   (e: 'add'): void;
   (e: 'new'): void;
   (e: 'open', blockId: number): void;
-  (e: 'move', item: LinkItem, delta: number): void;
+  (e: 'move', item: T, delta: number): void;
   (e: 'remove', id: number): void;
-  (e: 'toggle', item: LinkItem, enabled: boolean): void;
+  (e: 'toggle', item: T, enabled: boolean): void;
 }>();
 
-const sortedItems = computed(() => [...(props.items || [])].sort((a, b) => a.sequence - b.sequence));
+const sortedItems = computed<T[]>(() => [...(props.items || [])].sort((a, b) => a.sequence - b.sequence));
 const slots = useSlots();
 
-const itemKey = (item: LinkItem, index: number) => props.itemKey?.(item, index) ?? item.id;
-const blockMeta = (item: LinkItem) => props.metaText?.(item) || '';
-const blockVersionText = (item: LinkItem) => {
+const itemKey = (item: T, index: number) => props.itemKey?.(item, index) ?? item.id;
+const blockMeta = (item: T) => props.metaText?.(item) || '';
+const blockVersionText = (item: T) => {
   if (blockMeta(item)) return '';
   return props.blockVersion?.(item.block) || '';
 };
@@ -154,9 +154,9 @@ const handleOpen = (blockId: number) => {
   emit('open', blockId);
 };
 
-const handleToggle = (item: LinkItem, event: Event) => {
+const handleToggle = (item: T, event: Event) => {
   const enabled = (event.target as HTMLInputElement | null)?.checked === true;
-  emit('toggle', { ...item, enabled }, enabled);
+  emit('toggle', item, enabled);
 };
 </script>
 

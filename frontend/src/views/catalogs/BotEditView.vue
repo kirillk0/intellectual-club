@@ -33,7 +33,7 @@
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
       <div class="card stack">
-        <div v-if="errors.formErrors.length" class="error-text">{{ errors.formErrors.join(' ') }}</div>
+        <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
         <label :class="{ 'field-error': errors.hasField('name') }">
           Name
@@ -76,14 +76,14 @@
 
         <div v-if="botTab === 'blocks'" class="stack">
           <BotKnowledgeBlocksSection
-            :resetKey="editor.idParam.value"
+            :resetKey="editor.idParam.value ?? 'new'"
             :items="bindings.draft.value"
             :knowledgeBlocks="knowledgeBlocks"
             :linkedBlockIds="linkedBlockIds"
             :bindingsLoaded="bindings.loaded.value"
             :bindingsLoading="bindings.loading.value"
             :bindingsError="bindings.error.value"
-            :saving="saving.value"
+            :saving="saving"
             :isNew="isNew"
             :sharedReadonly="sharedReadonly"
             :blockName="blockName"
@@ -102,7 +102,7 @@
           <BotToolsSection
             :isNew="isNew"
             :sharedReadonly="sharedReadonly"
-            :resetKey="editor.idParam.value"
+            :resetKey="editor.idParam.value ?? 'new'"
             :toolLibrary="toolLibrary"
             :ownedToolLibrary="ownedToolLibrary"
             :toolLibraryLoading="toolLibraryLoading"
@@ -862,6 +862,7 @@ useUnsavedChangesGuard(guardDirty);
 
 const form = editor.form;
 const errors = editor.errors;
+const formErrors = computed(() => errors.formErrors.value);
 const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;

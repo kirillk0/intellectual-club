@@ -138,7 +138,7 @@
                 :working-state="vm.workingStateFor(msg.id)"
                 :can-delete="vm.canDeleteMessage(msg, idx)"
                 :delete-title="vm.deleteMessageTitle(msg, idx)"
-                :register-ref="(el) => vm.setMessageRef(msg.id, el as HTMLElement | null)"
+                :register-ref="(el) => vm.setMessageRef(msg.id, el)"
                 @toggle-working="vm.toggleWorking(msg.id)"
                 @working-step-select="(stepId) => vm.selectWorkingStep(msg.id, stepId)"
                 @copy="vm.copyMessage(msg)"
@@ -289,7 +289,7 @@
                   :disabled="
                     vm.sending ||
                     vm.isConfigSyncPending ||
-                    (vm.activeGenerationId && vm.cancelingGenerationId === vm.activeGenerationId)
+	                    Boolean(vm.activeGenerationId && vm.cancelingGenerationId === vm.activeGenerationId)
                   "
                   :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
                   @pointerdown="vm.activeGenerationId ? vm.handleCancelPointerDown : null"
@@ -529,7 +529,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, reactive, ref, Teleport, watch } from 'vue';
+import { nextTick, reactive, ref, Teleport, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -564,6 +564,9 @@ const router = useRouter();
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
 
 const FOCUS_COMPOSER_QUERY_PARAM = 'focusComposer';
+type TemplateRefValue = Element | ComponentPublicInstance | null;
+
+const toHTMLElement = (el: TemplateRefValue) => (el instanceof HTMLElement ? el : null);
 
 function isFocusComposerQueryEnabled(value: unknown) {
   if (Array.isArray(value)) return value.some(isFocusComposerQueryEnabled);
@@ -606,14 +609,14 @@ const getChatWindowGridStyle = (): Record<string, string> =>
 const getLibraryGridStyle = (): Record<string, string> =>
   vm.isMobile ? {} : { gridColumn: vm.leftOpen ? '3' : '2' };
 
-const chatWindowRefEl = (el: Element | null) => {
-  vm.chatWindowRef = el as HTMLElement | null;
+const chatWindowRefEl = (el: TemplateRefValue) => {
+  vm.chatWindowRef = toHTMLElement(el);
 };
 
 const handoffPendingBannerRef = ref<HTMLElement | null>(null);
 
-const setHandoffPendingBannerRef = (el: Element | null) => {
-  handoffPendingBannerRef.value = el as HTMLElement | null;
+const setHandoffPendingBannerRef = (el: TemplateRefValue) => {
+  handoffPendingBannerRef.value = toHTMLElement(el);
 };
 
 watch(

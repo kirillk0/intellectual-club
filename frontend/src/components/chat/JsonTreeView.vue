@@ -40,7 +40,6 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  value: null,
   downloadFilename: 'payload.json',
   preserveExpandedOnValueChange: false,
 });

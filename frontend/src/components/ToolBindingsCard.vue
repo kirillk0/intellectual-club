@@ -93,7 +93,7 @@
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends { id: number; alias: string; enabled: boolean; sequence?: number; tool_instance_id?: number | null; shadowed?: boolean; shadowedReason?: string; source?: string }">
 import { computed, useSlots } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import ToolBindingListItem from '@/components/ToolBindingListItem.vue';
@@ -102,7 +102,7 @@ type ToolBindingItem = {
   id: number;
   alias: string;
   enabled: boolean;
-  sequence: number;
+  sequence?: number;
   tool_instance_id?: number | null;
   shadowed?: boolean;
   shadowedReason?: string;
@@ -114,12 +114,12 @@ const props = withDefaults(
   defineProps<{
     title?: string;
     showHeader?: boolean;
-    items: ToolBindingItem[];
-    toolLabel: (item: ToolBindingItem) => string;
-    toolText?: (item: ToolBindingItem) => string;
-    toolType?: (item: ToolBindingItem) => string | null | undefined;
-    toolIsOutlet?: (item: ToolBindingItem) => boolean;
-    toolIsOnline?: (item: ToolBindingItem) => boolean;
+    items: T[];
+    toolLabel: (item: T) => string;
+    toolText?: (item: T) => string;
+    toolType?: (item: T) => string | null | undefined;
+    toolIsOutlet?: (item: T) => boolean;
+    toolIsOnline?: (item: T) => boolean;
     emptyText?: string;
     toggleLabel?: string;
     readonly?: boolean;
@@ -128,8 +128,8 @@ const props = withDefaults(
     openable?: boolean;
     addLabel?: string;
     addDisabled?: boolean;
-    toggleDisabled?: (item: ToolBindingItem) => boolean;
-    actionsDisabled?: (item: ToolBindingItem) => boolean;
+    toggleDisabled?: (item: T) => boolean;
+    actionsDisabled?: (item: T) => boolean;
   }>(),
   {
     title: '',
@@ -149,32 +149,34 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'add'): void;
-  (e: 'move', item: ToolBindingItem, delta: number): void;
+  (e: 'move', item: T, delta: number): void;
   (e: 'remove', id: number): void;
-  (e: 'toggle', item: ToolBindingItem, enabled: boolean): void;
+  (e: 'toggle', item: T, enabled: boolean): void;
   (e: 'open', toolInstanceId: number): void;
 }>();
 
 const slots = useSlots();
 
-const sortedItems = computed(() => [...(props.items || [])].sort((a, b) => a.sequence - b.sequence || a.id - b.id));
+const sortedItems = computed<T[]>(() =>
+  [...(props.items || [])].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0) || a.id - b.id)
+);
 
-const handleToggle = (item: ToolBindingItem, event: Event) => {
+const handleToggle = (item: T, event: Event) => {
   const target = event.target as HTMLInputElement | null;
   emit('toggle', item, Boolean(target?.checked));
 };
-const handleOpen = (item: ToolBindingItem) => {
+const handleOpen = (item: T) => {
   if (!props.openable) return;
   const toolInstanceId = Number(item.tool_instance_id || 0);
   if (!toolInstanceId) return;
   emit('open', toolInstanceId);
 };
 
-const toggleDisabled = (item: ToolBindingItem) => props.toggleDisabled?.(item) ?? false;
-const actionsDisabled = (item: ToolBindingItem) => props.actionsDisabled?.(item) ?? false;
-const isShadowed = (item: ToolBindingItem) => item.shadowed === true;
-const itemKey = (item: ToolBindingItem) => `${item.source || 'binding'}:${item.id}`;
-const toolText = (item: ToolBindingItem) => {
+const toggleDisabled = (item: T) => props.toggleDisabled?.(item) ?? false;
+const actionsDisabled = (item: T) => props.actionsDisabled?.(item) ?? false;
+const isShadowed = (item: T) => item.shadowed === true;
+const itemKey = (item: T) => `${item.source || 'binding'}:${item.id}`;
+const toolText = (item: T) => {
   const explicit = props.toolText?.(item);
   if (explicit) return explicit;
 
@@ -185,7 +187,7 @@ const toolText = (item: ToolBindingItem) => {
   const [, name, type] = match;
   return item.alias ? `${name} (${item.alias}) - ${type}` : `${name} - ${type}`;
 };
-const toolTextParts = (item: ToolBindingItem) => {
+const toolTextParts = (item: T) => {
   const text = toolText(item);
   const separatorIndex = text.lastIndexOf(' - ');
   const primary = separatorIndex < 0 ? text : text.slice(0, separatorIndex);
@@ -196,11 +198,11 @@ const toolTextParts = (item: ToolBindingItem) => {
     ? { name: aliasMatch[1], alias: aliasMatch[2], type }
     : { name: primary, alias: '', type };
 };
-const toolNameText = (item: ToolBindingItem) => toolTextParts(item).name;
-const toolAliasText = (item: ToolBindingItem) => toolTextParts(item).alias;
-const toolTypeText = (item: ToolBindingItem) => toolTextParts(item).type;
-const toolTypeValue = (item: ToolBindingItem) => props.toolType?.(item) || toolTypeText(item);
-const shadowedReason = (item: ToolBindingItem) =>
+const toolNameText = (item: T) => toolTextParts(item).name;
+const toolAliasText = (item: T) => toolTextParts(item).alias;
+const toolTypeText = (item: T) => toolTextParts(item).type;
+const toolTypeValue = (item: T) => props.toolType?.(item) || toolTypeText(item);
+const shadowedReason = (item: T) =>
   typeof item.shadowedReason === 'string' && item.shadowedReason.trim()
     ? item.shadowedReason
     : 'Another enabled tool with this alias has priority.';

@@ -8,7 +8,7 @@
         :disabled="disabled"
         autocomplete="off"
         aria-autocomplete="list"
-        :aria-expanded="options.length ? String(menuOpen) : undefined"
+        :aria-expanded="options.length ? menuOpen : undefined"
         aria-haspopup="listbox"
         @focus="openMenu"
         @input="handleInput"
@@ -20,7 +20,7 @@
         type="button"
         class="combo-box__toggle"
         :disabled="disabled"
-        :aria-expanded="String(menuOpen)"
+        :aria-expanded="menuOpen"
         :aria-label="toggleLabel"
         @click="toggleMenu"
       >

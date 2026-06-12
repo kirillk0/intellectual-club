@@ -112,6 +112,7 @@ const modalAriaLabelledby = computed(() => {
 const resolvedModalStyle = computed<StyleValue>(() => {
   const maxWidthStyle = props.maxWidth ? ({ maxWidth: props.maxWidth } satisfies CSSProperties) : null;
   if (!props.modalStyle) return maxWidthStyle;
+  if (Array.isArray(props.modalStyle)) return maxWidthStyle ? [...props.modalStyle, maxWidthStyle] : props.modalStyle;
   return maxWidthStyle ? [props.modalStyle, maxWidthStyle] : props.modalStyle;
 });
 

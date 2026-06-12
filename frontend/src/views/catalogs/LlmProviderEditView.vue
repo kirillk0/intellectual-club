@@ -34,7 +34,7 @@
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
       <div class="card stack">
-        <div v-if="errors.formErrors.length" class="error-text">{{ errors.formErrors.join(' ') }}</div>
+        <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
         <label :class="{ 'field-error': errors.hasField('name') }">
           Name
@@ -319,6 +319,7 @@ useUnsavedChangesGuard(editor.dirty);
 
 const form = editor.form;
 const errors = editor.errors;
+const formErrors = computed(() => errors.formErrors.value);
 const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;

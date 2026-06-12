@@ -63,13 +63,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { Teleport } from 'vue';
 
 export type LlmConfigurationTagListItem = {
   id: number;
   name: string;
 };
+
+type TemplateRefValue = Element | ComponentPublicInstance | null;
 
 const props = withDefaults(
   defineProps<{
@@ -130,7 +132,7 @@ const actionMenuTag = computed(() => {
 const isSelected = (tagId: number) => props.selectedId === tagId || selectedIdsSet.value.has(tagId);
 const isDisabled = (tagId: number) => disabledIdsSet.value.has(tagId);
 
-function setActionButtonRef(tagId: number, element: Element | null) {
+function setActionButtonRef(tagId: number, element: TemplateRefValue) {
   if (element instanceof HTMLElement) {
     actionButtonRefs.set(tagId, element);
     return;

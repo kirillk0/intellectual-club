@@ -6,7 +6,7 @@
       :disabled="disabled"
       :title="title"
       aria-haspopup="listbox"
-      :aria-expanded="String(menuOpen)"
+      :aria-expanded="menuOpen"
       @click.stop="toggleMenu"
       @keydown.down.prevent="openMenu"
       @keydown.enter.prevent="toggleMenu"
@@ -25,7 +25,7 @@
         class="tool-type-select__option"
         :class="{ active: option.type === modelValue }"
         role="option"
-        :aria-selected="String(option.type === modelValue)"
+        :aria-selected="option.type === modelValue"
         @click.stop="selectOption(option.type)"
       >
         <span v-if="option.type === modelValue" class="tool-type-select__check" aria-hidden="true">✓</span>

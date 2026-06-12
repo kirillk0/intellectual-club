@@ -166,7 +166,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeBlocksMarkdownExportModal from '@/components/KnowledgeBlocksMarkdownExportModal.vue';
@@ -446,13 +446,13 @@ function formatImportSummary(summary: MarkdownImportSummary) {
 
 function selectTag(id: number) {
   const current = selectedTagId.value;
-  const next = { ...route.query };
-  delete (next as any).no_tags;
+  const next: LocationQueryRaw = { ...route.query };
+  delete next.no_tags;
 
   if (current === id) {
-    delete (next as any).tag;
+    delete next.tag;
   } else {
-    (next as any).tag = String(id);
+    next.tag = String(id);
   }
 
   router.replace({ query: next }).catch(() => {});
@@ -460,22 +460,22 @@ function selectTag(id: number) {
 }
 
 function selectNoTags() {
-  const next = { ...route.query };
+  const next: LocationQueryRaw = { ...route.query };
   const isSelected = selectedNoTags.value;
 
-  delete (next as any).tag;
+  delete next.tag;
 
-  if (isSelected) delete (next as any).no_tags;
-  else (next as any).no_tags = 'true';
+  if (isSelected) delete next.no_tags;
+  else next.no_tags = 'true';
 
   router.replace({ query: next }).catch(() => {});
   if (isMobile.value) closeTagsOverlay();
 }
 
 function clearTag() {
-  const next = { ...route.query };
-  delete (next as any).tag;
-  delete (next as any).no_tags;
+  const next: LocationQueryRaw = { ...route.query };
+  delete next.tag;
+  delete next.no_tags;
   router.replace({ query: next }).catch(() => {});
   if (isMobile.value) closeTagsOverlay();
 }
@@ -489,7 +489,7 @@ function openBlock(id: number) {
 function createBlock() {
   const ids = visibleBlocks.value.map((b) => b.id);
   const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  const query: Record<string, unknown> = { navKey, returnTo: route.fullPath };
+  const query: LocationQueryRaw = { navKey, returnTo: route.fullPath };
   if (selectedTagId.value && !selectedNoTags.value) query.defaultTagId = String(selectedTagId.value);
   router.push({ path: `/catalogs/knowledge-blocks/new`, query });
 }

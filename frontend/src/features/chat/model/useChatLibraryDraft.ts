@@ -66,6 +66,21 @@ const toChatToolBindingLinks = (bindings: ChatToolBinding[]) =>
 const normalizeSequences = (items: ChatBlockLink[]) => [...items].map((item, idx) => ({ ...item, sequence: idx }));
 const cloneChatBlocks = (items: ChatBlockLink[]) => (items || []).map((item) => ({ ...item }));
 const cloneChatToolBindings = (items: ChatToolBindingLink[]) => (items || []).map((item) => ({ ...item }));
+const cloneChatVariables = (items: ChatVariable[]) => (items || []).map((item) => ({ ...item }));
+const normalizeChatVariables = (items: Partial<ChatVariable>[]): ChatVariable[] =>
+  (items || []).map((item) => ({
+    key: String(item.key ?? ''),
+    value: String(item.value ?? ''),
+  }));
+
+const toOptionalInt = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+  }
+  return null;
+};
 
 export function useChatLibraryDraft(params: Params) {
   const chatBlocksOriginal = ref<ChatBlockLink[]>([]);
@@ -76,8 +91,8 @@ export function useChatLibraryDraft(params: Params) {
   const chatToolBindingsDraft = ref<ChatToolBindingLink[]>([]);
   let tempChatToolBindingId = -1;
 
-  const chatVariablesOriginal = ref<Partial<ChatVariable>[]>([]);
-  const chatVariables = ref<Partial<ChatVariable>[]>([]);
+  const chatVariablesOriginal = ref<ChatVariable[]>([]);
+  const chatVariables = ref<ChatVariable[]>([]);
 
   const savingChatChanges = ref(false);
   const newChatToolInstanceIds = ref<number[]>([]);
@@ -113,14 +128,14 @@ export function useChatLibraryDraft(params: Params) {
     chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
     chatToolBindingsOriginal.value = normalizeToolBindingSequences(toChatToolBindingLinks(chatToolBindings || []));
     chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
-    chatVariablesOriginal.value = (variables || []).map((item) => ({ ...item }));
-    chatVariables.value = chatVariablesOriginal.value.map((item) => ({ ...item }));
+    chatVariablesOriginal.value = normalizeChatVariables(variables || []);
+    chatVariables.value = cloneChatVariables(chatVariablesOriginal.value);
     newChatToolInstanceIds.value = [];
   };
 
   const cancelChatChanges = () => {
     if (params.readOnly.value) return;
-    chatVariables.value = chatVariablesOriginal.value.map((item) => ({ ...item }));
+    chatVariables.value = cloneChatVariables(chatVariablesOriginal.value);
     chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
     chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
     newChatToolInstanceIds.value = [];
@@ -321,7 +336,7 @@ export function useChatLibraryDraft(params: Params) {
             name: String(attrs.name || ''),
             image: parseImageAsset(attrs.image),
             version: typeof attrs.version === 'string' ? attrs.version : null,
-            token_count: typeof attrs.token_count === 'number' ? attrs.token_count : toIntId(attrs.token_count as any),
+            token_count: toOptionalInt(attrs.token_count),
           } satisfies KnowledgeBlock;
         })
         .filter((block): block is KnowledgeBlock => Boolean(block));

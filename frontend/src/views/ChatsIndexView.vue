@@ -425,7 +425,7 @@ const botFilterOptions = computed<BotFilterOption[]>(() => {
     botMapById.set(bot.id, bot);
   }
 
-  const options = (chatListStats.value.bots || [])
+  const options: BotFilterOption[] = (chatListStats.value.bots || [])
     .filter((stat) => Number.isInteger(stat.bot_id) && stat.bot_id > 0 && stat.chat_count > 0)
     .map((stat) => {
       const bot = botMapById.get(stat.bot_id);

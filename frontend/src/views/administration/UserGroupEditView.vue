@@ -23,7 +23,7 @@
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
 
       <div class="card stack">
-        <div v-if="saveErrors.formErrors.length" class="error-text">{{ saveErrors.formErrors.join(' ') }}</div>
+        <div v-if="saveFormErrors.length" class="error-text">{{ saveFormErrors.join(' ') }}</div>
 
         <label :class="{ 'field-error': saveErrors.hasField('name') }">
           Name
@@ -268,6 +268,7 @@ const usersError = ref<string | null>(null);
 const availableUsers = ref<AdminUser[]>([]);
 
 const saveErrors = createErrorState();
+const saveFormErrors = computed(() => saveErrors.formErrors.value);
 
 const dirty = useJsonDirtyCompare(() => form, () => base.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);

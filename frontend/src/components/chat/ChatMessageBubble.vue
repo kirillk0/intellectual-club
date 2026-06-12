@@ -115,7 +115,7 @@
             class="icon-button message-action"
             type="button"
             aria-haspopup="menu"
-            :aria-expanded="String(moreMenuOpen)"
+            :aria-expanded="moreMenuOpen"
             :aria-label="`More actions for message ${index + 1}`"
             title="More actions"
             @click.stop="toggleMoreMenu"
@@ -199,7 +199,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
@@ -227,6 +227,8 @@ interface Props {
   readonly?: boolean;
   registerRef?: (el: HTMLElement | null) => void;
 }
+
+type TemplateRefValue = Element | ComponentPublicInstance | null;
 
 const props = withDefaults(defineProps<Props>(), {
   metaLabel: '—',
@@ -261,7 +263,7 @@ const emit = defineEmits<{
 
 const msg = computed(() => props.message);
 const messageId = computed(() => msg.value.id ?? null);
-const bookmarkPressed = computed(() => String(Boolean(msg.value.bookmarked)));
+const bookmarkPressed = computed(() => Boolean(msg.value.bookmarked));
 const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
 );
@@ -488,8 +490,8 @@ const totalCostLabel = computed(() => {
     .replace(/\.0+$/u, '');
 });
 
-const setBubbleEl = (el: Element | null) => {
-  props.registerRef?.(el as HTMLElement | null);
+const setBubbleEl = (el: TemplateRefValue) => {
+  props.registerRef?.(el instanceof HTMLElement ? el : null);
 };
 
 const setCopyButtonState = (button: HTMLButtonElement, copied: boolean) => {

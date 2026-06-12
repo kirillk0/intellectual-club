@@ -140,10 +140,8 @@ const props = withDefaults(defineProps<Props>(), {
   showResponse: false,
   requestLoading: false,
   requestError: '',
-  requestPayload: null,
   responseLoading: false,
   responseError: '',
-  responsePayload: null,
   retryFromStepPending: false,
 });
 

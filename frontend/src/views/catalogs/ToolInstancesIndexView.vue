@@ -28,7 +28,7 @@
                 type="button"
                 class="type-filter-option"
                 :class="{ active: !selectedToolType }"
-                :aria-pressed="String(!selectedToolType)"
+                :aria-pressed="!selectedToolType"
                 @click="clearType"
               >
                 <span class="type-filter-option__label">
@@ -43,7 +43,7 @@
                 type="button"
                 class="type-filter-option"
                 :class="{ active: selectedToolType === option.type }"
-                :aria-pressed="String(selectedToolType === option.type)"
+                :aria-pressed="selectedToolType === option.type"
                 @click="selectType(option.type)"
               >
                 <span class="type-filter-option__label">
@@ -140,7 +140,7 @@
             type="button"
             class="type-filter-option"
             :class="{ active: !selectedToolType }"
-            :aria-pressed="String(!selectedToolType)"
+            :aria-pressed="!selectedToolType"
             @click="clearType"
           >
             <span class="type-filter-option__label">
@@ -155,7 +155,7 @@
             type="button"
             class="type-filter-option"
             :class="{ active: selectedToolType === option.type }"
-            :aria-pressed="String(selectedToolType === option.type)"
+            :aria-pressed="selectedToolType === option.type"
             @click="selectType(option.type)"
           >
             <span class="type-filter-option__label">

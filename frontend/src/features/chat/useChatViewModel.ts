@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
@@ -146,16 +146,20 @@ export function useChatViewModel() {
   const shareLoading = ref(false);
   const shareSaving = ref(false);
 
-  const setMenuRef = (el: Element | null) => {
-    ui.menuRef.value = el as HTMLElement | null;
+  type TemplateRefValue = Element | ComponentPublicInstance | null;
+
+  const toHTMLElement = (el: TemplateRefValue) => (el instanceof HTMLElement ? el : null);
+
+  const setMenuRef = (el: TemplateRefValue) => {
+    ui.menuRef.value = toHTMLElement(el);
   };
 
-  const setMenuAnchorRef = (el: Element | null) => {
-    ui.menuAnchorRef.value = el as HTMLElement | null;
+  const setMenuAnchorRef = (el: TemplateRefValue) => {
+    ui.menuAnchorRef.value = toHTMLElement(el);
   };
 
-  const setMenuButtonRef = (el: Element | null) => {
-    ui.menuButtonRef.value = el as HTMLElement | null;
+  const setMenuButtonRef = (el: TemplateRefValue) => {
+    ui.menuButtonRef.value = toHTMLElement(el);
   };
 
   const refreshPromptContextFromServer = async () => {

@@ -164,7 +164,7 @@ const toggleBotSortMode = () => {
 };
 
 const choices = computed<BotSelectorOption[]>(() => {
-  const base = props.options?.length
+  const base: BotSelectorOption[] = props.options?.length
     ? props.options
     : [
         { id: '', name: 'No bot' },

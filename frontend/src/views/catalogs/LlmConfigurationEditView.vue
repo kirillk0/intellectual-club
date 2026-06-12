@@ -33,7 +33,7 @@
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
       <div class="card stack">
-        <div v-if="errors.formErrors.length" class="error-text">{{ errors.formErrors.join(' ') }}</div>
+        <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
         <div class="stack">
           <label :class="{ 'field-error': errors.hasField('provider_id') }">
@@ -205,10 +205,10 @@
             :blockImage="blockImage"
             :blockVersion="blockVersion"
             :metaText="blockMetaText"
-            :addDisabled="!bindings.loaded.value || bindings.loading.value || saving.value || sharedReadonly"
-            :newDisabled="saving.value || sharedReadonly"
+            :addDisabled="!bindings.loaded.value || bindings.loading.value || saving || sharedReadonly"
+            :newDisabled="saving || sharedReadonly"
             :openable="true"
-            :readonly="!bindings.loaded.value || bindings.loading.value || saving.value || sharedReadonly"
+            :readonly="!bindings.loaded.value || bindings.loading.value || saving || sharedReadonly"
             @add="openPicker"
             @new="openNewBlock"
             @open="openBlockEditor"
@@ -220,7 +220,7 @@
               <button
                 type="button"
                 class="kb-placement-toggle"
-                :disabled="!bindings.loaded.value || bindings.loading.value || saving.value || sharedReadonly"
+                :disabled="!bindings.loaded.value || bindings.loading.value || saving || sharedReadonly"
                 :aria-label="placementButtonLabel(item)"
                 :title="placementButtonLabel(item)"
                 @click.stop="toggleBindingSelection(item.id)"
@@ -639,6 +639,7 @@ useUnsavedChangesGuard(guardDirty);
 
 const form = editor.form;
 const errors = editor.errors;
+const formErrors = computed(() => errors.formErrors.value);
 const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;

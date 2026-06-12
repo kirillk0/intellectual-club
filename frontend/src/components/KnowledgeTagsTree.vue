@@ -79,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { Teleport } from 'vue';
 
 export type KnowledgeTagTreeItem = {
@@ -90,6 +90,7 @@ export type KnowledgeTagTreeItem = {
 };
 
 type OpenState = Record<string, boolean>;
+type TemplateRefValue = Element | ComponentPublicInstance | null;
 
 type TreeRow = {
   tag: KnowledgeTagTreeItem;
@@ -318,7 +319,7 @@ function toggleOpen(id: number, currentOpen: boolean) {
   persistOpenState(next);
 }
 
-function setActionButtonRef(tagId: number, element: Element | null) {
+function setActionButtonRef(tagId: number, element: TemplateRefValue) {
   if (element instanceof HTMLElement) {
     actionButtonRefs.set(tagId, element);
     return;
