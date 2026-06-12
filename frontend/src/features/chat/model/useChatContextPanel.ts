@@ -11,7 +11,7 @@ import type {
   LinkedBlock,
 } from '@/features/chat/types';
 import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
-import type { Bot, ChatBranchMessage, LlmConfiguration } from '@/types/api';
+import type { ActiveToolBinding as ApiActiveToolBinding, Bot, ChatBranchMessage, LlmConfiguration } from '@/types/api';
 import type { PromptBinding, PromptBlock } from '@/features/chat/model/chatViewModel.shared';
 
 type Params = {
@@ -278,7 +278,7 @@ export function useChatContextPanel(params: Params) {
   const activeToolInstances = ref<ActiveToolInstance[]>([]);
   const activeToolBindings = ref<ActiveToolBinding[]>([]);
 
-  const hydrate = (payload: { activeToolInstances: ActiveToolInstance[]; activeToolBindings: ActiveToolBinding[] }) => {
+  const hydrate = (payload: { activeToolInstances: ActiveToolInstance[]; activeToolBindings: ApiActiveToolBinding[] }) => {
     activeToolInstances.value = payload.activeToolInstances || [];
     activeToolBindings.value = (payload.activeToolBindings || []).map((binding) => ({
       ...binding,

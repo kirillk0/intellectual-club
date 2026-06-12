@@ -33,6 +33,17 @@ type Params = {
   refreshPromptContext: () => Promise<void>;
 };
 
+type ChatBotOption = {
+  id: number | '';
+  name: string;
+  image?: Bot['image'];
+  shared_incoming?: Bot['shared_incoming'];
+  shared_outgoing?: Bot['shared_outgoing'];
+  created_at?: string | null;
+  updated_at?: string | null;
+  sort_activity_at?: string | null;
+};
+
 export function useChatHeaderControls(params: Params) {
   const selectedConfig = ref<number | ''>('');
   const botSortMode = useBotSortPreference();
@@ -247,7 +258,7 @@ export function useChatHeaderControls(params: Params) {
     return params.chat.value?.updated_at ?? params.chat.value?.created_at ?? null;
   });
 
-  const createChatBotOptions = computed(() => [
+  const createChatBotOptions = computed<ChatBotOption[]>(() => [
     {
       id: '',
       name: 'No bot',

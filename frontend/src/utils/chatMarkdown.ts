@@ -1,4 +1,4 @@
-import DOMPurify from 'dompurify';
+import DOMPurify, { type Config } from 'dompurify';
 import { marked } from 'marked';
 import Temml, { type Options as TemmlOptions } from 'temml';
 
@@ -118,7 +118,7 @@ const normalizeChatMarkdown = (input: string) => {
   return normalized.join('\n');
 };
 
-const SANITIZE_OPTIONS = {
+const SANITIZE_OPTIONS: Config = {
   USE_PROFILES: { html: true, mathMl: true },
   FORBID_TAGS: [
     'style',
@@ -133,7 +133,7 @@ const SANITIZE_OPTIONS = {
     'frameset',
   ],
   FORBID_ATTR: ['style', 'srcset', 'formaction'],
-} as const;
+};
 
 const findNextMathDelimiter = (text: string, startIndex: number) => {
   for (let index = startIndex; index < text.length; index += 1) {

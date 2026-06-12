@@ -1,4 +1,4 @@
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch, type Reactive } from 'vue';
 import { useRoute } from 'vue-router';
 import type { JsonApiResource, JsonApiSingleResponse } from '@/api/jsonApi';
 import {
@@ -20,6 +20,8 @@ function deepClone<T>(value: T): T {
 }
 
 type QueryValue = string | number | boolean | null | undefined;
+type CrudFormState<TForm extends Record<string, unknown>> = Reactive<TForm>;
+type CrudDirtyForm<TForm extends Record<string, unknown>> = TForm | CrudFormState<TForm>;
 
 function pickQuery(query: Record<string, QueryValue>) {
   const out: Record<string, string> = {};
@@ -47,8 +49,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   editPath: (id: number | 'new') => string;
   defaultForm: () => TForm;
   fromApi: (resource: JsonApiResource) => Partial<TForm>;
-  toAttributes: (form: TForm) => Record<string, unknown>;
-  normalizeForDirty?: (form: TForm) => unknown;
+  toAttributes: (form: CrudFormState<TForm>) => Record<string, unknown>;
+  normalizeForDirty?: (form: CrudDirtyForm<TForm>) => unknown;
   duplicatePath?: (id: number) => string;
   preserveQueryKeys?: string[];
   documentQuery?: (context: { mode: 'load' | 'save' | 'duplicate' }) => URLSearchParams | undefined;
