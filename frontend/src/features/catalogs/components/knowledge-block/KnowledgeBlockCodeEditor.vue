@@ -57,6 +57,24 @@ function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
+const markdownHeadingPattern = /^ {0,3}(#{1,6})(?:\s|$)/;
+
+function contentLineClass(line: string) {
+  if (line.startsWith(COMMENT_PREFIX)) return 'knowledge-block-content-editor__comment';
+
+  const heading = line.match(markdownHeadingPattern);
+  if (!heading) return 'knowledge-block-content-editor__plain';
+
+  const level = heading[1].length;
+  if (level <= 2) {
+    return 'knowledge-block-content-editor__heading knowledge-block-content-editor__heading--strong';
+  }
+
+  if (level === 3) return 'knowledge-block-content-editor__heading';
+
+  return 'knowledge-block-content-editor__heading knowledge-block-content-editor__heading--emphasis';
+}
+
 const contentHighlightHtml = computed(() => {
   const text = String(props.content || '');
   if (text === '') return '&nbsp;';
@@ -65,9 +83,8 @@ const contentHighlightHtml = computed(() => {
     .split('\n')
     .map((line) => {
       const escaped = escapeHtml(line) || '&nbsp;';
-      return line.startsWith(COMMENT_PREFIX)
-        ? `<span class="knowledge-block-content-editor__comment">${escaped}</span>`
-        : `<span class="knowledge-block-content-editor__plain">${escaped}</span>`;
+      const className = contentLineClass(line);
+      return `<span class="${className}">${escaped}</span>`;
     })
     .join('\n');
 
@@ -337,6 +354,18 @@ defineExpose({
 
 :deep(.knowledge-block-content-editor__comment) {
   color: var(--color-text-subtle);
+}
+
+:deep(.knowledge-block-content-editor__heading) {
+  color: var(--color-link);
+}
+
+:deep(.knowledge-block-content-editor__heading--strong) {
+  font-weight: 700;
+}
+
+:deep(.knowledge-block-content-editor__heading--emphasis) {
+  font-style: italic;
 }
 
 :deep(.knowledge-block-content-editor__plain) {
