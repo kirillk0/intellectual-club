@@ -242,6 +242,9 @@ export function useChatViewModel() {
     scrollToLastMessage: contextPanel.scrollToLastMessage,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
+    onGenerationSettled: async () => {
+      await loadChatSafe({ mode: 'soft', includeSettings: false });
+    },
   });
 
   const messageActions = useChatMessageActions({

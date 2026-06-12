@@ -43,6 +43,7 @@ type Params = {
   scrollToLastMessage: ScrollToLastMessage;
   getOpenWorkingPollRequest?: (messageId: number) => string | null;
   applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
+  onGenerationSettled?: (messageId: number, status: string) => Promise<void> | void;
 };
 
 export function useChatComposerRuntime(params: Params) {
@@ -550,6 +551,7 @@ export function useChatComposerRuntime(params: Params) {
         if (params.activeGenerationId.value === messageId) params.activeGenerationId.value = null;
         if (params.cancelingGenerationId.value === messageId) params.cancelingGenerationId.value = null;
         stopPolling();
+        await params.onGenerationSettled?.(messageId, response.status);
         return false;
       }
 
