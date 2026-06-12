@@ -84,6 +84,42 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert final_step.id != old_step.id
   end
 
+  test "recover_orphaned_generations cancels generating message without steps" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Recover malformed orphaned", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    generating_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    message =
+      Ash.get!(ChatMessage, generating_message.id,
+        actor: actor,
+        load: [:steps]
+      )
+
+    assert message.status == :canceled
+    assert message.error_detail == "Orphaned generation (worker not found)"
+    assert message.steps == []
+  end
+
   test "recover_orphaned_generations finalizes generating message with completed final step" do
     %{user: actor} = user_fixture()
 

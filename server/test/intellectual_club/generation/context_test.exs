@@ -192,6 +192,45 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.messages == [%{"role" => "user", "content" => "Only history"}]
   end
 
+  test "build creates the generating assistant message and initial step together" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{title: "Initial step chat", note: "", variables: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Only history", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert is_integer(context.message_id)
+    assert is_integer(context.step_id)
+
+    message =
+      Ash.get!(ChatMessage, context.message_id,
+        actor: actor,
+        load: [:chat, :steps]
+      )
+
+    steps = Enum.sort_by(message.steps || [], & &1.sequence)
+
+    assert message.status == :generating
+    assert message.chat.last_message_id == message.id
+    assert Enum.map(steps, & &1.id) == [context.step_id]
+
+    [step] = steps
+    assert step.chat_message_id == context.message_id
+    assert step.sequence == 1
+    assert step.status == :waiting_provider
+    assert step.raw_request == context.request_payload
+    assert step.finished_at == nil
+  end
+
   test "passes fix role alteration from llm configuration into initial provider request" do
     %{user: actor} = user_fixture()
 

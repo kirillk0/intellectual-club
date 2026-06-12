@@ -13,6 +13,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Db
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
@@ -362,25 +363,21 @@ defmodule IntellectualClub.Generation.Context do
            messages, cache_control_enabled, history_length, adapter_module}
       end
 
-    generating_message_params = %{
-      chat_id: chat_id,
-      parent_id: target_parent_id,
-      llm_configuration_id: chat.llm_configuration_id,
-      token_count: 0
-    }
-
-    generating_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(:create_generating_assistant, generating_message_params,
-        actor: actor
+    {generating_message, initial_step} =
+      persist_initial_generation!(
+        chat_id,
+        target_parent_id,
+        chat.llm_configuration_id,
+        request_payload,
+        actor
       )
-      |> Ash.create!()
 
     %__MODULE__{
       owner_id: actor && actor.id,
       chat_id: chat_id,
       bot_id: chat.bot_id,
       message_id: generating_message.id,
+      step_id: initial_step.id,
       llm_configuration_id: chat.llm_configuration_id,
       history_mode: history_mode,
       history: history_entries,
@@ -410,6 +407,8 @@ defmodule IntellectualClub.Generation.Context do
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
       history_length: history_length,
+      initial_step_sequence: initial_step.sequence,
+      initial_step_status: initial_step.status,
       completion_effect: Keyword.get(opts, :completion_effect),
       chunk_delay_ms:
         Keyword.get(
@@ -419,6 +418,63 @@ defmodule IntellectualClub.Generation.Context do
         )
     }
   end
+
+  defp persist_initial_generation!(
+         chat_id,
+         target_parent_id,
+         llm_configuration_id,
+         request_payload,
+         actor
+       ) do
+    case Db.repo().transaction(fn ->
+           generating_message_params = %{
+             chat_id: chat_id,
+             parent_id: target_parent_id,
+             llm_configuration_id: llm_configuration_id,
+             token_count: 0
+           }
+
+           generating_message =
+             ChatMessage
+             |> Ash.Changeset.for_create(:create_generating_assistant, generating_message_params,
+               actor: actor
+             )
+             |> Ash.create!(actor: actor)
+
+           initial_step =
+             ChatMessageStep
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 chat_message_id: generating_message.id,
+                 sequence: 1,
+                 status: :waiting_provider,
+                 raw_request: normalize_initial_step_request(request_payload),
+                 raw_response: nil,
+                 response_final: false,
+                 input_tokens: nil,
+                 output_tokens: nil,
+                 cached_input_tokens: nil,
+                 reasoning_tokens: nil,
+                 cost: nil,
+                 first_token_at: nil,
+                 finished_at: nil
+               },
+               actor: actor
+             )
+             |> Ash.create!(actor: actor)
+
+           {generating_message, initial_step}
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "Failed to persist initial generation: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_initial_step_request(%{} = value), do: Map.new(value)
+  defp normalize_initial_step_request(nil), do: %{}
+  defp normalize_initial_step_request(value) when is_list(value), do: %{"items" => value}
+  defp normalize_initial_step_request(value), do: %{"raw" => value}
 
   defp project_message_text(message) do
     role = Map.get(message, :role)

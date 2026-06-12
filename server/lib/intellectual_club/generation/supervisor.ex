@@ -33,10 +33,6 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok = Persistence.cancel_orphaned_generating_messages!(chat_id)
 
     context = Context.build!(chat_id, opts)
-
-    step_id = Persistence.ensure_step_started!(context.message_id, context.request_payload || %{})
-    context = %{context | step_id: step_id}
-
     start_worker(context)
   end
 
@@ -214,6 +210,13 @@ defmodule IntellectualClub.Generation.Supervisor do
 
           {:error, :already_running} ->
             :ok
+
+          {:error, :no_steps_to_retry} ->
+            :ok = Persistence.cancel_orphaned_generating_message!(message_id)
+
+            Logger.info(
+              "Canceled orphaned generation without retryable steps message_id=#{message_id}"
+            )
 
           {:error, reason} ->
             Logger.warning(
