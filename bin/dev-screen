@@ -15,6 +15,26 @@ SERVER_SCRIPT="${REPO_ROOT}/bin/run-dev-server"
 LOG_FILE="${IC_V2_LOG_FILE:-${REPO_ROOT}/assets/logs/dev-screen.log}"
 START_TIMEOUT_SECONDS="${IC_V2_START_TIMEOUT_SECONDS:-20}"
 START_STABILITY_POLLS="${IC_V2_START_STABILITY_POLLS:-2}"
+NODE_VERSION_FILE="${REPO_ROOT}/.nvmrc"
+
+node_bin_dir() {
+  local major
+  local prefix
+  local requested
+
+  [[ -f "${NODE_VERSION_FILE}" ]] || return 0
+
+  requested="$(tr -d '[:space:]v' < "${NODE_VERSION_FILE}")"
+  major="${requested%%.*}"
+  [[ -n "${major}" ]] || return 0
+
+  for prefix in /opt/homebrew /usr/local; do
+    if [[ -x "${prefix}/opt/node@${major}/bin/node" ]]; then
+      printf '%s\n' "${prefix}/opt/node@${major}/bin"
+      return 0
+    fi
+  done
+}
 
 ensure_runtime_dirs() {
   mkdir -p "${SCREEN_DIR}" "$(dirname -- "${PID_FILE}")" "$(dirname -- "${LOG_FILE}")"
@@ -241,9 +261,18 @@ status() {
 }
 
 start() {
+  local launch_path
+  local node_bin
+
   if screen_running || [[ -n "$(port_pids)" ]]; then
     printf 'Server already appears to be running. Use restart or stop first.\n' >&2
     exit 1
+  fi
+
+  launch_path="${PATH}"
+  node_bin="$(node_bin_dir)"
+  if [[ -n "${node_bin}" ]]; then
+    launch_path="${node_bin}:${launch_path}"
   fi
 
   ensure_runtime_dirs
@@ -251,7 +280,7 @@ start() {
   cleanup_orphan_watchers
   rm -f "${PID_FILE}"
   : > "${LOG_FILE}"
-  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "cd '${REPO_ROOT}' && PORT='${PORT}' IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}' >> '${LOG_FILE}' 2>&1"
+  screen_cmd -S "${SESSION_NAME}" -dm bash -lc "export PATH='${launch_path}'; cd '${REPO_ROOT}' && PORT='${PORT}' IC_V2_SCREEN_NAME='${SESSION_NAME}' IC_V2_PID_FILE='${PID_FILE}' exec '${SERVER_SCRIPT}' >> '${LOG_FILE}' 2>&1"
 
   if ! wait_for_startup; then
     printf 'Failed to start %s on port %s\n' "${SESSION_NAME}" "${PORT}" >&2

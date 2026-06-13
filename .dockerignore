@@ -14,4 +14,6 @@ server/_build
 server/cover
 server/deps
 server/doc
+server/priv/static/assets
+server/priv/static/cache_manifest.json
 server/tmp
