@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import vue from '@vitejs/plugin-vue';
@@ -6,9 +7,29 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const isProd = mode === 'production';
+  const spaAssetsDir = path.resolve(__dirname, '../server/priv/static/assets');
+  const spaGeneratedPaths = [
+    path.join(spaAssetsDir, 'assets'),
+    path.join(spaAssetsDir, 'css/spa.css'),
+    path.join(spaAssetsDir, 'css/spa.css.map'),
+    path.join(spaAssetsDir, 'js/spa.js'),
+    path.join(spaAssetsDir, 'js/spa.js.map'),
+    path.join(spaAssetsDir, 'js/chunks'),
+  ];
 
   return {
-    plugins: [vue(), svgLoader({ defaultImport: 'component' })],
+    plugins: [
+      {
+        name: 'clean-spa-output',
+        buildStart() {
+          for (const outputPath of spaGeneratedPaths) {
+            fs.rmSync(outputPath, { force: true, recursive: true });
+          }
+        },
+      },
+      vue(),
+      svgLoader({ defaultImport: 'component' }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src'),
