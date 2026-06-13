@@ -22,7 +22,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Rollback retry", note: "", variables: %{}},
+        %{title: "Rollback retry", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -87,7 +87,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Multi-step finished at", note: "", variables: %{}},
+        %{title: "Multi-step finished at", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -184,7 +184,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "First token timing", note: "", variables: %{}},
+        %{title: "First token timing", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -251,8 +251,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
         %{
           title: "Usage accounting",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -316,7 +315,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "User usage", llm_configuration_id: configuration.id, note: "", variables: %{}},
+        %{title: "User usage", llm_configuration_id: configuration.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -611,7 +610,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: title, note: "", variables: %{}},
+        %{title: title, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

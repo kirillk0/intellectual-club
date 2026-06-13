@@ -512,8 +512,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
           title: "Shared chat without override",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: configuration.id,
-          variables: %{}
+          llm_configuration_id: configuration.id
         },
         actor: recipient
       )
@@ -561,8 +560,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
           title: "Shared chat with override",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: configuration.id,
-          variables: %{}
+          llm_configuration_id: configuration.id
         },
         actor: recipient
       )
@@ -589,7 +587,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat
@@ -648,8 +645,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
       %{
         name: name,
         version: "v1",
-        content: content,
-        variables: %{}
+        content: content
       },
       actor: actor
     )

@@ -4,7 +4,6 @@ defmodule IntellectualClub.Generation.SystemPrompt do
   """
 
   alias IntellectualClub.Knowledge.PromptContent
-  alias IntellectualClub.PromptVariables
 
   @doc """
   Renders a single system prompt from bot/chat/config/user block collections.
@@ -31,16 +30,9 @@ defmodule IntellectualClub.Generation.SystemPrompt do
 
     tool_context = Keyword.get(opts, :tool_context, "")
 
-    bot_vars = PromptVariables.normalize_map(Keyword.get(opts, :bot_variables, %{}))
-    chat_vars = PromptVariables.normalize_map(Keyword.get(opts, :chat_variables, %{}))
-    base_vars = Map.merge(bot_vars, chat_vars)
-
     rendered_blocks =
       ordered_blocks
-      |> Enum.map_join(
-        "\n",
-        &PromptContent.render_block(&1, merged_vars_for_block(&1, base_vars))
-      )
+      |> Enum.map_join("\n", &PromptContent.render_block/1)
 
     [rendered_blocks, format_raw_section(tool_context)]
     |> Enum.reject(&(String.trim(&1) == ""))
@@ -66,15 +58,4 @@ defmodule IntellectualClub.Generation.SystemPrompt do
       rendered -> rendered <> "\n\n---\n"
     end
   end
-
-  defp merged_vars_for_block(block, base_vars) when is_map(block) and is_map(base_vars) do
-    block_vars =
-      block
-      |> Map.get(:variables, %{})
-      |> PromptVariables.normalize_map()
-
-    Map.merge(base_vars, block_vars)
-  end
-
-  defp merged_vars_for_block(_block, base_vars), do: base_vars
 end

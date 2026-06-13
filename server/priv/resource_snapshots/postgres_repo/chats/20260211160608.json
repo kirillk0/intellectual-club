@@ -38,18 +38,6 @@
     },
     {
       "allow_nil?": false,
-      "default": "%{}",
-      "generated?": false,
-      "precision": null,
-      "primary_key?": false,
-      "references": null,
-      "scale": null,
-      "size": null,
-      "source": "variables",
-      "type": "map"
-    },
-    {
-      "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
       "precision": null,
@@ -198,13 +186,21 @@
     }
   ],
   "base_filter": null,
-  "check_constraints": [],
+  "check_constraints": [
+
+  ],
   "create_table_options": null,
-  "custom_indexes": [],
-  "custom_statements": [],
+  "custom_indexes": [
+
+  ],
+  "custom_statements": [
+
+  ],
   "has_create_action": true,
   "hash": "32A5AECF82B7B5B50E1B6F116D1E1843C9701884B2BD5EDFD70CEE3002AC76FA",
-  "identities": [],
+  "identities": [
+
+  ],
   "multitenancy": {
     "attribute": null,
     "global": null,

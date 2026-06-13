@@ -3,24 +3,19 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
 
   alias IntellectualClub.Generation.SystemPrompt
 
-  test "removes knowledge block comment lines before rendering prompt variables" do
+  test "removes knowledge block comment lines and preserves prompt placeholders" do
     prompt =
       SystemPrompt.build(
         bot_blocks: [
           %{
             name: "Commented block",
-            content: "{{dynamic_line}}\n//// remove this line\nVisible {{name}}",
-            variables: %{}
+            content: "{{dynamic_line}}\n//// remove this line\nVisible {{name}}"
           }
-        ],
-        bot_variables: %{
-          "dynamic_line" => "//// keep this rendered line",
-          "name" => "Alice"
-        }
+        ]
       )
 
-    assert String.contains?(prompt, "//// keep this rendered line")
-    assert String.contains?(prompt, "Visible Alice")
+    assert String.contains?(prompt, "{{dynamic_line}}")
+    assert String.contains?(prompt, "Visible {{name}}")
     refute String.contains?(prompt, "remove this line")
   end
 
@@ -34,7 +29,6 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
           %{
             name: "Files block",
             content: "//// hidden note\nVisible {{name}}",
-            variables: %{},
             file_bindings: [
               %{
                 id: 1,
@@ -67,12 +61,11 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
               }
             ]
           }
-        ],
-        bot_variables: %{"name" => "Alice"}
+        ]
       )
 
     assert prompt =~
-             "Visible Alice\n[Attached file file_id=#{file_external_id} filename=\"report.pdf\" mime_type=\"application/pdf\" size_bytes=42]"
+             "Visible {{name}}\n[Attached file file_id=#{file_external_id} filename=\"report.pdf\" mime_type=\"application/pdf\" size_bytes=42]"
 
     refute prompt =~ disabled_file_external_id
     refute prompt =~ "hidden note"
@@ -87,7 +80,6 @@ defmodule IntellectualClub.Generation.SystemPromptTest do
           %{
             name: "",
             content: "//// only a comment",
-            variables: %{},
             file_bindings: [
               %{
                 id: 1,

@@ -13,7 +13,7 @@ defmodule IntellectualClub.Generation.DemoGenerationTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Test chat", note: "", variables: %{}},
+        %{title: "Test chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

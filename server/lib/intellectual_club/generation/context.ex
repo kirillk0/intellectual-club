@@ -89,9 +89,7 @@ defmodule IntellectualClub.Generation.Context do
     system_prompt =
       SystemPrompt.build(
         prompt_blocks: Enum.map(prompt_blocks, & &1.knowledge_block),
-        tool_context: Map.get(tool_resolution, :tool_context, ""),
-        bot_variables: bot_variables(chat),
-        chat_variables: chat.variables
+        tool_context: Map.get(tool_resolution, :tool_context, "")
       )
 
     %{
@@ -1065,7 +1063,6 @@ defmodule IntellectualClub.Generation.Context do
       :version,
       :token_count,
       :content,
-      :variables,
       :image,
       :can_edit,
       :shared_incoming,
@@ -1234,7 +1231,4 @@ defmodule IntellectualClub.Generation.Context do
       _ -> :bottom
     end
   end
-
-  defp bot_variables(%{bot: %{variables: variables}}) when is_map(variables), do: variables
-  defp bot_variables(_chat), do: %{}
 end

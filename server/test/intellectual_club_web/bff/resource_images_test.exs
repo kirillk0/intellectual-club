@@ -25,7 +25,6 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
         %{
           name: "Image bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -123,7 +122,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Image block", version: "v1", content: "x", variables: %{}},
+        %{name: "Image block", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

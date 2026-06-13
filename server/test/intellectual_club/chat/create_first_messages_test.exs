@@ -23,7 +23,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "New chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "New chat", bot_id: bot.id, note: ""},
         actor: user
       )
       |> Ash.create!()
@@ -35,13 +35,13 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
       |> Ash.Query.load(steps: [items: [:contents]])
       |> Ash.read!(actor: user)
 
-    assert Enum.map(messages, &message_answer_text/1) == ["Hello", "Alt branch"]
+    assert Enum.map(messages, &message_answer_text/1) == ["Hello", "Alt branch", "{{missing}}"]
     assert Enum.all?(messages, &(&1.role == :assistant))
     assert Enum.all?(messages, &is_nil(&1.parent_id))
     assert Enum.all?(messages, &is_nil(&1.llm_configuration_id))
   end
 
-  test "first messages render bot and chat variables with chat overriding" do
+  test "first messages preserve placeholder text" do
     %{user: user} = user_fixture()
 
     bot =
@@ -50,8 +50,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
         :create,
         %{
           name: "Vars Bot",
-          first_messages: ["Hello {{ x }}!", "Name: {{name}}; missing: {{missing}}"],
-          variables: %{"x" => "bot-x"}
+          first_messages: ["Hello {{ x }}!", "Name: {{name}}; missing: {{missing}}"]
         },
         actor: user
       )
@@ -64,8 +63,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
         %{
           title: "New chat",
           bot_id: bot.id,
-          note: "",
-          variables: %{"x" => "chat-x", "name" => "Alice"}
+          note: ""
         },
         actor: user
       )
@@ -79,8 +77,8 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
       |> Ash.read!(actor: user)
 
     assert Enum.map(messages, &message_answer_text/1) == [
-             "Hello chat-x!",
-             "Name: Alice; missing: "
+             "Hello {{ x }}!",
+             "Name: {{name}}; missing: {{missing}}"
            ]
   end
 
@@ -89,9 +87,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "New chat", note: "", variables: %{}},
-        actor: user
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "New chat", note: ""}, actor: user)
       |> Ash.create!()
 
     messages =

@@ -35,37 +35,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def datetime_iso(nil), do: nil
   def datetime_iso(_value), do: nil
 
-  def variable_entries_from_map(map) when is_map(map) do
-    map
-    |> Enum.map(fn {key, value} -> %{key: to_string(key), value: to_string(value)} end)
-    |> Enum.sort_by(& &1.key)
-  end
-
-  def variable_entries_from_map(_other), do: []
-
-  def map_from_variable_entries(entries) when is_list(entries) do
-    Enum.reduce(entries, %{}, fn entry, acc ->
-      key =
-        entry
-        |> Map.get("key", Map.get(entry, :key, ""))
-        |> to_string()
-        |> String.trim()
-
-      value =
-        entry
-        |> Map.get("value", Map.get(entry, :value, ""))
-        |> to_string()
-
-      if key == "" do
-        acc
-      else
-        Map.put(acc, key, value)
-      end
-    end)
-  end
-
-  def map_from_variable_entries(_other), do: %{}
-
   def user(%User{} = user) do
     %{
       id: user.id,
@@ -219,7 +188,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       note: chat.note,
       bot_id: chat.bot_id,
       llm_configuration_id: chat.llm_configuration_id,
-      variables: variable_entries_from_map(chat.variables || %{}),
       parent_chat_id: chat.parent_chat_id,
       parent_message_id: chat.parent_message_id,
       parent_relation_kind: relation_kind_string(chat.parent_relation_kind),

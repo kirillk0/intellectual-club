@@ -166,7 +166,6 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
         %{
           name: "WSS bot #{System.unique_integer([:positive])}",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 5,
           history_mode: :agent
         },
@@ -213,8 +212,7 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
         title: "Responses WSS chat",
         bot_id: bot.id,
         llm_configuration_id: llm_configuration.id,
-        note: "",
-        variables: %{}
+        note: ""
       },
       actor: actor
     )

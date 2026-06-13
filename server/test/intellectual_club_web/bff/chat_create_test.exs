@@ -29,8 +29,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Old chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: config_old.id,
-          variables: %{}
+          llm_configuration_id: config_old.id
         },
         actor: actor
       )
@@ -44,8 +43,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "New chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: config_new.id,
-          variables: %{}
+          llm_configuration_id: config_new.id
         },
         actor: actor
       )
@@ -73,8 +71,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Existing chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: config.id,
-          variables: %{}
+          llm_configuration_id: config.id
         },
         actor: actor
       )
@@ -109,8 +106,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Bot A chat",
           note: "",
           bot_id: bot_a.id,
-          llm_configuration_id: config_a.id,
-          variables: %{}
+          llm_configuration_id: config_a.id
         },
         actor: actor
       )
@@ -124,8 +120,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Bot B chat",
           note: "",
           bot_id: bot_b.id,
-          llm_configuration_id: config_b.id,
-          variables: %{}
+          llm_configuration_id: config_b.id
         },
         actor: actor
       )
@@ -152,8 +147,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
         %{
           title: "Old no bot chat",
           note: "",
-          llm_configuration_id: config_old.id,
-          variables: %{}
+          llm_configuration_id: config_old.id
         },
         actor: actor
       )
@@ -166,8 +160,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
         %{
           title: "New no bot chat",
           note: "",
-          llm_configuration_id: config_new.id,
-          variables: %{}
+          llm_configuration_id: config_new.id
         },
         actor: actor
       )
@@ -234,8 +227,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Latest chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: latest_config.id,
-          variables: %{}
+          llm_configuration_id: latest_config.id
         },
         actor: actor
       )
@@ -287,8 +279,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Compatible chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: compatible_config.id,
-          variables: %{}
+          llm_configuration_id: compatible_config.id
         },
         actor: actor
       )
@@ -302,8 +293,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Incompatible chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: incompatible_config.id,
-          variables: %{}
+          llm_configuration_id: incompatible_config.id
         },
         actor: actor
       )
@@ -396,8 +386,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
           title: "Incompatible chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: incompatible_config.id,
-          variables: %{}
+          llm_configuration_id: incompatible_config.id
         },
         actor: actor
       )
@@ -463,8 +452,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
         %{
           title: "Latest no bot chat",
           note: "",
-          llm_configuration_id: disabled_config.id,
-          variables: %{}
+          llm_configuration_id: disabled_config.id
         },
         actor: actor
       )
@@ -490,7 +478,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
         %{
           name: name,
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat

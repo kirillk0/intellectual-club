@@ -52,8 +52,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
           title: "Compatible chat",
           note: "",
           bot_id: bot.id,
-          llm_configuration_id: compatible_config.id,
-          variables: %{}
+          llm_configuration_id: compatible_config.id
         },
         actor: actor
       )
@@ -66,8 +65,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
         %{
           title: "Bot switch chat",
           note: "",
-          llm_configuration_id: incompatible_config.id,
-          variables: %{}
+          llm_configuration_id: incompatible_config.id
         },
         actor: actor
       )
@@ -121,8 +119,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
         %{
           title: "Bot switch shared chat",
           note: "",
-          llm_configuration_id: incompatible_config.id,
-          variables: %{}
+          llm_configuration_id: incompatible_config.id
         },
         actor: recipient
       )
@@ -145,7 +142,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Tool bindings chat", note: "", variables: %{}},
+        %{title: "Tool bindings chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -286,7 +283,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Tool state chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Tool state chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

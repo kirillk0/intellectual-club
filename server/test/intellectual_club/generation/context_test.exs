@@ -93,7 +93,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Context bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -134,7 +133,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat with bot", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Chat with bot", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -178,7 +177,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat without bot", note: "", variables: %{}},
+        %{title: "Chat without bot", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -199,7 +198,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Initial step chat", note: "", variables: %{}},
+        %{title: "Initial step chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -271,8 +270,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Role fix chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -305,7 +303,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Tools bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -348,7 +345,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Fixed tools chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Fixed tools chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -425,7 +422,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Synthetic tool context chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Synthetic tool context chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -494,8 +491,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Chat Completions synthetic context",
           bot_id: bot.id,
           llm_configuration_id: chat_completion_config.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -521,8 +517,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Responses synthetic context",
           bot_id: bot.id,
           llm_configuration_id: responses_config.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -603,7 +598,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Outlet context chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Outlet context chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -650,7 +645,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Fixed disabled tools chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Fixed disabled tools chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -686,7 +681,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Override bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -744,7 +738,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Override chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Override chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -787,7 +781,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat shadow", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Chat shadow", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -826,7 +820,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "User shadow", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "User shadow", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -850,7 +844,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Sequence shadow", note: "", variables: %{}},
+        %{title: "Sequence shadow", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -883,7 +877,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Bot artifact tools", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Bot artifact tools", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -908,7 +902,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Shadowed artifact tools", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Shadowed artifact tools", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -921,7 +915,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Disabled artifact tools", note: "", variables: %{}},
+        %{title: "Disabled artifact tools", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -948,7 +942,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Functionless artifact tools", note: "", variables: %{}},
+        %{title: "Functionless artifact tools", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -983,7 +977,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "User artifact override", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "User artifact override", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -998,7 +992,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Parent-target chat", note: "", variables: %{}},
+        %{title: "Parent-target chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -1025,7 +1019,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert assistant_a.id != generating_message.id
   end
 
-  test "builds system prompt from bot, chat and config blocks with block variable priority" do
+  test "builds system prompt from bot, chat and config blocks without rendering placeholders" do
     %{user: actor} = user_fixture()
 
     bot_block =
@@ -1035,8 +1029,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Bot block",
           version: "v1",
-          content: "Bot says x={{x}} y={{y}} z={{z}}",
-          variables: %{"x" => "bot-block-x"}
+          content: "Bot says x={{x}} y={{y}} z={{z}}"
         },
         actor: actor
       )
@@ -1049,8 +1042,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Chat block",
           version: "v1",
-          content: "Chat says x={{x}} y={{y}}",
-          variables: %{"y" => "chat-block-y"}
+          content: "Chat says x={{x}} y={{y}}"
         },
         actor: actor
       )
@@ -1063,8 +1055,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Config block",
           version: "v1",
-          content: "Config says x={{x}} y={{y}} z={{z}}",
-          variables: %{"z" => "config-block-z"}
+          content: "Config says x={{x}} y={{y}} z={{z}}"
         },
         actor: actor
       )
@@ -1077,7 +1068,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Prompt bot",
           first_messages: [],
-          variables: %{"x" => "bot-x", "y" => "bot-y", "z" => "bot-z"},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -1145,21 +1135,11 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Prompt chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
       |> Ash.create!(actor: actor)
-
-    chat =
-      chat
-      |> Ash.Changeset.for_update(
-        :update,
-        %{variables: %{"x" => "chat-x", "y" => "chat-y"}},
-        actor: actor
-      )
-      |> Ash.update!(actor: actor)
 
     _ =
       ChatKnowledgeBlock
@@ -1181,17 +1161,17 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert String.contains?(
              context.system_prompt,
-             "Bot says x=bot-block-x y=chat-y z=bot-z"
+             "Bot says x={{x}} y={{y}} z={{z}}"
            )
 
     assert String.contains?(
              context.system_prompt,
-             "Chat says x=chat-x y=chat-block-y"
+             "Chat says x={{x}} y={{y}}"
            )
 
     assert String.contains?(
              context.system_prompt,
-             "Config says x=chat-x y=chat-y z=config-block-z"
+             "Config says x={{x}} y={{y}} z={{z}}"
            )
 
     assert Enum.at(context.messages, 0) == %{
@@ -1248,7 +1228,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Prompt bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -1316,8 +1295,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Prompt chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -1408,7 +1386,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Prompt bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -1492,8 +1469,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Prompt chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -1591,8 +1567,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "History reconstruction chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -1730,8 +1705,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Legacy provider chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -1801,8 +1775,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Canceled chat history reconstruction",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -1953,8 +1926,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Errored chat history reconstruction",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2106,8 +2078,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Empty tool output chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2227,8 +2198,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Responses history reconstruction chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2395,8 +2365,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Canceled responses history reconstruction",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2560,8 +2529,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           title: "Errored responses history reconstruction",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2707,7 +2675,6 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           name: "Cache bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -2766,8 +2733,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           title: "Cache control chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -2802,7 +2768,6 @@ defmodule IntellectualClub.Generation.ContextTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 10,
         context_soft_limit_percent: 80,
         history_mode: :chat

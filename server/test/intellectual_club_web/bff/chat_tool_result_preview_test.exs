@@ -20,7 +20,7 @@ defmodule IntellectualClubWeb.Bff.ChatToolResultPreviewTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Tool result preview", note: "", variables: %{}},
+        %{title: "Tool result preview", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

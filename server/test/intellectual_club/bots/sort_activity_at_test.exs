@@ -52,7 +52,6 @@ defmodule IntellectualClub.Bots.SortActivityAtTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80
       },
@@ -65,7 +64,7 @@ defmodule IntellectualClub.Bots.SortActivityAtTest do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      %{title: title, bot_id: bot_id, note: "", variables: %{}},
+      %{title: title, bot_id: bot_id, note: ""},
       actor: actor
     )
     |> Ash.create!(actor: actor)

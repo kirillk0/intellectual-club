@@ -37,7 +37,6 @@ defmodule IntellectualClub.Bots do
             :shared_incoming,
             :shared_outgoing,
             :first_messages,
-            :variables,
             :max_tool_rounds,
             :context_soft_limit_percent,
             :max_file_size_bytes,

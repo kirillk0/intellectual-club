@@ -222,7 +222,6 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
       %{
         name: "Shared chat bot #{System.unique_integer([:positive])}",
         first_messages: [],
-        variables: %{},
         history_mode: :chat
       },
       actor: actor
@@ -269,8 +268,7 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
         title: "Shared chat",
         note: "",
         bot_id: bot.id,
-        llm_configuration_id: configuration.id,
-        variables: %{}
+        llm_configuration_id: configuration.id
       },
       actor: actor
     )
@@ -281,7 +279,7 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
-      %{name: "Block", version: "v1", content: "content", variables: %{}},
+      %{name: "Block", version: "v1", content: "content"},
       actor: actor
     )
     |> Ash.create!()

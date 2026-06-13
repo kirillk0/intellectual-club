@@ -84,12 +84,6 @@ defmodule IntellectualClub.Chat.Chat do
       constraints(trim?: false, allow_empty?: true)
     end
 
-    attribute :variables, :map do
-      allow_nil?(true)
-      public?(true)
-      default(%{})
-    end
-
     attribute :parent_relation_kind, :atom do
       allow_nil?(true)
       public?(true)
@@ -212,7 +206,6 @@ defmodule IntellectualClub.Chat.Chat do
         :bot_id,
         :llm_configuration_id,
         :note,
-        :variables,
         :parent_chat_id,
         :parent_message_id,
         :parent_relation_kind
@@ -249,7 +242,6 @@ defmodule IntellectualClub.Chat.Chat do
         :bot_id,
         :llm_configuration_id,
         :note,
-        :variables,
         :parent_chat_id,
         :parent_message_id,
         :parent_relation_kind
@@ -284,7 +276,6 @@ defmodule IntellectualClub.Chat.Chat do
         :bot_id,
         :llm_configuration_id,
         :note,
-        :variables,
         :parent_chat_id,
         :parent_message_id,
         :parent_relation_kind

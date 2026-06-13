@@ -4,7 +4,6 @@ import type {
   ChatKnowledgeBlock,
   ChatMessageStep,
   ChatToolBinding,
-  ChatVariable,
   ChatRelations,
   Bot,
   KnowledgeBlock,
@@ -131,13 +130,6 @@ export const jsonStable = (value: unknown) => {
   } catch {
     return '';
   }
-};
-
-export const normalizeVariablesForCompare = (vars: Partial<ChatVariable>[]) => {
-  return [...(vars || [])]
-    .map((v) => ({ key: normalizeText(v.key), value: String(v.value ?? '') }))
-    .filter((v) => v.key !== '' || v.value !== '')
-    .sort((a, b) => a.key.localeCompare(b.key));
 };
 
 export const normalizeChatBlocksForCompare = (blocks: ChatBlockLink[]) => {

@@ -133,18 +133,12 @@ export type UserKnowledgeBlock = {
   knowledge_block?: KnowledgeBlock | null;
 };
 
-export type ChatVariable = {
-  key: string;
-  value: string;
-};
-
 export type Chat = {
   id: number;
   title: string;
   note: string;
   bot_id: number | null;
   llm_configuration_id: number | null;
-  variables: ChatVariable[];
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
   parent_relation_kind?: string | null;

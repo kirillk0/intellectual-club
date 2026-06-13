@@ -9,7 +9,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Knowledge.Changes.SetTokenCount
-  alias IntellectualClub.Knowledge.Changes.NormalizeKnowledgeBlockFields
   alias IntellectualClub.Knowledge.Changes.NormalizeVersion
   alias IntellectualClub.Knowledge.TagTree
   alias IntellectualClub.Duplication
@@ -125,12 +124,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       public?(true)
       default("")
       constraints(trim?: false, allow_empty?: true)
-    end
-
-    attribute :variables, :map do
-      allow_nil?(false)
-      public?(true)
-      default(%{})
     end
 
     attribute :token_count, :integer do
@@ -283,7 +276,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     end
 
     create :create do
-      accept([:name, :version, :content, :variables])
+      accept([:name, :version, :content])
 
       argument :tag_bindings, {:array, :map} do
         allow_nil?(true)
@@ -292,13 +285,12 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
 
       change(relate_actor(:owner))
       change({NormalizeVersion, []})
-      change({NormalizeKnowledgeBlockFields, []})
       change({SetTokenCount, []})
       change(&maybe_manage_tag_bindings/2)
     end
 
     create :import_markdown do
-      accept([:external_id, :name, :version, :content, :variables])
+      accept([:external_id, :name, :version, :content])
 
       argument :tag_bindings, {:array, :map} do
         allow_nil?(true)
@@ -306,7 +298,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
 
       change(relate_actor(:owner))
       change({NormalizeVersion, []})
-      change({NormalizeKnowledgeBlockFields, []})
       change({SetTokenCount, []})
       change(&maybe_manage_tag_bindings/2)
     end
@@ -339,8 +330,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
         |> Ash.Changeset.change_attributes(%{
           name: source.name,
           version: Duplication.next_copy_label(source.version),
-          content: source.content,
-          variables: source.variables
+          content: source.content
         })
         |> Ash.Changeset.after_action(fn changeset, duplicated ->
           actor = changeset.context[:private][:actor]
@@ -378,12 +368,11 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       end
 
       change({NormalizeVersion, []})
-      change({NormalizeKnowledgeBlockFields, []})
       change({SetTokenCount, []})
     end
 
     update :update do
-      accept([:name, :version, :content, :variables])
+      accept([:name, :version, :content])
       require_atomic?(false)
 
       argument :tag_bindings, {:array, :map} do
@@ -392,7 +381,6 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       end
 
       change({NormalizeVersion, []})
-      change({NormalizeKnowledgeBlockFields, []})
       change({SetTokenCount, []})
       change(&maybe_manage_tag_bindings/2)
     end

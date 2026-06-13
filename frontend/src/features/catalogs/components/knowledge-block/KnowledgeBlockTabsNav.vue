@@ -29,7 +29,6 @@ const emit = defineEmits<{
 
 const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => [
   { value: 'code', label: 'Code' },
-  { value: 'variables', label: 'Variables' },
   { value: 'tags', label: 'Tags' },
   { value: 'files', label: `Files (${props.filesCount})` },
   { value: 'details', label: 'Details' },

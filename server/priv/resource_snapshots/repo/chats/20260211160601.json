@@ -31,16 +31,6 @@
       "primary_key?": false
     },
     {
-      "default": "%{}",
-      "size": null,
-      "type": "map",
-      "source": "variables",
-      "references": null,
-      "allow_nil?": false,
-      "generated?": false,
-      "primary_key?": false
-    },
-    {
       "default": "nil",
       "size": null,
       "type": "utc_datetime_usec",
@@ -165,14 +155,20 @@
   "hash": "8F4882C8F84A35164FF96A4AD46A78570D6A64A64AC4C77DC19BD4C2CD1D78EA",
   "repo": "Elixir.IntellectualClub.Repo",
   "strict?": false,
-  "identities": [],
+  "identities": [
+
+  ],
   "multitenancy": {
     "global": null,
     "attribute": null,
     "strategy": null
   },
   "base_filter": null,
-  "custom_indexes": [],
-  "custom_statements": [],
+  "custom_indexes": [
+
+  ],
+  "custom_statements": [
+
+  ],
   "has_create_action": true
 }

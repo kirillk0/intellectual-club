@@ -115,9 +115,7 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
 
   defp create_chat!(actor) do
     Chat.Chat
-    |> Ash.Changeset.for_create(:create, %{title: "Content files test", note: "", variables: %{}},
-      actor: actor
-    )
+    |> Ash.Changeset.for_create(:create, %{title: "Content files test", note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 

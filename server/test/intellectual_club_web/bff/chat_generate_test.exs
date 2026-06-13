@@ -16,7 +16,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Generate after delete", note: "", variables: %{}},
+        %{title: "Generate after delete", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -59,7 +59,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Generate root branch", note: "", variables: %{}},
+        %{title: "Generate root branch", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

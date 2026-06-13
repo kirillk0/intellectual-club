@@ -16,9 +16,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Index chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Index chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, first} =
@@ -51,9 +49,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Branched chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Branched chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, _older_root} =
@@ -86,7 +82,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Generating chat", note: "", variables: %{}},
+        %{title: "Generating chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -121,23 +117,17 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     chat_a =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Chat A", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Chat A", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     chat_b =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Chat B", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Chat B", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     chat_c =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Chat C", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Chat C", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     conn_page_1 = get(conn, ~p"/api/bff/chats", %{"page" => "1", "per_page" => "2"})
@@ -288,7 +278,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat A", note: "", bot_id: bot_a.id, variables: %{}},
+        %{title: "Chat A", note: "", bot_id: bot_a.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -297,7 +287,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat B1", note: "", bot_id: bot_b.id, variables: %{}},
+        %{title: "Chat B1", note: "", bot_id: bot_b.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -306,16 +296,14 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat B2", note: "", bot_id: bot_b.id, variables: %{}},
+        %{title: "Chat B2", note: "", bot_id: bot_b.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
 
     _chat_without_bot =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "No bot", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "No bot", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     conn =
@@ -360,7 +348,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      Map.merge(%{title: title, note: "", variables: %{}}, attrs),
+      Map.merge(%{title: title, note: ""}, attrs),
       actor: actor
     )
     |> Ash.create!(actor: actor)
@@ -373,7 +361,6 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat

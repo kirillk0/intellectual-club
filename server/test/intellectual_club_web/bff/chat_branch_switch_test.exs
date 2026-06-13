@@ -14,9 +14,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchSwitchTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Switch chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Switch chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, root} = Threads.add_message_to_end(chat, :user, "Root", actor: actor)

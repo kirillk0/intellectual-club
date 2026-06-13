@@ -75,23 +75,6 @@
           </ToolBindingsCard>
         </div>
 
-        <div class="panel-section">
-          <div
-            class="flex compact-actions"
-            style="justify-content: space-between; align-items: center; gap: 8px"
-          >
-            <h4 style="margin: 0">Variables</h4>
-          </div>
-          <VariablesTable
-            v-if="chatVariables.length"
-            :modelValue="chatVariables"
-            :readonly="readonly"
-            @update:modelValue="(value) => emit('update:chatVariables', value)"
-          />
-          <div v-else class="flex" style="justify-content: flex-start">
-            <button class="link" type="button" :disabled="readonly" @click="emit('add-variable-row')">+ Add variable</button>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -110,13 +93,12 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import VariablesTable from '@/components/VariablesTable.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import ToolBindingPickerModal from '@/components/ToolBindingPickerModal.vue';
 import { toolBindingDisplayText } from '@/features/tools/model/toolInstances';
-import type { ChatVariable, ImageAsset, ToolInstanceOption } from '@/types/api';
+import type { ImageAsset, ToolInstanceOption } from '@/types/api';
 
 type ChatBlockLink = {
   id: number;
@@ -140,7 +122,6 @@ interface Props {
   readonly?: boolean;
   chatBlocks: ChatBlockLink[];
   chatToolBindings: ChatToolBindingLink[];
-  chatVariables: ChatVariable[];
   toolLibrary: ToolInstanceOption[];
   newChatToolInstanceIds: number[];
   chatBlockName: (blockId: number) => string;
@@ -172,8 +153,6 @@ const emit = defineEmits<{
   (e: 'move-chat-tool-binding', binding: ChatToolBindingLink, delta: number): void;
   (e: 'remove-chat-tool-binding', bindingId: number): void;
   (e: 'set-chat-tool-binding-enabled', bindingId: number, enabled: boolean): void;
-  (e: 'update:chatVariables', value: ChatVariable[]): void;
-  (e: 'add-variable-row'): void;
 }>();
 
 const openToolBindingPicker = () => {

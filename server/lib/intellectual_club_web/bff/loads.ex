@@ -86,7 +86,6 @@ defmodule IntellectualClubWeb.Bff.Loads do
       :version,
       :token_count,
       :content,
-      :variables,
       :image,
       :can_edit,
       :shared_incoming,

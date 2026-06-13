@@ -59,7 +59,6 @@ defmodule IntellectualClub.Chat.MetricsTest do
         %{
           name: "Metrics bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -127,8 +126,7 @@ defmodule IntellectualClub.Chat.MetricsTest do
           title: "Metrics chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )

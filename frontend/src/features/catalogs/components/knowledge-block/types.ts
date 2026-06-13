@@ -1,1 +1,1 @@
-export type KnowledgeBlockTab = 'code' | 'variables' | 'tags' | 'files' | 'details';
+export type KnowledgeBlockTab = 'code' | 'tags' | 'files' | 'details';

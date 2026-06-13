@@ -58,7 +58,7 @@ defmodule IntellectualClub.Chat.MessageContentFtsSyncTest do
 
   defp create_chat!(actor, title) do
     Chat
-    |> Ash.Changeset.for_create(:create, %{title: title, note: "", variables: %{}}, actor: actor)
+    |> Ash.Changeset.for_create(:create, %{title: title, note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 

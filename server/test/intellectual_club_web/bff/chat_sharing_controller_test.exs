@@ -83,7 +83,6 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
       %{
         name: "BFF shared bot #{System.unique_integer([:positive])}",
         first_messages: [],
-        variables: %{},
         history_mode: :chat
       },
       actor: actor
@@ -130,8 +129,7 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
         title: "BFF shared chat",
         note: "",
         bot_id: bot.id,
-        llm_configuration_id: configuration.id,
-        variables: %{}
+        llm_configuration_id: configuration.id
       },
       actor: actor
     )

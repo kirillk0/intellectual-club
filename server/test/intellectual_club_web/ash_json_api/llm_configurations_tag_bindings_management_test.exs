@@ -172,7 +172,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block", version: "v1", content: "x", variables: %{}},
+        %{name: "Block", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -266,7 +266,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block One", version: "v1", content: "x", variables: %{}},
+        %{name: "Block One", version: "v1", content: "x"},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -275,7 +275,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       KnowledgeBlock
       |> Ash.Changeset.for_create(
         :create,
-        %{name: "Block Two", version: "v2", content: "y", variables: %{}},
+        %{name: "Block Two", version: "v2", content: "y"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

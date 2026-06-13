@@ -620,7 +620,6 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         %{
           name: "Agent bot #{System.unique_integer([:positive])}",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: Keyword.get(opts, :max_tool_rounds, 20),
           context_soft_limit_percent: Keyword.get(opts, :context_soft_limit_percent, 80),
           history_mode: :agent
@@ -703,8 +702,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         title: "Soft limits chat",
         bot_id: bot.id,
         llm_configuration_id: llm_configuration.id,
-        note: "",
-        variables: %{}
+        note: ""
       },
       actor: actor
     )

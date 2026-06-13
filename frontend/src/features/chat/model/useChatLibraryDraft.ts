@@ -17,7 +17,6 @@ import { useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
 import type {
   ChatKnowledgeBlock,
   ChatToolBinding,
-  ChatVariable,
   KnowledgeBlock,
   ToolInstanceOption,
 } from '@/types/api';
@@ -27,7 +26,6 @@ import {
   jsonStable,
   normalizeChatBlocksForCompare,
   normalizeChatToolsForCompare,
-  normalizeVariablesForCompare,
 } from '@/features/chat/model/chatViewModel.shared';
 
 type Params = {
@@ -43,7 +41,6 @@ type Params = {
 type HydratePayload = {
   chatBlocks: ChatKnowledgeBlock[];
   chatToolBindings: ChatToolBinding[];
-  chatVariables: Partial<ChatVariable>[];
 };
 
 const toChatBlockLinks = (bindings: ChatKnowledgeBlock[]) =>
@@ -66,12 +63,6 @@ const toChatToolBindingLinks = (bindings: ChatToolBinding[]) =>
 const normalizeSequences = (items: ChatBlockLink[]) => [...items].map((item, idx) => ({ ...item, sequence: idx }));
 const cloneChatBlocks = (items: ChatBlockLink[]) => (items || []).map((item) => ({ ...item }));
 const cloneChatToolBindings = (items: ChatToolBindingLink[]) => (items || []).map((item) => ({ ...item }));
-const cloneChatVariables = (items: ChatVariable[]) => (items || []).map((item) => ({ ...item }));
-const normalizeChatVariables = (items: Partial<ChatVariable>[]): ChatVariable[] =>
-  (items || []).map((item) => ({
-    key: String(item.key ?? ''),
-    value: String(item.value ?? ''),
-  }));
 
 const toOptionalInt = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
@@ -91,9 +82,6 @@ export function useChatLibraryDraft(params: Params) {
   const chatToolBindingsDraft = ref<ChatToolBindingLink[]>([]);
   let tempChatToolBindingId = -1;
 
-  const chatVariablesOriginal = ref<ChatVariable[]>([]);
-  const chatVariables = ref<ChatVariable[]>([]);
-
   const savingChatChanges = ref(false);
   const newChatToolInstanceIds = ref<number[]>([]);
 
@@ -109,33 +97,27 @@ export function useChatLibraryDraft(params: Params) {
   const toolInstanceLibrary = useToolInstanceLibrary(params.toolLibrary);
 
   const chatTabDirty = computed(() => {
-    const varsA = normalizeVariablesForCompare(chatVariablesOriginal.value);
-    const varsB = normalizeVariablesForCompare(chatVariables.value);
     const blocksA = normalizeChatBlocksForCompare(chatBlocksOriginal.value);
     const blocksB = normalizeChatBlocksForCompare(chatBlocksDraft.value);
     const toolsA = normalizeChatToolsForCompare(chatToolBindingsOriginal.value);
     const toolsB = normalizeChatToolsForCompare(chatToolBindingsDraft.value);
 
     return (
-      jsonStable(varsA) !== jsonStable(varsB) ||
       jsonStable(blocksA) !== jsonStable(blocksB) ||
       jsonStable(toolsA) !== jsonStable(toolsB)
     );
   });
 
-  const hydrate = ({ chatBlocks, chatToolBindings, chatVariables: variables }: HydratePayload) => {
+  const hydrate = ({ chatBlocks, chatToolBindings }: HydratePayload) => {
     chatBlocksOriginal.value = normalizeSequences(toChatBlockLinks(chatBlocks || []));
     chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
     chatToolBindingsOriginal.value = normalizeToolBindingSequences(toChatToolBindingLinks(chatToolBindings || []));
     chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
-    chatVariablesOriginal.value = normalizeChatVariables(variables || []);
-    chatVariables.value = cloneChatVariables(chatVariablesOriginal.value);
     newChatToolInstanceIds.value = [];
   };
 
   const cancelChatChanges = () => {
     if (params.readOnly.value) return;
-    chatVariables.value = cloneChatVariables(chatVariablesOriginal.value);
     chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
     chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
     newChatToolInstanceIds.value = [];
@@ -148,7 +130,6 @@ export function useChatLibraryDraft(params: Params) {
 
     try {
       await api.patch(`/api/bff/chats/${params.chatId.value}`, {
-        variables: chatVariables.value,
         knowledge_block_bindings: (chatBlocksDraft.value || []).map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           knowledge_block_id: binding.block,
@@ -299,11 +280,6 @@ export function useChatLibraryDraft(params: Params) {
     chatToolBindingsDraft.value = setToolBindingEnabledInList(chatToolBindingsDraft.value, bindingId, enabled);
   };
 
-  const addVariableRow = () => {
-    if (params.readOnly.value) return;
-    chatVariables.value = [...chatVariables.value, { key: '', value: '' }];
-  };
-
   const addChatBlocks = (blockIds: number[]) => {
     if (params.readOnly.value) return;
     const existing = new Set(linkedChatBlockIds.value);
@@ -358,7 +334,6 @@ export function useChatLibraryDraft(params: Params) {
   return {
     chatBlocks,
     chatToolBindings,
-    chatVariables,
     chatTabDirty,
     savingChatChanges,
     newChatToolInstanceIds,
@@ -387,7 +362,6 @@ export function useChatLibraryDraft(params: Params) {
     moveChatToolBinding,
     removeChatToolBinding,
     setChatToolBindingEnabled,
-    addVariableRow,
     addChatBlocks,
   };
 }

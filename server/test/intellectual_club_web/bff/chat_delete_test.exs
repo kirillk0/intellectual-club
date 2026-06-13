@@ -29,9 +29,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Delete chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Delete chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, first} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
@@ -118,7 +116,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete attachments", note: "", variables: %{}},
+        %{title: "Delete attachments", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

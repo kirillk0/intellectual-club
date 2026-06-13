@@ -130,7 +130,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         %{
           title: "Auto retry",
           note: "",
-          variables: %{},
           llm_configuration_id: configuration.id
         },
         actor: actor
@@ -231,7 +230,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         %{
           title: "OAuth auto retry",
           note: "",
-          variables: %{},
           llm_configuration_id: configuration.id
         },
         actor: actor
@@ -277,8 +275,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         :create,
         %{
           title: "Auto retry success",
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )
@@ -370,8 +367,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         :create,
         %{
           title: "Auto retry custom",
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )

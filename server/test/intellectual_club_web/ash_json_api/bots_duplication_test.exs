@@ -269,7 +269,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         %{
           name: "Image bot",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat

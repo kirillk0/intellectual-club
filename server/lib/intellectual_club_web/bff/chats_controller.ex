@@ -210,8 +210,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         note: Map.get(params, "note", ""),
         bot_id: Helpers.parse_optional_integer(Map.get(params, "bot_id")),
         llm_configuration_id:
-          Helpers.parse_optional_integer(Map.get(params, "llm_configuration_id")),
-        variables: Serializer.map_from_variable_entries(Map.get(params, "variables", []))
+          Helpers.parse_optional_integer(Map.get(params, "llm_configuration_id"))
       }
 
       chat_params = maybe_apply_default_llm_configuration(chat_params, params, actor)
@@ -522,7 +521,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat_id = String.to_integer(id)
 
       allowed_fields =
-        ~w(title note bot_id llm_configuration_id variables knowledge_block_bindings tool_bindings)
+        ~w(title note bot_id llm_configuration_id knowledge_block_bindings tool_bindings)
 
       with {:ok, chat} <- fetch_owned_chat(chat_id, actor) do
         patch =
@@ -1119,9 +1118,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
       {"llm_configuration_id", value}, acc ->
         Map.put(acc, :llm_configuration_id, Helpers.parse_optional_integer(value))
-
-      {"variables", value}, acc ->
-        Map.put(acc, :variables, Serializer.map_from_variable_entries(value))
 
       {"knowledge_block_bindings", value}, acc ->
         bindings =

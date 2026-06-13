@@ -374,7 +374,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      Map.merge(%{title: title, note: "", variables: %{}}, attrs),
+      Map.merge(%{title: title, note: ""}, attrs),
       actor: actor
     )
     |> Ash.create!(actor: actor)
@@ -394,7 +394,6 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat,

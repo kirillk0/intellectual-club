@@ -83,8 +83,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDeleteTest do
         %{
           title: "Delete config chat",
           llm_configuration_id: configuration.id,
-          note: "",
-          variables: %{}
+          note: ""
         },
         actor: actor
       )

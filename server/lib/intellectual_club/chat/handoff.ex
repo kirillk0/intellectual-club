@@ -139,7 +139,6 @@ defmodule IntellectualClub.Chat.Handoff do
         note: source.note,
         bot_id: source.bot_id,
         llm_configuration_id: source.llm_configuration_id,
-        variables: source.variables || %{},
         parent_chat_id: source.id,
         parent_message_id: source_message_id,
         parent_relation_kind: @relation_kind

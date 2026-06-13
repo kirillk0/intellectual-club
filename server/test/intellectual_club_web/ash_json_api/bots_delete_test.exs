@@ -28,7 +28,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
         %{
           name: "Delete me",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -60,7 +59,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
         %{
           name: "Delete with deps",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -136,7 +134,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Linked chat", bot_id: bot.id, note: "", variables: %{}},
+        %{title: "Linked chat", bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -186,7 +184,6 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
         %{
           name: "Delete with image",
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat

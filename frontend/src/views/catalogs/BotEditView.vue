@@ -58,14 +58,6 @@
           </button>
           <button
             class="tab"
-            :class="{ active: botTab === 'variables' }"
-            type="button"
-            @click="botTab = 'variables'"
-          >
-            Variables ({{ variablesTabCount }})
-          </button>
-          <button
-            class="tab"
             :class="{ active: botTab === 'firstMessages' }"
             type="button"
             @click="botTab = 'firstMessages'"
@@ -351,14 +343,6 @@
           <p v-else-if="compatibleTagBindingsError" class="error-text">{{ compatibleTagBindingsError }}</p>
           <p v-if="compatibleTagBindingsDirty" class="muted">Tag changes will be saved when you save the bot.</p>
         </div>
-
-        <div v-else class="stack">
-          <strong>Variables</strong>
-          <VariablesTable :modelValue="variablesRows" :readonly="sharedReadonly" @update:modelValue="setVariablesRows" />
-          <div class="muted">
-            Variables are exposed to prompts as <code v-text="'{{key}}'"></code>.
-          </div>
-        </div>
       </div>
     </fieldset>
 
@@ -405,7 +389,6 @@ import CrudHeader from '@/components/CrudHeader.vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
-import VariablesTable from '@/components/VariablesTable.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import { deleteBotImage, uploadBotImage } from '@/api/images';
 import BotKnowledgeBlocksSection from '@/features/catalogs/components/BotKnowledgeBlocksSection.vue';
@@ -451,7 +434,6 @@ type BotForm = {
   name: string;
   image: ImageAsset | null;
   first_messages: string[];
-  variables: Record<string, string>;
   default_llm_configuration_id: number | null;
   handoff_message_block_id: number | null;
   max_tool_rounds: number;
@@ -493,12 +475,10 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
   const rawFirst = Array.isArray(attrs.first_messages) ? (attrs.first_messages as unknown[]) : [];
   const first_messages = rawFirst.map((m) => String(m || '')).filter((m) => m.trim() !== '');
-  const variables = attrs.variables && typeof attrs.variables === 'object' ? (attrs.variables as any) : {};
   return {
     name: String(attrs.name || ''),
     image: parseImageAsset(attrs.image),
     first_messages,
-    variables,
     default_llm_configuration_id:
       typeof attrs.default_llm_configuration_id === 'number'
         ? attrs.default_llm_configuration_id
@@ -606,7 +586,6 @@ const editor = useCrudEditor<BotForm>({
     name: '',
     image: null,
     first_messages: [],
-    variables: {},
     default_llm_configuration_id: null,
     handoff_message_block_id: null,
     max_tool_rounds: 300,
@@ -620,7 +599,6 @@ const editor = useCrudEditor<BotForm>({
   toAttributes: (form) => ({
     name: form.name,
     first_messages: (form.first_messages || []).map((m) => String(m || '').trim()).filter((m) => m !== ''),
-    variables: form.variables || {},
     default_llm_configuration_id: form.default_llm_configuration_id,
     handoff_message_block_id: form.handoff_message_block_id,
     max_tool_rounds: form.max_tool_rounds,
@@ -635,7 +613,6 @@ const editor = useCrudEditor<BotForm>({
   normalizeForDirty: (form) => ({
     name: form.name,
     first_messages: form.first_messages,
-    variables: form.variables,
     default_llm_configuration_id: form.default_llm_configuration_id,
     handoff_message_block_id: form.handoff_message_block_id,
     max_tool_rounds: form.max_tool_rounds,
@@ -873,7 +850,7 @@ const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
-const botTab = ref<'blocks' | 'firstMessages' | 'tools' | 'context' | 'configTags' | 'variables'>('blocks');
+const botTab = ref<'blocks' | 'firstMessages' | 'tools' | 'context' | 'configTags'>('blocks');
 const blocksTabCount = computed(() => bindings.draft.value.length);
 const toolsTabCount = computed(() => toolBindings.sortedToolBindings.value.length);
 const configTagsTabCount = computed(() => draftCompatibleTagIds.value.length);
@@ -950,45 +927,6 @@ const moveFirstMessage = (idx: number, delta: number) => {
   const [item] = list.splice(idx, 1);
   list.splice(target, 0, item);
   form.first_messages = list;
-};
-
-type VarRow = { key: string; value: string };
-
-const mapToVarRows = (vars: Record<string, unknown> | null | undefined): VarRow[] => {
-  return Object.entries(vars || {})
-    .map(([key, value]) => ({ key: String(key || ''), value: String(value ?? '') }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-};
-
-const varRowsToMap = (rows: VarRow[] | null | undefined): Record<string, string> => {
-  const next: Record<string, string> = {};
-  for (const row of rows || []) {
-    const key = String(row.key || '').trim();
-    if (!key) continue;
-    next[key] = String(row.value ?? '');
-  }
-  return next;
-};
-
-const stableVarMap = (vars: Record<string, string>) => JSON.stringify(Object.entries(vars).sort(([a], [b]) => a.localeCompare(b)));
-
-const variablesRows = ref<VarRow[]>([]);
-const variablesTabCount = computed(() => variablesRows.value.length);
-
-watch(
-  () => form.variables,
-  (value) => {
-    const incoming = varRowsToMap(mapToVarRows((value || {}) as Record<string, unknown>));
-    const current = varRowsToMap(variablesRows.value);
-    if (stableVarMap(incoming) === stableVarMap(current)) return;
-    variablesRows.value = mapToVarRows((value || {}) as Record<string, unknown>);
-  },
-  { immediate: true, deep: true }
-);
-
-const setVariablesRows = (rows: VarRow[]) => {
-  variablesRows.value = (rows || []).map((row) => ({ key: String(row.key || ''), value: String(row.value ?? '') }));
-  form.variables = varRowsToMap(variablesRows.value);
 };
 
 const knowledgeBlocks = ref<KnowledgeBlock[]>([]);

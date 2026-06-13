@@ -4,7 +4,6 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   """
 
   alias IntellectualClub.Chat.Media
-  alias IntellectualClub.PromptVariables
 
   @comment_prefix "//// "
 
@@ -23,16 +22,15 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   @doc """
   Renders a knowledge block title, body, and file attachment placeholders.
   """
-  def render_block(nil, _vars), do: ""
+  def render_block(nil), do: ""
 
-  def render_block(block, vars) do
+  def render_block(block) do
     title = block |> Map.get(:name, "") |> to_string() |> String.trim()
 
     body =
       block
       |> Map.get(:content, "")
       |> strip_comments()
-      |> PromptVariables.render(vars)
 
     attachments = attachment_placeholders(block)
 

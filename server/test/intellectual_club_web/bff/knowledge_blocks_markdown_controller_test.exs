@@ -193,7 +193,6 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
       attrs
       |> Map.drop([:tag_ids])
       |> Map.put_new(:version, "")
-      |> Map.put_new(:variables, %{})
       |> Map.update(:tag_bindings, Enum.map(tag_ids, &%{knowledge_tag_id: &1}), fn bindings ->
         bindings
       end)

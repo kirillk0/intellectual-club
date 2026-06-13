@@ -45,11 +45,6 @@
           @clear-content-error="errors.clearField('content')"
         />
 
-        <KnowledgeBlockVariablesSection
-          v-else-if="blockTab === 'variables'"
-          v-model:variables="form.variables"
-        />
-
         <KnowledgeBlockTagsSection
           v-else-if="blockTab === 'tags'"
           v-model:modal-open="tagModalOpen"
@@ -118,7 +113,6 @@ import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-b
 import KnowledgeBlockReadonlyBanner from '@/features/catalogs/components/knowledge-block/KnowledgeBlockReadonlyBanner.vue';
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
 import KnowledgeBlockTagsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTagsSection.vue';
-import KnowledgeBlockVariablesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockVariablesSection.vue';
 import type { KnowledgeBlockTab } from '@/features/catalogs/components/knowledge-block/types';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
@@ -136,7 +130,6 @@ type KnowledgeBlockForm = {
   version: string;
   content: string;
   image: ImageAsset | null;
-  variables: Record<string, string>;
   external_id: string | null;
   token_count: number | null;
   can_edit: boolean;
@@ -180,16 +173,12 @@ const removeTag = tagsDraft.removeTag;
 
 function fromApi(resource: JsonApiResource): Partial<KnowledgeBlockForm> {
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  const rawVariables = attrs.variables && typeof attrs.variables === 'object' ? (attrs.variables as Record<string, unknown>) : {};
-  const variables: Record<string, string> = {};
-  for (const [key, value] of Object.entries(rawVariables)) variables[key] = String(value ?? '');
 
   return {
     name: String(attrs.name || ''),
     version: String(attrs.version || ''),
     content: String(attrs.content || ''),
     image: parseImageAsset(attrs.image),
-    variables,
     external_id: typeof attrs.external_id === 'string' ? attrs.external_id : null,
     token_count: typeof attrs.token_count === 'number' ? attrs.token_count : null,
     can_edit: attrs.can_edit !== false,
@@ -278,7 +267,6 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
     version: '',
     content: '',
     image: null,
-    variables: {},
     external_id: null,
     token_count: null,
     can_edit: true,
@@ -292,14 +280,12 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
     name: form.name,
     version: form.version,
     content: form.content,
-    variables: form.variables || {},
     ...(tagBindingsPayload.value === undefined ? {} : { tag_bindings: tagBindingsPayload.value }),
   }),
   normalizeForDirty: (form) => ({
     name: form.name,
     version: form.version,
     content: form.content,
-    variables: form.variables,
     can_edit: form.can_edit,
     shared_incoming: form.shared_incoming,
     shared_outgoing: form.shared_outgoing,

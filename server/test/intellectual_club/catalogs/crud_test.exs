@@ -57,38 +57,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
     assert block.version == ""
   end
 
-  test "knowledge block normalizes variables on create and update" do
-    %{user: actor} = user_fixture()
-
-    block =
-      KnowledgeBlock
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "Variables block",
-          content: "Hello {{name}}",
-          variables: %{"  name  " => "Alice", "empty" => nil, "" => "skip"}
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    assert block.variables == %{"name" => "Alice", "empty" => ""}
-
-    updated =
-      block
-      |> Ash.Changeset.for_update(
-        :update,
-        %{
-          variables: %{"  name  " => "Bob", "company" => 42, "  " => "skip"}
-        },
-        actor: actor
-      )
-      |> Ash.update!(actor: actor)
-
-    assert updated.variables == %{"name" => "Bob", "company" => "42"}
-  end
-
   test "knowledge block external_id is unique per owner" do
     %{user: actor} = user_fixture()
     %{user: other_actor} = user_fixture()
@@ -221,7 +189,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
         %{
           name: "Bot",
           first_messages: ["Hi"],
-          variables: %{"company" => "Acme"},
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
           history_mode: :chat

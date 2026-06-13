@@ -343,7 +343,7 @@ defmodule IntellectualClub.Knowledge.MarkdownTransfer do
     else
       KnowledgeBlock
       |> Ash.Query.filter(owner_id == ^actor.id and external_id in ^external_ids)
-      |> Ash.Query.select([:id, :external_id, :name, :version, :variables])
+      |> Ash.Query.select([:id, :external_id, :name, :version])
       |> Ash.read!(actor: actor)
       |> Map.new(&{String.downcase(to_string(&1.external_id)), &1})
     end
@@ -380,7 +380,6 @@ defmodule IntellectualClub.Knowledge.MarkdownTransfer do
       %{
         name: item.name,
         content: item.content,
-        variables: %{},
         tag_bindings: [%{knowledge_tag_id: tag.id}]
       }
       |> maybe_put(:external_id, item.external_id)
@@ -394,7 +393,6 @@ defmodule IntellectualClub.Knowledge.MarkdownTransfer do
       %{
         name: item.name,
         content: item.content,
-        variables: %{},
         tag_bindings: [%{knowledge_tag_id: tag.id}]
       }
       |> maybe_put(:version, version)

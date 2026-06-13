@@ -31,7 +31,6 @@ defmodule IntellectualClub.Knowledge do
             :name,
             :version,
             :content,
-            :variables,
             :external_id,
             :token_count,
             :image,

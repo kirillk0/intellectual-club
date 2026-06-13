@@ -135,12 +135,6 @@ defmodule IntellectualClub.Bots.Bot do
       default([])
     end
 
-    attribute :variables, :map do
-      allow_nil?(false)
-      public?(true)
-      default(%{})
-    end
-
     attribute :max_tool_rounds, :integer do
       allow_nil?(false)
       public?(true)
@@ -304,7 +298,6 @@ defmodule IntellectualClub.Bots.Bot do
       accept([
         :name,
         :first_messages,
-        :variables,
         :max_tool_rounds,
         :context_soft_limit_percent,
         :max_file_size_bytes,
@@ -419,7 +412,6 @@ defmodule IntellectualClub.Bots.Bot do
         |> Ash.Changeset.change_attributes(%{
           name: Duplication.next_copy_label(source.name),
           first_messages: source.first_messages,
-          variables: source.variables,
           max_tool_rounds: source.max_tool_rounds,
           context_soft_limit_percent: source.context_soft_limit_percent,
           max_file_size_bytes: source.max_file_size_bytes,
@@ -518,7 +510,6 @@ defmodule IntellectualClub.Bots.Bot do
       accept([
         :name,
         :first_messages,
-        :variables,
         :max_tool_rounds,
         :context_soft_limit_percent,
         :max_file_size_bytes,

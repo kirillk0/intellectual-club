@@ -17,9 +17,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Polling chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Polling chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     prompt =
@@ -91,9 +89,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Step raw chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Step raw chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, _user_message} = Threads.add_message_to_end(chat, :user, "hello", actor: actor)
@@ -142,7 +138,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Polling fallback chat", note: "", variables: %{}},
+        %{title: "Polling fallback chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -177,7 +173,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollingTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Orphaned poll fallback", note: "", variables: %{}},
+        %{title: "Orphaned poll fallback", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

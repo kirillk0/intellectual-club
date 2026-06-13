@@ -44,16 +44,6 @@
       "generated?": false
     },
     {
-      "default": "%{}",
-      "size": null,
-      "type": "map",
-      "source": "variables",
-      "references": null,
-      "allow_nil?": false,
-      "primary_key?": false,
-      "generated?": false
-    },
-    {
       "default": "nil",
       "size": null,
       "type": "bigint",
@@ -124,7 +114,11 @@
     "strategy": null
   },
   "base_filter": null,
-  "custom_indexes": [],
-  "custom_statements": [],
+  "custom_indexes": [
+
+  ],
+  "custom_statements": [
+
+  ],
   "has_create_action": true
 }

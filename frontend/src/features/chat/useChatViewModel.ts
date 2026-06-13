@@ -321,7 +321,6 @@ export function useChatViewModel() {
     libraryDraft.hydrate({
       chatBlocks: payload.chat_blocks || [],
       chatToolBindings: payload.chat_tool_bindings || [],
-      chatVariables: chat.value?.variables || [],
     });
   };
 
@@ -919,7 +918,6 @@ export function useChatViewModel() {
     savingChatChanges: libraryDraft.savingChatChanges,
     chatBlocks: libraryDraft.chatBlocks,
     chatToolBindings: libraryDraft.chatToolBindings,
-    chatVariables: libraryDraft.chatVariables,
     toolLibrary,
     newChatToolInstanceIds: libraryDraft.newChatToolInstanceIds,
     chatBlockName: libraryDraft.chatBlockName,
@@ -942,7 +940,6 @@ export function useChatViewModel() {
     removeChatToolBinding: libraryDraft.removeChatToolBinding,
     setChatBlockEnabled: libraryDraft.setChatBlockEnabled,
     setChatToolBindingEnabled: libraryDraft.setChatToolBindingEnabled,
-    addVariableRow: libraryDraft.addVariableRow,
     chatBlocksPickerOpen: libraryDraft.chatBlocksPickerOpen,
     chatBlocksPickerSelection: libraryDraft.chatBlocksPickerSelection,
     linkedChatBlockIds: libraryDraft.linkedChatBlockIds,

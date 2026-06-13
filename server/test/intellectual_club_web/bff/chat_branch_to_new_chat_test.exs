@@ -32,8 +32,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
       create_chat!(actor, "Assistant source",
         note: "source note",
         bot_id: bot.id,
-        llm_configuration_id: configuration.id,
-        variables: %{topic: "branching"}
+        llm_configuration_id: configuration.id
       )
 
     {:ok, root} = Threads.add_message_to_end(source, :user, "Root prompt", actor: actor)
@@ -71,7 +70,6 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     assert target.parent_chat_id == nil
     assert target.parent_message_id == nil
     assert target.parent_relation_kind == nil
-    assert target.variables == %{"topic" => "branching"}
 
     branch = payload["branch"] || []
     assert Enum.map(branch, & &1["role"]) == ["user", "assistant"]
@@ -248,8 +246,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
       :create_empty,
       %{
         title: title,
-        note: "",
-        variables: %{}
+        note: ""
       }
       |> Map.merge(attrs),
       actor: actor
@@ -265,7 +262,6 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
         %{
           name: name,
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat
@@ -348,7 +344,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
-      %{name: "Branch block", version: "v1", content: "Knowledge", variables: %{}},
+      %{name: "Branch block", version: "v1", content: "Knowledge"},
       actor: actor
     )
     |> Ash.create!(actor: actor)

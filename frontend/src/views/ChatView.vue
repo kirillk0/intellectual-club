@@ -320,7 +320,6 @@
           :readonly="vm.sharedReadonly"
           :chat-blocks="vm.chatBlocks"
           :chat-tool-bindings="vm.chatToolBindings"
-          :chat-variables="vm.chatVariables"
           :tool-library="vm.toolLibrary"
           :new-chat-tool-instance-ids="vm.newChatToolInstanceIds"
           :chat-block-name="vm.chatBlockName"
@@ -344,8 +343,6 @@
           @remove-chat-tool-binding="vm.removeChatToolBinding"
           @set-chat-block-enabled="vm.setChatBlockEnabled"
           @set-chat-tool-binding-enabled="vm.setChatToolBindingEnabled"
-          @update:chatVariables="(value) => (vm.chatVariables = value)"
-          @add-variable-row="vm.addVariableRow"
         />
       </div>
 

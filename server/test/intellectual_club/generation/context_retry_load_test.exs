@@ -61,7 +61,7 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      %{title: title, note: "", variables: %{}},
+      %{title: title, note: ""},
       actor: actor
     )
     |> Ash.create!(actor: actor)

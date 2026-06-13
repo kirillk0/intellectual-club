@@ -445,7 +445,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       :create_empty,
       attrs
       |> Map.new()
-      |> Map.merge(%{title: title, note: "", variables: %{}}),
+      |> Map.merge(%{title: title, note: ""}),
       actor: actor
     )
     |> Ash.create!(actor: actor)
@@ -455,7 +455,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
-      %{name: name, version: "v1", content: content, variables: %{}},
+      %{name: name, version: "v1", content: content},
       actor: actor
     )
     |> Ash.create!(actor: actor)
@@ -469,7 +469,6 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
         %{
           name: name,
           first_messages: [],
-          variables: %{},
           max_tool_rounds: 20,
           context_soft_limit_percent: 80,
           history_mode: :chat

@@ -207,7 +207,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     KnowledgeBlock
     |> Ash.Changeset.for_create(
       :create,
-      %{name: "Files block", version: "v1", content: "content", variables: %{}},
+      %{name: "Files block", version: "v1", content: "content"},
       actor: actor
     )
     |> Ash.create!(actor: actor)

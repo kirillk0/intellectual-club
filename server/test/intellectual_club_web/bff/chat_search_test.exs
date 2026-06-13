@@ -20,9 +20,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Search chat", note: "", variables: %{}},
-        actor: actor
-      )
+      |> Ash.Changeset.for_create(:create, %{title: "Search chat", note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, root} = Threads.add_message_to_end(chat, :user, "Root", actor: actor)
@@ -58,7 +56,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Empty search chat", note: "", variables: %{}},
+        %{title: "Empty search chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -80,7 +78,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Unicode prefix chat", note: "", variables: %{}},
+        %{title: "Unicode prefix chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -102,7 +100,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Unicode infix chat", note: "", variables: %{}},
+        %{title: "Unicode infix chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -129,7 +127,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "And search chat", note: "", variables: %{}},
+        %{title: "And search chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -168,7 +166,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Meta chat", note: "arsen note", bot_id: meta_bot.id, variables: %{}},
+        %{title: "Meta chat", note: "arsen note", bot_id: meta_bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -179,7 +177,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Active match chat", note: "", bot_id: active_bot.id, variables: %{}},
+        %{title: "Active match chat", note: "", bot_id: active_bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -193,7 +191,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Inactive match chat", note: "", bot_id: inactive_bot.id, variables: %{}},
+        %{title: "Inactive match chat", note: "", bot_id: inactive_bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -238,7 +236,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Global unicode chat", note: "", variables: %{}},
+        %{title: "Global unicode chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -265,7 +263,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Large trace chat", note: "", variables: %{}},
+        %{title: "Large trace chat", note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -353,7 +351,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
         Chat
         |> Ash.Changeset.for_create(
           :create,
-          %{title: "Paged chat #{idx}", note: "", variables: %{}},
+          %{title: "Paged chat #{idx}", note: ""},
           actor: actor
         )
         |> Ash.create!(actor: actor)
@@ -377,7 +375,6 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat

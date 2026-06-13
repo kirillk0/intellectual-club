@@ -68,8 +68,7 @@ defmodule IntellectualClub.Chat.Continuation do
         title: source.title,
         note: source.note,
         bot_id: source.bot_id,
-        llm_configuration_id: source.llm_configuration_id,
-        variables: source.variables || %{}
+        llm_configuration_id: source.llm_configuration_id
       },
       actor: actor
     )
@@ -84,8 +83,7 @@ defmodule IntellectualClub.Chat.Continuation do
         title: source.title,
         note: branch_note(source.note),
         bot_id: source.bot_id,
-        llm_configuration_id: source.llm_configuration_id,
-        variables: source.variables || %{}
+        llm_configuration_id: source.llm_configuration_id
       },
       actor: actor
     )

@@ -5,16 +5,11 @@ defmodule IntellectualClub.Chat.Changes.NormalizeChatFields do
 
   use Ash.Resource.Change
 
-  alias IntellectualClub.PromptVariables
-
   @impl true
   def change(changeset, _opts, _context) do
     note = Ash.Changeset.get_attribute(changeset, :note)
-    variables = Ash.Changeset.get_attribute(changeset, :variables)
 
-    changeset
-    |> Ash.Changeset.change_attribute(:note, normalize_note(note))
-    |> Ash.Changeset.change_attribute(:variables, PromptVariables.normalize_map(variables))
+    Ash.Changeset.change_attribute(changeset, :note, normalize_note(note))
   end
 
   defp normalize_note(nil), do: ""

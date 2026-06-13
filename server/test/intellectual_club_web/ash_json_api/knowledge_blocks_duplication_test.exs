@@ -42,8 +42,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDuplicationTest do
         %{
           name: "Source block",
           version: "v1",
-          content: "Important content",
-          variables: %{"k" => "v"}
+          content: "Important content"
         },
         actor: actor
       )
@@ -90,7 +89,6 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDuplicationTest do
     assert duplicated.name == source.name
     assert duplicated.version == "v1 copy"
     assert duplicated.content == source.content
-    assert duplicated.variables == source.variables
     assert duplicated.token_count == source.token_count
 
     source_tag_ids =

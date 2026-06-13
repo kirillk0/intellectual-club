@@ -22,7 +22,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Upload limit chat", note: "", variables: %{}, bot_id: bot.id},
+        %{title: "Upload limit chat", note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -47,7 +47,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chunk upload chat", note: "", variables: %{}, bot_id: bot.id},
+        %{title: "Chunk upload chat", note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -96,7 +96,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Oversized chunk chat", note: "", variables: %{}, bot_id: bot.id},
+        %{title: "Oversized chunk chat", note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -151,7 +151,6 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       %{
         name: name,
         first_messages: [],
-        variables: %{},
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat,

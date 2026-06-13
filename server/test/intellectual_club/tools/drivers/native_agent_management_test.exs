@@ -121,9 +121,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
   defp create_chat!(actor, title) do
     Chat
-    |> Ash.Changeset.for_create(:create_empty, %{title: title, note: "", variables: %{}},
-      actor: actor
-    )
+    |> Ash.Changeset.for_create(:create_empty, %{title: title, note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 
