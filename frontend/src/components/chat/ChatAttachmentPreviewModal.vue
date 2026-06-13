@@ -69,7 +69,7 @@
     <div v-else-if="kind === 'markdown'" class="attachment-preview-markdown">
       <div class="message assistant attachment-preview-message">
         <div class="bubble">
-          <div class="message-content chat-markdown" v-html="markdownHtml"></div>
+          <div ref="markdownEl" class="message-content chat-markdown" v-html="markdownHtml"></div>
         </div>
       </div>
     </div>
@@ -79,11 +79,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, onMounted, onUpdated, ref } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-import { renderChatMessageHtml } from '@/utils/chatMarkdown';
+import { enhanceRenderedChatMessageHtml, renderChatMessageHtml } from '@/utils/chatMarkdown';
 
 interface Props {
   open: boolean;
@@ -108,6 +108,21 @@ const emit = defineEmits<{
 const errorText = computed(() => (props.error || '').trim());
 const textValue = computed(() => props.text ?? '');
 const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { highlightCode: true }));
+const markdownEl = ref<HTMLElement | null>(null);
+let enhanceMarkdownToken = 0;
+
+const scheduleEnhanceMarkdownHtml = () => {
+  const token = ++enhanceMarkdownToken;
+
+  void nextTick(async () => {
+    const root = markdownEl.value;
+    if (!root || token !== enhanceMarkdownToken) return;
+    await enhanceRenderedChatMessageHtml(root, { highlightCode: true });
+  });
+};
+
+onMounted(scheduleEnhanceMarkdownHtml);
+onUpdated(scheduleEnhanceMarkdownHtml);
 
 const handleImageClick = () => {
   if (props.kind !== 'image' || !props.canNavigate) return;

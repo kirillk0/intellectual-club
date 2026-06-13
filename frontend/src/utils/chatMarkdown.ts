@@ -1,6 +1,7 @@
 import DOMPurify, { type Config } from 'dompurify';
 import { marked } from 'marked';
-import Temml, { type Options as TemmlOptions } from 'temml';
+import type { Options as TemmlOptions } from 'temml';
+import temmlScriptUrl from 'temml/dist/temml.min.js?url&no-inline';
 
 import { highlightCodeBlocks } from './syntaxHighlight';
 
@@ -22,6 +23,8 @@ type MathSegment =
 type TemmlAutoRenderOptions = TemmlOptions & {
   macros?: Record<string, unknown>;
 };
+
+type TemmlStatic = typeof import('temml').default;
 
 type PreparedMarkdownMath = {
   markdown: string;
@@ -81,6 +84,100 @@ const MATH_DELIMITERS: MathDelimiter[] = [
 const TEMML_RENDER_OPTIONS: TemmlAutoRenderOptions = {
   throwOnError: true,
   strict: false,
+};
+
+let temmlPromise: Promise<TemmlStatic> | null = null;
+let temmlScriptPromise: Promise<TemmlStatic> | null = null;
+let temmlStylesPromise: Promise<void> | null = null;
+
+const loadTemmlStyles = async () => {
+  if (document.querySelector('style[data-temml-css="true"]')) return;
+
+  if (!temmlStylesPromise) {
+    temmlStylesPromise = Promise.all([
+      import('temml/dist/Temml-Local.css?raw'),
+      import('temml/dist/Temml.woff2?url'),
+    ])
+      .then(([cssModule, fontModule]) => {
+        if (document.querySelector('style[data-temml-css="true"]')) return;
+
+        const css = cssModule.default.replace(/url\((['"]?)Temml\.woff2\1\)/gu, `url("${fontModule.default}")`);
+        const style = document.createElement('style');
+        style.setAttribute('data-temml-css', 'true');
+        style.textContent = css;
+        document.head.appendChild(style);
+      })
+      .catch((error) => {
+        temmlStylesPromise = null;
+        throw error;
+      });
+  }
+
+  return temmlStylesPromise;
+};
+
+const getWindowTemml = () => (window as Window & { temml?: TemmlStatic }).temml;
+
+const getTemmlScriptUrl = () => {
+  if (temmlScriptUrl.startsWith('/assets/')) return temmlScriptUrl;
+  if (temmlScriptUrl.startsWith('/')) return `/assets${temmlScriptUrl}`;
+  return temmlScriptUrl;
+};
+
+const loadTemmlScript = async () => {
+  const loadedTemml = getWindowTemml();
+  if (loadedTemml) return loadedTemml;
+
+  if (!temmlScriptPromise) {
+    temmlScriptPromise = new Promise<TemmlStatic>((resolve, reject) => {
+      const existingScript = document.querySelector<HTMLScriptElement>('script[data-temml-script="true"]');
+      const script = existingScript ?? document.createElement('script');
+
+      const handleLoad = () => {
+        const temml = getWindowTemml();
+        if (temml) {
+          resolve(temml);
+          return;
+        }
+
+        temmlScriptPromise = null;
+        reject(new Error('Temml script loaded without exposing window.temml'));
+      };
+
+      const handleError = () => {
+        temmlScriptPromise = null;
+        reject(new Error('Failed to load Temml script'));
+      };
+
+      script.addEventListener('load', handleLoad, { once: true });
+      script.addEventListener('error', handleError, { once: true });
+
+      if (!existingScript) {
+        script.async = true;
+        script.src = getTemmlScriptUrl();
+        script.setAttribute('data-temml-script', 'true');
+        document.head.appendChild(script);
+      }
+    }).catch((error) => {
+      temmlScriptPromise = null;
+      throw error;
+    });
+  }
+
+  return temmlScriptPromise;
+};
+
+const loadTemml = async () => {
+  if (!temmlPromise) {
+    temmlPromise = Promise.all([loadTemmlScript(), loadTemmlStyles()])
+      .then(([temml]) => temml)
+      .catch((error) => {
+        temmlPromise = null;
+        throw error;
+      });
+  }
+
+  return temmlPromise;
 };
 
 const normalizeChatMarkdown = (input: string) => {
@@ -248,23 +345,24 @@ const prepareMarkdownMath = (input: string): PreparedMarkdownMath => {
 const appendRenderedMath = (
   fragment: DocumentFragment,
   segment: Extract<MathSegment, { type: 'math' }>,
-  macros: Record<string, unknown>
+  macros: Record<string, unknown>,
+  temml: TemmlStatic
 ) => {
   try {
-    const rendered = Temml.renderToString(segment.value, {
+    const rendered = temml.renderToString(segment.value, {
       ...TEMML_RENDER_OPTIONS,
       displayMode: segment.display,
       macros,
     });
     const template = document.createElement('template');
-    template.innerHTML = rendered;
+    template.innerHTML = DOMPurify.sanitize(rendered, SANITIZE_OPTIONS);
     fragment.appendChild(template.content.cloneNode(true));
   } catch {
     fragment.append(document.createTextNode(segment.raw));
   }
 };
 
-const replaceMathPlaceholders = (
+const restoreMathPlaceholders = (
   root: HTMLElement,
   placeholders: Map<string, Extract<MathSegment, { type: 'math' }>>
 ) => {
@@ -286,11 +384,7 @@ const replaceMathPlaceholders = (
     if (tokenPattern.test(node.data)) targets.push(node);
   }
 
-  const macros: Record<string, unknown> = {};
-
   targets.forEach((textNode) => {
-    const parent = textNode.parentElement;
-    const keepRaw = Boolean(parent?.closest('pre, code, script, style, textarea, option'));
     const fragment = document.createDocumentFragment();
     let lastIndex = 0;
     tokenPattern.lastIndex = 0;
@@ -309,10 +403,8 @@ const replaceMathPlaceholders = (
 
       if (!segment) {
         fragment.append(document.createTextNode(token));
-      } else if (keepRaw) {
-        fragment.append(document.createTextNode(segment.raw));
       } else {
-        appendRenderedMath(fragment, segment, macros);
+        fragment.append(document.createTextNode(segment.raw));
       }
 
       lastIndex = end;
@@ -324,17 +416,11 @@ const replaceMathPlaceholders = (
 
     textNode.replaceWith(fragment);
   });
-
-  try {
-    Temml.postProcess(root);
-  } catch {
-    // Keep rendered output even if post-processing fails.
-  }
 };
 
-const renderTexExpressions = (root: HTMLElement) => {
+const renderTexExpressions = async (root: HTMLElement) => {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const targets: Text[] = [];
+  const targets: Array<{ textNode: Text; segments: MathSegment[] }> = [];
 
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
@@ -342,15 +428,19 @@ const renderTexExpressions = (root: HTMLElement) => {
     if (!parent) continue;
     if (parent.closest('pre, code, script, style, textarea, option, math')) continue;
     if (!node.data.includes('$') && !node.data.includes('\\')) continue;
-    targets.push(node);
+
+    const segments = splitTextIntoMathSegments(node.data);
+    if (!segments.some((segment) => segment.type === 'math')) continue;
+    targets.push({ textNode: node, segments });
   }
 
+  if (!targets.length) return;
+
+  const temml = await loadTemml();
   const macros: Record<string, unknown> = {};
 
-  targets.forEach((textNode) => {
-    const segments = splitTextIntoMathSegments(textNode.data);
-    if (!segments.some((segment) => segment.type === 'math')) return;
-
+  targets.forEach(({ textNode, segments }) => {
+    if (!textNode.parentNode) return;
     const fragment = document.createDocumentFragment();
     segments.forEach((segment) => {
       if (segment.type === 'text') {
@@ -358,14 +448,14 @@ const renderTexExpressions = (root: HTMLElement) => {
         return;
       }
 
-      appendRenderedMath(fragment, segment, macros);
+      appendRenderedMath(fragment, segment, macros, temml);
     });
 
     textNode.replaceWith(fragment);
   });
 
   try {
-    Temml.postProcess(root);
+    temml.postProcess(root);
   } catch {
     // Keep rendered output even if post-processing fails.
   }
@@ -495,12 +585,7 @@ export const renderChatMessageHtml = (
   const wrapper = document.createElement('div');
   wrapper.innerHTML = html;
 
-  if (options?.highlightCode) {
-    highlightCodeBlocks(wrapper);
-  }
-
-  replaceMathPlaceholders(wrapper, prepared.placeholders);
-  renderTexExpressions(wrapper);
+  restoreMathPlaceholders(wrapper, prepared.placeholders);
   highlightQuotes(wrapper);
   if (options?.codeCopyButtons) {
     addCodeCopyButtons(wrapper);
@@ -511,4 +596,17 @@ export const renderChatMessageHtml = (
   sanitizedWrapper.innerHTML = sanitized;
   addSafeExternalLinkTargets(sanitizedWrapper);
   return wrapTables(sanitizedWrapper.innerHTML);
+};
+
+export const enhanceRenderedChatMessageHtml = async (
+  root: HTMLElement,
+  options?: { highlightCode?: boolean; highlightedAttr?: string }
+) => {
+  const tasks: Promise<void>[] = [renderTexExpressions(root)];
+
+  if (options?.highlightCode) {
+    tasks.push(highlightCodeBlocks(root, { highlightedAttr: options.highlightedAttr }));
+  }
+
+  await Promise.all(tasks);
 };

@@ -26,7 +26,7 @@
     <div v-else-if="renderMarkdown" class="prompt-modal__markdown">
       <div v-if="promptText" class="message assistant prompt-modal__message">
         <div class="bubble">
-          <div class="message-content chat-markdown" v-html="promptHtml"></div>
+          <div ref="promptMarkdownEl" class="message-content chat-markdown" v-html="promptHtml"></div>
         </div>
       </div>
       <div v-else class="prompt-modal__empty muted">—</div>
@@ -43,10 +43,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
-import { renderChatMessageHtml } from '@/utils/chatMarkdown';
+import { enhanceRenderedChatMessageHtml, renderChatMessageHtml } from '@/utils/chatMarkdown';
 
 interface Props {
   open: boolean;
@@ -59,6 +59,8 @@ const props = defineProps<Props>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const renderMarkdown = ref(true);
+const promptMarkdownEl = ref<HTMLElement | null>(null);
+let enhancePromptToken = 0;
 
 const loading = computed(() => Boolean(props.loading));
 const errorText = computed(() => (props.error || '').trim());
@@ -71,6 +73,19 @@ watch(
     if (open) renderMarkdown.value = true;
   },
 );
+
+const scheduleEnhancePromptHtml = () => {
+  const token = ++enhancePromptToken;
+
+  void nextTick(async () => {
+    const root = promptMarkdownEl.value;
+    if (!root || token !== enhancePromptToken) return;
+    await enhanceRenderedChatMessageHtml(root, { highlightCode: true });
+  });
+};
+
+onMounted(scheduleEnhancePromptHtml);
+onUpdated(scheduleEnhancePromptHtml);
 </script>
 
 <style scoped>

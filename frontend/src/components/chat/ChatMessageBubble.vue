@@ -18,7 +18,7 @@
         @attachment-open="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
-      <div class="message-content" @click="handleMessageContentClick">
+      <div ref="messageContentEl" class="message-content" @click="handleMessageContentClick">
         <template v-for="(part, partIdx) in messageParts" :key="part.key">
           <div class="message-answer-part">
             <span v-if="part.showTimestamp && part.timestamp" class="message-answer-time">
@@ -199,12 +199,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch, type ComponentPublicInstance } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
 import type { ChatBranchMessage, ChatMessageContent, ChatMessageStep } from '@/types/api';
-import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -272,6 +272,8 @@ const moreMenuOpen = ref(false);
 const moreMenuRef = ref<HTMLElement | null>(null);
 const moreMenuButtonRef = ref<HTMLElement | null>(null);
 const moreMenuStyle = ref<Record<string, string>>({});
+const messageContentEl = ref<HTMLElement | null>(null);
+let enhanceMessageContentToken = 0;
 
 const canRetry = computed(
   () => !props.readonly && Boolean(messageId.value) && (msg.value.working?.step_count || 0) > 0
@@ -463,7 +465,21 @@ watch(messageId, () => {
   closeMoreMenu();
 });
 
+const scheduleEnhanceMessageContent = () => {
+  const token = ++enhanceMessageContentToken;
+
+  void nextTick(async () => {
+    const root = messageContentEl.value;
+    if (!root || token !== enhanceMessageContentToken) return;
+    await enhanceRenderedChatMessageHtml(root, { highlightCode: shouldHighlightCode.value });
+  });
+};
+
+onMounted(scheduleEnhanceMessageContent);
+onUpdated(scheduleEnhanceMessageContent);
+
 onBeforeUnmount(() => {
+  enhanceMessageContentToken += 1;
   removeMoreMenuListeners();
 });
 

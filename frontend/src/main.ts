@@ -1,5 +1,4 @@
 import { createApp } from 'vue';
-import 'temml/dist/Temml-Local.css';
 
 import App from './App.vue';
 import { i18n } from './i18n';

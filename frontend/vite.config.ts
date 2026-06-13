@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
     path.join(spaAssetsDir, 'js/spa.js'),
     path.join(spaAssetsDir, 'js/spa.js.map'),
     path.join(spaAssetsDir, 'js/chunks'),
+    path.join(spaAssetsDir, 'temml.min.js'),
   ];
 
   return {
@@ -55,6 +56,7 @@ export default defineConfig(({ mode }) => {
           chunkFileNames: 'js/chunks/[name]-[hash].js',
           assetFileNames: (assetInfo) => {
             if (assetInfo.name?.endsWith('.css')) return 'css/spa.css';
+            if (assetInfo.name === 'temml.min.js') return '[name][extname]';
             return 'assets/[name][extname]';
           },
         },

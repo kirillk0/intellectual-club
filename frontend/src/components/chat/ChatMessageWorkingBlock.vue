@@ -234,9 +234,8 @@ import type {
   ChatMessageWorkingSummary,
 } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
-import { renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import { copyTextWithFallback } from '@/utils/clipboard';
-import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 
 interface Props {
   messageId: number | null;
@@ -546,7 +545,7 @@ onUnmounted(() => {
 const highlightWorkingJsonBlocks = () => {
   const root = workingBlockEl.value;
   if (!root) return;
-  highlightCodeBlocks(root);
+  void enhanceRenderedChatMessageHtml(root, { highlightCode: true });
 };
 
 const scheduleHighlightWorkingJsonBlocks = () => {
