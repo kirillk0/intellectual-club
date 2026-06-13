@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import { COMMENT_PREFIX } from '@/features/catalogs/model/knowledgeBlockMarkdownBlocks';
 
@@ -116,140 +116,6 @@ function syncContentEditorScrollFromTextarea(textarea: HTMLTextAreaElement) {
   contentScrollLeft.value = textarea.scrollLeft;
 }
 
-function scrollCodeEditorToPosition(textarea: HTMLTextAreaElement, position: number) {
-  const applyScroll = () => {
-    if (!document.body.contains(textarea)) return;
-    if (document.activeElement !== textarea) return;
-    if (textarea.selectionStart !== position || textarea.selectionEnd !== position) return;
-
-    scrollTextareaToPosition(textarea, position);
-    scrollCodeEditorIntoView(textarea);
-  };
-
-  applyScroll();
-  window.requestAnimationFrame(applyScroll);
-  window.requestAnimationFrame(() => {
-    window.requestAnimationFrame(applyScroll);
-  });
-  window.setTimeout(applyScroll, 120);
-  window.setTimeout(applyScroll, 320);
-  window.setTimeout(applyScroll, 640);
-}
-
-function scrollTextareaToPosition(textarea: HTMLTextAreaElement, position: number) {
-  const targetTop = measureTextareaPositionTop(textarea, position) ?? estimateTextareaPositionTop(textarea, position);
-  const viewportOffset = Math.max(24, textarea.clientHeight * 0.35);
-  const maxScrollTop = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
-
-  textarea.scrollTop = Math.max(0, Math.min(maxScrollTop, targetTop - viewportOffset));
-  syncContentEditorScrollFromTextarea(textarea);
-}
-
-function scrollCodeEditorIntoView(textarea: HTMLTextAreaElement) {
-  const rect = textarea.getBoundingClientRect();
-  const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
-  const headerHeight = getAppHeaderHeight();
-  const topLimit = headerHeight + 16;
-  const bottomLimit = viewportHeight - 24;
-  let nextTop: number | null = null;
-
-  if (rect.top < topLimit) {
-    nextTop = window.scrollY + rect.top - topLimit;
-  } else if (rect.bottom > bottomLimit) {
-    nextTop = window.scrollY + rect.bottom - bottomLimit;
-  }
-
-  if (nextTop === null) return;
-
-  window.scrollTo({
-    top: Math.max(0, nextTop),
-    left: window.scrollX,
-    behavior: 'auto',
-  });
-}
-
-function estimateTextareaPositionTop(textarea: HTMLTextAreaElement, position: number) {
-  const style = window.getComputedStyle(textarea);
-  const fontSize = Number.parseFloat(style.fontSize) || 14;
-  const lineHeight = getResolvedLineHeight(style, fontSize);
-  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
-  const lineIndex = String(props.content || '').slice(0, position).split('\n').length - 1;
-  return paddingTop + lineIndex * lineHeight;
-}
-
-function measureTextareaPositionTop(textarea: HTMLTextAreaElement, position: number) {
-  const value = String(props.content || '');
-  const style = window.getComputedStyle(textarea);
-  const fontSize = Number.parseFloat(style.fontSize) || 14;
-  const lineHeight = getResolvedLineHeight(style, fontSize);
-  const resolvedLineHeight = `${lineHeight}px`;
-  const overflowWrap = style.getPropertyValue('overflow-wrap');
-  const mirror = document.createElement('div');
-  const marker = document.createElement('span');
-
-  Object.assign(mirror.style, {
-    position: 'absolute',
-    visibility: 'hidden',
-    overflow: 'hidden',
-    top: '0',
-    left: '-9999px',
-    width: `${textarea.clientWidth}px`,
-    boxSizing: 'border-box',
-    paddingTop: style.paddingTop,
-    paddingRight: style.paddingRight,
-    paddingBottom: style.paddingBottom,
-    paddingLeft: style.paddingLeft,
-    fontFamily: style.fontFamily,
-    fontSize: style.fontSize,
-    fontStyle: style.fontStyle,
-    fontVariant: style.fontVariant,
-    fontWeight: style.fontWeight,
-    letterSpacing: style.letterSpacing,
-    lineHeight: resolvedLineHeight,
-    textTransform: style.textTransform,
-    whiteSpace: 'pre-wrap',
-    overflowWrap: !overflowWrap || overflowWrap === 'normal' ? 'break-word' : overflowWrap,
-    wordBreak: style.wordBreak,
-    tabSize: style.getPropertyValue('tab-size') || '8',
-  });
-
-  Object.assign(marker.style, {
-    display: 'inline-block',
-    width: '1px',
-    height: resolvedLineHeight,
-    lineHeight: resolvedLineHeight,
-  });
-
-  marker.textContent = '\u200b';
-  mirror.append(document.createTextNode(value.slice(0, position)), marker);
-  document.body.append(mirror);
-
-  const top = marker.offsetTop;
-  mirror.remove();
-  return Number.isFinite(top) ? top : null;
-}
-
-function getResolvedLineHeight(style: CSSStyleDeclaration, fontSize: number) {
-  return Number.parseFloat(style.lineHeight) || fontSize * 1.5;
-}
-
-function getAppHeaderHeight() {
-  const raw = window.getComputedStyle(document.documentElement).getPropertyValue('--app-header-height');
-  const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function focusAtPosition(position: number) {
-  await nextTick();
-  const textarea = contentTextareaRef.value;
-  if (!textarea) return;
-
-  const safePosition = Math.max(0, Math.min(String(props.content || '').length, position));
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(safePosition, safePosition);
-  scrollCodeEditorToPosition(textarea, safePosition);
-}
-
 function resetScroll() {
   contentScrollTop.value = 0;
   contentScrollLeft.value = 0;
@@ -261,7 +127,6 @@ function resetScroll() {
 }
 
 defineExpose({
-  focusAtPosition,
   resetScroll,
 });
 </script>

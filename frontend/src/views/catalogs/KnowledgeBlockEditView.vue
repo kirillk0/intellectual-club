@@ -37,18 +37,8 @@
       <div class="card stack">
         <KnowledgeBlockTabsNav v-model="blockTab" :files-count="filesTabCount" />
 
-        <KnowledgeBlockVisualEditor
-          v-if="blockTab === 'visual'"
-          ref="visualEditorRef"
-          v-model:content="form.content"
-          :content-error="contentError"
-          :disabled="visualEditingDisabled"
-          @clear-content-error="errors.clearField('content')"
-          @edit-source="openCodeAtPosition"
-        />
-
         <KnowledgeBlockCodeEditor
-          v-else-if="blockTab === 'code'"
+          v-if="blockTab === 'code'"
           ref="codeEditorRef"
           v-model:content="form.content"
           :content-error="contentError"
@@ -110,7 +100,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, toRef, watch } from 'vue';
+import { computed, ref, toRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { getApiErrorMessage } from '@/api/client';
@@ -129,7 +119,6 @@ import KnowledgeBlockReadonlyBanner from '@/features/catalogs/components/knowled
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
 import KnowledgeBlockTagsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTagsSection.vue';
 import KnowledgeBlockVariablesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockVariablesSection.vue';
-import KnowledgeBlockVisualEditor from '@/features/catalogs/components/knowledge-block/KnowledgeBlockVisualEditor.vue';
 import type { KnowledgeBlockTab } from '@/features/catalogs/components/knowledge-block/types';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
@@ -137,7 +126,6 @@ import {
   useKnowledgeBlockFileBindingsDraft,
   type KnowledgeBlockFileDraftItem,
 } from '@/features/catalogs/model/useKnowledgeBlockFileBindingsDraft';
-import { stripKnowledgeBlockComments } from '@/features/catalogs/model/knowledgeBlockMarkdownBlocks';
 import { useKnowledgeBlockTagsDraft } from '@/features/catalogs/model/useKnowledgeBlockTagsDraft';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
@@ -354,10 +342,9 @@ const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
-const blockTab = ref<KnowledgeBlockTab>('visual');
+const blockTab = ref<KnowledgeBlockTab>('code');
 const initializedTabForId = ref<string | null>(null);
 const codeEditorRef = ref<InstanceType<typeof KnowledgeBlockCodeEditor> | null>(null);
-const visualEditorRef = ref<InstanceType<typeof KnowledgeBlockVisualEditor> | null>(null);
 
 const filesTabCount = computed(() => fileAttachments.value.length);
 const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
@@ -368,13 +355,6 @@ const filesActionDisabled = computed(
     filesLoading.value ||
     (!isNew.value && !fileBindings.loaded.value)
 );
-const visualEditingDisabled = computed(
-  () => loading.value || saving.value || Boolean(loadError.value) || sharedReadonly.value
-);
-
-function getInitialBlockTab() {
-  return isNew.value || !stripKnowledgeBlockComments(form.content).trim() ? 'code' : 'visual';
-}
 
 watch(
   () => editor.idParam.value,
@@ -382,7 +362,6 @@ watch(
     initializedTabForId.value = null;
     tagModalOpen.value = false;
     linkedAfterCreate.value = false;
-    visualEditorRef.value?.reset();
     codeEditorRef.value?.resetScroll();
   }
 );
@@ -393,15 +372,11 @@ watch(
     if (!isLoaded || isLoading) return;
     const currentId = id || 'new';
     if (initializedTabForId.value === currentId) return;
-    blockTab.value = getInitialBlockTab();
+    blockTab.value = 'code';
     initializedTabForId.value = currentId;
   },
   { immediate: true }
 );
-
-watch(blockTab, (tab) => {
-  if (tab !== 'visual') visualEditorRef.value?.reset();
-});
 
 const knowledgeBlockContentDraftStorageKey = computed(() => {
   if (isNew.value) {
@@ -440,12 +415,6 @@ useUnsavedChangesGuard(guardDirty);
 
 function clearField(field: 'name' | 'version') {
   errors.clearField(field);
-}
-
-async function openCodeAtPosition(position: number) {
-  blockTab.value = 'code';
-  await nextTick();
-  await codeEditorRef.value?.focusAtPosition(position);
 }
 
 const save = async () => {
@@ -487,7 +456,6 @@ const save = async () => {
 };
 
 const cancelChanges = () => {
-  visualEditorRef.value?.reset();
   codeEditorRef.value?.resetScroll();
   editor.reset();
   tagsDraft.reset();

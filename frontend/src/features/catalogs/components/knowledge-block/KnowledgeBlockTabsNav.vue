@@ -28,7 +28,6 @@ const emit = defineEmits<{
 }>();
 
 const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => [
-  { value: 'visual', label: 'Visual' },
   { value: 'code', label: 'Code' },
   { value: 'variables', label: 'Variables' },
   { value: 'tags', label: 'Tags' },
@@ -36,4 +35,3 @@ const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => 
   { value: 'details', label: 'Details' },
 ]);
 </script>
-

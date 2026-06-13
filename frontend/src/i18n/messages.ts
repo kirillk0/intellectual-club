@@ -626,7 +626,6 @@ export const ruMessages: Record<string, string> = {
   'Variables': 'Переменные',
   'Variables are exposed to prompts as': 'Переменные доступны в prompts как',
   'Version': 'Версия',
-  'Visual': 'Визуально',
   'Visible to the model when this tool is available.': 'Видно модели, когда инструмент доступен.',
   'Waiting for configuration sync': 'Ожидание синхронизации конфигурации',
   'Waiting for server confirmation': 'Ожидание подтверждения сервера',
