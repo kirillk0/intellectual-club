@@ -158,15 +158,14 @@
             <button type="button" @click="resetParametersText" :disabled="saving || sharedReadonly">Reset JSON</button>
           </div>
 
-          <textarea
-            v-model="parametersText"
-            class="full"
-            rows="10"
-            spellcheck="false"
+          <JsonCodeEditor
+            :model-value="parametersText"
+            :error="parametersError"
+            :readonly="parametersEditorReadonly"
+            label="Parameters"
             placeholder="{ }"
-            :disabled="sharedReadonly"
-            @input="handleParametersInput"
-          ></textarea>
+            @update:modelValue="setParametersText"
+          />
           <div v-if="parametersError" class="error-text">{{ parametersError }}</div>
           <div class="muted">This JSON is validated on input and must be an object.</div>
         </div>
@@ -287,6 +286,7 @@ import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
+import JsonCodeEditor from '@/features/catalogs/components/JsonCodeEditor.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useKnowledgeBlockBindingsDraft } from '@/features/catalogs/model/useKnowledgeBlockBindingsDraft';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
@@ -651,6 +651,9 @@ const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const configTab = ref<'settings' | 'parameters' | 'tags' | 'blocks'>('settings');
+const parametersEditorReadonly = computed(
+  () => sharedReadonly.value || loading.value || saving.value || Boolean(loadError.value)
+);
 const save = async () => {
   if (saving.value) return;
   await editor.save();
@@ -961,8 +964,13 @@ const resetParametersText = () => {
   parametersError.value = null;
 };
 
-const handleParametersInput = () => {
-  const text = parametersText.value || '';
+const setParametersText = (value: string) => {
+  parametersText.value = value;
+  handleParametersInput(value);
+};
+
+const handleParametersInput = (value = parametersText.value) => {
+  const text = value || '';
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
