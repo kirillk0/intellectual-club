@@ -66,6 +66,7 @@ export function useKnowledgeBlockTagsDraft(params: {
 }) {
   const tagModalOpen = ref(false);
   const allTagsLoading = ref(false);
+  const allTagsLoaded = ref(false);
   const allTagsError = ref<string | null>(null);
   const allTags = ref<KnowledgeTagRow[]>([]);
   const tagBindingsLoading = ref(false);
@@ -167,7 +168,7 @@ export function useKnowledgeBlockTagsDraft(params: {
   }
 
   async function loadAllTags() {
-    if (allTagsLoading.value) return;
+    if (allTagsLoading.value || allTagsLoaded.value) return;
     allTagsLoading.value = true;
     allTagsError.value = null;
 
@@ -176,14 +177,17 @@ export function useKnowledgeBlockTagsDraft(params: {
       tagParams.set('sort', 'full_name');
       const payload = await jsonApiList('/api/ash/knowledge-tags', tagParams);
       allTags.value = (payload.data || []).map(parseTagRow).filter((t): t is KnowledgeTagRow => Boolean(t));
+      allTagsLoaded.value = true;
     } catch (e) {
       console.error(e);
       const message = e instanceof Error ? e.message : 'Failed to load tags.';
       if (message.startsWith('HTTP 403') || message.startsWith('HTTP 401')) {
         allTags.value = [];
+        allTagsLoaded.value = true;
         allTagsError.value = null;
       } else {
         allTagsError.value = message;
+        allTagsLoaded.value = false;
       }
     } finally {
       allTagsLoading.value = false;
@@ -192,7 +196,7 @@ export function useKnowledgeBlockTagsDraft(params: {
 
   function openTagModal() {
     tagModalOpen.value = true;
-    if (!allTagsLoading.value && !allTags.value.length) void loadAllTags();
+    if (!allTagsLoading.value && !allTagsLoaded.value) void loadAllTags();
   }
 
   function addTag(tagId: number) {
@@ -278,4 +282,3 @@ export function useKnowledgeBlockTagsDraft(params: {
     reset,
   };
 }
-
