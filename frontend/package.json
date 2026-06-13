@@ -11,6 +11,12 @@
     "build:watch:dev": "vite build --watch --mode development"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/search": "^6.7.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.43.1",
     "dompurify": "^3.3.0",
     "marked": "^17.0.1",
     "prismjs": "^1.30.0",

@@ -6,7 +6,6 @@ import { useNavigationStack } from '@/features/stack/navigationStack';
 
 import BotEditView from './views/catalogs/BotEditView.vue';
 import BotsIndexView from './views/catalogs/BotsIndexView.vue';
-import KnowledgeBlockEditView from './views/catalogs/KnowledgeBlockEditView.vue';
 import KnowledgeBlocksIndexView from './views/catalogs/KnowledgeBlocksIndexView.vue';
 import LlmConfigurationEditView from './views/catalogs/LlmConfigurationEditView.vue';
 import LlmConfigurationsIndexView from './views/catalogs/LlmConfigurationsIndexView.vue';
@@ -87,7 +86,7 @@ export const router = createRouter({
     {
       path: '/catalogs/knowledge-blocks/:id(\\d+|new)',
       name: 'knowledge-block',
-      component: KnowledgeBlockEditView,
+      component: () => import('./views/catalogs/KnowledgeBlockEditView.vue'),
       meta: { title: 'Knowledge Block' },
     },
     {

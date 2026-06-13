@@ -262,6 +262,7 @@ export const ruMessages: Record<string, string> = {
   'Loading attachment…': 'Загрузка вложения…',
   'Loading bindings…': 'Загрузка привязок…',
   'Loading configurations…': 'Загрузка конфигураций…',
+  'Loading editor…': 'Загрузка редактора…',
   'Loading model options…': 'Загрузка вариантов моделей…',
   'Loading payload…': 'Загрузка payload…',
   'Loading prompt…': 'Загрузка prompt…',

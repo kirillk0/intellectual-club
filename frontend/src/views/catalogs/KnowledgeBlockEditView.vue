@@ -42,6 +42,7 @@
           ref="codeEditorRef"
           v-model:content="form.content"
           :content-error="contentError"
+          :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
           @clear-content-error="errors.clearField('content')"
         />
 
@@ -95,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from 'vue';
+import { computed, defineAsyncComponent, h, ref, toRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { getApiErrorMessage } from '@/api/client';
@@ -106,14 +107,16 @@ import {
   type JsonApiResource,
 } from '@/api/jsonApi';
 import CrudHeader from '@/components/CrudHeader.vue';
-import KnowledgeBlockCodeEditor from '@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue';
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockFilesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockFilesSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
 import KnowledgeBlockReadonlyBanner from '@/features/catalogs/components/knowledge-block/KnowledgeBlockReadonlyBanner.vue';
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
 import KnowledgeBlockTagsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTagsSection.vue';
-import type { KnowledgeBlockTab } from '@/features/catalogs/components/knowledge-block/types';
+import type {
+  KnowledgeBlockCodeEditorExpose,
+  KnowledgeBlockTab,
+} from '@/features/catalogs/components/knowledge-block/types';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import {
@@ -124,6 +127,14 @@ import { useKnowledgeBlockTagsDraft } from '@/features/catalogs/model/useKnowled
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
 import type { ImageAsset } from '@/types/api';
+
+const KnowledgeBlockCodeEditor = defineAsyncComponent({
+  loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
+  loadingComponent: {
+    setup: () => () =>
+      h('div', { class: 'muted knowledge-block-code-editor-loading', 'aria-live': 'polite' }, 'Loading editor…'),
+  },
+});
 
 type KnowledgeBlockForm = {
   name: string;
@@ -330,7 +341,7 @@ const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const blockTab = ref<KnowledgeBlockTab>('code');
 const initializedTabForId = ref<string | null>(null);
-const codeEditorRef = ref<InstanceType<typeof KnowledgeBlockCodeEditor> | null>(null);
+const codeEditorRef = ref<KnowledgeBlockCodeEditorExpose | null>(null);
 
 const filesTabCount = computed(() => fileAttachments.value.length);
 const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
