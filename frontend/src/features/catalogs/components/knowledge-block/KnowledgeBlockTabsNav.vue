@@ -20,6 +20,7 @@ import type { KnowledgeBlockTab } from './types';
 
 const props = defineProps<{
   modelValue: KnowledgeBlockTab;
+  tagsCount: number;
   filesCount: number;
 }>();
 
@@ -29,7 +30,7 @@ const emit = defineEmits<{
 
 const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => [
   { value: 'code', label: 'Code' },
-  { value: 'tags', label: 'Tags' },
+  { value: 'tags', label: `Tags (${props.tagsCount})` },
   { value: 'files', label: `Files (${props.filesCount})` },
   { value: 'details', label: 'Details' },
 ]);

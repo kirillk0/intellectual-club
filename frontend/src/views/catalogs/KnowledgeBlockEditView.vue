@@ -35,7 +35,7 @@
       />
 
       <div class="card stack">
-        <KnowledgeBlockTabsNav v-model="blockTab" :files-count="filesTabCount" />
+        <KnowledgeBlockTabsNav v-model="blockTab" :tags-count="tagsTabCount" :files-count="filesTabCount" />
 
         <KnowledgeBlockCodeEditor
           v-if="blockTab === 'code'"
@@ -343,6 +343,7 @@ const blockTab = ref<KnowledgeBlockTab>('code');
 const initializedTabForId = ref<string | null>(null);
 const codeEditorRef = ref<KnowledgeBlockCodeEditorExpose | null>(null);
 
+const tagsTabCount = computed(() => attachedTagIds.value.length);
 const filesTabCount = computed(() => fileAttachments.value.length);
 const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
 const filesActionDisabled = computed(
