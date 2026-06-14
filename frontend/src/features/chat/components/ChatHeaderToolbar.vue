@@ -51,7 +51,7 @@
         </div>
 
         <button
-          class="icon-button primary toolbar-create-button"
+          class="icon-button toolbar-create-button chat-toolbar__icon-button"
           type="button"
           :aria-label="t(creatingChat ? 'Creating…' : 'New chat')"
           :title="t(creatingChat ? 'Creating…' : 'New chat')"
