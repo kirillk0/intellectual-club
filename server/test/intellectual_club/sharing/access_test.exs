@@ -509,7 +509,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Shared chat without override",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: configuration.id
@@ -557,7 +556,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Shared chat with override",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: configuration.id

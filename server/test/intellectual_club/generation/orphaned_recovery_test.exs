@@ -33,7 +33,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Recover orphaned", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -91,7 +91,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Recover malformed orphaned", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -127,7 +127,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Recover completed final step", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -178,7 +178,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Recover completed tool step", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -269,7 +269,6 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Recover retry attempt",
           note: "",
           llm_configuration_id: configuration.id
         },

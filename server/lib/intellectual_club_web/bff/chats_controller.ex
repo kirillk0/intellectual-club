@@ -223,7 +223,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   def create(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       chat_params = %{
-        title: Map.get(params, "title", "Untitled chat"),
         note: Map.get(params, "note", ""),
         bot_id: Helpers.parse_optional_integer(Map.get(params, "bot_id")),
         llm_configuration_id:
@@ -248,7 +247,6 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
         |> Ash.Changeset.for_create(
           :create,
           %{
-            title: "Untitled chat",
             note: "",
             bot_id: source.bot_id,
             llm_configuration_id: source.llm_configuration_id
@@ -563,7 +561,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       chat_id = String.to_integer(id)
 
       allowed_fields =
-        ~w(title note bot_id llm_configuration_id knowledge_block_bindings tool_bindings)
+        ~w(note bot_id llm_configuration_id knowledge_block_bindings tool_bindings)
 
       with {:ok, chat} <- fetch_owned_chat(chat_id, actor) do
         patch =
@@ -1243,7 +1241,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
 
         Map.put(acc, :tool_bindings, bindings)
 
-      {key, value}, acc when key in ["title", "note"] ->
+      {key, value}, acc when key == "note" ->
         Map.put(acc, String.to_existing_atom(key), value)
 
       _other, acc ->

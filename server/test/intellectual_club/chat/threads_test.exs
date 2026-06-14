@@ -21,7 +21,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Branch chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -67,7 +67,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -88,7 +88,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete last", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -111,7 +111,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete trace", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -149,7 +149,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete trace file", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -205,7 +205,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Destroy validation", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -226,7 +226,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Leaf destroy", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -275,7 +275,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Edit chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -291,7 +291,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Finished at chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -317,7 +317,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Default parent", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

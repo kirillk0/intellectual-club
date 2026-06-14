@@ -22,7 +22,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Rollback retry", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -87,7 +87,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Multi-step finished at", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -184,7 +184,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "First token timing", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -249,7 +249,6 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Usage accounting",
           llm_configuration_id: configuration.id,
           note: ""
         },
@@ -315,7 +314,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "User usage", llm_configuration_id: configuration.id, note: ""},
+        %{llm_configuration_id: configuration.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -605,12 +604,12 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     {item, content}
   end
 
-  defp create_generating_assistant_message!(actor, title) do
+  defp create_generating_assistant_message!(actor, _title) do
     chat =
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: title, note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

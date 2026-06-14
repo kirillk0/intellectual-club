@@ -704,7 +704,6 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        title: "Soft limits chat",
         bot_id: bot.id,
         llm_configuration_id: llm_configuration.id,
         note: ""

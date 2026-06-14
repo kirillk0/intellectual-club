@@ -77,7 +77,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete block chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

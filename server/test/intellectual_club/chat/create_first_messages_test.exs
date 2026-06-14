@@ -23,7 +23,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "New chat", bot_id: bot.id, note: ""},
+        %{bot_id: bot.id, note: ""},
         actor: user
       )
       |> Ash.create!()
@@ -61,7 +61,6 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "New chat",
           bot_id: bot.id,
           note: ""
         },
@@ -87,7 +86,7 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "New chat", note: ""}, actor: user)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: user)
       |> Ash.create!()
 
     messages =

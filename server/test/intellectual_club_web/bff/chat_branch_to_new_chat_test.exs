@@ -61,7 +61,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     assert is_integer(generation_id)
     assert target_id != source.id
 
-    assert get_in(payload, ["chat", "title"]) == "Assistant source"
+    refute Map.has_key?(payload["chat"], "title")
     assert get_in(payload, ["chat", "note"]) == "source note (branch)"
     assert get_in(payload, ["chat", "bot_id"]) == bot.id
     assert get_in(payload, ["chat", "llm_configuration_id"]) == configuration.id
@@ -238,14 +238,13 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     assert conn.status in [403, 404]
   end
 
-  defp create_chat!(actor, title, attrs \\ []) do
+  defp create_chat!(actor, _title, attrs \\ []) do
     attrs = Map.new(attrs)
 
     Chat
     |> Ash.Changeset.for_create(
       :create_empty,
       %{
-        title: title,
         note: ""
       }
       |> Map.merge(attrs),

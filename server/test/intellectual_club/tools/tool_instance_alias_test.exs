@@ -126,7 +126,7 @@ defmodule IntellectualClub.Tools.ToolInstanceAliasTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Chat", note: ""}, actor: owner)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: owner)
       |> Ash.create!(actor: owner)
 
     BotToolBinding

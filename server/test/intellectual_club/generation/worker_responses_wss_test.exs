@@ -209,7 +209,6 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        title: "Responses WSS chat",
         bot_id: bot.id,
         llm_configuration_id: llm_configuration.id,
         note: ""

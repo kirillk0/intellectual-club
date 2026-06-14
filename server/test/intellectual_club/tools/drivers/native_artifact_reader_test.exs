@@ -227,7 +227,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
     Chat.Chat
     |> Ash.Changeset.for_create(
       :create,
-      %{title: "Artifact reader test", note: ""},
+      %{note: ""},
       actor: actor
     )
     |> Ash.create!(actor: actor)

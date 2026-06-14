@@ -23,7 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Edit single", note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
@@ -72,7 +72,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Edit multi", note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
@@ -125,7 +125,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Reject legacy", note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
@@ -175,7 +175,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Edit user attachments", note: "", bot_id: bot.id},
+        %{note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -234,7 +234,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chunk edit user attachments", note: "", bot_id: bot.id},
+        %{note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -306,7 +306,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Edit assistant attachments", note: "", bot_id: bot.id},
+        %{note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -360,7 +360,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "No uploads", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

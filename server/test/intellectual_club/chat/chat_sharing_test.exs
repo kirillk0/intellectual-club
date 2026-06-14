@@ -265,7 +265,6 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        title: "Shared chat",
         note: "",
         bot_id: bot.id,
         llm_configuration_id: configuration.id

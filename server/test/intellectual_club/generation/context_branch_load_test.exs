@@ -19,7 +19,7 @@ defmodule IntellectualClub.Generation.ContextBranchLoadTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "History branch load", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

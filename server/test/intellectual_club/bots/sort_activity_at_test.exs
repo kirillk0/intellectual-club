@@ -60,11 +60,11 @@ defmodule IntellectualClub.Bots.SortActivityAtTest do
     |> Ash.create!(actor: actor)
   end
 
-  defp create_chat!(actor, bot_id, title) do
+  defp create_chat!(actor, bot_id, _title) do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      %{title: title, bot_id: bot_id, note: ""},
+      %{bot_id: bot_id, note: ""},
       actor: actor
     )
     |> Ash.create!(actor: actor)

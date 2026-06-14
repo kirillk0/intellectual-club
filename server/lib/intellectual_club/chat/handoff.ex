@@ -172,7 +172,6 @@ defmodule IntellectualClub.Chat.Handoff do
     |> Ash.Changeset.for_create(
       :create_empty,
       %{
-        title: source.title,
         note: source.note,
         bot_id: source.bot_id,
         llm_configuration_id: source.llm_configuration_id,

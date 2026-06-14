@@ -135,7 +135,6 @@ export type UserKnowledgeBlock = {
 
 export type Chat = {
   id: number;
-  title: string;
   note: string;
   bot_id: number | null;
   llm_configuration_id: number | null;
@@ -155,7 +154,6 @@ export type ChatRelationSummary = {
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
   kind?: string | null;
-  title?: string | null;
   note?: string | null;
   bot_id?: number | null;
   bot_name?: string | null;

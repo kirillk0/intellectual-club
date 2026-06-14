@@ -127,9 +127,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert String.contains?(message, "seconds")
   end
 
-  defp create_chat!(actor, title) do
+  defp create_chat!(actor, _title) do
     Chat
-    |> Ash.Changeset.for_create(:create_empty, %{title: title, note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 

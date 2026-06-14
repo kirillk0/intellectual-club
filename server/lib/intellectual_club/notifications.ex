@@ -536,7 +536,7 @@ defmodule IntellectualClub.Notifications do
   defp notification_title(:error, _locale), do: "Generation failed"
 
   defp notification_body(%ChatMessage{} = message, _status, _locale) do
-    [chat_title(message), answer_preview(message)]
+    [chat_label(message), answer_preview(message)]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(": ")
     |> case do
@@ -545,8 +545,8 @@ defmodule IntellectualClub.Notifications do
     end
   end
 
-  defp chat_title(%{chat: %{title: title}}), do: normalize_notification_text(title)
-  defp chat_title(_message), do: ""
+  defp chat_label(%{chat: %{note: note}}), do: normalize_notification_text(note)
+  defp chat_label(_message), do: ""
 
   defp answer_preview(%{steps: steps}) when is_list(steps) do
     steps

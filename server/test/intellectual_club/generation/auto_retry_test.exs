@@ -128,7 +128,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Auto retry",
           note: "",
           llm_configuration_id: configuration.id
         },
@@ -228,7 +227,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "OAuth auto retry",
           note: "",
           llm_configuration_id: configuration.id
         },
@@ -274,7 +272,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Auto retry success",
           note: ""
         },
         actor: actor
@@ -366,7 +363,6 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Auto retry custom",
           note: ""
         },
         actor: actor

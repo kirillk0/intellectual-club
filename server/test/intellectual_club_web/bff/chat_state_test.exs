@@ -34,7 +34,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "Markdown chat", note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     markdown = """
@@ -69,7 +69,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Answer preview chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -110,7 +110,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Retry diagnostics chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -181,7 +181,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "No bot options chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -191,7 +191,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "State options chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config.id
@@ -270,7 +269,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Tagged state chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config.id
@@ -323,7 +321,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{title: "User source chat", note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     conn = get(conn, ~p"/api/bff/chats/#{chat.id}/settings-state")
@@ -418,7 +416,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Prompt state chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config.id
@@ -509,7 +506,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Image options chat", note: "", bot_id: bot.id},
+        %{note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -592,7 +589,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Chat tool state", note: "", bot_id: bot.id},
+        %{note: "", bot_id: bot.id},
         actor: actor
       )
       |> Ash.create!(actor: actor)
@@ -670,7 +667,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Prompt context chat",
           note: "",
           llm_configuration_id: config.id
         },

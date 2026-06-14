@@ -98,9 +98,9 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
              json_response(state_conn, state_conn.status)
   end
 
-  defp create_chat!(actor, title) do
+  defp create_chat!(actor, _title) do
     Chat
-    |> Ash.Changeset.for_create(:create, %{title: title, note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 

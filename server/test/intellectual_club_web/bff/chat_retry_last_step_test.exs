@@ -142,9 +142,9 @@ defmodule IntellectualClubWeb.Bff.ChatRetryLastStepTest do
     assert payload["error"] == "Step not found"
   end
 
-  defp create_chat!(actor, title) do
+  defp create_chat!(actor, _title) do
     Chat
-    |> Ash.Changeset.for_create(:create, %{title: title, note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 

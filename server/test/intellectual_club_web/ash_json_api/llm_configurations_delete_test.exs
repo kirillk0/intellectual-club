@@ -81,7 +81,6 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDeleteTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Delete config chat",
           llm_configuration_id: configuration.id,
           note: ""
         },

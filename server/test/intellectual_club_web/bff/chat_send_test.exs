@@ -370,11 +370,11 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  defp create_chat!(actor, title, attrs \\ %{}) do
+  defp create_chat!(actor, _title, attrs \\ %{}) do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      Map.merge(%{title: title, note: ""}, attrs),
+      Map.merge(%{note: ""}, attrs),
       actor: actor
     )
     |> Ash.create!(actor: actor)

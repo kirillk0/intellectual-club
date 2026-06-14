@@ -624,13 +624,13 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert target.last_message_id == target_message.id
   end
 
-  defp create_chat!(actor, title, attrs \\ []) do
+  defp create_chat!(actor, _title, attrs \\ []) do
     Chat
     |> Ash.Changeset.for_create(
       :create_empty,
       attrs
       |> Map.new()
-      |> Map.merge(%{title: title, note: ""}),
+      |> Map.merge(%{note: ""}),
       actor: actor
     )
     |> Ash.create!(actor: actor)

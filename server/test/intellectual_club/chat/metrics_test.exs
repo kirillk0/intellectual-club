@@ -123,7 +123,6 @@ defmodule IntellectualClub.Chat.MetricsTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Metrics chat",
           bot_id: bot.id,
           llm_configuration_id: configuration.id,
           note: ""

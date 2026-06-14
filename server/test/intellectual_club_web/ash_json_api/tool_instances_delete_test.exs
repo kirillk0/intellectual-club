@@ -135,7 +135,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Delete tool chat", note: ""},
+        %{note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)

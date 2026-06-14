@@ -30,7 +30,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Old chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config_old.id
@@ -44,7 +43,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "New chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config_new.id
@@ -72,7 +70,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Existing chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: config.id
@@ -106,7 +103,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create_empty,
         %{
-          title: "Source chat",
           note: "Do not copy this note",
           bot_id: bot.id,
           llm_configuration_id: config.id
@@ -156,7 +152,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     source =
       Chat
-      |> Ash.Changeset.for_create(:create_empty, %{title: "Private chat", note: ""}, actor: owner)
+      |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: owner)
       |> Ash.create!(actor: owner)
 
     conn = post(conn, ~p"/api/bff/chats", %{"copy_from_chat_id" => source.id})
@@ -179,7 +175,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Bot A chat",
           note: "",
           bot_id: bot_a.id,
           llm_configuration_id: config_a.id
@@ -193,7 +188,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Bot B chat",
           note: "",
           bot_id: bot_b.id,
           llm_configuration_id: config_b.id
@@ -221,7 +215,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Old no bot chat",
           note: "",
           llm_configuration_id: config_old.id
         },
@@ -234,7 +227,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "New no bot chat",
           note: "",
           llm_configuration_id: config_new.id
         },
@@ -300,7 +292,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Latest chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: latest_config.id
@@ -352,7 +343,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Compatible chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: compatible_config.id
@@ -366,7 +356,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Incompatible chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: incompatible_config.id
@@ -459,7 +448,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Incompatible chat",
           note: "",
           bot_id: bot.id,
           llm_configuration_id: incompatible_config.id
@@ -526,7 +514,6 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          title: "Latest no bot chat",
           note: "",
           llm_configuration_id: disabled_config.id
         },

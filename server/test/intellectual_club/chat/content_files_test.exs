@@ -142,7 +142,7 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
 
   defp create_chat!(actor) do
     Chat.Chat
-    |> Ash.Changeset.for_create(:create, %{title: "Content files test", note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 
@@ -151,7 +151,6 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
     |> Ash.Changeset.for_create(
       :create_empty,
       %{
-        title: "Handoff child",
         note: "",
         parent_chat_id: parent_chat.id,
         parent_message_id: parent_message.id,

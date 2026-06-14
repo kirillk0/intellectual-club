@@ -126,7 +126,6 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        title: "BFF shared chat",
         note: "",
         bot_id: bot.id,
         llm_configuration_id: configuration.id

@@ -221,7 +221,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Notifications test", note: ""},
+        %{note: "Notifications test"},
         actor: actor
       )
       |> Ash.create!(actor: actor)

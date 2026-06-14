@@ -71,12 +71,6 @@ defmodule IntellectualClub.Chat.Chat do
   attributes do
     integer_primary_key(:id)
 
-    attribute :title, :string do
-      allow_nil?(false)
-      public?(true)
-      default("Untitled chat")
-    end
-
     attribute :note, :string do
       allow_nil?(true)
       public?(true)
@@ -202,7 +196,6 @@ defmodule IntellectualClub.Chat.Chat do
 
     create :create do
       accept([
-        :title,
         :bot_id,
         :llm_configuration_id,
         :note,
@@ -238,7 +231,6 @@ defmodule IntellectualClub.Chat.Chat do
 
     create :create_empty do
       accept([
-        :title,
         :bot_id,
         :llm_configuration_id,
         :note,
@@ -272,7 +264,6 @@ defmodule IntellectualClub.Chat.Chat do
 
     update :update do
       accept([
-        :title,
         :bot_id,
         :llm_configuration_id,
         :note,

@@ -139,7 +139,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def chat_summary(%Chat{} = chat, opts \\ []) do
     %{
       id: chat.id,
-      title: chat.title,
       note: chat.note,
       bot_id: chat.bot_id,
       bot_name: chat_bot_name(chat),
@@ -184,7 +183,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def chat_detail(%Chat{} = chat) do
     %{
       id: chat.id,
-      title: chat.title,
       note: chat.note,
       bot_id: chat.bot_id,
       llm_configuration_id: chat.llm_configuration_id,
@@ -206,7 +204,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       parent_chat_id: Keyword.get(opts, :parent_chat_id, chat.parent_chat_id),
       parent_message_id: Keyword.get(opts, :parent_message_id, chat.parent_message_id),
       kind: relation_kind_string(Keyword.get(opts, :kind, chat.parent_relation_kind)),
-      title: chat.title,
       note: chat.note,
       bot_id: chat.bot_id,
       bot_name: chat_bot_name(chat),

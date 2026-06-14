@@ -87,9 +87,9 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     assert get_in(entry, ["chat", "message_count"]) == 3
   end
 
-  defp create_chat!(actor, title) do
+  defp create_chat!(actor, _title) do
     Chat
-    |> Ash.Changeset.for_create(:create, %{title: title, note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
     |> Ash.create!(actor: actor)
   end
 end

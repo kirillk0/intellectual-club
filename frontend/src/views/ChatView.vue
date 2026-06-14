@@ -647,7 +647,7 @@ const describePendingFileStatus = describePendingFileUploadStatus;
 const pendingFileProgress = pendingFileProgressPercent;
 
 const relationTitle = (relation: ChatRelationSummary) =>
-  String(relation.note || relation.title || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
+  String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,

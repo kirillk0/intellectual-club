@@ -77,7 +77,6 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
         steps: Loads.message_tree()[:steps],
         chat: [
           :id,
-          :title,
           :note,
           :bot_id,
           :llm_configuration_id,

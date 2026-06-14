@@ -134,7 +134,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{title: "Linked chat", bot_id: bot.id, note: ""},
+        %{bot_id: bot.id, note: ""},
         actor: actor
       )
       |> Ash.create!(actor: actor)
