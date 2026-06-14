@@ -907,6 +907,7 @@ export function useChatViewModel() {
     creatingChat: headerControls.creatingChat,
     newChatModalOpen: headerControls.newChatModalOpen,
     newChatBotValue: headerControls.newChatBotValue,
+    botSelectionOptions: headerControls.botSelectionOptions,
     createChatBotOptions: headerControls.createChatBotOptions,
     openNewChatModal: headerControls.openNewChatModal,
     closeNewChatModal: headerControls.closeNewChatModal,

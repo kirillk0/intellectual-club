@@ -467,6 +467,7 @@ export const ruMessages: Record<string, string> = {
   'Save the block before uploading an image.': 'Сохраните блок перед загрузкой изображения.',
   'Save the bot before uploading an image.': 'Сохраните бота перед загрузкой изображения.',
   'Save the tool before discovering functions.': 'Сохраните инструмент перед обнаружением функций.',
+  'Same chat': 'Такой же чат',
   'Saving…': 'Сохранение…',
   'Schema': 'Схема',
   'Search': 'Поиск',

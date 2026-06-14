@@ -5,7 +5,7 @@ defmodule IntellectualClub.Chat.Handoff do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatKnowledgeBlock
+  alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Chat.Threads
@@ -14,7 +14,6 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Knowledge.KnowledgeBlock
-  alias IntellectualClub.Tools.ChatToolBinding
 
   require Ash.Query
 
@@ -125,8 +124,7 @@ defmodule IntellectualClub.Chat.Handoff do
   defp create_target_with_summary(source, actor, rolloff, source_message_id) do
     Db.repo().transaction(fn ->
       target = create_target_chat!(source, actor, source_message_id)
-      copy_knowledge_block_bindings!(source.id, target.id, actor)
-      copy_tool_bindings!(source.id, target.id, actor)
+      ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
       contents =
         case rolloff_message_contents(rolloff) do
@@ -185,54 +183,6 @@ defmodule IntellectualClub.Chat.Handoff do
       actor: actor
     )
     |> Ash.create!()
-  end
-
-  defp copy_knowledge_block_bindings!(source_chat_id, target_chat_id, actor) do
-    source_chat_id
-    |> copy_knowledge_block_bindings(actor)
-    |> Enum.each(fn attrs ->
-      ChatKnowledgeBlock
-      |> Ash.Changeset.for_create(:create, Map.put(attrs, :chat_id, target_chat_id), actor: actor)
-      |> Ash.create!(actor: actor)
-    end)
-  end
-
-  defp copy_tool_bindings!(source_chat_id, target_chat_id, actor) do
-    source_chat_id
-    |> copy_tool_bindings(actor)
-    |> Enum.each(fn attrs ->
-      ChatToolBinding
-      |> Ash.Changeset.for_create(:create, Map.put(attrs, :chat_id, target_chat_id), actor: actor)
-      |> Ash.create!(actor: actor)
-    end)
-  end
-
-  defp copy_knowledge_block_bindings(chat_id, actor) do
-    ChatKnowledgeBlock
-    |> Ash.Query.filter(chat_id == ^chat_id)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.read!(actor: actor)
-    |> Enum.map(fn binding ->
-      %{
-        knowledge_block_id: binding.knowledge_block_id,
-        enabled: binding.enabled,
-        sequence: binding.sequence
-      }
-    end)
-  end
-
-  defp copy_tool_bindings(chat_id, actor) do
-    ChatToolBinding
-    |> Ash.Query.filter(chat_id == ^chat_id)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.read!(actor: actor)
-    |> Enum.map(fn binding ->
-      %{
-        tool_instance_id: binding.tool_instance_id,
-        enabled: binding.enabled,
-        sequence: binding.sequence
-      }
-    end)
   end
 
   defp handoff_prompt(%Chat{} = source, actor) do

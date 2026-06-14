@@ -3,7 +3,7 @@ import { effectScope, ref, watch } from 'vue';
 export type BotSortMode = 'name' | 'recent_activity';
 
 type BotSortRecord = {
-  id?: number | '' | null;
+  id?: number | string | null;
   name?: string | null;
   sort_activity_at?: string | null;
   updated_at?: string | null;

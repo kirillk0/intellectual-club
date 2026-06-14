@@ -1166,13 +1166,14 @@ function closeCreateChatModal() {
   botModalOpen.value = false;
 }
 
-async function createChat(selectedBotId: number | '' = '') {
+async function createChat(selectedBotId: number | string | '' = '') {
   if (creating.value) return;
   creating.value = true;
   error.value = null;
   try {
+    const botId = selectedBotId === '' ? null : Number(selectedBotId);
     const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', {
-      bot_id: selectedBotId === '' ? null : Number(selectedBotId),
+      bot_id: typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
     });
     const id = payload.chat?.id;
     if (!id) throw new Error('Missing chat id');

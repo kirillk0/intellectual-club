@@ -72,7 +72,7 @@ import {
 import type { Bot, ImageAsset } from '@/types/api';
 
 type BotSelectorOption = {
-  id: number | '';
+  id: number | string | '';
   name: string;
   image?: ImageAsset | null;
   shared_incoming?: boolean;
@@ -80,10 +80,11 @@ type BotSelectorOption = {
   created_at?: string | null;
   updated_at?: string | null;
   sort_activity_at?: string | null;
+  pinned?: boolean;
 };
 
 interface Props {
-  modelValue: number | '';
+  modelValue: number | string | '';
   bots?: Bot[];
   options?: BotSelectorOption[];
   saving?: boolean;
@@ -94,12 +95,12 @@ interface Props {
 
 const props = defineProps<Props>();
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: number | ''): void;
-  (e: 'save', value: number | ''): void;
+  (e: 'update:modelValue', value: number | string | ''): void;
+  (e: 'save', value: number | string | ''): void;
   (e: 'cancel'): void;
 }>();
 
-const localValue = ref<number | ''>(props.modelValue);
+const localValue = ref<number | string | ''>(props.modelValue);
 const listRef = ref<HTMLElement | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
@@ -180,7 +181,10 @@ const choices = computed<BotSelectorOption[]>(() => {
         })),
       ];
 
-  return sortBotsByPreference(base, botSortMode.value);
+  const pinned = base.filter((opt) => opt.pinned);
+  const regular = base.filter((opt) => !opt.pinned);
+
+  return [...pinned, ...sortBotsByPreference(regular, botSortMode.value)];
 });
 
 const title = computed(() => props.title ?? 'Select bot');

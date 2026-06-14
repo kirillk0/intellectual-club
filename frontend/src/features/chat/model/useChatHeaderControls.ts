@@ -6,7 +6,6 @@ import {
   resolveChatUploadPolicy,
 } from '@/features/chat/attachments';
 import { normalizeIdList, normalizeNameList } from '@/features/chat/model/chatViewModel.shared';
-import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import type { Bot, Chat, LlmConfiguration } from '@/types/api';
 import { formatChatBaseTitle, formatChatFullTitle } from '@/utils/chatTitle';
 
@@ -34,7 +33,7 @@ type Params = {
 };
 
 type ChatBotOption = {
-  id: number | '';
+  id: ChatBotOptionId;
   name: string;
   image?: Bot['image'];
   shared_incoming?: Bot['shared_incoming'];
@@ -42,11 +41,15 @@ type ChatBotOption = {
   created_at?: string | null;
   updated_at?: string | null;
   sort_activity_at?: string | null;
+  pinned?: boolean;
 };
+
+const SAME_CHAT_OPTION_ID = 'same_chat' as const;
+type SameChatOptionId = typeof SAME_CHAT_OPTION_ID;
+type ChatBotOptionId = number | '' | SameChatOptionId;
 
 export function useChatHeaderControls(params: Params) {
   const selectedConfig = ref<number | ''>('');
-  const botSortMode = useBotSortPreference();
   const configSyncStatus = ref<'synced' | 'pending' | 'error'>('synced');
   const configSyncError = ref('');
   let configSyncToken = 0;
@@ -251,14 +254,14 @@ export function useChatHeaderControls(params: Params) {
   const savingBot = ref(false);
   const creatingChat = ref(false);
   const newChatModalOpen = ref(false);
-  const newChatBotValue = ref<number | ''>('');
+  const newChatBotValue = ref<ChatBotOptionId>(SAME_CHAT_OPTION_ID);
   const noBotSortActivityAt = computed(() => {
     if (params.noBotSortActivityAt.value) return params.noBotSortActivityAt.value;
     if (params.chat.value?.bot_id != null) return null;
     return params.chat.value?.updated_at ?? params.chat.value?.created_at ?? null;
   });
 
-  const createChatBotOptions = computed<ChatBotOption[]>(() => [
+  const botSelectionOptions = computed<ChatBotOption[]>(() => [
     {
       id: '',
       name: 'No bot',
@@ -276,6 +279,15 @@ export function useChatHeaderControls(params: Params) {
       updated_at: bot.updated_at ?? null,
       sort_activity_at: bot.sort_activity_at ?? null,
     })),
+  ]);
+
+  const createChatBotOptions = computed<ChatBotOption[]>(() => [
+    {
+      id: SAME_CHAT_OPTION_ID,
+      name: 'Same chat',
+      pinned: true,
+    },
+    ...botSelectionOptions.value,
   ]);
 
   const openBotModal = () => {
@@ -307,8 +319,7 @@ export function useChatHeaderControls(params: Params) {
 
   const openNewChatModal = () => {
     if (creatingChat.value) return;
-    const sortedOptions = sortBotsByPreference(createChatBotOptions.value, botSortMode.value);
-    newChatBotValue.value = botSortMode.value === 'recent_activity' ? sortedOptions[0]?.id ?? '' : '';
+    newChatBotValue.value = SAME_CHAT_OPTION_ID;
     newChatModalOpen.value = true;
   };
 
@@ -317,13 +328,20 @@ export function useChatHeaderControls(params: Params) {
     newChatModalOpen.value = false;
   };
 
-  const createChat = async (selectedBotId: number | '' = newChatBotValue.value) => {
+  const createChat = async (selectedBotId: number | string | '' = newChatBotValue.value) => {
     if (creatingChat.value) return;
     creatingChat.value = true;
     try {
-      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', {
-        bot_id: selectedBotId === '' ? null : Number(selectedBotId),
-      });
+      const botId = selectedBotId === '' ? null : Number(selectedBotId);
+      const requestPayload =
+        selectedBotId === SAME_CHAT_OPTION_ID
+          ? { copy_from_chat_id: params.chatId.value }
+          : {
+              bot_id:
+                typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
+            };
+
+      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', requestPayload);
       const id = payload.chat?.id;
       if (!id) throw new Error('Missing chat id');
       newChatModalOpen.value = false;
@@ -462,6 +480,7 @@ export function useChatHeaderControls(params: Params) {
     creatingChat,
     newChatModalOpen,
     newChatBotValue,
+    botSelectionOptions,
     createChatBotOptions,
     openNewChatModal,
     closeNewChatModal,

@@ -494,7 +494,7 @@
       <BotSelectorModal
         v-if="vm.botModalOpen"
         v-model="vm.botModalValue"
-        :options="vm.createChatBotOptions"
+        :options="vm.botSelectionOptions"
         :saving="vm.savingBot"
         @cancel="vm.closeBotModal"
         @save="vm.saveBotSelection"

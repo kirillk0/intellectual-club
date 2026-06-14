@@ -6,9 +6,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Bots.{Bot, BotShare}
-  alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.{Chat, ChatKnowledgeBlock, ChatMessage, Previews, Threads}
+  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag}
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Tools.{ChatToolBinding, ToolInstance}
+
+  require Ash.Query
 
   test "POST /api/bff/chats defaults configuration from latest chat for selected bot", %{
     conn: conn
@@ -86,6 +90,78 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     payload = json_response(conn, 200)
 
     assert payload["chat"]["llm_configuration_id"] == nil
+  end
+
+  test "POST /api/bff/chats copies current chat bot, configuration, blocks, tools and first messages",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    bot = create_bot!(actor, "Assistant", %{first_messages: ["Welcome"]})
+    provider = create_provider!(actor, "Provider A")
+    config = create_configuration!(actor, provider, "model-copy")
+
+    source =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          title: "Source chat",
+          note: "Do not copy this note",
+          bot_id: bot.id,
+          llm_configuration_id: config.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    block = create_knowledge_block!(actor)
+    tool = create_tool_instance!(actor)
+    create_chat_block_binding!(actor, source, block)
+    create_chat_tool_binding!(actor, source, tool)
+
+    {:ok, _message} =
+      Threads.add_message_to_end(source, :user, "Do not copy history", actor: actor)
+
+    payload =
+      conn
+      |> post(~p"/api/bff/chats", %{"copy_from_chat_id" => source.id})
+      |> json_response(200)
+
+    target_id = payload["chat"]["id"]
+    assert is_integer(target_id)
+    assert payload["chat"]["bot_id"] == bot.id
+    assert payload["chat"]["llm_configuration_id"] == config.id
+    assert payload["chat"]["note"] == ""
+
+    assert [%ChatKnowledgeBlock{knowledge_block_id: block_id, enabled: false, sequence: 7}] =
+             chat_block_bindings!(target_id, actor)
+
+    assert block_id == block.id
+
+    assert [%ChatToolBinding{tool_instance_id: tool_id, enabled: true, sequence: 3}] =
+             chat_tool_bindings!(target_id, actor)
+
+    assert tool_id == tool.id
+
+    messages = messages_for_chat!(target_id, actor)
+    assert Enum.map(messages, &message_text/1) == ["Welcome"]
+    refute Enum.any?(messages, &(message_text(&1) == "Do not copy history"))
+  end
+
+  test "POST /api/bff/chats copy_from_chat_id rejects inaccessible source chat", %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: other, password: password} = user_fixture()
+    conn = sign_in_conn(conn, other.username, password)
+
+    source =
+      Chat
+      |> Ash.Changeset.for_create(:create_empty, %{title: "Private chat", note: ""}, actor: owner)
+      |> Ash.create!(actor: owner)
+
+    conn = post(conn, ~p"/api/bff/chats", %{"copy_from_chat_id" => source.id})
+
+    assert conn.status in [403, 404]
   end
 
   test "POST /api/bff/chats uses latest configuration from the same bot only", %{conn: conn} do
@@ -527,6 +603,80 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     LlmConfigurationTag
     |> Ash.Changeset.for_create(:create, %{name: name}, actor: actor)
     |> Ash.create!(actor: actor)
+  end
+
+  defp create_knowledge_block!(actor) do
+    KnowledgeBlock
+    |> Ash.Changeset.for_create(
+      :create,
+      %{name: "Copy block", version: "v1", content: "Knowledge"},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_tool_instance!(actor) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-agent-management",
+        name: "Agent management",
+        description: "",
+        alias: "agent_management",
+        config: %{},
+        secrets: %{},
+        max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_block_binding!(actor, chat, block) do
+    ChatKnowledgeBlock
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, knowledge_block_id: block.id, enabled: false, sequence: 7},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_tool_binding!(actor, chat, tool) do
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: tool.id, enabled: true, sequence: 3},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp chat_block_bindings!(chat_id, actor) do
+    ChatKnowledgeBlock
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(sequence: :asc)
+    |> Ash.read!(actor: actor)
+  end
+
+  defp chat_tool_bindings!(chat_id, actor) do
+    ChatToolBinding
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(sequence: :asc)
+    |> Ash.read!(actor: actor)
+  end
+
+  defp messages_for_chat!(chat_id, actor) do
+    ChatMessage
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.load(steps: [items: [:contents]])
+    |> Ash.read!(actor: actor)
+  end
+
+  defp message_text(%ChatMessage{} = message) do
+    Previews.message_preview_text(message)
   end
 
   defp share_bot!(actor, bot, group) do

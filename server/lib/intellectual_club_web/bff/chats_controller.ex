@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotCompatibleConfigurationTag
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.ListingStats
@@ -17,6 +18,7 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Db
   alias IntellectualClub.Generation.Context, as: GenerationContext
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -203,6 +205,21 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
     end
   end
 
+  def create(conn, %{"copy_from_chat_id" => source_id} = _params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, source_chat_id} <- parse_resource_id(source_id),
+         {:ok, %Chat{} = source} <- fetch_readable_chat(source_chat_id, actor),
+         {:ok, %Chat{} = chat} <- create_chat_copy(source, actor) do
+      json(conn, %{chat: Serializer.chat_detail(chat)})
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        render_access_error(conn, error)
+    end
+  end
+
   def create(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       chat_params = %{
@@ -223,6 +240,31 @@ defmodule IntellectualClubWeb.Bff.ChatsController do
       json(conn, %{chat: Serializer.chat_detail(chat)})
     end
   end
+
+  defp create_chat_copy(%Chat{} = source, actor) do
+    Db.repo().transaction(fn ->
+      target =
+        Chat
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            title: "Untitled chat",
+            note: "",
+            bot_id: source.bot_id,
+            llm_configuration_id: source.llm_configuration_id
+          },
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
+
+      ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
+      Ash.get!(Chat, target.id, actor: actor)
+    end)
+    |> unwrap_chat_copy_transaction()
+  end
+
+  defp unwrap_chat_copy_transaction({:ok, %Chat{} = chat}), do: {:ok, chat}
+  defp unwrap_chat_copy_transaction({:error, error}), do: {:error, error}
 
   defp parse_bot_filter(params) when is_map(params) do
     raw =
