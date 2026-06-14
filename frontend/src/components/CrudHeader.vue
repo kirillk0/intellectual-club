@@ -50,7 +50,13 @@
         </div>
 
         <Teleport to="body">
-          <div class="dropdown floating-dropdown" v-if="menuOpen" ref="menuRef" :style="menuStyle">
+          <div
+            class="dropdown floating-dropdown"
+            v-if="menuOpen"
+            ref="menuRef"
+            :style="menuStyle"
+            @click="handleMenuClick"
+          >
             <button class="menu-item" type="button" @click="emitCreate">Create</button>
             <button v-if="showDuplicate" class="menu-item" type="button" @click="emitDuplicate">
               Duplicate
@@ -74,8 +80,9 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { Teleport } from 'vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 
-defineProps<{
+const props = defineProps<{
   title: string;
   dirty?: boolean;
   position?: number | string;
@@ -87,6 +94,7 @@ defineProps<{
 }>();
 
 const emit = defineEmits(['create', 'save', 'delete', 'cancel', 'close', 'prev', 'next', 'duplicate']);
+const layer = useStackLayer();
 
 const menuOpen = ref(false);
 const menuRef = ref<HTMLElement | null>(null);
@@ -112,14 +120,67 @@ const handleClickOutside = (event: MouseEvent) => {
   closeMenu();
 };
 
+const handleMenuClick = (event: MouseEvent) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target?.closest('button,a[href],[role="button"],[role="menuitem"]')) return;
+  closeMenu();
+};
+
+const isPrimarySaveShortcut = (event: KeyboardEvent) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
+  return event.code === 'KeyS' || event.key.toLowerCase() === 's';
+};
+
+const isVisibleElement = (element: HTMLElement) => {
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  return element.getClientRects().length > 0;
+};
+
+const hasOpenModal = () =>
+  Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).some(isVisibleElement);
+
+const isEscapeFromNativeSelect = (event: KeyboardEvent) =>
+  event.key === 'Escape' && event.target instanceof Element && Boolean(event.target.closest('select'));
+
+const handleGlobalKeydown = (event: KeyboardEvent) => {
+  if (!layer.active.value || event.defaultPrevented || event.isComposing) return;
+
+  const modalOpen = hasOpenModal();
+
+  if (isPrimarySaveShortcut(event)) {
+    event.preventDefault();
+    if (!modalOpen && props.dirty && !props.saving) emitSave();
+    return;
+  }
+
+  if (modalOpen || isEscapeFromNativeSelect(event)) return;
+
+  if (event.key !== 'Escape') return;
+
+  if (menuOpen.value) {
+    event.preventDefault();
+    closeMenu();
+    return;
+  }
+
+  if (props.saving) return;
+
+  event.preventDefault();
+  if (props.dirty) emitCancel();
+  else emitClose();
+};
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside);
+  window.addEventListener('keydown', handleGlobalKeydown);
   window.addEventListener('resize', updateMenuPosition);
   window.addEventListener('scroll', updateMenuPosition, true);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside);
+  window.removeEventListener('keydown', handleGlobalKeydown);
   window.removeEventListener('resize', updateMenuPosition);
   window.removeEventListener('scroll', updateMenuPosition, true);
 });

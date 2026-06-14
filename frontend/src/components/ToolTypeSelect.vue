@@ -11,7 +11,7 @@
       @keydown.down.prevent="openMenu"
       @keydown.enter.prevent="toggleMenu"
       @keydown.space.prevent="toggleMenu"
-      @keydown.esc="closeMenu"
+      @keydown.esc="handleEscape"
     >
       <ToolTypeBadge :type="selectedOption.type" :typeTitle="selectedOption.title" />
       <span class="tool-type-select__chevron" aria-hidden="true">▾</span>
@@ -100,6 +100,13 @@ function openMenu() {
 
 function closeMenu() {
   menuOpen.value = false;
+}
+
+function handleEscape(event: KeyboardEvent) {
+  if (!menuOpen.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeMenu();
 }
 
 function toggleMenu() {

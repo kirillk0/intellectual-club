@@ -13,7 +13,7 @@
         @focus="openMenu"
         @input="handleInput"
         @keydown.down.prevent="openMenu"
-        @keydown.esc="closeMenu"
+        @keydown.esc="handleEscape"
       />
       <button
         v-if="options.length"
@@ -86,6 +86,13 @@ const openMenu = () => {
 
 const closeMenu = () => {
   menuOpen.value = false;
+};
+
+const handleEscape = (event: KeyboardEvent) => {
+  if (!menuOpen.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeMenu();
 };
 
 const toggleMenu = () => {
