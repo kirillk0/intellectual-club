@@ -71,7 +71,7 @@
           >
             <SvgIcon name="chevron-left" size="16" />
           </button>
-          <span v-if="position && total" class="muted inline-meta">{{ position }}/{{ total }}</span>
+          <span v-if="position && total" class="muted inline-meta crud-record-position">{{ position }}/{{ total }}</span>
           <button
             class="icon-button crud-icon-button nav-btn"
             type="button"

@@ -799,6 +799,12 @@ fieldset {
   }
 }
 
+@media (max-width: 720px) {
+  .crud-record-position {
+    display: none;
+  }
+}
+
 .menu-meta {
   padding: 8px 12px 4px;
   color: var(--color-text-muted);
