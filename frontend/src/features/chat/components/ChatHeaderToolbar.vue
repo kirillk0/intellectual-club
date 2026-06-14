@@ -449,6 +449,10 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
     gap: 6px;
   }
 
+  .chat-toolbar__title-wrap {
+    display: none;
+  }
+
   .chat-toolbar__actions {
     gap: 4px;
   }
