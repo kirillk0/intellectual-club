@@ -4,8 +4,15 @@
       <div class="toolbar fill">
         <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button class="primary" type="button" @click="createProvider" :disabled="loading">
-            New provider
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createProvider"
+            :disabled="loading"
+            aria-label="New provider"
+            title="New provider"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

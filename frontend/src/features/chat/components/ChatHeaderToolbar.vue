@@ -1,22 +1,6 @@
 <template>
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
-      <div class="chat-toolbar__left">
-        <RouterLink :to="backTo" class="icon-button chat-toolbar__nav-button" aria-label="Back to chats" title="Back to chats">
-          ←
-        </RouterLink>
-        <button
-          class="icon-button chat-toolbar__nav-button"
-          type="button"
-          aria-label="New chat"
-          title="New chat"
-          @click="emit('open-new-chat')"
-          :disabled="creatingChat"
-        >
-          {{ creatingChat ? '…' : '+' }}
-        </button>
-      </div>
-
       <div class="chat-toolbar__title-wrap">
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
           <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
@@ -24,8 +8,8 @@
             v-if="canEdit"
             class="icon-button chat-toolbar__title-edit"
             type="button"
-            aria-label="Edit chat note"
-            title="Edit chat note"
+            :aria-label="t('Edit chat note')"
+            :title="t('Edit chat note')"
             @click="emit('open-note-modal')"
           >
             <SvgIcon name="edit" size="14" />
@@ -33,23 +17,23 @@
         </div>
       </div>
 
-      <div class="header-actions toolbar-actions-right">
+      <div class="header-actions toolbar-actions-right chat-toolbar__actions">
         <div class="flex config-control">
           <span
             v-if="configSyncStatus === 'pending'"
             class="config-status muted"
-            :title="`Effective: ${appliedConfigText}`"
+            :title="t('Effective: {value}', { value: appliedConfigText })"
             aria-live="polite"
           >
-            Saving…
+            {{ t('Saving…') }}
           </span>
           <span
             v-else-if="configSyncStatus === 'error'"
             class="config-status error-text"
-            :title="configSyncError || 'Failed to switch configuration'"
+            :title="configSyncError ? t(configSyncError) : t('Failed to switch configuration')"
             aria-live="polite"
           >
-            Not saved
+            {{ t('Not saved') }}
           </span>
           <ChatConfigurationSelect
             :model-value="selectedConfig"
@@ -66,95 +50,115 @@
           />
         </div>
 
+        <button
+          class="icon-button primary toolbar-create-button"
+          type="button"
+          :aria-label="t(creatingChat ? 'Creating…' : 'New chat')"
+          :title="t(creatingChat ? 'Creating…' : 'New chat')"
+          @click="emit('open-new-chat')"
+          :disabled="creatingChat"
+        >
+          <SvgIcon name="plus" size="16" />
+        </button>
+
         <div class="menu" :ref="setMenuAnchorRef">
           <button
-            class="icon-button"
+            class="icon-button chat-toolbar__icon-button"
             type="button"
             :ref="setMenuButtonRef"
             @click.stop="emit('toggle-menu')"
-            aria-label="More actions"
+            :aria-label="t('More actions')"
+            :title="t('More actions')"
           >
-            ⋯
+            <SvgIcon name="more-horizontal" size="16" />
           </button>
         </div>
 
+        <RouterLink :to="backTo" class="icon-button chat-toolbar__icon-button" :aria-label="t('Close')" :title="t('Close')">
+          <SvgIcon name="x" size="16" />
+        </RouterLink>
+
         <Teleport to="body">
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
-            <button class="menu-item" type="button" @click="emit('open-config-editor')" :disabled="!selectedConfig">
-              {{ editConfigLabel }}
+            <button
+              class="menu-item chat-menu-item"
+              type="button"
+              @click="emit('open-config-editor')"
+              :disabled="!selectedConfig"
+            >
+              <span class="chat-menu-item__icon" aria-hidden="true">
+                <SvgIcon name="sliders" size="16" />
+              </span>
+              <span class="chat-menu-item__label">{{ t(editConfigLabel) }}</span>
             </button>
-            <button v-if="canEdit" class="menu-item" type="button" @click="emit('open-share')">
-              Share…
+            <button v-if="canEdit" class="menu-item chat-menu-item" type="button" @click="emit('open-share')">
+              <span class="chat-menu-item__icon" aria-hidden="true">
+                <SvgIcon name="share-outgoing" size="16" />
+              </span>
+              <span class="chat-menu-item__label">{{ t('Share…') }}</span>
             </button>
             <button
               v-if="canEdit"
-              class="menu-item"
+              class="menu-item chat-menu-item"
               type="button"
               @click="emit('handoff')"
               :disabled="handoffDisabled"
               :title="handoffDisabled ? handoffDisabledTitle : undefined"
             >
-              {{ handoffPending ? 'Handing off…' : 'Handoff' }}
+              <span class="chat-menu-item__icon" aria-hidden="true">
+                <SvgIcon name="branch" size="16" />
+              </span>
+              <span class="chat-menu-item__label">{{ t(handoffPending ? 'Handing off…' : 'Handoff') }}</span>
             </button>
             <div class="menu-divider" aria-hidden="true"></div>
-            <div
-              class="menu-item"
-              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid var(--color-border);"
-            >
-              <div style="font-weight: 600; font-size: 0.95rem">Bot</div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.93rem">
+            <div class="menu-item chat-menu-section">
+              <div class="chat-menu-section__heading">
+                <SvgIcon name="bot" size="16" />
+                <span>{{ t('Bot') }}</span>
+              </div>
+              <div class="chat-menu-section__row">
                 <button
                   v-if="currentBotId"
                   type="button"
-                  class="link"
+                  class="link chat-menu-link"
                   @click="emit('open-bot-editor')"
-                  :title="`Open bot editor: ${currentBotName}`"
-                  style="
-                    flex: 1;
-                    min-width: 0;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    padding: 0;
-                    text-align: left;
-                  "
+                  :title="t('Open bot editor: {value}', { value: currentBotName })"
                 >
-                  {{ currentBotName }}
+                  <span>{{ currentBotName }}</span>
                 </button>
-                <span
-                  v-else
-                  style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"
-                >
-                  {{ currentBotName || 'No bot' }}
+                <span v-else class="chat-menu-value">
+                  {{ currentBotName || t('No bot') }}
                 </span>
-                <button v-if="canEdit" type="button" class="link" @click="emit('open-bot-modal')" style="padding: 0">
-                  change
+                <button v-if="canEdit" type="button" class="link chat-menu-inline-action" @click="emit('open-bot-modal')">
+                  <span>{{ t('change') }}</span>
                 </button>
               </div>
             </div>
-            <div
-              class="menu-item"
-              style="text-align: left; padding: 8px 12px 10px; border-bottom: 1px solid var(--color-border);"
+            <div class="menu-item chat-menu-section">
+              <div class="chat-menu-section__heading">
+                <SvgIcon name="document" size="16" />
+                <span>{{ t('Note') }}</span>
+              </div>
+              <div class="chat-menu-section__row">
+                <span class="chat-menu-value" :title="chatNote || t('No note')">
+                  {{ chatNote || t('No note') }}
+                </span>
+                <button v-if="canEdit" type="button" class="link chat-menu-inline-action" @click="emit('open-note-modal')">
+                  <span>{{ t('edit') }}</span>
+                </button>
+              </div>
+            </div>
+            <button
+              v-if="canEdit"
+              class="menu-item chat-menu-item danger"
+              type="button"
+              @click="emit('delete-chat')"
+              :disabled="deleting"
             >
-              <div style="font-weight: 600; font-size: 0.95rem">Note</div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.93rem">
-                <span
-                  style="
-                    flex: 1;
-                    min-width: 0;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                  "
-                  :title="chatNote || 'No note'"
-                >
-                  {{ chatNote || 'No note' }}
-                </span>
-                <button v-if="canEdit" type="button" class="link" @click="emit('open-note-modal')" style="padding: 0">edit</button>
-              </div>
-            </div>
-            <button v-if="canEdit" class="menu-item danger" type="button" @click="emit('delete-chat')" :disabled="deleting">
-              {{ deleting ? 'Deleting…' : 'Delete chat' }}
+              <span class="chat-menu-item__icon" aria-hidden="true">
+                <SvgIcon name="delete" size="16" />
+              </span>
+              <span class="chat-menu-item__label">{{ t(deleting ? 'Deleting…' : 'Delete chat') }}</span>
             </button>
           </div>
         </Teleport>
@@ -167,16 +171,16 @@
       style="padding: 10px; justify-content: space-between; align-items: center; gap: 12px"
     >
       <div style="min-width: 0">
-        <div style="font-weight: 600">Missing required tools</div>
+        <div style="font-weight: 600">{{ t('Missing required tools') }}</div>
         <div class="muted" style="font-size: 0.85rem">
-          This bot expects per-user tools for the following aliases:
+          {{ t('This bot expects per-user tools for the following aliases:') }}
           <code>{{ missingRequiredPerUserToolAliases.join(', ') }}</code
           >.
         </div>
       </div>
       <div class="flex" style="gap: 8px; align-items: center">
-        <button type="button" class="primary" @click="emit('open-bot-tools')">Configure tools</button>
-        <button type="button" @click="emit('dismiss-missing-tools-banner')">Dismiss</button>
+        <button type="button" class="primary" @click="emit('open-bot-tools')">{{ t('Configure tools') }}</button>
+        <button type="button" @click="emit('dismiss-missing-tools-banner')">{{ t('Dismiss') }}</button>
       </div>
     </div>
   </div>
@@ -186,6 +190,7 @@
 import { computed, type ComponentPublicInstance } from 'vue';
 
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import { translate } from '@/i18n';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
 import type { LlmConfiguration } from '@/types/api';
 
@@ -224,6 +229,7 @@ interface Props {
 }
 
 type TemplateRefValue = Element | ComponentPublicInstance | null;
+const t = translate;
 
 const props = withDefaults(defineProps<Props>(), {
   backTo: '/chats',
@@ -238,15 +244,15 @@ const props = withDefaults(defineProps<Props>(), {
 const configSelectorDisabled = computed(() => !props.canEdit || props.configSyncStatus === 'pending' || props.isGenerating);
 
 const configSelectorTitle = computed(() => {
-  if (!props.canEdit) return 'Shared chats are read-only';
-  if (props.isGenerating) return 'Cannot change configuration while generating a response';
-  if (props.configSyncStatus === 'pending') return 'Waiting for server confirmation';
+  if (!props.canEdit) return t('Shared chats are read-only');
+  if (props.isGenerating) return t('Cannot change configuration while generating a response');
+  if (props.configSyncStatus === 'pending') return t('Waiting for server confirmation');
   return undefined;
 });
 
 const handoffDisabledTitle = computed(() => {
-  if (props.isGenerating) return 'Cannot handoff while generating or syncing configuration';
-  if (props.configSyncStatus === 'pending') return 'Cannot handoff while generating or syncing configuration';
+  if (props.isGenerating) return t('Cannot handoff while generating or syncing configuration');
+  if (props.configSyncStatus === 'pending') return t('Cannot handoff while generating or syncing configuration');
   return undefined;
 });
 
@@ -267,9 +273,9 @@ const emit = defineEmits<{
 }>();
 
 const appliedConfigText = computed(() => {
-  if (props.appliedConfig === '') return 'No config';
+  if (props.appliedConfig === '') return t('No config');
   const id = Number(props.appliedConfig);
-  if (!Number.isFinite(id)) return 'No config';
+  if (!Number.isFinite(id)) return t('No config');
   const hit =
     props.selectableConfigs.find((c) => c.id === id) ||
     props.moreConfigs.find((c) => c.id === id) ||
@@ -310,29 +316,11 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   align-items: center;
 }
 
-.chat-toolbar__left {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-.chat-toolbar__nav-button {
-  color: var(--color-text);
-  text-decoration: none;
-  font-size: 18px;
-}
-
-.chat-toolbar__nav-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .chat-toolbar__title-wrap {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   overflow: hidden;
 }
 
@@ -341,7 +329,7 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   max-width: 100%;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   overflow: hidden;
 }
@@ -362,9 +350,107 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   font-size: 14px;
 }
 
-@media (max-width: 860px) {
-  .chat-toolbar__title {
-    display: none;
+.chat-toolbar__actions {
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 6px;
+}
+
+.chat-toolbar__icon-button {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.chat-toolbar__icon-button .svg-icon,
+.toolbar-create-button .svg-icon {
+  stroke-width: 1.35;
+}
+
+.chat-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-menu-item__icon {
+  width: 18px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+
+.chat-menu-item__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-menu-section {
+  text-align: left;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-menu-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.chat-menu-section__heading .svg-icon,
+.chat-menu-item .svg-icon {
+  stroke-width: 1.35;
+}
+
+.chat-menu-section__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.93rem;
+}
+
+.chat-menu-link,
+.chat-menu-inline-action,
+.chat-menu-value {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.chat-menu-link {
+  flex: 1;
+  padding: 0;
+  text-align: left;
+}
+
+.chat-menu-link span,
+.chat-menu-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-menu-value {
+  flex: 1;
+}
+
+.chat-menu-inline-action {
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+@media (max-width: 720px) {
+  .chat-toolbar {
+    gap: 6px;
+  }
+
+  .chat-toolbar__actions {
+    gap: 4px;
   }
 }
 </style>

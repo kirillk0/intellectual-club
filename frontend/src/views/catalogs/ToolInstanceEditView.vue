@@ -18,16 +18,17 @@
       @delete="remove"
       @duplicate="duplicate"
     >
-      <template #menu-extra>
+      <template #extra-actions>
         <button
           v-if="!isNew && supportsDiscovery && !sharedReadonly"
-          class="menu-item"
+          class="icon-button crud-icon-button"
           type="button"
           @click="runDiscover"
           :disabled="discovering || loading || saving || dirty"
-          :title="dirty ? 'Save changes before discovery.' : ''"
+          :aria-label="discovering ? 'Discovering…' : 'Discover functions'"
+          :title="dirty ? 'Save changes before discovery.' : discovering ? 'Discovering…' : 'Discover functions'"
         >
-          {{ discovering ? 'Discovering…' : 'Discover functions' }}
+          <SvgIcon name="tool-search" size="16" />
         </button>
       </template>
     </CrudHeader>
@@ -456,6 +457,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import { api, isHttpError } from '@/api/client';
 import {

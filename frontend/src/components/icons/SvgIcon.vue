@@ -32,6 +32,10 @@ import FilterIcon from './svg/filter.svg?component';
 import BranchIcon from './svg/branch.svg?component';
 import BookmarkIcon from './svg/bookmark.svg?component';
 import CheckIcon from './svg/check.svg?component';
+import PlusIcon from './svg/plus.svg?component';
+import SaveIcon from './svg/save.svg?component';
+import UndoIcon from './svg/undo.svg?component';
+import XIcon from './svg/x.svg?component';
 import MoreHorizontalIcon from './svg/more-horizontal.svg?component';
 import ChevronLeftIcon from './svg/chevron-left.svg?component';
 import ChevronRightIcon from './svg/chevron-right.svg?component';
@@ -84,6 +88,10 @@ const iconMap: Record<string, Component> = {
   'branch': BranchIcon,
   'bookmark': BookmarkIcon,
   'check': CheckIcon,
+  'plus': PlusIcon,
+  'save': SaveIcon,
+  'undo': UndoIcon,
+  'x': XIcon,
   'more-horizontal': MoreHorizontalIcon,
   'chevron-left': ChevronLeftIcon,
   'chevron-right': ChevronRightIcon,

@@ -7,8 +7,15 @@
           <button class="icon-button" type="button" @click="openUsage" :disabled="loading" aria-label="Usage" title="Usage">
             <SvgIcon name="bar-chart" />
           </button>
-          <button class="primary" type="button" @click="createConfig" :disabled="loading">
-            New configuration
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createConfig"
+            :disabled="loading"
+            aria-label="New configuration"
+            title="New configuration"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

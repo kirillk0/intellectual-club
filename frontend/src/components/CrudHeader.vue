@@ -1,85 +1,109 @@
 <template>
   <StackToolbarTeleport>
     <div class="toolbar crud-toolbar fill">
-      <strong>{{ title }}</strong>
+      <strong class="crud-title">{{ title }}</strong>
       <div class="header-actions crud-actions toolbar-actions-right">
         <button
           v-if="dirty"
-          :class="['primary', dirty && 'dirty']"
+          class="icon-button crud-icon-button primary dirty"
+          type="button"
           :disabled="saving"
+          aria-label="Save"
+          title="Save"
           @click="emitSave"
         >
-          Save
+          <SvgIcon name="save" size="16" />
         </button>
-        <button v-if="dirty" type="button" :disabled="saving" @click="emitCancel">Cancel</button>
-        <button v-else type="button" :disabled="saving" @click="emitClose">Close</button>
 
-        <div class="menu crud-menu" ref="menuAnchorRef">
+        <button
+          v-if="dirty"
+          class="icon-button crud-icon-button"
+          type="button"
+          :disabled="saving"
+          aria-label="Cancel"
+          title="Cancel"
+          @click="emitCancel"
+        >
+          <SvgIcon name="undo" size="16" />
+        </button>
+
+        <div class="crud-action-group">
           <button
-            class="icon-button"
+            class="icon-button crud-icon-button"
             type="button"
-            ref="menuButtonRef"
-            @click.stop="toggleMenu"
-            aria-label="More actions"
+            aria-label="Create"
+            title="Create"
+            @click="emitCreate"
           >
-            ⋯
+            <SvgIcon name="plus" size="16" />
+          </button>
+          <button
+            v-if="showDuplicate"
+            class="icon-button crud-icon-button"
+            type="button"
+            aria-label="Duplicate"
+            title="Duplicate"
+            @click="emitDuplicate"
+          >
+            <SvgIcon name="copy" size="16" />
+          </button>
+          <slot name="extra-actions"></slot>
+          <button
+            v-if="showDelete"
+            class="icon-button crud-icon-button danger"
+            type="button"
+            aria-label="Delete"
+            title="Delete"
+            @click="emitDelete"
+          >
+            <SvgIcon name="delete" size="16" />
           </button>
         </div>
 
-        <div class="crud-inline-extra">
-          <button class="desktop-only" type="button" @click="emitCreate">Create</button>
+        <div class="crud-action-group crud-nav-actions">
           <button
-            class="nav-btn"
+            class="icon-button crud-icon-button nav-btn"
             type="button"
             :disabled="navDisabled"
             @click="emitPrev"
             aria-label="Previous"
+            title="Previous"
           >
-            ‹
+            <SvgIcon name="chevron-left" size="16" />
           </button>
           <span v-if="position && total" class="muted inline-meta">{{ position }}/{{ total }}</span>
           <button
-            class="nav-btn"
+            class="icon-button crud-icon-button nav-btn"
             type="button"
             :disabled="navDisabled"
             @click="emitNext"
             aria-label="Next"
+            title="Next"
           >
-            ›
+            <SvgIcon name="chevron-right" size="16" />
           </button>
         </div>
 
-        <Teleport to="body">
-          <div
-            class="dropdown floating-dropdown"
-            v-if="menuOpen"
-            ref="menuRef"
-            :style="menuStyle"
-            @click="handleMenuClick"
-          >
-            <button class="menu-item" type="button" @click="emitCreate">Create</button>
-            <button v-if="showDuplicate" class="menu-item" type="button" @click="emitDuplicate">
-              Duplicate
-            </button>
-            <button v-if="showDelete" class="menu-item danger" type="button" @click="emitDelete">
-              Delete
-            </button>
-            <slot name="menu-extra"></slot>
-            <div class="menu-divider"></div>
-            <button class="menu-item" type="button" :disabled="navDisabled" @click="emitPrev">Prev</button>
-            <button class="menu-item" type="button" :disabled="navDisabled" @click="emitNext">Next</button>
-            <div v-if="position && total" class="menu-meta">{{ position }}/{{ total }}</div>
-          </div>
-        </Teleport>
+        <button
+          v-if="!dirty"
+          class="icon-button crud-icon-button crud-close-button"
+          type="button"
+          :disabled="saving"
+          aria-label="Close"
+          title="Close"
+          @click="emitClose"
+        >
+          <SvgIcon name="x" size="16" />
+        </button>
       </div>
     </div>
   </StackToolbarTeleport>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { Teleport } from 'vue';
+import { onBeforeUnmount, onMounted } from 'vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 
 const props = defineProps<{
@@ -95,36 +119,6 @@ const props = defineProps<{
 
 const emit = defineEmits(['create', 'save', 'delete', 'cancel', 'close', 'prev', 'next', 'duplicate']);
 const layer = useStackLayer();
-
-const menuOpen = ref(false);
-const menuRef = ref<HTMLElement | null>(null);
-const menuAnchorRef = ref<HTMLElement | null>(null);
-const menuButtonRef = ref<HTMLElement | null>(null);
-const menuStyle = ref<Record<string, string>>({});
-
-const toggleMenu = () => {
-  menuOpen.value = !menuOpen.value;
-  if (menuOpen.value) updateMenuPosition();
-};
-
-const closeMenu = () => {
-  menuOpen.value = false;
-  menuStyle.value = {};
-};
-
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as Node | null;
-  if (!menuRef.value || !target) return;
-  if (menuRef.value.contains(target)) return;
-  if (menuButtonRef.value && menuButtonRef.value.contains(target)) return;
-  closeMenu();
-};
-
-const handleMenuClick = (event: MouseEvent) => {
-  const target = event.target instanceof Element ? event.target : null;
-  if (!target?.closest('button,a[href],[role="button"],[role="menuitem"]')) return;
-  closeMenu();
-};
 
 const isPrimarySaveShortcut = (event: KeyboardEvent) => {
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
@@ -158,12 +152,6 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 
   if (event.key !== 'Escape') return;
 
-  if (menuOpen.value) {
-    event.preventDefault();
-    closeMenu();
-    return;
-  }
-
   if (props.saving) return;
 
   event.preventDefault();
@@ -172,83 +160,19 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 };
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside);
   window.addEventListener('keydown', handleGlobalKeydown);
-  window.addEventListener('resize', updateMenuPosition);
-  window.addEventListener('scroll', updateMenuPosition, true);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener('click', handleClickOutside);
   window.removeEventListener('keydown', handleGlobalKeydown);
-  window.removeEventListener('resize', updateMenuPosition);
-  window.removeEventListener('scroll', updateMenuPosition, true);
 });
 
-const updateMenuPosition = () => {
-  if (!menuOpen.value) return;
-  const btn = menuButtonRef.value;
-  if (!btn) return;
-  const rect = btn.getBoundingClientRect();
-  const minWidth = 180;
-  menuStyle.value = {
-    position: 'fixed',
-    top: `${rect.bottom + 6}px`,
-    left: `${rect.right - minWidth}px`,
-    minWidth: `${minWidth}px`,
-    zIndex: '2000',
-  };
-};
-
-const emitCreate = () => {
-  emit('create');
-  closeMenu();
-};
-
+const emitCreate = () => emit('create');
 const emitSave = () => emit('save');
 const emitCancel = () => emit('cancel');
 const emitClose = () => emit('close');
-
-const emitDelete = () => {
-  emit('delete');
-  closeMenu();
-};
-
-const emitPrev = () => {
-  emit('prev');
-  closeMenu();
-};
-
-const emitNext = () => {
-  emit('next');
-  closeMenu();
-};
-
-const emitDuplicate = () => {
-  emit('duplicate');
-  closeMenu();
-};
+const emitDelete = () => emit('delete');
+const emitPrev = () => emit('prev');
+const emitNext = () => emit('next');
+const emitDuplicate = () => emit('duplicate');
 </script>
-
-<style scoped>
-.crud-inline-extra {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.nav-btn {
-  width: 32px;
-  padding: 6px 0;
-}
-
-.menu.crud-menu {
-  margin-left: 8px;
-}
-
-@media (max-width: 720px) {
-  .crud-inline-extra .desktop-only {
-    display: none;
-  }
-}
-</style>

@@ -18,9 +18,16 @@
       @delete="remove"
       @duplicate="duplicate"
     >
-      <template #menu-extra>
-        <button v-if="!isNew && !sharedReadonly" class="menu-item" type="button" @click="openShareModal">
-          Share…
+      <template #extra-actions>
+        <button
+          v-if="!isNew && !sharedReadonly"
+          class="icon-button crud-icon-button"
+          type="button"
+          aria-label="Share…"
+          title="Share…"
+          @click="openShareModal"
+        >
+          <SvgIcon name="share-outgoing" size="16" />
         </button>
       </template>
     </CrudHeader>
@@ -282,6 +289,7 @@ import { useRoute } from 'vue-router';
 import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';

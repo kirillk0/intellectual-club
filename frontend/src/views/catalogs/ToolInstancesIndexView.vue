@@ -4,8 +4,15 @@
       <div class="toolbar fill">
         <strong>Tools</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button class="primary" type="button" @click="createTool" :disabled="loading">
-            New tool
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createTool"
+            :disabled="loading"
+            aria-label="New tool"
+            title="New tool"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

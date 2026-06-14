@@ -7,8 +7,15 @@
           <RouterLink to="/bookmarks" class="icon-button" aria-label="Open bookmarks" title="Bookmarks">
             <SvgIcon name="bookmark" />
           </RouterLink>
-          <button class="primary" style="white-space: nowrap" @click="openCreateChatModal" :disabled="creating">
-            {{ creating ? 'Creating…' : 'New chat' }}
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="openCreateChatModal"
+            :disabled="creating"
+            :aria-label="creating ? 'Creating…' : 'New chat'"
+            :title="creating ? 'Creating…' : 'New chat'"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

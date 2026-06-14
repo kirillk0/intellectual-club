@@ -4,8 +4,15 @@
       <div class="toolbar fill">
         <strong>Bots</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button class="primary" type="button" @click="createBot" :disabled="loading">
-            New bot
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createBot"
+            :disabled="loading"
+            aria-label="New bot"
+            title="New bot"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

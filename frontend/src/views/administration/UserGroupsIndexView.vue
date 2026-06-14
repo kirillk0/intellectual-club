@@ -4,8 +4,15 @@
       <div class="toolbar fill">
         <strong>Administration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button class="primary" type="button" @click="createGroup" :disabled="loading">
-            New group
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createGroup"
+            :disabled="loading"
+            aria-label="New group"
+            title="New group"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>
@@ -56,6 +63,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';

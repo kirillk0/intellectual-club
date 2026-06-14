@@ -688,6 +688,10 @@ fieldset {
   max-width: 200px;
 }
 
+.toolbar-create-button .svg-icon {
+  stroke-width: 1.35;
+}
+
 .chat-toolbar {
   flex-wrap: nowrap;
   gap: 6px;
@@ -709,41 +713,90 @@ fieldset {
   line-height: 1;
 }
 
+.crud-toolbar {
+  gap: 8px;
+  min-width: 0;
+}
+
+.crud-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .crud-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: nowrap;
   flex: 1;
   justify-content: flex-end;
+  min-width: 0;
 }
 
-.crud-inline-extra {
+.crud-action-group {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  flex: 0 0 auto;
 }
 
-.crud-menu {
-  display: inline-flex;
+.crud-icon-button {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.crud-icon-button .svg-icon {
+  stroke-width: 1.35;
+}
+
+.crud-icon-button.primary {
+  color: var(--color-primary-contrast);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.crud-icon-button.primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.crud-icon-button.danger {
+  color: var(--color-danger);
+  background: var(--color-surface);
+  border-color: var(--color-danger-border);
+}
+
+.crud-icon-button.danger:hover {
+  background: var(--color-danger-bg);
+}
+
+.crud-nav-actions {
+  gap: 3px;
+}
+
+.crud-close-button {
+  margin-left: 6px;
 }
 
 .inline-meta {
   font-size: 0.9rem;
+  min-width: 3.25rem;
+  text-align: center;
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {
-  .crud-inline-extra {
-    gap: 6px;
+  .crud-actions {
+    gap: 4px;
   }
 
-  .crud-menu {
-    display: block;
+  .crud-action-group {
+    gap: 3px;
   }
-}
-
-.crud-actions .menu {
-  margin-left: 2px;
 }
 
 .menu-meta {

@@ -20,8 +20,15 @@
           >
             {{ importPreviewLoading ? 'Loading…' : 'Import' }}
           </button>
-          <button class="primary" type="button" @click="createBlock" :disabled="loading">
-            New block
+          <button
+            class="icon-button primary toolbar-create-button"
+            type="button"
+            @click="createBlock"
+            :disabled="loading"
+            aria-label="New block"
+            title="New block"
+          >
+            <SvgIcon name="plus" size="16" />
           </button>
         </div>
       </div>

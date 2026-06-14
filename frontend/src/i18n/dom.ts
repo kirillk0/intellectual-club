@@ -144,17 +144,19 @@ const patchBrowserDialogs = () => {
 export const installDomTranslations = (root: HTMLElement) => {
   if (typeof window === 'undefined' || typeof MutationObserver === 'undefined') return;
 
+  const translationRoot = document.body || root;
+
   patchBrowserDialogs();
-  walk(root);
+  walk(translationRoot);
 
   observer?.disconnect();
   observer = new MutationObserver((mutations) => {
     if (mutations.some((mutation) => mutation.type === 'childList' || mutation.type === 'attributes')) {
-      scheduleWalk(root);
+      scheduleWalk(translationRoot);
     }
   });
 
-  observer.observe(root, {
+  observer.observe(translationRoot, {
     childList: true,
     subtree: true,
     attributes: true,
