@@ -45,8 +45,7 @@ defmodule IntellectualClub.Chat.Metrics do
     %{
       prompt_token_count: prompt_token_count,
       history_token_count: history_token_count,
-      history_message_count: history_message_count,
-      total_token_count: prompt_token_count + history_token_count
+      history_message_count: history_message_count
     }
   end
 

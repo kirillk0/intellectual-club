@@ -776,6 +776,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
     refute String.contains?(payload["compiled_prompt_text"], "prompt_mcp__disabled_tool")
     assert payload["counters"]["history_message_count"] == 1
+    refute Map.has_key?(payload["counters"], "total_token_count")
     refute Map.has_key?(payload, "branch")
     refute Map.has_key?(payload, "options")
 

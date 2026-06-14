@@ -18,7 +18,6 @@ export type Counters = {
   prompt_token_count: number;
   history_token_count: number;
   history_message_count: number;
-  total_token_count: number;
 };
 
 export type PromptBinding = {

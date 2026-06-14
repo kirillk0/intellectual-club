@@ -172,6 +172,5 @@ defmodule IntellectualClub.Chat.MetricsTest do
     assert counters.prompt_token_count == expected_prompt_tokens
     assert counters.history_token_count == expected_history_tokens
     assert counters.history_message_count == 2
-    assert counters.total_token_count == expected_prompt_tokens + expected_history_tokens
   end
 end

@@ -107,7 +107,6 @@ export function useChatViewModel() {
     prompt_token_count: 0,
     history_token_count: 0,
     history_message_count: 0,
-    total_token_count: 0,
   });
 
   const promptSources = ref<ChatSettingsStatePayload['prompt_sources']>({
