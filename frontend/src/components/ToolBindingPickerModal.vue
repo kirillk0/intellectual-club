@@ -86,17 +86,6 @@
                   >
                     Clear selection
                   </button>
-                  <button
-                    v-if="isMobile && !typesOverlayOpen"
-                    class="panel-toggle"
-                    :class="{ 'active-filter': hasActiveTypeFilter }"
-                    type="button"
-                    :disabled="saving || loading"
-                    @click="openTypesOverlay"
-                    aria-label="Show type filter"
-                  >
-                    <SvgIcon name="filter" />
-                  </button>
                 </div>
 
                 <p v-if="loading" class="muted" style="margin: 0">Loading tools…</p>
@@ -188,6 +177,18 @@
               </div>
               <p v-else class="muted">No tool types.</p>
             </aside>
+
+            <button
+              v-if="isMobile && !typesOverlayOpen"
+              class="panel-toggle floating left"
+              :class="{ 'active-filter': hasActiveTypeFilter }"
+              type="button"
+              :disabled="saving || loading"
+              @click="openTypesOverlay"
+              aria-label="Show type filter"
+            >
+              <SvgIcon name="filter" />
+            </button>
           </div>
         </div>
 

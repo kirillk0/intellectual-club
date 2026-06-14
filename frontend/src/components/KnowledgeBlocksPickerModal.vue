@@ -61,16 +61,6 @@
                   >
                     Clear selection
                   </button>
-                  <button
-                    v-if="isMobile && !tagsOverlayOpen"
-                    class="panel-toggle"
-                    :class="{ 'active-filter': hasActiveTagFilter }"
-                    type="button"
-                    @click="openTagsOverlay"
-                    aria-label="Show tags filter"
-                  >
-                    #
-                  </button>
                 </div>
 
                 <p v-if="tagFilterLoading" class="muted">Filtering by tag…</p>
@@ -149,6 +139,17 @@
 
               <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
             </aside>
+
+            <button
+              v-if="isMobile && !tagsOverlayOpen"
+              class="panel-toggle floating left"
+              :class="{ 'active-filter': hasActiveTagFilter }"
+              type="button"
+              @click="openTagsOverlay"
+              aria-label="Show tags filter"
+            >
+              #
+            </button>
           </div>
         </div>
 
