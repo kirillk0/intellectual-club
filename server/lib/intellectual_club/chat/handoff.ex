@@ -7,8 +7,10 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Db
+  alias IntellectualClub.Files
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -68,21 +70,29 @@ defmodule IntellectualClub.Chat.Handoff do
       source_message_id =
         normalize_source_message_id(Keyword.get(opts, :source_message_id), source)
 
-      case create_target_with_summary(source, actor, summary, source_message_id) do
-        {:ok, %{chat: chat} = result} when start_generation? ->
-          case GenerationSupervisor.start_generation(chat.id, actor: actor) do
-            {:ok, context} ->
-              {:ok, Map.put(result, :generation, context)}
+      rolloff_opts = [
+        source_message_id: source_message_id,
+        handoff_mode: Keyword.get(opts, :handoff_mode, :manual),
+        exclude_message_ids: Keyword.get(opts, :exclude_message_ids, [])
+      ]
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+      with {:ok, rolloff} <- HandoffRolloff.build(source, actor, summary, rolloff_opts) do
+        case create_target_with_summary(source, actor, rolloff, source_message_id) do
+          {:ok, %{chat: chat} = result} when start_generation? ->
+            case GenerationSupervisor.start_generation(chat.id, actor: actor) do
+              {:ok, context} ->
+                {:ok, Map.put(result, :generation, context)}
 
-        {:ok, result} ->
-          {:ok, Map.put_new(result, :generation, nil)}
+              {:error, reason} ->
+                {:error, reason}
+            end
 
-        {:error, reason} ->
-          {:error, reason}
+          {:ok, result} ->
+            {:ok, Map.put_new(result, :generation, nil)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
@@ -97,6 +107,7 @@ defmodule IntellectualClub.Chat.Handoff do
          %Chat{id: source_chat_id} when is_integer(source_chat_id) <- Map.get(message, :chat) do
       create_handoff_chat(source_chat_id, actor, summary,
         source_message_id: message.id,
+        exclude_message_ids: [message.id, message.parent_id],
         start_generation?: false
       )
     else
@@ -111,16 +122,23 @@ defmodule IntellectualClub.Chat.Handoff do
   def relation_kind, do: @relation_kind
   def summary_request, do: @summary_request
 
-  defp create_target_with_summary(source, actor, summary, source_message_id) do
+  defp create_target_with_summary(source, actor, rolloff, source_message_id) do
     Db.repo().transaction(fn ->
       target = create_target_chat!(source, actor, source_message_id)
       copy_knowledge_block_bindings!(source.id, target.id, actor)
       copy_tool_bindings!(source.id, target.id, actor)
 
+      contents =
+        case rolloff_message_contents(rolloff) do
+          {:ok, contents} -> contents
+          {:error, error} -> Db.repo().rollback(error)
+        end
+
       {:ok, message} =
-        Threads.add_message(target, :user, summary,
+        Threads.add_message(target, :user, rolloff.text,
           actor: actor,
           parent_id: nil,
+          contents: contents,
           status: :done
         )
 
@@ -129,6 +147,27 @@ defmodule IntellectualClub.Chat.Handoff do
     end)
     |> unwrap_transaction()
   end
+
+  defp rolloff_message_contents(%{text: text, artifact: nil}) do
+    {:ok, [%{kind: :text, content_text: text}]}
+  end
+
+  defp rolloff_message_contents(%{text: text, artifact: artifact}) when is_map(artifact) do
+    with {:ok, file} <-
+           Files.create_from_binary(
+             Map.fetch!(artifact, :filename),
+             Map.fetch!(artifact, :mime_type),
+             Map.fetch!(artifact, :payload)
+           ) do
+      {:ok, [%{kind: :text, content_text: text}, %{kind: :media, file_id: file.id}]}
+    end
+  end
+
+  defp rolloff_message_contents(%{text: text}) do
+    {:ok, [%{kind: :text, content_text: text}]}
+  end
+
+  defp rolloff_message_contents(_rolloff), do: {:error, :invalid_rolloff}
 
   defp create_target_chat!(%Chat{} = source, actor, source_message_id) do
     Chat

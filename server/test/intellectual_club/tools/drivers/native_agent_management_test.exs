@@ -3,6 +3,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.ExecutionContext
@@ -66,6 +67,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert target.parent_chat_id == source.id
     assert target.parent_message_id == assistant.id
     assert target.parent_relation_kind == :handoff
+
+    [first_message | _] = messages_for_chat!(target.id, actor)
+    first_message_text = Previews.message_preview_text(first_message)
+    assert String.starts_with?(first_message_text, "Work continued")
+    assert String.contains?(first_message_text, "Continue in the new chat.")
+    assert String.contains?(first_message_text, "Start")
+    assert String.contains?(first_message_text, "Working")
 
     assert wait_until(fn ->
              generation_message =
@@ -141,6 +149,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp messages_for_chat!(chat_id, actor) do
+    ChatMessage
+    |> Ash.Query.filter(chat_id == ^chat_id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.load(steps: [items: [:contents]])
+    |> Ash.read!(actor: actor)
   end
 
   defp wait_until(fun, timeout_ms \\ 1_000) when is_function(fun, 0) do

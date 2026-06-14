@@ -541,7 +541,12 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     child_messages = messages_for_chat!(target_id, actor)
     assert hd(child_messages).role == :user
     assert message_answer_text(hd(child_messages)) == ""
-    assert user_message_text(hd(child_messages)) == handoff_summary
+
+    child_prompt = user_message_text(hd(child_messages))
+    assert String.starts_with?(child_prompt, "Work continued")
+    assert String.contains?(child_prompt, "Hand off this work")
+    assert String.contains?(child_prompt, "<summary>Handoff message</summary>")
+    assert String.contains?(child_prompt, handoff_summary)
 
     assert wait_for_message!(child_generation_message_id, actor, &(&1.status == :done)).status ==
              :done

@@ -89,6 +89,33 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
              ContentFiles.load_payload_for_execution(file.external_id, context)
   end
 
+  test "load_payload_for_execution loads media payload from handoff ancestor chat" do
+    %{user: actor} = user_fixture()
+    parent_chat = create_chat!(actor)
+    parent_message = create_message!(parent_chat, actor)
+    step = create_step!(parent_message, actor)
+    item = create_item!(step, actor)
+    {:ok, file} = Files.create_from_binary("ancestor.txt", "text/plain", sample_payload())
+    content = create_media_content!(item, file, actor)
+
+    child_chat = create_handoff_child_chat!(parent_chat, parent_message, actor)
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: child_chat.id,
+      message_id: parent_message.id,
+      assistant_message_id: parent_message.id,
+      provider_type: :responses
+    }
+
+    assert {:ok, {loaded_content, loaded_file, payload}} =
+             ContentFiles.load_payload_for_execution(file.external_id, context)
+
+    assert loaded_content.id == content.id
+    assert loaded_file.id == file.id
+    assert payload == sample_payload()
+  end
+
   test "load_payload_for_execution accepts explicitly available stored file external_id" do
     %{user: actor} = user_fixture()
     {:ok, file} = Files.create_from_binary("knowledge.txt", "text/plain", sample_payload())
@@ -116,6 +143,22 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
   defp create_chat!(actor) do
     Chat.Chat
     |> Ash.Changeset.for_create(:create, %{title: "Content files test", note: ""}, actor: actor)
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_handoff_child_chat!(parent_chat, parent_message, actor) do
+    Chat.Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        title: "Handoff child",
+        note: "",
+        parent_chat_id: parent_chat.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :handoff
+      },
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
   end
 

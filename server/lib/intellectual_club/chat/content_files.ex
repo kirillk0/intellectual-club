@@ -3,6 +3,7 @@ defmodule IntellectualClub.Chat.ContentFiles do
   Helpers for loading file payloads referenced by chat message contents.
   """
 
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
@@ -61,13 +62,15 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   defp find_content_for_file(normalized_external_id, %ExecutionContext{} = context)
        when is_binary(normalized_external_id) do
+    chat_ids = handoff_chat_scope_ids(context)
+
     ChatMessageContent
     |> Ash.Query.filter(
       kind == :media and owner_id == ^context.owner_id and
         exists(file, external_id == ^normalized_external_id) and
         exists(
           chat_message_item.chat_message_step.chat_message,
-          owner_id == ^context.owner_id and chat_id == ^context.chat_id
+          owner_id == ^context.owner_id and chat_id in ^chat_ids
         )
     )
     |> Ash.Query.sort(id: :asc)
@@ -79,6 +82,53 @@ defmodule IntellectualClub.Chat.ContentFiles do
       {:error, error} -> {:error, error}
     end
   end
+
+  defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id, owner_id: owner_id})
+       when is_integer(chat_id) and is_integer(owner_id) do
+    chat_id
+    |> collect_handoff_chat_scope_ids(owner_id, MapSet.new(), [])
+    |> case do
+      [] -> [chat_id]
+      ids -> ids
+    end
+  end
+
+  defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id}) when is_integer(chat_id),
+    do: [chat_id]
+
+  defp handoff_chat_scope_ids(_context), do: []
+
+  defp collect_handoff_chat_scope_ids(chat_id, owner_id, seen, acc)
+       when is_integer(chat_id) and is_integer(owner_id) do
+    if MapSet.member?(seen, chat_id) do
+      Enum.reverse(acc)
+    else
+      seen = MapSet.put(seen, chat_id)
+
+      case load_owned_chat_for_scope(chat_id, owner_id) do
+        {:ok, %Chat{} = chat} ->
+          acc = [chat.id | acc]
+
+          if handoff_child?(chat) and is_integer(chat.parent_chat_id) do
+            collect_handoff_chat_scope_ids(chat.parent_chat_id, owner_id, seen, acc)
+          else
+            Enum.reverse(acc)
+          end
+
+        _other ->
+          Enum.reverse(acc)
+      end
+    end
+  end
+
+  defp load_owned_chat_for_scope(chat_id, owner_id) do
+    Chat
+    |> Ash.Query.filter(id == ^chat_id and owner_id == ^owner_id)
+    |> Ash.Query.select([:id, :owner_id, :parent_chat_id, :parent_relation_kind])
+    |> Ash.read_one(authorize?: false)
+  end
+
+  defp handoff_child?(%Chat{parent_relation_kind: value}), do: value in [:handoff, "handoff"]
 
   defp normalize_external_id(value) when is_binary(value) do
     value = String.trim(value)

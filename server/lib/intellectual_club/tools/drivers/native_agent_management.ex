@@ -113,6 +113,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
          {:ok, result} <-
            Handoff.create_handoff_chat(chat_id, actor, summary,
              source_message_id: assistant_message_id,
+             handoff_mode: :tool,
              start_generation?: true
            ) do
       chat = result.chat
