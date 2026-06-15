@@ -2,6 +2,10 @@
   <div class="app-shell">
     <header ref="appHeader" class="app-header compact" v-show="!isLoginRoute">
       <button class="menu-toggle" type="button" @click="toggleMenu" aria-label="Open menu">☰</button>
+      <RouterLink class="app-logo" to="/" aria-label="Go to home" title="Go to home" @click="closeMenu">
+        <img class="app-logo__mark" :src="appLogoUrl" alt="" aria-hidden="true" />
+        <span class="app-logo__text" data-i18n-ignore>Intellectual Club</span>
+      </RouterLink>
       <nav class="app-nav" :class="{ open: mobileMenuOpen }">
         <RouterLink to="/" custom v-slot="{ href, isActive, isExactActive, navigate }">
           <a
@@ -92,6 +96,7 @@ import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
 import { syncExistingWebPushSubscription } from '@/features/push/webPush';
 import { effectiveLocale, translate } from '@/i18n';
+import appLogoUrl from '@/assets/icon_full_size.png';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
 

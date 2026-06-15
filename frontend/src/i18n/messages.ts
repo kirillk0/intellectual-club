@@ -226,6 +226,7 @@ export const ruMessages: Record<string, string> = {
   'Functions': 'Функции',
   'Generating': 'Генерация',
   'Generation complete': 'Генерация завершена',
+  'Go to home': 'На главную',
   'Groups': 'Группы',
   'Handoff': 'Передать',
   'Handoff message block': 'Блок handoff-сообщения',

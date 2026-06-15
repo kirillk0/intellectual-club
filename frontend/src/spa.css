@@ -359,11 +359,36 @@ fieldset {
   z-index: 260;
 }
 
-.logo {
+.app-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--app-header-control-size);
+  flex: 0 0 auto;
+  padding: 2px 8px 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--color-text);
   font-weight: 700;
-  letter-spacing: 0.02em;
-  font-size: 1.08rem;
-  line-height: 1.1;
+  text-decoration: none;
+}
+
+.app-logo:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+}
+
+.app-logo__mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.app-logo__text {
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .app-nav {
@@ -487,6 +512,51 @@ fieldset {
   align-items: center;
 }
 
+@media (min-width: 721px) {
+  .menu-toggle,
+  .app-logo {
+    position: relative;
+    z-index: 310;
+  }
+
+  .toolbar-host {
+    position: absolute;
+    top: calc(var(--app-header-padding-y) + var(--app-safe-area-top));
+    right: calc(var(--app-header-padding-x) + var(--app-safe-area-right));
+    bottom: var(--app-header-padding-y);
+    left: calc(var(--app-header-padding-x) + var(--app-safe-area-left));
+    min-height: var(--app-header-control-size);
+    padding-left: 0;
+    overflow: visible;
+    pointer-events: none;
+    z-index: 280;
+  }
+
+  .toolbar-host .toolbar.fill {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+  }
+
+  .toolbar-host .toolbar.fill > strong,
+  .toolbar-host .toolbar.fill > .toolbar-title-group,
+  .toolbar-host .toolbar.fill > .chat-toolbar__title-wrap {
+    grid-column: 2;
+    justify-self: center;
+    min-width: 0;
+    max-width: min(34vw, 480px);
+    pointer-events: auto;
+  }
+
+  .toolbar-host .toolbar.fill > .toolbar-actions-right {
+    grid-column: 3;
+    justify-self: end;
+    margin-left: 0;
+    pointer-events: auto;
+  }
+}
+
 @media (max-width: 720px) {
   .backend-status-banner {
     align-items: flex-start;
@@ -505,8 +575,8 @@ fieldset {
     --app-header-gap: 6px;
   }
 
-  .logo {
-    font-size: 0.98rem;
+  .app-logo {
+    display: none;
   }
 
   .menu-toggle {
