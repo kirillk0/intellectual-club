@@ -113,6 +113,7 @@ const translatePatternRu = (key: string): string | null => {
 
   const blockLabel = (value: string) => resourceLabel(value, ['блок', 'блока', 'блоков']);
   const toolLabel = (value: string) => resourceLabel(value, ['инструмент', 'инструмента', 'инструментов']);
+  const sameChatBotLabel = (value: string) => value === 'No bot' ? (ruMessages['No bot'] ?? value) : value;
 
   const patterns: Array<[RegExp, (match: RegExpExecArray) => string]> = [
     [/^Add \((\d+)\)$/u, (match) => `${ruMessages.Add ?? 'Add'} (${match[1]})`],
@@ -142,6 +143,13 @@ const translatePatternRu = (key: string): string | null => {
     [/^Download (.+)$/u, (match) => `Скачать ${match[1]}`],
     [/^Branch message (\d+) to new chat$/u, (match) => `Создать ветку от сообщения ${match[1]} в новом чате`],
     [/^Branch from message (\d+)$/u, (match) => `Ветка от сообщения ${match[1]}`],
+    [/^⧉ (.+) \((\d+) blocks?, (\d+) tools?\)$/u, (match) =>
+      `⧉ ${sameChatBotLabel(match[1])} (${match[2]} ${blockLabel(match[2])}, ${match[3]} ${toolLabel(match[3])})`],
+    [/^⧉ (.+) \((\d+) blocks?\)$/u, (match) =>
+      `⧉ ${sameChatBotLabel(match[1])} (${match[2]} ${blockLabel(match[2])})`],
+    [/^⧉ (.+) \((\d+) tools?\)$/u, (match) =>
+      `⧉ ${sameChatBotLabel(match[1])} (${match[2]} ${toolLabel(match[2])})`],
+    [/^⧉ (.+)$/u, (match) => `⧉ ${sameChatBotLabel(match[1])}`],
     [/^(.+ · \d+) msgs$/u, (match) => `${match[1]} сообщ.`],
     [/^(.+ · )(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
   ];

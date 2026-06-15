@@ -120,6 +120,8 @@ export function useChatViewModel() {
 
   const bots = ref<Bot[]>([]);
   const noBotSortActivityAt = ref<string | null>(null);
+  const chatBlockCount = ref(0);
+  const chatToolCount = ref(0);
   const llmConfigurations = ref<LlmConfiguration[]>([]);
   const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
   const toolLibrary = ref<ToolInstanceOption[]>([]);
@@ -178,6 +180,8 @@ export function useChatViewModel() {
     canEdit,
     bots,
     noBotSortActivityAt,
+    chatBlockCount,
+    chatToolCount,
     llmConfigurations,
     artifactToolsAvailable,
     activeGenerationId,
@@ -308,6 +312,10 @@ export function useChatViewModel() {
     knowledgeBlocks.value = payload.options?.knowledge_blocks || [];
     toolLibrary.value = payload.options?.tool_instances || [];
     artifactToolsAvailable.value = payload.artifact_tools_available === true;
+    const chatBlocks = payload.chat_blocks || [];
+    const chatToolBindings = payload.chat_tool_bindings || [];
+    chatBlockCount.value = chatBlocks.length;
+    chatToolCount.value = chatToolBindings.length;
 
     headerControls.hydrate({
       selectedConfig: chat.value?.llm_configuration_id ?? '',
@@ -318,8 +326,8 @@ export function useChatViewModel() {
       activeToolBindings: payload.active_tool_bindings || [],
     });
     libraryDraft.hydrate({
-      chatBlocks: payload.chat_blocks || [],
-      chatToolBindings: payload.chat_tool_bindings || [],
+      chatBlocks,
+      chatToolBindings,
     });
   };
 
@@ -340,6 +348,8 @@ export function useChatViewModel() {
       activeGenerationId.value = null;
       cancelingGenerationId.value = null;
       artifactToolsAvailable.value = false;
+      chatBlockCount.value = 0;
+      chatToolCount.value = 0;
     }
 
     loadError.value = '';
@@ -379,6 +389,8 @@ export function useChatViewModel() {
       branch.value = [];
       relations.value = emptyChatRelations();
       chatIdleRevision.value = null;
+      chatBlockCount.value = 0;
+      chatToolCount.value = 0;
       if (isHttpError(error) && (error.status === 403 || error.status === 404)) {
         chatUnavailable.value = true;
         loadError.value = '';

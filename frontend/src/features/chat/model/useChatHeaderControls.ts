@@ -19,6 +19,8 @@ type Params = {
   canEdit: ComputedRef<boolean>;
   bots: Ref<Bot[]>;
   noBotSortActivityAt: Ref<string | null>;
+  chatBlockCount: Ref<number>;
+  chatToolCount: Ref<number>;
   llmConfigurations: Ref<LlmConfiguration[]>;
   artifactToolsAvailable: Ref<boolean>;
   activeGenerationId: Ref<number | null>;
@@ -260,6 +262,18 @@ export function useChatHeaderControls(params: Params) {
     if (params.chat.value?.bot_id != null) return null;
     return params.chat.value?.updated_at ?? params.chat.value?.created_at ?? null;
   });
+  const countLabel = (count: number, singular: string, plural: string) => `${count} ${count === 1 ? singular : plural}`;
+  const sameChatContextLabel = computed(() => {
+    const blockCount = Math.max(0, Number(params.chatBlockCount.value) || 0);
+    const toolCount = Math.max(0, Number(params.chatToolCount.value) || 0);
+    const parts = [
+      blockCount > 0 ? countLabel(blockCount, 'block', 'blocks') : '',
+      toolCount > 0 ? countLabel(toolCount, 'tool', 'tools') : '',
+    ].filter(Boolean);
+
+    return parts.length ? ` (${parts.join(', ')})` : '';
+  });
+  const sameChatOptionName = computed(() => `⧉ ${currentBotName.value || 'No bot'}${sameChatContextLabel.value}`);
 
   const botSelectionOptions = computed<ChatBotOption[]>(() => [
     {
@@ -284,7 +298,7 @@ export function useChatHeaderControls(params: Params) {
   const createChatBotOptions = computed<ChatBotOption[]>(() => [
     {
       id: SAME_CHAT_OPTION_ID,
-      name: 'Same chat',
+      name: sameChatOptionName.value,
       pinned: true,
     },
     ...botSelectionOptions.value,
