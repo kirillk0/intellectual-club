@@ -561,7 +561,10 @@ defmodule IntellectualClub.Chat.Threads do
     end
   end
 
-  defp normalize_content_specs(contents) when is_list(contents) do
+  @doc """
+  Normalizes message content specs for persistence.
+  """
+  def normalize_content_specs(contents) when is_list(contents) do
     contents
     |> Enum.filter(&is_map/1)
     |> Enum.with_index(1)
@@ -573,7 +576,7 @@ defmodule IntellectualClub.Chat.Threads do
     end)
   end
 
-  defp normalize_content_specs(_other), do: []
+  def normalize_content_specs(_other), do: []
 
   defp normalize_content_spec(content, sequence) when is_map(content) and is_integer(sequence) do
     kind =
@@ -607,16 +610,22 @@ defmodule IntellectualClub.Chat.Threads do
     end
   end
 
-  defp text_from_contents(contents) when is_list(contents) do
+  @doc """
+  Returns the text part of normalized message content specs.
+  """
+  def text_from_contents(contents) when is_list(contents) do
     contents
     |> Enum.filter(&(&1.kind == :text))
     |> Enum.map(&to_string(&1.content_text || ""))
     |> Enum.join("")
   end
 
-  defp text_from_contents(_other), do: ""
+  def text_from_contents(_other), do: ""
 
-  defp persist_message_trace!(message, role, contents, actor) do
+  @doc """
+  Persists the simple display trace for a user or assistant message.
+  """
+  def persist_message_trace!(message, role, contents, actor) do
     item_type =
       case role do
         :user -> :input

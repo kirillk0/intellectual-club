@@ -193,7 +193,7 @@ export function useChatContextPanel(params: Params) {
       const searchParams = new URLSearchParams();
       searchParams.set('q', query);
       const payload = await api.get<BranchSearchResults>(
-        `/api/bff/chats/${params.chatId.value}/search?${searchParams.toString()}`
+        `/api/bff/chat-search/${params.chatId.value}/messages?${searchParams.toString()}`
       );
       if (branchSearchSeq !== seq) return;
       branchSearchResults.value = payload || { active: [], inactive: [] };
@@ -355,7 +355,7 @@ export function useChatContextPanel(params: Params) {
 
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[] }>(
-        `/api/bff/chats/${params.chatId.value}/activate-branch`,
+        `/api/bff/chat-branches/${params.chatId.value}/activate`,
         {
           message_id: hit.id,
         }
@@ -406,7 +406,7 @@ export function useChatContextPanel(params: Params) {
     if (inactive && !params.readOnly.value) {
       try {
         const payload = await api.post<{ branch: ChatBranchMessage[] }>(
-          `/api/bff/chats/${params.chatId.value}/activate-branch`,
+          `/api/bff/chat-branches/${params.chatId.value}/activate`,
           {
             message_id: id,
           }

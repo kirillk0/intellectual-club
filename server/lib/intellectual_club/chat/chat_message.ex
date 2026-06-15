@@ -9,12 +9,71 @@ defmodule IntellectualClub.Chat.ChatMessage do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.MessageContentFts
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
   alias IntellectualClub.Chat.Changes.SetDefaultParentFromChatLastMessage
   alias IntellectualClub.Chat.Changes.ValidateParentMessage
   alias IntellectualClub.Chat.Validations.PreventDestroyWithChildren
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
+  alias IntellectualClub.TokenCounter
+
+  defp prepare_user_message_contents(changeset, _context) do
+    contents =
+      changeset
+      |> Ash.Changeset.get_argument(:contents)
+      |> List.wrap()
+      |> Threads.normalize_content_specs()
+
+    if contents == [] do
+      Ash.Changeset.add_error(changeset, field: :contents, message: "must not be empty")
+    else
+      changeset
+      |> Ash.Changeset.change_attribute(
+        :token_count,
+        TokenCounter.estimate(Threads.text_from_contents(contents))
+      )
+      |> Ash.Changeset.put_context(:normalized_contents, contents)
+    end
+  end
+
+  defp maybe_set_active_leaf_parent(changeset, _context) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      use_active_leaf_parent? =
+        Ash.Changeset.get_argument(changeset, :use_active_leaf_parent) != false
+
+      parent_id = Ash.Changeset.get_attribute(changeset, :parent_id)
+      chat_id = Ash.Changeset.get_attribute(changeset, :chat_id)
+      actor = changeset.context[:private][:actor]
+
+      cond do
+        not use_active_leaf_parent? ->
+          changeset
+
+        not is_nil(parent_id) ->
+          changeset
+
+        not is_integer(chat_id) ->
+          changeset
+
+        true ->
+          chat = Ash.get!(IntellectualClub.Chat.Chat, chat_id, actor: actor)
+          Ash.Changeset.force_change_attribute(changeset, :parent_id, chat.last_message_id)
+      end
+    end)
+  end
+
+  defp persist_user_message_contents(changeset, _context) do
+    Ash.Changeset.after_action(changeset, fn changeset, message ->
+      actor = changeset.context[:private][:actor]
+      contents = List.wrap(changeset.context[:normalized_contents])
+
+      case Threads.persist_message_trace!(message, :user, contents, actor) do
+        {:ok, _item} -> {:ok, message}
+        {:error, error} -> {:error, error}
+      end
+    end)
+  end
 
   sqlite do
     table("chat_messages")
@@ -156,6 +215,38 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change(set_attribute(:status, :done))
       change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
+    end
+
+    create :add_user_message_with_contents do
+      accept([:chat_id, :parent_id])
+
+      argument :contents, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      argument :use_active_leaf_parent, :boolean do
+        allow_nil?(false)
+        public?(true)
+        default(true)
+      end
+
+      change(relate_actor(:owner))
+      change({RequireRelatedAccessByActor, relationships: [:chat], access: :writable})
+      change(&prepare_user_message_contents/2)
+      change(&maybe_set_active_leaf_parent/2)
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:parent], access: :readable, required?: false}
+      )
+
+      change({ValidateParentMessage, []})
+      change(set_attribute(:role, :user))
+      change(set_attribute(:status, :done))
+      change({SetFinishedAtFromStatus, []})
+      change({SetChatLastMessage, []})
+      change(&persist_user_message_contents/2)
     end
 
     create :create_generating_assistant do

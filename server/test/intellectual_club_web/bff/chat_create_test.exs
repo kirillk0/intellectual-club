@@ -14,7 +14,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
   require Ash.Query
 
-  test "POST /api/bff/chats defaults configuration from latest chat for selected bot", %{
+  test "POST /api/bff/chat-lifecycle defaults configuration from latest chat for selected bot", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -51,13 +51,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = post(conn, ~p"/api/bff/chats", %{"bot_id" => bot.id})
+    conn = post(conn, ~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
     payload = json_response(conn, 200)
 
     assert payload["chat"]["llm_configuration_id"] == config_new.id
   end
 
-  test "POST /api/bff/chats does not override explicit null configuration", %{conn: conn} do
+  test "POST /api/bff/chat-lifecycle does not override explicit null configuration", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -79,7 +79,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.create!(actor: actor)
 
     conn =
-      post(conn, ~p"/api/bff/chats", %{
+      post(conn, ~p"/api/bff/chat-lifecycle", %{
         "bot_id" => bot.id,
         "llm_configuration_id" => nil
       })
@@ -89,7 +89,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     assert payload["chat"]["llm_configuration_id"] == nil
   end
 
-  test "POST /api/bff/chats copies current chat bot, configuration, blocks, tools and first messages",
+  test "POST /api/bff/chat-lifecycle copies current chat bot, configuration, blocks, tools and first messages",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -121,7 +121,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"copy_from_chat_id" => source.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"copy_from_chat_id" => source.id})
       |> json_response(200)
 
     target_id = payload["chat"]["id"]
@@ -145,7 +145,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     refute Enum.any?(messages, &(message_text(&1) == "Do not copy history"))
   end
 
-  test "POST /api/bff/chats copy_from_chat_id rejects inaccessible source chat", %{conn: conn} do
+  test "POST /api/bff/chat-lifecycle copy_from_chat_id rejects inaccessible source chat", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: other, password: password} = user_fixture()
     conn = sign_in_conn(conn, other.username, password)
@@ -155,12 +155,12 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: owner)
       |> Ash.create!(actor: owner)
 
-    conn = post(conn, ~p"/api/bff/chats", %{"copy_from_chat_id" => source.id})
+    conn = post(conn, ~p"/api/bff/chat-lifecycle", %{"copy_from_chat_id" => source.id})
 
     assert conn.status in [403, 404]
   end
 
-  test "POST /api/bff/chats uses latest configuration from the same bot only", %{conn: conn} do
+  test "POST /api/bff/chat-lifecycle uses latest configuration from the same bot only", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -196,13 +196,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = post(conn, ~p"/api/bff/chats", %{"bot_id" => bot_a.id})
+    conn = post(conn, ~p"/api/bff/chat-lifecycle", %{"bot_id" => bot_a.id})
     payload = json_response(conn, 200)
 
     assert payload["chat"]["llm_configuration_id"] == config_a.id
   end
 
-  test "POST /api/bff/chats defaults configuration from latest no bot chat", %{conn: conn} do
+  test "POST /api/bff/chat-lifecycle defaults configuration from latest no bot chat", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -234,14 +234,14 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = post(conn, ~p"/api/bff/chats", %{})
+    conn = post(conn, ~p"/api/bff/chat-lifecycle", %{})
     payload = json_response(conn, 200)
 
     assert payload["chat"]["bot_id"] == nil
     assert payload["chat"]["llm_configuration_id"] == config_new.id
   end
 
-  test "POST /api/bff/chats defaults to the first available configuration when chats do not exist yet",
+  test "POST /api/bff/chat-lifecycle defaults to the first available configuration when chats do not exist yet",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -250,7 +250,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     config_b = create_configuration!(actor, provider, "model-b")
     config_a = create_configuration!(actor, provider, "model-a")
 
-    conn = post(conn, ~p"/api/bff/chats", %{})
+    conn = post(conn, ~p"/api/bff/chat-lifecycle", %{})
     payload = json_response(conn, 200)
 
     assert payload["chat"]["bot_id"] == nil
@@ -258,7 +258,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
     refute payload["chat"]["llm_configuration_id"] == config_b.id
   end
 
-  test "POST /api/bff/chats uses bot default configuration when selected bot has no chats",
+  test "POST /api/bff/chat-lifecycle uses bot default configuration when selected bot has no chats",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -270,14 +270,14 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == default_config.id
     refute payload["chat"]["llm_configuration_id"] == fallback_config.id
   end
 
-  test "POST /api/bff/chats prefers latest chat configuration over bot default",
+  test "POST /api/bff/chat-lifecycle prefers latest chat configuration over bot default",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -302,13 +302,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == latest_config.id
   end
 
-  test "POST /api/bff/chats defaults to the latest compatible configuration for the selected bot",
+  test "POST /api/bff/chat-lifecycle defaults to the latest compatible configuration for the selected bot",
        %{
          conn: conn
        } do
@@ -366,13 +366,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
-  test "POST /api/bff/chats matches shared bot configuration tags by name", %{conn: conn} do
+  test "POST /api/bff/chat-lifecycle matches shared bot configuration tags by name", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: recipient, password: password} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
@@ -406,14 +406,14 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["bot_id"] == bot.id
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
-  test "POST /api/bff/chats falls back to the first compatible configuration when latest bot chat is no longer compatible",
+  test "POST /api/bff/chat-lifecycle falls back to the first compatible configuration when latest bot chat is no longer compatible",
        %{
          conn: conn
        } do
@@ -458,13 +458,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
-  test "POST /api/bff/chats uses bot default even when disabled and tag-incompatible",
+  test "POST /api/bff/chat-lifecycle uses bot default even when disabled and tag-incompatible",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -492,13 +492,13 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{"bot_id" => bot.id})
+      |> post(~p"/api/bff/chat-lifecycle", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == default_config.id
   end
 
-  test "POST /api/bff/chats falls back to the first available configuration when latest no bot configuration is disabled",
+  test "POST /api/bff/chat-lifecycle falls back to the first available configuration when latest no bot configuration is disabled",
        %{
          conn: conn
        } do
@@ -527,7 +527,7 @@ defmodule IntellectualClubWeb.Bff.ChatCreateTest do
 
     payload =
       conn
-      |> post(~p"/api/bff/chats", %{})
+      |> post(~p"/api/bff/chat-lifecycle", %{})
       |> json_response(200)
 
     assert payload["chat"]["llm_configuration_id"] == fallback_config.id

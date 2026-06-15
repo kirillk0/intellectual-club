@@ -42,7 +42,7 @@ export const isRetryableUploadChunkError = (error: unknown) => {
 };
 
 export const createChatUploadSession = async (chatId: number, file: File) => {
-  const payload = await api.post<ChatUploadResponse>(`/api/bff/chats/${chatId}/uploads`, {
+  const payload = await api.post<ChatUploadResponse>(`/api/bff/chat-uploads/${chatId}`, {
     filename: file.name,
     mime_type: file.type || 'application/octet-stream',
     size_bytes: file.size,
@@ -52,12 +52,12 @@ export const createChatUploadSession = async (chatId: number, file: File) => {
 };
 
 export const getChatUploadSession = async (chatId: number, uploadId: string) => {
-  const payload = await api.get<ChatUploadResponse>(`/api/bff/chats/${chatId}/uploads/${uploadId}`);
+  const payload = await api.get<ChatUploadResponse>(`/api/bff/chat-uploads/${chatId}/${uploadId}`);
   return payload.upload;
 };
 
 export const abortChatUploadSession = async (chatId: number, uploadId: string) => {
-  const payload = await api.del<ChatUploadResponse>(`/api/bff/chats/${chatId}/uploads/${uploadId}`);
+  const payload = await api.del<ChatUploadResponse>(`/api/bff/chat-uploads/${chatId}/${uploadId}`);
   return payload.upload;
 };
 
@@ -75,7 +75,7 @@ export const uploadChatChunk = (
     const xhr = new XMLHttpRequest();
     const csrf = getCsrfToken();
 
-    xhr.open('PUT', `/api/bff/chats/${chatId}/uploads/${uploadId}/chunk`);
+    xhr.open('PUT', `/api/bff/chat-uploads/${chatId}/${uploadId}/chunk`);
     xhr.responseType = 'text';
     xhr.withCredentials = true;
     xhr.setRequestHeader('accept', 'application/json');

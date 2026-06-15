@@ -10,7 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
   alias IntellectualClub.Llm.{LlmConfiguration, LlmProvider}
   alias IntellectualClub.Tools.{BotToolBinding, ChatToolBinding, ToolInstance}
 
-  test "POST /api/bff/chats/:id/send treats whitespace-only content as user message", %{
+  test "POST /api/bff/chat-generation/:id/send treats whitespace-only content as user message", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -19,7 +19,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "Whitespace send chat")
     whitespace = "   "
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => whitespace})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => whitespace})
     payload = json_response(conn, 200)
 
     generation_id = get_in(payload, ["generation", "message_id"])
@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send with empty content does not create user message", %{
+  test "POST /api/bff/chat-generation/:id/send with empty content does not create user message", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -48,7 +48,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     chat = create_chat!(actor, "Empty send chat")
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => ""})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => ""})
     payload = json_response(conn, 200)
 
     generation_id = get_in(payload, ["generation", "message_id"])
@@ -60,7 +60,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send with file-only multipart creates user media content", %{
+  test "POST /api/bff/chat-generation/:id/send with file-only multipart creates user media content", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -70,7 +70,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "File send chat", %{bot_id: bot.id})
     upload = temp_upload("attached.png", "image/png", image_payload())
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 200)
     generation_id = get_in(payload, ["generation", "message_id"])
     assert is_integer(generation_id)
@@ -92,7 +92,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send with upload_ids creates user media content and consumes uploads",
+  test "POST /api/bff/chat-generation/:id/send with upload_ids creates user media content and consumes uploads",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -111,7 +111,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
       )
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{
+      post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{
         "content" => "",
         "upload_ids" => [upload["upload_id"]]
       })
@@ -133,13 +133,13 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     assert get_in(media_content, ["media", "filename"]) == "attached.txt"
     assert get_in(media_content, ["media", "mime_type"]) == "text/plain"
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}")
+    conn = get(conn, ~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}")
     assert json_response(conn, 404)["error"] == "Upload not found."
 
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send rejects files when bot and configuration do not allow uploads",
+  test "POST /api/bff/chat-generation/:id/send rejects files when bot and configuration do not allow uploads",
        %{
          conn: conn
        } do
@@ -149,13 +149,13 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "Restricted send chat")
     upload = temp_upload("attached.txt", "text/plain", "hello")
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 422)
 
     assert payload["error"] == "File uploads are disabled for the current bot and configuration."
   end
 
-  test "POST /api/bff/chats/:id/send allows files when chat has an artifact tool", %{
+  test "POST /api/bff/chat-generation/:id/send allows files when chat has an artifact tool", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -166,7 +166,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     bind_tool_to_chat!(actor, chat, tool)
     upload = temp_upload("attached.txt", "text/plain", "hello from chat tool")
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 200)
     generation_id = get_in(payload, ["generation", "message_id"])
     assert is_integer(generation_id)
@@ -183,7 +183,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send allows images when configuration supports image input", %{
+  test "POST /api/bff/chat-generation/:id/send allows images when configuration supports image input", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -197,7 +197,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "Image send chat", %{llm_configuration_id: configuration.id})
     upload = temp_upload("attached.png", "image/png", image_payload())
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 200)
     generation_id = get_in(payload, ["generation", "message_id"])
     assert is_integer(generation_id)
@@ -209,7 +209,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send rejects files above the bot size limit", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/send rejects files above the bot size limit", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -219,13 +219,13 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "Small limit chat", %{bot_id: bot.id})
     upload = temp_upload("attached.txt", "text/plain", "hello")
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "", "files" => [upload]})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "", "files" => [upload]})
     payload = json_response(conn, 422)
 
     assert payload["error"] == ~s(File "attached.txt" exceeds the maximum size of 4 B.)
   end
 
-  test "POST /api/bff/chats/:id/send without parent_id appends follow-up to active branch leaf",
+  test "POST /api/bff/chat-generation/:id/send without parent_id appends follow-up to active branch leaf",
        %{
          conn: conn
        } do
@@ -238,7 +238,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     {:ok, assistant} =
       Threads.add_message(chat, :assistant, "Answer", actor: actor, parent_id: root.id)
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{"content" => "Follow-up"})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => "Follow-up"})
     payload = json_response(conn, 200)
 
     generation_id = get_in(payload, ["generation", "message_id"])
@@ -260,7 +260,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send can copy existing attachments without reupload", %{
+  test "POST /api/bff/chat-generation/:id/send can copy existing attachments without reupload", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -297,7 +297,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
       Threads.add_message(chat, :assistant, "Answer", actor: actor, parent_id: root.id)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{
+      post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{
         "content" => "",
         "parent_id" => assistant.id,
         "copy_content_ids" => [copied_content_id]
@@ -328,7 +328,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/send with explicit null parent_id branches from root level", %{
+  test "POST /api/bff/chat-generation/:id/send with explicit null parent_id branches from root level", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -341,7 +341,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
       Threads.add_message(chat, :assistant, "Answer", actor: actor, parent_id: root.id)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat.id}/send", %{
+      post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{
         "content" => "Alternative root",
         "parent_id" => nil
       })
@@ -526,7 +526,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     upload =
       conn
-      |> post(~p"/api/bff/chats/#{chat_id}/uploads", %{
+      |> post(~p"/api/bff/chat-uploads/#{chat_id}", %{
         "filename" => filename,
         "mime_type" => "text/plain",
         "size_bytes" => size
@@ -538,7 +538,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     |> sign_in_conn(username, password)
     |> put_req_header("content-type", "application/octet-stream")
     |> put_req_header("x-upload-offset", "0")
-    |> put(~p"/api/bff/chats/#{chat_id}/uploads/#{upload["upload_id"]}/chunk", payload)
+    |> put(~p"/api/bff/chat-uploads/#{chat_id}/#{upload["upload_id"]}/chunk", payload)
     |> json_response(200)
 
     upload

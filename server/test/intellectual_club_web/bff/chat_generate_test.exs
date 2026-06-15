@@ -8,7 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Threads
 
-  test "POST /api/bff/chats/:id/generate keeps deleted-reply parent by default", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/generate keeps deleted-reply parent by default", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -34,7 +34,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
 
     assert Enum.map(delete_payload["branch"] || [], & &1["id"]) == [user_message.id]
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/generate", %{})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/generate", %{})
     payload = json_response(conn, 200)
 
     generation_id = get_in(payload, ["generation", "message_id"])
@@ -50,7 +50,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/generate with explicit null parent creates root assistant branch",
+  test "POST /api/bff/chat-generation/:id/generate with explicit null parent creates root assistant branch",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -70,7 +70,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
         parent_id: nil
       )
 
-    conn = post(conn, ~p"/api/bff/chats/#{chat.id}/generate", %{"parent_id" => nil})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/generate", %{"parent_id" => nil})
     payload = json_response(conn, 200)
 
     generation_id = get_in(payload, ["generation", "message_id"])

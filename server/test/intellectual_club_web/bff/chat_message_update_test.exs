@@ -291,7 +291,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
 
     assert {:error, _reason} = Files.load_payload(old_media_content.file_id)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}")
+    conn = get(conn, ~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}")
     assert json_response(conn, 404)["error"] == "Upload not found."
   end
 
@@ -488,7 +488,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
 
     upload =
       conn
-      |> post(~p"/api/bff/chats/#{chat_id}/uploads", %{
+      |> post(~p"/api/bff/chat-uploads/#{chat_id}", %{
         "filename" => filename,
         "mime_type" => "text/plain",
         "size_bytes" => size
@@ -500,7 +500,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
     |> sign_in_conn(username, password)
     |> put_req_header("content-type", "application/octet-stream")
     |> put_req_header("x-upload-offset", "0")
-    |> put(~p"/api/bff/chats/#{chat_id}/uploads/#{upload["upload_id"]}/chunk", payload)
+    |> put(~p"/api/bff/chat-uploads/#{chat_id}/#{upload["upload_id"]}/chunk", payload)
     |> json_response(200)
 
     upload

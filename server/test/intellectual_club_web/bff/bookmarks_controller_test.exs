@@ -23,7 +23,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     assert payload["message_id"] == message.id
     assert payload["bookmarked"] == true
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chat-state/#{chat.id}")
     payload = json_response(conn, 200)
 
     bookmarked_message =
@@ -38,7 +38,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
 
     assert payload["bookmarked"] == false
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
+    conn = get(conn, ~p"/api/bff/chat-state/#{chat.id}")
     payload = json_response(conn, 200)
 
     bookmarked_message =

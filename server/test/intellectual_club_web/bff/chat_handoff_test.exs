@@ -124,7 +124,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert tool_id == tool.id
   end
 
-  test "POST /api/bff/chats/:id/handoff persists summary as assistant message and creates child chat",
+  test "POST /api/bff/chat-generation/:id/handoff persists summary as assistant message and creates child chat",
        %{
          conn: conn
        } do
@@ -162,7 +162,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     {:ok, source_message} =
       Threads.add_message_to_end(source, :user, "Summarize me", actor: actor)
 
-    conn = post(conn, ~p"/api/bff/chats/#{source.id}/handoff", %{})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{source.id}/handoff", %{})
     payload = json_response(conn, 200)
 
     generation_message_id = payload["generation"]["message_id"]
@@ -196,7 +196,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     source_conn =
       get(
         build_conn() |> sign_in_conn(actor.username, password),
-        ~p"/api/bff/chats/#{source.id}/state"
+        ~p"/api/bff/chat-state/#{source.id}"
       )
 
     source_payload = json_response(source_conn, 200)
@@ -231,14 +231,14 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     refute Enum.any?(target_messages, &(&1.status == :generating))
   end
 
-  test "POST /api/bff/chats/:id/handoff rejects non-owner", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/handoff rejects non-owner", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: other, password: password} = user_fixture()
     conn = sign_in_conn(conn, other.username, password)
 
     source = create_chat!(owner, "Private source")
 
-    conn = post(conn, ~p"/api/bff/chats/#{source.id}/handoff", %{})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{source.id}/handoff", %{})
     assert response(conn, conn.status)
     assert conn.status in [403, 404]
   end
@@ -398,7 +398,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
            end)
   end
 
-  test "GET /api/bff/chats/:id/state includes parent and child handoff relations", %{conn: conn} do
+  test "GET /api/bff/chat-state/:id includes parent and child handoff relations", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -410,7 +410,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
         source_message_id: source_message.id
       )
 
-    source_conn = get(conn, ~p"/api/bff/chats/#{source.id}/state")
+    source_conn = get(conn, ~p"/api/bff/chat-state/#{source.id}")
     source_payload = json_response(source_conn, 200)
 
     children =
@@ -423,7 +423,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     target_conn =
       get(
         build_conn() |> sign_in_conn(actor.username, password),
-        ~p"/api/bff/chats/#{target.id}/state"
+        ~p"/api/bff/chat-state/#{target.id}"
       )
 
     target_payload = json_response(target_conn, 200)
@@ -433,7 +433,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert target_payload["relations"]["parent"]["kind"] == "handoff"
   end
 
-  test "GET /api/bff/chats includes relation hints", %{conn: conn} do
+  test "GET /api/bff/chat-list includes relation hints", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -445,7 +445,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
         source_message_id: source_message.id
       )
 
-    conn = get(conn, ~p"/api/bff/chats")
+    conn = get(conn, ~p"/api/bff/chat-list")
     payload = json_response(conn, 200)
 
     source_summary = Enum.find(payload["chats"], &(&1["id"] == source.id))

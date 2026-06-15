@@ -37,15 +37,9 @@ defmodule IntellectualClub.Chat.Handoff do
 
   @spec manual_handoff(integer(), map()) :: {:ok, map()} | {:error, term()}
   def manual_handoff(source_chat_id, actor) when is_integer(source_chat_id) do
-    with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_id, actor),
-         {:ok, handoff_prompt} <- handoff_prompt(source, actor),
-         {:ok, prompt_message} <-
-           Threads.add_message(source, :user, handoff_prompt,
-             actor: actor,
-             parent_id: source.last_message_id,
-             status: :done
-           ) do
-      GenerationSupervisor.start_generation(source.id,
+    with {:ok, %ChatMessage{} = prompt_message} <-
+           prepare_manual_handoff_message(source_chat_id, actor) do
+      GenerationSupervisor.start_generation(source_chat_id,
         actor: actor,
         parent_id: prompt_message.id,
         tools_payload_override: [],
@@ -55,6 +49,23 @@ defmodule IntellectualClub.Chat.Handoff do
   end
 
   def manual_handoff(_source_chat_id, _actor), do: {:error, :invalid_chat_id}
+
+  @spec prepare_manual_handoff_message(integer(), map()) ::
+          {:ok, ChatMessage.t()} | {:error, term()}
+  def prepare_manual_handoff_message(source_chat_id, actor) when is_integer(source_chat_id) do
+    with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_id, actor),
+         {:ok, handoff_prompt} <- handoff_prompt(source, actor),
+         {:ok, prompt_message} <-
+           Threads.add_message(source, :user, handoff_prompt,
+             actor: actor,
+             parent_id: source.last_message_id,
+             status: :done
+           ) do
+      {:ok, prompt_message}
+    end
+  end
+
+  def prepare_manual_handoff_message(_source_chat_id, _actor), do: {:error, :invalid_chat_id}
 
   @spec create_handoff_chat(Chat.t() | integer(), map(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}

@@ -659,11 +659,11 @@ export function useChatComposerRuntime(params: Params) {
       const payload =
         hasUserText || hasPendingFiles
           ? await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-              `/api/bff/chats/${params.chatId.value}/send`,
+              `/api/bff/chat-generation/${params.chatId.value}/send`,
               buildSendPayload(content, uploadIds)
             )
           : await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-              `/api/bff/chats/${params.chatId.value}/generate`,
+              `/api/bff/chat-generation/${params.chatId.value}/generate`,
               {}
             );
 

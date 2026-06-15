@@ -8,7 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchSwitchTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Threads
 
-  test "POST /api/bff/chats/:id/switch-branch switches by explicit target_id", %{conn: conn} do
+  test "POST /api/bff/chat-branches/:id/switch switches by explicit target_id", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -26,7 +26,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchSwitchTest do
     {:ok, _branch} = Threads.activate_branch(chat.id, a1.id, actor)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat.id}/switch-branch", %{
+      post(conn, ~p"/api/bff/chat-branches/#{chat.id}/switch", %{
         "message_id" => a1.id,
         "target_id" => b1.id
       })

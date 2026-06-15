@@ -238,7 +238,7 @@ export function useChatHeaderControls(params: Params) {
     savingNote.value = true;
     try {
       const nextNote = noteModalValue.value.trim();
-      await api.patch(`/api/bff/chats/${params.chatId.value}`, { note: nextNote });
+      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, { note: nextNote });
       params.chatNote.value = nextNote;
       closeNoteModal();
     } catch (error) {
@@ -306,7 +306,7 @@ export function useChatHeaderControls(params: Params) {
     savingBot.value = true;
     try {
       const botId = botModalValue.value === '' ? null : Number(botModalValue.value);
-      await api.patch(`/api/bff/chats/${params.chatId.value}`, { bot_id: botId });
+      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, { bot_id: botId });
       await params.reloadChat();
       closeBotModal();
     } catch (error) {
@@ -341,7 +341,7 @@ export function useChatHeaderControls(params: Params) {
                 typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
             };
 
-      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', requestPayload);
+      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chat-lifecycle', requestPayload);
       const id = payload.chat?.id;
       if (!id) throw new Error('Missing chat id');
       newChatModalOpen.value = false;
@@ -369,7 +369,7 @@ export function useChatHeaderControls(params: Params) {
     const cfgId = selectedConfig.value === '' ? null : Number(selectedConfig.value);
 
     try {
-      const payload = await api.patch<{ chat: Chat }>(`/api/bff/chats/${params.chatId.value}`, {
+      const payload = await api.patch<{ chat: Chat }>(`/api/bff/chat-lifecycle/${params.chatId.value}`, {
         llm_configuration_id: cfgId,
       });
 
@@ -427,7 +427,7 @@ export function useChatHeaderControls(params: Params) {
     }
     params.deleting.value = true;
     try {
-      await api.del(`/api/bff/chats/${params.chatId.value}`);
+      await api.del(`/api/bff/chat-lifecycle/${params.chatId.value}`);
       params.closeMenu();
       await params.pushRoute('/');
     } finally {

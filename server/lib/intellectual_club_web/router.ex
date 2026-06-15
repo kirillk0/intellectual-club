@@ -123,31 +123,37 @@ defmodule IntellectualClubWeb.Router do
          AdminWebPushSettingsController,
          :regenerate_keys
 
-    get "/chats", ChatsController, :index
-    get "/chats/search", ChatsController, :search
-    get "/chats/idle-state", ChatsController, :idle_state
-    post "/chats", ChatsController, :create
-    get "/chats/:id/idle-state", ChatsController, :idle_state
-    get "/chats/:id/state", ChatsController, :state
-    get "/chats/:id/settings-state", ChatsController, :settings_state
-    get "/chats/:id/prompt-context", ChatsController, :prompt_context
-    get "/chats/:id/search", ChatsController, :search_messages
-    get "/chats/:id/shares", ChatsController, :shares
-    put "/chats/:id/shares", ChatsController, :update_shares
-    post "/chats/:id/continue", ChatsController, :continue_conversation
-    post "/chats/:id/branch-to-new-chat", ChatsController, :branch_to_new_chat
-    post "/chats/:id/handoff", ChatsController, :handoff
-    patch "/chats/:id", ChatsController, :update
-    delete "/chats/:id", ChatsController, :delete
-    post "/chats/:chat_id/uploads", ChatUploadsController, :create
-    get "/chats/:chat_id/uploads/:upload_id", ChatUploadsController, :show
-    put "/chats/:chat_id/uploads/:upload_id/chunk", ChatUploadsController, :append_chunk
-    delete "/chats/:chat_id/uploads/:upload_id", ChatUploadsController, :delete
+    get "/chat-list", ChatListController, :index
+    get "/chat-list/search", ChatListController, :search
+    get "/chat-list/idle-state", ChatListController, :idle_state
 
-    post "/chats/:id/send", ChatsController, :send
-    post "/chats/:id/generate", ChatsController, :generate
-    post "/chats/:id/switch-branch", ChatsController, :switch_branch
-    post "/chats/:id/activate-branch", ChatsController, :activate_branch
+    post "/chat-lifecycle", ChatLifecycleController, :create
+    patch "/chat-lifecycle/:id", ChatLifecycleController, :update
+    delete "/chat-lifecycle/:id", ChatLifecycleController, :delete
+    post "/chat-lifecycle/:id/continue", ChatLifecycleController, :continue_conversation
+
+    get "/chat-state/:id", ChatStateController, :state
+    get "/chat-state/:id/settings", ChatStateController, :settings
+    get "/chat-state/:id/prompt-context", ChatStateController, :prompt_context
+    get "/chat-state/:id/idle-state", ChatStateController, :idle_state
+
+    get "/chat-search/:id/messages", ChatSearchController, :messages
+
+    post "/chat-branches/:id/switch", ChatBranchesController, :switch
+    post "/chat-branches/:id/activate", ChatBranchesController, :activate
+
+    post "/chat-generation/:id/send", ChatGenerationController, :send
+    post "/chat-generation/:id/generate", ChatGenerationController, :generate
+    post "/chat-generation/:id/branch-to-new-chat", ChatGenerationController, :branch_to_new_chat
+    post "/chat-generation/:id/handoff", ChatGenerationController, :handoff
+
+    get "/chat-shares/:id", ChatSharesController, :show
+    put "/chat-shares/:id", ChatSharesController, :update
+
+    post "/chat-uploads/:chat_id", ChatUploadsController, :create
+    get "/chat-uploads/:chat_id/:upload_id", ChatUploadsController, :show
+    put "/chat-uploads/:chat_id/:upload_id/chunk", ChatUploadsController, :append_chunk
+    delete "/chat-uploads/:chat_id/:upload_id", ChatUploadsController, :delete
 
     post "/chat-messages/:id/cancel", ChatMessagesController, :cancel
     post "/chat-messages/:id/retry-last-step", ChatMessagesController, :retry_last_step

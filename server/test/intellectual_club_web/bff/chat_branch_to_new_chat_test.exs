@@ -20,7 +20,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
 
   require Ash.Query
 
-  test "POST /api/bff/chats/:id/branch-to-new-chat branches from assistant as alternative answer",
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat branches from assistant as alternative answer",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -49,7 +49,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     {:ok, _meta} = Threads.activate_branch(source.id, selected_assistant.id, actor)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{source.id}/branch-to-new-chat", %{
+      post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
         "message_id" => selected_assistant.id
       })
 
@@ -87,7 +87,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/branch-to-new-chat branches from user with settings and attachments",
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat branches from user with settings and attachments",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -132,7 +132,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     |> upload_chunk!(source.id, upload_id, "uploaded payload")
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{source.id}/branch-to-new-chat", %{
+      post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
         "message_id" => selected_user.id,
         "content" => "Replacement follow-up",
         "copy_content_ids" => [copied_content_id],
@@ -185,18 +185,18 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chats/:id/branch-to-new-chat rejects missing message id", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects missing message id", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     source = create_chat!(actor, "Missing message id")
 
-    conn = post(conn, ~p"/api/bff/chats/#{source.id}/branch-to-new-chat", %{})
+    conn = post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{})
     payload = json_response(conn, 422)
 
     assert payload["error"] == "message_id is required"
   end
 
-  test "POST /api/bff/chats/:id/branch-to-new-chat rejects inactive message", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects inactive message", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     source = create_chat!(actor, "Inactive message")
@@ -212,7 +212,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     {:ok, _meta} = Threads.activate_branch(source.id, active.id, actor)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{source.id}/branch-to-new-chat", %{
+      post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
         "message_id" => inactive.id
       })
 
@@ -220,7 +220,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     assert payload["error"] == "Message is not in the active branch."
   end
 
-  test "POST /api/bff/chats/:id/branch-to-new-chat rejects non-owner", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects non-owner", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: other, password: password} = user_fixture()
     conn = sign_in_conn(conn, other.username, password)
@@ -229,7 +229,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     {:ok, message} = Threads.add_message_to_end(source, :user, "Root", actor: owner)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{source.id}/branch-to-new-chat", %{
+      post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
         "message_id" => message.id,
         "content" => "Replacement"
       })
@@ -389,7 +389,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
 
   defp create_upload!(conn, chat_id, filename, mime_type, size_bytes) do
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat_id}/uploads", %{
+      post(conn, ~p"/api/bff/chat-uploads/#{chat_id}", %{
         "filename" => filename,
         "mime_type" => mime_type,
         "size_bytes" => size_bytes
@@ -403,7 +403,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
       conn
       |> put_req_header("content-type", "application/octet-stream")
       |> put_req_header("x-upload-offset", "0")
-      |> put(~p"/api/bff/chats/#{chat_id}/uploads/#{upload_id}/chunk", payload)
+      |> put(~p"/api/bff/chat-uploads/#{chat_id}/#{upload_id}/chunk", payload)
 
     json_response(conn, 200)
   end

@@ -539,8 +539,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def normalize_runtime_step_for_client(step), do: step
 
   defp configuration_display_label(%LlmConfiguration{} = configuration) do
-    note = String.trim(to_string(configuration.note || ""))
-    model_name = String.trim(to_string(configuration.model_name || ""))
+    note = configuration |> Map.get(:note) |> loaded_string() |> String.trim()
+    model_name = configuration |> Map.get(:model_name) |> loaded_string() |> String.trim()
 
     cond do
       model_name != "" and note != "" -> "#{model_name} (#{note})"

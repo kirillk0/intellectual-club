@@ -23,7 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
   import Ecto.Query
   require Ash.Query
 
-  test "DELETE /api/bff/chats/:id deletes chat with dependent records", %{conn: conn} do
+  test "DELETE /api/bff/chat-lifecycle/:id deletes chat with dependent records", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -78,7 +78,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
       )
       |> Ash.create!()
 
-    conn = delete(conn, ~p"/api/bff/chats/#{chat.id}")
+    conn = delete(conn, ~p"/api/bff/chat-lifecycle/#{chat.id}")
     assert %{"status" => "ok"} = json_response(conn, 200)
 
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
@@ -106,7 +106,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
     assert tool_bindings == []
   end
 
-  test "DELETE /api/bff/chats/:id removes attachment files and payloads via Ash cascades", %{
+  test "DELETE /api/bff/chat-lifecycle/:id removes attachment files and payloads via Ash cascades", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -142,7 +142,7 @@ defmodule IntellectualClubWeb.Bff.ChatDeleteTest do
     [item] = Enum.sort_by(step.items || [], & &1.sequence)
     media_content = Enum.find(item.contents || [], &(&1.kind == :media))
 
-    conn = delete(conn, ~p"/api/bff/chats/#{chat.id}")
+    conn = delete(conn, ~p"/api/bff/chat-lifecycle/#{chat.id}")
     assert %{"status" => "ok"} = json_response(conn, 200)
 
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =

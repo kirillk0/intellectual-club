@@ -14,7 +14,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
   require Ash.Query
 
-  test "PATCH /api/bff/chats/:id switches to the latest compatible configuration when bot changes",
+  test "PATCH /api/bff/chat-lifecycle/:id switches to the latest compatible configuration when bot changes",
        %{
          conn: conn
        } do
@@ -71,14 +71,14 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     payload =
       conn
-      |> patch(~p"/api/bff/chats/#{chat.id}", %{"bot_id" => bot.id})
+      |> patch(~p"/api/bff/chat-lifecycle/#{chat.id}", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["bot_id"] == bot.id
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
-  test "PATCH /api/bff/chats/:id matches shared bot configuration tags by name", %{conn: conn} do
+  test "PATCH /api/bff/chat-lifecycle/:id matches shared bot configuration tags by name", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: recipient, password: password} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
@@ -124,14 +124,14 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     payload =
       conn
-      |> patch(~p"/api/bff/chats/#{chat.id}", %{"bot_id" => bot.id})
+      |> patch(~p"/api/bff/chat-lifecycle/#{chat.id}", %{"bot_id" => bot.id})
       |> json_response(200)
 
     assert payload["chat"]["bot_id"] == bot.id
     assert payload["chat"]["llm_configuration_id"] == compatible_config.id
   end
 
-  test "PATCH /api/bff/chats/:id manages chat tool bindings", %{conn: conn} do
+  test "PATCH /api/bff/chat-lifecycle/:id manages chat tool bindings", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -176,7 +176,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     _payload =
       conn
-      |> patch(~p"/api/bff/chats/#{chat.id}", %{
+      |> patch(~p"/api/bff/chat-lifecycle/#{chat.id}", %{
         "tool_bindings" => [
           %{"tool_instance_id" => tool_a.id, "enabled" => true},
           %{"tool_instance_id" => tool_b.id, "enabled" => false}
@@ -200,7 +200,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     _payload =
       conn
-      |> patch(~p"/api/bff/chats/#{chat.id}", %{
+      |> patch(~p"/api/bff/chat-lifecycle/#{chat.id}", %{
         "tool_bindings" => [
           %{
             "id" => first_binding.id,
@@ -223,7 +223,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
            ]
   end
 
-  test "GET /api/bff/chats/:id/state returns only effective active tool bindings", %{conn: conn} do
+  test "GET /api/bff/chat-state/:id returns only effective active tool bindings", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -295,7 +295,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/settings-state")
+      |> get(~p"/api/bff/chat-state/#{chat.id}/settings")
       |> json_response(200)
 
     assert [%{"alias" => "web", "source" => "chat", "tool_instance" => tool_payload}] =

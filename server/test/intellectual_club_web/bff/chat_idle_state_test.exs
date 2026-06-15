@@ -9,7 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
 
-  test "GET /api/bff/chats/idle-state returns a revision and then 204 for unchanged state", %{
+  test "GET /api/bff/chat-list/idle-state returns a revision and then 204 for unchanged state", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -19,17 +19,17 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats/idle-state")
+      |> get(~p"/api/bff/chat-list/idle-state")
       |> json_response(200)
 
     assert is_binary(payload["revision"])
     assert payload["active_generation_message_id"] == nil
 
-    conn = get(conn, ~p"/api/bff/chats/idle-state?revision=#{payload["revision"]}")
+    conn = get(conn, ~p"/api/bff/chat-list/idle-state?revision=#{payload["revision"]}")
     assert response(conn, 204) == ""
   end
 
-  test "GET /api/bff/chats/idle-state changes after generation starts on the page", %{conn: conn} do
+  test "GET /api/bff/chat-list/idle-state changes after generation starts on the page", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -37,21 +37,21 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
 
     initial_payload =
       conn
-      |> get(~p"/api/bff/chats/idle-state")
+      |> get(~p"/api/bff/chat-list/idle-state")
       |> json_response(200)
 
     generating_message = create_generating_message!(chat, actor)
 
     changed_payload =
       conn
-      |> get(~p"/api/bff/chats/idle-state?revision=#{initial_payload["revision"]}")
+      |> get(~p"/api/bff/chat-list/idle-state?revision=#{initial_payload["revision"]}")
       |> json_response(200)
 
     assert changed_payload["revision"] != initial_payload["revision"]
     assert changed_payload["active_generation_message_id"] == generating_message.id
   end
 
-  test "GET /api/bff/chats/:id/idle-state returns 204 for unchanged state and changes after generation starts",
+  test "GET /api/bff/chat-state/:id/idle-state returns 204 for unchanged state and changes after generation starts",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
@@ -60,14 +60,14 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
 
     initial_payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/idle-state")
+      |> get(~p"/api/bff/chat-state/#{chat.id}/idle-state")
       |> json_response(200)
 
     assert is_binary(initial_payload["revision"])
     assert initial_payload["active_generation_message_id"] == nil
 
     unchanged_conn =
-      get(conn, ~p"/api/bff/chats/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
+      get(conn, ~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
 
     assert response(unchanged_conn, 204) == ""
 
@@ -75,22 +75,22 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
 
     changed_payload =
       conn
-      |> get(~p"/api/bff/chats/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
+      |> get(~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
       |> json_response(200)
 
     assert changed_payload["revision"] != initial_payload["revision"]
     assert changed_payload["active_generation_message_id"] == generating_message.id
   end
 
-  test "GET /api/bff/chats/:id/idle-state matches state access errors", %{conn: conn} do
+  test "GET /api/bff/chat-state/:id/idle-state matches state access errors", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
     chat = create_chat!(owner, "Private idle chat")
 
-    state_conn = get(conn, ~p"/api/bff/chats/#{chat.id}/state")
-    idle_conn = get(conn, ~p"/api/bff/chats/#{chat.id}/idle-state")
+    state_conn = get(conn, ~p"/api/bff/chat-state/#{chat.id}")
+    idle_conn = get(conn, ~p"/api/bff/chat-state/#{chat.id}/idle-state")
 
     assert idle_conn.status == state_conn.status
 

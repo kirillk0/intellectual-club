@@ -129,7 +129,7 @@ export function useChatLibraryDraft(params: Params) {
     savingChatChanges.value = true;
 
     try {
-      await api.patch(`/api/bff/chats/${params.chatId.value}`, {
+      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, {
         knowledge_block_bindings: (chatBlocksDraft.value || []).map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           knowledge_block_id: binding.block,

@@ -14,7 +14,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Db
 
-  test "GET /api/bff/chats/:id/search splits active/inactive hits", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages splits active/inactive hits", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -33,7 +33,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     {:ok, _branch} = Threads.activate_branch(chat.id, active_msg.id, actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "Find"})
+    conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "Find"})
     payload = json_response(conn, 200)
 
     assert length(payload["active"] || []) == 1
@@ -48,7 +48,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert is_binary(List.first(payload["inactive"])["finished_at"])
   end
 
-  test "GET /api/bff/chats/:id/search returns empty results for empty term", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages returns empty results for empty term", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -61,14 +61,14 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => ""})
+    conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => ""})
     payload = json_response(conn, 200)
 
     assert payload["active"] == []
     assert payload["inactive"] == []
   end
 
-  test "GET /api/bff/chats/:id/search uses case-insensitive unicode matching", %{
+  test "GET /api/bff/chat-search/:id/messages uses case-insensitive unicode matching", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -85,14 +85,14 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Привет мир", actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "ПРИВ"})
+    conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "ПРИВ"})
     payload = json_response(conn, 200)
 
     assert Enum.map(payload["active"] || [], & &1["id"]) == [message.id]
     assert payload["inactive"] == []
   end
 
-  test "GET /api/bff/chats/:id/search uses adapter-specific substring semantics", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages uses adapter-specific substring semantics", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -107,7 +107,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     {:ok, _message} = Threads.add_message_to_end(chat, :user, "Привет мир", actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "рив"})
+    conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "рив"})
     payload = json_response(conn, 200)
 
     if Db.sqlite?() do
@@ -119,7 +119,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert payload["inactive"] == []
   end
 
-  test "GET /api/bff/chats/:id/search uses adapter-specific multi-token semantics", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages uses adapter-specific multi-token semantics", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -136,19 +136,19 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     {:ok, _other} = Threads.add_message_to_end(chat, :assistant, "alpha only", actor: actor)
 
     if Db.sqlite?() do
-      conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "beta alpha"})
+      conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
       payload = json_response(conn, 200)
 
       assert Enum.map(payload["active"] || [], & &1["id"]) == [matching.id]
       assert payload["inactive"] == []
     else
-      exact_order_conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "alpha beta"})
+      exact_order_conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "alpha beta"})
       exact_order_payload = json_response(exact_order_conn, 200)
 
       assert Enum.map(exact_order_payload["active"] || [], & &1["id"]) == [matching.id]
       assert exact_order_payload["inactive"] == []
 
-      reversed_conn = get(conn, ~p"/api/bff/chats/#{chat.id}/search", %{"q" => "beta alpha"})
+      reversed_conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
       reversed_payload = json_response(reversed_conn, 200)
 
       assert reversed_payload["active"] == []
@@ -156,7 +156,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     end
   end
 
-  test "GET /api/bff/chats/search returns meta/active/inactive match types", %{conn: conn} do
+  test "GET /api/bff/chat-list/search returns meta/active/inactive match types", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -210,7 +210,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
         parent_id: root.id
       )
 
-    conn = get(conn, ~p"/api/bff/chats/search", %{"q" => "arsen"})
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "arsen"})
     payload = json_response(conn, 200)
 
     results = payload["chats"] || []
@@ -228,7 +228,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert Enum.at(results, 2)["message_count"] == 2
   end
 
-  test "GET /api/bff/chats/search uses case-insensitive matching for message hits", %{conn: conn} do
+  test "GET /api/bff/chat-list/search uses case-insensitive matching for message hits", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -243,7 +243,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Привет мир", actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/search", %{"q" => "ПРИВ"})
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "ПРИВ"})
     payload = json_response(conn, 200)
     results = payload["chats"] || []
 
@@ -255,7 +255,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert is_binary(result["snippet"])
   end
 
-  test "GET /api/bff/chats/search handles large assistant traces", %{conn: conn} do
+  test "GET /api/bff/chat-list/search handles large assistant traces", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -330,7 +330,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     _bulk_result =
       Ash.bulk_create!(content_payloads, ChatMessageContent, :create, actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats/search", %{"q" => "needle"})
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
     payload = json_response(conn, 200)
     results = payload["chats"] || []
 
@@ -342,7 +342,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert is_binary(result["snippet"])
   end
 
-  test "GET /api/bff/chats/search respects per_page as total result limit", %{conn: conn} do
+  test "GET /api/bff/chat-list/search respects per_page as total result limit", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -360,7 +360,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
         Threads.add_message_to_end(chat, :user, "paged needle #{idx}", actor: actor)
     end)
 
-    conn = get(conn, ~p"/api/bff/chats/search", %{"q" => "needle", "per_page" => "5"})
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle", "per_page" => "5"})
     payload = json_response(conn, 200)
     results = payload["chats"] || []
 

@@ -163,7 +163,7 @@ export function useChatViewModel() {
 
   const refreshPromptContextFromServer = async () => {
     if (!chatId.value) return;
-    const payload = await api.get<ChatPromptContextPayload>(`/api/bff/chats/${chatId.value}/prompt-context`);
+    const payload = await api.get<ChatPromptContextPayload>(`/api/bff/chat-state/${chatId.value}/prompt-context`);
     promptSources.value = payload.prompt_sources || promptSources.value;
     promptBlocks.value = payload.prompt_blocks || [];
     compiledPromptText.value = payload.compiled_prompt_text || '';
@@ -325,7 +325,7 @@ export function useChatViewModel() {
 
   const loadSettingsState = async () => {
     if (!chatId.value) return;
-    const payload = await api.get<ChatSettingsStatePayload>(`/api/bff/chats/${chatId.value}/settings-state`, {
+    const payload = await api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${chatId.value}/settings`, {
       showErrorBanner: false,
     });
     applySettingsState(payload);
@@ -346,11 +346,11 @@ export function useChatViewModel() {
     chatUnavailable.value = false;
 
     const [payload, settingsPayload] = await Promise.all([
-      api.get<ChatStatePayload>(`/api/bff/chats/${chatId.value}/state`, {
+      api.get<ChatStatePayload>(`/api/bff/chat-state/${chatId.value}`, {
         showErrorBanner: false,
       }),
       includeSettings
-        ? api.get<ChatSettingsStatePayload>(`/api/bff/chats/${chatId.value}/settings-state`, {
+        ? api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${chatId.value}/settings`, {
             showErrorBanner: false,
           })
         : Promise.resolve(null),
@@ -434,7 +434,7 @@ export function useChatViewModel() {
     const query = chatIdleProbeParams().toString();
     const suffix = query ? `?${query}` : '';
     const payload = await api.get<ChatIdleStatePayload | undefined>(
-      `/api/bff/chats/${chatId.value}/idle-state${suffix}`,
+      `/api/bff/chat-state/${chatId.value}/idle-state${suffix}`,
       {
         signal,
         showErrorBanner: false,
@@ -547,7 +547,7 @@ export function useChatViewModel() {
     try {
       const [groupsPayload, state] = await Promise.all([
         api.get<{ groups: Group[] }>('/api/bff/me/groups'),
-        api.get<ChatShareState>(`/api/bff/chats/${chatId.value}/shares`),
+        api.get<ChatShareState>(`/api/bff/chat-shares/${chatId.value}`),
       ]);
       shareGroups.value = groupsPayload.groups || [];
       applyShareState(state || {});
@@ -563,7 +563,7 @@ export function useChatViewModel() {
     if (!canEdit.value || !chatId.value || shareSaving.value) return;
     shareSaving.value = true;
     try {
-      const state = await api.put<ChatShareState>(`/api/bff/chats/${chatId.value}/shares`, {
+      const state = await api.put<ChatShareState>(`/api/bff/chat-shares/${chatId.value}`, {
         group_ids: groupIds,
       });
       applyShareState(state || {});
@@ -581,7 +581,7 @@ export function useChatViewModel() {
     if (!sharedReadonly.value || !chatId.value || continuingConversation.value) return;
     continuingConversation.value = true;
     try {
-      const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chats/${chatId.value}/continue`, {});
+      const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chat-lifecycle/${chatId.value}/continue`, {});
       const nextId = payload.chat?.id;
       if (!nextId) throw new Error('Missing chat id');
       await router.push(chatRouteTarget(nextId, { focusComposer: '1' }));
@@ -600,7 +600,7 @@ export function useChatViewModel() {
 
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-        `/api/bff/chats/${chatId.value}/handoff`,
+        `/api/bff/chat-generation/${chatId.value}/handoff`,
         {}
       );
       branch.value = payload.branch || [];

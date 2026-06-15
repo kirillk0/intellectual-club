@@ -25,13 +25,19 @@ defmodule IntellectualClub.Chat do
         index :read
         get(:read)
         post(:create)
+        post(:copy, route: "/:id/copy")
+        post(:continue, route: "/:id/continue")
+        post(:create_branch, route: "/:id/branch")
         patch(:update)
+        patch(:activate_branch, route: "/:id/activate-branch")
+        patch(:switch_branch, route: "/:id/switch-branch")
         delete(:destroy)
       end
 
       base_route "/chat-messages", IntellectualClub.Chat.ChatMessage do
         index :read
         get(:read)
+        post(:add_user_message_with_contents, route: "/add-user")
         delete(:destroy)
       end
 

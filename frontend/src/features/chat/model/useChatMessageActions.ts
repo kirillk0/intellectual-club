@@ -397,7 +397,7 @@ export function useChatMessageActions(params: Params) {
     if (!params.chatId.value) return;
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[] }>(
-        `/api/bff/chats/${params.chatId.value}/switch-branch`,
+        `/api/bff/chat-branches/${params.chatId.value}/switch`,
         {
           message_id: messageId,
           direction,
@@ -475,7 +475,7 @@ export function useChatMessageActions(params: Params) {
 
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-        `/api/bff/chats/${params.chatId.value}/generate`,
+        `/api/bff/chat-generation/${params.chatId.value}/generate`,
         { parent_id: msg.parent_id ?? null }
       );
       replaceBranch(payload.branch);
@@ -532,7 +532,7 @@ export function useChatMessageActions(params: Params) {
 
     try {
       const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-        `/api/bff/chats/${params.chatId.value}/branch-to-new-chat`,
+        `/api/bff/chat-generation/${params.chatId.value}/branch-to-new-chat`,
         { message_id: msg.id }
       );
       const nextChatId = payload.chat?.id;
@@ -642,7 +642,7 @@ export function useChatMessageActions(params: Params) {
         if (branchMode === 'branch_new_chat') {
           branchingNewChatMessageId.value = editingMessageId;
           const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-            `/api/bff/chats/${params.chatId.value}/branch-to-new-chat`,
+            `/api/bff/chat-generation/${params.chatId.value}/branch-to-new-chat`,
             {
               message_id: editingMessageId,
               ...(hasBranchFiles
@@ -658,7 +658,7 @@ export function useChatMessageActions(params: Params) {
         }
 
         const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-          `/api/bff/chats/${params.chatId.value}/send`,
+          `/api/bff/chat-generation/${params.chatId.value}/send`,
           hasBranchFiles
             ? buildSendPayload(content, uploadIds, editExistingAttachments.value, parentId)
             : { content, parent_id: parentId }

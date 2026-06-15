@@ -634,7 +634,7 @@ defmodule IntellectualClub.Chat.Search do
       :can_edit,
       :shared_incoming,
       :shared_outgoing,
-      llm_configuration: [:provider]
+      llm_configuration: [:model_name, :note, :provider]
     ])
     |> Ash.read!(actor: actor)
   end
@@ -695,7 +695,7 @@ defmodule IntellectualClub.Chat.Search do
       :can_edit,
       :shared_incoming,
       :shared_outgoing,
-      llm_configuration: [:provider]
+      llm_configuration: [:model_name, :note, :provider]
     ])
     |> Ash.read!(actor: actor)
   end

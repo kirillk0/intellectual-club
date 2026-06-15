@@ -722,7 +722,7 @@ async function loadChats(
       };
       stats?: ChatListStats;
       idle_revision?: string | null;
-    }>(`/api/bff/chats?${params.toString()}`, {
+    }>(`/api/bff/chat-list?${params.toString()}`, {
       showErrorBanner: opts.showErrorBanner ?? true,
       signal: opts.signal,
     });
@@ -824,7 +824,7 @@ async function runChatSearch(
     params.set('per_page', String(perPage.value));
     const bot = String(botFilter.value || '').trim();
     if (bot) params.set('bot', bot);
-    const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chats/search?${params.toString()}`, {
+    const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chat-list/search?${params.toString()}`, {
       showErrorBanner: opts.showErrorBanner ?? true,
       signal: controller.signal,
     });
@@ -923,7 +923,7 @@ async function runChatListIdleProbe(signal: AbortSignal) {
   if (!canRunChatListIdleProbe()) return;
 
   const payload = await api.get<ChatListIdleStatePayload | undefined>(
-    `/api/bff/chats/idle-state?${chatListIdleProbeParams().toString()}`,
+    `/api/bff/chat-list/idle-state?${chatListIdleProbeParams().toString()}`,
     {
       signal,
       showErrorBanner: false,
@@ -1172,7 +1172,7 @@ async function createChat(selectedBotId: number | string | '' = '') {
   error.value = null;
   try {
     const botId = selectedBotId === '' ? null : Number(selectedBotId);
-    const payload = await api.post<{ chat: { id: number } }>('/api/bff/chats', {
+    const payload = await api.post<{ chat: { id: number } }>('/api/bff/chat-lifecycle', {
       bot_id: typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
     });
     const id = payload.chat?.id;

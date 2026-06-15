@@ -9,7 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
 
-  test "POST /api/bff/chats/:chat_id/uploads rejects files above the bot size limit", %{
+  test "POST /api/bff/chat-uploads/:chat_id rejects files above the bot size limit", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -28,7 +28,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       |> Ash.create!(actor: actor)
 
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat.id}/uploads", %{
+      post(conn, ~p"/api/bff/chat-uploads/#{chat.id}", %{
         "filename" => "big.txt",
         "mime_type" => "text/plain",
         "size_bytes" => 5
@@ -59,7 +59,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       |> sign_in_conn(actor.username, password)
       |> put_req_header("content-type", "application/octet-stream")
       |> put_req_header("x-upload-offset", "0")
-      |> put(~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}/chunk", "hello ")
+      |> put(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}/chunk", "hello ")
 
     payload = json_response(conn, 200)
     assert get_in(payload, ["upload", "uploaded_bytes"]) == 6
@@ -70,7 +70,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       |> sign_in_conn(actor.username, password)
       |> put_req_header("content-type", "application/octet-stream")
       |> put_req_header("x-upload-offset", "0")
-      |> put(~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}/chunk", "oops")
+      |> put(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}/chunk", "oops")
 
     payload = json_response(conn, 409)
     assert payload["next_offset"] == 6
@@ -80,7 +80,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       |> sign_in_conn(actor.username, password)
       |> put_req_header("content-type", "application/octet-stream")
       |> put_req_header("x-upload-offset", "6")
-      |> put(~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}/chunk", "world")
+      |> put(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}/chunk", "world")
 
     payload = json_response(conn, 200)
     assert get_in(payload, ["upload", "uploaded_bytes"]) == 11
@@ -111,7 +111,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
       |> sign_in_conn(actor.username, password)
       |> put_req_header("content-type", "application/octet-stream")
       |> put_req_header("x-upload-offset", "0")
-      |> put(~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}/chunk", oversized_chunk)
+      |> put(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}/chunk", oversized_chunk)
 
     payload = json_response(conn, 422)
     assert payload["error"] == "Upload chunk exceeds the allowed chunk size."
@@ -119,7 +119,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
     conn =
       build_conn()
       |> sign_in_conn(actor.username, password)
-      |> get(~p"/api/bff/chats/#{chat.id}/uploads/#{upload["upload_id"]}")
+      |> get(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}")
 
     payload = json_response(conn, 200)
     assert get_in(payload, ["upload", "uploaded_bytes"]) == 0
@@ -128,7 +128,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
 
   defp create_upload!(conn, chat_id, filename, mime_type, size_bytes) do
     conn =
-      post(conn, ~p"/api/bff/chats/#{chat_id}/uploads", %{
+      post(conn, ~p"/api/bff/chat-uploads/#{chat_id}", %{
         "filename" => filename,
         "mime_type" => mime_type,
         "size_bytes" => size_bytes

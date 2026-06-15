@@ -9,8 +9,12 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Llm.LlmProvider
 
-  test "GET /api/bff/chats returns first_message_preview from the first message", %{conn: conn} do
+  test "GET /api/bff/chat-list returns first_message_preview from the first message", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -25,7 +29,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     {:ok, _second} =
       Threads.add_message(chat, :assistant, "Last message", actor: actor, parent_id: first.id)
 
-    conn = get(conn, ~p"/api/bff/chats", %{"preview_len" => "10"})
+    conn = get(conn, ~p"/api/bff/chat-list", %{"preview_len" => "10"})
     payload = json_response(conn, 200)
 
     chat_payload =
@@ -43,7 +47,27 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload["page"]["has_next"] == false
   end
 
-  test "GET /api/bff/chats uses the first message from active branch root", %{conn: conn} do
+  test "GET /api/bff/chat-list returns loaded configuration labels", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    provider = create_provider!(actor, "List Provider")
+    configuration = create_configuration!(actor, provider, "list-model", "primary")
+    chat = create_chat!(actor, "Configured", %{llm_configuration_id: configuration.id})
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list")
+      |> json_response(200)
+
+    chat_payload = chat_payload(payload, chat.id)
+
+    assert is_map(chat_payload)
+    assert chat_payload["llm_configuration_id"] == configuration.id
+    assert chat_payload["llm_configuration_label"] == "list-model (primary)"
+  end
+
+  test "GET /api/bff/chat-list uses the first message from active branch root", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -58,7 +82,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     {:ok, _active_root} =
       Threads.add_message(chat, :assistant, "Active branch root", actor: actor, parent_id: nil)
 
-    conn = get(conn, ~p"/api/bff/chats", %{"preview_len" => "30"})
+    conn = get(conn, ~p"/api/bff/chat-list", %{"preview_len" => "30"})
     payload = json_response(conn, 200)
 
     chat_payload =
@@ -72,7 +96,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert chat_payload["message_count"] == 1
   end
 
-  test "GET /api/bff/chats returns active_generation_message_id for generating chats", %{
+  test "GET /api/bff/chat-list returns active_generation_message_id for generating chats", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -98,7 +122,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       )
       |> Ash.create!(actor: actor)
 
-    conn = get(conn, ~p"/api/bff/chats")
+    conn = get(conn, ~p"/api/bff/chat-list")
     payload = json_response(conn, 200)
 
     chat_payload =
@@ -111,7 +135,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert chat_payload["message_count"] == 2
   end
 
-  test "GET /api/bff/chats paginates by page and per_page", %{conn: conn} do
+  test "GET /api/bff/chat-list paginates by page and per_page", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -130,7 +154,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
-    conn_page_1 = get(conn, ~p"/api/bff/chats", %{"page" => "1", "per_page" => "2"})
+    conn_page_1 = get(conn, ~p"/api/bff/chat-list", %{"page" => "1", "per_page" => "2"})
     payload_page_1 = json_response(conn_page_1, 200)
 
     ids_page_1 =
@@ -144,7 +168,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload_page_1["page"]["total"] == 3
     assert payload_page_1["page"]["has_next"] == true
 
-    conn_page_2 = get(conn, ~p"/api/bff/chats", %{"page" => "2", "per_page" => "2"})
+    conn_page_2 = get(conn, ~p"/api/bff/chat-list", %{"page" => "2", "per_page" => "2"})
     payload_page_2 = json_response(conn_page_2, 200)
 
     ids_page_2 =
@@ -159,7 +183,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload_page_2["page"]["has_next"] == false
   end
 
-  test "GET /api/bff/chats keeps message activity order after chat metadata changes", %{
+  test "GET /api/bff/chat-list keeps message activity order after chat metadata changes", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -176,24 +200,24 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     Process.sleep(20)
 
     conn
-    |> patch(~p"/api/bff/chats/#{older_chat.id}", %{"note" => "Renamed older chat"})
+    |> patch(~p"/api/bff/chat-lifecycle/#{older_chat.id}", %{"note" => "Renamed older chat"})
     |> json_response(200)
 
     payload =
       conn
-      |> get(~p"/api/bff/chats")
+      |> get(~p"/api/bff/chat-list")
       |> json_response(200)
 
     idle_payload =
       conn
-      |> get(~p"/api/bff/chats/idle-state")
+      |> get(~p"/api/bff/chat-list/idle-state")
       |> json_response(200)
 
     assert chat_ids(payload) == [newer_chat.id, older_chat.id]
     assert is_binary(idle_payload["revision"])
   end
 
-  test "GET /api/bff/chats sorts empty chats by creation after chat metadata changes", %{
+  test "GET /api/bff/chat-list sorts empty chats by creation after chat metadata changes", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -208,12 +232,12 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     Process.sleep(20)
 
     conn
-    |> patch(~p"/api/bff/chats/#{older_chat.id}", %{"note" => "Renamed older empty"})
+    |> patch(~p"/api/bff/chat-lifecycle/#{older_chat.id}", %{"note" => "Renamed older empty"})
     |> json_response(200)
 
     payload =
       conn
-      |> get(~p"/api/bff/chats")
+      |> get(~p"/api/bff/chat-list")
       |> json_response(200)
 
     newer_payload = chat_payload(payload, newer_chat.id)
@@ -224,7 +248,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload["stats"]["no_bot_last_activity_at"] == newer_payload["last_activity_at"]
   end
 
-  test "GET /api/bff/chats sorts by active branch leaf instead of newer inactive messages", %{
+  test "GET /api/bff/chat-list sorts by active branch leaf instead of newer inactive messages", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -255,7 +279,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     payload =
       conn
-      |> get(~p"/api/bff/chats")
+      |> get(~p"/api/bff/chat-list")
       |> json_response(200)
 
     branched_payload = chat_payload(payload, branched_chat.id)
@@ -265,7 +289,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert branched_payload["message_count"] == 2
   end
 
-  test "GET /api/bff/chats returns sidebar stats independent from pagination and filter", %{
+  test "GET /api/bff/chat-list returns sidebar stats independent from pagination and filter", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -307,7 +331,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       |> Ash.create!(actor: actor)
 
     conn =
-      get(conn, ~p"/api/bff/chats", %{
+      get(conn, ~p"/api/bff/chat-list", %{
         "page" => "1",
         "per_page" => "1",
         "bot" => Integer.to_string(bot_a.id)
@@ -364,6 +388,39 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
         max_tool_rounds: 20,
         context_soft_limit_percent: 80,
         history_mode: :chat
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_provider!(actor, name) do
+    LlmProvider
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        name: name,
+        type: :openrouter_chat_completion,
+        auth_method: :api_key,
+        base_url: "https://openrouter.ai/api/v1",
+        api_key: "test-key"
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_configuration!(actor, provider, model_name, note) do
+    LlmConfiguration
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        provider_id: provider.id,
+        model_name: model_name,
+        note: note,
+        parameters: %{},
+        enabled: true,
+        timeout_seconds: 300
       },
       actor: actor
     )

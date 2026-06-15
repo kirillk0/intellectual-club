@@ -26,7 +26,7 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     share_payload =
       owner_conn
-      |> put(~p"/api/bff/chats/#{chat.id}/shares", %{group_ids: [group.id]})
+      |> put(~p"/api/bff/chat-shares/#{chat.id}", %{group_ids: [group.id]})
       |> json_response(200)
 
     assert share_payload["group_ids"] == [group.id]
@@ -35,7 +35,7 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     state_payload =
       recipient_conn
-      |> get(~p"/api/bff/chats/#{chat.id}/state")
+      |> get(~p"/api/bff/chat-state/#{chat.id}")
       |> json_response(200)
 
     assert state_payload["chat"]["can_edit"] == false
@@ -44,22 +44,22 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     list_payload =
       recipient_conn
-      |> get(~p"/api/bff/chats")
+      |> get(~p"/api/bff/chat-list")
       |> json_response(200)
 
     refute Enum.any?(list_payload["chats"] || [], &(&1["id"] == chat.id))
 
     recipient_conn
-    |> delete(~p"/api/bff/chats/#{chat.id}")
+    |> delete(~p"/api/bff/chat-lifecycle/#{chat.id}")
     |> json_response(403)
 
     recipient_conn
-    |> post(~p"/api/bff/chats/#{chat.id}/generate", %{})
+    |> post(~p"/api/bff/chat-generation/#{chat.id}/generate", %{})
     |> json_response(403)
 
     continue_payload =
       recipient_conn
-      |> post(~p"/api/bff/chats/#{chat.id}/continue", %{})
+      |> post(~p"/api/bff/chat-lifecycle/#{chat.id}/continue", %{})
       |> json_response(200)
 
     new_chat_id = get_in(continue_payload, ["chat", "id"])
@@ -72,7 +72,7 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     conn
     |> sign_in_conn(user.username, password)
-    |> get(~p"/api/bff/chats/999999/state")
+    |> get(~p"/api/bff/chat-state/999999")
     |> json_response(404)
   end
 
