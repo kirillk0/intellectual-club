@@ -46,7 +46,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
   defp build_candidates(entries, summary, opts, full_document) do
     [
       candidate(entries, summary, opts, :full, false, full_document),
-      candidate(entries, summary, opts, :assistant_200, false, full_document),
+      candidate(entries, summary, opts, :assistant_200, true, full_document),
       candidate(entries, summary, opts, :massive, true, full_document)
     ]
   end

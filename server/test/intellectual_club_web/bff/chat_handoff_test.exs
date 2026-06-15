@@ -530,7 +530,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert String.contains?(text, "/api/bff/chat-messages/#{source_message.id}/contents/")
   end
 
-  test "handoff truncates assistant history before attaching full conversation" do
+  test "handoff truncates assistant history and attaches full conversation" do
     %{user: actor} = user_fixture()
 
     source = create_chat!(actor, "Assistant truncation source")
@@ -551,7 +551,16 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
     assert String.contains?(text, "[truncated to 200 tokens]")
     assert String.contains?(text, "Continue after long answer.")
-    assert [] = media_contents_for_message!(message.id, actor)
+
+    [artifact_content] = media_contents_for_message!(message.id, actor)
+    assert artifact_content.file.filename == "full_conversation.md"
+    assert artifact_content.file.mime_type == "text/markdown"
+
+    assert {:ok, {_file, payload}} = Files.load_payload(artifact_content.file_id)
+    assert String.contains?(payload, "# Previous conversation")
+    assert String.contains?(payload, "Short prompt")
+    assert String.contains?(payload, "assistant-long-output")
+    refute String.contains?(payload, "[truncated to 200 tokens]")
   end
 
   test "handoff renders assistant answer items as separate entries before truncating" do
