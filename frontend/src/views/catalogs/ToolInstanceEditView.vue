@@ -1,5 +1,5 @@
 <template>
-  <div v-if="loaded" class="stack">
+  <div v-if="loaded" ref="toolEditorRoot" class="stack">
     <CrudHeader
       title="Tool"
       :dirty="headerDirty"
@@ -428,9 +428,16 @@
                   <span v-else class="badge muted" title="Built-in fixed function">fixed</span>
                 </div>
 
-                <details v-if="fn.parameters_schema" style="margin-top: 10px">
+                <details
+                  v-if="fn.parameters_schema"
+                  style="margin-top: 10px"
+                  @toggle="handleFunctionSchemaToggle(fn.key, $event)"
+                >
                   <summary class="muted">Schema</summary>
-                  <pre class="code-block" style="white-space: pre-wrap; word-break: break-word">{{ formatJson(fn.parameters_schema) }}</pre>
+                  <pre
+                    v-if="isFunctionSchemaOpen(fn.key)"
+                    class="code-block tool-function-schema-code"
+                  ><code class="language-json">{{ formatJson(fn.parameters_schema) }}</code></pre>
                 </details>
               </div>
             </div>
@@ -455,7 +462,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -474,6 +481,7 @@ import {
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { formatRelativeDateTime } from '@/utils/dates';
+import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
 
@@ -543,6 +551,7 @@ type ToolFunctionRow = {
 const TOOL_DOCUMENT_INCLUDE = 'functions';
 
 const route = useRoute();
+const toolEditorRoot = ref<HTMLElement | null>(null);
 
 function normalizeString(value: unknown): string {
   return String(value ?? '').trim();
@@ -1239,6 +1248,42 @@ const functionsError = ref<string | null>(null);
 const functions = ref<ToolFunctionRow[]>([]);
 const persistedFunctionRows = ref<ToolFunctionRow[]>([]);
 const savingFunctionIds = ref(new Set<string>());
+const openFunctionSchemaKeys = ref(new Set<string>());
+
+function isFunctionSchemaOpen(functionKey: string): boolean {
+  return openFunctionSchemaKeys.value.has(functionKey);
+}
+
+function handleFunctionSchemaToggle(functionKey: string, event: Event) {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLDetailsElement)) return;
+
+  const next = new Set(openFunctionSchemaKeys.value);
+  const opened = target.open;
+  if (opened) {
+    next.add(functionKey);
+  } else {
+    next.delete(functionKey);
+  }
+  openFunctionSchemaKeys.value = next;
+  if (opened) void highlightFunctionSchemaBlocks();
+}
+
+async function highlightFunctionSchemaBlocks() {
+  await nextTick();
+  const root = toolEditorRoot.value;
+  if (!root) return;
+  await highlightCodeBlocks(root, { highlightedAttr: 'data-tool-schema-highlighted' });
+}
+
+watch(
+  () => functions.value.map((fn) => fn.key),
+  (keys) => {
+    const allowed = new Set(keys);
+    const next = new Set([...openFunctionSchemaKeys.value].filter((key) => allowed.has(key)));
+    if (next.size !== openFunctionSchemaKeys.value.size) openFunctionSchemaKeys.value = next;
+  }
+);
 
 function setFixedFunctions() {
   const fixed = currentToolType.value?.fixed_functions || [];
@@ -1510,5 +1555,11 @@ onMounted(() => {
 
 .tool-type-summary > span:last-child {
   min-width: 0;
+}
+
+.tool-function-schema-code {
+  max-height: clamp(160px, calc(var(--app-vh, 1vh) * 32), 340px);
+  margin-top: 8px;
+  overflow: auto;
 }
 </style>

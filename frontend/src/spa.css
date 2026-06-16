@@ -2190,3 +2190,153 @@ select.full {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.code-block > code {
+  display: block;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.code-block > code .token.comment,
+.code-block > code .token.prolog,
+.code-block > code .token.doctype,
+.code-block > code .token.cdata {
+  color: #6a9955;
+}
+
+.code-block > code .token.punctuation {
+  color: #d4d4d4;
+}
+
+.code-block > code .token.property,
+.code-block > code .token.tag,
+.code-block > code .token.constant,
+.code-block > code .token.symbol,
+.code-block > code .token.deleted {
+  color: #9cdcfe;
+}
+
+.code-block > code .token.boolean,
+.code-block > code .token.number {
+  color: #b5cea8;
+}
+
+.code-block > code .token.selector,
+.code-block > code .token.attr-name,
+.code-block > code .token.string,
+.code-block > code .token.char,
+.code-block > code .token.builtin,
+.code-block > code .token.inserted {
+  color: #ce9178;
+}
+
+.code-block > code .token.operator,
+.code-block > code .token.entity,
+.code-block > code .token.url,
+.code-block > code .token.variable {
+  color: #d4d4d4;
+}
+
+.code-block > code .token.atrule,
+.code-block > code .token.attr-value,
+.code-block > code .token.function,
+.code-block > code .token.class-name {
+  color: #dcdcaa;
+}
+
+.code-block > code .token.keyword {
+  color: #c586c0;
+}
+
+.code-block > code .token.regex,
+.code-block > code .token.important {
+  color: #d7ba7d;
+}
+
+.code-block > code .token.important,
+.code-block > code .token.bold {
+  font-weight: 600;
+}
+
+.code-block > code .token.italic {
+  font-style: italic;
+}
+
+.code-block > code {
+  display: block;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.code-block > code .token.comment,
+.code-block > code .token.prolog,
+.code-block > code .token.doctype,
+.code-block > code .token.cdata {
+  color: #6a9955;
+}
+
+.code-block > code .token.punctuation {
+  color: #d4d4d4;
+}
+
+.code-block > code .token.property,
+.code-block > code .token.tag,
+.code-block > code .token.constant,
+.code-block > code .token.symbol,
+.code-block > code .token.deleted {
+  color: #9cdcfe;
+}
+
+.code-block > code .token.boolean,
+.code-block > code .token.number {
+  color: #b5cea8;
+}
+
+.code-block > code .token.selector,
+.code-block > code .token.attr-name,
+.code-block > code .token.string,
+.code-block > code .token.char,
+.code-block > code .token.builtin,
+.code-block > code .token.inserted {
+  color: #ce9178;
+}
+
+.code-block > code .token.operator,
+.code-block > code .token.entity,
+.code-block > code .token.url,
+.code-block > code .token.variable {
+  color: #d4d4d4;
+}
+
+.code-block > code .token.atrule,
+.code-block > code .token.attr-value,
+.code-block > code .token.function,
+.code-block > code .token.class-name {
+  color: #dcdcaa;
+}
+
+.code-block > code .token.keyword {
+  color: #c586c0;
+}
+
+.code-block > code .token.regex,
+.code-block > code .token.important {
+  color: #d7ba7d;
+}
+
+.code-block > code .token.important,
+.code-block > code .token.bold {
+  font-weight: 600;
+}
+
+.code-block > code .token.italic {
+  font-style: italic;
+}
