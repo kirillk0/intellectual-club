@@ -2,12 +2,12 @@
   <div class="app-shell">
     <header ref="appHeader" class="app-header compact" v-show="!isLoginRoute">
       <button class="menu-toggle" type="button" @click="toggleMenu" aria-label="Open menu">☰</button>
-      <RouterLink class="app-logo" to="/" aria-label="Go to home" title="Go to home" @click="closeMenu">
+      <RouterLink class="app-logo" to="/chats" aria-label="Go to home" title="Go to home" @click="closeMenu">
         <img class="app-logo__mark" :src="appLogoUrl" alt="" aria-hidden="true" />
         <span class="app-logo__text" data-i18n-ignore>Intellectual Club</span>
       </RouterLink>
       <nav class="app-nav" :class="{ open: mobileMenuOpen }">
-        <RouterLink to="/" custom v-slot="{ href, isActive, isExactActive, navigate }">
+        <RouterLink to="/chats" custom v-slot="{ href, isActive, isExactActive, navigate }">
           <a
             :href="href"
             :class="{

@@ -2,6 +2,7 @@ import type { RouteLocationNormalizedLoaded } from 'vue-router';
 import { isStandalonePwa } from '@/pwa';
 
 const STORAGE_KEY = 'intellectual-club:pwa:last-route';
+const CHAT_LIST_PATH = '/chats';
 const EXCLUDED_ROUTE_NAMES = new Set(['login', 'outlet-connect']);
 
 let initialRestoreChecked = false;
@@ -36,6 +37,25 @@ const safeStoredPath = (value: string | null): string | null => {
   }
 };
 
+const chatListStoredPath = (value: string): string | null => {
+  if (!value.startsWith('/') || value.startsWith('//')) return null;
+
+  try {
+    const url = new URL(value, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    if (url.pathname !== '/' && url.pathname !== CHAT_LIST_PATH) return null;
+
+    return `${CHAT_LIST_PATH}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+};
+
+const routeStoredPath = (route: RouteLocationNormalizedLoaded): string | null => {
+  if (routeName(route) === 'chats') return chatListStoredPath(route.fullPath);
+  return safeStoredPath(route.fullPath);
+};
+
 export const restorePwaRouteOnLaunch = (route: RouteLocationNormalizedLoaded): string | null => {
   if (initialRestoreChecked) return null;
   initialRestoreChecked = true;
@@ -54,7 +74,7 @@ export const rememberPwaRoute = (route: RouteLocationNormalizedLoaded, authentic
   if (!authenticated || !pwaRoutePersistenceEnabled()) return;
   if (EXCLUDED_ROUTE_NAMES.has(routeName(route))) return;
 
-  const fullPath = safeStoredPath(route.fullPath);
+  const fullPath = routeStoredPath(route);
   if (!fullPath) return;
 
   try {
