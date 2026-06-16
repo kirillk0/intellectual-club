@@ -5,7 +5,7 @@
         <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="createProvider"
             :disabled="loading"
@@ -13,6 +13,7 @@
             title="New provider"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">New provider</span>
           </button>
         </div>
       </div>

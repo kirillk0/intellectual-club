@@ -5,7 +5,7 @@
         <strong>Administration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="createUser"
             :disabled="loading"
@@ -13,6 +13,7 @@
             title="New user"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">New user</span>
           </button>
         </div>
       </div>

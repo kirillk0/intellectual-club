@@ -5,7 +5,7 @@
       <div class="header-actions crud-actions toolbar-actions-right">
         <button
           v-if="dirty"
-          class="icon-button crud-icon-button primary dirty"
+          class="icon-button icon-button--labeled crud-icon-button primary dirty"
           type="button"
           :disabled="saving"
           aria-label="Save"
@@ -13,11 +13,12 @@
           @click="emitSave"
         >
           <SvgIcon name="save" size="16" />
+          <span class="icon-button__label">Save</span>
         </button>
 
         <button
           v-if="dirty"
-          class="icon-button crud-icon-button"
+          class="icon-button icon-button--labeled crud-icon-button"
           type="button"
           :disabled="saving"
           aria-label="Cancel"
@@ -25,38 +26,42 @@
           @click="emitCancel"
         >
           <SvgIcon name="undo" size="16" />
+          <span class="icon-button__label">Cancel</span>
         </button>
 
         <div class="crud-action-group">
           <button
-            class="icon-button crud-icon-button"
+            class="icon-button icon-button--labeled crud-icon-button"
             type="button"
             aria-label="Create"
             title="Create"
             @click="emitCreate"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">Create</span>
           </button>
           <button
             v-if="showDuplicate"
-            class="icon-button crud-icon-button"
+            class="icon-button icon-button--labeled crud-icon-button"
             type="button"
             aria-label="Duplicate"
             title="Duplicate"
             @click="emitDuplicate"
           >
             <SvgIcon name="copy" size="16" />
+            <span class="icon-button__label">Duplicate</span>
           </button>
           <slot name="extra-actions"></slot>
           <button
             v-if="showDelete"
-            class="icon-button crud-icon-button danger"
+            class="icon-button icon-button--labeled crud-icon-button danger"
             type="button"
             aria-label="Delete"
             title="Delete"
             @click="emitDelete"
           >
             <SvgIcon name="delete" size="16" />
+            <span class="icon-button__label">Delete</span>
           </button>
         </div>
 
@@ -86,7 +91,7 @@
 
         <button
           v-if="!dirty"
-          class="icon-button crud-icon-button crud-close-button"
+          class="icon-button icon-button--labeled crud-icon-button crud-close-button"
           type="button"
           :disabled="saving"
           aria-label="Close"
@@ -94,6 +99,7 @@
           @click="emitClose"
         >
           <SvgIcon name="x" size="16" />
+          <span class="icon-button__label">Close</span>
         </button>
       </div>
     </div>

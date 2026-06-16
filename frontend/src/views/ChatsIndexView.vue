@@ -4,11 +4,12 @@
       <div class="toolbar fill">
         <strong>Chats</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <RouterLink to="/bookmarks" class="icon-button" aria-label="Open bookmarks" title="Bookmarks">
+          <RouterLink to="/bookmarks" class="icon-button icon-button--labeled" aria-label="Open bookmarks" title="Bookmarks">
             <SvgIcon name="bookmark" />
+            <span class="icon-button__label">Bookmarks</span>
           </RouterLink>
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="openCreateChatModal"
             :disabled="creating"
@@ -16,6 +17,7 @@
             :title="creating ? 'Creating…' : 'New chat'"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">{{ creating ? 'Creating…' : 'New chat' }}</span>
           </button>
         </div>
       </div>

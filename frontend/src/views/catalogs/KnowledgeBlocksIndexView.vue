@@ -21,7 +21,7 @@
             {{ importPreviewLoading ? 'Loading…' : 'Import' }}
           </button>
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="createBlock"
             :disabled="loading"
@@ -29,6 +29,7 @@
             title="New block"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">New block</span>
           </button>
         </div>
       </div>

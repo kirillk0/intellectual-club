@@ -4,11 +4,12 @@
       <div class="toolbar fill">
         <strong>LLM Configuration</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <button class="icon-button" type="button" @click="openUsage" :disabled="loading" aria-label="Usage" title="Usage">
+          <button class="icon-button icon-button--labeled" type="button" @click="openUsage" :disabled="loading" aria-label="Usage" title="Usage">
             <SvgIcon name="bar-chart" />
+            <span class="icon-button__label">Usage</span>
           </button>
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="createConfig"
             :disabled="loading"
@@ -16,6 +17,7 @@
             title="New configuration"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">New configuration</span>
           </button>
         </div>
       </div>

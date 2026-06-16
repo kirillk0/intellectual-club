@@ -3,8 +3,9 @@
     <StackToolbarTeleport>
       <div class="toolbar fill">
         <div class="toolbar-title-group">
-          <RouterLink to="/" class="icon-button" aria-label="Back to chats" title="Back to chats">
+          <RouterLink to="/" class="icon-button icon-button--labeled" aria-label="Back to chats" title="Back to chats">
             <SvgIcon name="chevron-left" />
+            <span class="icon-button__label">Back to chats</span>
           </RouterLink>
           <strong>Bookmarks</strong>
         </div>

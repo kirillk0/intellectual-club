@@ -51,7 +51,7 @@
         </div>
 
         <button
-          class="icon-button toolbar-create-button chat-toolbar__icon-button"
+          class="icon-button icon-button--labeled toolbar-create-button chat-toolbar__icon-button"
           type="button"
           :aria-label="t(creatingChat ? 'Creating…' : 'New chat')"
           :title="t(creatingChat ? 'Creating…' : 'New chat')"
@@ -59,6 +59,7 @@
           :disabled="creatingChat"
         >
           <SvgIcon name="plus" size="16" />
+          <span class="icon-button__label">{{ t(creatingChat ? 'Creating…' : 'New chat') }}</span>
         </button>
 
         <div class="menu" :ref="setMenuAnchorRef">
@@ -74,8 +75,9 @@
           </button>
         </div>
 
-        <RouterLink :to="backTo" class="icon-button chat-toolbar__icon-button" :aria-label="t('Close')" :title="t('Close')">
+        <RouterLink :to="backTo" class="icon-button icon-button--labeled chat-toolbar__icon-button" :aria-label="t('Close')" :title="t('Close')">
           <SvgIcon name="x" size="16" />
+          <span class="icon-button__label">{{ t('Close') }}</span>
         </RouterLink>
 
         <Teleport to="body">

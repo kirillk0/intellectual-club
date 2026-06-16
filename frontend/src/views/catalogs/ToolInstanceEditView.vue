@@ -21,7 +21,7 @@
       <template #extra-actions>
         <button
           v-if="!isNew && supportsDiscovery && !sharedReadonly"
-          class="icon-button crud-icon-button"
+          class="icon-button icon-button--labeled crud-icon-button"
           type="button"
           @click="runDiscover"
           :disabled="discovering || loading || saving || dirty"
@@ -29,6 +29,7 @@
           :title="dirty ? 'Save changes before discovery.' : discovering ? 'Discovering…' : 'Discover functions'"
         >
           <SvgIcon name="tool-search" size="16" />
+          <span class="icon-button__label">{{ discovering ? 'Discovering…' : 'Discover functions' }}</span>
         </button>
       </template>
     </CrudHeader>

@@ -473,6 +473,17 @@ fieldset {
   font-size: 1.05rem;
 }
 
+.icon-button__label {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .menu-toggle:hover,
 .icon-button:hover {
   background: var(--color-surface-hover);
@@ -554,6 +565,34 @@ fieldset {
     justify-self: end;
     margin-left: 0;
     pointer-events: auto;
+  }
+}
+
+@media (min-width: 1180px) {
+  .toolbar-host .icon-button--labeled:not(.crud-icon-button) {
+    width: auto;
+    min-width: var(--app-header-control-size);
+    max-width: 15rem;
+    gap: 6px;
+    padding: 0 10px;
+  }
+
+  .toolbar-host .icon-button--labeled:not(.crud-icon-button) .icon-button__label {
+    display: inline-block;
+  }
+}
+
+@media (min-width: 1440px) {
+  .toolbar-host .crud-icon-button.icon-button--labeled {
+    width: auto;
+    min-width: 32px;
+    max-width: 12rem;
+    gap: 6px;
+    padding: 0 9px;
+  }
+
+  .toolbar-host .crud-icon-button.icon-button--labeled .icon-button__label {
+    display: inline-block;
   }
 }
 

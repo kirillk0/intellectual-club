@@ -5,7 +5,7 @@
         <strong>Bots</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button
-            class="icon-button primary toolbar-create-button"
+            class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
             @click="createBot"
             :disabled="loading"
@@ -13,6 +13,7 @@
             title="New bot"
           >
             <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">New bot</span>
           </button>
         </div>
       </div>
