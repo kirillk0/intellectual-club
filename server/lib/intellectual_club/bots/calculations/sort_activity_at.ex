@@ -82,7 +82,7 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
   end
 
   defp normalize_datetime(%DateTime{} = value), do: value
-  defp normalize_datetime(%NaiveDateTime{} = value), do: value
+  defp normalize_datetime(%NaiveDateTime{} = value), do: DateTime.from_naive!(value, "Etc/UTC")
 
   defp normalize_datetime(value) when is_binary(value) do
     normalized =
@@ -99,11 +99,11 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
 
         case NaiveDateTime.from_iso8601(normalized) do
           {:ok, datetime} ->
-            datetime
+            normalize_datetime(datetime)
 
           _ ->
             case NaiveDateTime.from_iso8601(without_z) do
-              {:ok, datetime} -> datetime
+              {:ok, datetime} -> normalize_datetime(datetime)
               _ -> nil
             end
         end

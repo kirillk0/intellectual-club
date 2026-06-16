@@ -25,6 +25,7 @@ defmodule IntellectualClub.Bots.SortActivityAtTest do
       [first_message.created_at, second_message.created_at]
       |> Enum.max_by(&datetime_unix_microseconds/1)
 
+    assert %DateTime{} = loaded_bot.sort_activity_at
     assert datetime_iso(loaded_bot.sort_activity_at) == datetime_iso(expected_latest)
   end
 
@@ -34,6 +35,7 @@ defmodule IntellectualClub.Bots.SortActivityAtTest do
 
     loaded_bot = load_bot_with_sort_activity!(bot.id, actor)
 
+    assert %DateTime{} = loaded_bot.sort_activity_at
     assert datetime_iso(loaded_bot.sort_activity_at) == datetime_iso(bot.updated_at)
   end
 
