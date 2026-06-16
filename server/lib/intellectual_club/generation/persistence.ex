@@ -1185,6 +1185,7 @@ defmodule IntellectualClub.Generation.Persistence do
           item_id: item.id,
           step_id: item.chat_message_step_id,
           sequence: item.sequence,
+          created_at: item.created_at,
           call_id: call_id,
           name: name,
           args: args,

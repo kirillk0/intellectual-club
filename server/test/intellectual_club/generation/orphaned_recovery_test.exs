@@ -10,6 +10,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
 
   setup do
     previous_backoff = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
@@ -231,6 +233,70 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert hd(steps).status == :done
   end
 
+  test "recover_orphaned_generations resumes native agent sleep from persisted call timestamp" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    tool_instance = create_agent_management_tool_instance!(actor)
+    _binding = create_chat_tool_binding!(actor, chat, tool_instance)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Sleep now", actor: actor)
+
+    generating_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => "Sleep now"}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(generating_message.id, 1, raw_request, [])
+    requested_ms = 300
+
+    runtime_step =
+      RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: raw_request)
+      |> add_tool_call_to_runtime_step(
+        "sleep_1",
+        "agent_management__sleep",
+        %{"seconds" => requested_ms / 1000},
+        1
+      )
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "sleep-step-response"}})
+      |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+    %{tool_calls: [call]} =
+      Persistence.persist_provider_completed!(generating_message.id, runtime_step)
+
+    assert %DateTime{} = call.created_at
+
+    Process.sleep(180)
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    message = wait_for_status!(generating_message.id, actor, [:done], 5_000)
+    sleep = sleep_result_payload!(message)
+
+    assert sleep["milliseconds"] == requested_ms
+    assert sleep["elapsed_milliseconds"] > 0
+    assert sleep["remaining_milliseconds"] < requested_ms
+    assert sleep["elapsed_milliseconds"] + sleep["remaining_milliseconds"] == requested_ms
+  end
+
   test "recover_orphaned_generations continues transient retry attempt numbering" do
     %{user: actor} = user_fixture()
 
@@ -422,6 +488,51 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
          }
        }}
     )
+  end
+
+  defp create_agent_management_tool_instance!(actor) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-agent-management",
+        name: "Agent management",
+        alias: "agent_management",
+        description: "",
+        config: %{},
+        secrets: %{},
+        max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_tool_binding!(actor, chat, tool_instance) do
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: tool_instance.id, enabled: true, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp sleep_result_payload!(message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.filter(&(&1.type == :tool_result))
+    |> Enum.flat_map(&List.wrap(&1.contents))
+    |> Enum.filter(&(&1.kind == :opaque))
+    |> Enum.find_value(fn
+      %{content_json: %{"raw" => %{"sleep" => %{} = sleep}}} -> sleep
+      _other -> nil
+    end)
+    |> case do
+      %{} = sleep -> sleep
+      _other -> flunk("Expected persisted sleep tool result")
+    end
   end
 
   defp retry_error_attempts(step) do

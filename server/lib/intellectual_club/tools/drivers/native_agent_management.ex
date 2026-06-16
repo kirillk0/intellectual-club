@@ -145,14 +145,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     {:error, "Handoff requires generation execution context."}
   end
 
-  def execute(%ToolInstance{} = _tool_instance, "sleep", args, _context) when is_map(args) do
+  def execute(%ToolInstance{} = _tool_instance, "sleep", args, context) when is_map(args) do
     with {:ok, seconds, timeout_ms} <- read_sleep_seconds(args) do
-      Process.sleep(timeout_ms)
+      {elapsed_ms, remaining_ms} = sleep_timing(timeout_ms, context)
+
+      Process.sleep(remaining_ms)
 
       {:ok,
        %ExecutionResult{
          text: "Paused for #{format_seconds(seconds)}.",
-         raw: %{"sleep" => %{"seconds" => seconds, "milliseconds" => timeout_ms}},
+         raw: %{
+           "sleep" => %{
+             "seconds" => seconds,
+             "milliseconds" => timeout_ms,
+             "elapsed_milliseconds" => elapsed_ms,
+             "remaining_milliseconds" => remaining_ms
+           }
+         },
          media: [],
          artifacts: []
        }}
@@ -197,6 +206,26 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       _other ->
         {:error, "Argument `seconds` must be a non-negative number."}
     end
+  end
+
+  defp sleep_timing(timeout_ms, %ExecutionContext{tool_call_created_at: %DateTime{} = started_at})
+       when is_integer(timeout_ms) and timeout_ms >= 0 do
+    elapsed_ms =
+      DateTime.utc_now()
+      |> DateTime.diff(started_at, :millisecond)
+      |> clamp_milliseconds(0, timeout_ms)
+
+    {elapsed_ms, max(timeout_ms - elapsed_ms, 0)}
+  end
+
+  defp sleep_timing(timeout_ms, _context) when is_integer(timeout_ms) and timeout_ms >= 0 do
+    {0, timeout_ms}
+  end
+
+  defp clamp_milliseconds(value, min_value, max_value) when is_integer(value) do
+    value
+    |> max(min_value)
+    |> min(max_value)
   end
 
   defp format_seconds(seconds) when is_integer(seconds), do: "#{seconds} seconds"

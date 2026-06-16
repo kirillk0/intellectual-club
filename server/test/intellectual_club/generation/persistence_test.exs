@@ -487,8 +487,10 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     %{tool_calls: [call]} =
       Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
 
+    assert %DateTime{} = call.created_at
     assert [missing] = Persistence.list_missing_tool_calls!(step_id)
     assert missing.item_id == call.item_id
+    assert missing.created_at == call.created_at
 
     result = %{
       text: "tool output",

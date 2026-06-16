@@ -75,6 +75,8 @@ defmodule IntellectualClub.Generation.Worker do
     tool_calls
     |> Task.async_stream(
       fn call ->
+        execution_context = execution_context_for_tool_call(execution_context, call)
+
         result =
           Executor.execute_llm_tool(
             tool_instances_by_alias,
@@ -1146,6 +1148,8 @@ defmodule IntellectualClub.Generation.Worker do
     tool_calls
     |> Task.async_stream(
       fn call ->
+        execution_context = execution_context_for_tool_call(execution_context, call)
+
         result =
           Executor.execute_llm_tool(
             tool_instances_by_alias,
@@ -1327,6 +1331,18 @@ defmodule IntellectualClub.Generation.Worker do
     }
   end
 
+  defp execution_context_for_tool_call(%ExecutionContext{} = context, call) do
+    call = tool_call_to_map(call)
+
+    %{
+      context
+      | tool_call_item_id: Map.get(call, :item_id) || Map.get(call, "item_id"),
+        tool_call_created_at: Map.get(call, :created_at) || Map.get(call, "created_at")
+    }
+  end
+
+  defp execution_context_for_tool_call(context, _call), do: context
+
   defp decorate_tool_result(call, %ExecutionResult{} = result) do
     media_contents =
       result.media
@@ -1367,6 +1383,7 @@ defmodule IntellectualClub.Generation.Worker do
         item_id: Map.get(call, :item_id),
         step_id: Map.get(call, :step_id),
         sequence: Map.get(call, :sequence),
+        created_at: Map.get(call, :created_at) || Map.get(call, "created_at"),
         call_id: to_string(Map.get(call, :call_id) || ""),
         name: to_string(Map.get(call, :name) || ""),
         args: Map.get(call, :args) || %{},

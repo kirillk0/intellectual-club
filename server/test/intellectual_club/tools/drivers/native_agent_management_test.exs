@@ -110,6 +110,30 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert result.text == "Paused for 0.02 seconds."
     assert result.raw["sleep"]["seconds"] == 0.02
     assert result.raw["sleep"]["milliseconds"] == 20
+    assert result.raw["sleep"]["elapsed_milliseconds"] == 0
+    assert result.raw["sleep"]["remaining_milliseconds"] == 20
+  end
+
+  test "sleep skips already elapsed persisted duration" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    context = %ExecutionContext{
+      tool_call_created_at: DateTime.add(DateTime.utc_now(), -1, :second)
+    }
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok, %ExecutionResult{} = result} =
+             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.2}, context)
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 80
+    assert result.raw["sleep"]["seconds"] == 0.2
+    assert result.raw["sleep"]["milliseconds"] == 200
+    assert result.raw["sleep"]["elapsed_milliseconds"] == 200
+    assert result.raw["sleep"]["remaining_milliseconds"] == 0
   end
 
   test "sleep validates duration" do
