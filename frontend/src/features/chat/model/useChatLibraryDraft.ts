@@ -1,8 +1,8 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
-import { api } from '@/api/client';
 import { jsonApiList, toIntId } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { parseImageAsset } from '@/features/media/image';
 import {
@@ -129,7 +129,7 @@ export function useChatLibraryDraft(params: Params) {
     savingChatChanges.value = true;
 
     try {
-      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, {
+      await updateChatRecord(params.chatId.value, {
         knowledge_block_bindings: (chatBlocksDraft.value || []).map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           knowledge_block_id: binding.block,

@@ -200,7 +200,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     Process.sleep(20)
 
     conn
-    |> patch(~p"/api/bff/chat-lifecycle/#{older_chat.id}", %{"note" => "Renamed older chat"})
+    |> json_api_patch("/api/ash/chats/#{older_chat.id}", %{"note" => "Renamed older chat"})
     |> json_response(200)
 
     payload =
@@ -232,7 +232,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     Process.sleep(20)
 
     conn
-    |> patch(~p"/api/bff/chat-lifecycle/#{older_chat.id}", %{"note" => "Renamed older empty"})
+    |> json_api_patch("/api/ash/chats/#{older_chat.id}", %{"note" => "Renamed older empty"})
     |> json_response(200)
 
     payload =
@@ -366,6 +366,18 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     payload
     |> Map.get("chats", [])
     |> Enum.find(fn item -> item["id"] == chat_id end)
+  end
+
+  defp json_api_patch(conn, path, attributes) do
+    conn
+    |> put_req_header("accept", "application/vnd.api+json")
+    |> put_req_header("content-type", "application/vnd.api+json")
+    |> patch(path, %{
+      "data" => %{
+        "type" => "chats",
+        "attributes" => attributes
+      }
+    })
   end
 
   defp create_chat!(actor, _title, attrs \\ %{}) do

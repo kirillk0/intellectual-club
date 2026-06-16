@@ -127,11 +127,6 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-list/search", ChatListController, :search
     get "/chat-list/idle-state", ChatListController, :idle_state
 
-    post "/chat-lifecycle", ChatLifecycleController, :create
-    patch "/chat-lifecycle/:id", ChatLifecycleController, :update
-    delete "/chat-lifecycle/:id", ChatLifecycleController, :delete
-    post "/chat-lifecycle/:id/continue", ChatLifecycleController, :continue_conversation
-
     get "/chat-state/:id", ChatStateController, :state
     get "/chat-state/:id/settings", ChatStateController, :settings
     get "/chat-state/:id/prompt-context", ChatStateController, :prompt_context
@@ -177,10 +172,6 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-messages/:message_id/contents/:content_id/file",
         ChatMessagesController,
         :content_file
-
-    post "/chat-knowledge-blocks", ChatKnowledgeBlocksController, :create
-    patch "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :update
-    delete "/chat-knowledge-blocks/:id", ChatKnowledgeBlocksController, :delete
 
     post "/knowledge-blocks/markdown-import/preview", KnowledgeBlocksMarkdownController, :preview
     post "/knowledge-blocks/markdown-import", KnowledgeBlocksMarkdownController, :import

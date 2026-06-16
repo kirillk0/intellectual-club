@@ -173,6 +173,7 @@ import ChatListRow from '@/components/ChatListRow.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
+import { createChatRecord } from '@/features/chat/chatAshApi';
 import { parseImageAsset } from '@/features/media/image';
 import { translate } from '@/i18n';
 import type { Bot, ImageAsset } from '@/types/api';
@@ -1172,11 +1173,9 @@ async function createChat(selectedBotId: number | string | '' = '') {
   error.value = null;
   try {
     const botId = selectedBotId === '' ? null : Number(selectedBotId);
-    const payload = await api.post<{ chat: { id: number } }>('/api/bff/chat-lifecycle', {
+    const id = await createChatRecord({
       bot_id: typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
     });
-    const id = payload.chat?.id;
-    if (!id) throw new Error('Missing chat id');
     botModalOpen.value = false;
     await router.push({
       path: `/chats/${id}`,

@@ -1,10 +1,15 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
-import { api } from '@/api/client';
 import {
   describeChatUploadPolicy,
   resolveChatUploadPolicy,
 } from '@/features/chat/attachments';
+import {
+  copyChatRecord,
+  createChatRecord,
+  deleteChatRecord,
+  updateChatRecord,
+} from '@/features/chat/chatAshApi';
 import { normalizeIdList, normalizeNameList } from '@/features/chat/model/chatViewModel.shared';
 import type { Bot, Chat, LlmConfiguration } from '@/types/api';
 import { formatChatBaseTitle, formatChatFullTitle } from '@/utils/chatTitle';
@@ -240,8 +245,9 @@ export function useChatHeaderControls(params: Params) {
     savingNote.value = true;
     try {
       const nextNote = noteModalValue.value.trim();
-      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, { note: nextNote });
+      await updateChatRecord(params.chatId.value, { note: nextNote });
       params.chatNote.value = nextNote;
+      if (params.chat.value) params.chat.value = { ...params.chat.value, note: nextNote };
       closeNoteModal();
     } catch (error) {
       console.error(error);
@@ -320,7 +326,7 @@ export function useChatHeaderControls(params: Params) {
     savingBot.value = true;
     try {
       const botId = botModalValue.value === '' ? null : Number(botModalValue.value);
-      await api.patch(`/api/bff/chat-lifecycle/${params.chatId.value}`, { bot_id: botId });
+      await updateChatRecord(params.chatId.value, { bot_id: botId });
       await params.reloadChat();
       closeBotModal();
     } catch (error) {
@@ -347,17 +353,13 @@ export function useChatHeaderControls(params: Params) {
     creatingChat.value = true;
     try {
       const botId = selectedBotId === '' ? null : Number(selectedBotId);
-      const requestPayload =
+      const id =
         selectedBotId === SAME_CHAT_OPTION_ID
-          ? { copy_from_chat_id: params.chatId.value }
-          : {
+          ? await copyChatRecord(params.chatId.value)
+          : await createChatRecord({
               bot_id:
                 typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
-            };
-
-      const payload = await api.post<{ chat: { id: number } }>('/api/bff/chat-lifecycle', requestPayload);
-      const id = payload.chat?.id;
-      if (!id) throw new Error('Missing chat id');
+            });
       newChatModalOpen.value = false;
       await params.pushRoute(`/chats/${id}`, { focusComposer: '1' });
     } finally {
@@ -383,13 +385,13 @@ export function useChatHeaderControls(params: Params) {
     const cfgId = selectedConfig.value === '' ? null : Number(selectedConfig.value);
 
     try {
-      const payload = await api.patch<{ chat: Chat }>(`/api/bff/chat-lifecycle/${params.chatId.value}`, {
+      await updateChatRecord(params.chatId.value, {
         llm_configuration_id: cfgId,
       });
 
       if (configSyncToken !== token) return;
-      params.chat.value = payload.chat;
-      selectedConfig.value = payload.chat?.llm_configuration_id ?? '';
+      if (params.chat.value) params.chat.value = { ...params.chat.value, llm_configuration_id: cfgId };
+      selectedConfig.value = cfgId ?? '';
       await params.refreshPromptContext();
       configSyncStatus.value = 'synced';
     } catch (error) {
@@ -441,7 +443,7 @@ export function useChatHeaderControls(params: Params) {
     }
     params.deleting.value = true;
     try {
-      await api.del(`/api/bff/chat-lifecycle/${params.chatId.value}`);
+      await deleteChatRecord(params.chatId.value);
       params.closeMenu();
       await params.pushRoute('/');
     } finally {

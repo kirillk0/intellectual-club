@@ -49,9 +49,11 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     refute Enum.any?(list_payload["chats"] || [], &(&1["id"] == chat.id))
 
-    recipient_conn
-    |> delete(~p"/api/bff/chat-lifecycle/#{chat.id}")
-    |> json_response(403)
+    delete_conn =
+      recipient_conn
+      |> json_api_delete("/api/ash/chats/#{chat.id}")
+
+    assert delete_conn.status in [403, 404]
 
     recipient_conn
     |> post(~p"/api/bff/chat-generation/#{chat.id}/generate", %{})
@@ -59,10 +61,14 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
 
     continue_payload =
       recipient_conn
-      |> post(~p"/api/bff/chat-lifecycle/#{chat.id}/continue", %{})
-      |> json_response(200)
+      |> json_api_post("/api/ash/chats/#{chat.id}/continue", %{})
+      |> json_response(201)
 
-    new_chat_id = get_in(continue_payload, ["chat", "id"])
+    new_chat_id =
+      continue_payload
+      |> get_in(["data", "id"])
+      |> String.to_integer()
+
     assert is_integer(new_chat_id)
     assert new_chat_id != chat.id
   end
@@ -88,6 +94,25 @@ defmodule IntellectualClubWeb.Bff.ChatSharingControllerTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp json_api_post(conn, path, attributes) do
+    conn
+    |> put_req_header("accept", "application/vnd.api+json")
+    |> put_req_header("content-type", "application/vnd.api+json")
+    |> post(path, %{
+      "data" => %{
+        "type" => "chats",
+        "attributes" => attributes
+      }
+    })
+  end
+
+  defp json_api_delete(conn, path) do
+    conn
+    |> put_req_header("accept", "application/vnd.api+json")
+    |> put_req_header("content-type", "application/vnd.api+json")
+    |> delete(path)
   end
 
   defp create_configuration!(actor) do

@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicI
 import { useRoute, useRouter } from 'vue-router';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
+import { continueChatRecord } from '@/features/chat/chatAshApi';
 import { useChatContextPanel } from '@/features/chat/model/useChatContextPanel';
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import { useChatHeaderControls } from '@/features/chat/model/useChatHeaderControls';
@@ -593,9 +594,7 @@ export function useChatViewModel() {
     if (!sharedReadonly.value || !chatId.value || continuingConversation.value) return;
     continuingConversation.value = true;
     try {
-      const payload = await api.post<{ chat: { id: number } }>(`/api/bff/chat-lifecycle/${chatId.value}/continue`, {});
-      const nextId = payload.chat?.id;
-      if (!nextId) throw new Error('Missing chat id');
+      const nextId = await continueChatRecord(chatId.value);
       await router.push(chatRouteTarget(nextId, { focusComposer: '1' }));
     } catch (error) {
       console.error(error);
