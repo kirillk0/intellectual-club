@@ -138,6 +138,7 @@ export const ruMessages: Record<string, string> = {
   'Describe when and how the model should use this tool.': 'Опишите, когда и как модель должна использовать этот инструмент.',
   'Description': 'Описание',
   'Details': 'Детали',
+  'Discover': 'Обнаружить',
   'Discovered:': 'Обнаружено:',
   'Discovery error:': 'Ошибка обнаружения:',
   'Dismiss': 'Скрыть',

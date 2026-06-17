@@ -17,22 +17,7 @@
       @next="goNext"
       @delete="remove"
       @duplicate="duplicate"
-    >
-      <template #extra-actions>
-        <button
-          v-if="!isNew && supportsDiscovery && !sharedReadonly"
-          class="icon-button icon-button--labeled crud-icon-button"
-          type="button"
-          @click="runDiscover"
-          :disabled="discovering || loading || saving || dirty"
-          :aria-label="discovering ? 'Discovering…' : 'Discover functions'"
-          :title="dirty ? 'Save changes before discovery.' : discovering ? 'Discovering…' : 'Discover functions'"
-        >
-          <SvgIcon name="tool-search" size="16" />
-          <span class="icon-button__label">{{ discovering ? 'Discovering…' : 'Discover functions' }}</span>
-        </button>
-      </template>
-    </CrudHeader>
+    />
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
     <div v-if="sharedReadonly" class="card share-banner">
@@ -397,45 +382,57 @@
           </template>
         </div>
 
-	        <div v-else class="stack">
-	          <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-	            <strong>Functions</strong>
-	            <button
-	              v-if="supportsDiscovery"
+        <div v-else class="stack">
+          <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+            <strong>Functions</strong>
+            <button
+              v-if="supportsDiscovery"
+              class="icon-button icon-button--labeled crud-icon-button tool-discover-button"
               type="button"
               @click="runDiscover"
               :disabled="isNew || discovering || dirty || loading || saving"
+              :aria-label="discovering ? 'Discovering…' : 'Discover'"
+              :title="
+                isNew
+                  ? 'Save the tool before discovering functions.'
+                  : dirty
+                    ? 'Save changes before discovery.'
+                    : discovering
+                      ? 'Discovering…'
+                      : 'Discover'
+              "
             >
-	              {{ discovering ? 'Discovering…' : 'Discover' }}
-	            </button>
-	          </div>
+              <SvgIcon name="tool-search" size="16" />
+              <span class="icon-button__label">{{ discovering ? 'Discovering…' : 'Discover' }}</span>
+            </button>
+          </div>
 
-	          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
-	          <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
+          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
+          <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
 
-	          <p v-if="functionsMode === 'fixed'" class="muted">This tool provides fixed functions and does not use discovery.</p>
-	          <p v-else-if="supportsDiscovery && isNew" class="muted">Save the tool before discovering functions.</p>
-	          <p v-else-if="functionsLoading" class="muted">Loading…</p>
-	          <p v-else-if="functionsError" class="error-text">{{ functionsError }}</p>
+          <p v-if="functionsMode === 'fixed'" class="muted">This tool provides fixed functions and does not use discovery.</p>
+          <p v-else-if="supportsDiscovery && isNew" class="muted">Save the tool before discovering functions.</p>
+          <p v-else-if="functionsLoading" class="muted">Loading…</p>
+          <p v-else-if="functionsError" class="error-text">{{ functionsError }}</p>
 
-	          <div v-if="!functionsLoading && !functionsError && !(supportsDiscovery && isNew)" class="stack" style="gap: 10px">
-	            <p v-if="!functions.length" class="muted">
-	              {{
-	                functionsMode === 'stored'
-	                  ? supportsDiscovery
-	                    ? 'No functions yet. Run discovery.'
-	                    : 'No functions yet.'
-	                  : 'Fixed functions are provided by the driver.'
-	              }}
-	            </p>
+          <div v-if="!functionsLoading && !functionsError && !(supportsDiscovery && isNew)" class="stack" style="gap: 10px">
+            <p v-if="!functions.length" class="muted">
+              {{
+                functionsMode === 'stored'
+                  ? supportsDiscovery
+                    ? 'No functions yet. Run discovery.'
+                    : 'No functions yet.'
+                  : 'Fixed functions are provided by the driver.'
+              }}
+            </p>
 
-	            <div v-else class="stack" style="gap: 10px">
-	              <div v-for="fn in functions" :key="fn.key" class="card" style="padding: 10px">
-	                <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-	                  <div style="min-width: 0">
-	                    <div style="font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
-	                      {{ fn.name }}
-	                    </div>
+            <div v-else class="stack" style="gap: 10px">
+              <div v-for="fn in functions" :key="fn.key" class="card" style="padding: 10px">
+                <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
+                  <div style="min-width: 0">
+                    <div style="font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
+                      {{ fn.name }}
+                    </div>
                     <div v-if="fn.description" class="muted" style="font-size: 0.85rem">
                       {{ fn.description }}
                     </div>
@@ -1629,6 +1626,23 @@ onMounted(() => {
 
 .tool-type-summary > span:last-child {
   min-width: 0;
+}
+
+.tool-discover-button {
+  width: auto;
+  min-width: 32px;
+  height: 32px;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 8px;
+}
+
+.tool-discover-button .icon-button__label {
+  display: inline-block;
+}
+
+.tool-discover-button :deep(.svg-icon) {
+  stroke-width: 1.35;
 }
 
 .tool-function-schema-code {
