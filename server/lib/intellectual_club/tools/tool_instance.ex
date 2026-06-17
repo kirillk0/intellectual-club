@@ -20,6 +20,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   alias IntellectualClub.Tools.Changes.ValidatePositiveRpsLimit
   alias IntellectualClub.Tools.Changes.ValidateToolConfig
   alias IntellectualClub.Tools.Changes.ValidateToolAlias
+  alias IntellectualClub.Tools.Changes.ValidateUniqueOutletToken
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.Changes.ValidateToolType
 
@@ -244,6 +245,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
 
@@ -273,7 +275,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
           description: source.description,
           alias: source.alias || source.name,
           config: duplicate_config(source, preserve_secrets?),
-          secrets: if(preserve_secrets?, do: source.secrets, else: %{}),
+          secrets: duplicate_secrets(source, preserve_secrets?),
           max_output_tokens: source.max_output_tokens,
           rps_limit: source.rps_limit
         })
@@ -314,6 +316,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
 
@@ -323,6 +326,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
       change({MergeSecretsPatch, []})
+      change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
 
@@ -403,4 +407,8 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
   defp duplicate_config(%{config: config}, _preserve_secrets?) when is_map(config), do: config
   defp duplicate_config(_source, _preserve_secrets?), do: %{}
+
+  defp duplicate_secrets(%{type: "outlet"}, _preserve_secrets?), do: %{}
+  defp duplicate_secrets(%{secrets: secrets}, true) when is_map(secrets), do: secrets
+  defp duplicate_secrets(_source, _preserve_secrets?), do: %{}
 end

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import outlets.outlet_base as outlet_base
@@ -12,6 +15,70 @@ from outlets.outlet_base import (
     outlet_tool,
     upload_call_file,
 )
+
+
+class _PairingResponse:
+    def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class OutletTokenConfigTest(unittest.TestCase):
+    def test_save_token_to_file_does_not_persist_tool_instance_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "outlet.json"
+
+            outlet_base._save_token_to_file(path, server_url="http://localhost:4000/", token="runner-token")
+
+            payload = json.loads(path.read_text("utf-8"))
+
+        self.assertEqual(payload["server_url"], "http://localhost:4000")
+        self.assertEqual(payload["token"], "runner-token")
+        self.assertIn("saved_at", payload)
+        self.assertNotIn("tool_instance_id", payload)
+
+    def test_pair_with_server_returns_token_and_ignores_tool_instance_id(self):
+        manager = mock.MagicMock()
+        client = mock.Mock()
+        manager.__enter__.return_value = client
+        manager.__exit__.return_value = False
+        client.post.side_effect = [
+            _PairingResponse(
+                {
+                    "status": "ok",
+                    "device_code": "device-code",
+                    "user_code": "ABCD-EFGH",
+                    "verification_url": "http://localhost:4000/outlets/connect?code=ABCD-EFGH",
+                    "interval": 0.5,
+                    "expires_in": 30,
+                }
+            ),
+            _PairingResponse(
+                {
+                    "status": "approved",
+                    "token": "paired-token",
+                    "tool_instance_id": 123,
+                }
+            ),
+        ]
+
+        with mock.patch("outlets.outlet_base.httpx.Client", return_value=manager), mock.patch(
+            "outlets.outlet_base.webbrowser.open"
+        ):
+            token = outlet_base._pair_with_server(
+                server_url="http://localhost:4000",
+                default_name="shell-outlet",
+                metadata={},
+            )
+
+        self.assertEqual(token, "paired-token")
 
 
 class OutletRunnerCompleteRetryTest(unittest.IsolatedAsyncioTestCase):

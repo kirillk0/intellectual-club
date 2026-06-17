@@ -290,9 +290,12 @@
 	        <div v-else-if="toolTab === 'credentials'" class="stack">
 	          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
 	          <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
-	          <p v-else-if="!secretsFields.length" class="muted">This tool type does not require credentials.</p>
+	          <p v-if="errors.hasField('secrets')" class="error-text">{{ errors.messageFor('secrets') }}</p>
+	          <p v-if="!toolTypesError && !toolTypesLoading && !secretsFields.length" class="muted">
+              This tool type does not require credentials.
+            </p>
 
-	          <template v-else>
+	          <template v-if="!toolTypesError && !toolTypesLoading && secretsFields.length">
 	            <label v-if="hasAuthToggle">
 	              Authentication method
 	              <select v-model="authMethod" class="full" @change="authMethodTouched = true">
@@ -316,17 +319,15 @@
                 </span>
               </div>
 
-              <div v-if="secretWidget(field.key, field.schema) === 'textarea'">
-                <textarea
-                  v-model="(form.secrets_patch as any)[field.key]"
-                  class="full"
-                  rows="8"
-                  autocomplete="off"
-                  spellcheck="false"
-                  :placeholder="secretPlaceholder(field.key, field.schema)"
-                  @input="handleSecretInput(field.key)"
-                />
-                <div class="flex" style="justify-content: flex-end; margin-top: 8px">
+              <div v-if="isOutletTokenField(field.key)" class="stack" style="gap: 8px; margin-top: 8px">
+                <div class="flex" style="gap: 8px; align-items: center; flex-wrap: wrap">
+                  <button
+                    type="button"
+                    :disabled="saving || loading"
+                    @click="generateAndCopyOutletToken(field.key)"
+                  >
+                    {{ outletTokenButtonText(field.key) }}
+                  </button>
                   <button
                     type="button"
                     class="danger"
@@ -337,26 +338,53 @@
                     Clear
                   </button>
                 </div>
+                <div v-if="outletTokenHasDraft(field.key)" class="muted" style="font-size: 0.85rem">
+                  Generated token copied. Save to activate it.
+                </div>
               </div>
-              <div v-else class="flex" style="gap: 8px; align-items: center">
-                <input
-                  v-model="(form.secrets_patch as any)[field.key]"
-                  type="password"
-                  class="full"
-                  autocomplete="new-password"
-                  placeholder="Stored on server"
-                  @input="handleSecretInput(field.key)"
-                />
-                <button
-                  type="button"
-                  class="danger"
-                  :disabled="(!isSecretPresent(field.key) && !Boolean((form.secrets_clear as any)[field.key])) || saving || loading"
-                  @click="markSecretForClear(field.key)"
-                  title="Remove the stored credential on the server."
-                >
-                  Clear
-                </button>
-              </div>
+              <template v-else>
+                <div v-if="secretWidget(field.key, field.schema) === 'textarea'">
+                  <textarea
+                    v-model="(form.secrets_patch as any)[field.key]"
+                    class="full"
+                    rows="8"
+                    autocomplete="off"
+                    spellcheck="false"
+                    :placeholder="secretPlaceholder(field.key, field.schema)"
+                    @input="handleSecretInput(field.key)"
+                  />
+                  <div class="flex" style="justify-content: flex-end; margin-top: 8px">
+                    <button
+                      type="button"
+                      class="danger"
+                      :disabled="(!isSecretPresent(field.key) && !Boolean((form.secrets_clear as any)[field.key])) || saving || loading"
+                      @click="markSecretForClear(field.key)"
+                      title="Remove the stored credential on the server."
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <div v-else class="flex" style="gap: 8px; align-items: center">
+                  <input
+                    v-model="(form.secrets_patch as any)[field.key]"
+                    type="password"
+                    class="full"
+                    autocomplete="new-password"
+                    placeholder="Stored on server"
+                    @input="handleSecretInput(field.key)"
+                  />
+                  <button
+                    type="button"
+                    class="danger"
+                    :disabled="(!isSecretPresent(field.key) && !Boolean((form.secrets_clear as any)[field.key])) || saving || loading"
+                    @click="markSecretForClear(field.key)"
+                    title="Remove the stored credential on the server."
+                  >
+                    Clear
+                  </button>
+                </div>
+              </template>
 
               <div v-if="Boolean((form.secrets_clear as any)[field.key])" class="muted" style="margin-top: 6px">
                 Credential will be removed on save.
@@ -480,6 +508,8 @@ import {
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
+import { translate } from '@/i18n';
+import { copyTextWithFallback } from '@/utils/clipboard';
 import { formatRelativeDateTime } from '@/utils/dates';
 import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
@@ -1110,10 +1140,53 @@ function isSecretPresent(secretKey: string): boolean {
   return (form.secrets_present || []).includes(key);
 }
 
+function isOutletTokenField(secretKey: string): boolean {
+  return String(form.type || '').trim() === 'outlet' && String(secretKey || '').trim() === 'token';
+}
+
+function outletTokenHasDraft(secretKey: string): boolean {
+  const key = String(secretKey || '').trim();
+  if (!key) return false;
+  return String((form.secrets_patch as any)[key] || '').trim() !== '';
+}
+
+function outletTokenButtonText(secretKey: string): string {
+  return isSecretPresent(secretKey) || outletTokenHasDraft(secretKey) ? 'Regenerate and copy' : 'Generate and copy';
+}
+
+function generateOutletToken(): string {
+  const bytes = new Uint8Array(32);
+  window.crypto.getRandomValues(bytes);
+
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return window
+    .btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function generateAndCopyOutletToken(secretKey: string) {
+  const key = String(secretKey || '').trim();
+  if (!key) return;
+
+  const token = generateOutletToken();
+  (form.secrets_patch as any)[key] = token;
+  (form.secrets_clear as any)[key] = false;
+  errors.clearField('secrets');
+
+  await copyTextWithFallback(token, { promptLabel: translate('Copy the outlet token manually:') });
+}
+
 function handleSecretInput(secretKey: string) {
   const key = String(secretKey || '').trim();
   if (!key) return;
   (form.secrets_clear as any)[key] = false;
+  errors.clearField('secrets');
 }
 
 function markSecretForClear(secretKey: string) {
@@ -1121,6 +1194,7 @@ function markSecretForClear(secretKey: string) {
   if (!key) return;
   (form.secrets_clear as any)[key] = true;
   (form.secrets_patch as any)[key] = '';
+  errors.clearField('secrets');
 }
 
 watch(

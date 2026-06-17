@@ -58,7 +58,6 @@ The persisted JSON currently contains:
 
 - `server_url`
 - `token`
-- `tool_instance_id`
 - `saved_at`
 
 The saved token is only reused when the `server_url` in the file matches the current `--server-url` / `OUTLET_SERVER_URL`.

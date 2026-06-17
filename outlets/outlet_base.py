@@ -475,12 +475,11 @@ def _load_token_from_file(path: pathlib.Path, *, server_url: str) -> str:
         return ""
 
 
-def _save_token_to_file(path: pathlib.Path, *, server_url: str, token: str, tool_instance_id: Any | None) -> None:
+def _save_token_to_file(path: pathlib.Path, *, server_url: str, token: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "server_url": str(server_url or "").strip().rstrip("/"),
         "token": str(token or "").strip(),
-        "tool_instance_id": tool_instance_id,
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -492,7 +491,7 @@ def _save_token_to_file(path: pathlib.Path, *, server_url: str, token: str, tool
         pass
 
 
-def _pair_with_server(*, server_url: str, default_name: str, metadata: dict[str, Any]) -> tuple[str, Any | None]:
+def _pair_with_server(*, server_url: str, default_name: str, metadata: dict[str, Any]) -> str:
     start_url = _join_url(server_url, "/api/outlet/pair/start/")
     poll_url = _join_url(server_url, "/api/outlet/pair/poll/")
 
@@ -538,9 +537,8 @@ def _pair_with_server(*, server_url: str, default_name: str, metadata: dict[str,
                     status = str(payload.get("status") or "")
                     if status == "approved":
                         token = str(payload.get("token") or "").strip()
-                        tool_instance_id = payload.get("tool_instance_id")
                         if token:
-                            return token, tool_instance_id
+                            return token
                     if status == "consumed":
                         raise RuntimeError("Pairing token already consumed. Please restart pairing.")
             time.sleep(max(0.5, interval))
@@ -1020,15 +1018,14 @@ def run_outlet(provider_factory: Callable[[], Any], *, default_name: str) -> Non
     if not token:
         token = _load_token_from_file(token_path, server_url=server_url)
 
-    tool_instance_id = None
     if not token and not bool(args.no_pairing):
         try:
-            token, tool_instance_id = _pair_with_server(
+            token = _pair_with_server(
                 server_url=server_url,
                 default_name=default_name,
                 metadata=_base_runner_metadata(),
             )
-            _save_token_to_file(token_path, server_url=server_url, token=token, tool_instance_id=tool_instance_id)
+            _save_token_to_file(token_path, server_url=server_url, token=token)
             print(f"Outlet token saved to: {token_path}", file=sys.stderr)
         except Exception as exc:
             print(f"Failed to authorize outlet: {exc}", file=sys.stderr)
