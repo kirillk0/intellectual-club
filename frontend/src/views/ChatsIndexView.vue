@@ -409,6 +409,16 @@ function setBotFilter(value: string) {
   if (isMobile.value) filterOpen.value = false;
 }
 
+function createChatInitialBotSelection(): number | '' {
+  const raw = String(botFilter.value || '').trim();
+  if (raw === 'none') return '';
+
+  const botId = Number(raw);
+  if (Number.isInteger(botId) && botId > 0) return botId;
+
+  return botSortMode.value === 'recent_activity' ? createChatBotOptions.value[0]?.id ?? '' : '';
+}
+
 const noBotChatCount = computed(() => {
   const count = chatListStats.value.no_bot_chat_count;
   return Number.isInteger(count) && count > 0 ? count : 0;
@@ -1160,13 +1170,13 @@ watch(
 async function openCreateChatModal() {
   if (creating.value) return;
   error.value = null;
-  const initialSelection = botSortMode.value === 'recent_activity' ? createChatBotOptions.value[0]?.id ?? '' : '';
+  const initialSelection = createChatInitialBotSelection();
   botModalValue.value = initialSelection;
   botModalOpen.value = true;
   await loadBots({ showError: true });
 
   if (!botModalOpen.value || botModalValue.value !== initialSelection) return;
-  botModalValue.value = botSortMode.value === 'recent_activity' ? createChatBotOptions.value[0]?.id ?? '' : '';
+  botModalValue.value = createChatInitialBotSelection();
 }
 
 function closeCreateChatModal() {
