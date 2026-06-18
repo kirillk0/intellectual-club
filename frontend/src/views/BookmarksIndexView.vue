@@ -2,12 +2,9 @@
   <div class="stack">
     <StackToolbarTeleport>
       <div class="toolbar fill">
-        <div class="toolbar-title-group">
-          <RouterLink to="/" class="icon-button icon-button--labeled" aria-label="Back to chats" title="Back to chats">
-            <SvgIcon name="chevron-left" />
-            <span class="icon-button__label">Back to chats</span>
-          </RouterLink>
-          <strong>Bookmarks</strong>
+        <strong>Bookmarks</strong>
+        <div class="header-actions toolbar-actions-right">
+          <button type="button" @click="goBack">Back</button>
         </div>
       </div>
     </StackToolbarTeleport>
@@ -54,11 +51,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { RouterLink } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
-import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -82,6 +78,9 @@ type BookmarkEntry = {
   preview?: string | null;
   chat: BookmarkChat;
 };
+
+const route = useRoute();
+const router = useRouter();
 
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -109,6 +108,11 @@ const emptyState = computed(() => {
   return bookmarks.value.length ? '' : 'No bookmarks yet.';
 });
 
+const returnTo = computed(() => {
+  const value = route.query.returnTo;
+  return typeof value === 'string' && value.startsWith('/') ? value : '/chats';
+});
+
 function niceDate(iso: string | null) {
   return formatRelativeDateTime(iso);
 }
@@ -119,6 +123,7 @@ function chatLabel(chat: BookmarkChat) {
 
 function bookmarkResultLink(entry: BookmarkEntry) {
   const query: Record<string, string> = {
+    returnTo: returnTo.value,
     focusMessage: String(entry.message_id),
   };
 
@@ -130,6 +135,10 @@ function bookmarkResultLink(entry: BookmarkEntry) {
     path: `/chats/${entry.chat.id}`,
     query,
   };
+}
+
+function goBack() {
+  router.push(returnTo.value);
 }
 
 async function loadBookmarks() {
@@ -154,12 +163,6 @@ onMounted(() => {
 
 <style scoped>
 .bookmarks-list {
-  gap: 10px;
-}
-
-.toolbar-title-group {
-  display: inline-flex;
-  align-items: center;
   gap: 10px;
 }
 

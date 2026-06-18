@@ -4,7 +4,7 @@
       <div class="toolbar fill">
         <strong>Chats</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <RouterLink to="/bookmarks" class="icon-button icon-button--labeled" aria-label="Open bookmarks" title="Bookmarks">
+          <RouterLink :to="bookmarksLink" class="icon-button icon-button--labeled" aria-label="Open bookmarks" title="Bookmarks">
             <SvgIcon name="bookmark" />
             <span class="icon-button__label">Bookmarks</span>
           </RouterLink>
@@ -265,6 +265,11 @@ const CHAT_SEARCH_MIN_LENGTH = 2;
 
 const route = useRoute();
 const router = useRouter();
+
+const bookmarksLink = computed(() => ({
+  path: '/bookmarks',
+  query: { returnTo: route.fullPath || '/chats' },
+}));
 
 function getQueryString(value: unknown) {
   if (Array.isArray(value)) {
