@@ -3,12 +3,14 @@
     :open="open"
     :backdrop-class="{
       'edit-message-modal-backdrop': true,
+      'edit-message-modal-backdrop--mobile-layer': mobileLayer,
       'modal-backdrop--compact': compactViewport,
     }"
     :modal-class="{
       'edit-message-modal': true,
       'edit-message-modal--dragging': dragActive,
       'edit-message-modal--compact': compactViewport,
+      'edit-message-modal--mobile-layer': mobileLayer,
     }"
     :modal-style="modalStyle"
     :aria-label="title"
@@ -212,19 +214,24 @@ const dragActive = ref(false);
 const dragDepth = ref(0);
 const selectedContentIndex = ref(0);
 const modalHeightPx = ref(0);
+const mobileLayer = ref(false);
 const previousBodyOverflow = ref<string | null>(null);
 const previousHtmlOverflow = ref<string | null>(null);
 const lockedScrollX = ref(0);
 const lockedScrollY = ref(0);
+const scrollLockActive = ref(false);
+const overflowLockApplied = ref(false);
 
 const contents = computed(() => (Array.isArray(props.modelValue) ? props.modelValue : []));
 const existingAttachments = computed(() => props.existingAttachments || []);
 const pendingFiles = computed(() => props.pendingFiles || []);
 const selectedContentValue = computed(() => contents.value[selectedContentIndex.value] ?? '');
 const modalStyle = computed(() =>
-  modalHeightPx.value > 0 ? { '--edit-message-modal-height': `${modalHeightPx.value}px` } : {}
+  !mobileLayer.value && modalHeightPx.value > 0
+    ? { '--edit-message-modal-height': `${modalHeightPx.value}px` }
+    : {}
 );
-const compactViewport = computed(() => modalHeightPx.value > 0 && modalHeightPx.value < 620);
+const compactViewport = computed(() => !mobileLayer.value && modalHeightPx.value > 0 && modalHeightPx.value < 620);
 let viewportSyncTimeouts: number[] = [];
 
 watch(
@@ -292,12 +299,58 @@ const handleTextareaSubmit = () => {
   emit('save');
 };
 
+const isMobileLayerViewport = () => window.matchMedia('(max-width: 640px)').matches;
+
+const applyDocumentOverflowLock = () => {
+  if (overflowLockApplied.value) return;
+
+  document.body.style.overflow = 'hidden';
+  document.documentElement.style.overflow = 'hidden';
+  overflowLockApplied.value = true;
+};
+
+const releaseDocumentOverflowLock = () => {
+  if (!overflowLockApplied.value) return;
+
+  document.body.style.overflow = previousBodyOverflow.value ?? '';
+  document.documentElement.style.overflow = previousHtmlOverflow.value ?? '';
+  overflowLockApplied.value = false;
+};
+
+const updateDocumentScrollLockMode = () => {
+  if (!scrollLockActive.value) return;
+
+  if (mobileLayer.value) {
+    releaseDocumentOverflowLock();
+    return;
+  }
+
+  applyDocumentOverflowLock();
+};
+
+const updateMobileLayer = () => {
+  const next = isMobileLayerViewport();
+  if (mobileLayer.value !== next) {
+    mobileLayer.value = next;
+  }
+
+  if (next) {
+    modalHeightPx.value = 0;
+    clearViewportSyncTimeouts();
+  }
+
+  updateDocumentScrollLockMode();
+  return next;
+};
+
 const computeModalHeight = () => {
+  if (updateMobileLayer()) {
+    return;
+  }
+
   const visualViewport = window.visualViewport;
   const viewportHeight = visualViewport?.height ?? window.innerHeight;
-  const isNarrowViewport = window.matchMedia('(max-width: 640px)').matches;
-  const viewportInset = isNarrowViewport ? 20 : 40;
-  modalHeightPx.value = Math.max(320, Math.round(viewportHeight - viewportInset));
+  modalHeightPx.value = Math.max(320, Math.round(viewportHeight - 40));
 };
 
 const clearViewportSyncTimeouts = () => {
@@ -308,6 +361,10 @@ const clearViewportSyncTimeouts = () => {
 };
 
 const syncViewport = () => {
+  if (updateMobileLayer()) {
+    return;
+  }
+
   computeModalHeight();
   enforceWindowScrollLock();
 };
@@ -327,7 +384,30 @@ const scheduleModalHeightRecalc = () => {
   );
 };
 
+const handleViewportResize = () => {
+  updateMobileLayer();
+
+  if (mobileLayer.value) {
+    return;
+  }
+
+  scheduleModalHeightRecalc();
+};
+
+const handleVisualViewportChange = () => {
+  if (updateMobileLayer()) {
+    return;
+  }
+
+  scheduleModalHeightRecalc();
+};
+
 const lockDocumentScroll = () => {
+  if (scrollLockActive.value) {
+    updateDocumentScrollLockMode();
+    return;
+  }
+
   if (previousBodyOverflow.value === null) {
     previousBodyOverflow.value = document.body.style.overflow;
   }
@@ -337,36 +417,38 @@ const lockDocumentScroll = () => {
 
   lockedScrollX.value = window.scrollX;
   lockedScrollY.value = window.scrollY;
+  scrollLockActive.value = true;
 
-  document.body.style.overflow = 'hidden';
-  document.documentElement.style.overflow = 'hidden';
+  updateDocumentScrollLockMode();
 };
 
 const unlockDocumentScroll = () => {
-  document.body.style.overflow = previousBodyOverflow.value ?? '';
-  document.documentElement.style.overflow = previousHtmlOverflow.value ?? '';
+  if (!scrollLockActive.value) return;
+
+  releaseDocumentOverflowLock();
 
   previousBodyOverflow.value = null;
   previousHtmlOverflow.value = null;
+  scrollLockActive.value = false;
   window.scrollTo(lockedScrollX.value, lockedScrollY.value);
 };
 
 const attachViewportListeners = () => {
-  window.addEventListener('resize', scheduleModalHeightRecalc);
-  window.addEventListener('orientationchange', scheduleModalHeightRecalc);
-  window.visualViewport?.addEventListener('resize', scheduleModalHeightRecalc);
-  window.visualViewport?.addEventListener('scroll', scheduleModalHeightRecalc);
+  window.addEventListener('resize', handleViewportResize);
+  window.addEventListener('orientationchange', handleViewportResize);
+  window.visualViewport?.addEventListener('resize', handleVisualViewportChange);
+  window.visualViewport?.addEventListener('scroll', handleVisualViewportChange);
 };
 
 const detachViewportListeners = () => {
-  window.removeEventListener('resize', scheduleModalHeightRecalc);
-  window.removeEventListener('orientationchange', scheduleModalHeightRecalc);
-  window.visualViewport?.removeEventListener('resize', scheduleModalHeightRecalc);
-  window.visualViewport?.removeEventListener('scroll', scheduleModalHeightRecalc);
+  window.removeEventListener('resize', handleViewportResize);
+  window.removeEventListener('orientationchange', handleViewportResize);
+  window.visualViewport?.removeEventListener('resize', handleVisualViewportChange);
+  window.visualViewport?.removeEventListener('scroll', handleVisualViewportChange);
 };
 
 const enforceWindowScrollLock = () => {
-  if (!props.open) return;
+  if (!props.open || mobileLayer.value) return;
 
   if (window.scrollX !== lockedScrollX.value || window.scrollY !== lockedScrollY.value) {
     window.scrollTo(lockedScrollX.value, lockedScrollY.value);
@@ -374,7 +456,7 @@ const enforceWindowScrollLock = () => {
 };
 
 const handleDocumentFocusChange = () => {
-  if (!props.open) return;
+  if (!props.open || updateMobileLayer()) return;
   scheduleModalHeightRecalc();
 };
 
@@ -396,6 +478,8 @@ const detachScrollLockListeners = () => {
 };
 
 const handleBackdropTouchMove = (event: TouchEvent) => {
+  if (mobileLayer.value) return;
+
   const target = event.target as HTMLElement | null;
   if (!target) {
     if (event.cancelable) event.preventDefault();
@@ -415,10 +499,13 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
+      updateMobileLayer();
       lockDocumentScroll();
       attachViewportListeners();
       attachScrollLockListeners();
-      scheduleModalHeightRecalc();
+      if (!mobileLayer.value) {
+        scheduleModalHeightRecalc();
+      }
       return;
     }
 
@@ -542,7 +629,7 @@ const handleDrop = (event: DragEvent) => {
   overflow: hidden;
 }
 
-.edit-message-modal--compact .edit-message-modal__body {
+:global(.edit-message-modal--compact .edit-message-modal__body) {
   overflow: visible;
   grid-template-rows: auto auto;
 }
@@ -555,7 +642,7 @@ const handleDrop = (event: DragEvent) => {
   overflow: visible;
 }
 
-.edit-message-modal--compact .message-edit-content {
+:global(.edit-message-modal--compact .message-edit-content) {
   min-height: min(220px, 42vh);
 }
 
@@ -590,7 +677,7 @@ const handleDrop = (event: DragEvent) => {
   touch-action: pan-y;
 }
 
-.edit-message-modal--compact .message-edit-textarea {
+:global(.edit-message-modal--compact .message-edit-textarea) {
   min-height: min(180px, 34vh) !important;
 }
 
@@ -600,7 +687,7 @@ const handleDrop = (event: DragEvent) => {
   min-height: 0;
 }
 
-.edit-message-modal--compact .message-attachments {
+:global(.edit-message-modal--compact .message-attachments) {
   gap: 6px;
 }
 
@@ -626,7 +713,7 @@ const handleDrop = (event: DragEvent) => {
   touch-action: pan-y;
 }
 
-.edit-message-modal--compact .attachment-list {
+:global(.edit-message-modal--compact .attachment-list) {
   max-height: min(112px, 18vh);
 }
 
@@ -761,25 +848,85 @@ const handleDrop = (event: DragEvent) => {
   padding-bottom: 8px;
 }
 
-.edit-message-modal--compact .modal-actions {
+:global(.edit-message-modal--compact .modal-actions) {
   position: sticky;
   bottom: 0;
   background: var(--color-surface);
   padding-top: 8px;
 }
 
+:global(.edit-message-modal-backdrop--mobile-layer) {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  background: var(--color-bg);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+:global(.edit-message-modal--mobile-layer) {
+  width: 100%;
+  min-height: calc(var(--app-vh, 1vh) * 100);
+  height: auto;
+  max-height: none;
+  padding:
+    calc(12px + var(--app-safe-area-top))
+    calc(12px + var(--app-safe-area-right))
+    calc(12px + var(--app-safe-area-bottom))
+    calc(12px + var(--app-safe-area-left));
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  align-content: normal;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
 @media (max-width: 640px) {
   :global(.edit-message-modal-backdrop) {
-    align-items: flex-start;
-    padding: 10px 4px;
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 0;
+    background: var(--color-bg);
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
   }
 
   :global(.edit-message-modal) {
-    width: min(100vw - 8px, 920px);
-    height: var(--edit-message-modal-height, calc(100dvh - 20px));
-    max-height: var(--edit-message-modal-height, calc(100dvh - 20px));
-    padding: 12px;
-    border-radius: 10px;
+    width: 100%;
+    min-height: calc(var(--app-vh, 1vh) * 100);
+    height: auto;
+    max-height: none;
+    padding:
+      calc(12px + var(--app-safe-area-top))
+      calc(12px + var(--app-safe-area-right))
+      calc(12px + var(--app-safe-area-bottom))
+      calc(12px + var(--app-safe-area-left));
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    align-content: normal;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .edit-message-modal__body {
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: visible;
+  }
+
+  .message-edit-content {
+    min-height: clamp(260px, 54vh, 540px);
+    grid-template-rows: auto minmax(220px, auto);
+  }
+
+  .message-edit-textarea {
+    height: clamp(220px, 48vh, 460px) !important;
+    min-height: 220px !important;
+    max-height: 460px !important;
+    resize: vertical;
   }
 
   .message-edit-content__header {
@@ -799,6 +946,21 @@ const handleDrop = (event: DragEvent) => {
 
   .attachment-list {
     grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .modal-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    flex-wrap: wrap;
+    padding-top: 8px;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .modal-actions .error-text {
+    flex: 1 0 100%;
   }
 }
 </style>
