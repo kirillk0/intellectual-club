@@ -82,6 +82,7 @@ import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import type { ImageAsset } from '@/types/api';
 
 type BotRow = {
@@ -99,6 +100,7 @@ type BotRow = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -190,14 +192,14 @@ const visibleBots = computed(() => {
 
 function openBot(id: number) {
   const ids = visibleBots.value.map((b) => b.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/bots/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/bots/${id}`, query: { recordsetKey } });
 }
 
 function createBot() {
   const ids = visibleBots.value.map((b) => b.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/bots/new`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/bots/new`, query: { recordsetKey } });
 }
 
 async function loadBots() {

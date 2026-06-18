@@ -87,6 +87,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 
 type Period = 'day' | 'week' | 'month' | 'custom';
 
@@ -121,6 +122,7 @@ type UsagePayload = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const periodOptions: { value: Period; label: string }[] = [
   { value: 'day', label: 'Day' },
@@ -228,6 +230,10 @@ function formatCost(value: unknown) {
 }
 
 function goBack() {
+  if (stackNav.isStackActive.value) {
+    stackNav.close();
+    return;
+  }
   router.push(returnTo.value);
 }
 

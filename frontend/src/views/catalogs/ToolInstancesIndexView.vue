@@ -197,6 +197,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -229,6 +230,7 @@ type ToolTypeOption = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -411,14 +413,14 @@ function clearType() {
 
 function openTool(id: number) {
   const ids = visibleTools.value.map((t) => t.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/tools/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/tools/${id}`, query: { recordsetKey } });
 }
 
 function createTool() {
   const ids = visibleTools.value.map((t) => t.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/tools/new`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/tools/new`, query: { recordsetKey } });
 }
 
 async function loadTools() {

@@ -192,6 +192,7 @@ import {
 import { parseImageAsset } from '@/features/media/image';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
 
@@ -207,6 +208,7 @@ type KnowledgeBlockRow = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -490,16 +492,16 @@ function clearTag() {
 
 function openBlock(id: number) {
   const ids = visibleBlocks.value.map((b) => b.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/knowledge-blocks/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/knowledge-blocks/${id}`, query: { recordsetKey } });
 }
 
 function createBlock() {
   const ids = visibleBlocks.value.map((b) => b.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  const query: LocationQueryRaw = { navKey, returnTo: route.fullPath };
+  const recordsetKey = createRecordset(ids);
+  const query: LocationQueryRaw = { recordsetKey };
   if (selectedTagId.value && !selectedNoTags.value) query.defaultTagId = String(selectedTagId.value);
-  router.push({ path: `/catalogs/knowledge-blocks/new`, query });
+  stackNav.open({ path: `/catalogs/knowledge-blocks/new`, query });
 }
 
 let lastBlocksRequestId = 0;

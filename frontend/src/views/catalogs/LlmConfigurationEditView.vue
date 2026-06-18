@@ -940,8 +940,8 @@ const addSelectedBlocks = (ids: number[]) => bindings.addBlocks(ids);
 
 const openBlockEditor = (blockId: number) => {
   const ids = linkedBlockIds.value;
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { recordsetKey } });
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({

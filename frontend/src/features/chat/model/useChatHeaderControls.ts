@@ -409,7 +409,6 @@ export function useChatHeaderControls(params: Params) {
     if (!selectedConfig.value) return;
     params.stackOpen({
       path: `/catalogs/llm-configurations/${selectedConfig.value}`,
-      query: { returnTo: params.routeFullPath() },
     });
     params.closeMenu();
   };
@@ -418,7 +417,6 @@ export function useChatHeaderControls(params: Params) {
     if (!currentBotId.value) return;
     params.stackOpen({
       path: `/catalogs/bots/${currentBotId.value}`,
-      query: { returnTo: params.routeFullPath() },
     });
     params.closeMenu();
   };

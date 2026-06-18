@@ -1,40 +1,42 @@
 <template>
-  <RouterLink class="row chat-list-row" :class="rowToneClass" :to="to">
-    <div class="chat-result-main">
-      <div class="chat-result-title">
-        <span class="chat-result-name">{{ title }}</span>
-        <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
-      </div>
-      <div class="chat-result-meta">
-        <div class="muted">{{ metaText }}</div>
-        <span
-          v-if="generationState"
-          class="chat-result-generation-state"
-          :class="`chat-result-generation-state--${generationState}`"
-          :aria-label="generationStateLabel"
-          :title="generationStateLabel"
-        >
-          <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
-            <span></span><span></span><span></span>
+  <RouterLink custom :to="to" v-slot="{ href, navigate }">
+    <a class="row chat-list-row" :class="rowToneClass" :href="href" @click="handleClick($event, navigate)">
+      <div class="chat-result-main">
+        <div class="chat-result-title">
+          <span class="chat-result-name">{{ title }}</span>
+          <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
+        </div>
+        <div class="chat-result-meta">
+          <div class="muted">{{ metaText }}</div>
+          <span
+            v-if="generationState"
+            class="chat-result-generation-state"
+            :class="`chat-result-generation-state--${generationState}`"
+            :aria-label="generationStateLabel"
+            :title="generationStateLabel"
+          >
+            <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </span>
+            <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
+            <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
           </span>
-          <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
-          <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
-        </span>
-      </div>
-      <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
-      <div v-if="previewText" class="chat-first-preview">
-        <div class="chat-first-preview-bubble" :class="previewToneClass">
-          {{ previewText }}
+        </div>
+        <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
+        <div v-if="previewText" class="chat-first-preview">
+          <div class="chat-first-preview-bubble" :class="previewToneClass">
+            {{ previewText }}
+          </div>
+        </div>
+        <div v-if="snippet" class="chat-search-snippet">
+          {{ snippet }}
         </div>
       </div>
-      <div v-if="snippet" class="chat-search-snippet">
-        {{ snippet }}
-      </div>
-    </div>
 
-    <div class="chat-result-badges">
-      <slot name="badges"></slot>
-    </div>
+      <div class="chat-result-badges">
+        <slot name="badges"></slot>
+      </div>
+    </a>
   </RouterLink>
 </template>
 
@@ -47,6 +49,7 @@ type GenerationState = 'generating' | 'reconnecting' | 'done';
 
 interface Props {
   to: RouteLocationRaw;
+  stack?: boolean;
   title: string;
   configLabel?: string | null;
   metaText: string;
@@ -59,6 +62,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  stack: false,
   configLabel: null,
   secondaryMeta: null,
   previewText: null,
@@ -67,6 +71,23 @@ const props = withDefaults(defineProps<Props>(), {
   generationState: null,
   rowRole: null,
 });
+
+const emit = defineEmits<{
+  navigate: [to: RouteLocationRaw, event: MouseEvent];
+}>();
+
+const isPlainLeftClick = (event: MouseEvent) =>
+  event.button === 0 && !event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey;
+
+function handleClick(event: MouseEvent, navigate: (event?: MouseEvent) => void) {
+  if (event.defaultPrevented || !isPlainLeftClick(event)) return;
+  if (!props.stack) {
+    navigate(event);
+    return;
+  }
+  event.preventDefault();
+  emit('navigate', props.to, event);
+}
 
 const rowToneClass = computed(() => ({
   'chat-list-row--user': props.rowRole === 'user',

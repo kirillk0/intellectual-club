@@ -1009,8 +1009,8 @@ watch(
 
 const openBlockEditor = (blockId: number) => {
   const ids = linkedBlockIds.value;
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { recordsetKey } });
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
@@ -1027,8 +1027,8 @@ const openNewBlock = newBlockDraft.openNewBlock;
 const openToolEditor = (toolInstanceId: number) => {
   if (!toolInstanceId) return;
   const ids = linkedToolInstanceIds.value;
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  stackNav.open({ path: `/catalogs/tools/${toolInstanceId}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/tools/${toolInstanceId}`, query: { recordsetKey } });
 };
 
 watch(

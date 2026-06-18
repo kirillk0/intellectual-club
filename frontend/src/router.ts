@@ -182,11 +182,9 @@ router.afterEach((to, from) => {
     const scrollY = stack.pendingPush.value;
     stack.push(from, scrollY);
     stack.clearPendingPush();
-    if (scrollY) {
-      nextTick(() => {
-        window.scrollTo({ top: scrollY, left: 0 });
-      });
-    }
+    nextTick(() => {
+      window.scrollTo({ top: 0, left: 0 });
+    });
   }
 
   if (!stack.active.value) return;

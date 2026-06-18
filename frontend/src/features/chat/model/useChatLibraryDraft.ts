@@ -161,9 +161,8 @@ export function useChatLibraryDraft(params: Params) {
     const ids = Array.from(
       new Set((chatBlocks.value || []).map((binding) => binding.block).filter((id): id is number => typeof id === 'number' && id > 0))
     );
-    const returnTo = params.routeFullPath();
-    const navKey = createRecordset(ids, { returnTo });
-    params.stackOpen({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { navKey, returnTo } });
+    const recordsetKey = createRecordset(ids);
+    params.stackOpen({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { recordsetKey } });
   };
 
   const openChatToolEditor = (toolInstanceId: number) => {
@@ -174,9 +173,8 @@ export function useChatLibraryDraft(params: Params) {
           .filter((id): id is number => typeof id === 'number' && id > 0)
       )
     );
-    const returnTo = params.routeFullPath();
-    const navKey = createRecordset(ids, { returnTo });
-    params.stackOpen({ path: `/catalogs/tools/${toolInstanceId}`, query: { navKey, returnTo } });
+    const recordsetKey = createRecordset(ids);
+    params.stackOpen({ path: `/catalogs/tools/${toolInstanceId}`, query: { recordsetKey } });
   };
 
   const moveChatBlock = (binding: ChatBlockLink, delta: number) => {

@@ -76,7 +76,6 @@ import CrudHeader from '@/components/CrudHeader.vue';
 import { api, isHttpError } from '@/api/client';
 import {
   appendRecordsetId,
-  getRecordset,
   removeRecordsetId,
 } from '@/features/catalogs/model/recordsets';
 import { useCrudRecordsetNavigation } from '@/features/catalogs/model/useCrudRecordsetNavigation';
@@ -243,10 +242,11 @@ const numericId = computed(() => {
   return id ?? undefined;
 });
 
-const navKey = computed(() => route.query.navKey as string | undefined);
-const recordsetReturnTo = computed(() => getRecordset(navKey.value)?.returnTo ?? null);
-const explicitReturnTo = computed(() => (route.query.returnTo as string | undefined) ?? null);
-const returnTo = computed(() => explicitReturnTo.value ?? recordsetReturnTo.value);
+const recordsetKey = computed(
+  () => pickLocationQueryValue(route.query.recordsetKey) ?? pickLocationQueryValue(route.query.navKey)
+);
+const explicitReturnTo = computed(() => pickLocationQueryValue(route.query.returnTo) ?? null);
+const returnTo = computed(() => explicitReturnTo.value);
 
 const form = reactive<GroupForm>({
   name: '',
@@ -277,12 +277,8 @@ useUnsavedChangesGuard(dirty);
 
 const editorQuery = computed(() => {
   const query = pickQuery({
-    navKey: navKey.value,
-    returnTo: returnTo.value,
+    recordsetKey: recordsetKey.value,
   });
-
-  const q = pickLocationQueryValue(route.query.q);
-  if (q !== undefined) query.q = q;
 
   return query;
 });
@@ -296,7 +292,7 @@ const navigateTo = (id: number) => {
 };
 
 const { totalCount, positionNumber, navDisabled, goPrev, goNext } = useCrudRecordsetNavigation({
-  recordsetKey: navKey,
+  recordsetKey,
   currentId: numericId,
   isNew,
   navigate: navigateTo,
@@ -401,7 +397,7 @@ async function save() {
       const createdGroup = payload.group;
       applyGroup(createdGroup);
 
-      if (navKey.value) appendRecordsetId(navKey.value, createdGroup.id);
+      if (recordsetKey.value) appendRecordsetId(recordsetKey.value, createdGroup.id);
 
       await stackNav.replace({
         path: `/administration/user-groups/${createdGroup.id}`,
@@ -436,7 +432,7 @@ async function remove() {
   try {
     await api.del(`/api/bff/admin/user-groups/${numericId.value}`);
 
-    if (navKey.value) removeRecordsetId(navKey.value, numericId.value);
+    if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
 
     if (stack.active.value) {
       stackNav.close();

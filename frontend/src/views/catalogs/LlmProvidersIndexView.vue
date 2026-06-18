@@ -70,6 +70,7 @@ import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type ProviderRow = {
@@ -83,6 +84,7 @@ type ProviderRow = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -138,14 +140,14 @@ const visibleProviders = computed(() => {
 
 function openProvider(id: number) {
   const ids = visibleProviders.value.map((p) => p.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/llm-providers/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/llm-providers/${id}`, query: { recordsetKey } });
 }
 
 function createProvider() {
   const ids = visibleProviders.value.map((p) => p.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/llm-providers/new`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/llm-providers/new`, query: { recordsetKey } });
 }
 
 async function loadProviders() {

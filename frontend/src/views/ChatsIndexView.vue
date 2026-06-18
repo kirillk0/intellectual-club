@@ -4,10 +4,10 @@
       <div class="toolbar fill">
         <strong>Chats</strong>
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
-          <RouterLink :to="bookmarksLink" class="icon-button icon-button--labeled" aria-label="Open bookmarks" title="Bookmarks">
+          <button class="icon-button icon-button--labeled" type="button" aria-label="Open bookmarks" title="Bookmarks" @click="openBookmarks">
             <SvgIcon name="bookmark" />
             <span class="icon-button__label">Bookmarks</span>
-          </RouterLink>
+          </button>
           <button
             class="icon-button icon-button--labeled primary toolbar-create-button"
             type="button"
@@ -66,6 +66,7 @@
                 v-for="c in visibleChats"
                 :key="c.id"
                 :to="chatResultLink(c)"
+                :stack="true"
                 :title="chatLabel(c)"
                 :config-label="c.llm_configuration_label || null"
                 :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
@@ -75,6 +76,7 @@
                 :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
                 :generation-state="generationStateForChat(c)"
                 :row-role="chatResultRole(c)"
+                @navigate="openChat"
               >
                 <template #badges>
                   <span
@@ -167,7 +169,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -177,6 +179,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
 import { parseImageAsset } from '@/features/media/image';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { translate } from '@/i18n';
 import type { Bot, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
@@ -265,11 +268,9 @@ const CHAT_SEARCH_MIN_LENGTH = 2;
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
-const bookmarksLink = computed(() => ({
-  path: '/bookmarks',
-  query: { returnTo: route.fullPath || '/chats' },
-}));
+const openBookmarks = () => stackNav.open({ path: '/bookmarks' });
 
 function getQueryString(value: unknown) {
   if (Array.isArray(value)) {
@@ -615,7 +616,7 @@ function chatResultRole(chat: ChatSummary | ChatSearchResult) {
 
 function chatResultLink(chat: ChatSummary | ChatSearchResult) {
   const path = `/chats/${chat.id}`;
-  const query: Record<string, string> = { returnTo: route.fullPath || '/chats' };
+  const query: Record<string, string> = {};
   if (!isSearchResult(chat)) return { path, query };
   if (!chat.message_id || chat.match_type === 'meta') return { path, query };
   query.focusMessage = String(chat.message_id);
@@ -623,6 +624,10 @@ function chatResultLink(chat: ChatSummary | ChatSearchResult) {
     query.focusInactive = '1';
   }
   return { path, query };
+}
+
+function openChat(to: RouteLocationRaw) {
+  stackNav.open(to);
 }
 
 function formatPreview(text: string) {
@@ -1194,9 +1199,9 @@ async function createChat(selectedBotId: number | string | '' = '') {
       bot_id: typeof botId === 'number' && Number.isInteger(botId) && botId > 0 ? botId : null,
     });
     botModalOpen.value = false;
-    await router.push({
+    await stackNav.open({
       path: `/chats/${id}`,
-      query: { returnTo: route.fullPath || '/chats', focusComposer: '1' },
+      query: { focusComposer: '1' },
     });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create chat.';

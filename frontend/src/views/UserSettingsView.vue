@@ -169,14 +169,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
+import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { parseImageAsset } from '@/features/media/image';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   currentWebPushSubscription,
   disableWebPush,
@@ -208,8 +209,7 @@ type UserKnowledgeBlockLink = {
 type LocaleDraft = '' | 'en' | 'ru';
 type ThemeDraft = PreferredTheme;
 
-const router = useRouter();
-const route = useRoute();
+const stackNav = useStackNavigation();
 const { currentUser } = useSessionAuth();
 
 const loading = ref(false);
@@ -456,11 +456,13 @@ const openPicker = () => {
 
 const openBlockEditor = (blockId: number) => {
   if (!blockId) return;
-  router.push({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(linkedBlockIds.value);
+  stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { recordsetKey } });
 };
 
 const openNewBlock = () => {
-  router.push({ path: '/catalogs/knowledge-blocks/new', query: { returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(linkedBlockIds.value);
+  stackNav.open({ path: '/catalogs/knowledge-blocks/new', query: { recordsetKey } });
 };
 
 const addBlocks = (blockIds: number[]) => {

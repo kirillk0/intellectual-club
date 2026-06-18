@@ -31,12 +31,14 @@
           v-for="entry in visibleBookmarks"
           :key="entry.bookmark_id"
           :to="bookmarkResultLink(entry)"
+          :stack="true"
           :title="chatLabel(entry.chat)"
           :config-label="entry.chat.llm_configuration_label || null"
           :meta-text="`${niceDate(entry.chat.last_activity_at || entry.chat.created_at || null)} · ${entry.chat.message_count ?? 0} msgs`"
           :secondary-meta="entry.bookmarked_at ? `Bookmarked ${niceDate(entry.bookmarked_at)}` : null"
           :preview-text="entry.preview || 'No preview available.'"
           :preview-role="entry.message_role"
+          @navigate="openBookmark"
         >
           <template #badges>
             <span v-if="entry.inactive" class="badge badge-muted">Inactive branch</span>
@@ -51,11 +53,12 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 
@@ -81,6 +84,7 @@ type BookmarkEntry = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -123,7 +127,6 @@ function chatLabel(chat: BookmarkChat) {
 
 function bookmarkResultLink(entry: BookmarkEntry) {
   const query: Record<string, string> = {
-    returnTo: returnTo.value,
     focusMessage: String(entry.message_id),
   };
 
@@ -137,7 +140,15 @@ function bookmarkResultLink(entry: BookmarkEntry) {
   };
 }
 
+function openBookmark(to: RouteLocationRaw) {
+  stackNav.open(to);
+}
+
 function goBack() {
+  if (stackNav.isStackActive.value) {
+    stackNav.close();
+    return;
+  }
   router.push(returnTo.value);
 }
 

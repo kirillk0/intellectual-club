@@ -10,7 +10,7 @@ import {
 } from '@/api/jsonApi';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
-import { appendRecordsetId, getRecordset, removeRecordsetId } from './recordsets';
+import { appendRecordsetId, removeRecordsetId } from './recordsets';
 import { useCrudRecordsetNavigation } from './useCrudRecordsetNavigation';
 import { useFormErrors } from './useFormErrors';
 import { useJsonDirtyCompare } from './useJsonDirtyCompare';
@@ -74,11 +74,11 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     return id ?? undefined;
   });
 
-  const navKey = computed(() => route.query.navKey as string | undefined);
-
-  const recordsetReturnTo = computed(() => getRecordset(navKey.value)?.returnTo ?? null);
-  const explicitReturnTo = computed(() => (route.query.returnTo as string | undefined) ?? null);
-  const returnTo = computed(() => explicitReturnTo.value ?? recordsetReturnTo.value);
+  const recordsetKey = computed(
+    () => pickLocationQueryValue(route.query.recordsetKey) ?? pickLocationQueryValue(route.query.navKey)
+  );
+  const explicitReturnTo = computed(() => pickLocationQueryValue(route.query.returnTo) ?? null);
+  const returnTo = computed(() => explicitReturnTo.value);
 
   const form = reactive<TForm>(options.defaultForm());
   const base = ref<TForm>(deepClone(options.defaultForm()));
@@ -99,8 +99,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
 
   const editorQuery = computed(() => {
     const query = pickQuery({
-      navKey: navKey.value,
-      returnTo: returnTo.value,
+      recordsetKey: recordsetKey.value,
     });
 
     for (const key of options.preserveQueryKeys || []) {
@@ -120,7 +119,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   };
 
   const { totalCount, positionNumber, navDisabled, goPrev, goNext } = useCrudRecordsetNavigation({
-    recordsetKey: navKey,
+    recordsetKey,
     currentId: numericId,
     isNew,
     navigate: navigateTo,
@@ -200,7 +199,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         handleDocument(created, 'save');
 
         if (newId) {
-          if (navKey.value) appendRecordsetId(navKey.value, newId);
+          if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
           await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
         }
       } else {
@@ -239,7 +238,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     try {
       const id = numericId.value;
       await jsonApiDelete(options.basePath, id);
-      if (navKey.value) removeRecordsetId(navKey.value, id);
+      if (recordsetKey.value) removeRecordsetId(recordsetKey.value, id);
       if (stack.active.value) {
         stackNav.close();
       } else {
@@ -277,7 +276,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       handleDocument(duplicated, 'duplicate');
 
       if (newId) {
-        if (navKey.value) appendRecordsetId(navKey.value, newId);
+        if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
         await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
       }
     } catch (error) {
@@ -314,7 +313,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     idParam,
     isNew,
     numericId,
-    navKey,
+    recordsetKey,
     returnTo,
     editorQuery,
     totalCount,

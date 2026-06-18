@@ -14,7 +14,6 @@
   <div class="stack chat-page" v-else-if="vm.loaded && vm.chat">
     <StackToolbarTeleport>
       <ChatHeaderToolbar
-        :back-to="vm.chatsReturnTarget"
         :selected-config="vm.selectedConfig"
         :applied-config="vm.appliedConfig"
         :selectable-configs="vm.selectableConfigs"
@@ -47,6 +46,7 @@
         :set-menu-button-ref="vm.setMenuButtonRef"
         @update:selectedConfig="(value) => (vm.selectedConfig = value)"
         @change-config="vm.updateConfig"
+        @close="vm.backToChats"
         @toggle-menu="vm.toggleMenu"
         @open-new-chat="vm.openNewChatModal"
         @open-config-editor="vm.openConfigEditor"
@@ -117,6 +117,7 @@
               v-if="vm.parentRelation"
               class="chat-relation-banner chat-relation-banner--parent"
               :to="chatRoute(vm.parentRelation.chat_id)"
+              @click.capture="handleChatRouteClick($event, vm.parentRelation.chat_id)"
             >
               <span>Continuation of</span>
               <strong>{{ relationTitle(vm.parentRelation) }}</strong>
@@ -167,6 +168,7 @@
                 :key="`handoff-${msg.id}-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
                 :to="chatRoute(relation.chat_id)"
+                @click.capture="handleChatRouteClick($event, relation.chat_id)"
               >
                 <span>Continued in</span>
                 <strong>{{ relationTitle(relation) }}</strong>
@@ -189,6 +191,7 @@
                 :key="`handoff-fallback-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
                 :to="chatRoute(relation.chat_id)"
+                @click.capture="handleChatRouteClick($event, relation.chat_id)"
               >
                 <span>Continued in</span>
                 <strong>{{ relationTitle(relation) }}</strong>
@@ -651,8 +654,17 @@ const relationTitle = (relation: ChatRelationSummary) =>
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,
-  query: { returnTo: vm.chatsReturnTarget },
+  state: { stack: true },
 });
+
+const isPlainLeftClick = (event: MouseEvent) =>
+  event.button === 0 && !event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey;
+
+const handleChatRouteClick = (event: MouseEvent, chatId: number) => {
+  if (event.defaultPrevented || !isPlainLeftClick(event)) return;
+  event.preventDefault();
+  void vm.openChat(chatId);
+};
 
 const handleDragEnter = () => {
   if (!vm.canAttachFiles) return;

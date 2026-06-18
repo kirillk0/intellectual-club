@@ -144,6 +144,7 @@ import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsM
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type ConfigRow = {
@@ -168,6 +169,7 @@ type ConfigTagRow = {
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -336,20 +338,20 @@ function clearTag() {
 
 function openConfig(id: number) {
   const ids = visibleConfigs.value.map((c) => c.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/catalogs/llm-configurations/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/catalogs/llm-configurations/${id}`, query: { recordsetKey } });
 }
 
 function createConfig() {
   const ids = visibleConfigs.value.map((c) => c.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  const query: LocationQueryRaw = { navKey, returnTo: route.fullPath };
+  const recordsetKey = createRecordset(ids);
+  const query: LocationQueryRaw = { recordsetKey };
   if (selectedTagId.value && !selectedNoTags.value) query.defaultTagId = String(selectedTagId.value);
-  router.push({ path: `/catalogs/llm-configurations/new`, query });
+  stackNav.open({ path: `/catalogs/llm-configurations/new`, query });
 }
 
 function openUsage() {
-  router.push({ path: '/catalogs/llm-configurations/usage', query: { returnTo: route.fullPath } });
+  stackNav.open({ path: '/catalogs/llm-configurations/usage' });
 }
 
 async function loadConfigs() {

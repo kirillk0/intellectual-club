@@ -75,10 +75,16 @@
           </button>
         </div>
 
-        <RouterLink :to="backTo" class="icon-button icon-button--labeled chat-toolbar__icon-button" :aria-label="t('Close')" :title="t('Close')">
+        <button
+          class="icon-button icon-button--labeled chat-toolbar__icon-button"
+          type="button"
+          :aria-label="t('Close')"
+          :title="t('Close')"
+          @click="emit('close')"
+        >
           <SvgIcon name="x" size="16" />
           <span class="icon-button__label">{{ t('Close') }}</span>
-        </RouterLink>
+        </button>
 
         <Teleport to="body">
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
@@ -197,7 +203,6 @@ import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
 import type { LlmConfiguration } from '@/types/api';
 
 interface Props {
-  backTo?: string;
   selectedConfig: number | '';
   appliedConfig: number | '';
   selectableConfigs: LlmConfiguration[];
@@ -234,7 +239,6 @@ type TemplateRefValue = Element | ComponentPublicInstance | null;
 const t = translate;
 
 const props = withDefaults(defineProps<Props>(), {
-  backTo: '/chats',
   selectableConfigs: () => [],
   defaultConfig: null,
   regularSelectableConfigs: () => [],
@@ -242,6 +246,23 @@ const props = withDefaults(defineProps<Props>(), {
   selectedDisabledConfig: null,
   selectedDisabledConfigReason: null,
 });
+
+const emit = defineEmits<{
+  close: [];
+  'update:selectedConfig': [value: number | ''];
+  'change-config': [];
+  'toggle-menu': [];
+  'open-new-chat': [];
+  'open-config-editor': [];
+  'open-bot-editor': [];
+  'open-bot-modal': [];
+  'open-note-modal': [];
+  'open-share': [];
+  handoff: [];
+  'delete-chat': [];
+  'open-bot-tools': [];
+  'dismiss-missing-tools-banner': [];
+}>();
 
 const configSelectorDisabled = computed(() => !props.canEdit || props.configSyncStatus === 'pending' || props.isGenerating);
 
@@ -257,22 +278,6 @@ const handoffDisabledTitle = computed(() => {
   if (props.configSyncStatus === 'pending') return t('Cannot handoff while generating or syncing configuration');
   return undefined;
 });
-
-const emit = defineEmits<{
-  (e: 'update:selectedConfig', value: number | ''): void;
-  (e: 'change-config'): void;
-  (e: 'toggle-menu'): void;
-  (e: 'open-new-chat'): void;
-  (e: 'open-config-editor'): void;
-  (e: 'open-bot-editor'): void;
-  (e: 'open-bot-modal'): void;
-  (e: 'open-note-modal'): void;
-  (e: 'open-share'): void;
-  (e: 'handoff'): void;
-  (e: 'delete-chat'): void;
-  (e: 'open-bot-tools'): void;
-  (e: 'dismiss-missing-tools-banner'): void;
-}>();
 
 const appliedConfigText = computed(() => {
   if (props.appliedConfig === '') return t('No config');

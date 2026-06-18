@@ -3,7 +3,6 @@ import { reactive } from 'vue';
 export type CrudRecordset = {
   ids: number[];
   createdAt: number;
-  returnTo?: string | null;
 };
 
 const STORAGE_KEY = 'ic_v2_crud_recordsets_v1';
@@ -62,7 +61,6 @@ function restoreRecordsets() {
     recordsets.set(key, {
       ids,
       createdAt: typeof v.createdAt === 'number' ? v.createdAt : Date.now(),
-      returnTo: typeof v.returnTo === 'string' ? v.returnTo : null,
     });
   }
 
@@ -71,9 +69,9 @@ function restoreRecordsets() {
 
 restoreRecordsets();
 
-export function createRecordset(ids: number[], opts: { returnTo?: string | null } = {}): string {
+export function createRecordset(ids: number[]): string {
   const key = randomKey();
-  recordsets.set(key, { ids: Array.from(ids), createdAt: Date.now(), returnTo: opts.returnTo ?? null });
+  recordsets.set(key, { ids: Array.from(ids), createdAt: Date.now() });
   pruneRecordsets();
   persistRecordsets();
   return key;

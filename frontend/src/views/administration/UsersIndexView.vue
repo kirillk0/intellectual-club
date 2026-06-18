@@ -71,11 +71,13 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useSessionAuth } from '@/features/auth/session';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUser } from '@/types/api';
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const { currentUser } = useSessionAuth();
 
@@ -125,14 +127,14 @@ const visibleUsers = computed(() => {
 
 function openUser(id: number) {
   const ids = visibleUsers.value.map((user) => user.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/administration/users/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/administration/users/${id}`, query: { recordsetKey } });
 }
 
 function createUser() {
   const ids = visibleUsers.value.map((user) => user.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: '/administration/users/new', query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: '/administration/users/new', query: { recordsetKey } });
 }
 
 async function loadUsers() {

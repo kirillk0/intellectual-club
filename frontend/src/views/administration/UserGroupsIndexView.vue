@@ -68,11 +68,13 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUserGroup } from '@/types/api';
 
 const route = useRoute();
 const router = useRouter();
+const stackNav = useStackNavigation();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -129,14 +131,14 @@ const visibleGroups = computed(() => {
 
 function openGroup(id: number) {
   const ids = visibleGroups.value.map((group) => group.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: `/administration/user-groups/${id}`, query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: `/administration/user-groups/${id}`, query: { recordsetKey } });
 }
 
 function createGroup() {
   const ids = visibleGroups.value.map((group) => group.id);
-  const navKey = createRecordset(ids, { returnTo: route.fullPath });
-  router.push({ path: '/administration/user-groups/new', query: { navKey, returnTo: route.fullPath } });
+  const recordsetKey = createRecordset(ids);
+  stackNav.open({ path: '/administration/user-groups/new', query: { recordsetKey } });
 }
 
 async function loadGroups() {

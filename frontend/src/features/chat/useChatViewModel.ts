@@ -89,8 +89,25 @@ export function useChatViewModel() {
   const chatsReturnTarget = computed(() => readChatListReturnTarget(route.query.returnTo));
   const chatRouteTarget = (id: number, query: Record<string, string> = {}) => ({
     path: `/chats/${id}`,
-    query: { returnTo: chatsReturnTarget.value, ...query },
+    query,
   });
+
+  const navigateToChat = (id: number, query: Record<string, string> = {}) => {
+    const target = chatRouteTarget(id, query);
+    if (stack.active.value) return stackNav.replace(target);
+    return router.push(target);
+  };
+
+  const navigateToChatPath = (path: string, query: Record<string, string> = {}) => {
+    const target = Object.keys(query).length ? { path, query } : { path };
+    if (stack.active.value) return stackNav.replace(target);
+    return router.push(target);
+  };
+
+  const goToChats = () => {
+    if (stack.active.value) return stackNav.close();
+    return router.push(chatsReturnTarget.value);
+  };
 
   const ui = useChatUiChrome();
 
@@ -191,12 +208,16 @@ export function useChatViewModel() {
     toggleMenu: ui.toggleMenu,
     closeMenu: ui.closeMenu,
     stackOpen: stackNav.open,
-    pushRoute: (path, query = {}) => {
-      if (path === '/') return router.push(chatsReturnTarget.value);
-      if (path.startsWith('/chats/')) {
-        return router.push({ path, query: { returnTo: chatsReturnTarget.value, ...query } });
+    pushRoute: async (path, query = {}) => {
+      if (path === '/') {
+        await goToChats();
+        return;
       }
-      return Object.keys(query).length ? router.push({ path, query }) : router.push(path);
+      if (path.startsWith('/chats/')) {
+        await navigateToChatPath(path, query);
+        return;
+      }
+      await (Object.keys(query).length ? router.push({ path, query }) : router.push(path));
     },
     reloadChat: () => loadChat({ mode: 'soft' }),
     refreshPromptContext: () => refreshPromptContextFromServer(),
@@ -270,7 +291,7 @@ export function useChatViewModel() {
     removePendingFileFromCollection: composerRuntime.removePendingFileFromCollection,
     clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
     pushChatRoute: async (id) => {
-      await router.push(chatRouteTarget(id));
+      await navigateToChat(id);
     },
     afterBranchSwitched: contextPanel.rerunBranchSearch,
   });
@@ -595,7 +616,7 @@ export function useChatViewModel() {
     continuingConversation.value = true;
     try {
       const nextId = await continueChatRecord(chatId.value);
-      await router.push(chatRouteTarget(nextId, { focusComposer: '1' }));
+      await navigateToChat(nextId, { focusComposer: '1' });
     } catch (error) {
       console.error(error);
       window.alert(getApiErrorMessage(error, 'Failed to continue conversation.'));
@@ -628,7 +649,7 @@ export function useChatViewModel() {
   };
 
   const backToChats = async () => {
-    await router.push(chatsReturnTarget.value);
+    await goToChats();
   };
 
   watch(
@@ -776,6 +797,7 @@ export function useChatViewModel() {
     handoffDisabled,
     handoffChat,
     chatsReturnTarget,
+    openChat: navigateToChat,
     backToChats,
     closeOverlays: ui.closeOverlays,
     promptTokenCount: contextPanel.promptTokenCount,

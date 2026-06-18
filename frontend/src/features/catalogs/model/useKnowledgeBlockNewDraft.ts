@@ -1,12 +1,11 @@
 import { ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
 import { createRecordset, getRecordset } from './recordsets';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 
 type MaybePromise<T> = T | Promise<T>;
 
 type PendingNewBlockContext = {
-  navKey: string;
+  recordsetKey: string;
   initialIds: number[];
 };
 
@@ -21,7 +20,6 @@ function normalizeIds(ids: number[]) {
 }
 
 export function useKnowledgeBlockNewDraft(params: Params) {
-  const route = useRoute();
   const stackNav = useStackNavigation();
   const pendingNewBlockContext = ref<PendingNewBlockContext | null>(null);
 
@@ -36,14 +34,14 @@ export function useKnowledgeBlockNewDraft(params: Params) {
 
   const openNewBlock = () => {
     const ids = normalizeIds(params.linkedBlockIds());
-    const navKey = createRecordset(ids, { returnTo: route.fullPath });
+    const recordsetKey = createRecordset(ids);
     pendingNewBlockContext.value = {
-      navKey,
+      recordsetKey,
       initialIds: [...ids],
     };
     stackNav.open({
       path: '/catalogs/knowledge-blocks/new',
-      query: { navKey, returnTo: route.fullPath },
+      query: { recordsetKey },
     });
   };
 
@@ -52,7 +50,7 @@ export function useKnowledgeBlockNewDraft(params: Params) {
     if (!pending) return false;
     pendingNewBlockContext.value = null;
 
-    const recordset = getRecordset(pending.navKey);
+    const recordset = getRecordset(pending.recordsetKey);
     if (!recordset) return true;
 
     const baseline = new Set(pending.initialIds);
