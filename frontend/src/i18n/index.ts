@@ -141,6 +141,7 @@ const translatePatternRu = (key: string): string | null => {
     [/^Remove bookmark for message (\d+)$/u, (match) => `Удалить закладку у сообщения ${match[1]}`],
     [/^More actions for message (\d+)$/u, (match) => `Дополнительные действия для сообщения ${match[1]}`],
     [/^Download (.+)$/u, (match) => `Скачать ${match[1]}`],
+    [/^Open attachment (.+)$/u, (match) => `Открыть вложение ${match[1]}`],
     [/^Branch message (\d+) to new chat$/u, (match) => `Создать ветку от сообщения ${match[1]} в новом чате`],
     [/^Branch from message (\d+)$/u, (match) => `Ветка от сообщения ${match[1]}`],
     [/^⧉ (.+) \((\d+) blocks?, (\d+) tools?\)$/u, (match) =>

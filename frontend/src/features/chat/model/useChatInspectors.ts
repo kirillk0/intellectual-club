@@ -353,6 +353,7 @@ export function useChatInspectors(params: Params) {
   const pendingPreviewKey = (scope: PendingAttachmentScope, fileId: string) => `pending-${scope}-${fileId}`;
   const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => (a.sequence ?? 0) - (b.sequence ?? 0);
   const normalizePreviewIndex = (index: number, length: number) => ((index % length) + length) % length;
+  const isPreviewableKind = (kind: ReturnType<typeof getAttachmentPreviewKind>) => kind !== 'binary';
 
   const getPendingFilesForScope = (scope: PendingAttachmentScope) =>
     scope === 'edit' ? params.editPendingFiles.value : params.composerPendingFiles.value;
@@ -360,10 +361,33 @@ export function useChatInspectors(params: Params) {
   const findPendingAttachment = (fileId: string, scope: PendingAttachmentScope) =>
     getPendingFilesForScope(scope).find((item) => item.id === fileId) || null;
 
+  const getMessageAttachmentPreviewKind = (content: ChatMessageContent) =>
+    getAttachmentPreviewKind(
+      getAttachmentName(content),
+      getAttachmentMimeType(content),
+      Boolean(content.media?.is_image)
+    );
+
+  const getPendingAttachmentPreviewKind = (file: PendingChatFile) =>
+    getAttachmentPreviewKind(file.name, file.mimeType, file.mimeType.trim().toLowerCase().startsWith('image/'));
+
+  const canPreviewMessageAttachment = (content: ChatMessageContent) =>
+    content.kind === 'media' && Boolean(content.media) && isPreviewableKind(getMessageAttachmentPreviewKind(content));
+
+  const canPreviewPendingAttachment = (file: PendingChatFile) =>
+    isPreviewableKind(getPendingAttachmentPreviewKind(file));
+
+  const canPreviewAttachmentItem = (item: AttachmentPreviewItem) => {
+    if (item.type === 'message') return canPreviewMessageAttachment(item.content);
+
+    const pending = findPendingAttachment(item.fileId, item.scope);
+    return pending ? canPreviewPendingAttachment(pending) : false;
+  };
+
   const buildMessagePreviewItems = (messageId: number, contents: ChatMessageContent[] | null | undefined) =>
     (contents || [])
       .slice()
-      .filter((content) => content.kind === 'media' && content.media)
+      .filter(canPreviewMessageAttachment)
       .sort(sortBySequence)
       .map(
         (content): AttachmentPreviewItem => ({
@@ -375,14 +399,16 @@ export function useChatInspectors(params: Params) {
       );
 
   const buildComposerPreviewItems = () =>
-    params.composerPendingFiles.value.map(
-      (file): AttachmentPreviewItem => ({
-        key: pendingPreviewKey('composer', file.id),
-        type: 'pending',
-        scope: 'composer',
-        fileId: file.id,
-      })
-    );
+    params.composerPendingFiles.value
+      .filter(canPreviewPendingAttachment)
+      .map(
+        (file): AttachmentPreviewItem => ({
+          key: pendingPreviewKey('composer', file.id),
+          type: 'pending',
+          scope: 'composer',
+          fileId: file.id,
+        })
+      );
 
   const buildEditPreviewItems = () => [
     ...params.editExistingAttachments.value.map(
@@ -401,7 +427,7 @@ export function useChatInspectors(params: Params) {
         fileId: file.id,
       })
     ),
-  ];
+  ].filter(canPreviewAttachmentItem);
 
   const revokeAttachmentPreviewObjectUrl = () => {
     if (!attachmentPreviewObjectUrl) return;
@@ -447,6 +473,55 @@ export function useChatInspectors(params: Params) {
       });
   };
 
+  const downloadAttachmentItem = async (
+    item: AttachmentPreviewItem,
+    options: { usePreparedDownload?: boolean } = {}
+  ) => {
+    if (attachmentPreviewDownloadPending.value) return;
+
+    attachmentPreviewDownloadPending.value = true;
+
+    try {
+      if (item.type === 'message') {
+        const contentId = Number(item.content?.id || 0);
+        const name = getAttachmentName(item.content);
+        const mimeType = getAttachmentMimeType(item.content);
+        const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
+        if (!url) throw new Error('Attachment is not available.');
+
+        if (options.usePreparedDownload && shouldUseFileShareForDownloads()) {
+          const prepared = preparedAttachmentDownload;
+          const key = previewItemKey(item);
+
+          if (prepared?.key === key && prepared.file) {
+            await saveBlobAsFile(prepared.file, name, mimeType);
+            return;
+          }
+
+          if (prepared?.key === key && prepared.error) {
+            throw prepared.error;
+          }
+
+          throw new Error('Attachment is still preparing for download.');
+        }
+
+        await saveUrlAsFile(url, name, mimeType);
+        return;
+      }
+
+      const pending = findPendingAttachment(item.fileId, item.scope);
+      if (!pending) throw new Error('Attachment is no longer available.');
+
+      await saveBlobAsFile(pending.file, pending.name, pending.mimeType);
+    } catch (error) {
+      if (!isFileSaveAbort(error)) {
+        alert(errorMessage(error, 'Failed to download attachment.'));
+      }
+    } finally {
+      attachmentPreviewDownloadPending.value = false;
+    }
+  };
+
   const openMessageAttachmentPreview = async (payload: {
     messageId: number;
     content: ChatMessageContent;
@@ -455,6 +530,18 @@ export function useChatInspectors(params: Params) {
     const messageId = Number(payload.messageId || 0);
     const contentId = Number(payload.content?.id || 0);
     if (!messageId || !contentId) return;
+
+    const currentItem: AttachmentPreviewItem = {
+      key: messagePreviewKey(messageId, contentId),
+      type: 'message',
+      messageId,
+      content: payload.content,
+    };
+
+    if (!canPreviewAttachmentItem(currentItem)) {
+      await downloadAttachmentItem(currentItem);
+      return;
+    }
 
     const items = buildMessagePreviewItems(messageId, payload.contents?.length ? payload.contents : [payload.content]);
     const currentKey = messagePreviewKey(messageId, contentId);
@@ -478,8 +565,7 @@ export function useChatInspectors(params: Params) {
       const contentId = Number(item.content?.id || 0);
       const name = getAttachmentName(item.content);
       const mimeType = getAttachmentMimeType(item.content);
-      const isImage = Boolean(item.content.media?.is_image);
-      const kind = getAttachmentPreviewKind(name, mimeType, isImage);
+      const kind = getMessageAttachmentPreviewKind(item.content);
       const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
 
       attachmentPreviewTitle.value = name;
@@ -524,8 +610,7 @@ export function useChatInspectors(params: Params) {
       return;
     }
 
-    const isImage = pending.mimeType.trim().toLowerCase().startsWith('image/');
-    const kind = getAttachmentPreviewKind(pending.name, pending.mimeType, isImage);
+    const kind = getPendingAttachmentPreviewKind(pending);
     const objectUrl = URL.createObjectURL(pending.file);
 
     attachmentPreviewObjectUrl = objectUrl;
@@ -573,6 +658,21 @@ export function useChatInspectors(params: Params) {
     fileId: string,
     scope: PendingAttachmentScope = 'composer'
   ) => {
+    const pending = findPendingAttachment(fileId, scope);
+    if (!pending) return;
+
+    const currentItem: AttachmentPreviewItem = {
+      key: pendingPreviewKey(scope, fileId),
+      type: 'pending',
+      scope,
+      fileId,
+    };
+
+    if (!canPreviewPendingAttachment(pending)) {
+      await downloadAttachmentItem(currentItem);
+      return;
+    }
+
     const items = scope === 'edit' ? buildEditPreviewItems() : buildComposerPreviewItems();
     const currentKey = pendingPreviewKey(scope, fileId);
     const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
@@ -581,6 +681,18 @@ export function useChatInspectors(params: Params) {
   };
 
   const openExistingAttachmentPreview = async (attachment: ExistingChatAttachment) => {
+    const currentItem: AttachmentPreviewItem = {
+      key: messagePreviewKey(attachment.messageId, attachment.id),
+      type: 'message',
+      messageId: attachment.messageId,
+      content: attachment.content,
+    };
+
+    if (!canPreviewAttachmentItem(currentItem)) {
+      await downloadAttachmentItem(currentItem);
+      return;
+    }
+
     const items = buildEditPreviewItems();
     const currentKey = messagePreviewKey(attachment.messageId, attachment.id);
     const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
@@ -618,52 +730,9 @@ export function useChatInspectors(params: Params) {
   };
 
   const downloadAttachmentPreview = async () => {
-    if (attachmentPreviewDownloadPending.value) return;
-
     const item = attachmentPreviewCurrentItem.value;
     if (!item) return;
-
-    attachmentPreviewDownloadPending.value = true;
-
-    try {
-      if (item.type === 'message') {
-        const contentId = Number(item.content?.id || 0);
-        const name = getAttachmentName(item.content);
-        const mimeType = getAttachmentMimeType(item.content);
-        const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
-        if (!url) throw new Error('Attachment is not available.');
-
-        if (shouldUseFileShareForDownloads()) {
-          const prepared = preparedAttachmentDownload;
-          const key = previewItemKey(item);
-
-          if (prepared?.key === key && prepared.file) {
-            await saveBlobAsFile(prepared.file, name, mimeType);
-            return;
-          }
-
-          if (prepared?.key === key && prepared.error) {
-            throw prepared.error;
-          }
-
-          throw new Error('Attachment is still preparing for download.');
-        }
-
-        await saveUrlAsFile(url, name, mimeType);
-        return;
-      }
-
-      const pending = findPendingAttachment(item.fileId, item.scope);
-      if (!pending) throw new Error('Attachment is no longer available.');
-
-      await saveBlobAsFile(pending.file, pending.name, pending.mimeType);
-    } catch (error) {
-      if (!isFileSaveAbort(error)) {
-        alert(errorMessage(error, 'Failed to download attachment.'));
-      }
-    } finally {
-      attachmentPreviewDownloadPending.value = false;
-    }
+    await downloadAttachmentItem(item, { usePreparedDownload: true });
   };
 
   const closeAttachmentPreview = () => {

@@ -240,7 +240,7 @@
                 :title="`${item.name}  (${formatPendingFileSize(item.size)})`"
                 role="button"
                 tabindex="0"
-                :aria-label="`Preview attachment ${item.name}`"
+                :aria-label="`Open attachment ${item.name}`"
                 @click="vm.openPendingAttachmentPreview(item.id, 'composer')"
                 @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
                 @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
