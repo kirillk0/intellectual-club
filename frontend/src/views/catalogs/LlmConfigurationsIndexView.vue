@@ -28,16 +28,66 @@
     <div class="split-wrapper">
       <div class="catalog-split">
         <aside class="catalog-split__sidebar">
-          <LlmConfigurationTagsManagerPanel
-            :selectedId="selectedTagId"
-            :noTagsSelected="selectedNoTags"
-            :hasActiveFilter="hasActiveTagFilter"
-            noTagsLabel="No tags"
-            @select="selectTag"
-            @select-no-tags="selectNoTags"
-            @clear-filter="clearTag"
-            @changed="loadTagBindings"
-          />
+          <div class="llm-configurations-sidebar-stack">
+            <section class="card stack llm-config-provider-filter-card">
+              <div class="llm-config-filter-header">
+                <strong>Provider</strong>
+                <button type="button" class="link" :disabled="loading || !hasActiveProviderFilter" @click="clearProvider">
+                  Clear
+                </button>
+              </div>
+
+              <p v-if="loading" class="muted">Loading…</p>
+              <div v-else class="provider-filter-list" aria-label="Filter by provider">
+                <button
+                  type="button"
+                  class="provider-filter-option"
+                  :class="{ active: !selectedProviderFilter }"
+                  :aria-pressed="!selectedProviderFilter"
+                  @click="clearProvider"
+                >
+                  <span class="provider-filter-option__name">All providers</span>
+                  <span class="provider-filter-option__count">{{ configs.length }}</span>
+                </button>
+
+                <button
+                  v-if="hasNoProviderConfigs || selectedNoProvider"
+                  type="button"
+                  class="provider-filter-option"
+                  :class="{ active: selectedNoProvider }"
+                  :aria-pressed="selectedNoProvider"
+                  @click="selectProvider('none')"
+                >
+                  <span class="provider-filter-option__name">No provider</span>
+                  <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
+                </button>
+
+                <button
+                  v-for="provider in providerFilterOptions"
+                  :key="provider.id"
+                  type="button"
+                  class="provider-filter-option"
+                  :class="{ active: selectedProviderId === provider.id }"
+                  :aria-pressed="selectedProviderId === provider.id"
+                  @click="selectProvider(String(provider.id))"
+                >
+                  <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
+                  <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+                </button>
+              </div>
+            </section>
+
+            <LlmConfigurationTagsManagerPanel
+              :selectedId="selectedTagId"
+              :noTagsSelected="selectedNoTags"
+              :hasActiveFilter="hasActiveTagFilter"
+              noTagsLabel="No tags"
+              @select="selectTag"
+              @select-no-tags="selectNoTags"
+              @clear-filter="clearTag"
+              @changed="loadTagBindings"
+            />
+          </div>
         </aside>
 
         <main class="catalog-split__main stack">
@@ -103,7 +153,60 @@
         <div v-if="isMobile && tagsOverlayOpen" class="panel-backdrop" @click="closeTagsOverlay"></div>
       </transition>
 
-      <aside v-if="isMobile && tagsOverlayOpen" class="sidebar overlay align-left">
+      <aside v-if="isMobile && tagsOverlayOpen" class="sidebar overlay align-left llm-configurations-filter-overlay">
+        <section class="card stack llm-config-provider-filter-card">
+          <div class="llm-config-filter-header">
+            <strong>Provider</strong>
+            <div class="llm-config-filter-header__actions">
+              <button type="button" class="link" :disabled="loading || !hasActiveProviderFilter" @click="clearProvider">
+                Clear
+              </button>
+              <button class="panel-toggle" type="button" @click="closeTagsOverlay" aria-label="Hide filters">
+                <SvgIcon name="chevron-left" />
+              </button>
+            </div>
+          </div>
+
+          <p v-if="loading" class="muted">Loading…</p>
+          <div v-else class="provider-filter-list" aria-label="Filter by provider">
+            <button
+              type="button"
+              class="provider-filter-option"
+              :class="{ active: !selectedProviderFilter }"
+              :aria-pressed="!selectedProviderFilter"
+              @click="clearProvider"
+            >
+              <span class="provider-filter-option__name">All providers</span>
+              <span class="provider-filter-option__count">{{ configs.length }}</span>
+            </button>
+
+            <button
+              v-if="hasNoProviderConfigs || selectedNoProvider"
+              type="button"
+              class="provider-filter-option"
+              :class="{ active: selectedNoProvider }"
+              :aria-pressed="selectedNoProvider"
+              @click="selectProvider('none')"
+            >
+              <span class="provider-filter-option__name">No provider</span>
+              <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
+            </button>
+
+            <button
+              v-for="provider in providerFilterOptions"
+              :key="provider.id"
+              type="button"
+              class="provider-filter-option"
+              :class="{ active: selectedProviderId === provider.id }"
+              :aria-pressed="selectedProviderId === provider.id"
+              @click="selectProvider(String(provider.id))"
+            >
+              <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
+              <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+            </button>
+          </div>
+        </section>
+
         <LlmConfigurationTagsManagerPanel
           :selectedId="selectedTagId"
           :noTagsSelected="selectedNoTags"
@@ -113,24 +216,18 @@
           @select-no-tags="selectNoTags"
           @clear-filter="clearTag"
           @changed="loadTagBindings"
-        >
-          <template #header-extra>
-            <button class="panel-toggle" type="button" @click="closeTagsOverlay" aria-label="Hide tags filter">
-              <SvgIcon name="chevron-left" />
-            </button>
-          </template>
-        </LlmConfigurationTagsManagerPanel>
+        />
       </aside>
 
       <button
         v-if="isMobile && !tagsOverlayOpen"
         class="panel-toggle floating left"
-        :class="{ 'active-filter': hasActiveTagFilter }"
+        :class="{ 'active-filter': hasActiveCatalogFilter }"
         type="button"
         @click="openTagsOverlay"
-        aria-label="Show tags filter"
+        aria-label="Show filters"
       >
-        #
+        <SvgIcon name="filter" />
       </button>
     </div>
   </div>
@@ -161,6 +258,8 @@ type ProviderRow = {
   id: number;
   name: string;
 };
+
+type ProviderFilterOption = ProviderRow;
 
 type ConfigTagRow = {
   id: number;
@@ -207,6 +306,24 @@ function parseBooleanQuery(value: unknown): boolean {
 
 const selectedNoTags = computed(() => parseBooleanQuery(route.query.no_tags));
 const hasActiveTagFilter = computed(() => Boolean(selectedTagId.value) || selectedNoTags.value);
+
+function normalizeProviderFilter(value: unknown): string {
+  const source = Array.isArray(value) ? value[0] : value;
+  if (String(source || '').trim().toLowerCase() === 'none') return 'none';
+
+  const id = toIntId(source as any);
+  return id ? String(id) : '';
+}
+
+const selectedProviderFilter = computed(() => normalizeProviderFilter(route.query.provider));
+const selectedProviderId = computed(() => {
+  const value = selectedProviderFilter.value;
+  if (!value || value === 'none') return null;
+  return Number(value);
+});
+const selectedNoProvider = computed(() => selectedProviderFilter.value === 'none');
+const hasActiveProviderFilter = computed(() => Boolean(selectedProviderFilter.value));
+const hasActiveCatalogFilter = computed(() => hasActiveTagFilter.value || hasActiveProviderFilter.value);
 
 watch(
   () => route.query.q,
@@ -267,6 +384,39 @@ function providerName(providerId: number | null) {
   return providersById.value.get(providerId) || `Provider #${providerId}`;
 }
 
+const hasNoProviderConfigs = computed(() => configs.value.some((config) => !config.provider_id));
+const noProviderConfigCount = computed(() => configs.value.filter((config) => !config.provider_id).length);
+
+const providerConfigCounts = computed(() => {
+  const counts = new Map<number, number>();
+
+  for (const config of configs.value) {
+    const providerId = config.provider_id;
+    if (!providerId) continue;
+    counts.set(providerId, (counts.get(providerId) || 0) + 1);
+  }
+
+  return counts;
+});
+
+const providerFilterOptions = computed<ProviderFilterOption[]>(() => {
+  const byId = new Map<number, ProviderFilterOption>();
+
+  for (const provider of providers.value) byId.set(provider.id, provider);
+
+  for (const config of configs.value) {
+    const id = config.provider_id;
+    if (!id || byId.has(id)) continue;
+    byId.set(id, { id, name: providerName(id) });
+  }
+
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
+
+function providerConfigCount(providerId: number) {
+  return providerConfigCounts.value.get(providerId) || 0;
+}
+
 function configLabel(config: ConfigRow) {
   const note = config.note.trim();
   if (!note) return config.model_name;
@@ -281,6 +431,14 @@ const visibleConfigs = computed(() => {
   const q = normalize(search.value);
 
   return configs.value.filter((config) => {
+    const matchesProvider = selectedNoProvider.value
+      ? !config.provider_id
+      : selectedProviderId.value
+        ? config.provider_id === selectedProviderId.value
+        : true;
+
+    if (!matchesProvider) return false;
+
     const tags = configTags(config.id);
     const tagIds = tags.map((tag) => tag.id);
     const matchesTag = selectedNoTags.value
@@ -334,6 +492,32 @@ function clearTag() {
   delete next.no_tags;
   router.replace({ query: next }).catch(() => {});
   if (isMobile.value) closeTagsOverlay();
+}
+
+function selectProvider(value: string) {
+  const provider = normalizeProviderFilter(value);
+  const next: LocationQueryRaw = { ...route.query };
+
+  delete next.provider;
+  if (provider && provider !== selectedProviderFilter.value) next.provider = provider;
+
+  router.replace({ query: next }).catch(() => {});
+}
+
+function clearProvider() {
+  const next: LocationQueryRaw = { ...route.query };
+  delete next.provider;
+  router.replace({ query: next }).catch(() => {});
+}
+
+function ensureSelectedProviderIsAvailable() {
+  const id = selectedProviderId.value;
+  if (!id) return;
+  if (providerFilterOptions.value.some((provider) => provider.id === id)) return;
+
+  const next: LocationQueryRaw = { ...route.query };
+  delete next.provider;
+  router.replace({ query: next }).catch(() => {});
 }
 
 function openConfig(id: number) {
@@ -432,6 +616,7 @@ async function loadData() {
   error.value = null;
   try {
     await Promise.all([loadConfigs(), loadProviders(), loadTagBindings()]);
+    ensureSelectedProviderIsAvailable();
   } catch (e) {
     console.error(e);
     error.value = e instanceof Error ? e.message : 'Failed to load configurations.';
@@ -489,5 +674,68 @@ watch(
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.llm-configurations-sidebar-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.llm-configurations-filter-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.llm-config-filter-header,
+.llm-config-filter-header__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+
+.provider-filter-option:hover,
+.provider-filter-option:focus-visible,
+.provider-filter-option.active {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-strong);
+}
+
+.provider-filter-option.active {
+  color: var(--color-primary);
+}
+
+.provider-filter-option__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.provider-filter-option__count {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
 }
 </style>
