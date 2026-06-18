@@ -438,9 +438,10 @@ onBeforeUnmount(() => {
   text-align: left;
   padding: 9px 12px;
   border-radius: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  white-space: normal;
+  word-break: normal;
 }
 
 .config-select__item:hover,
