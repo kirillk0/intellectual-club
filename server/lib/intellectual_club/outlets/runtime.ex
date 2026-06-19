@@ -178,7 +178,8 @@ defmodule IntellectualClub.Outlets.Runtime do
            runner_id,
            runner_session_id,
            now_ms,
-           metadata
+           metadata,
+           allow_session_replacement?: true
          ) do
       {:error, :runner_already_active, instance, state} ->
         state = put_instance(state, tool_instance_id, instance)
@@ -307,91 +308,100 @@ defmodule IntellectualClub.Outlets.Runtime do
         _ -> %{}
       end
 
-    case touch_runner(
-           instance,
-           state,
-           tool_instance_id,
-           runner_id,
-           runner_session_id,
-           now_ms,
-           metadata
-         ) do
-      {:error, :runner_already_active, instance, state} ->
+    call_id = normalize_string(payload, "call_id", default: "")
+
+    case Map.fetch(instance.running, call_id) do
+      :error ->
         state = put_instance(state, tool_instance_id, instance)
-        {:reply, {:error, :runner_already_active}, state}
+        {:reply, {:error, :not_found}, state}
 
-      {:ok, instance, state} ->
-        call_id = normalize_string(payload, "call_id", default: "")
+      {:ok, call} ->
+        owns_call? =
+          to_string(call.runner_id) == runner_id and
+            to_string(call.runner_session_id) == runner_session_id
 
-        case Map.fetch(instance.running, call_id) do
-          :error ->
-            state = put_instance(state, tool_instance_id, instance)
-            {:reply, {:error, :not_found}, state}
+        if owns_call? do
+          case touch_runner(
+                 instance,
+                 state,
+                 tool_instance_id,
+                 runner_id,
+                 runner_session_id,
+                 now_ms,
+                 metadata
+               ) do
+            {:error, :runner_already_active, instance, state} ->
+              state = put_instance(state, tool_instance_id, instance)
+              {:reply, {:error, :runner_already_active}, state}
 
-          {:ok, _call} ->
-            status =
-              payload
-              |> Map.get("status", Map.get(payload, :status, "done"))
-              |> to_string()
-              |> String.trim()
-              |> case do
-                "error" -> "error"
-                _ -> "done"
-              end
-
-            result_text =
-              payload
-              |> Map.get("result_text", Map.get(payload, :result_text, ""))
-              |> to_string()
-
-            error_text =
-              payload
-              |> Map.get("error_text", Map.get(payload, :error_text, ""))
-              |> to_string()
-
-            result_raw =
-              case Map.get(payload, "result_raw", Map.get(payload, :result_raw)) do
-                %{} = m -> m
-                nil -> %{}
-                other -> %{"result" => other}
-              end
-
-            result_media =
-              case Map.get(payload, "result_media", Map.get(payload, :result_media)) do
-                list when is_list(list) -> Enum.filter(list, &is_map/1)
-                _ -> []
-              end
-
-            result_artifacts =
-              case Map.get(payload, "result_artifacts", Map.get(payload, :result_artifacts)) do
-                list when is_list(list) -> Enum.filter(list, &is_map/1)
-                _ -> []
-              end
-
-            {waiter, instance, state} =
-              pop_call_waiter(instance, state, tool_instance_id, call_id)
-
-            instance = %{instance | running: Map.delete(instance.running, call_id)}
-
-            if waiter do
-              reply =
-                if status == "done" do
-                  {:ok,
-                   %{
-                     text: result_text,
-                     raw: result_raw,
-                     media: result_media,
-                     artifacts: result_artifacts
-                   }}
-                else
-                  {:error, error_text |> blank_to_default("Outlet call failed.")}
+            {:ok, instance, state} ->
+              status =
+                payload
+                |> Map.get("status", Map.get(payload, :status, "done"))
+                |> to_string()
+                |> String.trim()
+                |> case do
+                  "error" -> "error"
+                  _ -> "done"
                 end
 
-              GenServer.reply(waiter.from, reply)
-            end
+              result_text =
+                payload
+                |> Map.get("result_text", Map.get(payload, :result_text, ""))
+                |> to_string()
 
-            state = put_instance(state, tool_instance_id, instance)
-            {:reply, :ok, state}
+              error_text =
+                payload
+                |> Map.get("error_text", Map.get(payload, :error_text, ""))
+                |> to_string()
+
+              result_raw =
+                case Map.get(payload, "result_raw", Map.get(payload, :result_raw)) do
+                  %{} = m -> m
+                  nil -> %{}
+                  other -> %{"result" => other}
+                end
+
+              result_media =
+                case Map.get(payload, "result_media", Map.get(payload, :result_media)) do
+                  list when is_list(list) -> Enum.filter(list, &is_map/1)
+                  _ -> []
+                end
+
+              result_artifacts =
+                case Map.get(payload, "result_artifacts", Map.get(payload, :result_artifacts)) do
+                  list when is_list(list) -> Enum.filter(list, &is_map/1)
+                  _ -> []
+                end
+
+              {waiter, instance, state} =
+                pop_call_waiter(instance, state, tool_instance_id, call_id)
+
+              instance = %{instance | running: Map.delete(instance.running, call_id)}
+
+              if waiter do
+                reply =
+                  if status == "done" do
+                    {:ok,
+                     %{
+                       text: result_text,
+                       raw: result_raw,
+                       media: result_media,
+                       artifacts: result_artifacts
+                     }}
+                  else
+                    {:error, error_text |> blank_to_default("Outlet call failed.")}
+                  end
+
+                GenServer.reply(waiter.from, reply)
+              end
+
+              state = put_instance(state, tool_instance_id, instance)
+              {:reply, :ok, state}
+          end
+        else
+          state = put_instance(state, tool_instance_id, instance)
+          {:reply, {:error, :not_found}, state}
         end
     end
   end
@@ -589,8 +599,11 @@ defmodule IntellectualClub.Outlets.Runtime do
          runner_id,
          runner_session_id,
          now_ms,
-         metadata
+         metadata,
+         opts \\ []
        ) do
+    allow_session_replacement? = Keyword.get(opts, :allow_session_replacement?, false)
+
     case instance.runner do
       nil ->
         runner = %{
@@ -604,10 +617,11 @@ defmodule IntellectualClub.Outlets.Runtime do
         {:ok, %{instance | runner: runner}, state}
 
       %{runner_id: prev_id, runner_session_id: prev_session} = runner ->
-        same? = to_string(prev_id) == runner_id and to_string(prev_session) == runner_session_id
+        same_runner? = to_string(prev_id) == runner_id
+        same_session? = same_runner? and to_string(prev_session) == runner_session_id
 
         cond do
-          same? ->
+          same_session? ->
             runner = %{
               runner
               | last_seen_ms: now_ms,
@@ -616,29 +630,63 @@ defmodule IntellectualClub.Outlets.Runtime do
 
             {:ok, %{instance | runner: runner}, state}
 
+          same_runner? and allow_session_replacement? ->
+            replace_runner_session(
+              instance,
+              state,
+              tool_instance_id,
+              runner_id,
+              runner_session_id,
+              now_ms,
+              metadata
+            )
+
           runner_online?(instance, now_ms) ->
             {:error, :runner_already_active, instance, state}
 
           true ->
-            {instance, state} =
-              fail_running_calls(
-                instance,
-                state,
-                tool_instance_id,
-                @runner_session_replaced_error
-              )
-
-            runner = %{
-              runner_id: runner_id,
-              runner_session_id: runner_session_id,
-              last_seen_ms: now_ms,
-              offline_since_ms: nil,
-              metadata: runner_metadata(metadata, %{})
-            }
-
-            {:ok, %{instance | runner: runner}, state}
+            replace_runner_session(
+              instance,
+              state,
+              tool_instance_id,
+              runner_id,
+              runner_session_id,
+              now_ms,
+              metadata
+            )
         end
     end
+  end
+
+  defp replace_runner_session(
+         instance,
+         state,
+         tool_instance_id,
+         runner_id,
+         runner_session_id,
+         now_ms,
+         metadata
+       ) do
+    {instance, state, prev_waiter} = pop_poll_waiter(instance, state, tool_instance_id)
+    maybe_reply_prev_poll(prev_waiter)
+
+    {instance, state} =
+      fail_running_calls(
+        instance,
+        state,
+        tool_instance_id,
+        @runner_session_replaced_error
+      )
+
+    runner = %{
+      runner_id: runner_id,
+      runner_session_id: runner_session_id,
+      last_seen_ms: now_ms,
+      offline_since_ms: nil,
+      metadata: runner_metadata(metadata, %{})
+    }
+
+    {:ok, %{instance | runner: runner}, state}
   end
 
   defp runner_metadata(%{} = metadata, _fallback) when map_size(metadata) > 0, do: metadata

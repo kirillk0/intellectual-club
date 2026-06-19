@@ -136,6 +136,101 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert refreshed.last_discovery_error == ""
   end
 
+  test "POST /api/outlet/poll replaces an online session for the same runner id" do
+    reset_runtime!()
+
+    %{user: actor} = user_fixture()
+
+    _tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Restartable outlet",
+        secrets: %{"token" => "runner-replacement"}
+      })
+
+    first_response =
+      poll_outlet("runner-replacement", %{
+        "runner_id" => "runner-replace",
+        "runner_session_id" => "runner-session-1",
+        "capacity" => 1,
+        "max_wait_seconds" => 0
+      })
+
+    assert first_response["status"] == "ok"
+    [old_task] = first_response["tasks"]
+
+    second_response =
+      poll_outlet("runner-replacement", %{
+        "runner_id" => "runner-replace",
+        "runner_session_id" => "runner-session-2",
+        "capacity" => 1,
+        "max_wait_seconds" => 0
+      })
+
+    assert second_response["status"] == "ok"
+    [new_task] = second_response["tasks"]
+    assert new_task["call_id"] != old_task["call_id"]
+
+    stale_complete =
+      complete_outlet_response(
+        "runner-replacement",
+        %{
+          "call_id" => old_task["call_id"],
+          "runner_id" => "runner-replace",
+          "runner_session_id" => "runner-session-1",
+          "status" => "done",
+          "result_raw" => %{"tools" => []}
+        },
+        404
+      )
+
+    assert stale_complete["error"] == "Call not found."
+
+    assert %{"status" => "ok"} =
+             complete_outlet("runner-replacement", %{
+               "call_id" => new_task["call_id"],
+               "runner_id" => "runner-replace",
+               "runner_session_id" => "runner-session-2",
+               "status" => "done",
+               "result_raw" => %{"tools" => []}
+             })
+  end
+
+  test "POST /api/outlet/poll rejects a different runner id while online" do
+    reset_runtime!()
+
+    %{user: actor} = user_fixture()
+
+    _tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Single runner outlet",
+        secrets: %{"token" => "runner-single-active"}
+      })
+
+    first_response =
+      poll_outlet("runner-single-active", %{
+        "runner_id" => "runner-a",
+        "runner_session_id" => "runner-a-session",
+        "capacity" => 0,
+        "max_wait_seconds" => 0
+      })
+
+    assert first_response["status"] == "idle"
+
+    conflict_response =
+      poll_outlet_response(
+        "runner-single-active",
+        %{
+          "runner_id" => "runner-b",
+          "runner_session_id" => "runner-b-session",
+          "capacity" => 0,
+          "max_wait_seconds" => 0
+        },
+        409
+      )
+
+    assert conflict_response["error"] == "Runner already connected."
+  end
+
   test "POST /api/outlet/poll waits for positive capacity before scheduling auto-discovery" do
     reset_runtime!()
 
@@ -323,17 +418,27 @@ defmodule IntellectualClubWeb.OutletControllerTest do
   end
 
   defp poll_outlet(token, payload) when is_binary(token) and is_map(payload) do
+    poll_outlet_response(token, payload, 200)
+  end
+
+  defp poll_outlet_response(token, payload, status)
+       when is_binary(token) and is_map(payload) and is_integer(status) do
     build_conn()
     |> put_req_header("x-outlet-token", token)
     |> post("/api/outlet/poll/", payload)
-    |> json_response(200)
+    |> json_response(status)
   end
 
   defp complete_outlet(token, payload) when is_binary(token) and is_map(payload) do
+    complete_outlet_response(token, payload, 200)
+  end
+
+  defp complete_outlet_response(token, payload, status)
+       when is_binary(token) and is_map(payload) and is_integer(status) do
     build_conn()
     |> put_req_header("x-outlet-token", token)
     |> post("/api/outlet/complete/", payload)
-    |> json_response(200)
+    |> json_response(status)
   end
 
   defp list_tool_functions(tool_instance_id) when is_integer(tool_instance_id) do
