@@ -1,3 +1,9 @@
+FROM rust:1-bookworm AS rust-builder
+
+WORKDIR /src
+COPY outlets/rust /src/outlets/rust
+RUN cargo build --manifest-path /src/outlets/rust/Cargo.toml --release -p outlet-shell-daemon
+
 FROM python:3.12-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,6 +73,8 @@ RUN printf '%s\n' \
 
 ENV PYTHONUNBUFFERED=1
 
+COPY --from=rust-builder /src/outlets/rust/target/release/outlet-shell-daemon /usr/local/bin/outlet-shell-daemon
+
 COPY outlets/shell/entrypoint.sh /usr/local/bin/outlet-entrypoint
 RUN chmod 0755 /usr/local/bin/outlet-entrypoint
 
@@ -74,4 +82,4 @@ WORKDIR /app
 COPY outlets /app/outlets
 
 ENTRYPOINT ["/usr/local/bin/outlet-entrypoint"]
-CMD ["python", "-m", "outlets.shell.shell_outlet"]
+CMD ["outlet-shell-daemon"]

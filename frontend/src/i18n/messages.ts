@@ -658,7 +658,7 @@ export const ruMessages: Record<string, string> = {
   'You': 'Вы',
   'You are not a member of any groups.': 'Вы не состоите ни в одной группе.',
   'You can read live updates and artifacts. Continue to make your own copy.': 'Вы можете читать обновления и артефакты. Продолжите, чтобы создать свою копию.',
-  'You can return to your terminal. The outlet runner will receive the token automatically.': 'Можно вернуться в терминал. Runner outlet получит токен автоматически.',
+  'You can return to the outlet application. The outlet runner will receive the token automatically.': 'Можно вернуться в приложение outlet. Runner outlet получит токен автоматически.',
   'You do not have permission to perform this action.': 'У вас нет прав для этого действия.',
   'You have unsaved changes. Leave without saving?': 'Есть несохраненные изменения. Выйти без сохранения?',
   'Your session is no longer valid. Sign in and try again.': 'Сессия больше недействительна. Войдите и попробуйте снова.',

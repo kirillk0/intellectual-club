@@ -1,0 +1,40 @@
+[workspace]
+members = [
+  "crates/outlet-core",
+  "crates/outlet-shell",
+  "crates/outlet-shell-daemon",
+  "crates/outlet-shell-desktop",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+eframe = "0.33"
+fastrand = "2"
+gethostname = "1"
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+libc = "0.2"
+mime_guess = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+shellexpand = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+webbrowser = "1"
+which = "8"

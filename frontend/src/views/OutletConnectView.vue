@@ -8,7 +8,7 @@
     <div v-if="approved" class="stack" style="margin-top: 16px;">
       <div class="success-text">Approved.</div>
       <div class="muted">
-        You can return to your terminal. The outlet runner will receive the token automatically.
+        You can return to the outlet application. The outlet runner will receive the token automatically.
       </div>
       <div class="flex" style="gap: 10px; flex-wrap: wrap;">
         <RouterLink
@@ -120,4 +120,3 @@ function reset() {
   code.value = '';
 }
 </script>
-

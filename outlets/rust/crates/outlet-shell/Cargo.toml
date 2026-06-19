@@ -1,0 +1,22 @@
+[package]
+name = "outlet-shell"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+hex.workspace = true
+image.workspace = true
+libc.workspace = true
+mime_guess.workspace = true
+outlet-core = { path = "../outlet-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+shellexpand.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+which.workspace = true
