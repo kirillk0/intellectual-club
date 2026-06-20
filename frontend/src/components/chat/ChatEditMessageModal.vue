@@ -299,7 +299,11 @@ const handleTextareaSubmit = () => {
   emit('save');
 };
 
-const isMobileLayerViewport = () => window.matchMedia('(max-width: 640px)').matches;
+const isTouchFullscreenViewport = () => {
+  if (window.matchMedia('(pointer: coarse)').matches) return true;
+  if (navigator.maxTouchPoints <= 0) return false;
+  return window.matchMedia('(hover: none)').matches;
+};
 
 const applyDocumentOverflowLock = () => {
   if (overflowLockApplied.value) return;
@@ -329,7 +333,7 @@ const updateDocumentScrollLockMode = () => {
 };
 
 const updateMobileLayer = () => {
-  const next = isMobileLayerViewport();
+  const next = isTouchFullscreenViewport();
   if (mobileLayer.value !== next) {
     mobileLayer.value = next;
   }
@@ -883,84 +887,59 @@ const handleDrop = (event: DragEvent) => {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
+:global(.edit-message-modal--mobile-layer .edit-message-modal__body) {
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: visible;
+}
+
+:global(.edit-message-modal--mobile-layer .message-edit-content) {
+  min-height: clamp(260px, 54vh, 540px);
+  grid-template-rows: auto minmax(220px, auto);
+}
+
+:global(.edit-message-modal--mobile-layer .message-edit-textarea) {
+  height: clamp(220px, 48vh, 460px) !important;
+  min-height: 220px !important;
+  max-height: 460px !important;
+  resize: vertical;
+}
+
+:global(.edit-message-modal--mobile-layer .attachment-list) {
+  max-height: none;
+}
+
+:global(.edit-message-modal--mobile-layer .modal-actions) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+:global(.edit-message-modal--mobile-layer .modal-actions .error-text) {
+  flex: 1 0 100%;
+}
+
 @media (max-width: 640px) {
-  :global(.edit-message-modal-backdrop) {
-    align-items: stretch;
-    justify-content: stretch;
-    padding: 0;
-    background: var(--color-bg);
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  :global(.edit-message-modal) {
-    width: 100%;
-    min-height: calc(var(--app-vh, 1vh) * 100);
-    height: auto;
-    max-height: none;
-    padding:
-      calc(12px + var(--app-safe-area-top))
-      calc(12px + var(--app-safe-area-right))
-      calc(12px + var(--app-safe-area-bottom))
-      calc(12px + var(--app-safe-area-left));
-    border: none;
-    border-radius: 0;
-    box-shadow: none;
-    overflow: visible;
-    align-content: normal;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-  }
-
-  .edit-message-modal__body {
-    grid-template-rows: minmax(0, 1fr) auto;
-    overflow: visible;
-  }
-
-  .message-edit-content {
-    min-height: clamp(260px, 54vh, 540px);
-    grid-template-rows: auto minmax(220px, auto);
-  }
-
-  .message-edit-textarea {
-    height: clamp(220px, 48vh, 460px) !important;
-    min-height: 220px !important;
-    max-height: 460px !important;
-    resize: vertical;
-  }
-
-  .message-edit-content__header {
+  :global(.edit-message-modal--mobile-layer .message-edit-content__header) {
     align-items: stretch;
     flex-direction: column;
     gap: 6px;
   }
 
-  .message-edit-select {
+  :global(.edit-message-modal--mobile-layer .message-edit-select) {
     max-width: none;
     width: 100%;
   }
 
-  .message-attachments__header {
+  :global(.edit-message-modal--mobile-layer .message-attachments__header) {
     align-items: center;
   }
 
-  .attachment-list {
+  :global(.edit-message-modal--mobile-layer .attachment-list) {
     grid-template-columns: 1fr;
-    max-height: none;
-  }
-
-  .modal-actions {
-    position: sticky;
-    bottom: 0;
-    z-index: 1;
-    flex-wrap: wrap;
-    padding-top: 8px;
-    background: var(--color-surface);
-    border-top: 1px solid var(--color-border);
-  }
-
-  .modal-actions .error-text {
-    flex: 1 0 100%;
   }
 }
 </style>
