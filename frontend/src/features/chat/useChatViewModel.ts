@@ -426,6 +426,12 @@ export function useChatViewModel() {
     }
   };
 
+  const loadInitialChatSafe = async () => {
+    await loadChatSafe({ mode: 'initial' });
+    if (chatUnavailable.value || !chat.value) return;
+    await contextPanel.handleFocusMessage();
+  };
+
   let chatIdlePollTimer: number | null = null;
   let chatIdlePollAbortController: AbortController | null = null;
   let chatIdlePollToken = 0;
@@ -666,11 +672,7 @@ export function useChatViewModel() {
       chatIdleRevision.value = null;
       artifactToolsAvailable.value = false;
       contextPanel.resetForChatChange();
-      void (async () => {
-        await loadChatSafe();
-        if (chatUnavailable.value || !chat.value) return;
-        await contextPanel.handleFocusMessage();
-      })();
+      void loadInitialChatSafe();
     }
   );
 
@@ -705,11 +707,7 @@ export function useChatViewModel() {
     window.addEventListener('focus', composerRuntime.handleFocus);
     window.addEventListener('focus', handleChatIdleFocus);
     if (chatId.value) {
-      void (async () => {
-        await loadChatSafe();
-        if (chatUnavailable.value || !chat.value) return;
-        await contextPanel.handleFocusMessage();
-      })();
+      void loadInitialChatSafe();
     }
   });
 
@@ -731,6 +729,7 @@ export function useChatViewModel() {
   return {
     loaded,
     loadError,
+    retryLoadChat: loadInitialChatSafe,
     chatUnavailable,
     chat,
     chatNote,

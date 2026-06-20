@@ -55,7 +55,10 @@
           </section>
 
           <p v-if="loading" class="muted">Loading…</p>
-          <p v-else-if="error" class="error-text">{{ error }}</p>
+          <section v-else-if="error" class="card stack chat-list-error" role="alert">
+            <p class="error-text">{{ error }}</p>
+            <button class="primary" type="button" @click="loadChats()">{{ translate('Retry') }}</button>
+          </section>
 
           <section v-else class="card stack chat-list-main">
             <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>

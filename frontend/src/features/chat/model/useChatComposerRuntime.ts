@@ -516,6 +516,8 @@ export function useChatComposerRuntime(params: Params) {
       const response = await api.get<PollResponse>(`/api/bff/chat-messages/${messageId}/poll${suffix}`, {
         signal: controller.signal,
         showErrorBanner: false,
+        timeoutMs: null,
+        retry: false,
       });
 
       if (pollingToken !== token) return false;

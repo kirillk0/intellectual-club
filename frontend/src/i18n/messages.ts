@@ -569,6 +569,7 @@ export const ruMessages: Record<string, string> = {
   'Text': 'Текст',
   'The request could not be completed. Review the input and try again.': 'Не удалось выполнить запрос. Проверьте ввод и попробуйте снова.',
   'The request could not reach the server. Check your connection and try again.': 'Запрос не дошел до сервера. Проверьте соединение и попробуйте снова.',
+  'The request timed out. Check your connection and try again.': 'Время ожидания запроса истекло. Проверьте соединение и попробуйте снова.',
   'The requested resource could not be found.': 'Запрошенный ресурс не найден.',
   'The server could not process this request. Review the input and try again.': 'Сервер не смог обработать запрос. Проверьте ввод и попробуйте снова.',
   'The server is temporarily unavailable. Please try again.': 'Сервер временно недоступен. Попробуйте снова.',

@@ -522,7 +522,10 @@
         <h1>Chat unavailable</h1>
         <p>{{ vm.loadError || 'This chat could not be loaded.' }}</p>
       </div>
-      <button class="primary" type="button" @click="vm.backToChats">Back to chats</button>
+      <div class="chat-unavailable__actions">
+        <button class="primary" type="button" @click="vm.retryLoadChat">Retry</button>
+        <button type="button" @click="vm.backToChats">Back to chats</button>
+      </div>
     </section>
   </div>
   <p v-else class="muted">Loading…</p>
@@ -910,6 +913,13 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 .chat-unavailable__copy p {
   margin: 0;
   color: var(--color-text-muted);
+}
+
+.chat-unavailable__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 @media (max-width: 720px) {
