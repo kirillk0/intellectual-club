@@ -14,6 +14,7 @@ import { appendRecordsetId, removeRecordsetId } from './recordsets';
 import { useCrudRecordsetNavigation } from './useCrudRecordsetNavigation';
 import { useFormErrors } from './useFormErrors';
 import { useJsonDirtyCompare } from './useJsonDirtyCompare';
+import { publishJsonApiEntityChange } from '@/features/entities/entityChanges';
 
 function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -197,6 +198,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         Object.assign(form, options.fromApi(created.data));
         base.value = deepClone(form);
         handleDocument(created, 'save');
+        publishJsonApiEntityChange('upsert', created.data);
 
         if (newId) {
           if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
@@ -214,6 +216,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         Object.assign(form, options.fromApi(updated.data));
         base.value = deepClone(form);
         handleDocument(updated, 'save');
+        publishJsonApiEntityChange('upsert', updated.data);
       }
 
       return true;
@@ -238,6 +241,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     try {
       const id = numericId.value;
       await jsonApiDelete(options.basePath, id);
+      publishJsonApiEntityChange('delete', { type: options.type, id: String(id) });
       if (recordsetKey.value) removeRecordsetId(recordsetKey.value, id);
       if (stack.active.value) {
         stackNav.close();
@@ -274,6 +278,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       Object.assign(form, options.fromApi(duplicated.data));
       base.value = deepClone(form);
       handleDocument(duplicated, 'duplicate');
+      publishJsonApiEntityChange('upsert', duplicated.data);
 
       if (newId) {
         if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);

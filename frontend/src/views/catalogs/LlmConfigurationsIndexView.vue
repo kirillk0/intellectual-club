@@ -239,8 +239,9 @@ import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsManagerPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useEntityChanges, useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
@@ -549,12 +550,39 @@ async function loadConfigs() {
   configs.value = (payload.data || []).map(parseRow).filter((c): c is ConfigRow => Boolean(c));
 }
 
+async function fetchConfigRow(id: number) {
+  try {
+    const params = new URLSearchParams();
+    params.set(
+      'fields[llm-configurations]',
+      'provider_id,model_name,note,enabled,shared_incoming,shared_outgoing'
+    );
+    const payload = await jsonApiGet(`/api/ash/llm-configurations/${id}`, params);
+    return parseRow(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh configuration row.', error);
+    return null;
+  }
+}
+
 async function loadProviders() {
   const params = new URLSearchParams();
   params.set('sort', 'name');
   params.set('fields[llm-providers]', 'name');
   const payload = await jsonApiList('/api/ash/llm-providers', params);
   providers.value = (payload.data || []).map(parseProviderRow).filter((p): p is ProviderRow => Boolean(p));
+}
+
+async function fetchProviderRow(id: number) {
+  try {
+    const params = new URLSearchParams();
+    params.set('fields[llm-providers]', 'name');
+    const payload = await jsonApiGet(`/api/ash/llm-providers/${id}`, params);
+    return parseProviderRow(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh provider row.', error);
+    return null;
+  }
 }
 
 async function loadTagBindings() {
@@ -624,6 +652,32 @@ async function loadData() {
     loading.value = false;
   }
 }
+
+useLiveEntityRows(configs, {
+  kind: 'llm-configuration',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchConfigRow(change.id),
+  compare: (a, b) => configLabel(a).localeCompare(configLabel(b)) || a.id - b.id,
+});
+
+useLiveEntityRows(providers, {
+  kind: 'llm-provider',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchProviderRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
+
+useEntityChanges((change) => {
+  if (change.kind !== 'llm-configuration') return;
+  if (change.operation === 'delete') {
+    const next = new Map(tagsByConfigId.value);
+    next.delete(change.id);
+    tagsByConfigId.value = next;
+    return;
+  }
+
+  void loadTagBindings();
+});
 
 onMounted(() => {
   updateIsMobile();

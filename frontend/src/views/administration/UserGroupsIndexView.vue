@@ -68,6 +68,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUserGroup } from '@/types/api';
@@ -129,6 +130,23 @@ const visibleGroups = computed(() => {
   );
 });
 
+function normalizeGroupRow(value: unknown): AdminUserGroup | null {
+  if (!value || typeof value !== 'object') return null;
+  const group = value as AdminUserGroup;
+  if (!Number.isInteger(group.id) || group.id <= 0) return null;
+  return group;
+}
+
+async function fetchGroupRow(groupId: number): Promise<AdminUserGroup | null> {
+  try {
+    const payload = await api.get<{ group: AdminUserGroup }>(`/api/bff/admin/user-groups/${groupId}`);
+    return normalizeGroupRow(payload.group);
+  } catch (error) {
+    console.warn('Failed to refresh user group row.', error);
+    return null;
+  }
+}
+
 function openGroup(id: number) {
   const ids = visibleGroups.value.map((group) => group.id);
   const recordsetKey = createRecordset(ids);
@@ -155,6 +173,13 @@ async function loadGroups() {
     loading.value = false;
   }
 }
+
+useLiveEntityRows(groups, {
+  kind: 'admin-user-group',
+  getId: (row) => row.id,
+  resolveRow: (change) => normalizeGroupRow(change.row) ?? fetchGroupRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 onMounted(() => {
   loadGroups();

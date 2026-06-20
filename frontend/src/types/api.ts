@@ -148,6 +148,29 @@ export type Chat = {
   updated_at?: string | null;
 };
 
+export type ChatSummary = {
+  id: number;
+  note?: string | null;
+  bot_id: number | null;
+  bot_name: string;
+  llm_configuration_id?: number | null;
+  llm_configuration_label?: string | null;
+  active_generation_message_id?: number | null;
+  parent_chat_id?: number | null;
+  parent_message_id?: number | null;
+  parent_relation_kind?: string | null;
+  child_handoff_count?: number | null;
+  created_at: string | null;
+  updated_at?: string | null;
+  last_activity_at: string | null;
+  message_count?: number | null;
+  first_message_preview?: string | null;
+  first_message_role?: 'user' | 'assistant' | null;
+  can_edit?: boolean | null;
+  shared_incoming?: boolean | null;
+  shared_outgoing?: boolean | null;
+};
+
 export type ChatRelationSummary = {
   chat_id: number;
   message_id?: number | null;

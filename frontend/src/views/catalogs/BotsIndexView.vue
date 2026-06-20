@@ -78,10 +78,11 @@ import { useRoute, useRouter } from 'vue-router';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';
-import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import type { ImageAsset } from '@/types/api';
 
@@ -225,6 +226,28 @@ async function loadBots() {
     loading.value = false;
   }
 }
+
+async function fetchBotRow(id: number) {
+  try {
+    const botsParams = new URLSearchParams();
+    botsParams.set(
+      'fields[bots]',
+      'name,blocks_count,tools_count,sort_activity_at,image,shared_incoming,shared_outgoing'
+    );
+    const payload = await jsonApiGet(`/api/ash/bots/${id}`, botsParams);
+    return parseRow(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh bot row.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(bots, {
+  kind: 'bot',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchBotRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 onMounted(() => {
   loadBots();

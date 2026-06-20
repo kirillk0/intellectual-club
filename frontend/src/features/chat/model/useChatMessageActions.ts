@@ -16,6 +16,7 @@ import {
   type PollResponse,
   type WorkingPayload,
 } from '@/features/chat/model/chatViewModel.shared';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import type { Chat, ChatBranchMessage, ChatMessageStep } from '@/types/api';
 
@@ -543,6 +544,7 @@ export function useChatMessageActions(params: Params) {
       );
       const nextChatId = payload.chat?.id;
       if (!nextChatId) throw new Error('Missing chat id');
+      publishEntityChange({ kind: 'chat', operation: 'touch', id: nextChatId, meta: { reason: 'branch-new-chat' } });
       await params.pushChatRoute(nextChatId);
     } catch (error) {
       console.error(error);
@@ -583,6 +585,8 @@ export function useChatMessageActions(params: Params) {
       replaceBranch(payload.source_branch);
       const nextChatId = payload.chat?.id;
       if (!nextChatId) throw new Error('Missing chat id');
+      publishEntityChange({ kind: 'chat', operation: 'touch', id: params.chatId.value, meta: { reason: 'branch-moved' } });
+      publishEntityChange({ kind: 'chat', operation: 'touch', id: nextChatId, meta: { reason: 'branch-move-new-chat' } });
       await params.pushChatRoute(nextChatId);
     } catch (error) {
       console.error(error);
@@ -688,6 +692,7 @@ export function useChatMessageActions(params: Params) {
           const nextChatId = payload.chat?.id;
           if (!nextChatId) throw new Error('Missing chat id');
           resetEditState();
+          publishEntityChange({ kind: 'chat', operation: 'touch', id: nextChatId, meta: { reason: 'branch-new-chat' } });
           await params.pushChatRoute(nextChatId);
           return;
         }

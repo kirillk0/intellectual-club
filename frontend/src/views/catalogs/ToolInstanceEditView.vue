@@ -505,6 +505,7 @@ import {
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import { translate } from '@/i18n';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -1472,6 +1473,7 @@ async function runDiscover() {
     };
 
     await editor.load();
+    publishEntityChange({ kind: 'tool-instance', operation: 'touch', id: toolId, meta: { reason: 'discovery' } });
   } catch (e) {
     console.error(e);
     const message =
@@ -1482,6 +1484,7 @@ async function runDiscover() {
           : 'Discovery failed.';
 
     form.last_discovery_error = message;
+    publishEntityChange({ kind: 'tool-instance', operation: 'touch', id: toolId, meta: { reason: 'discovery-error' } });
   } finally {
     discovering.value = false;
   }

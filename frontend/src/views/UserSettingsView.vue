@@ -176,6 +176,7 @@ import { api, isHttpError } from '@/api/client';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
@@ -190,6 +191,7 @@ import {
 import {
   jsonApiCreate,
   jsonApiDelete,
+  jsonApiGet,
   jsonApiList,
   jsonApiUpdate,
   relationshipId,
@@ -398,6 +400,25 @@ const parseKnowledgeBlock = (resource: JsonApiResource): KnowledgeBlock | null =
     token_count: tokenCount,
   };
 };
+
+const fetchKnowledgeBlockRow = async (blockId: number) => {
+  try {
+    const params = new URLSearchParams();
+    params.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, params);
+    return parseKnowledgeBlock(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh settings knowledge block option.', error);
+    return null;
+  }
+};
+
+useLiveEntityRows(knowledgeBlocks, {
+  kind: 'knowledge-block',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchKnowledgeBlockRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 const parseUserKnowledgeBlock = (
   resource: JsonApiResource,

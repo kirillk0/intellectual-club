@@ -300,11 +300,13 @@ import { useKnowledgeBlockBindingsDraft } from '@/features/catalogs/model/useKno
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   createJsonApiIncludedIndex,
+  jsonApiGet,
   jsonApiList,
   relatedResource,
   relatedResources,
@@ -839,6 +841,25 @@ async function loadKnowledgeBlocks() {
   }
 }
 
+async function fetchKnowledgeBlockOption(blockId: number) {
+  try {
+    const qs = new URLSearchParams();
+    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, qs);
+    return parseKnowledgeBlockOption(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh configuration knowledge block option.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(knowledgeBlocks, {
+  kind: 'knowledge-block',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchKnowledgeBlockOption(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
+
 function applyConfigurationDocument(payload: JsonApiSingleResponse) {
   const includedIndex = createJsonApiIncludedIndex(payload.included);
   const root = payload.data;
@@ -947,7 +968,8 @@ const openBlockEditor = (blockId: number) => {
 const newBlockDraft = useKnowledgeBlockNewDraft({
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
-    await loadKnowledgeBlocks();
+    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
+    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
     bindings.addBlocks(createdIds);
   },
   resetOn: () => editor.idParam.value,

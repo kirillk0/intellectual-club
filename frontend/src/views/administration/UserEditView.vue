@@ -155,6 +155,7 @@ import {
   appendRecordsetId,
   removeRecordsetId,
 } from '@/features/catalogs/model/recordsets';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import { useCrudRecordsetNavigation } from '@/features/catalogs/model/useCrudRecordsetNavigation';
 import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompare';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
@@ -392,6 +393,13 @@ function applyUser(user: AdminUser) {
   userMeta.updated_at = user.updated_at ?? null;
 }
 
+function publishTouchedGroups(previousGroupIds: number[], nextGroupIds: number[]) {
+  const ids = new Set([...previousGroupIds, ...nextGroupIds]);
+  for (const groupId of ids) {
+    publishEntityChange({ kind: 'admin-user-group', operation: 'touch', id: groupId });
+  }
+}
+
 function toggleGroup(groupId: number) {
   form.group_ids = normalizeIdList(
     form.group_ids.includes(groupId)
@@ -525,6 +533,8 @@ async function save() {
   saving.value = true;
 
   try {
+    const previousGroupIds = [...base.value.group_ids];
+
     if (isNew.value) {
       const payload = await api.post<{ user: AdminUser }>('/api/bff/admin/users', {
         username: form.username,
@@ -536,6 +546,8 @@ async function save() {
 
       const createdUser = payload.user;
       applyUser(createdUser);
+      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: createdUser.id, row: createdUser });
+      publishTouchedGroups(previousGroupIds, form.group_ids);
       resetPasswordForm();
 
       if (recordsetKey.value) appendRecordsetId(recordsetKey.value, createdUser.id);
@@ -554,6 +566,8 @@ async function save() {
       });
 
       applyUser(payload.user);
+      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: payload.user.id, row: payload.user });
+      publishTouchedGroups(previousGroupIds, form.group_ids);
       await syncCurrentSessionIfNeeded(payload.user);
     }
   } catch (error) {
@@ -573,7 +587,10 @@ async function remove() {
   deleting.value = true;
 
   try {
+    const previousGroupIds = [...base.value.group_ids];
     await api.del(`/api/bff/admin/users/${numericId.value}`);
+    publishEntityChange({ kind: 'admin-user', operation: 'delete', id: numericId.value });
+    publishTouchedGroups(previousGroupIds, []);
 
     if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
 
@@ -614,6 +631,7 @@ async function resetPassword() {
     );
 
     userMeta.updated_at = payload.user.updated_at ?? userMeta.updated_at;
+    publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: payload.user.id, row: payload.user });
     resetPasswordForm();
   } catch (error) {
     if (!resetErrors.setFromHttpError(error)) {

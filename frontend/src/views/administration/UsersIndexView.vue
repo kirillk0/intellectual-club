@@ -70,6 +70,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useSessionAuth } from '@/features/auth/session';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -125,6 +126,13 @@ const visibleUsers = computed(() => {
   );
 });
 
+function normalizeUserRow(value: unknown): AdminUser | null {
+  if (!value || typeof value !== 'object') return null;
+  const user = value as AdminUser;
+  if (!Number.isInteger(user.id) || user.id <= 0) return null;
+  return user;
+}
+
 function openUser(id: number) {
   const ids = visibleUsers.value.map((user) => user.id);
   const recordsetKey = createRecordset(ids);
@@ -151,6 +159,13 @@ async function loadUsers() {
     loading.value = false;
   }
 }
+
+useLiveEntityRows(users, {
+  kind: 'admin-user',
+  getId: (row) => row.id,
+  resolveRow: (change) => normalizeUserRow(change.row),
+  compare: (a, b) => a.username.localeCompare(b.username) || a.id - b.id,
+});
 
 onMounted(() => {
   loadUsers();

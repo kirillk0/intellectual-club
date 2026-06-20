@@ -418,6 +418,7 @@ import {
 } from '@/features/catalogs/model/useBotUserToolOverrides';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { publishEntityChange, useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
@@ -428,6 +429,7 @@ import {
 } from '@/features/tools/model/toolInstances';
 import {
   createJsonApiIncludedIndex,
+  jsonApiGet,
   jsonApiList,
   relatedResource,
   relatedResources,
@@ -894,11 +896,13 @@ const handleImageSelected = async (event: Event) => {
   const target = event.target as HTMLInputElement | null;
   const file = target?.files?.[0];
   if (target) target.value = '';
-  if (!file || isNew.value || editor.numericId.value == null) return;
+  const botId = editor.numericId.value;
+  if (!file || isNew.value || botId == null) return;
 
   try {
-    const response = await uploadBotImage(editor.numericId.value, file);
+    const response = await uploadBotImage(botId, file);
     form.image = response.image;
+    publishEntityChange({ kind: 'bot', operation: 'touch', id: botId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert(getApiErrorMessage(error, 'Failed to upload image.'));
@@ -906,12 +910,14 @@ const handleImageSelected = async (event: Event) => {
 };
 
 const removeImage = async () => {
-  if (!form.image || isNew.value || editor.numericId.value == null) return;
+  const botId = editor.numericId.value;
+  if (!form.image || isNew.value || botId == null) return;
   if (!window.confirm('Remove image?')) return;
 
   try {
-    const response = await deleteBotImage(editor.numericId.value);
+    const response = await deleteBotImage(botId);
     form.image = response.image;
+    publishEntityChange({ kind: 'bot', operation: 'touch', id: botId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert('Failed to remove image.');
@@ -963,6 +969,25 @@ async function loadKnowledgeBlocks() {
     console.warn('Failed to load knowledge blocks', e);
   }
 }
+
+async function fetchKnowledgeBlockOption(blockId: number) {
+  try {
+    const qs = new URLSearchParams();
+    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, qs);
+    return parseKnowledgeBlockOption(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh bot knowledge block option.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(knowledgeBlocks, {
+  kind: 'knowledge-block',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchKnowledgeBlockOption(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 const linkedBlockIds = computed(() => bindings.linkedBlockIds.value);
 
@@ -1016,7 +1041,8 @@ const openBlockEditor = (blockId: number) => {
 const newBlockDraft = useKnowledgeBlockNewDraft({
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
-    await loadKnowledgeBlocks();
+    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
+    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
     bindings.addBlocks(createdIds);
   },
   resetOn: () => editor.idParam.value,
@@ -1084,6 +1110,26 @@ async function loadToolLibrary() {
     toolLibraryLoading.value = false;
   }
 }
+
+async function fetchToolLibraryOption(toolInstanceId: number) {
+  try {
+    const qs = new URLSearchParams();
+    qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
+    const payload = await jsonApiGet(`/api/ash/tool-instances/${toolInstanceId}`, qs);
+    return parseToolInstanceOption(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh bot tool option.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(toolLibrary, {
+  kind: 'tool-instance',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchToolLibraryOption(change.id),
+  merge: (current, incoming) => mergeToolInstanceOptions(current ? [current] : [], [incoming])[0] ?? incoming,
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 const toolInstanceLibrary = useToolInstanceLibrary(toolLibrary);
 const toolLibraryById = toolInstanceLibrary.toolLibraryById;

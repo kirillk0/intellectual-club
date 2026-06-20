@@ -58,9 +58,12 @@ import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { fetchChatSummary } from '@/features/chat/chatSummaries';
+import { useEntityChanges } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
+import type { ChatSummary } from '@/types/api';
 
 type BookmarkChat = {
   id: number;
@@ -143,6 +146,46 @@ function bookmarkResultLink(entry: BookmarkEntry) {
 function openBookmark(to: RouteLocationRaw) {
   stackNav.open(to);
 }
+
+function patchBookmarkChat(summary: ChatSummary) {
+  bookmarks.value = bookmarks.value.map((entry) => {
+    if (entry.chat.id !== summary.id) return entry;
+
+    return {
+      ...entry,
+      chat: {
+        ...entry.chat,
+        note: summary.note,
+        bot_name: summary.bot_name,
+        llm_configuration_label: summary.llm_configuration_label,
+        created_at: summary.created_at,
+        last_activity_at: summary.last_activity_at,
+        message_count: summary.message_count,
+      },
+    };
+  });
+}
+
+async function refreshBookmarkedChat(chatId: number) {
+  if (!bookmarks.value.some((entry) => entry.chat.id === chatId)) return;
+
+  try {
+    patchBookmarkChat(await fetchChatSummary(chatId));
+  } catch (error) {
+    console.warn('Failed to refresh bookmarked chat summary.', error);
+  }
+}
+
+useEntityChanges((change) => {
+  if (change.kind !== 'chat') return;
+
+  if (change.operation === 'delete') {
+    bookmarks.value = bookmarks.value.filter((entry) => entry.chat.id !== change.id);
+    return;
+  }
+
+  void refreshBookmarkedChat(change.id);
+});
 
 function goBack() {
   if (stackNav.isStackActive.value) {

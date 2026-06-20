@@ -126,6 +126,7 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-list", ChatListController, :index
     get "/chat-list/search", ChatListController, :search
     get "/chat-list/idle-state", ChatListController, :idle_state
+    get "/chat-list/:id/summary", ChatListController, :summary
 
     get "/chat-state/:id", ChatStateController, :state
     get "/chat-state/:id/settings", ChatStateController, :settings

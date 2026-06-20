@@ -174,41 +174,22 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
-import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListRow from '@/components/ChatListRow.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
+import { fetchChatSummary } from '@/features/chat/chatSummaries';
+import { useEntityChanges, useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { translate } from '@/i18n';
-import type { Bot, ImageAsset } from '@/types/api';
+import type { Bot, ChatSummary, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-
-type ChatSummary = {
-  id: number;
-  note?: string | null;
-  bot_id: number | null;
-  bot_name: string;
-  llm_configuration_label?: string | null;
-  active_generation_message_id?: number | null;
-  parent_chat_id?: number | null;
-  parent_message_id?: number | null;
-  parent_relation_kind?: string | null;
-  child_handoff_count?: number | null;
-  created_at: string | null;
-  last_activity_at: string | null;
-  message_count?: number | null;
-  first_message_preview?: string | null;
-  first_message_role?: 'user' | 'assistant' | null;
-  can_edit?: boolean | null;
-  shared_incoming?: boolean | null;
-  shared_outgoing?: boolean | null;
-};
 
 type ChatSearchResult = ChatSummary & {
   match_type: 'meta' | 'active_message' | 'inactive_message';
@@ -524,6 +505,106 @@ function matchesBotFilter(chat: Pick<ChatSummary, 'bot_id'>) {
   if (!Number.isInteger(id) || id <= 0) return true;
   return chat.bot_id === id;
 }
+
+function chatSortTimestamp(chat: ChatSummary) {
+  const value = chat.last_activity_at || chat.created_at || '';
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortChatRows<T extends ChatSummary>(items: T[]): T[] {
+  return [...items].sort((left, right) => {
+    const activity = chatSortTimestamp(right) - chatSortTimestamp(left);
+    return activity || right.id - left.id;
+  });
+}
+
+function mergeChatRows<T extends ChatSummary>(items: T[], summary: ChatSummary): T[] {
+  const index = items.findIndex((item) => item.id === summary.id);
+  if (index === -1) return sortChatRows([...items, summary as T]);
+
+  const next = [...items];
+  next[index] = { ...next[index], ...summary };
+  return sortChatRows(next);
+}
+
+function patchExistingChatRows<T extends ChatSummary>(items: T[], summary: ChatSummary): T[] {
+  const index = items.findIndex((item) => item.id === summary.id);
+  if (index === -1) return items;
+
+  const next = [...items];
+  next[index] = { ...next[index], ...summary };
+  return sortChatRows(next);
+}
+
+function isNewChatChangeReason(reason: unknown) {
+  return ['create', 'copy', 'continue', 'branch-new-chat', 'branch-move-new-chat'].includes(String(reason || ''));
+}
+
+function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
+  const existedInPage = chats.value.some((chat) => chat.id === summary.id);
+
+  if (matchesBotFilter(summary)) {
+    chats.value = mergeChatRows(chats.value, summary);
+    if (!existedInPage && isNewChatChangeReason(changeReason)) totalChats.value += 1;
+  } else if (existedInPage) {
+    chats.value = chats.value.filter((chat) => chat.id !== summary.id);
+    totalChats.value = Math.max(0, totalChats.value - 1);
+  }
+
+  chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
+  chatListIdleRevision.value = null;
+  syncVisibleGenerationState(visibleChats.value);
+}
+
+function removeChatFromLists(chatId: number) {
+  chats.value = chats.value.filter((chat) => chat.id !== chatId);
+  chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== chatId);
+  totalChats.value = Math.max(0, totalChats.value - 1);
+
+  const nextComplete = new Set(generationCompleteChatIds.value);
+  if (nextComplete.delete(chatId)) generationCompleteChatIds.value = nextComplete;
+  chatListIdleRevision.value = null;
+  syncVisibleGenerationState(visibleChats.value);
+}
+
+const chatSummaryRefreshTimers = new Map<number, number>();
+
+function clearChatSummaryRefresh(chatId: number) {
+  const timer = chatSummaryRefreshTimers.get(chatId);
+  if (timer == null) return;
+  window.clearTimeout(timer);
+  chatSummaryRefreshTimers.delete(chatId);
+}
+
+function refreshChatSummary(chatId: number, changeReason?: unknown) {
+  clearChatSummaryRefresh(chatId);
+
+  const timer = window.setTimeout(async () => {
+    chatSummaryRefreshTimers.delete(chatId);
+
+    try {
+      const summary = await fetchChatSummary(chatId, previewLength.value);
+      applyChatSummary(summary, changeReason);
+    } catch (error) {
+      console.warn('Failed to refresh chat summary.', error);
+    }
+  }, 150);
+
+  chatSummaryRefreshTimers.set(chatId, timer);
+}
+
+useEntityChanges((change) => {
+  if (change.kind !== 'chat') return;
+
+  if (change.operation === 'delete') {
+    clearChatSummaryRefresh(change.id);
+    removeChatFromLists(change.id);
+    return;
+  }
+
+  refreshChatSummary(change.id, change.meta?.reason);
+});
 
 const filteredChats = computed(() => chats.value.filter(matchesBotFilter));
 const filteredChatSearchResults = computed(() => chatSearchResults.value.filter(matchesBotFilter));
@@ -1129,6 +1210,25 @@ async function loadBots(opts: { showError?: boolean } = {}) {
   }
 }
 
+async function fetchBotOptionRow(id: number) {
+  try {
+    const params = new URLSearchParams();
+    params.set('fields[bots]', 'name,sort_activity_at,image');
+    const payload = await jsonApiGet(`/api/ash/bots/${id}`, params);
+    return parseBot(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh chat list bot option.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(bots, {
+  kind: 'bot',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchBotOptionRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
+
 watch(
   () => chatSearchTerm.value,
   (value, previousValue) => {
@@ -1234,6 +1334,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pageshow', handleChatListPageShow);
   window.removeEventListener('focus', handleChatListFocus);
   if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+  for (const timer of chatSummaryRefreshTimers.values()) window.clearTimeout(timer);
+  chatSummaryRefreshTimers.clear();
   abortActiveChatSearch();
   stopChatListPolling();
   stopChatListIdlePolling();

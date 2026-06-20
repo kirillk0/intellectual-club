@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.Search, as: ChatSearch
+  alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
@@ -106,6 +107,59 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           |> put_status(:unprocessable_entity)
           |> json(%{error: error_message})
       end
+    end
+  end
+
+  def summary(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- ChatParams.resource_id(id),
+         {:ok, chat} <- ChatAccess.fetch_readable_chat(chat_id, actor) do
+      preview_len = ChatParams.preview_len(params)
+
+      chat =
+        Ash.load!(
+          chat,
+          [
+            :bot,
+            :last_message,
+            :last_activity_at,
+            :can_edit,
+            :shared_incoming,
+            :shared_outgoing,
+            llm_configuration: [:model_name, :note, :provider]
+          ],
+          actor: actor
+        )
+
+      active_branch_summaries = Listing.active_branch_summaries([chat], actor)
+
+      first_message_previews =
+        Listing.active_root_message_previews([chat], active_branch_summaries, preview_len, actor)
+
+      child_handoff_counts = Listing.child_handoff_counts([chat.id], actor)
+
+      activity_at = Listing.activity_at(chat)
+      active_branch_summary = Map.get(active_branch_summaries, chat.id, %{})
+
+      {first_message_preview, first_message_role} =
+        Map.get(first_message_previews, chat.id, {nil, nil})
+
+      payload =
+        Serializer.chat_summary(chat,
+          activity_at: activity_at,
+          child_handoff_count: Map.get(child_handoff_counts, chat.id, 0)
+        )
+        |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
+        |> Map.put(:first_message_preview, first_message_preview)
+        |> Map.put(:first_message_role, first_message_role)
+
+      json(conn, %{chat: payload})
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ChatAccess.render_error(conn, error)
     end
   end
 

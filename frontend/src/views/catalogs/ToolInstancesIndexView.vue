@@ -195,8 +195,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
-import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -443,6 +444,28 @@ async function loadTools() {
     loading.value = false;
   }
 }
+
+async function fetchToolRow(id: number) {
+  try {
+    const params = new URLSearchParams();
+    params.set(
+      'fields[tool-instances]',
+      'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
+    );
+    const payload = await jsonApiGet(`/api/ash/tool-instances/${id}`, params);
+    return parseRow(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh tool row.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(tools, {
+  kind: 'tool-instance',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchToolRow(change.id),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 onMounted(() => {
   updateIsMobile();

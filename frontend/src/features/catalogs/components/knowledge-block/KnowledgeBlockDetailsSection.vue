@@ -46,6 +46,7 @@ import { computed, ref } from 'vue';
 import { getApiErrorMessage } from '@/api/client';
 import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/images';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import { translate } from '@/i18n';
 import type { ImageAsset } from '@/types/api';
 import { formatFileBytes } from '@/utils/fileSize';
@@ -74,11 +75,13 @@ const handleImageSelected = async (event: Event) => {
   const target = event.target as HTMLInputElement | null;
   const file = target?.files?.[0];
   if (target) target.value = '';
-  if (!file || props.isNew || props.blockId == null) return;
+  const blockId = props.blockId;
+  if (!file || props.isNew || blockId == null) return;
 
   try {
-    const response = await uploadKnowledgeBlockImage(props.blockId, file);
+    const response = await uploadKnowledgeBlockImage(blockId, file);
     emit('update:image', response.image);
+    publishEntityChange({ kind: 'knowledge-block', operation: 'touch', id: blockId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert(getApiErrorMessage(error, 'Failed to upload image.'));
@@ -86,12 +89,14 @@ const handleImageSelected = async (event: Event) => {
 };
 
 const removeImage = async () => {
-  if (!props.image || props.isNew || props.blockId == null) return;
+  const blockId = props.blockId;
+  if (!props.image || props.isNew || blockId == null) return;
   if (!window.confirm('Remove image?')) return;
 
   try {
-    const response = await deleteKnowledgeBlockImage(props.blockId);
+    const response = await deleteKnowledgeBlockImage(blockId);
     emit('update:image', response.image);
+    publishEntityChange({ kind: 'knowledge-block', operation: 'touch', id: blockId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert('Failed to remove image.');

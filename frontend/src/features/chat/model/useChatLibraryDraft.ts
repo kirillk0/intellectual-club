@@ -1,9 +1,10 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
-import { jsonApiList, toIntId } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import {
   moveToolBindingInList,
@@ -13,7 +14,7 @@ import {
   setToolBindingEnabledInList,
   validateNewToolBinding,
 } from '@/features/tools/model/toolBindings';
-import { useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
+import { parseToolInstanceOption, useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
 import type {
   ChatKnowledgeBlock,
   ChatToolBinding,
@@ -71,6 +72,20 @@ const toOptionalInt = (value: unknown) => {
     if (Number.isFinite(parsed)) return Math.trunc(parsed);
   }
   return null;
+};
+
+const parseKnowledgeBlockCatalogResource = (resource: JsonApiResource | null | undefined): KnowledgeBlock | null => {
+  if (!resource) return null;
+  const id = toIntId(resource.id);
+  if (!id) return null;
+  const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  return {
+    id,
+    name: String(attrs.name || ''),
+    image: parseImageAsset(attrs.image),
+    version: typeof attrs.version === 'string' ? attrs.version : null,
+    token_count: toOptionalInt(attrs.token_count),
+  } satisfies KnowledgeBlock;
 };
 
 export function useChatLibraryDraft(params: Params) {
@@ -294,6 +309,13 @@ export function useChatLibraryDraft(params: Params) {
     chatBlocksDraft.value = normalizeSequences(next);
   };
 
+  const mergeKnowledgeBlockCatalogRows = (blocks: KnowledgeBlock[]) => {
+    const byId = new Map<number, KnowledgeBlock>();
+    for (const block of params.knowledgeBlocks.value || []) byId.set(block.id, block);
+    for (const block of blocks || []) byId.set(block.id, block);
+    params.knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  };
+
   const loadKnowledgeBlocksCatalog = async () => {
     try {
       const qs = new URLSearchParams();
@@ -301,18 +323,7 @@ export function useChatLibraryDraft(params: Params) {
       qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
       const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
       const nextBlocks = (payload.data || [])
-        .map((resource): KnowledgeBlock | null => {
-          const id = toIntId(resource.id);
-          if (!id) return null;
-          const attrs = (resource.attributes || {}) as Record<string, unknown>;
-          return {
-            id,
-            name: String(attrs.name || ''),
-            image: parseImageAsset(attrs.image),
-            version: typeof attrs.version === 'string' ? attrs.version : null,
-            token_count: toOptionalInt(attrs.token_count),
-          } satisfies KnowledgeBlock;
-        })
+        .map(parseKnowledgeBlockCatalogResource)
         .filter((block): block is KnowledgeBlock => Boolean(block));
       params.knowledgeBlocks.value = nextBlocks;
     } catch (error) {
@@ -323,10 +334,49 @@ export function useChatLibraryDraft(params: Params) {
   const newBlockDraft = useKnowledgeBlockNewDraft({
     linkedBlockIds: () => linkedChatBlockIds.value,
     onBlocksCreated: async (createdIds) => {
-      await loadKnowledgeBlocksCatalog();
+      const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockCatalogRow(id)));
+      mergeKnowledgeBlockCatalogRows(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
       addChatBlocks(createdIds);
     },
     resetOn: () => params.chatId.value,
+  });
+
+  const fetchKnowledgeBlockCatalogRow = async (blockId: number) => {
+    try {
+      const qs = new URLSearchParams();
+      qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+      const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, qs);
+      return parseKnowledgeBlockCatalogResource(payload.data);
+    } catch (error) {
+      console.warn('Failed to refresh chat knowledge block option.', error);
+      return null;
+    }
+  };
+
+  const fetchToolLibraryRow = async (toolInstanceId: number) => {
+    try {
+      const qs = new URLSearchParams();
+      qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
+      const payload = await jsonApiGet(`/api/ash/tool-instances/${toolInstanceId}`, qs);
+      return parseToolInstanceOption(payload.data);
+    } catch (error) {
+      console.warn('Failed to refresh chat tool option.', error);
+      return null;
+    }
+  };
+
+  useLiveEntityRows(params.knowledgeBlocks, {
+    kind: 'knowledge-block',
+    getId: (row) => row.id,
+    resolveRow: (change) => fetchKnowledgeBlockCatalogRow(change.id),
+    compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+  });
+
+  useLiveEntityRows(params.toolLibrary, {
+    kind: 'tool-instance',
+    getId: (row) => row.id,
+    resolveRow: (change) => fetchToolLibraryRow(change.id),
+    compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
   });
 
   return {

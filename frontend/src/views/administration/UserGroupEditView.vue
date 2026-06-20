@@ -78,6 +78,7 @@ import {
   appendRecordsetId,
   removeRecordsetId,
 } from '@/features/catalogs/model/recordsets';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import { useCrudRecordsetNavigation } from '@/features/catalogs/model/useCrudRecordsetNavigation';
 import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompare';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
@@ -396,6 +397,7 @@ async function save() {
 
       const createdGroup = payload.group;
       applyGroup(createdGroup);
+      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: createdGroup.id, row: createdGroup });
 
       if (recordsetKey.value) appendRecordsetId(recordsetKey.value, createdGroup.id);
 
@@ -412,6 +414,7 @@ async function save() {
       });
 
       applyGroup(payload.group);
+      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: payload.group.id, row: payload.group });
     }
   } catch (error) {
     if (!saveErrors.setFromHttpError(error)) {
@@ -431,6 +434,7 @@ async function remove() {
 
   try {
     await api.del(`/api/bff/admin/user-groups/${numericId.value}`);
+    publishEntityChange({ kind: 'admin-user-group', operation: 'delete', id: numericId.value });
 
     if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
 

@@ -190,8 +190,9 @@ import {
   type MarkdownImportSummary,
 } from '@/api/knowledgeBlocksMarkdown';
 import { parseImageAsset } from '@/features/media/image';
-import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
@@ -299,6 +300,12 @@ function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
 }
 
 const visibleBlocks = computed(() => blocks.value);
+
+function rowMatchesSearch(row: KnowledgeBlockRow) {
+  const q = String(route.query.q || '').trim().toLowerCase();
+  if (!q) return true;
+  return `${row.name} ${formatVersion(row.version)}`.toLowerCase().includes(q);
+}
 
 function describeTransferError(error: unknown, fallback: string) {
   return getApiErrorMessage(error, fallback);
@@ -530,6 +537,26 @@ async function loadBlocks() {
     loading.value = false;
   }
 }
+
+async function fetchBlockRow(id: number) {
+  try {
+    const params = new URLSearchParams();
+    params.set('fields[knowledge-blocks]', 'name,version,token_count,image,shared_incoming,shared_outgoing');
+    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${id}`, params);
+    return parseRow(payload.data);
+  } catch (error) {
+    console.warn('Failed to refresh knowledge block row.', error);
+    return null;
+  }
+}
+
+useLiveEntityRows(blocks, {
+  kind: 'knowledge-block',
+  getId: (row) => row.id,
+  resolveRow: (change) => fetchBlockRow(change.id),
+  include: (row, _change, current) => rowMatchesSearch(row) && (!hasActiveTagFilter.value || Boolean(current)),
+  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+});
 
 let reloadTimer: number | null = null;
 function scheduleReloadBlocks() {
