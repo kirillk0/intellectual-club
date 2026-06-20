@@ -59,6 +59,7 @@ export function useChatMessageActions(params: Params) {
   const retryingMessageId = ref<number | null>(null);
   const branchingAssistantId = ref<number | null>(null);
   const branchingNewChatMessageId = ref<number | null>(null);
+  const movingBranchToNewChatMessageId = ref<number | null>(null);
   const deletingMessageId = ref<number | null>(null);
   const bookmarkingMessageIds = ref<Set<number>>(new Set());
   const openWorking = ref<OpenWorkingState | null>(null);
@@ -172,6 +173,11 @@ export function useChatMessageActions(params: Params) {
   const branchMessageById = (messageId: number | null | undefined) => {
     if (!messageId) return null;
     return params.branch.value.find((item) => item.id === messageId) || null;
+  };
+
+  const hasSiblingBranches = (msg: ChatBranchMessage) => {
+    if ((msg.siblings || []).length > 1) return true;
+    return Boolean(msg.prev_sibling_id || msg.next_sibling_id);
   };
 
   const currentRetryConfigurationId = () => {
@@ -557,6 +563,35 @@ export function useChatMessageActions(params: Params) {
     void branchAssistantToNewChat(msg);
   };
 
+  const moveBranchToNewChat = async (msg: ChatBranchMessage) => {
+    if (params.readOnly.value) return;
+    if (!msg.id || !params.chatId.value) return;
+    if (!hasSiblingBranches(msg)) return;
+    if (movingBranchToNewChatMessageId.value != null) return;
+
+    movingBranchToNewChatMessageId.value = msg.id;
+
+    try {
+      const payload = await api.post<{
+        chat: Chat;
+        branch: ChatBranchMessage[];
+        source_branch: ChatBranchMessage[];
+      }>(`/api/bff/chat-branches/${params.chatId.value}/move-to-new-chat`, {
+        message_id: msg.id,
+      });
+
+      replaceBranch(payload.source_branch);
+      const nextChatId = payload.chat?.id;
+      if (!nextChatId) throw new Error('Missing chat id');
+      await params.pushChatRoute(nextChatId);
+    } catch (error) {
+      console.error(error);
+      alert(errorMessage(error, 'Failed to move branch to new chat.'));
+    } finally {
+      if (movingBranchToNewChatMessageId.value === msg.id) movingBranchToNewChatMessageId.value = null;
+    }
+  };
+
   const resetEditState = () => {
     editingMessage.value = null;
     editContentIds.value = [];
@@ -705,6 +740,7 @@ export function useChatMessageActions(params: Params) {
     retryingMessageId,
     branchingAssistantId,
     branchingNewChatMessageId,
+    movingBranchToNewChatMessageId,
     isBookmarkingMessage,
     editingMessage,
     modalMode,
@@ -734,6 +770,7 @@ export function useChatMessageActions(params: Params) {
     startEdit,
     startBranch,
     startBranchToNewChat,
+    moveBranchToNewChat,
     cancelEdit,
     removeEditExistingAttachment,
     addEditPendingFiles,

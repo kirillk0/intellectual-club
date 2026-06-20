@@ -136,6 +136,7 @@ defmodule IntellectualClubWeb.Router do
 
     post "/chat-branches/:id/switch", ChatBranchesController, :switch
     post "/chat-branches/:id/activate", ChatBranchesController, :activate
+    post "/chat-branches/:id/move-to-new-chat", ChatBranchesController, :move_to_new_chat
 
     post "/chat-generation/:id/send", ChatGenerationController, :send
     post "/chat-generation/:id/generate", ChatGenerationController, :generate

@@ -278,6 +278,20 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change({ValidateParentMessage, []})
     end
 
+    update :move_to_chat do
+      accept([:chat_id, :parent_id])
+      require_atomic?(false)
+
+      change({RequireRelatedAccessByActor, relationships: [:chat], access: :writable})
+
+      change(
+        {RequireRelatedAccessByActor,
+         relationships: [:parent], access: :readable, required?: false}
+      )
+
+      change({ValidateParentMessage, []})
+    end
+
     update :update_token_count do
       accept([:token_count])
       require_atomic?(false)

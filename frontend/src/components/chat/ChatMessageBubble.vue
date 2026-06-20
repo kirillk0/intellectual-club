@@ -179,6 +179,21 @@
             <span class="message-actions-menu__label">Branch to new chat</span>
           </button>
           <button
+            v-if="canMoveBranchToNewChat"
+            class="menu-item message-actions-menu__item"
+            type="button"
+            role="menuitem"
+            :disabled="moveBranchToNewChatDisabled"
+            :aria-label="moveBranchToNewChatAriaLabel"
+            :title="moveBranchToNewChatTitle"
+            @click="emitMoveBranchNewChat"
+          >
+            <span class="message-actions-menu__icon">
+              <SvgIcon name="branch" size="16" />
+            </span>
+            <span class="message-actions-menu__label">{{ moveBranchToNewChatLabel }}</span>
+          </button>
+          <button
             class="menu-item message-actions-menu__item danger"
             type="button"
             role="menuitem"
@@ -209,6 +224,7 @@ import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.v
 import { formatTimeOfDay } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { copyTextWithFallback } from '@/utils/clipboard';
+import { translate } from '@/i18n';
 
 interface Props {
   message: ChatBranchMessage;
@@ -219,6 +235,7 @@ interface Props {
   bookmarking?: boolean;
   branchingAssistantId?: number | null;
   branchingNewChatMessageId?: number | null;
+  movingBranchToNewChatMessageId?: number | null;
   pollReconnecting?: boolean;
   workingOpen?: boolean;
   workingState?: OpenWorkingState | null;
@@ -237,6 +254,7 @@ const props = withDefaults(defineProps<Props>(), {
   bookmarking: false,
   branchingAssistantId: null,
   branchingNewChatMessageId: null,
+  movingBranchToNewChatMessageId: null,
   pollReconnecting: false,
   workingOpen: false,
   workingState: null,
@@ -252,6 +270,7 @@ const emit = defineEmits<{
   (e: 'edit'): void;
   (e: 'branch'): void;
   (e: 'branch-new-chat'): void;
+  (e: 'move-branch-new-chat'): void;
   (e: 'retry'): void;
   (e: 'delete'): void;
   (e: 'switch-branch', direction: 'prev' | 'next'): void;
@@ -341,6 +360,32 @@ const branchToNewChatDisabled = computed(() => {
   if (props.branchingNewChatMessageId == null) return false;
   return true;
 });
+
+const hasSiblingBranches = computed(() => {
+  if ((msg.value.siblings || []).length > 1) return true;
+  return Boolean(msg.value.prev_sibling_id || msg.value.next_sibling_id);
+});
+
+const canMoveBranchToNewChat = computed(() => !props.readonly && hasSiblingBranches.value);
+
+const moveBranchToNewChatDisabled = computed(() => {
+  if (!messageId.value) return true;
+  if (props.readonly) return true;
+  if (msg.value.status === 'generating') return true;
+  if (props.movingBranchToNewChatMessageId == null) return false;
+  return true;
+});
+
+const moveBranchToNewChatLabel = computed(() =>
+  props.movingBranchToNewChatMessageId === messageId.value
+    ? translate('Moving branch…')
+    : translate('Move branch to new chat')
+);
+
+const moveBranchToNewChatTitle = computed(() => translate('Move branch to new chat'));
+const moveBranchToNewChatAriaLabel = computed(() =>
+  translate(`Move branch from message ${props.index + 1} to new chat`)
+);
 
 const updateMoreMenuPosition = () => {
   if (!moreMenuOpen.value) return;
@@ -449,6 +494,12 @@ const emitBranchNewChat = () => {
   if (branchToNewChatDisabled.value) return;
   closeMoreMenu();
   emit('branch-new-chat');
+};
+
+const emitMoveBranchNewChat = () => {
+  if (moveBranchToNewChatDisabled.value) return;
+  closeMoreMenu();
+  emit('move-branch-new-chat');
 };
 
 const emitDelete = () => {
@@ -615,8 +666,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 .message-actions-menu__label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 </style>
