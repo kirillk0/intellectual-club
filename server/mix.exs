@@ -21,7 +21,7 @@ defmodule IntellectualClub.MixProject do
   def application do
     [
       mod: {IntellectualClub.Application, []},
-      extra_applications: [:logger, :runtime_tools, :ssh]
+      extra_applications: [:logger, :runtime_tools, :ssh, :xmerl]
     ]
   end
 
@@ -79,7 +79,7 @@ defmodule IntellectualClub.MixProject do
       {:web_push_elixir, "~> 0.8.0"},
       {:mint_web_socket, "~> 1.0"},
       {:ex_image_info, "~> 1.0"},
-      {:extractous_ex, "~> 0.2.1"},
+      {:pdf_elixide, "~> 0.4.0"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
     ]

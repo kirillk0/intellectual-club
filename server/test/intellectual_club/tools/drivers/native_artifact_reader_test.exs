@@ -89,6 +89,58 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
     assert snippet =~ "needle"
   end
 
+  test "read_file extracts text from PDF artifacts" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor, %{"chunk_size_tokens" => 10})
+    {file, context} = create_context_file!(actor, "sample.pdf", "application/pdf", pdf_payload())
+
+    assert {:ok, {text, raw}} =
+             NativeArtifactReader.execute(
+               tool_instance,
+               "read_file",
+               %{
+                 "file_id" => file.external_id,
+                 "page" => 1
+               },
+               context
+             )
+
+    assert text =~ "File: sample.pdf"
+    assert text =~ "Hello PDF needle text"
+    assert raw["file_id"] == file.external_id
+    assert raw["pages_total"] >= 1
+  end
+
+  test "read_file extracts paragraphs from DOCX artifacts" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor, %{"chunk_size_tokens" => 100})
+
+    {file, context} =
+      create_context_file!(
+        actor,
+        "sample.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        docx_payload()
+      )
+
+    assert {:ok, {text, raw}} =
+             NativeArtifactReader.execute(
+               tool_instance,
+               "read_file",
+               %{
+                 "file_id" => file.external_id,
+                 "page" => 1
+               },
+               context
+             )
+
+    assert text =~ "File: sample.docx"
+    assert text =~ "First DOCX paragraph"
+    assert text =~ "Second DOCX needle paragraph"
+    assert raw["file_id"] == file.external_id
+    assert raw["pages_total"] >= 1
+  end
+
   test "read_image accepts a valid image payload" do
     %{user: actor} = user_fixture()
     tool_instance = create_tool_instance!(actor)
@@ -287,5 +339,45 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
     <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
       0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
       5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
+  end
+
+  defp pdf_payload do
+    [
+      "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIg",
+      "MCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBv",
+      "YmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVz",
+      "b3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2Jq",
+      "CjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNh",
+      "ID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTMgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3",
+      "MiA3MjAgVGQgKEhlbGxvIFBERiBuZWVkbGUgdGV4dCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVm",
+      "CjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAw",
+      "MDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAw",
+      "MDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQxMwolJUVP",
+      "Rgo="
+    ]
+    |> IO.iodata_to_binary()
+    |> Base.decode64!()
+  end
+
+  defp docx_payload do
+    document_xml = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:p>
+          <w:r><w:t>First DOCX paragraph</w:t></w:r>
+        </w:p>
+        <w:p>
+          <w:r><w:t>Second DOCX </w:t></w:r>
+          <w:r><w:t>needle paragraph</w:t></w:r>
+        </w:p>
+      </w:body>
+    </w:document>
+    """
+
+    {:ok, {_name, bytes}} =
+      :zip.create(~c"sample.docx", [{~c"word/document.xml", document_xml}], [:memory])
+
+    bytes
   end
 end

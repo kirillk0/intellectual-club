@@ -151,6 +151,32 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     assert raw["pages_total"] >= 1
   end
 
+  test "read_url extracts DOCX text responses" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        type: "native-web-reader",
+        config: %{"chunk_size_tokens" => 100},
+        secrets: %{}
+      })
+
+    {:ok, server} = start_raw_http_server(200, "application/zip", docx_payload())
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:ok, {text, raw}} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/sample.docx",
+               "page" => 1
+             })
+
+    assert text =~ "Source: http://127.0.0.1:#{server.port}/sample.docx"
+    assert text =~ "Web DOCX needle paragraph"
+    assert raw["content_type"] == "application/zip"
+    assert raw["pages_total"] >= 1
+  end
+
   defp create_tool_instance!(actor, attrs) when is_map(attrs) do
     ToolInstance
     |> Ash.Changeset.for_create(
@@ -230,5 +256,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
       {:error, :closed} ->
         :ok
     end
+  end
+
+  defp docx_payload do
+    document_xml = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:p>
+          <w:r><w:t>Web DOCX needle paragraph</w:t></w:r>
+        </w:p>
+      </w:body>
+    </w:document>
+    """
+
+    {:ok, {_name, bytes}} =
+      :zip.create(~c"sample.docx", [{~c"word/document.xml", document_xml}], [:memory])
+
+    bytes
   end
 end

@@ -4,22 +4,19 @@ defmodule IntellectualClub.Tools.DocumentReader do
   """
 
   alias IntellectualClub.TokenCounter
+  alias PdfElixide.Document, as: PdfDocument
 
   @default_chunk_size_tokens 5_000
   @default_cache_ttl_seconds 86_400
   @default_cache_max_bytes 1 * 1024 * 1024 * 1024
   @default_extract_timeout_seconds 45.0
   @default_max_extract_chars 500_000
-  @supported_pdf_ocr_strategies ["NO_OCR", "AUTO", "OCR_ONLY", "OCR_AND_TEXT_EXTRACTION"]
-  @default_pdf_ocr_strategy "NO_OCR"
 
   def default_chunk_size_tokens, do: @default_chunk_size_tokens
   def default_cache_ttl_seconds, do: @default_cache_ttl_seconds
   def default_cache_max_bytes, do: @default_cache_max_bytes
   def default_extract_timeout_seconds, do: @default_extract_timeout_seconds
   def default_max_extract_chars, do: @default_max_extract_chars
-  def default_pdf_ocr_strategy, do: @default_pdf_ocr_strategy
-  def supported_pdf_ocr_strategies, do: @supported_pdf_ocr_strategies
 
   def config_from_map(cfg) when is_map(cfg) do
     %{
@@ -31,8 +28,7 @@ defmodule IntellectualClub.Tools.DocumentReader do
       extract_timeout_seconds:
         max(0.1, read_float(cfg, "extract_timeout_seconds", @default_extract_timeout_seconds)),
       max_extract_chars:
-        max(1, read_integer(cfg, "max_extract_chars", @default_max_extract_chars)),
-      pdf_ocr_strategy: read_pdf_ocr_strategy(cfg, "pdf_ocr_strategy", @default_pdf_ocr_strategy)
+        max(1, read_integer(cfg, "max_extract_chars", @default_max_extract_chars))
     }
   end
 
@@ -329,7 +325,6 @@ defmodule IntellectualClub.Tools.DocumentReader do
         "cache_max_bytes" -> Map.get(map, :cache_max_bytes)
         "extract_timeout_seconds" -> Map.get(map, :extract_timeout_seconds)
         "max_extract_chars" -> Map.get(map, :max_extract_chars)
-        "pdf_ocr_strategy" -> Map.get(map, :pdf_ocr_strategy)
         "pages_total" -> Map.get(map, :pages_total)
         _ -> nil
       end
@@ -340,7 +335,7 @@ defmodule IntellectualClub.Tools.DocumentReader do
   defp build_cache(doc_dir, cfg, source_fun) do
     with :ok <- File.mkdir_p(doc_dir),
          {:ok, {bytes, source_meta}} <- source_fun.(),
-         {:ok, {extracted_text, extraction_meta}} <- extract_text(bytes, cfg),
+         {:ok, {extracted_text, extraction_meta}} <- extract_text(bytes, source_meta, cfg),
          :ok <- write_pages(doc_dir, split_to_pages(extracted_text, cfg.chunk_size_tokens)) do
       meta =
         source_meta
@@ -382,48 +377,38 @@ defmodule IntellectualClub.Tools.DocumentReader do
     end
   end
 
-  defp extract_text(bytes, cfg) when is_binary(bytes) and is_map(cfg) do
-    opts = [max_length: cfg.max_extract_chars, pdf: [ocr_strategy: cfg.pdf_ocr_strategy]]
+  defp extract_text(bytes, source_meta, cfg)
+       when is_binary(bytes) and is_map(source_meta) and is_map(cfg) do
     timeout_ms = cfg.extract_timeout_seconds |> Kernel.*(1000) |> trunc() |> max(1)
 
-    case extract_with_timeout(bytes, opts, timeout_ms) do
-      {:ok, {:ok, %{content: content, metadata: metadata}}} ->
-        text = normalize_text(to_string(content || ""))
+    case extract_with_timeout(bytes, source_meta, cfg, timeout_ms) do
+      {:ok, {:ok, {text, metadata}}} ->
         metadata = if is_map(metadata), do: metadata, else: %{}
 
         extraction_meta =
           %{}
-          |> maybe_put("title", map_get(metadata, "title"))
           |> maybe_put("metadata", metadata)
 
         {:ok, {text, extraction_meta}}
 
-      {:ok, {:ok, other}} ->
-        text =
-          other
-          |> inspect(limit: :infinity)
-          |> normalize_text()
-
-        {:ok, {text, %{}}}
-
       {:ok, {:error, reason}} ->
-        {:error, "Extractous extraction failed: #{inspect(reason)}"}
+        {:error, "Document extraction failed: #{format_reason(reason)}"}
 
       {:error, :timeout} ->
         seconds = Float.round(timeout_ms / 1000.0, 1)
-        {:error, "Extractous extraction timed out after #{seconds} seconds."}
+        {:error, "Document extraction timed out after #{seconds} seconds."}
 
       {:error, {:exit, reason}} ->
-        {:error, "Extractous extraction exited: #{Exception.format_exit(reason)}"}
+        {:error, "Document extraction exited: #{Exception.format_exit(reason)}"}
     end
   rescue
     exception ->
       {:error, Exception.message(exception)}
   end
 
-  defp extract_with_timeout(bytes, opts, timeout_ms)
-       when is_binary(bytes) and is_list(opts) and is_integer(timeout_ms) do
-    task = Task.async(fn -> ExtractousEx.extract_from_bytes(bytes, opts) end)
+  defp extract_with_timeout(bytes, source_meta, cfg, timeout_ms)
+       when is_binary(bytes) and is_map(source_meta) and is_map(cfg) and is_integer(timeout_ms) do
+    task = Task.async(fn -> extract_bytes(bytes, source_meta, cfg) end)
 
     case Task.yield(task, timeout_ms) do
       {:ok, result} ->
@@ -437,6 +422,428 @@ defmodule IntellectualClub.Tools.DocumentReader do
     :exit, reason ->
       {:error, {:exit, reason}}
   end
+
+  defp extract_bytes(bytes, source_meta, cfg)
+       when is_binary(bytes) and is_map(source_meta) and is_map(cfg) do
+    cond do
+      pdf_binary?(bytes) or pdf_source?(source_meta) ->
+        extract_pdf_text(bytes, cfg)
+
+      docx_source?(source_meta) ->
+        extract_docx_text(bytes, cfg)
+
+      html_source?(source_meta) or html_binary?(bytes) ->
+        text =
+          bytes
+          |> extract_html_text()
+          |> limit_chars(cfg.max_extract_chars)
+
+        {:ok, {text, %{"extractor" => "html_text"}}}
+
+      text_source?(source_meta) or looks_like_text?(bytes) ->
+        text =
+          bytes
+          |> sanitize_binary_text()
+          |> normalize_text()
+          |> limit_chars(cfg.max_extract_chars)
+
+        {:ok, {text, %{"extractor" => "plain_text"}}}
+
+      true ->
+        {:error, "Unsupported document type. Supported types: PDF, DOCX, HTML, and plain text."}
+    end
+  end
+
+  defp extract_pdf_text(bytes, cfg) when is_binary(bytes) and is_map(cfg) do
+    with {:ok, doc} <- PdfDocument.from_binary(bytes),
+         {:ok, page_count} <- PdfDocument.page_count(doc),
+         {:ok, {pages, truncated?}} <- extract_pdf_pages(doc, page_count, cfg.max_extract_chars) do
+      text =
+        pages
+        |> Enum.join("\n\n")
+        |> normalize_text()
+        |> limit_chars(cfg.max_extract_chars)
+
+      metadata =
+        %{
+          "extractor" => "pdf_elixide",
+          "pdf_page_count" => page_count,
+          "pdf_version" => format_pdf_version(PdfDocument.version(doc))
+        }
+        |> maybe_put("truncated", if(truncated?, do: true, else: nil))
+
+      {:ok, {text, metadata}}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp extract_docx_text(bytes, cfg) when is_binary(bytes) and is_map(cfg) do
+    with {:ok, document_xml} <- read_docx_document_xml(bytes),
+         {:ok, paragraphs} <- docx_paragraphs(document_xml) do
+      full_text =
+        paragraphs
+        |> Enum.join("\n\n")
+        |> normalize_text()
+
+      text = limit_chars(full_text, cfg.max_extract_chars)
+      truncated? = String.length(full_text) > String.length(text)
+
+      metadata =
+        %{
+          "extractor" => "docx_xml",
+          "docx_paragraph_count" => length(paragraphs)
+        }
+        |> maybe_put("truncated", if(truncated?, do: true, else: nil))
+
+      {:ok, {text, metadata}}
+    end
+  end
+
+  defp read_docx_document_xml(bytes) when is_binary(bytes) do
+    case :zip.extract(bytes, [:memory]) do
+      {:ok, entries} ->
+        entries
+        |> Enum.find(fn {name, _content} -> to_string(name) == "word/document.xml" end)
+        |> case do
+          {_name, document_xml} when is_binary(document_xml) ->
+            {:ok, document_xml}
+
+          _other ->
+            {:error, "DOCX archive does not contain word/document.xml."}
+        end
+
+      {:error, reason} ->
+        {:error, "Invalid DOCX archive: #{inspect(reason)}"}
+    end
+  end
+
+  defp docx_paragraphs(document_xml) when is_binary(document_xml) do
+    initial_state = %{paragraphs: [], current: [], in_paragraph?: false, text_depth: 0}
+
+    event_fun = fn event, _location, state ->
+      handle_docx_sax_event(event, state)
+    end
+
+    document_xml
+    |> sanitize_binary_text()
+    |> String.to_charlist()
+    |> then(
+      &apply(:xmerl_sax_parser, :stream, [
+        &1,
+        [{:event_fun, event_fun}, {:event_state, initial_state}]
+      ])
+    )
+    |> case do
+      {:ok, state, _rest} ->
+        paragraphs =
+          state.paragraphs
+          |> Enum.reverse()
+          |> Enum.map(&normalize_text/1)
+          |> Enum.reject(&(&1 == ""))
+
+        {:ok, paragraphs}
+
+      {:fatal_error, _location, reason, _state} ->
+        {:error, "Invalid DOCX document XML: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "Invalid DOCX document XML: #{inspect(reason)}"}
+
+      other ->
+        {:error, "Invalid DOCX document XML: #{inspect(other)}"}
+    end
+  catch
+    :exit, reason ->
+      {:error, "Invalid DOCX document XML: #{Exception.format_exit(reason)}"}
+  end
+
+  defp handle_docx_sax_event({:startElement, _uri, local_name, _qname, _attrs}, state) do
+    cond do
+      xml_local_name?(local_name, "p") ->
+        %{state | in_paragraph?: true, current: [], text_depth: 0}
+
+      state.in_paragraph? and xml_local_name?(local_name, "t") ->
+        %{state | text_depth: state.text_depth + 1}
+
+      state.in_paragraph? and xml_local_name?(local_name, "tab") ->
+        append_docx_text(state, "\t")
+
+      state.in_paragraph? and
+          (xml_local_name?(local_name, "br") or xml_local_name?(local_name, "cr")) ->
+        append_docx_text(state, "\n")
+
+      true ->
+        state
+    end
+  end
+
+  defp handle_docx_sax_event({:endElement, _uri, local_name, _qname}, state) do
+    cond do
+      state.in_paragraph? and xml_local_name?(local_name, "p") ->
+        paragraph =
+          state.current
+          |> Enum.reverse()
+          |> IO.iodata_to_binary()
+
+        %{
+          state
+          | paragraphs: [paragraph | state.paragraphs],
+            current: [],
+            in_paragraph?: false,
+            text_depth: 0
+        }
+
+      state.text_depth > 0 and xml_local_name?(local_name, "t") ->
+        %{state | text_depth: state.text_depth - 1}
+
+      true ->
+        state
+    end
+  end
+
+  defp handle_docx_sax_event({:characters, chars}, state)
+       when state.in_paragraph? and state.text_depth > 0 do
+    append_docx_text(state, chars)
+  end
+
+  defp handle_docx_sax_event(_event, state), do: state
+
+  defp append_docx_text(state, chars) do
+    %{state | current: [chars | state.current]}
+  end
+
+  defp xml_local_name?(name, expected) when is_list(name) and is_binary(expected) do
+    name == String.to_charlist(expected)
+  end
+
+  defp xml_local_name?(name, expected) when is_binary(expected) do
+    name
+    |> to_string()
+    |> String.split(":")
+    |> List.last()
+    |> Kernel.==(expected)
+  end
+
+  defp extract_pdf_pages(_doc, page_count, _max_chars) when page_count <= 0 do
+    {:ok, {[], false}}
+  end
+
+  defp extract_pdf_pages(doc, page_count, max_chars)
+       when is_integer(page_count) and is_integer(max_chars) do
+    0..(page_count - 1)
+    |> Enum.reduce_while({:ok, {[], 0, false}}, fn page_index, {:ok, {pages, char_count, _}} ->
+      remaining = max(0, max_chars - char_count)
+
+      if remaining == 0 do
+        {:halt, {:ok, {pages, char_count, true}}}
+      else
+        case PdfDocument.extract_text(doc, page_index) do
+          {:ok, page_text} ->
+            text =
+              page_text
+              |> to_string()
+              |> normalize_text()
+
+            clipped = limit_chars(text, remaining)
+            new_char_count = char_count + String.length(clipped)
+            pages = pages ++ [clipped]
+
+            truncated? =
+              String.length(text) > String.length(clipped) or
+                (new_char_count >= max_chars and page_index < page_count - 1)
+
+            if truncated? or new_char_count >= max_chars do
+              {:halt, {:ok, {pages, new_char_count, truncated?}}}
+            else
+              {:cont, {:ok, {pages, new_char_count, false}}}
+            end
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end
+    end)
+    |> case do
+      {:ok, {pages, _char_count, truncated?}} -> {:ok, {pages, truncated?}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp extract_html_text(bytes) when is_binary(bytes) do
+    bytes
+    |> sanitize_binary_text()
+    |> String.replace(~r/<(script|style|noscript)\b[^>]*>.*?<\/\1>/isu, " ")
+    |> String.replace(~r/<(br|hr)\b[^>]*>/iu, "\n")
+    |> String.replace(
+      ~r/<\/(p|div|section|article|header|footer|main|li|tr|h[1-6]|table|ul|ol|blockquote)>/iu,
+      "\n"
+    )
+    |> String.replace(~r/<[^>]+>/u, " ")
+    |> decode_html_entities()
+    |> normalize_text()
+  end
+
+  defp decode_html_entities(text) when is_binary(text) do
+    named_entities = %{
+      "amp" => "&",
+      "lt" => "<",
+      "gt" => ">",
+      "quot" => "\"",
+      "apos" => "'",
+      "nbsp" => " ",
+      "ndash" => "-",
+      "mdash" => "-",
+      "hellip" => "...",
+      "copy" => "(c)",
+      "reg" => "(r)"
+    }
+
+    text =
+      Regex.replace(~r/&([A-Za-z][A-Za-z0-9]+);/u, text, fn full, name ->
+        Map.get(named_entities, String.downcase(name), full)
+      end)
+
+    Regex.replace(~r/&#(x?[0-9A-Fa-f]+);/u, text, fn full, value ->
+      decode_numeric_entity(value, full)
+    end)
+  end
+
+  defp decode_numeric_entity("x" <> value, fallback) do
+    decode_numeric_entity(value, 16, fallback)
+  end
+
+  defp decode_numeric_entity(value, fallback) do
+    decode_numeric_entity(value, 10, fallback)
+  end
+
+  defp decode_numeric_entity(value, base, fallback) do
+    case Integer.parse(value, base) do
+      {codepoint, ""} when codepoint in 0..0x10FFFF ->
+        try do
+          <<codepoint::utf8>>
+        rescue
+          ArgumentError -> fallback
+        end
+
+      _ ->
+        fallback
+    end
+  end
+
+  defp limit_chars(text, max_chars) when is_binary(text) and is_integer(max_chars) do
+    String.slice(text, 0, max(0, max_chars))
+  end
+
+  defp pdf_binary?(<<"%PDF-", _rest::binary>>), do: true
+  defp pdf_binary?(_bytes), do: false
+
+  defp pdf_source?(source_meta) when is_map(source_meta) do
+    source_type_contains?(source_meta, "application/pdf") or
+      source_extension(source_meta) == ".pdf"
+  end
+
+  defp docx_source?(source_meta) when is_map(source_meta) do
+    source_type_contains?(source_meta, "wordprocessingml.document") or
+      source_extension(source_meta) == ".docx"
+  end
+
+  defp html_source?(source_meta) when is_map(source_meta) do
+    source_type_contains?(source_meta, "html") or
+      source_extension(source_meta) in [".html", ".htm"]
+  end
+
+  defp text_source?(source_meta) when is_map(source_meta) do
+    source_type = source_type(source_meta)
+    extension = source_extension(source_meta)
+
+    String.contains?(source_type, "text/") or
+      Enum.any?(
+        [
+          "application/json",
+          "application/xml",
+          "application/xhtml",
+          "application/javascript",
+          "application/x-javascript",
+          "application/yaml",
+          "application/x-yaml"
+        ],
+        &String.contains?(source_type, &1)
+      ) or
+      extension in ~w(.txt .text .md .markdown .json .jsonl .ndjson .csv .tsv .xml .yaml .yml .log)
+  end
+
+  defp source_type_contains?(source_meta, needle)
+       when is_map(source_meta) and is_binary(needle) do
+    source_meta
+    |> source_type()
+    |> String.contains?(needle)
+  end
+
+  defp source_type(source_meta) when is_map(source_meta) do
+    [map_get(source_meta, "content_type"), map_get(source_meta, "mime_type")]
+    |> Enum.map(&to_string/1)
+    |> Enum.join(" ")
+    |> String.downcase()
+  end
+
+  defp source_extension(source_meta) when is_map(source_meta) do
+    source_meta
+    |> map_get("source_extension")
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp html_binary?(bytes) when is_binary(bytes) do
+    sample =
+      bytes
+      |> binary_prefix(512)
+      |> sanitize_binary_text()
+      |> String.trim_leading()
+      |> String.downcase()
+
+    String.starts_with?(sample, "<!doctype html") or String.starts_with?(sample, "<html") or
+      String.contains?(sample, "<body")
+  end
+
+  defp looks_like_text?(bytes) when is_binary(bytes) do
+    sample = binary_prefix(bytes, 4096)
+
+    cond do
+      sample == "" ->
+        true
+
+      :binary.match(sample, <<0>>) != :nomatch ->
+        false
+
+      not String.valid?(sample) ->
+        false
+
+      true ->
+        control_count =
+          sample
+          |> :binary.bin_to_list()
+          |> Enum.count(fn byte ->
+            byte < 32 and byte not in [9, 10, 12, 13]
+          end)
+
+        control_count / max(1, byte_size(sample)) < 0.05
+    end
+  end
+
+  defp binary_prefix(bytes, max_bytes) when is_binary(bytes) and is_integer(max_bytes) do
+    binary_part(bytes, 0, min(byte_size(bytes), max(0, max_bytes)))
+  end
+
+  defp format_pdf_version({major, minor}) when is_integer(major) and is_integer(minor) do
+    "#{major}.#{minor}"
+  end
+
+  defp format_pdf_version(other), do: inspect(other)
+
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(reason), do: inspect(reason)
 
   defp split_to_pages(text, chunk_size_tokens)
        when is_binary(text) and is_integer(chunk_size_tokens) do
@@ -759,19 +1166,6 @@ defmodule IntellectualClub.Tools.DocumentReader do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value) when is_map(map), do: Map.put(map, key, value)
-
-  defp read_pdf_ocr_strategy(cfg, key, default)
-       when is_map(cfg) and is_binary(key) and is_binary(default) do
-    value =
-      cfg
-      |> map_get(key)
-      |> case do
-        nil -> default
-        other -> other |> to_string() |> String.trim() |> String.upcase()
-      end
-
-    if value in @supported_pdf_ocr_strategies, do: value, else: default
-  end
 
   defp coerce_optional_integer(nil, default) when is_integer(default), do: {:ok, default}
   defp coerce_optional_integer(value, _default) when is_integer(value), do: {:ok, value}

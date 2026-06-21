@@ -43,8 +43,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
       "cache_ttl_seconds" => DocumentReader.default_cache_ttl_seconds(),
       "cache_max_bytes" => DocumentReader.default_cache_max_bytes(),
       "extract_timeout_seconds" => DocumentReader.default_extract_timeout_seconds(),
-      "max_extract_chars" => DocumentReader.default_max_extract_chars(),
-      "pdf_ocr_strategy" => DocumentReader.default_pdf_ocr_strategy()
+      "max_extract_chars" => DocumentReader.default_max_extract_chars()
     }
   end
 
@@ -82,12 +81,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
           "title" => "Max extract chars",
           "description" => "Maximum number of extracted characters per document.",
           "minimum" => 0
-        },
-        "pdf_ocr_strategy" => %{
-          "type" => "string",
-          "title" => "PDF OCR strategy",
-          "enum" => DocumentReader.supported_pdf_ocr_strategies(),
-          "description" => "PDF OCR strategy used by Extractous."
         }
       },
       "additionalProperties" => false
@@ -103,7 +96,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
       %{
         "name" => "read_file",
         "description" =>
-          "Read a text, HTML, PDF, or office artifact by file_id and return one extracted page.",
+          "Read a text, HTML, PDF, or DOCX artifact by file_id and return one extracted page.",
         "schema" => %{
           "type" => "object",
           "properties" => %{

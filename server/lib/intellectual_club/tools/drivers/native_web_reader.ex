@@ -58,7 +58,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
   @impl true
   def description do
-    "Fetch an HTML or PDF URL, extract text, expose paged reads, and regex search snippets."
+    "Fetch an HTML, PDF, DOCX, or text URL, extract text, expose paged reads, and regex search snippets."
   end
 
   @impl true
@@ -80,8 +80,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
       "http_timeout_seconds" => @default_http_timeout_seconds,
       "extract_timeout_seconds" => DocumentReader.default_extract_timeout_seconds(),
       "user_agent" => @default_user_agent,
-      "max_extract_chars" => DocumentReader.default_max_extract_chars(),
-      "pdf_ocr_strategy" => DocumentReader.default_pdf_ocr_strategy()
+      "max_extract_chars" => DocumentReader.default_max_extract_chars()
     }
   end
 
@@ -137,12 +136,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
           "title" => "Max extract chars",
           "description" => "Maximum number of extracted characters per document.",
           "minimum" => 0
-        },
-        "pdf_ocr_strategy" => %{
-          "type" => "string",
-          "title" => "PDF OCR strategy",
-          "enum" => DocumentReader.supported_pdf_ocr_strategies(),
-          "description" => "PDF OCR strategy used by Extractous."
         }
       },
       "additionalProperties" => false
@@ -158,7 +151,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
       %{
         "name" => "read_url",
         "description" =>
-          "Fetch a URL (HTML or PDF), extract text, and return a requested cached page.",
+          "Fetch a URL (HTML, PDF, DOCX, or text), extract text, and return a requested cached page.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
@@ -178,7 +171,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
       %{
         "name" => "search_url",
         "description" =>
-          "Fetch a URL (HTML or PDF), extract text, and search across pages returning snippets with page numbers.",
+          "Fetch a URL (HTML, PDF, DOCX, or text), extract text, and search across pages returning snippets with page numbers.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
@@ -434,7 +427,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
     else
       content_type = first_header_value(resp.headers, "content-type")
 
-      with :ok <- reject_unsupported_content_type(content_type),
+      with :ok <- reject_unsupported_content_type(content_type, url),
            body <- body_to_binary(resp.body) do
         if cfg.max_download_bytes > 0 and byte_size(body) > cfg.max_download_bytes do
           {:error, "Download exceeds max_download_bytes limit."}
@@ -516,21 +509,36 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
     end
   end
 
-  defp reject_unsupported_content_type(content_type) do
+  defp reject_unsupported_content_type(content_type, url) do
     normalized =
       content_type
       |> to_string()
       |> String.downcase()
 
-    if Enum.any?(@unsupported_content_type_parts, &String.contains?(normalized, &1)) do
-      {:error, unsupported_download_message()}
-    else
+    if docx_url?(url) and String.contains?(normalized, "application/zip") do
       :ok
+    else
+      if Enum.any?(@unsupported_content_type_parts, &String.contains?(normalized, &1)) do
+        {:error, unsupported_download_message()}
+      else
+        :ok
+      end
     end
   end
 
+  defp docx_url?(url) when is_binary(url) do
+    url
+    |> URI.parse()
+    |> Map.get(:path)
+    |> to_string()
+    |> String.downcase()
+    |> String.ends_with?(".docx")
+  end
+
+  defp docx_url?(_url), do: false
+
   defp unsupported_download_message do
-    "Web Reader does not support compressed archives or bulk data dumps. Use a smaller HTML, PDF, or text endpoint instead."
+    "Web Reader does not support compressed archives or bulk data dumps. Use a smaller HTML, PDF, DOCX, or text endpoint instead."
   end
 
   defp guess_extension(content_type, url) do
@@ -539,8 +547,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
     cond do
       String.contains?(ct, "application/pdf") -> ".pdf"
+      String.contains?(ct, "wordprocessingml.document") -> ".docx"
       String.contains?(ct, "text/html") or String.contains?(ct, "application/xhtml") -> ".html"
       String.ends_with?(path, ".pdf") -> ".pdf"
+      String.ends_with?(path, ".docx") -> ".docx"
       String.ends_with?(path, ".html") or String.ends_with?(path, ".htm") -> ".html"
       true -> ".bin"
     end
