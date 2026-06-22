@@ -172,7 +172,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
+import { useRoute, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -251,7 +251,6 @@ const CHAT_SEARCH_DEBOUNCE_MS = 600;
 const CHAT_SEARCH_MIN_LENGTH = 2;
 
 const route = useRoute();
-const router = useRouter();
 const stackNav = useStackNavigation();
 
 const openBookmarks = () => stackNav.open({ path: '/bookmarks' });
@@ -346,7 +345,24 @@ function syncChatListRouteQuery() {
     return;
   }
 
-  router.replace({ query: next }).catch(() => {});
+  const params = new URLSearchParams();
+  Object.entries(next).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item != null) params.append(key, String(item));
+      });
+      return;
+    }
+    if (value != null) params.set(key, String(value));
+  });
+
+  const queryString = params.toString();
+  const path = window.location.pathname || route.path || '/';
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${path}${queryString ? `?${queryString}` : ''}${route.hash || ''}`
+  );
 }
 
 watch(
