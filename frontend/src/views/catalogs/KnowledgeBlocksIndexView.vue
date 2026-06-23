@@ -554,7 +554,13 @@ useLiveEntityRows(blocks, {
   kind: 'knowledge-block',
   getId: (row) => row.id,
   resolveRow: (change) => fetchBlockRow(change.id),
-  include: (row, _change, current) => rowMatchesSearch(row) && (!hasActiveTagFilter.value || Boolean(current)),
+  include: (row, _change, current) => {
+    if (!rowMatchesSearch(row)) return false;
+    if (!hasActiveTagFilter.value) return true;
+
+    scheduleReloadBlocks();
+    return Boolean(current);
+  },
   compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
 });
 
