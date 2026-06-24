@@ -1,116 +1,63 @@
 <template>
-  <div class="stack">
-    <div class="knowledge-block-code-field">
-      <div class="knowledge-block-code-field__label">Content</div>
-      <div
-        :class="[
-          'knowledge-block-content-editor',
-          contentError && 'knowledge-block-content-editor--error',
-          readonly && 'knowledge-block-content-editor--readonly',
-        ]"
-      >
-        <div ref="editorRootRef" class="knowledge-block-content-editor__host" data-i18n-ignore></div>
-      </div>
-      <div class="muted knowledge-block-content-editor__hint">
-        Lines starting with <code>//// </code> are treated as comments and removed from the compiled prompt.
-      </div>
-      <div v-if="contentError" class="error-text">{{ contentError }}</div>
-    </div>
+  <div class="markdown-code-viewer">
+    <div ref="editorRootRef" class="markdown-code-viewer__host" data-i18n-ignore></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from '@codemirror/commands';
+import { defaultKeymap } from '@codemirror/commands';
+import { highlightSelectionMatches, search, searchKeymap } from '@codemirror/search';
 import {
   Compartment,
   EditorState,
   Transaction,
 } from '@codemirror/state';
 import {
-  EditorView,
   drawSelection,
+  EditorView,
   highlightActiveLine,
   keymap,
-  placeholder,
 } from '@codemirror/view';
-import {
-  highlightSelectionMatches,
-  search,
-  searchKeymap,
-} from '@codemirror/search';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { effectiveLocale, translate } from '@/i18n';
 import { CODEMIRROR_RU_PHRASES } from '@/utils/codeMirrorPhrases';
 import { markdownCodeHighlightingExtensions } from '@/utils/markdownCodeMirror';
-import type { KnowledgeBlockCodeEditorExpose } from './types';
 
 const props = defineProps<{
-  content: string;
-  contentError: string | null;
-  readonly: boolean;
+  value: string;
+  label: string;
 }>();
 
-const emit = defineEmits<{
-  (e: 'update:content', value: string): void;
-  (e: 'clear-content-error'): void;
-}>();
-
-const editableCompartment = new Compartment();
 const localizedCompartment = new Compartment();
 const editorRootRef = ref<HTMLDivElement | null>(null);
 const editorView = ref<EditorView | null>(null);
-let syncingFromProps = false;
-
-function readonlyExtensions() {
-  return [
-    EditorState.readOnly.of(props.readonly),
-    EditorView.editable.of(!props.readonly),
-  ];
-}
 
 function localizedExtensions() {
   return [
     EditorState.phrases.of(effectiveLocale.value === 'ru' ? CODEMIRROR_RU_PHRASES : {}),
-    placeholder(translate('Write the knowledge block content...')),
     EditorView.contentAttributes.of({
-      'aria-label': translate('Content'),
-      spellcheck: 'true',
-      autocorrect: 'on',
-      autocapitalize: 'sentences',
-      writingsuggestions: 'true',
+      'aria-label': translate(props.label),
+      spellcheck: 'false',
     }),
   ];
 }
 
 function editorExtensions() {
   return [
-    history(),
+    EditorState.readOnly.of(true),
+    EditorView.editable.of(false),
     drawSelection(),
     ...markdownCodeHighlightingExtensions(),
     EditorView.lineWrapping,
     highlightActiveLine(),
     search({ top: true }),
     highlightSelectionMatches(),
-    editableCompartment.of(readonlyExtensions()),
     localizedCompartment.of(localizedExtensions()),
     keymap.of([
-      indentWithTab,
       ...defaultKeymap,
-      ...historyKeymap,
       ...searchKeymap,
     ]),
-    EditorView.updateListener.of((update) => {
-      if (!update.docChanged || syncingFromProps) return;
-
-      emit('clear-content-error');
-      emit('update:content', update.state.doc.toString());
-    }),
   ];
 }
 
@@ -122,27 +69,10 @@ function replaceEditorContent(value: string) {
   const current = view.state.doc.toString();
   if (next === current) return;
 
-  syncingFromProps = true;
-  try {
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: next },
-      annotations: Transaction.addToHistory.of(false),
-    });
-  } finally {
-    syncingFromProps = false;
-  }
-}
-
-function resetScroll() {
-  const view = editorView.value;
-  if (!view) return;
-
-  view.scrollDOM.scrollTop = 0;
-  view.scrollDOM.scrollLeft = 0;
-}
-
-function focus() {
-  editorView.value?.focus();
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: next },
+    annotations: Transaction.addToHistory.of(false),
+  });
 }
 
 onMounted(() => {
@@ -151,7 +81,7 @@ onMounted(() => {
 
   editorView.value = new EditorView({
     state: EditorState.create({
-      doc: String(props.content || ''),
+      doc: String(props.value || ''),
       extensions: editorExtensions(),
     }),
     parent: root,
@@ -164,94 +94,50 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => props.content,
+  () => props.value,
   (value) => replaceEditorContent(value)
 );
 
 watch(
-  () => props.readonly,
-  () => {
-    editorView.value?.dispatch({
-      effects: editableCompartment.reconfigure(readonlyExtensions()),
-    });
-  }
-);
-
-watch(
-  effectiveLocale,
+  [effectiveLocale, () => props.label],
   () => {
     editorView.value?.dispatch({
       effects: localizedCompartment.reconfigure(localizedExtensions()),
     });
   }
 );
-
-const exposed: KnowledgeBlockCodeEditorExpose = {
-  resetScroll,
-  focus,
-};
-
-defineExpose(exposed);
 </script>
 
 <style scoped>
-.knowledge-block-code-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.knowledge-block-code-field__label {
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.knowledge-block-content-editor {
+.markdown-code-viewer {
   position: relative;
-  height: clamp(360px, calc(var(--app-vh, 1vh) * 68), 640px);
+  height: clamp(280px, calc(var(--app-vh, 1vh) * 60), 620px);
   border: 1px solid var(--color-border-strong);
   border-radius: 6px;
-  background: var(--color-surface);
+  background: var(--color-surface-muted);
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.knowledge-block-content-editor:focus-within {
+.markdown-code-viewer:focus-within {
   border-color: var(--color-focus);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-focus) 18%, transparent);
 }
 
-.knowledge-block-content-editor--error {
-  border-color: var(--color-danger);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 22%, transparent);
-}
-
-.knowledge-block-content-editor--error:focus-within {
-  border-color: var(--color-danger);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 18%, transparent);
-}
-
-.knowledge-block-content-editor--readonly {
-  background: var(--color-surface-muted);
-}
-
-.knowledge-block-content-editor__host {
+.markdown-code-viewer__host {
   height: 100%;
 }
 
-.knowledge-block-content-editor__hint {
-  margin-top: 0;
-}
-
 @media (max-width: 640px) {
-  .knowledge-block-content-editor {
+  .markdown-code-viewer {
+    height: clamp(240px, calc(var(--app-vh, 1vh) * 58), 520px);
     font-size: 1rem;
   }
 }
 
 :deep(.cm-editor) {
   height: 100%;
-  background: var(--color-surface);
+  background: var(--color-surface-muted);
   color: var(--color-text);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.95rem;
@@ -289,10 +175,6 @@ defineExpose(exposed);
 
 :deep(.cm-cursor) {
   border-left-color: var(--color-text);
-}
-
-:deep(.cm-placeholder) {
-  color: var(--color-text-subtle);
 }
 
 :deep(.cm-line.markdown-code-editor__comment-line),
@@ -376,9 +258,5 @@ defineExpose(exposed);
   background: var(--color-surface-elevated);
   color: var(--color-text);
   box-shadow: var(--shadow-menu);
-}
-
-.knowledge-block-content-editor--readonly :deep(.cm-editor) {
-  background: var(--color-surface-muted);
 }
 </style>

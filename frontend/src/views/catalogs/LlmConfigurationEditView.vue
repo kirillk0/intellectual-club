@@ -284,7 +284,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, h, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
@@ -294,7 +294,6 @@ import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
-import JsonCodeEditor from '@/features/catalogs/components/JsonCodeEditor.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useKnowledgeBlockBindingsDraft } from '@/features/catalogs/model/useKnowledgeBlockBindingsDraft';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
@@ -316,6 +315,13 @@ import {
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
 import type { Group, KnowledgeBlock } from '@/types/api';
+
+const JsonCodeEditor = defineAsyncComponent({
+  loader: () => import('@/features/catalogs/components/JsonCodeEditor.vue'),
+  loadingComponent: {
+    setup: () => () => h('div', { class: 'muted json-code-editor-loading', 'aria-live': 'polite' }, 'Loading editor…'),
+  },
+});
 
 type ConfigurationForm = {
   provider_id: number | null;

@@ -52,7 +52,7 @@ import {
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { effectiveLocale, translate } from '@/i18n';
-import { CODEMIRROR_RU_PHRASES } from './codeMirrorPhrases';
+import { CODEMIRROR_RU_PHRASES } from '@/utils/codeMirrorPhrases';
 
 const props = withDefaults(
   defineProps<{
