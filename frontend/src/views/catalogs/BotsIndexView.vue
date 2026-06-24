@@ -19,56 +19,58 @@
       </div>
     </StackToolbarTeleport>
 
-    <section class="card stack">
-      <div class="catalog-filters">
-        <label class="catalog-filters__search">
-          Search
-          <div class="catalog-search-row">
-            <input v-model="search" type="search" class="full" placeholder="Search bots" />
-            <button
-              type="button"
-              class="sort-toggle"
-              :class="{ active: botSortModeValue === 'recent_activity' }"
-              :aria-label="botSortToggleLabel"
-              :title="botSortToggleLabel"
-              @click="toggleBotSortMode"
-            >
-              <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
-            </button>
-          </div>
-        </label>
-      </div>
-    </section>
-
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
-
-    <section v-else class="card stack">
-      <div class="list catalog-list">
-        <button
-          v-for="b in visibleBots"
-          :key="b.id"
-          type="button"
-          class="row catalog-row"
-          @click="openBot(b.id)"
-        >
-          <div class="catalog-row__main">
-            <div class="catalog-row__title">
-              {{ b.name }}
-              <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
-              <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
+    <PullToRefresh :refresh="loadBots" :disabled="loading">
+      <section class="card stack">
+        <div class="catalog-filters">
+          <label class="catalog-filters__search">
+            Search
+            <div class="catalog-search-row">
+              <input v-model="search" type="search" class="full" placeholder="Search bots" />
+              <button
+                type="button"
+                class="sort-toggle"
+                :class="{ active: botSortModeValue === 'recent_activity' }"
+                :aria-label="botSortToggleLabel"
+                :title="botSortToggleLabel"
+                @click="toggleBotSortMode"
+              >
+                <SvgIcon :name="botSortModeValue === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
+              </button>
             </div>
-            <div class="catalog-row__subtitle">{{ resourcesLabel(b) }}</div>
-          </div>
-          <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
-          <div class="catalog-row__meta">
-            <span class="catalog-row__chevron" aria-hidden="true">›</span>
-          </div>
-        </button>
-      </div>
+          </label>
+        </div>
+      </section>
 
-      <p v-if="!visibleBots.length" class="muted">No bots found.</p>
-    </section>
+      <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="error" class="error-text">{{ error }}</p>
+
+      <section v-else class="card stack">
+        <div class="list catalog-list">
+          <button
+            v-for="b in visibleBots"
+            :key="b.id"
+            type="button"
+            class="row catalog-row"
+            @click="openBot(b.id)"
+          >
+            <div class="catalog-row__main">
+              <div class="catalog-row__title">
+                {{ b.name }}
+                <span v-if="b.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+                <span v-else-if="b.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
+              </div>
+              <div class="catalog-row__subtitle">{{ resourcesLabel(b) }}</div>
+            </div>
+            <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
+            <div class="catalog-row__meta">
+              <span class="catalog-row__chevron" aria-hidden="true">›</span>
+            </div>
+          </button>
+        </div>
+
+        <p v-if="!visibleBots.length" class="muted">No bots found.</p>
+      </section>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -76,6 +78,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';
 import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';

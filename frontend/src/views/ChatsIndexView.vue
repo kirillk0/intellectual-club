@@ -24,98 +24,100 @@
     </StackToolbarTeleport>
 
     <div class="split-wrapper">
-      <div class="catalog-split">
-        <aside class="catalog-split__sidebar">
-          <ChatBotFiltersPanel
-            v-model:searchTerm="botSearchTerm"
-            :sortMode="botSortModeValue"
-            :selectedFilter="botFilter"
-            :hasActiveFilter="hasActiveBotFilter"
-            :allBotsCount="allBotsCount"
-            :options="visibleBotFilterOptions"
-            :emptyState="botFilterEmptyState"
-            @toggle-sort="toggleBotSortMode"
-            @select-filter="setBotFilter"
-            @clear-filter="setBotFilter('')"
-          />
-        </aside>
+      <PullToRefresh :refresh="refreshChatIndex" :disabled="loading || chatSearchLoading || loadingBots || creating">
+        <div class="catalog-split">
+          <aside class="catalog-split__sidebar">
+            <ChatBotFiltersPanel
+              v-model:searchTerm="botSearchTerm"
+              :sortMode="botSortModeValue"
+              :selectedFilter="botFilter"
+              :hasActiveFilter="hasActiveBotFilter"
+              :allBotsCount="allBotsCount"
+              :options="visibleBotFilterOptions"
+              :emptyState="botFilterEmptyState"
+              @toggle-sort="toggleBotSortMode"
+              @select-filter="setBotFilter"
+              @clear-filter="setBotFilter('')"
+            />
+          </aside>
 
-        <main class="catalog-split__main stack">
-          <section class="card stack">
-            <div class="chat-search">
-              <input
-                v-model="chatSearchTerm"
-                type="search"
-                class="full"
-                placeholder="Search chats"
-                aria-label="Search chats"
-              />
-              <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
-            </div>
-          </section>
+          <main class="catalog-split__main stack">
+            <section class="card stack">
+              <div class="chat-search">
+                <input
+                  v-model="chatSearchTerm"
+                  type="search"
+                  class="full"
+                  placeholder="Search chats"
+                  aria-label="Search chats"
+                />
+                <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
+              </div>
+            </section>
 
-          <p v-if="loading" class="muted">Loading…</p>
-          <section v-else-if="error" class="card stack chat-list-error" role="alert">
-            <p class="error-text">{{ error }}</p>
-            <button class="primary" type="button" @click="loadChats()">{{ translate('Retry') }}</button>
-          </section>
+            <p v-if="loading" class="muted">Loading…</p>
+            <section v-else-if="error" class="card stack chat-list-error" role="alert">
+              <p class="error-text">{{ error }}</p>
+              <button class="primary" type="button" @click="loadChats()">{{ translate('Retry') }}</button>
+            </section>
 
-          <section v-else class="card stack chat-list-main">
-            <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
-            <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
+            <section v-else class="card stack chat-list-main">
+              <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
+              <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
-            <div class="list">
-              <ChatListRow
-                v-for="c in visibleChats"
-                :key="c.id"
-                :to="chatResultLink(c)"
-                :stack="true"
-                :title="chatLabel(c)"
-                :config-label="c.llm_configuration_label || null"
-                :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
-                :secondary-meta="relationMeta(c)"
-                :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
-                :preview-role="!hasChatSearch ? c.first_message_role : null"
-                :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
-                :generation-state="generationStateForChat(c)"
-                :row-role="chatResultRole(c)"
-                @navigate="openChat"
-              >
-                <template #badges>
-                  <span
-                    v-if="c.shared_outgoing"
-                    class="share-indicator"
-                    title="Shared with groups"
-                    aria-label="Shared with groups"
-                  >
-                    <SvgIcon name="share-outgoing" />
-                  </span>
-                  <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
-                    {{ matchBadgeLabel(c.match_type) }}
-                  </span>
-                  <span v-if="c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
-                  <span v-if="Number(c.child_handoff_count || 0) > 0" class="badge">
-                    {{ continuationCountLabel(c.child_handoff_count || 0) }}
-                  </span>
-                </template>
-              </ChatListRow>
-            </div>
+              <div class="list">
+                <ChatListRow
+                  v-for="c in visibleChats"
+                  :key="c.id"
+                  :to="chatResultLink(c)"
+                  :stack="true"
+                  :title="chatLabel(c)"
+                  :config-label="c.llm_configuration_label || null"
+                  :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
+                  :secondary-meta="relationMeta(c)"
+                  :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
+                  :preview-role="!hasChatSearch ? c.first_message_role : null"
+                  :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
+                  :generation-state="generationStateForChat(c)"
+                  :row-role="chatResultRole(c)"
+                  @navigate="openChat"
+                >
+                  <template #badges>
+                    <span
+                      v-if="c.shared_outgoing"
+                      class="share-indicator"
+                      title="Shared with groups"
+                      aria-label="Shared with groups"
+                    >
+                      <SvgIcon name="share-outgoing" />
+                    </span>
+                    <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
+                      {{ matchBadgeLabel(c.match_type) }}
+                    </span>
+                    <span v-if="c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
+                    <span v-if="Number(c.child_handoff_count || 0) > 0" class="badge">
+                      {{ continuationCountLabel(c.child_handoff_count || 0) }}
+                    </span>
+                  </template>
+                </ChatListRow>
+              </div>
 
-            <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
-              <button type="button" :disabled="loading || pageNumber <= 1" @click="goToPreviousPage">
-                Previous
-              </button>
-              <span class="muted">Page {{ pageNumber }} of {{ totalPages }}</span>
-              <button type="button" :disabled="loading || !hasNextPage" @click="goToNextPage">
-                Next
-              </button>
-            </div>
+              <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
+                <button type="button" :disabled="loading || pageNumber <= 1" @click="goToPreviousPage">
+                  Previous
+                </button>
+                <span class="muted">Page {{ pageNumber }} of {{ totalPages }}</span>
+                <button type="button" :disabled="loading || !hasNextPage" @click="goToNextPage">
+                  Next
+                </button>
+              </div>
 
-            <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
-            <p v-if="chatSearchEmptyState" class="muted">{{ chatSearchEmptyState }}</p>
-          </section>
-        </main>
-      </div>
+              <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
+              <p v-if="chatSearchEmptyState" class="muted">{{ chatSearchEmptyState }}</p>
+            </section>
+          </main>
+        </div>
+      </PullToRefresh>
 
       <transition name="fade">
         <div v-if="isMobile && filterOpen" class="panel-backdrop" @click="closeFilter"></div>
@@ -178,6 +180,7 @@ import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/js
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListRow from '@/components/ChatListRow.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
@@ -974,6 +977,17 @@ async function runChatSearch(
     }
     if (!silent && seq === chatSearchSeq) chatSearchLoading.value = false;
   }
+}
+
+async function refreshChatIndex() {
+  const refreshBots = loadBots({ showError: true });
+  if (hasChatSearch.value) {
+    const term = chatSearchTerm.value.trim();
+    await Promise.all([term ? runChatSearch(term) : Promise.resolve(), refreshBots]);
+    return;
+  }
+
+  await Promise.all([loadChats(), refreshBots]);
 }
 
 let chatListPollTimer: number | null = null;

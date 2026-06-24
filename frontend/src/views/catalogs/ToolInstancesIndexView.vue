@@ -20,110 +20,112 @@
     </StackToolbarTeleport>
 
     <div class="split-wrapper">
-      <div class="catalog-split">
-        <aside class="catalog-split__sidebar">
-          <section class="card stack tools-types-card">
-            <div class="tools-filter-header">
-              <strong>Type</strong>
-              <button type="button" class="link" :disabled="loading || !hasActiveTypeFilter" @click="clearType">
-                Clear
-              </button>
-            </div>
+      <PullToRefresh :refresh="loadTools" :disabled="loading">
+        <div class="catalog-split">
+          <aside class="catalog-split__sidebar">
+            <section class="card stack tools-types-card">
+              <div class="tools-filter-header">
+                <strong>Type</strong>
+                <button type="button" class="link" :disabled="loading || !hasActiveTypeFilter" @click="clearType">
+                  Clear
+                </button>
+              </div>
+
+              <p v-if="loading" class="muted">Loading…</p>
+              <div v-else-if="toolTypeOptions.length" class="type-filter-list" aria-label="Filter by type">
+                <button
+                  type="button"
+                  class="type-filter-option"
+                  :class="{ active: !selectedToolType }"
+                  :aria-pressed="!selectedToolType"
+                  @click="clearType"
+                >
+                  <span class="type-filter-option__label">
+                    <span class="type-filter-option__name">All types</span>
+                  </span>
+                  <span class="type-filter-option__count">{{ tools.length }}</span>
+                </button>
+
+                <button
+                  v-for="option in toolTypeOptions"
+                  :key="option.type"
+                  type="button"
+                  class="type-filter-option"
+                  :class="{ active: selectedToolType === option.type }"
+                  :aria-pressed="selectedToolType === option.type"
+                  @click="selectType(option.type)"
+                >
+                  <span class="type-filter-option__label">
+                    <ToolTypeBadge :type="option.type" :typeTitle="option.title" />
+                  </span>
+                  <span class="type-filter-option__count">{{ option.count }}</span>
+                </button>
+              </div>
+              <p v-else class="muted">No tool types.</p>
+            </section>
+          </aside>
+
+          <main class="catalog-split__main stack">
+            <section class="card stack">
+              <label>
+                Search
+                <input v-model="search" type="search" class="full" placeholder="Search tools" />
+              </label>
+            </section>
 
             <p v-if="loading" class="muted">Loading…</p>
-            <div v-else-if="toolTypeOptions.length" class="type-filter-list" aria-label="Filter by type">
-              <button
-                type="button"
-                class="type-filter-option"
-                :class="{ active: !selectedToolType }"
-                :aria-pressed="!selectedToolType"
-                @click="clearType"
-              >
-                <span class="type-filter-option__label">
-                  <span class="type-filter-option__name">All types</span>
-                </span>
-                <span class="type-filter-option__count">{{ tools.length }}</span>
-              </button>
+            <p v-else-if="error" class="error-text">{{ error }}</p>
 
-              <button
-                v-for="option in toolTypeOptions"
-                :key="option.type"
-                type="button"
-                class="type-filter-option"
-                :class="{ active: selectedToolType === option.type }"
-                :aria-pressed="selectedToolType === option.type"
-                @click="selectType(option.type)"
-              >
-                <span class="type-filter-option__label">
-                  <ToolTypeBadge :type="option.type" :typeTitle="option.title" />
-                </span>
-                <span class="type-filter-option__count">{{ option.count }}</span>
-              </button>
-            </div>
-            <p v-else class="muted">No tool types.</p>
-          </section>
-        </aside>
+            <section v-else class="card stack">
+              <div class="list catalog-list">
+                <button
+                  v-for="t in visibleTools"
+                  :key="t.id"
+                  type="button"
+                  class="row catalog-row"
+                  @click="openTool(t.id)"
+                >
+                  <div class="catalog-row__main">
+                    <div class="catalog-row__title">
+                      {{ t.name || 'Untitled tool' }}
+                      <span v-if="t.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+                      <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
+                    </div>
+                    <div class="catalog-row__subtitle tool-row__subtitle">
+                      <span>{{ t.alias }}</span>
+                      <span aria-hidden="true">·</span>
+                      <ToolTypeBadge :type="t.type" :typeTitle="t.typeLabel" />
+                      <span v-if="t.server_url" class="muted"> · {{ t.server_url }}</span>
+                    </div>
+                    <div v-if="t.description" class="muted catalog-row__description">
+                      {{ t.description }}
+                    </div>
+                    <div v-if="t.last_discovery_error" class="error-text" style="margin-top: 4px; font-size: 0.85rem">
+                      Discovery error: {{ t.last_discovery_error }}
+                    </div>
+                    <div v-else-if="t.last_discovered_at" class="muted" style="margin-top: 4px; font-size: 0.85rem">
+                      Last discovered: {{ formatRelativeDateTime(t.last_discovered_at) }}
+                    </div>
+                  </div>
+                  <div class="catalog-row__meta">
+                    <span
+                      v-if="t.type === 'outlet'"
+                      class="status-dot"
+                      :class="t.outlet_online ? 'success' : 'danger'"
+                      :title="t.outlet_online ? 'Online' : 'Offline'"
+                    />
+                    <span class="badge">{{ t.max_output_tokens }} max</span>
+                    <span v-if="t.rps_limit !== null" class="badge">{{ t.rps_limit }} rps</span>
+                    <span class="catalog-row__chevron" aria-hidden="true">›</span>
+                  </div>
+                </button>
+              </div>
 
-        <main class="catalog-split__main stack">
-          <section class="card stack">
-            <label>
-              Search
-              <input v-model="search" type="search" class="full" placeholder="Search tools" />
-            </label>
-          </section>
-
-          <p v-if="loading" class="muted">Loading…</p>
-          <p v-else-if="error" class="error-text">{{ error }}</p>
-
-          <section v-else class="card stack">
-            <div class="list catalog-list">
-              <button
-                v-for="t in visibleTools"
-                :key="t.id"
-                type="button"
-                class="row catalog-row"
-                @click="openTool(t.id)"
-              >
-                <div class="catalog-row__main">
-                  <div class="catalog-row__title">
-                    {{ t.name || 'Untitled tool' }}
-                    <span v-if="t.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
-                    <span v-else-if="t.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
-                  </div>
-                  <div class="catalog-row__subtitle tool-row__subtitle">
-                    <span>{{ t.alias }}</span>
-                    <span aria-hidden="true">·</span>
-                    <ToolTypeBadge :type="t.type" :typeTitle="t.typeLabel" />
-                    <span v-if="t.server_url" class="muted"> · {{ t.server_url }}</span>
-                  </div>
-                  <div v-if="t.description" class="muted catalog-row__description">
-                    {{ t.description }}
-                  </div>
-                  <div v-if="t.last_discovery_error" class="error-text" style="margin-top: 4px; font-size: 0.85rem">
-                    Discovery error: {{ t.last_discovery_error }}
-                  </div>
-                  <div v-else-if="t.last_discovered_at" class="muted" style="margin-top: 4px; font-size: 0.85rem">
-                    Last discovered: {{ formatRelativeDateTime(t.last_discovered_at) }}
-                  </div>
-                </div>
-                <div class="catalog-row__meta">
-                  <span
-                    v-if="t.type === 'outlet'"
-                    class="status-dot"
-                    :class="t.outlet_online ? 'success' : 'danger'"
-                    :title="t.outlet_online ? 'Online' : 'Offline'"
-                  />
-                  <span class="badge">{{ t.max_output_tokens }} max</span>
-                  <span v-if="t.rps_limit !== null" class="badge">{{ t.rps_limit }} rps</span>
-                  <span class="catalog-row__chevron" aria-hidden="true">›</span>
-                </div>
-              </button>
-            </div>
-
-            <p v-if="!visibleTools.length" class="muted">No tools found.</p>
-          </section>
-        </main>
-      </div>
+              <p v-if="!visibleTools.length" class="muted">No tools found.</p>
+            </section>
+          </main>
+        </div>
+      </PullToRefresh>
 
       <transition name="fade">
         <div v-if="isMobile && typesOverlayOpen" class="panel-backdrop" @click="closeTypesOverlay"></div>
@@ -193,6 +195,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';

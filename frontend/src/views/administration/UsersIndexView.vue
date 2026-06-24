@@ -21,44 +21,46 @@
 
     <AdministrationNav />
 
-    <section class="card stack">
-      <label>
-        Search
-        <input v-model="search" type="search" class="full" placeholder="Search users" />
-      </label>
-    </section>
+    <PullToRefresh :refresh="loadUsers" :disabled="loading">
+      <section class="card stack">
+        <label>
+          Search
+          <input v-model="search" type="search" class="full" placeholder="Search users" />
+        </label>
+      </section>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
+      <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="error" class="error-text">{{ error }}</p>
 
-    <section v-else class="card stack">
-      <div class="list catalog-list">
-        <button
-          v-for="user in visibleUsers"
-          :key="user.id"
-          type="button"
-          class="row catalog-row"
-          @click="openUser(user.id)"
-        >
-          <div class="catalog-row__main">
-            <div class="catalog-row__title">
-              {{ user.username }}
+      <section v-else class="card stack">
+        <div class="list catalog-list">
+          <button
+            v-for="user in visibleUsers"
+            :key="user.id"
+            type="button"
+            class="row catalog-row"
+            @click="openUser(user.id)"
+          >
+            <div class="catalog-row__main">
+              <div class="catalog-row__title">
+                {{ user.username }}
+              </div>
+              <div class="catalog-row__subtitle">
+                {{ user.is_admin ? 'Administrator' : 'Standard user' }}
+                <span v-if="lastChangeLabel(user)"> · {{ lastChangeLabel(user) }}</span>
+              </div>
             </div>
-            <div class="catalog-row__subtitle">
-              {{ user.is_admin ? 'Administrator' : 'Standard user' }}
-              <span v-if="lastChangeLabel(user)"> · {{ lastChangeLabel(user) }}</span>
+            <div class="catalog-row__meta">
+              <span v-if="user.is_admin" class="badge">Admin</span>
+              <span v-if="user.id === currentUser?.id" class="badge">You</span>
+              <span class="catalog-row__chevron" aria-hidden="true">›</span>
             </div>
-          </div>
-          <div class="catalog-row__meta">
-            <span v-if="user.is_admin" class="badge">Admin</span>
-            <span v-if="user.id === currentUser?.id" class="badge">You</span>
-            <span class="catalog-row__chevron" aria-hidden="true">›</span>
-          </div>
-        </button>
-      </div>
+          </button>
+        </div>
 
-      <p v-if="!visibleUsers.length" class="muted">No users found.</p>
-    </section>
+        <p v-if="!visibleUsers.length" class="muted">No users found.</p>
+      </section>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -67,6 +69,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';

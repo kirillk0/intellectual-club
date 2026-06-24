@@ -9,45 +9,47 @@
       </div>
     </StackToolbarTeleport>
 
-    <section class="card stack">
-      <div class="chat-search">
-        <input
-          v-model="searchTerm"
-          type="search"
-          class="full"
-          placeholder="Search bookmarks"
-          aria-label="Search bookmarks"
-        />
-        <button v-if="searchTerm" type="button" @click="searchTerm = ''">Clear</button>
-      </div>
-    </section>
+    <PullToRefresh :refresh="loadBookmarks" :disabled="loading">
+      <section class="card stack">
+        <div class="chat-search">
+          <input
+            v-model="searchTerm"
+            type="search"
+            class="full"
+            placeholder="Search bookmarks"
+            aria-label="Search bookmarks"
+          />
+          <button v-if="searchTerm" type="button" @click="searchTerm = ''">Clear</button>
+        </div>
+      </section>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
+      <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="error" class="error-text">{{ error }}</p>
 
-    <section v-else class="card stack bookmarks-list">
-      <div class="list">
-        <ChatListRow
-          v-for="entry in visibleBookmarks"
-          :key="entry.bookmark_id"
-          :to="bookmarkResultLink(entry)"
-          :stack="true"
-          :title="chatLabel(entry.chat)"
-          :config-label="entry.chat.llm_configuration_label || null"
-          :meta-text="`${niceDate(entry.chat.last_activity_at || entry.chat.created_at || null)} · ${entry.chat.message_count ?? 0} msgs`"
-          :secondary-meta="entry.bookmarked_at ? `Bookmarked ${niceDate(entry.bookmarked_at)}` : null"
-          :preview-text="entry.preview || 'No preview available.'"
-          :preview-role="entry.message_role"
-          @navigate="openBookmark"
-        >
-          <template #badges>
-            <span v-if="entry.inactive" class="badge badge-muted">Inactive branch</span>
-          </template>
-        </ChatListRow>
-      </div>
+      <section v-else class="card stack bookmarks-list">
+        <div class="list">
+          <ChatListRow
+            v-for="entry in visibleBookmarks"
+            :key="entry.bookmark_id"
+            :to="bookmarkResultLink(entry)"
+            :stack="true"
+            :title="chatLabel(entry.chat)"
+            :config-label="entry.chat.llm_configuration_label || null"
+            :meta-text="`${niceDate(entry.chat.last_activity_at || entry.chat.created_at || null)} · ${entry.chat.message_count ?? 0} msgs`"
+            :secondary-meta="entry.bookmarked_at ? `Bookmarked ${niceDate(entry.bookmarked_at)}` : null"
+            :preview-text="entry.preview || 'No preview available.'"
+            :preview-role="entry.message_role"
+            @navigate="openBookmark"
+          >
+            <template #badges>
+              <span v-if="entry.inactive" class="badge badge-muted">Inactive branch</span>
+            </template>
+          </ChatListRow>
+        </div>
 
-      <p v-if="emptyState" class="muted">{{ emptyState }}</p>
-    </section>
+        <p v-if="emptyState" class="muted">{{ emptyState }}</p>
+      </section>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -57,6 +59,7 @@ import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
 import { useEntityChanges } from '@/features/entities/entityChanges';

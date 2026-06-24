@@ -21,45 +21,47 @@
 
     <LlmConfigurationNav />
 
-    <section class="card stack">
-      <label>
-        Search
-        <input v-model="search" type="search" class="full" placeholder="Search providers" />
-      </label>
-    </section>
+    <PullToRefresh :refresh="loadProviders" :disabled="loading">
+      <section class="card stack">
+        <label>
+          Search
+          <input v-model="search" type="search" class="full" placeholder="Search providers" />
+        </label>
+      </section>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
+      <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="error" class="error-text">{{ error }}</p>
 
-    <section v-else class="card stack">
-      <div class="list catalog-list">
-        <button
-          v-for="p in visibleProviders"
-          :key="p.id"
-          type="button"
-          class="row catalog-row"
-          @click="openProvider(p.id)"
-        >
-          <div class="catalog-row__main">
-            <div class="catalog-row__title">
-              {{ p.name }}
-              <span v-if="p.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
-              <span v-else-if="p.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
+      <section v-else class="card stack">
+        <div class="list catalog-list">
+          <button
+            v-for="p in visibleProviders"
+            :key="p.id"
+            type="button"
+            class="row catalog-row"
+            @click="openProvider(p.id)"
+          >
+            <div class="catalog-row__main">
+              <div class="catalog-row__title">
+                {{ p.name }}
+                <span v-if="p.shared_incoming" class="share-indicator" title="Shared with you" aria-label="Shared with you"><SvgIcon name="share-incoming" /></span>
+                <span v-else-if="p.shared_outgoing" class="share-indicator" title="Shared with groups" aria-label="Shared with groups"><SvgIcon name="share-outgoing" /></span>
+              </div>
+              <div class="catalog-row__subtitle">
+                {{ providerTypeLabel(p.type) }}
+                <span v-if="p.base_url"> · {{ p.base_url }}</span>
+              </div>
             </div>
-            <div class="catalog-row__subtitle">
-              {{ providerTypeLabel(p.type) }}
-              <span v-if="p.base_url"> · {{ p.base_url }}</span>
+            <div class="catalog-row__meta">
+              <span class="badge">{{ providerTypeLabel(p.type) }}</span>
+              <span class="catalog-row__chevron" aria-hidden="true">›</span>
             </div>
-          </div>
-          <div class="catalog-row__meta">
-            <span class="badge">{{ providerTypeLabel(p.type) }}</span>
-            <span class="catalog-row__chevron" aria-hidden="true">›</span>
-          </div>
-        </button>
-      </div>
+          </button>
+        </div>
 
-      <p v-if="!visibleProviders.length" class="muted">No providers found.</p>
-    </section>
+        <p v-if="!visibleProviders.length" class="muted">No providers found.</p>
+      </section>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -67,6 +69,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';

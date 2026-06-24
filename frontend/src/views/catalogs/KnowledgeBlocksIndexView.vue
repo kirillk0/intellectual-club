@@ -36,75 +36,77 @@
     </StackToolbarTeleport>
 
     <div class="split-wrapper">
-      <div class="catalog-split">
-        <aside class="catalog-split__sidebar">
-          <KnowledgeTagsManagerPanel
-            :selectedId="selectedTagId"
-            :noTagsSelected="selectedNoTags"
-            :hasActiveFilter="hasActiveTagFilter"
-            noTagsLabel="No tags"
-            storageKey="ic.knowledge_tags.tree.open_state.v3"
-            :defaultExpandDepth="1"
-            @select="selectTag"
-            @select-no-tags="selectNoTags"
-            @clear-filter="clearTag"
-          />
-        </aside>
+      <PullToRefresh :refresh="loadBlocks" :disabled="loading || importBusy || exportSaving">
+        <div class="catalog-split">
+          <aside class="catalog-split__sidebar">
+            <KnowledgeTagsManagerPanel
+              :selectedId="selectedTagId"
+              :noTagsSelected="selectedNoTags"
+              :hasActiveFilter="hasActiveTagFilter"
+              noTagsLabel="No tags"
+              storageKey="ic.knowledge_tags.tree.open_state.v3"
+              :defaultExpandDepth="1"
+              @select="selectTag"
+              @select-no-tags="selectNoTags"
+              @clear-filter="clearTag"
+            />
+          </aside>
 
-        <main class="catalog-split__main stack">
-          <section class="card stack">
-            <label>
-              Search
-              <input v-model="search" type="search" class="full" placeholder="Search blocks" />
-            </label>
-            <p v-if="transferStatus" class="muted transfer-message">{{ transferStatus }}</p>
-            <p v-if="transferError" class="error-text transfer-message">{{ transferError }}</p>
-          </section>
+          <main class="catalog-split__main stack">
+            <section class="card stack">
+              <label>
+                Search
+                <input v-model="search" type="search" class="full" placeholder="Search blocks" />
+              </label>
+              <p v-if="transferStatus" class="muted transfer-message">{{ transferStatus }}</p>
+              <p v-if="transferError" class="error-text transfer-message">{{ transferError }}</p>
+            </section>
 
-          <p v-if="loading" class="muted">Loading…</p>
-          <p v-else-if="error" class="error-text">{{ error }}</p>
+            <p v-if="loading" class="muted">Loading…</p>
+            <p v-else-if="error" class="error-text">{{ error }}</p>
 
-          <section v-else class="card stack">
-            <div class="list catalog-list">
-              <button
-                v-for="b in visibleBlocks"
-                :key="b.id"
-                type="button"
-                class="row catalog-row"
-                @click="openBlock(b.id)"
-              >
-                <div class="catalog-row__main">
-                  <div class="catalog-row__title">
-                    {{ b.name }}
-                    <span
-                      v-if="b.shared_incoming"
-                      class="share-indicator"
-                      title="Shared with you"
-                      aria-label="Shared with you"
-                    ><SvgIcon name="share-incoming" /></span>
-                    <span
-                      v-else-if="b.shared_outgoing"
-                      class="share-indicator"
-                      title="Shared with groups"
-                      aria-label="Shared with groups"
-                    ><SvgIcon name="share-outgoing" /></span>
+            <section v-else class="card stack">
+              <div class="list catalog-list">
+                <button
+                  v-for="b in visibleBlocks"
+                  :key="b.id"
+                  type="button"
+                  class="row catalog-row"
+                  @click="openBlock(b.id)"
+                >
+                  <div class="catalog-row__main">
+                    <div class="catalog-row__title">
+                      {{ b.name }}
+                      <span
+                        v-if="b.shared_incoming"
+                        class="share-indicator"
+                        title="Shared with you"
+                        aria-label="Shared with you"
+                      ><SvgIcon name="share-incoming" /></span>
+                      <span
+                        v-else-if="b.shared_outgoing"
+                        class="share-indicator"
+                        title="Shared with groups"
+                        aria-label="Shared with groups"
+                      ><SvgIcon name="share-outgoing" /></span>
+                    </div>
+                    <div class="catalog-row__subtitle">
+                      {{ formatVersion(b.version) || 'No version' }}
+                    </div>
                   </div>
-                  <div class="catalog-row__subtitle">
-                    {{ formatVersion(b.version) || 'No version' }}
+                  <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
+                  <div class="catalog-row__meta">
+                    <span class="badge">{{ b.tokenCount }} tokens</span>
+                    <span class="catalog-row__chevron" aria-hidden="true">›</span>
                   </div>
-                </div>
-                <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
-                <div class="catalog-row__meta">
-                  <span class="badge">{{ b.tokenCount }} tokens</span>
-                  <span class="catalog-row__chevron" aria-hidden="true">›</span>
-                </div>
-              </button>
-            </div>
+                </button>
+              </div>
 
-            <p v-if="!visibleBlocks.length" class="muted">No blocks found.</p>
-          </section>
-        </main>
-      </div>
+              <p v-if="!visibleBlocks.length" class="muted">No blocks found.</p>
+            </section>
+          </main>
+        </div>
+      </PullToRefresh>
 
       <transition name="fade">
         <div v-if="isMobile && tagsOverlayOpen" class="panel-backdrop" @click="closeTagsOverlay"></div>
@@ -180,6 +182,7 @@ import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import KnowledgeBlocksMarkdownExportModal from '@/components/KnowledgeBlocksMarkdownExportModal.vue';
 import KnowledgeBlocksMarkdownImportModal from '@/components/KnowledgeBlocksMarkdownImportModal.vue';
 import KnowledgeTagsManagerPanel from '@/components/KnowledgeTagsManagerPanel.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import {
   exportKnowledgeBlocksMarkdownArchive,

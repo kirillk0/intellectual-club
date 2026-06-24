@@ -26,7 +26,8 @@
     <LlmConfigurationNav />
 
     <div class="split-wrapper">
-      <div class="catalog-split">
+      <PullToRefresh :refresh="loadData" :disabled="loading">
+        <div class="catalog-split">
         <aside class="catalog-split__sidebar">
           <div class="llm-configurations-sidebar-stack">
             <section class="card stack llm-config-provider-filter-card">
@@ -147,7 +148,8 @@
             <p v-if="!visibleConfigs.length" class="muted">No configurations found.</p>
           </section>
         </main>
-      </div>
+        </div>
+      </PullToRefresh>
 
       <transition name="fade">
         <div v-if="isMobile && tagsOverlayOpen" class="panel-backdrop" @click="closeTagsOverlay"></div>
@@ -238,6 +240,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsManagerPanel.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { jsonApiGet, jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';

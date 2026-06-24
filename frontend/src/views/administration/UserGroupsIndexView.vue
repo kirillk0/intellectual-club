@@ -21,42 +21,44 @@
 
     <AdministrationNav />
 
-    <section class="card stack">
-      <label>
-        Search
-        <input v-model="search" type="search" class="full" placeholder="Search groups" />
-      </label>
-    </section>
+    <PullToRefresh :refresh="loadGroups" :disabled="loading">
+      <section class="card stack">
+        <label>
+          Search
+          <input v-model="search" type="search" class="full" placeholder="Search groups" />
+        </label>
+      </section>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="error" class="error-text">{{ error }}</p>
+      <p v-if="loading" class="muted">Loading…</p>
+      <p v-else-if="error" class="error-text">{{ error }}</p>
 
-    <section v-else class="card stack">
-      <div class="list catalog-list">
-        <button
-          v-for="group in visibleGroups"
-          :key="group.id"
-          type="button"
-          class="row catalog-row"
-          @click="openGroup(group.id)"
-        >
-          <div class="catalog-row__main">
-            <div class="catalog-row__title">
-              {{ group.name }}
+      <section v-else class="card stack">
+        <div class="list catalog-list">
+          <button
+            v-for="group in visibleGroups"
+            :key="group.id"
+            type="button"
+            class="row catalog-row"
+            @click="openGroup(group.id)"
+          >
+            <div class="catalog-row__main">
+              <div class="catalog-row__title">
+                {{ group.name }}
+              </div>
+              <div class="catalog-row__subtitle">
+                {{ memberCountLabel(group) }}
+                <span v-if="lastChangeLabel(group)"> · {{ lastChangeLabel(group) }}</span>
+              </div>
             </div>
-            <div class="catalog-row__subtitle">
-              {{ memberCountLabel(group) }}
-              <span v-if="lastChangeLabel(group)"> · {{ lastChangeLabel(group) }}</span>
+            <div class="catalog-row__meta">
+              <span class="catalog-row__chevron" aria-hidden="true">›</span>
             </div>
-          </div>
-          <div class="catalog-row__meta">
-            <span class="catalog-row__chevron" aria-hidden="true">›</span>
-          </div>
-        </button>
-      </div>
+          </button>
+        </div>
 
-      <p v-if="!visibleGroups.length" class="muted">No groups found.</p>
-    </section>
+        <p v-if="!visibleGroups.length" class="muted">No groups found.</p>
+      </section>
+    </PullToRefresh>
   </div>
 </template>
 
@@ -65,6 +67,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api } from '@/api/client';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
