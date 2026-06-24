@@ -11,11 +11,14 @@ export default defineConfig(({ mode }) => {
   const spaGeneratedPaths = [
     path.join(spaAssetsDir, 'assets'),
     path.join(spaAssetsDir, 'css/spa.css'),
+    path.join(spaAssetsDir, 'css/spa.css.gz'),
     path.join(spaAssetsDir, 'css/spa.css.map'),
     path.join(spaAssetsDir, 'js/spa.js'),
+    path.join(spaAssetsDir, 'js/spa.js.gz'),
     path.join(spaAssetsDir, 'js/spa.js.map'),
     path.join(spaAssetsDir, 'js/chunks'),
     path.join(spaAssetsDir, 'temml.min.js'),
+    path.join(spaAssetsDir, 'temml.min.js.gz'),
   ];
 
   return {

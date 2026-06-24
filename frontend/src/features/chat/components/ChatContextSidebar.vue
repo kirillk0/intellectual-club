@@ -162,10 +162,13 @@
               :key="idx"
               @click="emit('branch-item-click', msg.id)"
             >
-                <div class="branch-item-main">
-                  <div class="branch-item-meta">{{ messageMetaLabel(msg) || '—' }}</div>
-                  <div class="branch-item-snippet" :title="messageText(msg)">{{ preview(messageText(msg)) }}</div>
+              <div class="branch-item-main">
+                <div class="branch-item-meta">
+                  <span class="branch-item-number">#{{ idx + 1 }}</span>
+                  {{ messageMetaLabel(msg) || '—' }}
                 </div>
+                <div class="branch-item-snippet" :title="messageText(msg)">{{ preview(messageText(msg)) }}</div>
+              </div>
               <div v-if="!readonly && msg.siblings && msg.siblings.length > 1" class="branch-links">
                 <span
                   v-for="sib in msg.siblings"

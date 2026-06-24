@@ -1510,6 +1510,14 @@ select.full {
   color: var(--color-text-muted);
 }
 
+.branch-item-number,
+.message-number {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
 .branch-item-snippet {
   font-size: 0.86rem;
   color: var(--color-text);

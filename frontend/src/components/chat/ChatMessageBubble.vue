@@ -68,6 +68,7 @@
 
       <div class="message-footer">
         <div class="message-meta">
+          <span class="message-number">#{{ index + 1 }}</span>
           {{ metaLabel }}
           <span v-if="msg.token_count != null"> · {{ msg.token_count }} tokens</span>
           <span v-if="totalCostLabel != null"> · ${{ totalCostLabel }}</span>

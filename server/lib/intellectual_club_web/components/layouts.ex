@@ -5,6 +5,8 @@ defmodule IntellectualClubWeb.Layouts do
   """
   use IntellectualClubWeb, :html
 
+  @dev_static_assets Mix.env() != :prod
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
@@ -182,7 +184,7 @@ defmodule IntellectualClubWeb.Layouts do
   end
 
   def tracked_asset_path(path) when is_binary(path) do
-    if code_reloader?() do
+    if @dev_static_assets do
       case dev_asset_version(path) do
         nil -> path
         version -> "#{path}?v=#{version}"
@@ -190,12 +192,6 @@ defmodule IntellectualClubWeb.Layouts do
     else
       path
     end
-  end
-
-  defp code_reloader? do
-    :intellectual_club
-    |> Application.get_env(IntellectualClubWeb.Endpoint, [])
-    |> Keyword.get(:code_reloader, false)
   end
 
   defp dev_asset_version(path) do
