@@ -73,7 +73,7 @@
                   :stack="true"
                   :title="chatLabel(c)"
                   :config-label="c.llm_configuration_label || null"
-                  :meta-text="`${niceDate(c.last_activity_at || c.created_at)} · ${c.message_count ?? 0} msgs`"
+                  :meta-text="chatMetaText(c)"
                   :secondary-meta="relationMeta(c)"
                   :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
                   :preview-role="!hasChatSearch ? c.first_message_role : null"
@@ -673,6 +673,26 @@ function generationStateForChat(chat: ChatSummary): GenerationState | null {
     return chatListGenerationPollReconnecting.value ? 'reconnecting' : 'generating';
   }
   return generationCompleteChatIds.value.has(chat.id) ? 'done' : null;
+}
+
+function countLabel(count: unknown, singular: string, plural: string) {
+  const value = typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0;
+  if (value <= 0) return null;
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function chatResourceMeta(chat: ChatSummary) {
+  return [
+    countLabel(chat.blocks_count, 'block', 'blocks'),
+    countLabel(chat.tools_count, 'tool', 'tools'),
+  ].filter((value): value is string => Boolean(value));
+}
+
+function chatMetaText(chat: ChatSummary) {
+  return [
+    `${niceDate(chat.last_activity_at || chat.created_at)} · ${chat.message_count ?? 0} msgs`,
+    ...chatResourceMeta(chat),
+  ].join(' · ');
 }
 
 function continuationCountLabel(count: number) {

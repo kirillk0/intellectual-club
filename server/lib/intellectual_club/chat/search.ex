@@ -631,6 +631,8 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.Query.load([
       :bot,
       :last_message,
+      :blocks_count,
+      :tools_count,
       :can_edit,
       :shared_incoming,
       :shared_outgoing,
@@ -692,6 +694,8 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.Query.load([
       :bot,
       :last_message,
+      :blocks_count,
+      :tools_count,
       :can_edit,
       :shared_incoming,
       :shared_outgoing,

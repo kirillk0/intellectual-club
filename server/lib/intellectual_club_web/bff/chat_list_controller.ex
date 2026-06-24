@@ -25,6 +25,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           :bot,
           :last_message,
           :last_activity_at,
+          :blocks_count,
+          :tools_count,
           :can_edit,
           :shared_incoming,
           :shared_outgoing,
@@ -123,6 +125,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             :bot,
             :last_message,
             :last_activity_at,
+            :blocks_count,
+            :tools_count,
             :can_edit,
             :shared_incoming,
             :shared_outgoing,
@@ -167,7 +171,14 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
       pagination = ChatParams.pagination(params)
-      page = Listing.read_page(actor, bot_filter, pagination, [:last_message])
+
+      page =
+        Listing.read_page(actor, bot_filter, pagination, [
+          :last_message,
+          :blocks_count,
+          :tools_count
+        ])
+
       chats = Map.get(page, :results, [])
       revision = Revisions.chat_list_revision(pagination, bot_filter, page, chats)
 

@@ -154,7 +154,14 @@ const translatePatternRu = (key: string): string | null => {
     [/^⧉ (.+) \((\d+) tools?\)$/u, (match) =>
       `⧉ ${sameChatBotLabel(match[1])} (${match[2]} ${toolLabel(match[2])})`],
     [/^⧉ (.+)$/u, (match) => `⧉ ${sameChatBotLabel(match[1])}`],
-    [/^(.+ · \d+) msgs$/u, (match) => `${match[1]} сообщ.`],
+    [/^(.+ · \d+) msgs(?: · (\d+) blocks?)?(?: · (\d+) tools?)?$/u, (match) =>
+      [
+        `${match[1]} сообщ.`,
+        match[2] ? `${match[2]} ${blockLabel(match[2])}` : '',
+        match[3] ? `${match[3]} инстр.` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')],
     [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) =>
       `${match[1]}${match[2]}${match[3]} ${tokenLabel(match[3])}`],
     [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens( · .+)$/u, (match) =>

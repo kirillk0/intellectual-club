@@ -65,6 +65,8 @@ defmodule IntellectualClub.Chat.Revisions do
       chat.id,
       datetime_revision_value(chat.updated_at),
       Map.get(chat, :last_message_id),
+      count_revision_value(Map.get(chat, :blocks_count)),
+      count_revision_value(Map.get(chat, :tools_count)),
       active_generation_message_id(chat),
       message_status_revision_value(last_message),
       datetime_revision_value(Map.get(last_message || %{}, :updated_at))
@@ -86,6 +88,10 @@ defmodule IntellectualClub.Chat.Revisions do
     do: status
 
   defp message_status_revision_value(_message), do: nil
+
+  defp count_revision_value(%Ash.NotLoaded{}), do: nil
+  defp count_revision_value(value) when is_integer(value), do: value
+  defp count_revision_value(_value), do: nil
 
   defp datetime_revision_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
 

@@ -164,6 +164,8 @@ export type ChatSummary = {
   updated_at?: string | null;
   last_activity_at: string | null;
   message_count?: number | null;
+  blocks_count?: number | null;
+  tools_count?: number | null;
   first_message_preview?: string | null;
   first_message_role?: 'user' | 'assistant' | null;
   can_edit?: boolean | null;

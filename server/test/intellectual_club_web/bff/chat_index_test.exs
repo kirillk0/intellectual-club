@@ -7,10 +7,14 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
 
   test "GET /api/bff/chat-list returns first_message_preview from the first message", %{
     conn: conn
@@ -65,6 +69,38 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert is_map(chat_payload)
     assert chat_payload["llm_configuration_id"] == configuration.id
     assert chat_payload["llm_configuration_label"] == "list-model (primary)"
+  end
+
+  test "GET /api/bff/chat-list returns chat block and tool counts", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat_with_bindings = create_chat!(actor, "With bindings")
+    empty_chat = create_chat!(actor, "Without bindings")
+
+    first_block = create_knowledge_block!(actor, "List Block A")
+    second_block = create_knowledge_block!(actor, "List Block B")
+    tool = create_tool_instance!(actor)
+
+    create_chat_block_binding!(actor, chat_with_bindings, first_block)
+    create_chat_block_binding!(actor, chat_with_bindings, second_block)
+    create_chat_tool_binding!(actor, chat_with_bindings, tool)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list")
+      |> json_response(200)
+
+    chat_payload = chat_payload(payload, chat_with_bindings.id)
+    empty_payload = chat_payload(payload, empty_chat.id)
+
+    assert is_map(chat_payload)
+    assert chat_payload["blocks_count"] == 2
+    assert chat_payload["tools_count"] == 1
+
+    assert is_map(empty_payload)
+    assert empty_payload["blocks_count"] == 0
+    assert empty_payload["tools_count"] == 0
   end
 
   test "GET /api/bff/chat-list uses the first message from active branch root", %{conn: conn} do
@@ -434,6 +470,54 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
         enabled: true,
         timeout_seconds: 300
       },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_knowledge_block!(actor, name) do
+    KnowledgeBlock
+    |> Ash.Changeset.for_create(
+      :create,
+      %{name: name, version: "v1", content: "Knowledge"},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_tool_instance!(actor) do
+    ToolInstance
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        type: "native-agent-management",
+        name: "Agent management",
+        description: "",
+        alias: "agent_management",
+        config: %{},
+        secrets: %{},
+        max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_block_binding!(actor, chat, block) do
+    ChatKnowledgeBlock
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, knowledge_block_id: block.id, enabled: true, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_chat_tool_binding!(actor, chat, tool) do
+    ChatToolBinding
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_id: chat.id, tool_instance_id: tool.id, enabled: true, sequence: 0},
       actor: actor
     )
     |> Ash.create!(actor: actor)

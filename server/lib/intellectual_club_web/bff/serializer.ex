@@ -149,6 +149,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       parent_message_id: chat.parent_message_id,
       parent_relation_kind: relation_kind_string(chat.parent_relation_kind),
       child_handoff_count: Keyword.get(opts, :child_handoff_count, 0),
+      blocks_count: loaded_count(Map.get(chat, :blocks_count)),
+      tools_count: loaded_count(Map.get(chat, :tools_count)),
       can_edit: loaded_value(Map.get(chat, :can_edit)),
       shared_incoming: loaded_value(Map.get(chat, :shared_incoming)),
       shared_outgoing: loaded_value(Map.get(chat, :shared_outgoing)),
@@ -179,6 +181,10 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       chat_count: count
     }
   end
+
+  defp loaded_count(%Ash.NotLoaded{}), do: 0
+  defp loaded_count(value) when is_integer(value) and value >= 0, do: value
+  defp loaded_count(_value), do: 0
 
   def chat_detail(%Chat{} = chat) do
     %{

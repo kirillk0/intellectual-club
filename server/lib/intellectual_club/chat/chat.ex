@@ -373,6 +373,18 @@ defmodule IntellectualClub.Chat.Chat do
       public?(true)
     end
 
+    calculate :blocks_count,
+              :integer,
+              {IntellectualClub.Chat.Calculations.BlocksCount, []} do
+      public?(true)
+    end
+
+    calculate :tools_count,
+              :integer,
+              {IntellectualClub.Chat.Calculations.ToolsCount, []} do
+      public?(true)
+    end
+
     calculate :active_root_message_id,
               :integer,
               {IntellectualClub.Chat.Calculations.ActiveRootMessageId, []} do
