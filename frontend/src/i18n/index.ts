@@ -121,9 +121,10 @@ const translatePatternRu = (key: string): string | null => {
       `${countedLabels[match[1]] ?? match[1]} (${match[2]})`],
     [/^(Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
     [/^· (Created|Updated) (.+)$/u, (match) => `· ${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
+    [/^· (~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) => `· ${match[1]}${match[2]} ${tokenLabel(match[2])}`],
     [/^(.+ · )(Created|Updated) (.+)$/u, (match) =>
       `${match[1]}${ruMessages[match[2]] ?? match[2]} ${match[3]}`],
-    [/^(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]} ${tokenLabel(match[1])}`],
+    [/^(~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
     [/^(\d+) members?$/u, (match) => `${match[1]} ${memberLabel(match[1])}`],
     [/^(\d+) blocks? · (\d+) tools?$/u, (match) =>
       `${match[1]} ${blockLabel(match[1])} · ${match[2]} ${toolLabel(match[2])}`],
@@ -154,7 +155,10 @@ const translatePatternRu = (key: string): string | null => {
       `⧉ ${sameChatBotLabel(match[1])} (${match[2]} ${toolLabel(match[2])})`],
     [/^⧉ (.+)$/u, (match) => `⧉ ${sameChatBotLabel(match[1])}`],
     [/^(.+ · \d+) msgs$/u, (match) => `${match[1]} сообщ.`],
-    [/^(.+ · )(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
+    [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) =>
+      `${match[1]}${match[2]}${match[3]} ${tokenLabel(match[3])}`],
+    [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens( · .+)$/u, (match) =>
+      `${match[1]}${match[2]}${match[3]} ${tokenLabel(match[3])}${match[4]}`],
   ];
 
   for (const [pattern, replacer] of patterns) {

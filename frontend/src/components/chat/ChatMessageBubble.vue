@@ -70,7 +70,7 @@
         <div class="message-meta">
           <span class="message-number">#{{ index + 1 }}</span>
           {{ metaLabel }}
-          <span v-if="msg.token_count != null"> · {{ msg.token_count }} tokens</span>
+          <span v-if="msg.token_count != null"> · {{ formatEstimatedTokens(msg.token_count) }}</span>
           <span v-if="totalCostLabel != null"> · ${{ totalCostLabel }}</span>
         </div>
         <div class="message-actions">
@@ -226,6 +226,7 @@ import { formatTimeOfDay } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import { translate } from '@/i18n';
+import { formatEstimatedTokens } from '@/utils/tokens';
 
 interface Props {
   message: ChatBranchMessage;

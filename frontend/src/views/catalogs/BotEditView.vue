@@ -258,7 +258,7 @@
                 :name="selectedHandoffBlock.name"
                 :image="selectedHandoffBlock.image"
                 :version="selectedHandoffBlock.version"
-                :meta="`${selectedHandoffBlock.token_count ?? 0} tokens`"
+                :meta="formatEstimatedTokens(selectedHandoffBlock.token_count)"
                 :openable="true"
                 @open="openBlockEditor(selectedHandoffBlock.id)"
               />
@@ -422,6 +422,7 @@ import { publishEntityChange, useLiveEntityRows } from '@/features/entities/enti
 import { parseImageAsset } from '@/features/media/image';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
+import { formatEstimatedTokens } from '@/utils/tokens';
 import {
   mergeToolInstanceOptions,
   parseToolInstanceOption,

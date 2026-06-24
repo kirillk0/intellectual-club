@@ -36,7 +36,7 @@
               <div class="markdown-transfer-modal__title">{{ block.name || `Block #${block.id}` }}</div>
               <div class="muted">{{ formatVersion(block.version) || 'No version' }}</div>
             </div>
-            <span class="badge">{{ block.tokenCount }} tokens</span>
+            <span class="badge">{{ formatEstimatedTokens(block.tokenCount) }}</span>
           </label>
         </div>
 
@@ -54,6 +54,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import ModalWindow from '@/components/ModalWindow.vue';
+import { formatEstimatedTokens } from '@/utils/tokens';
 
 type ExportBlock = {
   id: number;

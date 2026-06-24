@@ -6,6 +6,7 @@ import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
+import { formatEstimatedTokens } from '@/utils/tokens';
 import {
   moveToolBindingInList,
   markShadowedToolBindings,
@@ -229,8 +230,7 @@ export function useChatLibraryDraft(params: Params) {
 
   const chatBlockMeta = (binding: ChatBlockLink) => {
     const block = (params.knowledgeBlocks.value || []).find((item) => item.id === binding.block);
-    const tokens = block?.token_count ?? 0;
-    return `${tokens} tokens`;
+    return formatEstimatedTokens(block?.token_count);
   };
 
   const addChatToolBinding = (toolInstanceIds?: number[]) => {

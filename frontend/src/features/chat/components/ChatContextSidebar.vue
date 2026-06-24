@@ -23,7 +23,7 @@
           >
             Prompt
           </button>
-          <span>{{ promptTokenCount }}</span>
+          <span>{{ formatEstimatedTokens(promptTokenCount) }}</span>
           <span>·</span>
           <span>Context:</span>
           <span>{{ formatStepMetric(agentContextTokenCount) }}</span>
@@ -38,12 +38,12 @@
             aria-label="Open prompt details"
             @click="emit('open-prompt-modal')"
           >
-            {{ promptTokenCount }}
+            {{ formatEstimatedTokens(promptTokenCount) }}
           </button>
           <span>+</span>
-          <span>{{ historyTokenCount }}</span>
+          <span>{{ formatEstimatedTokens(historyTokenCount) }}</span>
           <span>=</span>
-          <span>{{ totalTokenCount }}</span>
+          <span>{{ formatEstimatedTokens(totalTokenCount) }}</span>
         </div>
       </template>
 
@@ -241,6 +241,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import { toolBindingDisplayText, toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
+import { formatEstimatedTokens } from '@/utils/tokens';
 import type {
   ActiveToolBinding,
   BranchSearchResults,
@@ -352,7 +353,7 @@ const contextBlockMeta = (item: { id: number; block: number }) => {
   const block = linked.block;
   const parts = [
     props.sourceLabels[linked.source] || linked.source,
-    `${block.token_count ?? 0} tokens`,
+    formatEstimatedTokens(block.token_count),
   ];
   const version = props.hasBlockVersion(block.version) ? props.formatBlockVersion(block.version) : '';
 

@@ -72,7 +72,7 @@
                     :key="block.id"
                     :name="block.name"
                     :image="block.image"
-                    :meta="`${block.token_count ?? 0} tokens`"
+                    :meta="formatEstimatedTokens(block.token_count)"
                     :version="block.version"
                     :disabled="isDisabled(block.id)"
                     as="label"
@@ -177,6 +177,7 @@ import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import type { KnowledgeBlock } from '@/types/api';
+import { formatEstimatedTokens } from '@/utils/tokens';
 
 type KnowledgeTagRow = KnowledgeTagTreeItem;
 

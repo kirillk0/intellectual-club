@@ -36,7 +36,7 @@
     <div class="muted">External ID</div>
     <div class="knowledge-block-mono">{{ externalId || generatedOnSaveLabel }}</div>
     <div class="muted knowledge-block-details-label">Token estimate</div>
-    <div>{{ tokenCount ?? calculatedOnSaveLabel }}</div>
+    <div>{{ tokenCount == null ? calculatedOnSaveLabel : formatEstimatedTokens(tokenCount) }}</div>
   </div>
 </template>
 
@@ -50,6 +50,7 @@ import { publishEntityChange } from '@/features/entities/entityChanges';
 import { translate } from '@/i18n';
 import type { ImageAsset } from '@/types/api';
 import { formatFileBytes } from '@/utils/fileSize';
+import { formatEstimatedTokens } from '@/utils/tokens';
 
 const props = defineProps<{
   image: ImageAsset | null;

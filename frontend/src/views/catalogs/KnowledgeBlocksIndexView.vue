@@ -96,7 +96,7 @@
                   </div>
                   <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
                   <div class="catalog-row__meta">
-                    <span class="badge">{{ b.tokenCount }} tokens</span>
+                    <span class="badge">{{ formatEstimatedTokens(b.tokenCount) }}</span>
                     <span class="catalog-row__chevron" aria-hidden="true">›</span>
                   </div>
                 </button>
@@ -199,6 +199,7 @@ import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
+import { formatEstimatedTokens } from '@/utils/tokens';
 
 type KnowledgeBlockRow = {
   id: number;
