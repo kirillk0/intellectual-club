@@ -151,7 +151,10 @@ function localizedExtensions() {
     placeholder(translate('Write the knowledge block content...')),
     EditorView.contentAttributes.of({
       'aria-label': translate('Content'),
-      spellcheck: 'false',
+      spellcheck: 'true',
+      autocorrect: 'on',
+      autocapitalize: 'sentences',
+      writingsuggestions: 'true',
     }),
   ];
 }
