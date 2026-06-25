@@ -1512,9 +1512,6 @@ select.full {
 
 .branch-item-number,
 .message-number {
-  color: var(--color-text);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
   margin-right: 6px;
 }
 
