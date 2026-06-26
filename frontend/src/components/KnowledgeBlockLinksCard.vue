@@ -24,6 +24,7 @@
         :image="blockImage?.(item.block)"
         :meta="blockMeta(item)"
         :version="blockVersionText(item)"
+        :tokenCount="blockTokenCountValue(item)"
         :openable="openable"
         @open="handleOpen(item.block)"
       >
@@ -104,6 +105,7 @@ const props = withDefaults(
     blockName: (blockId: number) => string;
     blockImage?: (blockId: number) => ImageAsset | null;
     blockVersion?: (blockId: number) => string | undefined;
+    blockTokenCount?: (blockId: number, item: T) => number | string | null | undefined;
     metaText?: (item: T) => string;
     emptyText?: string;
     addLabel?: string;
@@ -144,10 +146,8 @@ const slots = useSlots();
 
 const itemKey = (item: T, index: number) => props.itemKey?.(item, index) ?? item.id;
 const blockMeta = (item: T) => props.metaText?.(item) || '';
-const blockVersionText = (item: T) => {
-  if (blockMeta(item)) return '';
-  return props.blockVersion?.(item.block) || '';
-};
+const blockVersionText = (item: T) => props.blockVersion?.(item.block) || '';
+const blockTokenCountValue = (item: T) => props.blockTokenCount?.(item.block, item) ?? null;
 
 const handleOpen = (blockId: number) => {
   if (!props.openable) return;

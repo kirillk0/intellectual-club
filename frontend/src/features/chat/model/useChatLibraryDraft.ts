@@ -6,7 +6,6 @@ import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { formatEstimatedTokens } from '@/utils/tokens';
 import {
   moveToolBindingInList,
   markShadowedToolBindings,
@@ -228,9 +227,18 @@ export function useChatLibraryDraft(params: Params) {
     return block?.image || null;
   };
 
-  const chatBlockMeta = (binding: ChatBlockLink) => {
-    const block = (params.knowledgeBlocks.value || []).find((item) => item.id === binding.block);
-    return formatEstimatedTokens(block?.token_count);
+  const chatBlockVersion = (blockId: number) => {
+    const block = (params.knowledgeBlocks.value || []).find((item) => item.id === blockId);
+    return block?.version || '';
+  };
+
+  const chatBlockTokenCount = (blockId: number) => {
+    const block = (params.knowledgeBlocks.value || []).find((item) => item.id === blockId);
+    return block?.token_count ?? null;
+  };
+
+  const chatBlockMeta = (_binding: ChatBlockLink) => {
+    return '';
   };
 
   const addChatToolBinding = (toolInstanceIds?: number[]) => {
@@ -401,6 +409,8 @@ export function useChatLibraryDraft(params: Params) {
     setChatBlockEnabled,
     chatBlockName,
     chatBlockImage,
+    chatBlockVersion,
+    chatBlockTokenCount,
     chatBlockMeta,
     toolLabel: toolInstanceLibrary.toolLabel,
     toolTypeLabel: toolInstanceLibrary.toolTypeLabel,

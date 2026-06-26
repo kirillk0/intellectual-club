@@ -329,6 +329,8 @@
           :new-chat-tool-instance-ids="vm.newChatToolInstanceIds"
           :chat-block-name="vm.chatBlockName"
           :chat-block-image="vm.chatBlockImage"
+          :chat-block-version="vm.chatBlockVersion"
+          :chat-block-token-count="vm.chatBlockTokenCount"
           :chat-block-meta="vm.chatBlockMeta"
           :tool-label="vm.toolLabel"
           :tool-is-outlet="vm.toolIsOutlet"

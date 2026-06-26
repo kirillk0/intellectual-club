@@ -6,6 +6,7 @@
       :blockName="blockName"
       :blockImage="blockImage"
       :blockVersion="blockVersion"
+      :blockTokenCount="blockTokenCount"
       :addDisabled="!bindingsLoaded || bindingsLoading || saving || sharedReadonly"
       :newDisabled="saving || sharedReadonly"
       :openable="true"
@@ -62,6 +63,7 @@ const props = defineProps<{
   blockName: (blockId: number) => string;
   blockImage: (blockId: number) => ImageAsset | null;
   blockVersion: (blockId: number) => string | undefined;
+  blockTokenCount: (blockId: number) => number | null | undefined;
 }>();
 
 const emit = defineEmits<{

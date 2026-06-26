@@ -34,6 +34,8 @@
             :items="chatBlocks"
             :blockName="chatBlockName"
             :blockImage="chatBlockImage"
+            :blockVersion="chatBlockVersion"
+            :blockTokenCount="chatBlockTokenCount"
             :metaText="chatBlockMeta"
             :openable="true"
             :readonly="readonly"
@@ -126,6 +128,8 @@ interface Props {
   newChatToolInstanceIds: number[];
   chatBlockName: (blockId: number) => string;
   chatBlockImage: (blockId: number) => ImageAsset | null;
+  chatBlockVersion: (blockId: number) => string | undefined;
+  chatBlockTokenCount: (blockId: number) => number | null | undefined;
   chatBlockMeta: (block: ChatBlockLink) => string;
   toolLabel: (toolInstanceId: number) => string;
   toolIsOutlet: (toolInstanceId: number) => boolean;

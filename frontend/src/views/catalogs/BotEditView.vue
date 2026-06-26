@@ -88,6 +88,7 @@
             :blockName="blockName"
             :blockImage="blockImage"
             :blockVersion="blockVersion"
+            :blockTokenCount="blockTokenCount"
             @add-blocks="bindings.addBlocks"
             @open-new-block="openNewBlock"
             @open-block-editor="openBlockEditor"
@@ -258,7 +259,7 @@
                 :name="selectedHandoffBlock.name"
                 :image="selectedHandoffBlock.image"
                 :version="selectedHandoffBlock.version"
-                :meta="formatEstimatedTokens(selectedHandoffBlock.token_count)"
+                :tokenCount="selectedHandoffBlock.token_count"
                 :openable="true"
                 @open="openBlockEditor(selectedHandoffBlock.id)"
               />
@@ -422,7 +423,6 @@ import { publishEntityChange, useLiveEntityRows } from '@/features/entities/enti
 import { parseImageAsset } from '@/features/media/image';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
-import { formatEstimatedTokens } from '@/utils/tokens';
 import {
   mergeToolInstanceOptions,
   parseToolInstanceOption,
@@ -1001,6 +1001,7 @@ const blocksById = computed(() => {
 const blockName = (id: number) => blocksById.value.get(id)?.name || `Block #${id}`;
 const blockImage = (id: number) => blocksById.value.get(id)?.image || null;
 const blockVersion = (id: number) => blocksById.value.get(id)?.version || '';
+const blockTokenCount = (id: number) => blocksById.value.get(id)?.token_count ?? null;
 const selectedHandoffBlock = computed(() =>
   form.handoff_message_block_id ? blocksById.value.get(form.handoff_message_block_id) || null : null
 );

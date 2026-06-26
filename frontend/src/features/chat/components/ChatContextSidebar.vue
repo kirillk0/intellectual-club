@@ -192,20 +192,22 @@
       <div v-else class="panel-pane" role="tabpanel">
         <div class="panel-section">
           <h4 style="margin: 0">Blocks</h4>
-          <KnowledgeBlockLinksCard
-            title="Blocks"
-            :items="contextBlockLinks"
-            :blockName="contextBlockName"
-            :blockImage="contextBlockImage"
-            :metaText="contextBlockMeta"
-            :openable="true"
-            :readonly="true"
-            :showHeader="false"
-            :showToggle="false"
-            :showActions="false"
-            emptyText="No blocks linked."
-            @open="(blockId) => emit('open-context-block-editor', blockId)"
-          />
+          <div v-if="contextBlockLinks.length" class="list context-block-list">
+            <KnowledgeBlockListItem
+              v-for="item in contextBlockLinks"
+              :key="item.id"
+              :name="contextBlockName(item.block)"
+              :image="contextBlockImage(item.block)"
+              :version="contextBlockVersion(item.block)"
+              :tokenCount="contextBlockTokenCount(item.block)"
+              :openable="true"
+              :detailsRow="true"
+              @open="emit('open-context-block-editor', item.block)"
+            />
+          </div>
+          <div v-else class="list">
+            <p class="muted">No blocks linked.</p>
+          </div>
         </div>
 
         <div class="panel-section">
@@ -238,7 +240,7 @@
 import type { ChatBranchMessage } from '@/types/api';
 import { computed } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
+import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import { toolBindingDisplayText, toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
 import { formatEstimatedTokens } from '@/utils/tokens';
@@ -335,31 +337,18 @@ const contextBlocksById = computed(() => {
   return map;
 });
 
-const contextBlocksByLinkId = computed(() => {
-  const map = new Map<number, LinkedBlock>();
-  for (const item of contextBlockLinks.value) {
-    const linked = props.linkedBlocks[item.id - 1];
-    if (linked) map.set(item.id, linked);
-  }
-  return map;
-});
-
 const contextBlockName = (blockId: number) => contextBlocksById.value.get(blockId)?.block.name || `Block #${blockId}`;
 const contextBlockImage = (blockId: number) => contextBlocksById.value.get(blockId)?.block.image || null;
-const contextBlockMeta = (item: { id: number; block: number }) => {
-  const linked = contextBlocksByLinkId.value.get(item.id);
-  if (!linked) return '';
-
-  const block = linked.block;
-  const parts = [
-    props.sourceLabels[linked.source] || linked.source,
-    formatEstimatedTokens(block.token_count),
-  ];
-  const version = props.hasBlockVersion(block.version) ? props.formatBlockVersion(block.version) : '';
-
-  if (version) parts.push(version);
-
-  return parts.filter(Boolean).join(' · ');
+const contextBlockVersion = (blockId: number) => {
+  const version = contextBlocksById.value.get(blockId)?.block.version;
+  return props.hasBlockVersion(version) ? props.formatBlockVersion(version) : '';
 };
+const contextBlockTokenCount = (blockId: number) => contextBlocksById.value.get(blockId)?.block.token_count ?? null;
 
 </script>
+
+<style scoped>
+.context-block-list {
+  margin-top: 8px;
+}
+</style>

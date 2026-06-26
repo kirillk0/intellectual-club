@@ -67,39 +67,36 @@
 
             <section v-else class="card stack">
               <div class="list catalog-list">
-                <button
+                <KnowledgeBlockListItem
                   v-for="b in visibleBlocks"
                   :key="b.id"
-                  type="button"
                   class="row catalog-row"
-                  @click="openBlock(b.id)"
+                  as="button"
+                  :name="b.name"
+                  :image="b.image"
+                  :version="b.version"
+                  :tokenCount="b.tokenCount"
+                  :openable="true"
+                  @open="openBlock(b.id)"
                 >
-                  <div class="catalog-row__main">
-                    <div class="catalog-row__title">
-                      {{ b.name }}
-                      <span
-                        v-if="b.shared_incoming"
-                        class="share-indicator"
-                        title="Shared with you"
-                        aria-label="Shared with you"
-                      ><SvgIcon name="share-incoming" /></span>
-                      <span
-                        v-else-if="b.shared_outgoing"
-                        class="share-indicator"
-                        title="Shared with groups"
-                        aria-label="Shared with groups"
-                      ><SvgIcon name="share-outgoing" /></span>
-                    </div>
-                    <div class="catalog-row__subtitle">
-                      {{ formatVersion(b.version) || 'No version' }}
-                    </div>
-                  </div>
-                  <ImageThumbnail :image="b.image" :label="b.name" :size="44" :hideWithoutImage="true" />
-                  <div class="catalog-row__meta">
-                    <span class="badge">{{ formatEstimatedTokens(b.tokenCount) }}</span>
+                  <template #title-extra>
+                    <span
+                      v-if="b.shared_incoming"
+                      class="share-indicator"
+                      title="Shared with you"
+                      aria-label="Shared with you"
+                    ><SvgIcon name="share-incoming" /></span>
+                    <span
+                      v-else-if="b.shared_outgoing"
+                      class="share-indicator"
+                      title="Shared with groups"
+                      aria-label="Shared with groups"
+                    ><SvgIcon name="share-outgoing" /></span>
+                  </template>
+                  <template #trailing>
                     <span class="catalog-row__chevron" aria-hidden="true">›</span>
-                  </div>
-                </button>
+                  </template>
+                </KnowledgeBlockListItem>
               </div>
 
               <p v-if="!visibleBlocks.length" class="muted">No blocks found.</p>
@@ -178,7 +175,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
-import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import KnowledgeBlocksMarkdownExportModal from '@/components/KnowledgeBlocksMarkdownExportModal.vue';
 import KnowledgeBlocksMarkdownImportModal from '@/components/KnowledgeBlocksMarkdownImportModal.vue';
 import KnowledgeTagsManagerPanel from '@/components/KnowledgeTagsManagerPanel.vue';
@@ -199,7 +196,6 @@ import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
-import { formatEstimatedTokens } from '@/utils/tokens';
 
 type KnowledgeBlockRow = {
   id: number;
