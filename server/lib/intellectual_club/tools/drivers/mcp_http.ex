@@ -79,9 +79,6 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
 
         {:fallback, :list_tools} ->
           list_tools(server_url, session_id, bearer_token: bearer_token)
-
-        other ->
-          {:error, other}
       end
     end
   end

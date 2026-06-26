@@ -126,15 +126,11 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
     end)
   end
 
-  defp responses_items?(_other), do: false
-
   defp normalize_responses_items(items) when is_list(items) do
     items
     |> Enum.filter(&is_map/1)
     |> Enum.map(&Map.new/1)
   end
-
-  defp normalize_responses_items(_other), do: []
 
   defp normalize_responses_parameters(parameters) when is_map(parameters) do
     cond do

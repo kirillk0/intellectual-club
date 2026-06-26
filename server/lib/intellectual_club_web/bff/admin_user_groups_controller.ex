@@ -9,8 +9,6 @@ defmodule IntellectualClubWeb.Bff.AdminUserGroupsController do
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
-  require Ash.Query
-
   def index(conn, _params) do
     with {:ok, actor} <- Helpers.require_admin(conn),
          {:ok, groups} <- list_groups(actor) do
@@ -103,8 +101,6 @@ defmodule IntellectualClubWeb.Bff.AdminUserGroupsController do
       {:error, error} -> {:error, error}
     end
   end
-
-  defp fetch_group(_group_id, _actor), do: {:error, :not_found}
 
   defp create_group(params, actor) do
     payload =

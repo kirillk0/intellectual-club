@@ -436,8 +436,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     end
   end
 
-  defp responses_output_text(_other), do: ""
-
   defp responses_content_part_text(part) when is_map(part) do
     type = get_any(part, [{"type", :type}])
 

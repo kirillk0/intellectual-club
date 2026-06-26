@@ -262,7 +262,6 @@ defmodule IntellectualClub.Chat.Handoff do
     do: message_id
 
   defp normalize_source_message_id(_message_id, %Chat{last_message_id: id}), do: id
-  defp normalize_source_message_id(_message_id, _source), do: nil
 
   defp summary_from_message(%ChatMessage{} = message) do
     message

@@ -86,7 +86,7 @@ defmodule IntellectualClub.Outlets.Pairing do
 
   @spec poll_pairing!(String.t()) :: {:ok, map()} | {:error, map()}
   def poll_pairing!(device_code) when is_binary(device_code) do
-    device_code = String.trim(device_code || "")
+    device_code = String.trim(device_code)
 
     if device_code == "" do
       {:error, %{status: "error", error: "Invalid device code."}}

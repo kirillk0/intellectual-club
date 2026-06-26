@@ -8,8 +8,6 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.TokenCounter
 
-  require Ash.Query
-
   @budget_tokens 20_000
   @assistant_soft_limit 200
   @massive_user_limit 200

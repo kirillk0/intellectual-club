@@ -155,8 +155,6 @@ defmodule IntellectualClub.Chat.DefaultLlmConfiguration do
     end
   end
 
-  defp accessible_llm_configuration?(_actor, _llm_configuration_id), do: false
-
   defp latest_chat_llm_configuration_id(_actor, _bot_id, []), do: nil
 
   defp latest_chat_llm_configuration_id(actor, bot_id, available_ids) do

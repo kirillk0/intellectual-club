@@ -749,8 +749,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     end
   end
 
-  defp extract_reasoning(_delta), do: nil
-
   defp flatten_reasoning(nil), do: nil
 
   defp flatten_reasoning(value) when is_binary(value) do

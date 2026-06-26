@@ -105,7 +105,6 @@ defmodule IntellectualClub.Notifications do
           {:error, error}
       end
     else
-      false -> {:error, :web_push_disabled}
       {:error, reason} -> {:error, reason}
     end
   end

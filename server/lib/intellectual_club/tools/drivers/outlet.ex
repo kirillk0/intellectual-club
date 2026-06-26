@@ -118,14 +118,13 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
       discovered_tools_from_raw(raw)
     else
       {:error, reason} -> {:error, reason}
-      _other -> {:error, "Outlet discovery returned an invalid payload."}
     end
   end
 
   @impl true
   def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
-    case Runtime.enqueue_and_wait(tool_instance, function_name, args || %{}, execution_context) do
+    case Runtime.enqueue_and_wait(tool_instance, function_name, args, execution_context) do
       {:ok, result} ->
         {:ok, ExecutionResult.normalize(result)}
 

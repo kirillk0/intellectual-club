@@ -31,7 +31,6 @@ defmodule IntellectualClub.Tools.DriverMetadata do
       case driver.secrets_schema() do
         nil -> nil
         %{} = schema -> normalize_map(schema)
-        _other -> nil
       end
 
     fixed_functions =

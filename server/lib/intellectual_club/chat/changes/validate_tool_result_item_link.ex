@@ -8,8 +8,6 @@ defmodule IntellectualClub.Chat.Changes.ValidateToolResultItemLink do
   alias Ash.Changeset
   alias IntellectualClub.Chat.ChatMessageItem
 
-  require Ash.Query
-
   @impl true
   def change(changeset, _opts, _context) do
     Changeset.before_action(changeset, fn changeset ->

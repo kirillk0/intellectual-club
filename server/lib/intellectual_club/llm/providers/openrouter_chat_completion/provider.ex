@@ -219,7 +219,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
     end
   end
 
-  defp sanitize_tool_call_id_for_anthropic(nil), do: "call"
   defp sanitize_tool_call_id_for_anthropic(""), do: "call"
 
   defp sanitize_tool_call_id_for_anthropic(value) when is_binary(value) do
@@ -228,7 +227,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
     else
       cleaned =
         value
-        |> Regex.replace(@anthropic_tool_call_id_rewrite, "_")
+        |> then(&Regex.replace(@anthropic_tool_call_id_rewrite, &1, "_"))
         |> String.trim("_")
 
       if cleaned == "", do: "call", else: cleaned

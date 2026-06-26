@@ -1164,7 +1164,6 @@ defmodule IntellectualClub.Tools.DocumentReader do
   end
 
   defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value) when is_map(map), do: Map.put(map, key, value)
 
   defp coerce_optional_integer(nil, default) when is_integer(default), do: {:ok, default}

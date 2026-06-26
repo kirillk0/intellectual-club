@@ -248,8 +248,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
 
   defp extract_assistant_chat_message(_raw_response), do: %{}
 
-  defp sanitize_reasoning_details(value) when not is_list(value), do: value
-
   defp sanitize_reasoning_details(value) when is_list(value) do
     Enum.map(value, fn
       %{} = item ->
@@ -343,8 +341,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     |> to_string()
   end
 
-  defp extract_system_prompt(_messages), do: ""
-
   defp infer_history_length(messages) when is_list(messages) do
     indices =
       messages
@@ -365,8 +361,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
         Enum.min(filtered) + 1
     end
   end
-
-  defp infer_history_length(_messages), do: nil
 
   defp drop_system_marker_index(messages, [0 | rest]) do
     case List.first(messages) do

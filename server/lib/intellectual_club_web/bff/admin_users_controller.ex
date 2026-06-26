@@ -9,8 +9,6 @@ defmodule IntellectualClubWeb.Bff.AdminUsersController do
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
-  require Ash.Query
-
   def index(conn, _params) do
     with {:ok, actor} <- Helpers.require_admin(conn),
          {:ok, users} <- list_users(actor) do
@@ -121,8 +119,6 @@ defmodule IntellectualClubWeb.Bff.AdminUsersController do
       {:error, error} -> {:error, error}
     end
   end
-
-  defp fetch_user(_user_id, _actor), do: {:error, :not_found}
 
   defp create_user(params, actor) do
     payload =

@@ -46,7 +46,6 @@ defmodule IntellectualClub.Tools.Drivers.SshKeyCb do
       {:ok, key}
     else
       {:error, _reason} = error -> error
-      _other -> {:error, :no_identity}
     end
   end
 

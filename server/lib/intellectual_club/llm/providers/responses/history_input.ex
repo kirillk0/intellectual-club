@@ -361,8 +361,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
     call_id != "" and not MapSet.member?(valid_tool_call_ids, call_id)
   end
 
-  defp orphaned_tool_call_by_call_id?(_map, _valid_tool_call_ids), do: false
-
   defp last_answer_item_index(indexed_items) when is_list(indexed_items) do
     Enum.reduce(indexed_items, nil, fn {item, index}, acc ->
       case History.item_type(item) do
@@ -405,8 +403,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
       Map.new(item)
     end
   end
-
-  defp sanitize_item(_other), do: nil
 
   defp normalize_arguments_json(nil), do: "{}"
 

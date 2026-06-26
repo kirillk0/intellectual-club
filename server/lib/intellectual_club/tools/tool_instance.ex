@@ -386,8 +386,6 @@ defmodule IntellectualClub.Tools.ToolInstance do
     end
   end
 
-  defp secrets_schema_properties(_other), do: %{}
-
   defp secrets_schema_aliases(raw_spec) when is_map(raw_spec) do
     raw_spec
     |> Map.get("x-aliases", Map.get(raw_spec, :"x-aliases", []))

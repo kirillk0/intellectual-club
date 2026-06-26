@@ -185,7 +185,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects missing message id", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects missing message id", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     source = create_chat!(actor, "Missing message id")
@@ -196,7 +198,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchToNewChatTest do
     assert payload["error"] == "message_id is required"
   end
 
-  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects inactive message", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/branch-to-new-chat rejects inactive message", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     source = create_chat!(actor, "Inactive message")

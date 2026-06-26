@@ -147,7 +147,7 @@ defmodule IntellectualClubWeb.OutletController do
   end
 
   def upload_file(conn, %{"call_id" => call_id} = params) do
-    payload = params || %{}
+    payload = params
     token = extract_token(conn, payload)
     tool_instance = Auth.tool_instance_for_token(token)
 
@@ -156,7 +156,7 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
-      with {:ok, _call} <-
+      with {:ok, {:ok, _call}} <-
              with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end),
            {:ok, body} <- read_full_body(conn),
            :ok <- require_non_empty_body(body),
@@ -214,7 +214,7 @@ defmodule IntellectualClubWeb.OutletController do
   end
 
   def download_file(conn, %{"call_id" => call_id, "file_id" => file_external_id} = params) do
-    payload = params || %{}
+    payload = params
     token = extract_token(conn, payload)
     tool_instance = Auth.tool_instance_for_token(token)
 
@@ -356,7 +356,7 @@ defmodule IntellectualClubWeb.OutletController do
 
       {:error, %{} = response} ->
         status =
-          case Map.get(response, :error) || Map.get(response, "error") do
+          case Map.get(response, :error) do
             "Pairing is approved but token is missing." -> :internal_server_error
             _ -> :bad_request
           end

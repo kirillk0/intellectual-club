@@ -201,10 +201,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
   def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "read_file" -> read_file(tool_instance, args || %{}, execution_context)
-      "search_file" -> search_file(tool_instance, args || %{}, execution_context)
-      "read_image" -> read_image(args || %{}, execution_context)
-      "upload_file" -> upload_file(args || %{})
+      "read_file" -> read_file(tool_instance, args, execution_context)
+      "search_file" -> search_file(tool_instance, args, execution_context)
+      "read_image" -> read_image(args, execution_context)
+      "upload_file" -> upload_file(args)
       _other -> {:error, "Unknown function: #{function_name}"}
     end
   end
@@ -220,7 +220,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
            |> normalize_payload_error(),
          {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, file, payload, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
-      used_page = page || 1
+      used_page = page
 
       cond do
         total_pages <= 0 ->
@@ -547,7 +547,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
   end
 
   defp cache_root(%ToolInstance{} = tool_instance) do
-    tmp = System.tmp_dir!() || "/tmp"
+    tmp = System.tmp_dir!()
     Path.join([tmp, "club_artifact_reader_cache", "tool_#{tool_instance.id}"])
   end
 

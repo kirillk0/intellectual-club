@@ -687,8 +687,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     MapSet.member?(@retryable_error_types, error_type)
   end
 
-  defp retryable_error_payload?(_error), do: false
-
   defp truncate(value, limit \\ 500) when is_binary(value) and is_integer(limit) and limit > 0 do
     if String.length(value) <= limit do
       value

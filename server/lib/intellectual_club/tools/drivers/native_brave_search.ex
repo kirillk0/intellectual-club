@@ -151,7 +151,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
   def execute(%ToolInstance{} = tool_instance, function_name, args, _execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "web_search" -> web_search(tool_instance, args || %{})
+      "web_search" -> web_search(tool_instance, args)
       _other -> {:error, "Unknown function: #{function_name}"}
     end
   end
@@ -186,24 +186,20 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
       ]
 
       case request_json(endpoint, params, headers, cfg.timeout_seconds) do
-        {:ok, payload} ->
-          if is_map(payload) do
-            results = extract_web_results(payload)
+        {:ok, %{} = payload} ->
+          results = extract_web_results(payload)
 
-            text =
-              format_output_text(query, count, offset, country, search_lang, safesearch, results)
+          text =
+            format_output_text(query, count, offset, country, search_lang, safesearch, results)
 
-            {:ok,
-             {text,
-              %{
-                "endpoint" => endpoint,
-                "params" => params,
-                "results" => results,
-                "raw" => payload
-              }}}
-          else
-            {:error, "Brave Search API returned unexpected JSON shape."}
-          end
+          {:ok,
+           {text,
+            %{
+              "endpoint" => endpoint,
+              "params" => params,
+              "results" => results,
+              "raw" => payload
+            }}}
 
         {:error, _reason} = error ->
           error
@@ -385,8 +381,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
       []
     end
   end
-
-  defp extract_web_results(_other), do: []
 
   defp format_output_text(query, count, offset, country, search_lang, safesearch, results)
        when is_binary(query) and is_integer(count) and is_integer(offset) and is_list(results) do

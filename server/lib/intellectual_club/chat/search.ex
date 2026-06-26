@@ -374,8 +374,6 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
-  defp read_steps_for_messages([], _actor), do: []
-
   defp read_steps_for_messages(message_ids, actor) when is_list(message_ids) do
     message_ids
     |> chunk_ids()

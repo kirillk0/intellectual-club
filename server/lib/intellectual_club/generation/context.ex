@@ -756,7 +756,7 @@ defmodule IntellectualClub.Generation.Context do
     tools = RequestPayload.tools(payload)
     tool_choice = RequestPayload.tool_choice(payload)
 
-    has_tools? = is_list(tools) and tools != []
+    has_tools? = tools != []
     has_tool_choice? = not is_nil(tool_choice)
 
     if has_tools? or has_tool_choice? do
@@ -776,8 +776,6 @@ defmodule IntellectualClub.Generation.Context do
       :error -> Map.get(tool_resolution, :tools_payload, [])
     end
   end
-
-  defp generation_tools_payload(_tool_resolution, _opts), do: []
 
   defp generation_history_load do
     [
@@ -931,8 +929,6 @@ defmodule IntellectualClub.Generation.Context do
   defp trace_history_message?(message) when is_map(message) do
     is_list(Map.get(message, :steps, Map.get(message, "steps")))
   end
-
-  defp trace_history_message?(_other), do: false
 
   defp provider_type_for_configuration(%{provider: %{type: type}}),
     do: normalize_provider_type(type)
@@ -1093,8 +1089,6 @@ defmodule IntellectualClub.Generation.Context do
     |> Enum.with_index()
     |> Enum.map(fn {entry, index} -> Map.put(entry, :prompt_order, index) end)
   end
-
-  defp ordered_prompt_blocks(_prompt_sources), do: []
 
   defp split_configuration_prompt_bindings(bindings) when is_list(bindings) do
     Enum.reduce(bindings, {[], []}, fn binding, {top, bottom} ->

@@ -232,10 +232,10 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "run_command" -> run_command(tool_instance, args || %{})
-      "read_image" -> read_image(tool_instance, args || %{})
-      "download_file" -> download_file(tool_instance, args || %{}, execution_context)
-      "upload_file" -> upload_file(tool_instance, args || %{})
+      "run_command" -> run_command(tool_instance, args)
+      "read_image" -> read_image(tool_instance, args)
+      "download_file" -> download_file(tool_instance, args, execution_context)
+      "upload_file" -> upload_file(tool_instance, args)
       _other -> {:error, "Unknown function: #{function_name}"}
     end
   end

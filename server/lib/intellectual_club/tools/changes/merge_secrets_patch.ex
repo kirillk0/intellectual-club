@@ -75,8 +75,6 @@ defmodule IntellectualClub.Tools.Changes.MergeSecretsPatch do
     end)
   end
 
-  defp apply_patch(_current, _patch), do: %{}
-
   defp normalize_secret_key(key) when is_atom(key),
     do: key |> Atom.to_string() |> normalize_secret_key()
 

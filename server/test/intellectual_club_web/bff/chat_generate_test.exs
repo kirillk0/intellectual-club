@@ -8,7 +8,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerateTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Threads
 
-  test "POST /api/bff/chat-generation/:id/generate keeps deleted-reply parent by default", %{conn: conn} do
+  test "POST /api/bff/chat-generation/:id/generate keeps deleted-reply parent by default", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 

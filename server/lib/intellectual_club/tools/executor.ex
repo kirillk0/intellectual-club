@@ -28,7 +28,7 @@ defmodule IntellectualClub.Tools.Executor do
       execute_tool_instance(tool_instance, function_name, args, execution_context)
     else
       {:error, message} ->
-        error_text = to_string(message || "Tool error")
+        error_text = to_string(message)
 
         sanitize_execution_result(%ExecutionResult{
           text: error_text,

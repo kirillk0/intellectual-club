@@ -214,8 +214,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   def execute(%ToolInstance{} = tool_instance, function_name, args, _execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "read_url" -> read_url(tool_instance, args || %{})
-      "search_url" -> search_url(tool_instance, args || %{})
+      "read_url" -> read_url(tool_instance, args)
+      "search_url" -> search_url(tool_instance, args)
       _other -> {:error, "Unknown function: #{function_name}"}
     end
   end
@@ -229,7 +229,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
          {:ok, page} <- DocumentReader.parse_page(args),
          {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, normalized_url, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
-      used_page = page || 1
+      used_page = page
       final_url = to_string(Map.get(meta, "final_url") || normalized_url)
 
       cond do
@@ -587,7 +587,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   end
 
   defp cache_root(%ToolInstance{} = tool_instance) do
-    tmp = System.tmp_dir!() || "/tmp"
+    tmp = System.tmp_dir!()
     Path.join([tmp, "club_web_reader_cache", "tool_#{tool_instance.id}"])
   end
 

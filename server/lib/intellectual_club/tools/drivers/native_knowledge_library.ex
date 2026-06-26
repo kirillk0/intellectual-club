@@ -293,9 +293,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   def execute(%ToolInstance{} = tool_instance, function_name, args, _execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "list_blocks" -> list_blocks(tool_instance, args || %{})
-      "read_block" -> read_block(tool_instance, args || %{})
-      "search_blocks" -> search_blocks(tool_instance, args || %{})
+      "list_blocks" -> list_blocks(tool_instance, args)
+      "read_block" -> read_block(tool_instance, args)
+      "search_blocks" -> search_blocks(tool_instance, args)
       _other -> {:error, "Unknown function: #{function_name}"}
     end
   end
@@ -360,7 +360,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
          {:ok, page} <- DocumentReader.parse_page(args),
          {:ok, {doc_dir, meta, cached}} <- ensure_block_cache_ready(tool_instance, block, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
-      used_page = page || 1
+      used_page = page
 
       cond do
         total_pages <= 0 ->
@@ -570,7 +570,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     end
   end
 
-  defp block_by_id(_blocks, nil), do: nil
   defp block_by_id(blocks, block_id), do: Enum.find(blocks, &(&1.id == block_id))
 
   defp collect_block_snippets(_tool_instance, _blocks, _cfg, _regex, _snippet_len_chars, 0) do
@@ -884,15 +883,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   defp cache_root(%ToolInstance{} = tool_instance) do
-    tmp = System.tmp_dir!() || "/tmp"
+    tmp = System.tmp_dir!()
     Path.join([tmp, "club_knowledge_library_cache", "tool_#{tool_instance.id}"])
   end
 
   defp normalize_map(%{} = map) do
     Enum.into(map, %{}, fn {key, value} -> {normalize_key(key), value} end)
   end
-
-  defp normalize_map(_other), do: %{}
 
   defp normalize_key(key) when is_binary(key), do: key
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)

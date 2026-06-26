@@ -712,8 +712,6 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     Map.get(meta, :retryable) == true or Map.get(meta, "retryable") == true
   end
 
-  defp retryable_terminal_error?(_meta), do: false
-
   defp retryable_transport_error?(%Mint.TransportError{}), do: true
   defp retryable_transport_error?(%Mint.HTTPError{}), do: true
   defp retryable_transport_error?(%Mint.WebSocketError{}), do: true

@@ -29,7 +29,9 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
     assert response(conn, 204) == ""
   end
 
-  test "GET /api/bff/chat-list/idle-state changes after generation starts on the page", %{conn: conn} do
+  test "GET /api/bff/chat-list/idle-state changes after generation starts on the page", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -67,7 +69,10 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
     assert initial_payload["active_generation_message_id"] == nil
 
     unchanged_conn =
-      get(conn, ~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
+      get(
+        conn,
+        ~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}"
+      )
 
     assert response(unchanged_conn, 204) == ""
 
@@ -75,7 +80,9 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
 
     changed_payload =
       conn
-      |> get(~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}")
+      |> get(
+        ~p"/api/bff/chat-state/#{chat.id}/idle-state?revision=#{initial_payload["revision"]}"
+      )
       |> json_response(200)
 
     assert changed_payload["revision"] != initial_payload["revision"]

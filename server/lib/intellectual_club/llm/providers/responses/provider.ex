@@ -231,8 +231,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
     hosted_tools_from_request(previous_raw_request) ++ normalize_tools_list(tools)
   end
 
-  defp followup_tools_from_request(_previous_raw_request, tools), do: normalize_tools_list(tools)
-
   defp hosted_tools_from_request(payload) when is_map(payload) do
     payload
     |> RequestPayload.tools()
@@ -251,8 +249,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         []
     end)
   end
-
-  defp hosted_tools_from_request(_payload), do: []
 
   defp normalize_tools_list(tools) when is_list(tools), do: tools
   defp normalize_tools_list(_tools), do: []

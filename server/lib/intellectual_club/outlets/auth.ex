@@ -11,7 +11,7 @@ defmodule IntellectualClub.Outlets.Auth do
 
   @spec tool_instance_for_token(String.t()) :: ToolInstance.t() | nil
   def tool_instance_for_token(token) when is_binary(token) do
-    token = String.trim(token || "")
+    token = String.trim(token)
 
     if token == "" do
       nil

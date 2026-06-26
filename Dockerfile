@@ -2,7 +2,7 @@ ARG NODE_VERSION=24.16.0
 
 FROM node:${NODE_VERSION}-slim AS node
 
-FROM elixir:1.19-slim AS build
+FROM elixir:1.20-slim AS build
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules

@@ -13,8 +13,6 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
   alias IntellectualClubWeb.Bff.Loads
   alias IntellectualClubWeb.Bff.Serializer
 
-  require Ash.Query
-
   @preview_length 220
 
   def index(conn, _params) do

@@ -661,8 +661,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
     |> Enum.map(fn {_index, item} -> item end)
   end
 
-  defp assembled_output_items(_state), do: []
-
   defp assembled_output_item_entries(state) when is_map(state) do
     tool_calls = Map.get(state, :tool_calls, %{})
 
@@ -673,16 +671,12 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
     |> Enum.filter(fn {_index, item} -> is_map(item) and map_size(item) > 0 end)
   end
 
-  defp assembled_output_item_entries(_state), do: []
-
   defp stream_output_updated?(state) when is_map(state) do
     state
     |> Map.get(:output_item_updates, MapSet.new())
     |> MapSet.size()
     |> Kernel.>(0)
   end
-
-  defp stream_output_updated?(_state), do: false
 
   defp merge_completed_output(existing_output, state) when is_map(state) do
     stream_items_by_index =
@@ -735,8 +729,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
       |> Enum.filter(&is_map/1)
     end
   end
-
-  defp merge_completed_output(_existing_output, _state), do: []
 
   defp finalize_output_item(%{} = item, tool_calls) when is_map(tool_calls) do
     case {Map.get(item, "type"), Map.get(item, "id")} do
@@ -792,26 +784,13 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
     merge_output_item(accumulated, incoming, :best)
   end
 
-  defp merge_output_item(accumulated, _incoming) when is_map(accumulated),
-    do: Map.new(accumulated)
-
-  defp merge_output_item(_accumulated, incoming) when is_map(incoming), do: Map.new(incoming)
-  defp merge_output_item(_accumulated, _incoming), do: %{}
-
   defp merge_output_item_preserving_accumulated(accumulated, incoming)
        when is_map(accumulated) and is_map(incoming) do
     merge_output_item(accumulated, incoming, :accumulated)
   end
 
-  defp merge_output_item_preserving_accumulated(accumulated, _incoming)
-       when is_map(accumulated),
-       do: Map.new(accumulated)
-
-  defp merge_output_item_preserving_accumulated(_accumulated, incoming)
-       when is_map(incoming),
-       do: Map.new(incoming)
-
-  defp merge_output_item_preserving_accumulated(_accumulated, _incoming), do: %{}
+  defp merge_output_item_preserving_accumulated(accumulated, _incoming) when is_map(accumulated),
+    do: Map.new(accumulated)
 
   defp merge_output_item(accumulated, incoming, string_merge_mode)
        when is_map(accumulated) and is_map(incoming) do
@@ -824,14 +803,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
     |> merge_output_item_container("summary", accumulated, incoming, string_merge_mode)
     |> put_merged_string_field("arguments", accumulated, incoming, string_merge_mode)
   end
-
-  defp merge_output_item(accumulated, _incoming, _string_merge_mode) when is_map(accumulated),
-    do: Map.new(accumulated)
-
-  defp merge_output_item(_accumulated, incoming, _string_merge_mode) when is_map(incoming),
-    do: Map.new(incoming)
-
-  defp merge_output_item(_accumulated, _incoming, _string_merge_mode), do: %{}
 
   defp merge_output_item_container(item, key, accumulated, incoming, string_merge_mode)
        when is_map(item) and is_binary(key) and is_map(accumulated) and is_map(incoming) do

@@ -531,7 +531,6 @@ defmodule IntellectualClub.Sharing do
   end
 
   defp validation_message({:error, {:validation, message}}) when is_binary(message), do: message
-  defp validation_message(_other), do: "This chat cannot be shared yet."
 
   defp replace_bot_tool_modes(_bot, tool_modes, _actor) when map_size(tool_modes) == 0, do: :ok
 

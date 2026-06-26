@@ -564,7 +564,7 @@ defmodule IntellectualClub.Outlets.Runtime do
     %{
       call_id: Ecto.UUID.generate(),
       function_name: function_name,
-      arguments: args || %{},
+      arguments: args,
       execution_context: execution_context,
       status: :queued,
       enqueued_at_ms: now_ms,

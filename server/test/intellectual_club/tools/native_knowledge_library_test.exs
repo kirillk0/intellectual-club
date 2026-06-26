@@ -16,8 +16,6 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ToolInstance
 
-  require Ash.Query
-
   test "lists, reads, and searches owner blocks from a configured tag subtree" do
     %{user: owner} = user_fixture()
 

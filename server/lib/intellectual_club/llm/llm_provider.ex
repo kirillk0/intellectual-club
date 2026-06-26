@@ -8,8 +8,6 @@ defmodule IntellectualClub.Llm.LlmProvider do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  require Ash.Query
-
   alias IntellectualClub.Duplication
   alias IntellectualClub.Llm.Changes.ValidateProviderAuth
 

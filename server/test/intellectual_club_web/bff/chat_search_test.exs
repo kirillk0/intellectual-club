@@ -92,7 +92,9 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert payload["inactive"] == []
   end
 
-  test "GET /api/bff/chat-search/:id/messages uses adapter-specific substring semantics", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages uses adapter-specific substring semantics", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -119,7 +121,9 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert payload["inactive"] == []
   end
 
-  test "GET /api/bff/chat-search/:id/messages uses adapter-specific multi-token semantics", %{conn: conn} do
+  test "GET /api/bff/chat-search/:id/messages uses adapter-specific multi-token semantics", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -142,13 +146,17 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       assert Enum.map(payload["active"] || [], & &1["id"]) == [matching.id]
       assert payload["inactive"] == []
     else
-      exact_order_conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "alpha beta"})
+      exact_order_conn =
+        get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "alpha beta"})
+
       exact_order_payload = json_response(exact_order_conn, 200)
 
       assert Enum.map(exact_order_payload["active"] || [], & &1["id"]) == [matching.id]
       assert exact_order_payload["inactive"] == []
 
-      reversed_conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
+      reversed_conn =
+        get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
+
       reversed_payload = json_response(reversed_conn, 200)
 
       assert reversed_payload["active"] == []
@@ -228,7 +236,9 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert Enum.at(results, 2)["message_count"] == 2
   end
 
-  test "GET /api/bff/chat-list/search uses case-insensitive matching for message hits", %{conn: conn} do
+  test "GET /api/bff/chat-list/search uses case-insensitive matching for message hits", %{
+    conn: conn
+  } do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 

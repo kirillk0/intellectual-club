@@ -552,8 +552,6 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp maybe_retry_current_step(_state, _meta), do: :no_retry
-
   defp persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
     try do
       raw_request = state.runtime_step.raw_request || %{}
@@ -612,8 +610,6 @@ defmodule IntellectualClub.Generation.Worker do
     |> to_string()
   end
 
-  defp error_text_from_meta(_meta), do: "Provider error"
-
   defp retryable_provider_error?(meta) when is_map(meta) do
     retryable_hint = bool_value(meta, :retryable)
     status_code = status_code_from_meta(meta)
@@ -623,8 +619,6 @@ defmodule IntellectualClub.Generation.Worker do
       (is_integer(status_code) and MapSet.member?(@auto_retry_http_status_codes, status_code)) or
       MapSet.member?(@auto_retry_error_kinds, error_kind)
   end
-
-  defp retryable_provider_error?(_meta), do: false
 
   defp auto_retry_backoff_values do
     configured = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)

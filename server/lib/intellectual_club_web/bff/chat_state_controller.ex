@@ -21,9 +21,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
       {:error, %Plug.Conn{} = conn} ->
         conn
 
-      {:ok, nil} ->
-        ChatAccess.render_error(conn, :not_found)
-
       {:error, error} ->
         ChatAccess.render_error(conn, error)
     end
@@ -37,9 +34,6 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
     else
       {:error, %Plug.Conn{} = conn} ->
         conn
-
-      {:ok, nil} ->
-        ChatAccess.render_error(conn, :not_found)
 
       {:error, error} ->
         ChatAccess.render_error(conn, error)
