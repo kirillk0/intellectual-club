@@ -18,9 +18,8 @@ __pycache__/
 /frontend/node_modules/
 /frontend/dist/
 /frontend/.vite/
-/outlets/shell/.env
-/outlets/**/__pycache__/
-/outlets/rust/target/
+/native_tools/outlet-shell-image/.env
+/native_tools/target/
 /data/*.db
 /data/*.db-shm
 /data/*.db-wal

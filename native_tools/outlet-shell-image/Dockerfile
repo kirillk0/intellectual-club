@@ -1,8 +1,11 @@
 FROM rust:1-bookworm AS rust-builder
 
 WORKDIR /src
-COPY outlets/rust /src/outlets/rust
-RUN cargo build --manifest-path /src/outlets/rust/Cargo.toml --release -p outlet-shell-daemon
+COPY native_tools /src/native_tools
+ENV CARGO_NET_RETRY=10
+ENV CARGO_HTTP_TIMEOUT=600
+ENV CARGO_HTTP_LOW_SPEED_LIMIT=1
+RUN cargo build --manifest-path /src/native_tools/Cargo.toml --release -p outlet-shell-daemon --locked
 
 FROM python:3.12-bookworm
 
@@ -47,8 +50,8 @@ ARG OUTLET_GID=1000
 ENV OUTLET_USER="${OUTLET_USER}"
 ENV HOME="/home/${OUTLET_USER}"
 
-COPY outlets/shell/requirements.txt /tmp/shell-requirements.txt
-COPY outlets/shell/requirements.additional.txt /tmp/shell-requirements-additional.txt
+COPY native_tools/outlet-shell-image/requirements.txt /tmp/shell-requirements.txt
+COPY native_tools/outlet-shell-image/requirements.additional.txt /tmp/shell-requirements-additional.txt
 
 RUN groupadd --gid "${OUTLET_GID}" "${OUTLET_USER}" \
     && useradd --uid "${OUTLET_UID}" --gid "${OUTLET_GID}" --create-home --shell /bin/bash "${OUTLET_USER}" \
@@ -73,13 +76,12 @@ RUN printf '%s\n' \
 
 ENV PYTHONUNBUFFERED=1
 
-COPY --from=rust-builder /src/outlets/rust/target/release/outlet-shell-daemon /usr/local/bin/outlet-shell-daemon
+COPY --from=rust-builder /src/native_tools/target/release/outlet-shell-daemon /usr/local/bin/outlet-shell-daemon
 
-COPY outlets/shell/entrypoint.sh /usr/local/bin/outlet-entrypoint
+COPY native_tools/outlet-shell-image/entrypoint.sh /usr/local/bin/outlet-entrypoint
 RUN chmod 0755 /usr/local/bin/outlet-entrypoint
 
 WORKDIR /app
-COPY outlets /app/outlets
 
 ENTRYPOINT ["/usr/local/bin/outlet-entrypoint"]
 CMD ["outlet-shell-daemon"]

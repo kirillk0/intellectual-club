@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/openai-oauth",
   "crates/outlet-core",
   "crates/outlet-shell",
   "crates/outlet-shell-daemon",
@@ -15,6 +16,7 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -22,6 +24,7 @@ directories = "6"
 eframe = "0.33"
 fastrand = "2"
 gethostname = "1"
+getrandom = "0.2"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 libc = "0.2"
@@ -35,6 +38,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-m
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 webbrowser = "1"
 which = "8"

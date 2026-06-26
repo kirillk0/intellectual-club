@@ -8,7 +8,9 @@ assets
 data
 frontend/dist
 frontend/node_modules
+native_tools/target
 outlets/**/__pycache__
+outlets/rust/target
 server/.elixir_ls
 server/_build
 server/cover
