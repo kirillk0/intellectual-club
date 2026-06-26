@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat.Search do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.MessageContentFts
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Db
@@ -20,6 +21,8 @@ defmodule IntellectualClub.Chat.Search do
   @default_message_limit 50
   @default_chat_limit 50
   @default_message_candidate_limit 500
+  @snippet_radius 240
+  @snippet_preview_limit @snippet_radius * 2
   @trace_read_chunk_size 200
   @searchable_trace_item_types [:input, :answer]
 
@@ -115,18 +118,31 @@ defmodule IntellectualClub.Chat.Search do
       meta_chats = search_meta_chats(term, bot_filter, chat_limit, actor)
       meta_ids = MapSet.new(Enum.map(meta_chats, & &1.id))
 
-      meta_message_count_by_chat =
-        Threads.active_branch_counts_by_chat(Enum.map(meta_chats, & &1.id), actor)
+      meta_active_branch_summaries =
+        Threads.active_branch_summaries_by_chat(Enum.map(meta_chats, & &1.id), actor)
+
+      meta_first_message_previews =
+        Listing.active_root_message_previews(
+          meta_chats,
+          meta_active_branch_summaries,
+          @snippet_preview_limit,
+          actor
+        )
 
       meta_entries =
         Enum.map(meta_chats, fn chat ->
+          active_branch_summary = Map.get(meta_active_branch_summaries, chat.id, %{})
+
+          {first_message_preview, _first_message_role} =
+            Map.get(meta_first_message_previews, chat.id, {nil, nil})
+
           %{
             chat: chat,
             match_type: :meta,
-            snippet: nil,
+            snippet: first_message_preview,
             message_id: nil,
             message_role: nil,
-            message_count: Map.get(meta_message_count_by_chat, chat.id, 0)
+            message_count: Map.get(active_branch_summary, :message_count, 0)
           }
         end)
 
@@ -148,25 +164,20 @@ defmodule IntellectualClub.Chat.Search do
 
         active_ids_by_chat = Threads.active_branch_ids_by_chat(chat_ids, actor)
 
-        {active_match, inactive_match} =
+        {active_candidates_by_chat, inactive_candidates_by_chat} =
           Enum.reduce(message_candidates, {%{}, %{}}, fn message, {active_acc, inactive_acc} ->
             chat_id = message.chat_id
             active_ids = Map.get(active_ids_by_chat, chat_id, MapSet.new())
 
-            cond do
-              Map.has_key?(active_acc, chat_id) ->
-                {active_acc, inactive_acc}
-
-              MapSet.member?(active_ids, message.id) ->
-                {Map.put(active_acc, chat_id, message), inactive_acc}
-
-              Map.has_key?(inactive_acc, chat_id) ->
-                {active_acc, inactive_acc}
-
-              true ->
-                {active_acc, Map.put(inactive_acc, chat_id, message)}
+            if MapSet.member?(active_ids, message.id) do
+              {put_message_candidate(active_acc, message), inactive_acc}
+            else
+              {active_acc, put_message_candidate(inactive_acc, message)}
             end
           end)
+
+        active_match = select_message_candidates(active_candidates_by_chat)
+        inactive_match = select_message_candidates(inactive_candidates_by_chat)
 
         inactive_match =
           Enum.reduce(Map.keys(active_match), inactive_match, fn chat_id, acc ->
@@ -557,7 +568,7 @@ defmodule IntellectualClub.Chat.Search do
     {sort_seq(record), Map.get(record, :id, 0)}
   end
 
-  defp build_snippet(text, search, radius \\ 60)
+  defp build_snippet(text, search, radius \\ @snippet_radius)
 
   defp build_snippet(text, {:fts, %MessageContentFts{} = fts}, radius)
        when is_integer(radius) do
@@ -641,16 +652,53 @@ defmodule IntellectualClub.Chat.Search do
 
   defp search_message_candidates(search, bot_filter, meta_ids, limit, actor)
        when is_tuple(search) do
+    user_candidates = read_message_candidates(search, bot_filter, meta_ids, limit, actor, :user)
+
+    assistant_candidates =
+      read_message_candidates(search, bot_filter, meta_ids, limit, actor, :assistant)
+
+    user_candidates ++ assistant_candidates
+  end
+
+  defp read_message_candidates(search, bot_filter, meta_ids, limit, actor, role)
+       when is_tuple(search) and is_atom(role) do
     meta_list = MapSet.to_list(meta_ids)
 
     ChatMessage
     |> Ash.Query.filter(owner_id == ^actor.id)
+    |> Ash.Query.filter(role == ^role)
     |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
     |> apply_bot_filter_via_chat(bot_filter)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
     |> Ash.read!(actor: actor)
+  end
+
+  defp put_message_candidate(acc, message) do
+    Map.update(acc, message.chat_id, initial_message_candidate(message), fn candidate ->
+      update_message_candidate(candidate, message)
+    end)
+  end
+
+  defp initial_message_candidate(message), do: update_message_candidate(%{}, message)
+
+  defp update_message_candidate(candidate, message) do
+    key = if preferred_message_candidate?(message), do: :preferred, else: :fallback
+
+    if Map.has_key?(candidate, key) do
+      candidate
+    else
+      Map.put(candidate, key, message)
+    end
+  end
+
+  defp preferred_message_candidate?(message), do: wanted_trace_item_type(message) == :input
+
+  defp select_message_candidates(candidates_by_chat) when is_map(candidates_by_chat) do
+    Map.new(candidates_by_chat, fn {chat_id, candidate} ->
+      {chat_id, Map.get(candidate, :preferred) || Map.get(candidate, :fallback)}
+    end)
   end
 
   defp maybe_exclude_chat_ids(query, []), do: query

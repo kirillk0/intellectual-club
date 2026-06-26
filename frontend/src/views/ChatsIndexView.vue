@@ -77,7 +77,7 @@
                   :secondary-meta="relationMeta(c)"
                   :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
                   :preview-role="!hasChatSearch ? c.first_message_role : null"
-                  :snippet="hasChatSearch && isSearchResult(c) && c.match_type !== 'meta' ? c.snippet || null : null"
+                  :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
                   :generation-state="generationStateForChat(c)"
                   :row-role="chatResultRole(c)"
                   @navigate="openChat"

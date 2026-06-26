@@ -236,6 +236,116 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert Enum.at(results, 2)["message_count"] == 2
   end
 
+  test "GET /api/bff/chat-list/search prefers active user hits over newer assistant hits", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_msg} =
+      Threads.add_message_to_end(chat, :user, "needle user message", actor: actor)
+
+    {:ok, _assistant_msg} =
+      Threads.add_message(chat, :assistant, "needle assistant message",
+        actor: actor,
+        parent_id: user_msg.id
+      )
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+    results = payload["chats"] || []
+
+    result = Enum.find(results, &(&1["id"] == chat.id))
+
+    assert is_map(result)
+    assert result["match_type"] == "active_message"
+    assert result["message_id"] == user_msg.id
+    assert result["message_role"] == "user"
+  end
+
+  test "GET /api/bff/chat-list/search keeps active assistant hits over inactive user hits", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, root} = Threads.add_message_to_end(chat, :user, "root", actor: actor)
+
+    {:ok, _inactive_user} =
+      Threads.add_message(chat, :user, "needle inactive user",
+        actor: actor,
+        parent_id: root.id
+      )
+
+    {:ok, active_assistant} =
+      Threads.add_message(chat, :assistant, "needle active assistant",
+        actor: actor,
+        parent_id: root.id
+      )
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+    results = payload["chats"] || []
+
+    result = Enum.find(results, &(&1["id"] == chat.id))
+
+    assert is_map(result)
+    assert result["match_type"] == "active_message"
+    assert result["message_id"] == active_assistant.id
+    assert result["message_role"] == "assistant"
+  end
+
+  test "GET /api/bff/chat-list/search returns first active message snippet for meta matches", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    bot = create_bot!(actor, "Needle Bot")
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: "needle note", bot_id: bot.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _first} =
+      Threads.add_message_to_end(chat, :user, "First meta line\nSecond meta line", actor: actor)
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+    results = payload["chats"] || []
+
+    result = Enum.find(results, &(&1["id"] == chat.id))
+
+    assert is_map(result)
+    assert result["match_type"] == "meta"
+    assert result["snippet"] == "First meta line Second meta line"
+    assert is_nil(result["message_id"])
+    assert is_nil(result["message_role"])
+  end
+
   test "GET /api/bff/chat-list/search uses case-insensitive matching for message hits", %{
     conn: conn
   } do
@@ -263,6 +373,40 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert result["match_type"] == "active_message"
     assert result["message_id"] == message.id
     assert is_binary(result["snippet"])
+  end
+
+  test "GET /api/bff/chat-list/search returns expanded snippets around message hits", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    prefix = String.duplicate("left context ", 24)
+    suffix = String.duplicate(" right context", 24)
+
+    {:ok, message} =
+      Threads.add_message_to_end(chat, :user, prefix <> "needle" <> suffix, actor: actor)
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+    results = payload["chats"] || []
+
+    result = Enum.find(results, &(&1["id"] == chat.id))
+
+    assert is_map(result)
+    assert result["match_type"] == "active_message"
+    assert result["message_id"] == message.id
+    assert String.contains?(result["snippet"], "needle")
+    assert String.length(result["snippet"]) > 250
   end
 
   test "GET /api/bff/chat-list/search handles large assistant traces", %{conn: conn} do
