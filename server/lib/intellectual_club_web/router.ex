@@ -71,6 +71,7 @@ defmodule IntellectualClubWeb.Router do
   scope "/api/outlet", IntellectualClubWeb do
     pipe_through :api
 
+    get "/metadata/", OutletController, :metadata
     post "/poll/", OutletController, :poll
     post "/complete/", OutletController, :complete
     post "/calls/:call_id/files", OutletController, :upload_file

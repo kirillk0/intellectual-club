@@ -654,6 +654,31 @@ pub struct PairingPollResponse {
     pub error: String,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct OutletMetadataResponse {
+    pub status: String,
+    pub metadata: OutletMetadata,
+}
+
+impl OutletMetadataResponse {
+    pub fn tool_instance_name(&self) -> &str {
+        &self.metadata.tool_instance.name
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct OutletMetadata {
+    pub tool_instance: OutletToolInstanceMetadata,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct OutletToolInstanceMetadata {
+    pub id: i64,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub name: String,
+}
+
 #[derive(Clone)]
 pub struct PairingClient {
     client: reqwest::Client,
@@ -721,6 +746,47 @@ impl PairingClient {
             return Err(anyhow!("pairing poll failed: HTTP {status}"));
         }
         Ok(payload)
+    }
+}
+
+#[derive(Clone)]
+pub struct OutletMetadataClient {
+    client: reqwest::Client,
+    server_url: String,
+    token: String,
+}
+
+impl OutletMetadataClient {
+    pub fn new(server_url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            server_url: server_url.into().trim().trim_end_matches('/').to_string(),
+            token: token.into().trim().to_string(),
+        }
+    }
+
+    pub async fn fetch(&self) -> Result<OutletMetadataResponse> {
+        let response = self
+            .client
+            .get(join_url(&self.server_url, "/api/outlet/metadata/"))
+            .bearer_auth(&self.token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .context("failed to fetch outlet metadata")?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(anyhow!("Unauthorized. Check outlet token."));
+        }
+        if !status.is_success() {
+            return Err(anyhow!("outlet metadata failed: HTTP {status}"));
+        }
+
+        response
+            .json()
+            .await
+            .context("invalid outlet metadata JSON")
     }
 }
 
@@ -936,6 +1002,26 @@ mod tests {
     fn pairing_defaults_match_server_flow() {
         assert_eq!(default_pairing_expires_in(), 900);
         assert_eq!(default_pairing_interval(), 2.0);
+    }
+
+    #[test]
+    fn outlet_metadata_response_deserializes_and_exposes_name() {
+        let payload: OutletMetadataResponse = serde_json::from_value(json!({
+            "status": "ok",
+            "metadata": {
+                "tool_instance": {
+                    "id": 123,
+                    "type": "outlet",
+                    "name": "Shell Outlet"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.status, "ok");
+        assert_eq!(payload.tool_instance_name(), "Shell Outlet");
+        assert_eq!(payload.metadata.tool_instance.id, 123);
+        assert_eq!(payload.metadata.tool_instance.tool_type, "outlet");
     }
 
     #[test]

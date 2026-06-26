@@ -22,6 +22,29 @@ defmodule IntellectualClubWeb.OutletController do
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
 
+  def metadata(conn, _params) do
+    payload = conn.body_params || %{}
+    token = extract_token(conn, payload)
+    tool_instance = Auth.tool_instance_for_token(token)
+
+    if tool_instance == nil do
+      conn
+      |> put_status(:unauthorized)
+      |> json(%{error: "Unauthorized."})
+    else
+      json(conn, %{
+        status: "ok",
+        metadata: %{
+          tool_instance: %{
+            id: tool_instance.id,
+            type: tool_instance.type,
+            name: tool_instance.name
+          }
+        }
+      })
+    end
+  end
+
   def poll(conn, _params) do
     payload = conn.body_params || %{}
     token = extract_token(conn, payload)

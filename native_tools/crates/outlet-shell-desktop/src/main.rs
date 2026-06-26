@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use directories::ProjectDirs;
 use eframe::egui;
 use outlet_core::{
-    base_runner_metadata, OutletRunner, PairingClient, RunnerConfig, RunnerEvent, ToolProvider,
+    base_runner_metadata, OutletMetadataClient, OutletRunner, PairingClient, RunnerConfig,
+    RunnerEvent, ToolProvider,
 };
 use outlet_shell::ShellOutlet;
 use serde::{Deserialize, Serialize};
@@ -105,12 +106,19 @@ enum UiEvent {
         session_id: String,
         profile_id: Option<String>,
         server_url: String,
-        requested_name: String,
-        suggested_tool_name: String,
+        tool_name: String,
         token: String,
     },
     PairingFailed {
         session_id: String,
+        error: String,
+    },
+    MetadataRefreshed {
+        profile_id: String,
+        name: String,
+    },
+    MetadataRefreshFailed {
+        profile_id: String,
         error: String,
     },
 }
@@ -132,7 +140,6 @@ struct OutletDesktopApp {
     ui_rx: mpsc::Receiver<UiEvent>,
     runners: HashMap<String, RunnerHandle>,
     statuses: HashMap<String, ProfileStatus>,
-    new_name: String,
     new_server_url: String,
     pairing: Option<PairingState>,
     last_error: String,
@@ -156,7 +163,6 @@ impl OutletDesktopApp {
             ui_rx,
             runners: HashMap::new(),
             statuses: HashMap::new(),
-            new_name: String::new(),
             new_server_url: "http://localhost:4000".to_string(),
             pairing: None,
             last_error: String::new(),
@@ -207,8 +213,7 @@ impl OutletDesktopApp {
                     session_id,
                     profile_id,
                     server_url,
-                    requested_name,
-                    suggested_tool_name,
+                    tool_name,
                     token,
                 } => {
                     if self
@@ -217,13 +222,7 @@ impl OutletDesktopApp {
                         .map(|pairing| pairing.session_id.as_str())
                         == Some(session_id.as_str())
                     {
-                        self.finish_pairing(
-                            profile_id,
-                            server_url,
-                            requested_name,
-                            suggested_tool_name,
-                            token,
-                        );
+                        self.finish_pairing(profile_id, server_url, tool_name, token);
                     }
                 }
                 UiEvent::PairingFailed { session_id, error } => {
@@ -232,6 +231,20 @@ impl OutletDesktopApp {
                             pairing.status = "Pairing failed".to_string();
                             pairing.error = error;
                         }
+                    }
+                }
+                UiEvent::MetadataRefreshed { profile_id, name } => {
+                    self.apply_profile_name(&profile_id, name);
+                }
+                UiEvent::MetadataRefreshFailed { profile_id, error } => {
+                    if self
+                        .config
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.id == profile_id)
+                    {
+                        let status = self.statuses.entry(profile_id).or_default();
+                        status.error = format!("Metadata refresh failed: {error}");
                     }
                 }
             }
@@ -280,12 +293,11 @@ impl OutletDesktopApp {
         &mut self,
         profile_id: Option<String>,
         server_url: String,
-        requested_name: String,
-        suggested_tool_name: String,
+        tool_name: String,
         token: String,
     ) {
         let now = now_timestamp();
-        let final_name = first_non_empty(&[&requested_name, &suggested_tool_name, "Shell Outlet"]);
+        let final_name = first_non_empty(&[&tool_name, "Shell Outlet"]);
         let profile_id = if let Some(profile_id) = profile_id {
             if let Some(profile) = self
                 .config
@@ -293,7 +305,9 @@ impl OutletDesktopApp {
                 .iter_mut()
                 .find(|profile| profile.id == profile_id)
             {
-                profile.name = final_name;
+                if !tool_name.trim().is_empty() {
+                    profile.name = final_name;
+                }
                 profile.server_url = normalize_server_url(&server_url);
                 profile.token = token;
                 profile.updated_at = now;
@@ -310,6 +324,33 @@ impl OutletDesktopApp {
         }
         self.pairing = None;
         self.start_profile(&profile_id);
+    }
+
+    fn apply_profile_name(&mut self, profile_id: &str, name: String) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        if let Some(profile) = self
+            .config
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+        {
+            if profile.name != name {
+                profile.name = name.to_string();
+                profile.updated_at = now_timestamp();
+                changed = true;
+            }
+        }
+
+        if changed {
+            if let Err(error) = save_config(&self.config_path, &self.config) {
+                self.last_error = error.to_string();
+            }
+        }
     }
 
     fn create_profile(
@@ -333,12 +374,7 @@ impl OutletDesktopApp {
         id
     }
 
-    fn start_pairing(
-        &mut self,
-        profile_id: Option<String>,
-        server_url: String,
-        requested_name: String,
-    ) {
+    fn start_pairing(&mut self, profile_id: Option<String>, server_url: String) {
         let server_url = normalize_server_url(&server_url);
         if server_url.is_empty() {
             self.last_error = "Server URL is required.".to_string();
@@ -346,6 +382,7 @@ impl OutletDesktopApp {
         }
 
         let session_id = Uuid::new_v4().to_string();
+        let requested_name = String::new();
         self.pairing = Some(PairingState {
             session_id: session_id.clone(),
             profile_id: profile_id.clone(),
@@ -399,13 +436,21 @@ impl OutletDesktopApp {
                     Ok(response)
                         if response.status == "approved" && !response.token.trim().is_empty() =>
                     {
+                        let token = response.token;
+                        let tool_name = match fetch_outlet_tool_name(&server_url, &token).await {
+                            Ok(name) => name,
+                            Err(error) => {
+                                warn!(error = %error, "failed to fetch outlet metadata after pairing");
+                                String::new()
+                            }
+                        };
+
                         let _ = ui_tx.send(UiEvent::PairingApproved {
                             session_id,
                             profile_id,
                             server_url,
-                            requested_name,
-                            suggested_tool_name: started.suggested_tool_name,
-                            token: response.token,
+                            tool_name,
+                            token,
                         });
                         return;
                     }
@@ -515,13 +560,35 @@ impl OutletDesktopApp {
             },
         );
         self.runners.insert(
-            profile.id,
+            profile.id.clone(),
             RunnerHandle {
                 cancel,
                 runner_join,
                 event_join,
             },
         );
+        self.refresh_profile_metadata(&profile);
+    }
+
+    fn refresh_profile_metadata(&self, profile: &Profile) {
+        let profile_id = profile.id.clone();
+        let server_url = profile.server_url.clone();
+        let token = profile.token.clone();
+        let ui_tx = self.ui_tx.clone();
+
+        self.runtime.spawn(async move {
+            match fetch_outlet_tool_name(&server_url, &token).await {
+                Ok(name) => {
+                    let _ = ui_tx.send(UiEvent::MetadataRefreshed { profile_id, name });
+                }
+                Err(error) => {
+                    let _ = ui_tx.send(UiEvent::MetadataRefreshFailed {
+                        profile_id,
+                        error: error.to_string(),
+                    });
+                }
+            }
+        });
     }
 
     fn stop_profile(&mut self, profile_id: &str) {
@@ -581,13 +648,9 @@ impl eframe::App for OutletDesktopApp {
                 ui.label("Server URL");
                 ui.text_edit_singleline(&mut self.new_server_url);
             });
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                ui.text_edit_singleline(&mut self.new_name);
-            });
             if ui.button("Pair new outlet").clicked() {
                 self.last_error.clear();
-                self.start_pairing(None, self.new_server_url.clone(), self.new_name.clone());
+                self.start_pairing(None, self.new_server_url.clone());
             }
 
             if let Some(pairing) = &self.pairing {
@@ -692,7 +755,7 @@ impl eframe::App for OutletDesktopApp {
                             .cloned()
                         {
                             self.stop_profile(&id);
-                            self.start_pairing(Some(id), profile.server_url, profile.name);
+                            self.start_pairing(Some(id), profile.server_url);
                         }
                     }
                     ProfileAction::ToggleAutoStart(id, value) => self.set_auto_start(&id, value),
@@ -777,6 +840,18 @@ fn now_timestamp() -> String {
 
 fn normalize_server_url(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
+}
+
+async fn fetch_outlet_tool_name(server_url: &str, token: &str) -> Result<String> {
+    let payload = OutletMetadataClient::new(server_url, token).fetch().await?;
+    let name = payload.tool_instance_name().trim().to_string();
+    if name.is_empty() {
+        Err(anyhow!(
+            "Outlet metadata does not include tool instance name."
+        ))
+    } else {
+        Ok(name)
+    }
 }
 
 fn first_non_empty(values: &[&str]) -> String {

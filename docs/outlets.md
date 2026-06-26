@@ -89,6 +89,32 @@ The token is not a runner identity. Multiple processes can know the same token, 
 server still needs `runner_id` and `runner_session_id` to manage presence and
 single-runner semantics.
 
+## Metadata Protocol
+
+The runner may fetch server-owned outlet metadata with `GET /api/outlet/metadata/`.
+This endpoint is authenticated with the same outlet token as the runtime protocol.
+
+The metadata endpoint is intentionally separate from the poll loop. It is meant for
+setup, startup refresh, profile display, and future low-frequency metadata needs. A
+runner should not depend on metadata being returned from `/api/outlet/poll/`.
+
+The response includes the outlet tool instance identity and display name:
+
+```json
+{
+  "status": "ok",
+  "metadata": {
+    "tool_instance": {
+      "id": 123,
+      "type": "outlet",
+      "name": "Shell Outlet"
+    }
+  }
+}
+```
+
+The response must not expose secrets, owner data, or live runner metadata.
+
 ## Poll Protocol
 
 The runner polls the server for work with a payload containing:

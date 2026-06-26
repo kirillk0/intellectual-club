@@ -136,6 +136,42 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert refreshed.last_discovery_error == ""
   end
 
+  test "GET /api/outlet/metadata returns outlet tool instance metadata" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Metadata API outlet",
+        secrets: %{"token" => "runner-metadata-api"}
+      })
+
+    response = metadata_outlet_response("runner-metadata-api", 200)
+
+    assert response["status"] == "ok"
+
+    assert response["metadata"]["tool_instance"] == %{
+             "id" => tool_instance.id,
+             "type" => "outlet",
+             "name" => "Metadata API outlet"
+           }
+
+    refute Map.has_key?(response["metadata"]["tool_instance"], "secrets")
+    refute Map.has_key?(response["metadata"]["tool_instance"], "owner_id")
+    refute Map.has_key?(response["metadata"], "runner")
+  end
+
+  test "GET /api/outlet/metadata rejects missing or invalid tokens" do
+    missing_response =
+      build_conn()
+      |> get("/api/outlet/metadata/")
+      |> json_response(401)
+
+    invalid_response = metadata_outlet_response("missing-token", 401)
+
+    assert missing_response["error"] == "Unauthorized."
+    assert invalid_response["error"] == "Unauthorized."
+  end
+
   test "POST /api/outlet/poll replaces an online session for the same runner id" do
     reset_runtime!()
 
@@ -438,6 +474,13 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     build_conn()
     |> put_req_header("x-outlet-token", token)
     |> post("/api/outlet/complete/", payload)
+    |> json_response(status)
+  end
+
+  defp metadata_outlet_response(token, status) when is_binary(token) and is_integer(status) do
+    build_conn()
+    |> put_req_header("x-outlet-token", token)
+    |> get("/api/outlet/metadata/")
     |> json_response(status)
   end
 
