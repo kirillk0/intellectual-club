@@ -70,7 +70,9 @@ const translatePatternRu = (key: string): string | null => {
     Tags: 'Теги',
     'Config tags': 'Теги конфигураций',
     Files: 'Файлы',
+    Functions: 'Функции',
     'First messages': 'Первые сообщения',
+    Groups: 'Группы',
   };
 
   const tokenLabel = (value: string) => {
@@ -117,7 +119,7 @@ const translatePatternRu = (key: string): string | null => {
 
   const patterns: Array<[RegExp, (match: RegExpExecArray) => string]> = [
     [/^Add \((\d+)\)$/u, (match) => `${ruMessages.Add ?? 'Add'} (${match[1]})`],
-    [/^(Blocks|Tools|Tags|Config tags|Files|First messages) \((\d+)\)$/u, (match) =>
+    [/^(Blocks|Tools|Tags|Config tags|Files|Functions|First messages|Groups) \((\d+)\)$/u, (match) =>
       `${countedLabels[match[1]] ?? match[1]} (${match[2]})`],
     [/^(Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
     [/^· (Created|Updated) (.+)$/u, (match) => `· ${ruMessages[match[1]] ?? match[1]} ${match[2]}`],

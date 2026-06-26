@@ -13,10 +13,10 @@
 
     <div class="tabs" style="margin-bottom: 12px">
       <button class="tab" :class="{ active: step === 'groups' }" type="button" @click="step = 'groups'">
-        Groups
+        Groups ({{ groupsTabCount }})
       </button>
       <button class="tab" :class="{ active: step === 'tools' }" type="button" @click="step = 'tools'">
-        Tools
+        Tools ({{ toolsTabCount }})
       </button>
     </div>
 
@@ -170,6 +170,8 @@ const confirmSharedTools = ref(false);
 
 const persistedTools = computed(() => (props.toolBindings || []).filter((item) => typeof item.id === 'number' && item.id > 0));
 const hasUnsavedTools = computed(() => (props.toolBindings || []).some((item) => typeof item.id !== 'number' || item.id <= 0));
+const groupsTabCount = computed(() => selected.value.length);
+const toolsTabCount = computed(() => persistedTools.value.length);
 
 const toolLabel = (binding: BotShareToolBinding) => {
   const name = (binding.tool_instance_name || '').trim() || `Tool ${binding.id}`;

@@ -87,7 +87,7 @@
             type="button"
             @click="toolTab = 'functions'"
           >
-            Functions
+            Functions ({{ functionsTabCount }})
           </button>
         </div>
 
@@ -860,6 +860,7 @@ const goList = editor.goList;
 
 const toolTab = ref<'settings' | 'description' | 'credentials' | 'functions'>('settings');
 const descriptionHasText = computed(() => String(form.description || '').trim() !== '');
+const functionsTabCount = computed(() => functions.value.length);
 
 function handleNameInput() {
   errors.clearField('name');

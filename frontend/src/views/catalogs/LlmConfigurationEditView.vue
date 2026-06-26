@@ -99,10 +99,10 @@
             Parameters
           </button>
           <button class="tab" :class="{ active: configTab === 'tags' }" type="button" @click="configTab = 'tags'">
-            Tags
+            Tags ({{ tagsTabCount }})
           </button>
           <button class="tab" :class="{ active: configTab === 'blocks' }" type="button" @click="configTab = 'blocks'">
-            Blocks
+            Blocks ({{ blocksTabCount }})
           </button>
         </div>
 
@@ -667,6 +667,8 @@ const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const configTab = ref<'settings' | 'parameters' | 'tags' | 'blocks'>('settings');
+const tagsTabCount = computed(() => draftTagIds.value.length);
+const blocksTabCount = computed(() => bindings.draft.value.length);
 const parametersEditorReadonly = computed(
   () => sharedReadonly.value || loading.value || saving.value || Boolean(loadError.value)
 );
