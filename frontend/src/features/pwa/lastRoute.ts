@@ -4,6 +4,12 @@ import { isStandalonePwa } from '@/pwa';
 const STORAGE_KEY = 'intellectual-club:pwa:last-route';
 const CHAT_LIST_PATH = '/chats';
 const EXCLUDED_ROUTE_NAMES = new Set(['login', 'outlet-connect']);
+const LAST_ROUTE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+type StoredPwaRoute = {
+  fullPath: string;
+  visitedAt: number;
+};
 
 let initialRestoreChecked = false;
 
@@ -56,6 +62,31 @@ const routeStoredPath = (route: RouteLocationNormalizedLoaded): string | null =>
   return safeStoredPath(route.fullPath);
 };
 
+const parseStoredRoute = (raw: string | null): StoredPwaRoute | null => {
+  if (!raw) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const { fullPath, visitedAt } = parsed as Record<string, unknown>;
+    if (typeof fullPath !== 'string') return null;
+    if (typeof visitedAt !== 'number' || !Number.isFinite(visitedAt)) return null;
+
+    const safeFullPath = safeStoredPath(fullPath);
+    if (!safeFullPath) return null;
+
+    return { fullPath: safeFullPath, visitedAt };
+  } catch {
+    return null;
+  }
+};
+
+const storedRouteFresh = (visitedAt: number) => {
+  const age = Date.now() - visitedAt;
+  return age >= 0 && age <= LAST_ROUTE_MAX_AGE_MS;
+};
+
 export const restorePwaRouteOnLaunch = (route: RouteLocationNormalizedLoaded): string | null => {
   if (initialRestoreChecked) return null;
   initialRestoreChecked = true;
@@ -64,7 +95,18 @@ export const restorePwaRouteOnLaunch = (route: RouteLocationNormalizedLoaded): s
   if (route.fullPath !== '/') return null;
 
   try {
-    return safeStoredPath(window.localStorage.getItem(STORAGE_KEY));
+    const storedRoute = parseStoredRoute(window.localStorage.getItem(STORAGE_KEY));
+    if (!storedRoute) {
+      window.localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+
+    if (!storedRouteFresh(storedRoute.visitedAt)) {
+      window.localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+
+    return storedRoute.fullPath;
   } catch {
     return null;
   }
@@ -78,7 +120,8 @@ export const rememberPwaRoute = (route: RouteLocationNormalizedLoaded, authentic
   if (!fullPath) return;
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, fullPath);
+    const payload: StoredPwaRoute = { fullPath, visitedAt: Date.now() };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // Ignore private mode storage failures.
   }
