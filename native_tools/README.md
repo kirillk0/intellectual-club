@@ -5,6 +5,7 @@ This directory contains native helper tools for Intellectual Club.
 The Rust workspace builds all native binaries together:
 
 - `openai-oauth` — OpenAI OAuth PKCE helper with token refresh support
+- `intellectual-club-launcher` — desktop/CLI launcher that runs embedded PostgreSQL and the Phoenix release
 - `outlet-core` — shared HTTP transport, pairing, file helpers, runner loop, and provider interfaces
 - `outlet-shell` — reusable shell outlet tools
 - `outlet-shell-daemon` — headless binary for containers and server environments
@@ -36,6 +37,24 @@ Run OpenAI OAuth:
 cargo run --manifest-path native_tools/Cargo.toml -p openai-oauth
 cargo run --manifest-path native_tools/Cargo.toml -p openai-oauth -- --refresh '<refresh_token>'
 ```
+
+Run the desktop launcher GUI from a dev artifact bundle:
+
+```bash
+./build/dev/bin/intellectual-club-launcher
+```
+
+Run the launcher from CLI:
+
+```bash
+./build/dev/bin/intellectual-club-launcher start
+./build/dev/bin/intellectual-club-launcher status --json
+./build/dev/bin/intellectual-club-launcher backup
+./build/dev/bin/intellectual-club-launcher stop
+```
+
+The launcher stores config, PostgreSQL data, backups, runtime status, and cached PostgreSQL
+installations in OS-specific app data directories via `directories::ProjectDirs`.
 
 ## Shell Outlet Image
 
