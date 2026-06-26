@@ -45,42 +45,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
-  def admin_user(%User{} = user) do
-    %{
-      id: user.id,
-      username: user.username,
-      is_admin: user.is_admin,
-      created_at: datetime_iso(user.created_at),
-      updated_at: datetime_iso(user.updated_at),
-      groups: user.groups |> loaded_records() |> Enum.map(&admin_user_group_summary/1)
-    }
-  end
-
-  def admin_user_summary(%User{} = user) do
-    %{
-      id: user.id,
-      username: user.username,
-      is_admin: user.is_admin
-    }
-  end
-
-  def admin_user_group(%UserGroup{} = group) do
-    %{
-      id: group.id,
-      name: group.name,
-      created_at: datetime_iso(group.created_at),
-      updated_at: datetime_iso(group.updated_at),
-      users: group.users |> loaded_records() |> Enum.map(&admin_user_summary/1)
-    }
-  end
-
-  def admin_user_group_summary(%UserGroup{} = group) do
-    %{
-      id: group.id,
-      name: group.name
-    }
-  end
-
   def user_group_summary(%UserGroup{} = group) do
     %{
       id: group.id,
@@ -563,10 +527,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp loaded_string(value) when is_binary(value), do: value
   defp loaded_string(nil), do: ""
   defp loaded_string(value), do: to_string(value)
-
-  defp loaded_records(%Ash.NotLoaded{}), do: []
-  defp loaded_records(values) when is_list(values), do: values
-  defp loaded_records(_other), do: []
 
   defp loaded_ids(%Ash.NotLoaded{}), do: []
 

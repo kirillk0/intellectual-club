@@ -69,7 +69,7 @@ import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { api } from '@/api/client';
+import { getAdminUserGroup, listAdminUserGroups } from '@/api/adminAshApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
@@ -142,8 +142,7 @@ function normalizeGroupRow(value: unknown): AdminUserGroup | null {
 
 async function fetchGroupRow(groupId: number): Promise<AdminUserGroup | null> {
   try {
-    const payload = await api.get<{ group: AdminUserGroup }>(`/api/bff/admin/user-groups/${groupId}`);
-    return normalizeGroupRow(payload.group);
+    return normalizeGroupRow(await getAdminUserGroup(groupId));
   } catch (error) {
     console.warn('Failed to refresh user group row.', error);
     return null;
@@ -167,8 +166,7 @@ async function loadGroups() {
   error.value = null;
 
   try {
-    const payload = await api.get<{ groups: AdminUserGroup[] }>('/api/bff/admin/user-groups');
-    groups.value = Array.isArray(payload.groups) ? payload.groups : [];
+    groups.value = await listAdminUserGroups();
   } catch (e) {
     console.error(e);
     error.value = e instanceof Error ? e.message : 'Failed to load groups.';

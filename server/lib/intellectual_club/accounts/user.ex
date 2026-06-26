@@ -58,8 +58,8 @@ defmodule IntellectualClub.Accounts.User do
       constraints(trim?: true, allow_empty?: false)
     end
 
-    create_timestamp(:created_at)
-    update_timestamp(:updated_at)
+    create_timestamp(:created_at, public?: true)
+    update_timestamp(:updated_at, public?: true)
   end
 
   relationships do
@@ -75,6 +75,7 @@ defmodule IntellectualClub.Accounts.User do
       through(IntellectualClub.Accounts.UserGroupMembership)
       source_attribute_on_join_resource(:user_id)
       destination_attribute_on_join_resource(:user_group_id)
+      public?(true)
     end
   end
 
@@ -84,6 +85,7 @@ defmodule IntellectualClub.Accounts.User do
 
   json_api do
     type "users"
+    includes([:groups])
   end
 
   admin do

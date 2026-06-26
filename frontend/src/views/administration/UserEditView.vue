@@ -149,7 +149,15 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
-import { api, isHttpError } from '@/api/client';
+import { isHttpError } from '@/api/client';
+import {
+  createAdminUser,
+  deleteAdminUser,
+  getAdminUser,
+  listAdminUserGroups,
+  resetAdminUserPassword,
+  updateAdminUser,
+} from '@/api/adminAshApi';
 import { fetchCurrentUser, useSessionAuth } from '@/features/auth/session';
 import {
   appendRecordsetId,
@@ -161,7 +169,12 @@ import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompa
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
-import { toIntId } from '@/api/jsonApi';
+import {
+  fieldErrorsFromJsonApiErrors,
+  formErrorsFromJsonApiErrors,
+  getJsonApiErrors,
+  toIntId,
+} from '@/api/jsonApi';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUser, AdminUserGroup, AdminUserGroupSummary } from '@/types/api';
 
@@ -235,6 +248,13 @@ function createErrorState() {
 
   const setFromHttpError = (error: unknown) => {
     if (!isHttpError(error)) return false;
+
+    const jsonApiErrors = getJsonApiErrors(error);
+    if (jsonApiErrors?.length) {
+      formErrors.value = formErrorsFromJsonApiErrors(jsonApiErrors);
+      fieldErrors.value = fieldErrorsFromJsonApiErrors(jsonApiErrors);
+      return true;
+    }
 
     const body = error.bodyJson;
     const nextFieldErrors: ErrorMap = {};
@@ -445,6 +465,15 @@ function extractErrorMessage(error: unknown, fallback: string) {
     return error instanceof Error ? error.message : fallback;
   }
 
+  const jsonApiErrors = getJsonApiErrors(error);
+  if (jsonApiErrors?.length) {
+    const message = jsonApiErrors
+      .map((item) => String(item.detail || item.title || '').trim())
+      .filter((item) => item !== '')
+      .join(' ');
+    if (message) return message;
+  }
+
   const body = error.bodyJson;
   if (body && typeof body === 'object') {
     const payload = body as { error?: unknown; detail?: unknown; errors?: unknown };
@@ -477,8 +506,7 @@ async function load() {
 
   try {
     try {
-      const groupsPayload = await api.get<{ groups: AdminUserGroup[] }>('/api/bff/admin/user-groups');
-      availableGroups.value = normalizeGroupOptions(Array.isArray(groupsPayload.groups) ? groupsPayload.groups : []);
+      availableGroups.value = normalizeGroupOptions(await listAdminUserGroups());
     } catch (error) {
       console.error(error);
       availableGroups.value = [];
@@ -501,8 +529,7 @@ async function load() {
       return;
     }
 
-    const payload = await api.get<{ user: AdminUser }>(`/api/bff/admin/users/${numericId.value}`);
-    applyUser(payload.user);
+    applyUser(await getAdminUser(numericId.value));
     resetPasswordForm();
   } catch (error) {
     console.error(error);
@@ -536,7 +563,7 @@ async function save() {
     const previousGroupIds = [...base.value.group_ids];
 
     if (isNew.value) {
-      const payload = await api.post<{ user: AdminUser }>('/api/bff/admin/users', {
+      const createdUser = await createAdminUser({
         username: form.username,
         is_admin: form.is_admin,
         group_ids: form.group_ids,
@@ -544,7 +571,6 @@ async function save() {
         password_confirmation: passwordForm.password_confirmation,
       });
 
-      const createdUser = payload.user;
       applyUser(createdUser);
       publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: createdUser.id, row: createdUser });
       publishTouchedGroups(previousGroupIds, form.group_ids);
@@ -559,16 +585,16 @@ async function save() {
     } else {
       if (numericId.value === undefined) return;
 
-      const payload = await api.patch<{ user: AdminUser }>(`/api/bff/admin/users/${numericId.value}`, {
+      const updatedUser = await updateAdminUser(numericId.value, {
         username: form.username,
         is_admin: form.is_admin,
         group_ids: form.group_ids,
       });
 
-      applyUser(payload.user);
-      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: payload.user.id, row: payload.user });
+      applyUser(updatedUser);
+      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: updatedUser.id, row: updatedUser });
       publishTouchedGroups(previousGroupIds, form.group_ids);
-      await syncCurrentSessionIfNeeded(payload.user);
+      await syncCurrentSessionIfNeeded(updatedUser);
     }
   } catch (error) {
     if (!saveErrors.setFromHttpError(error)) {
@@ -588,7 +614,7 @@ async function remove() {
 
   try {
     const previousGroupIds = [...base.value.group_ids];
-    await api.del(`/api/bff/admin/users/${numericId.value}`);
+    await deleteAdminUser(numericId.value);
     publishEntityChange({ kind: 'admin-user', operation: 'delete', id: numericId.value });
     publishTouchedGroups(previousGroupIds, []);
 
@@ -622,16 +648,13 @@ async function resetPassword() {
   resettingPassword.value = true;
 
   try {
-    const payload = await api.post<{ user: AdminUser }>(
-      `/api/bff/admin/users/${numericId.value}/reset-password`,
-      {
-        password: passwordForm.password,
-        password_confirmation: passwordForm.password_confirmation,
-      }
-    );
+    const updatedUser = await resetAdminUserPassword(numericId.value, {
+      password: passwordForm.password,
+      password_confirmation: passwordForm.password_confirmation,
+    });
 
-    userMeta.updated_at = payload.user.updated_at ?? userMeta.updated_at;
-    publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: payload.user.id, row: payload.user });
+    userMeta.updated_at = updatedUser.updated_at ?? userMeta.updated_at;
+    publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: updatedUser.id, row: updatedUser });
     resetPasswordForm();
   } catch (error) {
     if (!resetErrors.setFromHttpError(error)) {

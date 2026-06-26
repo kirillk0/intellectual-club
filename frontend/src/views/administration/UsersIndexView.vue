@@ -71,7 +71,7 @@ import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { api } from '@/api/client';
+import { listAdminUsers } from '@/api/adminAshApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useSessionAuth } from '@/features/auth/session';
@@ -153,8 +153,7 @@ async function loadUsers() {
   error.value = null;
 
   try {
-    const payload = await api.get<{ users: AdminUser[] }>('/api/bff/admin/users');
-    users.value = Array.isArray(payload.users) ? payload.users : [];
+    users.value = await listAdminUsers();
   } catch (e) {
     console.error(e);
     error.value = e instanceof Error ? e.message : 'Failed to load users.';

@@ -104,19 +104,6 @@ defmodule IntellectualClubWeb.Router do
     post "/web-push/subscriptions", WebPushController, :upsert_subscription
     delete "/web-push/subscriptions", WebPushController, :delete_subscription
 
-    get "/admin/users", AdminUsersController, :index
-    get "/admin/users/:id", AdminUsersController, :show
-    post "/admin/users", AdminUsersController, :create
-    patch "/admin/users/:id", AdminUsersController, :update
-    delete "/admin/users/:id", AdminUsersController, :delete
-    post "/admin/users/:id/reset-password", AdminUsersController, :reset_password
-
-    get "/admin/user-groups", AdminUserGroupsController, :index
-    get "/admin/user-groups/:id", AdminUserGroupsController, :show
-    post "/admin/user-groups", AdminUserGroupsController, :create
-    patch "/admin/user-groups/:id", AdminUserGroupsController, :update
-    delete "/admin/user-groups/:id", AdminUserGroupsController, :delete
-
     get "/admin/web-push-settings", AdminWebPushSettingsController, :show
     patch "/admin/web-push-settings", AdminWebPushSettingsController, :update
 

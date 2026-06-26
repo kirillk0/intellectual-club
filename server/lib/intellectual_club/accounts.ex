@@ -21,6 +21,18 @@ defmodule IntellectualClub.Accounts do
       base_route "/users", IntellectualClub.Accounts.User do
         index :read
         get(:read)
+        post(:create)
+        patch(:update)
+        patch(:reset_password, route: "/:id/reset-password")
+        delete(:destroy)
+      end
+
+      base_route "/user-groups", IntellectualClub.Accounts.UserGroup do
+        index :admin_read
+        get(:admin_read)
+        post(:create)
+        patch(:update)
+        delete(:destroy)
       end
 
       base_route "/user-knowledge-blocks", IntellectualClub.Accounts.UserKnowledgeBlock do

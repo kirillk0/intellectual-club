@@ -5,7 +5,7 @@ defmodule IntellectualClub.Accounts.UserGroup do
 
   use IntellectualClub.Resource,
     domain: IntellectualClub.Accounts,
-    extensions: [AshAdmin.Resource],
+    extensions: [AshAdmin.Resource, AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
   sqlite do
@@ -23,11 +23,12 @@ defmodule IntellectualClub.Accounts.UserGroup do
 
     attribute :name, :string do
       allow_nil?(false)
+      public?(true)
       constraints(min_length: 1, max_length: 128, trim?: true, allow_empty?: false)
     end
 
-    create_timestamp(:created_at)
-    update_timestamp(:updated_at)
+    create_timestamp(:created_at, public?: true)
+    update_timestamp(:updated_at, public?: true)
   end
 
   relationships do
@@ -51,11 +52,17 @@ defmodule IntellectualClub.Accounts.UserGroup do
       through(IntellectualClub.Accounts.UserGroupMembership)
       source_attribute_on_join_resource(:user_group_id)
       destination_attribute_on_join_resource(:user_id)
+      public?(true)
     end
   end
 
   identities do
     identity(:unique_name, [:name])
+  end
+
+  json_api do
+    type "user-groups"
+    includes([:users])
   end
 
   admin do
@@ -71,6 +78,10 @@ defmodule IntellectualClub.Accounts.UserGroup do
 
   actions do
     defaults([:read])
+
+    read :admin_read do
+      description("Read user groups as an admin")
+    end
 
     create :create do
       accept([:name])
@@ -103,6 +114,11 @@ defmodule IntellectualClub.Accounts.UserGroup do
   end
 
   policies do
+    policy action(:admin_read) do
+      authorize_if actor_attribute_equals(:is_admin, true)
+      forbid_if always()
+    end
+
     policy action_type(:read) do
       authorize_if actor_attribute_equals(:is_admin, true)
       authorize_if expr(exists(memberships, user_id == ^actor(:id)))

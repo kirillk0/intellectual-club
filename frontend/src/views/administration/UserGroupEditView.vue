@@ -73,7 +73,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
-import { api, isHttpError } from '@/api/client';
+import { isHttpError } from '@/api/client';
+import {
+  createAdminUserGroup,
+  deleteAdminUserGroup,
+  getAdminUserGroup,
+  listAdminUsers,
+  updateAdminUserGroup,
+} from '@/api/adminAshApi';
 import {
   appendRecordsetId,
   removeRecordsetId,
@@ -84,7 +91,12 @@ import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompa
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
-import { toIntId } from '@/api/jsonApi';
+import {
+  fieldErrorsFromJsonApiErrors,
+  formErrorsFromJsonApiErrors,
+  getJsonApiErrors,
+  toIntId,
+} from '@/api/jsonApi';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUser, AdminUserGroup } from '@/types/api';
 
@@ -159,6 +171,13 @@ function createErrorState() {
   const setFromHttpError = (error: unknown) => {
     if (!isHttpError(error)) return false;
 
+    const jsonApiErrors = getJsonApiErrors(error);
+    if (jsonApiErrors?.length) {
+      formErrors.value = formErrorsFromJsonApiErrors(jsonApiErrors);
+      fieldErrors.value = fieldErrorsFromJsonApiErrors(jsonApiErrors);
+      return true;
+    }
+
     const body = error.bodyJson;
     const nextFieldErrors: ErrorMap = {};
     const nextFormErrors: string[] = [];
@@ -206,6 +225,15 @@ function createErrorState() {
 function extractErrorMessage(error: unknown, fallback: string) {
   if (!isHttpError(error)) {
     return error instanceof Error ? error.message : fallback;
+  }
+
+  const jsonApiErrors = getJsonApiErrors(error);
+  if (jsonApiErrors?.length) {
+    const message = jsonApiErrors
+      .map((item) => String(item.detail || item.title || '').trim())
+      .filter((item) => item !== '')
+      .join(' ');
+    if (message) return message;
   }
 
   const body = error.bodyJson;
@@ -340,8 +368,7 @@ function detailValue(value?: string | null) {
 
 async function loadUsers() {
   try {
-    const payload = await api.get<{ users: AdminUser[] }>('/api/bff/admin/users');
-    availableUsers.value = normalizeUsers(Array.isArray(payload.users) ? payload.users : []);
+    availableUsers.value = normalizeUsers(await listAdminUsers());
     usersError.value = null;
   } catch (error) {
     console.error(error);
@@ -372,8 +399,7 @@ async function load() {
       return;
     }
 
-    const payload = await api.get<{ group: AdminUserGroup }>(`/api/bff/admin/user-groups/${numericId.value}`);
-    applyGroup(payload.group);
+    applyGroup(await getAdminUserGroup(numericId.value));
   } catch (error) {
     console.error(error);
     loadError.value = extractErrorMessage(error, 'Failed to load group.');
@@ -390,12 +416,11 @@ async function save() {
 
   try {
     if (isNew.value) {
-      const payload = await api.post<{ group: AdminUserGroup }>('/api/bff/admin/user-groups', {
+      const createdGroup = await createAdminUserGroup({
         name: form.name,
         user_ids: form.user_ids,
       });
 
-      const createdGroup = payload.group;
       applyGroup(createdGroup);
       publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: createdGroup.id, row: createdGroup });
 
@@ -408,13 +433,13 @@ async function save() {
     } else {
       if (numericId.value === undefined) return;
 
-      const payload = await api.patch<{ group: AdminUserGroup }>(`/api/bff/admin/user-groups/${numericId.value}`, {
+      const updatedGroup = await updateAdminUserGroup(numericId.value, {
         name: form.name,
         user_ids: form.user_ids,
       });
 
-      applyGroup(payload.group);
-      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: payload.group.id, row: payload.group });
+      applyGroup(updatedGroup);
+      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: updatedGroup.id, row: updatedGroup });
     }
   } catch (error) {
     if (!saveErrors.setFromHttpError(error)) {
@@ -433,7 +458,7 @@ async function remove() {
   deleting.value = true;
 
   try {
-    await api.del(`/api/bff/admin/user-groups/${numericId.value}`);
+    await deleteAdminUserGroup(numericId.value);
     publishEntityChange({ kind: 'admin-user-group', operation: 'delete', id: numericId.value });
 
     if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
