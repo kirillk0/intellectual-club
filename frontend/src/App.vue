@@ -2,54 +2,117 @@
   <div class="app-shell">
     <header ref="appHeader" class="app-header compact" v-show="!isLoginRoute">
       <button class="menu-toggle" type="button" @click="toggleMenu" aria-label="Open menu">☰</button>
-      <RouterLink class="app-logo" to="/chats" aria-label="Go to home" title="Go to home" @click="closeMenu">
-        <img class="app-logo__mark" :src="appLogoUrl" alt="" aria-hidden="true" />
-        <span class="app-logo__text" data-i18n-ignore>Intellectual Club</span>
+      <RouterLink to="/chats" custom v-slot="{ href, navigate, route: targetRoute }">
+        <a
+          class="app-logo"
+          :href="href"
+          aria-label="Go to home"
+          title="Go to home"
+          @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+        >
+          <img class="app-logo__mark" :src="appLogoUrl" alt="" aria-hidden="true" />
+          <span class="app-logo__text" data-i18n-ignore>Intellectual Club</span>
+        </a>
       </RouterLink>
       <nav class="app-nav" :class="{ open: mobileMenuOpen }">
-        <RouterLink to="/chats" custom v-slot="{ href, isActive, isExactActive, navigate }">
+        <RouterLink to="/chats" custom v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }">
           <a
             :href="href"
             :class="{
               'router-link-active': isActive,
               'router-link-exact-active': isExactActive,
             }"
-            @click="handleChatsNavigation($event, navigate)"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
           >
             <SvgIcon class="app-nav__icon" name="chat" />
             Chats
           </a>
         </RouterLink>
-        <RouterLink to="/catalogs/bots">
-          <SvgIcon class="app-nav__icon" name="bot" />
-          Bots
+        <RouterLink to="/catalogs/bots" custom v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }">
+          <a
+            :href="href"
+            :class="{
+              'router-link-active': isActive,
+              'router-link-exact-active': isExactActive,
+            }"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+          >
+            <SvgIcon class="app-nav__icon" name="bot" />
+            Bots
+          </a>
         </RouterLink>
-        <RouterLink to="/catalogs/knowledge-blocks">
-          <SvgIcon class="app-nav__icon" name="document" />
-          Knowledge Blocks
+        <RouterLink
+          to="/catalogs/knowledge-blocks"
+          custom
+          v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }"
+        >
+          <a
+            :href="href"
+            :class="{
+              'router-link-active': isActive,
+              'router-link-exact-active': isExactActive,
+            }"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+          >
+            <SvgIcon class="app-nav__icon" name="document" />
+            Knowledge Blocks
+          </a>
         </RouterLink>
-        <RouterLink to="/catalogs/tools">
-          <SvgIcon class="app-nav__icon" name="wrench" />
-          Tools
+        <RouterLink to="/catalogs/tools" custom v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }">
+          <a
+            :href="href"
+            :class="{
+              'router-link-active': isActive,
+              'router-link-exact-active': isExactActive,
+            }"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+          >
+            <SvgIcon class="app-nav__icon" name="wrench" />
+            Tools
+          </a>
         </RouterLink>
-        <RouterLink to="/catalogs/llm-configurations" custom v-slot="{ href, navigate }">
+        <RouterLink to="/catalogs/llm-configurations" custom v-slot="{ href, navigate, route: targetRoute }">
           <a
             :href="href"
             :class="{ 'router-link-active': isLlmConfigurationRoute }"
-            @click="navigate"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
           >
             <SvgIcon class="app-nav__icon" name="sliders" />
             LLM Configuration
           </a>
         </RouterLink>
-        <RouterLink v-if="currentUser?.is_admin" to="/administration/users">
-          <SvgIcon class="app-nav__icon" name="shield" />
-          Administration
+        <RouterLink
+          v-if="currentUser?.is_admin"
+          to="/administration/users"
+          custom
+          v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }"
+        >
+          <a
+            :href="href"
+            :class="{
+              'router-link-active': isActive,
+              'router-link-exact-active': isExactActive,
+            }"
+            @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+          >
+            <SvgIcon class="app-nav__icon" name="shield" />
+            Administration
+          </a>
         </RouterLink>
         <div class="user-slot" v-if="currentUser">
-          <RouterLink class="user-link" to="/settings">
-            <SvgIcon class="app-nav__icon" name="user" />
-            {{ currentUser.username }}
+          <RouterLink to="/settings" custom v-slot="{ href, isActive, isExactActive, navigate, route: targetRoute }">
+            <a
+              class="user-link"
+              :href="href"
+              :class="{
+                'router-link-active': isActive,
+                'router-link-exact-active': isExactActive,
+              }"
+              @click="handleMenuNavigation($event, navigate, targetRoute.fullPath)"
+            >
+              <SvgIcon class="app-nav__icon" name="user" />
+              {{ currentUser.username }}
+            </a>
           </RouterLink>
           <button
             type="button"
@@ -78,7 +141,7 @@
     </section>
 
     <main class="app-main" :class="{ 'app-main--chat': isChatRoute, 'app-main--login': isLoginRoute }">
-      <StackRouterView />
+      <StackRouterView :reopen-key="routeReopenKey" />
     </main>
   </div>
 </template>
@@ -99,8 +162,6 @@ import { effectiveLocale, translate } from '@/i18n';
 import appLogoUrl from '@/assets/icon_full_size.png';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
-
-const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
 
 const router = useRouter();
 const route = useRoute();
@@ -129,6 +190,7 @@ const resolveRouteTitle = (targetRoute: RouteLocationNormalizedLoaded) => {
 useDocumentTitle(computed(() => resolveRouteTitle(route)));
 
 const mobileMenuOpen = ref(false);
+const routeReopenKey = ref(0);
 
 const toggleMenu = () => {
   mobileMenuOpen.value = !mobileMenuOpen.value;
@@ -138,11 +200,20 @@ const closeMenu = () => {
   mobileMenuOpen.value = false;
 };
 
-const handleChatsNavigation = (event: MouseEvent, navigate: (event?: MouseEvent) => unknown) => {
-  if (route.name === 'chats') {
+const shouldLetBrowserHandleNavigation = (event: MouseEvent) =>
+  event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey;
+
+const handleMenuNavigation = (
+  event: MouseEvent,
+  navigate: (event?: MouseEvent) => unknown,
+  targetFullPath: string
+) => {
+  if (shouldLetBrowserHandleNavigation(event)) return;
+
+  if (router.currentRoute.value.fullPath === targetFullPath) {
     event.preventDefault();
     closeMenu();
-    window.dispatchEvent(new CustomEvent(CHAT_LIST_RESET_EVENT));
+    routeReopenKey.value += 1;
     return;
   }
 

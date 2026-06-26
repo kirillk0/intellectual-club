@@ -22,6 +22,8 @@ import { RouterView, useRoute, type RouteLocationNormalizedLoaded } from 'vue-ro
 import StackLayerProvider from '@/components/StackLayerProvider.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 
+const props = defineProps<{ reopenKey?: number }>();
+
 const route = useRoute();
 const stack = useNavigationStack();
 const stackVisible = computed(() => stack.active.value || stack.pendingPush.value !== null);
@@ -51,7 +53,8 @@ const routeViewIdentity = (candidate: RouteLocationNormalizedLoaded) => {
   return `${name}::${matched}`;
 };
 
-const layerKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) => `${depth}:${routeViewIdentity(layerRoute)}`;
+const layerKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) =>
+  `${depth}:${routeViewIdentity(layerRoute)}:${depth === lastIndex.value ? props.reopenKey ?? 0 : 0}`;
 
 const baseLayer = ref<RouteLocationNormalizedLoaded>(cloneRoute(route));
 const needsBaseLayerSync = (candidate: RouteLocationNormalizedLoaded) =>

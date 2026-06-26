@@ -244,7 +244,6 @@ type ChatListIdleStatePayload = {
 
 type GenerationState = 'generating' | 'reconnecting' | 'done';
 
-const CHAT_LIST_RESET_EVENT = 'chat-list:reset-to-first-page';
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
 const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
 const CHAT_LIST_IDLE_POLL_DELAY_MS = 30_000;
@@ -911,12 +910,6 @@ function goToNextPage() {
   void loadChats();
 }
 
-function handleChatListReset() {
-  if (pageNumber.value <= 1) return;
-  pageNumber.value = 1;
-  void loadChats();
-}
-
 let chatSearchTimer: number | null = null;
 let chatSearchSeq = 0;
 let chatSearchAbortController: AbortController | null = null;
@@ -1371,7 +1364,6 @@ onMounted(() => {
     void runChatSearch(chatSearchTerm.value.trim());
   }
   window.addEventListener('resize', updateIsMobile);
-  window.addEventListener(CHAT_LIST_RESET_EVENT, handleChatListReset);
   document.addEventListener('visibilitychange', handleChatListVisibilityChange);
   window.addEventListener('pageshow', handleChatListPageShow);
   window.addEventListener('focus', handleChatListFocus);
@@ -1379,7 +1371,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateIsMobile);
-  window.removeEventListener(CHAT_LIST_RESET_EVENT, handleChatListReset);
   document.removeEventListener('visibilitychange', handleChatListVisibilityChange);
   window.removeEventListener('pageshow', handleChatListPageShow);
   window.removeEventListener('focus', handleChatListFocus);
