@@ -41,6 +41,7 @@ type Params = {
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
   draftReady?: ComputedRef<boolean>;
+  autoScrollEnabled?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
   getOpenWorkingPollRequest?: (messageId: number) => string | null;
   applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
@@ -101,6 +102,8 @@ export function useChatComposerRuntime(params: Params) {
       window.requestAnimationFrame(() => resolve());
     });
 
+  const canAutoScroll = () => params.autoScrollEnabled?.value ?? true;
+
   const getPageScroller = () => document.scrollingElement || document.documentElement;
 
   const getMaxPageScrollTop = () => {
@@ -109,15 +112,19 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const isPageScrolledToBottom = () => {
+    if (!canAutoScroll()) return false;
     const scroller = getPageScroller();
     return getMaxPageScrollTop() - scroller.scrollTop <= 8;
   };
 
   const keepPageScrolledToBottom = async () => {
+    if (!canAutoScroll()) return;
     await nextTick();
     await waitForAnimationFrame();
+    if (!canAutoScroll()) return;
     window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
     await waitForAnimationFrame();
+    if (!canAutoScroll()) return;
     window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
   };
 
@@ -697,7 +704,9 @@ export function useChatComposerRuntime(params: Params) {
         await startPolling(messageId);
       }
 
-      void params.scrollToLastMessage({ behavior: 'smooth', block: 'end' });
+      if (canAutoScroll()) {
+        void params.scrollToLastMessage({ behavior: 'smooth', block: 'end' });
+      }
     } catch (error) {
       console.error(error);
       params.loadError.value = errorMessage(error, translate('Failed to send message.'));

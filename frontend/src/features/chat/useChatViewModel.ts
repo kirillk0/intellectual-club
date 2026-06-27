@@ -21,6 +21,7 @@ import {
 } from '@/features/chat/model/chatViewModel.shared';
 import { SOURCE_LABELS } from '@/features/chat/types';
 import { useNavigationStack } from '@/features/stack/navigationStack';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
 import type {
@@ -85,6 +86,7 @@ export function useChatViewModel() {
   const router = useRouter();
   const stackNav = useStackNavigation();
   const stack = useNavigationStack();
+  const layer = useStackLayer();
   const chatId = computed(() => Number(route.params.id));
   const chatsReturnTarget = computed(() => readChatListReturnTarget(route.query.returnTo));
   const chatRouteTarget = (id: number, query: Record<string, string> = {}) => ({
@@ -254,6 +256,10 @@ export function useChatViewModel() {
     },
     stackOpen: stackNav.open,
   });
+  const scrollToLastMessageIfLayerActive: typeof contextPanel.scrollToLastMessage = async (opts) => {
+    if (!layer.active.value) return;
+    await contextPanel.scrollToLastMessage(opts);
+  };
 
   let getOpenWorkingPollRequest: (messageId: number) => string | null = () => null;
   let applyWorkingPoll: Parameters<typeof useChatComposerRuntime>[0]['applyWorkingPoll'] = () => {};
@@ -268,7 +274,8 @@ export function useChatViewModel() {
     activeGenerationId,
     cancelingGenerationId,
     draftReady: computed(() => loaded.value && Boolean(chat.value)),
-    scrollToLastMessage: contextPanel.scrollToLastMessage,
+    autoScrollEnabled: computed(() => layer.active.value),
+    scrollToLastMessage: scrollToLastMessageIfLayerActive,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
     onGenerationSettled: async () => {
@@ -286,7 +293,7 @@ export function useChatViewModel() {
     waitForConfigSync: headerControls.waitForConfigSync,
     messageConfigLabel: headerControls.messageConfigLabel,
     startPolling: composerRuntime.startPolling,
-    scrollToLastMessage: contextPanel.scrollToLastMessage,
+    scrollToLastMessage: scrollToLastMessageIfLayerActive,
     ensurePendingFilesUploaded: composerRuntime.ensurePendingFilesUploaded,
     removePendingFileFromCollection: composerRuntime.removePendingFileFromCollection,
     clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
@@ -306,7 +313,7 @@ export function useChatViewModel() {
     branchMessageById: messageActions.branchMessageById,
     retryConfigurationWarning: messageActions.retryConfigurationWarning,
     startPolling: composerRuntime.startPolling,
-    scrollToLastMessage: contextPanel.scrollToLastMessage,
+    scrollToLastMessage: scrollToLastMessageIfLayerActive,
     composerPendingFiles: composerRuntime.pendingFiles,
     editPendingFiles: messageActions.editPendingFiles,
     editExistingAttachments: messageActions.editExistingAttachments,
@@ -399,7 +406,7 @@ export function useChatViewModel() {
     loaded.value = true;
     startChatIdlePolling();
     if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
-      void contextPanel.scrollToLastMessage();
+      void scrollToLastMessageIfLayerActive();
     }
   };
 
