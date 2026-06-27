@@ -50,11 +50,13 @@ Run the launcher from CLI:
 ./build/dev/bin/intellectual-club-launcher start
 ./build/dev/bin/intellectual-club-launcher status --json
 ./build/dev/bin/intellectual-club-launcher backup
+./build/dev/bin/intellectual-club-launcher move-files --to /path/to/files
 ./build/dev/bin/intellectual-club-launcher stop
 ```
 
-The launcher stores config, PostgreSQL data, backups, runtime status, and cached PostgreSQL
-installations in OS-specific app data directories via `directories::ProjectDirs`.
+The launcher stores config, PostgreSQL data, file storage, backups, runtime status, and
+cached PostgreSQL installations in OS-specific app data directories via
+`directories::ProjectDirs`.
 
 ## Shell Outlet Image
 

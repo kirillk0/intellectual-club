@@ -18,15 +18,13 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
     Threads
   }
 
-  alias IntellectualClub.Db
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag, LlmProvider}
   alias IntellectualClub.Tools.{ChatToolBinding, ToolInstance}
 
-  import Ecto.Query
   require Ash.Query
 
   defp json_api_post(conn, path, attributes) do
@@ -761,7 +759,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
-    assert payload_count(file.sha256) == 0
+    refute FilesystemStorage.exists?(file.sha256)
   end
 
   defp type_for_path(path) do
@@ -954,13 +952,5 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
       })
 
     file
-  end
-
-  defp payload_count(sha256) do
-    Db.repo().aggregate(
-      from(payload in FilePayload, where: payload.sha256 == ^sha256),
-      :count,
-      :sha256
-    )
   end
 end

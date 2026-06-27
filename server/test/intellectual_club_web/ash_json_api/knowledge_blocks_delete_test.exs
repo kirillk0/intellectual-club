@@ -11,13 +11,11 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockTag
   alias IntellectualClub.Knowledge.KnowledgeTag
-  alias IntellectualClub.Db
 
-  import Ecto.Query
   require Ash.Query
 
   test "DELETE /api/ash/knowledge-blocks/:id deletes block and clears dependent bindings", %{
@@ -171,11 +169,7 @@ defmodule IntellectualClubWeb.AshJsonApi.KnowledgeBlocksDeleteTest do
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(StoredFile, stored_file.id, authorize?: false)
 
-    assert Db.repo().aggregate(
-             from(payload in FilePayload, where: payload.sha256 == ^stored_file.sha256),
-             :count,
-             :sha256
-           ) == 0
+    refute FilesystemStorage.exists?(stored_file.sha256)
   end
 
   defp image_payload do

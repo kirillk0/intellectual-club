@@ -7,12 +7,9 @@ defmodule IntellectualClub.Chat.ThreadsTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
-
-  import Ecto.Query
+  alias IntellectualClub.Files.FilesystemStorage
 
   test "branch metadata and switching to rightmost leaf" do
     %{user: actor} = user_fixture()
@@ -189,7 +186,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
-    assert payload_count(file.sha256) == 0
+    refute FilesystemStorage.exists?(file.sha256)
 
     kept_child = Ash.get!(ChatMessage, kept_child.id, actor: actor)
     assert kept_child.parent_id == root.id
@@ -265,7 +262,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
-    assert payload_count(file.sha256) == 0
+    refute FilesystemStorage.exists?(file.sha256)
   end
 
   test "adding a message stores token_count estimate" do
@@ -353,13 +350,5 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       })
 
     file
-  end
-
-  defp payload_count(sha256) do
-    Db.repo().aggregate(
-      from(payload in FilePayload, where: payload.sha256 == ^sha256),
-      :count,
-      :sha256
-    )
   end
 end

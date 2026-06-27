@@ -10,12 +10,10 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Knowledge.KnowledgeBlock
-  alias IntellectualClub.Db
   alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, ToolInstance}
 
-  import Ecto.Query
   require Ash.Query
 
   test "DELETE /api/ash/bots/:id deletes owned bot", %{conn: conn} do
@@ -211,11 +209,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(StoredFile, stored_file.id, authorize?: false)
 
-    assert Db.repo().aggregate(
-             from(payload in FilePayload, where: payload.sha256 == ^stored_file.sha256),
-             :count,
-             :sha256
-           ) == 0
+    refute FilesystemStorage.exists?(stored_file.sha256)
   end
 
   defp image_payload do

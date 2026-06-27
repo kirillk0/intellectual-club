@@ -5,12 +5,9 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
-  import Ecto.Query
-
-  alias IntellectualClub.Db
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockFile
 
@@ -126,7 +123,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
     assert %{"attachments" => [^second]} = json_response(delete_conn, 200)
     assert {:error, :not_found} = Files.get_by_external_id(first["file_id"])
-    assert payload_count(first_file.sha256) == 0
+    refute FilesystemStorage.exists?(first_file.sha256)
 
     {:ok, second_file} = Files.get_by_external_id(second["file_id"])
 
@@ -140,7 +137,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
              |> Ash.read!(authorize?: false)
 
     assert {:error, :not_found} = Files.get_by_external_id(second["file_id"])
-    assert payload_count(second_file.sha256) == 0
+    refute FilesystemStorage.exists?(second_file.sha256)
   end
 
   test "duplicating a knowledge block duplicates logical file rows and reuses payload", %{
@@ -180,7 +177,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     assert duplicate_binding.enabled == false
     assert duplicate_binding.file.sha256 == source_binding.file.sha256
     assert file_count(file.sha256) == 2
-    assert payload_count(file.sha256) == 1
+    assert FilesystemStorage.exists?(file.sha256)
   end
 
   test "upload can create a disabled knowledge block file binding", %{conn: conn} do
@@ -227,14 +224,6 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       filename: filename,
       content_type: content_type
     }
-  end
-
-  defp payload_count(sha256) do
-    Db.repo().aggregate(
-      from(payload in FilePayload, where: payload.sha256 == ^sha256),
-      :count,
-      :sha256
-    )
   end
 
   defp file_count(sha256) do

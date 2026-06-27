@@ -10,6 +10,8 @@ pub struct RuntimeStatus {
     pub app_url: String,
     pub database_url: String,
     pub postgres_data_dir: PathBuf,
+    #[serde(default)]
+    pub files_data_dir: PathBuf,
     pub started_at: String,
     pub updated_at: String,
     pub state: String,
@@ -80,6 +82,7 @@ impl ServiceState {
 pub struct PathsPayload {
     pub config_path: PathBuf,
     pub postgres_data_dir: PathBuf,
+    pub files_data_dir: PathBuf,
     pub backups_dir: PathBuf,
     pub installations_dir: PathBuf,
     pub runtime_dir: PathBuf,

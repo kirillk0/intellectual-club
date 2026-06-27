@@ -55,7 +55,7 @@ RUN useradd --create-home --shell /bin/bash app
 
 COPY --from=build /app/server/_build/prod/rel/intellectual_club /app
 
-RUN chown -R app:app /app
+RUN mkdir -p /app/data/files && chown -R app:app /app
 USER app
 
 ENV PHX_SERVER=true

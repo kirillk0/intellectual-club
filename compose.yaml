@@ -24,12 +24,16 @@ services:
       PHX_HOST: localhost
       PORT: "4000"
       POOL_SIZE: "10"
+      FILE_STORAGE_PATH: /app/data/files
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - file_storage:/app/data/files
     ports:
       - "4000:4000"
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  file_storage:

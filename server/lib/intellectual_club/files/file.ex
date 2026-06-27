@@ -46,8 +46,8 @@ defmodule IntellectualClub.Files.File do
 
     attribute :storage_backend, :atom do
       allow_nil?(false)
-      default(:db)
-      constraints(one_of: [:db])
+      default(:fs)
+      constraints(one_of: [:db, :fs])
     end
 
     create_timestamp(:created_at)
@@ -62,6 +62,10 @@ defmodule IntellectualClub.Files.File do
 
     create :create do
       accept([:sha256, :filename, :size_bytes, :mime_type, :storage_backend])
+    end
+
+    update :update_storage_backend do
+      accept([:storage_backend])
     end
   end
 end

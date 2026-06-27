@@ -38,6 +38,23 @@ trim_env = fn name ->
   end
 end
 
+runtime_data_dir = trim_env.("DATA_DIR") || Path.expand("../../data", __DIR__)
+
+default_file_storage_path =
+  if config_env() == :test do
+    Path.join(
+      System.tmp_dir!(),
+      "intellectual_club_test_files_#{System.unique_integer([:positive])}"
+    )
+  else
+    Path.join(runtime_data_dir, "files")
+  end
+
+file_storage_path = trim_env.("FILE_STORAGE_PATH") || default_file_storage_path
+File.mkdir_p!(file_storage_path)
+
+config :intellectual_club, :file_storage_path, file_storage_path
+
 postgres_url? = fn
   nil -> false
   url -> String.starts_with?(url, ["postgres://", "postgresql://", "ecto://"])
@@ -158,7 +175,7 @@ if config_env() == :prod do
     token_signing_secret: token_signing_secret
 
   if !use_postgres? do
-    data_dir = System.get_env("DATA_DIR") || Path.expand("../../data", __DIR__)
+    data_dir = runtime_data_dir
     File.mkdir_p!(data_dir)
 
     database_path =

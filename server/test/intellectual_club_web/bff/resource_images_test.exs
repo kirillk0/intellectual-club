@@ -5,12 +5,9 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
-  import Ecto.Query
-
   alias IntellectualClub.Bots.Bot
-  alias IntellectualClub.Db
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilePayload
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Knowledge.KnowledgeBlock
 
   test "bot image endpoints upload, stream, delete, and expose image metadata in JSON:API", %{
@@ -108,7 +105,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(StoredFile, file_id, authorize?: false)
 
-    assert payload_count(image["sha256"]) == 0
+    refute FilesystemStorage.exists?(image["sha256"])
   end
 
   test "knowledge block image endpoints reject unauthorized and invalid uploads, and expose image metadata",
@@ -191,14 +188,6 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       end) || %{}
 
     assert get_in(listed_block, ["attributes", "image", "sha256"]) == image["sha256"]
-  end
-
-  defp payload_count(sha256) do
-    Db.repo().aggregate(
-      from(payload in FilePayload, where: payload.sha256 == ^sha256),
-      :count,
-      :sha256
-    )
   end
 
   defp json_api_get(conn, path) do

@@ -10,9 +10,9 @@ use crate::cli::LogSource;
 use crate::config::{AppPaths, LauncherConfig, Locale, TextKey};
 use crate::fs_utils::{list_backups, open_path, BackupEntry};
 use crate::operations::{
-    backup_command, build_status_payload, log_path_for, move_data_command, open_command, open_log,
-    read_log, restart_application_command, restore_command, start_application_command,
-    start_command, stop_application_command, stop_command,
+    backup_command, build_status_payload, log_path_for, move_data_command, move_files_data_command,
+    open_command, open_log, read_log, restart_application_command, restore_command,
+    start_application_command, start_command, stop_application_command, stop_command,
 };
 use crate::status::{ServiceState, ServiceStatus, StatusPayload};
 
@@ -42,6 +42,7 @@ pub struct LauncherGui {
     last_error: String,
     last_message: String,
     moving_to: String,
+    files_moving_to: String,
     busy: Option<String>,
     last_refresh: Instant,
 }
@@ -73,6 +74,7 @@ impl LauncherGui {
             last_error: String::new(),
             last_message: String::new(),
             moving_to: String::new(),
+            files_moving_to: String::new(),
             busy: None,
             last_refresh: Instant::now() - REFRESH_INTERVAL,
         };
@@ -363,6 +365,10 @@ impl LauncherGui {
         let app_rows = [
             (locale.text(TextKey::Url), self.config.app_url()),
             (locale.text(TextKey::Port), self.config.app_port.to_string()),
+            (
+                locale.text(TextKey::FilesDataDir),
+                self.config.files_data_dir.display().to_string(),
+            ),
         ];
         let postgres_rows = [
             (
@@ -656,6 +662,10 @@ impl LauncherGui {
                 Some(self.config.postgres_data_dir.clone()),
             ),
             (
+                locale.text(TextKey::FilesDataDir),
+                Some(self.config.files_data_dir.clone()),
+            ),
+            (
                 locale.text(TextKey::BackupsDir),
                 Some(self.paths.backups_dir.clone()),
             ),
@@ -719,7 +729,7 @@ impl LauncherGui {
         ui.separator();
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(locale.text(TextKey::TargetPath));
+            ui.label(locale.text(TextKey::DataDir));
             ui.add(
                 egui::TextEdit::singleline(&mut self.moving_to)
                     .desired_width(460.0)
@@ -738,6 +748,30 @@ impl LauncherGui {
                 let label = locale.text(TextKey::MoveData).to_string();
                 self.run_task(label.clone(), async move {
                     move_data_command(&paths, &mut config, &target, false).await?;
+                    Ok(format!("{label}: {}", target.display()))
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(locale.text(TextKey::FilesDataDir));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.files_moving_to)
+                    .desired_width(460.0)
+                    .hint_text(self.config.files_data_dir.display().to_string()),
+            );
+            if ui
+                .add_enabled(
+                    !self.is_busy() && !self.files_moving_to.trim().is_empty(),
+                    egui::Button::new(locale.text(TextKey::MoveFilesData)),
+                )
+                .clicked()
+            {
+                let paths = self.paths.clone();
+                let mut config = self.config.clone();
+                let target = PathBuf::from(self.files_moving_to.trim());
+                let label = locale.text(TextKey::MoveFilesData).to_string();
+                self.run_task(label.clone(), async move {
+                    move_files_data_command(&paths, &mut config, &target, false).await?;
                     Ok(format!("{label}: {}", target.display()))
                 });
             }

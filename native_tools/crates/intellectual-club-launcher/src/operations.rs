@@ -273,6 +273,13 @@ pub async fn backup_command(
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+    let files_backup_path = files_backup_path_for(&backup_path);
+    if files_backup_path.exists() {
+        bail!(
+            "files backup already exists: {}",
+            files_backup_path.display()
+        );
+    }
 
     let mut command = PgDumpBuilder::from(&settings)
         .dbname(&config.database_name)
@@ -288,7 +295,9 @@ pub async fn backup_command(
         "database": config.database_name,
         "postgres_version": PG_VERSION,
         "dump": backup_path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
+        "files": files_backup_path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
     });
+    backup_files_dir(&config.files_data_dir, &files_backup_path)?;
     fs::write(
         backup_path.with_extension("dump.json"),
         serde_json::to_string_pretty(&meta)? + "\n",
@@ -329,6 +338,7 @@ pub async fn restore_command(
         execute_pg_command(&mut command, settings.timeout).await?;
         admin.finish().await;
     }
+    restore_files_dir_if_present(&files_backup_path_for(dump_path), &config.files_data_dir)?;
 
     start_command(paths, config, false).await?;
     Ok(())
@@ -380,6 +390,59 @@ pub async fn move_data_command(
     }
 }
 
+pub async fn move_files_data_command(
+    paths: &AppPaths,
+    config: &mut LauncherConfig,
+    target: &Path,
+    delete_source: bool,
+) -> Result<()> {
+    let source = config.files_data_dir.clone();
+    if source == target {
+        bail!("target files directory is already active");
+    }
+
+    stop_command(paths, config).await.ok();
+    let safety = backup_command(paths, config, None).await?;
+    println!("Safety backup: {}", safety.display());
+
+    if target.exists() {
+        if is_empty_dir(target)? {
+            fs::remove_dir(target)
+                .with_context(|| format!("failed to remove empty {}", target.display()))?;
+        } else {
+            bail!("target already exists: {}", target.display());
+        }
+    }
+
+    if source.exists() {
+        copy_dir_all(&source, target)?;
+    } else {
+        fs::create_dir_all(target)
+            .with_context(|| format!("failed to create {}", target.display()))?;
+    }
+
+    let previous = config.files_data_dir.clone();
+    config.files_data_dir = target.to_path_buf();
+    config.save(&paths.config_path)?;
+
+    match start_command(paths, config, false).await {
+        Ok(()) => {
+            if delete_source && previous.exists() {
+                fs::remove_dir_all(&previous)
+                    .with_context(|| format!("failed to delete {}", previous.display()))?;
+            }
+            println!("Moved files to {}", target.display());
+            Ok(())
+        }
+        Err(error) => {
+            config.files_data_dir = previous;
+            config.save(&paths.config_path)?;
+            fs::remove_dir_all(target).ok();
+            Err(error).context("moved files failed validation; restored previous config")
+        }
+    }
+}
+
 pub fn paths_command(paths: &AppPaths, config: &LauncherConfig, json: bool) -> Result<()> {
     let payload = paths_payload(paths, config);
     if json {
@@ -387,6 +450,7 @@ pub fn paths_command(paths: &AppPaths, config: &LauncherConfig, json: bool) -> R
     } else {
         println!("config_path: {}", payload.config_path.display());
         println!("postgres_data_dir: {}", payload.postgres_data_dir.display());
+        println!("files_data_dir: {}", payload.files_data_dir.display());
         println!("backups_dir: {}", payload.backups_dir.display());
         println!("installations_dir: {}", payload.installations_dir.display());
         println!("runtime_dir: {}", payload.runtime_dir.display());
@@ -409,6 +473,7 @@ pub async fn doctor_command(paths: &AppPaths, config: &LauncherConfig) -> Result
     println!("config: {}", paths.config_path.display());
     println!("app_dir: {}", resolve_app_dir(config)?.display());
     println!("postgres_data_dir: {}", config.postgres_data_dir.display());
+    println!("files_data_dir: {}", config.files_data_dir.display());
     println!("postgres_version: {}", PG_VERSION);
     let admin = ensure_postgres_for_admin(paths, config).await?;
     println!("postgres_setup: ok");
@@ -464,6 +529,7 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
             app_url: config.app_url(),
             database_url: database_url.clone(),
             postgres_data_dir: config.postgres_data_dir.clone(),
+            files_data_dir: config.files_data_dir.clone(),
             started_at: timestamp(),
             updated_at: timestamp(),
             state: "starting".to_string(),
@@ -623,6 +689,8 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
     if !bin_path.exists() {
         bail!("Phoenix release binary not found: {}", bin_path.display());
     }
+    fs::create_dir_all(&config.files_data_dir)
+        .with_context(|| format!("failed to create {}", config.files_data_dir.display()))?;
     let public_host = launcher_public_host();
 
     let log = open_log_file(log_path)?;
@@ -633,6 +701,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
         .current_dir(&app_dir)
         .env("PHX_SERVER", "true")
         .env("DATABASE_URL", database_url)
+        .env("FILE_STORAGE_PATH", &config.files_data_dir)
         .env("PORT", config.app_port.to_string())
         .env("PHX_HOST", public_host)
         .env("PHX_SCHEME", "http")
@@ -982,6 +1051,7 @@ pub fn paths_payload(paths: &AppPaths, config: &LauncherConfig) -> PathsPayload 
     PathsPayload {
         config_path: paths.config_path.clone(),
         postgres_data_dir: config.postgres_data_dir.clone(),
+        files_data_dir: config.files_data_dir.clone(),
         backups_dir: paths.backups_dir.clone(),
         installations_dir: paths.installations_dir.clone(),
         runtime_dir: paths.runtime_dir.clone(),
@@ -995,6 +1065,32 @@ pub fn paths_payload(paths: &AppPaths, config: &LauncherConfig) -> PathsPayload 
 
 pub fn postgres_log_path(config: &LauncherConfig) -> PathBuf {
     config.postgres_data_dir.join("start.log")
+}
+
+fn files_backup_path_for(dump_path: &Path) -> PathBuf {
+    dump_path.with_extension("files")
+}
+
+fn backup_files_dir(source: &Path, target: &Path) -> Result<()> {
+    if source.exists() {
+        copy_dir_all(source, target)
+    } else {
+        fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))
+    }
+}
+
+fn restore_files_dir_if_present(source: &Path, target: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if !source.is_dir() {
+        bail!("files backup is not a directory: {}", source.display());
+    }
+    if target.exists() {
+        fs::remove_dir_all(target)
+            .with_context(|| format!("failed to remove {}", target.display()))?;
+    }
+    copy_dir_all(source, target)
 }
 
 pub fn log_path_for(paths: &AppPaths, config: &LauncherConfig, source: LogSource) -> PathBuf {
@@ -1112,5 +1208,54 @@ fn local_lan_ipv4_host() -> Option<String> {
     match socket.local_addr().ok()?.ip() {
         IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_backup_path_replaces_dump_extension() {
+        assert_eq!(
+            files_backup_path_for(Path::new("/tmp/intellectual-club.dump")),
+            PathBuf::from("/tmp/intellectual-club.files")
+        );
+    }
+
+    #[test]
+    fn file_backup_and_restore_copy_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-files-backup-{}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let backup = root.join("backup.files");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(source.join("aa").join("bb")).unwrap();
+        fs::write(
+            source.join("aa").join("bb").join("payload.blob"),
+            b"payload",
+        )
+        .unwrap();
+
+        backup_files_dir(&source, &backup).unwrap();
+        assert_eq!(
+            fs::read(backup.join("aa").join("bb").join("payload.blob")).unwrap(),
+            b"payload"
+        );
+
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("stale.blob"), b"stale").unwrap();
+        restore_files_dir_if_present(&backup, &target).unwrap();
+
+        assert!(!target.join("stale.blob").exists());
+        assert_eq!(
+            fs::read(target.join("aa").join("bb").join("payload.blob")).unwrap(),
+            b"payload"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 }

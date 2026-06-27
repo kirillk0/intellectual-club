@@ -82,6 +82,13 @@ pub enum CommandKind {
         #[arg(long)]
         delete_source: bool,
     },
+    MoveFiles {
+        #[arg(long, value_name = "PATH")]
+        to: PathBuf,
+
+        #[arg(long)]
+        delete_source: bool,
+    },
     Paths {
         #[arg(long)]
         json: bool,

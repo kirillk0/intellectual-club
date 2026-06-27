@@ -12,12 +12,13 @@ pub const DATABASE_NAME: &str = "intellectual_club";
 pub const PG_VERSION: &str = "=16.13.0";
 pub const DEFAULT_PORT: u16 = 4000;
 pub const DEFAULT_POSTGRES_PORT: u16 = 55432;
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct AppPaths {
     pub config_path: PathBuf,
     pub default_data_dir: PathBuf,
+    pub default_files_data_dir: PathBuf,
     pub backups_dir: PathBuf,
     pub installations_dir: PathBuf,
     pub runtime_dir: PathBuf,
@@ -38,6 +39,7 @@ impl AppPaths {
         Ok(Self {
             config_path,
             default_data_dir: data_dir.join("postgres").join("data"),
+            default_files_data_dir: data_dir.join("files"),
             backups_dir: data_dir.join("backups"),
             installations_dir: project_dirs
                 .cache_dir()
@@ -56,6 +58,7 @@ impl AppPaths {
         for dir in [
             self.config_path.parent(),
             Some(self.default_data_dir.as_path()),
+            Some(self.default_files_data_dir.as_path()),
             Some(self.backups_dir.as_path()),
             Some(self.installations_dir.as_path()),
             Some(self.runtime_dir.as_path()),
@@ -75,6 +78,8 @@ pub struct LauncherConfig {
     pub version: u32,
     pub app_dir: Option<PathBuf>,
     pub postgres_data_dir: PathBuf,
+    #[serde(default)]
+    pub files_data_dir: PathBuf,
     pub postgres_port: u16,
     pub app_port: u16,
     pub database_name: String,
@@ -97,8 +102,12 @@ impl LauncherConfig {
             .with_context(|| format!("failed to read {}", path.display()))?;
         let mut config: Self = serde_json::from_str(&text).context("invalid launcher config")?;
         let mut changed = false;
-        if config.version == 0 {
+        if config.version < CONFIG_VERSION {
             config.version = CONFIG_VERSION;
+            changed = true;
+        }
+        if config.files_data_dir.as_os_str().is_empty() {
+            config.files_data_dir = paths.default_files_data_dir.clone();
             changed = true;
         }
         if config.secret_key_base.len() < 64 {
@@ -120,6 +129,7 @@ impl LauncherConfig {
             version: CONFIG_VERSION,
             app_dir: default_app_dir(),
             postgres_data_dir: paths.default_data_dir.clone(),
+            files_data_dir: paths.default_files_data_dir.clone(),
             postgres_port: DEFAULT_POSTGRES_PORT,
             app_port: DEFAULT_PORT,
             database_name: DATABASE_NAME.to_string(),
@@ -192,6 +202,7 @@ impl Locale {
             (Self::Ru, TextKey::RestoreSelected) => "Восстановить выбранный",
             (Self::Ru, TextKey::OpenBackups) => "Открыть бэкапы",
             (Self::Ru, TextKey::MoveData) => "Переместить данные",
+            (Self::Ru, TextKey::MoveFilesData) => "Переместить файлы",
             (Self::Ru, TextKey::Running) => "Запущено",
             (Self::Ru, TextKey::Starting) => "Запускается",
             (Self::Ru, TextKey::Stopped) => "Остановлено",
@@ -207,6 +218,7 @@ impl Locale {
             (Self::Ru, TextKey::Pid) => "PID",
             (Self::Ru, TextKey::Port) => "Порт",
             (Self::Ru, TextKey::DataDir) => "Данные Postgres",
+            (Self::Ru, TextKey::FilesDataDir) => "Файлы",
             (Self::Ru, TextKey::AppDir) => "Приложение",
             (Self::Ru, TextKey::ConfigPath) => "Конфиг",
             (Self::Ru, TextKey::BackupsDir) => "Бэкапы",
@@ -221,7 +233,6 @@ impl Locale {
             (Self::Ru, TextKey::Size) => "Размер",
             (Self::Ru, TextKey::Reveal) => "Показать",
             (Self::Ru, TextKey::Busy) => "Выполняется",
-            (Self::Ru, TextKey::TargetPath) => "Новый путь",
             (Self::Ru, TextKey::AppLogEmpty) => "Лог пока пуст",
             (Self::En, TextKey::Title) => "Intellectual Club",
             (Self::En, TextKey::Overview) => "Overview",
@@ -241,6 +252,7 @@ impl Locale {
             (Self::En, TextKey::RestoreSelected) => "Restore selected",
             (Self::En, TextKey::OpenBackups) => "Open backups",
             (Self::En, TextKey::MoveData) => "Move data",
+            (Self::En, TextKey::MoveFilesData) => "Move files",
             (Self::En, TextKey::Running) => "Running",
             (Self::En, TextKey::Starting) => "Starting",
             (Self::En, TextKey::Stopped) => "Stopped",
@@ -256,6 +268,7 @@ impl Locale {
             (Self::En, TextKey::Pid) => "PID",
             (Self::En, TextKey::Port) => "Port",
             (Self::En, TextKey::DataDir) => "Postgres data",
+            (Self::En, TextKey::FilesDataDir) => "Files",
             (Self::En, TextKey::AppDir) => "Application",
             (Self::En, TextKey::ConfigPath) => "Config",
             (Self::En, TextKey::BackupsDir) => "Backups",
@@ -270,7 +283,6 @@ impl Locale {
             (Self::En, TextKey::Size) => "Size",
             (Self::En, TextKey::Reveal) => "Reveal",
             (Self::En, TextKey::Busy) => "Running",
-            (Self::En, TextKey::TargetPath) => "New path",
             (Self::En, TextKey::AppLogEmpty) => "Log is empty",
         }
     }
@@ -296,6 +308,7 @@ pub enum TextKey {
     RestoreSelected,
     OpenBackups,
     MoveData,
+    MoveFilesData,
     Running,
     Starting,
     Stopped,
@@ -311,6 +324,7 @@ pub enum TextKey {
     Pid,
     Port,
     DataDir,
+    FilesDataDir,
     AppDir,
     ConfigPath,
     BackupsDir,
@@ -325,7 +339,6 @@ pub enum TextKey {
     Size,
     Reveal,
     Busy,
-    TargetPath,
     AppLogEmpty,
 }
 
