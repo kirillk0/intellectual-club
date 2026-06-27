@@ -17,8 +17,7 @@ use crate::operations::{
     paths_command, restore_command, start_command, status_command, stop_command,
 };
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
     init_logging(&args.log_level);
 
@@ -33,29 +32,32 @@ async fn main() -> Result<()> {
         return run_gui(paths, config).map_err(|error| anyhow!(error.to_string()));
     };
 
-    match command {
-        CommandKind::Start { open } => start_command(&paths, &config, open).await,
-        CommandKind::Stop => stop_command(&paths, &config).await,
-        CommandKind::Restart { open } => {
-            stop_command(&paths, &config).await?;
-            start_command(&paths, &config, open).await
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        match command {
+            CommandKind::Start { open } => start_command(&paths, &config, open).await,
+            CommandKind::Stop => stop_command(&paths, &config).await,
+            CommandKind::Restart { open } => {
+                stop_command(&paths, &config).await?;
+                start_command(&paths, &config, open).await
+            }
+            CommandKind::Status { json } => status_command(&paths, &config, json).await,
+            CommandKind::Logs { source, lines } => logs_command(&paths, &config, source, lines),
+            CommandKind::Open => open_command(&paths, &config).await,
+            CommandKind::Backup { output } => backup_command(&paths, &config, output)
+                .await
+                .map(|path| println!("{}", path.display())),
+            CommandKind::Restore { path, force } => {
+                restore_command(&paths, &config, &path, force).await
+            }
+            CommandKind::MoveData { to, delete_source } => {
+                move_data_command(&paths, &mut config, &to, delete_source).await
+            }
+            CommandKind::Paths { json } => paths_command(&paths, &config, json),
+            CommandKind::Doctor => doctor_command(&paths, &config).await,
+            CommandKind::Daemon { open } => daemon_command(paths, config, open).await,
         }
-        CommandKind::Status { json } => status_command(&paths, &config, json).await,
-        CommandKind::Logs { source, lines } => logs_command(&paths, &config, source, lines),
-        CommandKind::Open => open_command(&paths, &config).await,
-        CommandKind::Backup { output } => backup_command(&paths, &config, output)
-            .await
-            .map(|path| println!("{}", path.display())),
-        CommandKind::Restore { path, force } => {
-            restore_command(&paths, &config, &path, force).await
-        }
-        CommandKind::MoveData { to, delete_source } => {
-            move_data_command(&paths, &mut config, &to, delete_source).await
-        }
-        CommandKind::Paths { json } => paths_command(&paths, &config, json),
-        CommandKind::Doctor => doctor_command(&paths, &config).await,
-        CommandKind::Daemon { open } => daemon_command(paths, config, open).await,
-    }
+    })
 }
 
 fn init_logging(level: &str) {
