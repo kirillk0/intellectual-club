@@ -23,6 +23,7 @@ pub struct AppPaths {
     pub runtime_dir: PathBuf,
     pub status_path: PathBuf,
     pub stop_request_path: PathBuf,
+    pub app_request_path: PathBuf,
     pub launcher_log_path: PathBuf,
     pub app_log_path: PathBuf,
 }
@@ -44,6 +45,7 @@ impl AppPaths {
                 .join("installations"),
             status_path: runtime_dir.join("status.json"),
             stop_request_path: runtime_dir.join("stop-request"),
+            app_request_path: runtime_dir.join("app-request"),
             launcher_log_path: runtime_dir.join("launcher.log"),
             app_log_path: runtime_dir.join("app.log"),
             runtime_dir,

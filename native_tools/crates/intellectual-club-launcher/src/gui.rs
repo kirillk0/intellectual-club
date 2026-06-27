@@ -11,7 +11,8 @@ use crate::config::{AppPaths, LauncherConfig, Locale, TextKey};
 use crate::fs_utils::{list_backups, open_path, BackupEntry};
 use crate::operations::{
     backup_command, build_status_payload, log_path_for, move_data_command, open_command, open_log,
-    read_log, restore_command, start_command, stop_command,
+    read_log, restart_application_command, restore_command, start_application_command,
+    start_command, stop_application_command, stop_command,
 };
 use crate::status::{ServiceState, ServiceStatus, StatusPayload};
 
@@ -262,6 +263,82 @@ impl LauncherGui {
             });
     }
 
+    fn render_application_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        locale: Locale,
+        status: &ServiceStatus,
+        rows: &[(&str, String)],
+    ) {
+        service_card_with_controls(
+            ui,
+            locale,
+            locale.text(TextKey::Application),
+            status,
+            rows,
+            |ui| self.render_application_controls(ui, locale, status),
+        );
+    }
+
+    fn render_application_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        locale: Locale,
+        status: &ServiceStatus,
+    ) {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let start_enabled = !self.is_busy()
+                && !matches!(status.state, ServiceState::Running | ServiceState::Starting);
+            if ui
+                .add_enabled(
+                    start_enabled,
+                    egui::Button::new(locale.text(TextKey::Start)),
+                )
+                .clicked()
+            {
+                let paths = self.paths.clone();
+                let config = self.config.clone();
+                let label = locale.text(TextKey::Start).to_string();
+                self.run_task(label.clone(), async move {
+                    start_application_command(&paths, &config).await?;
+                    Ok(label)
+                });
+            }
+
+            let stop_enabled = !self.is_busy()
+                && matches!(status.state, ServiceState::Running | ServiceState::Starting);
+            if ui
+                .add_enabled(stop_enabled, egui::Button::new(locale.text(TextKey::Stop)))
+                .clicked()
+            {
+                let paths = self.paths.clone();
+                let config = self.config.clone();
+                let label = locale.text(TextKey::Stop).to_string();
+                self.run_task(label.clone(), async move {
+                    stop_application_command(&paths, &config).await?;
+                    Ok(label)
+                });
+            }
+
+            if ui
+                .add_enabled(
+                    !self.is_busy(),
+                    egui::Button::new(locale.text(TextKey::Restart)),
+                )
+                .clicked()
+            {
+                let paths = self.paths.clone();
+                let config = self.config.clone();
+                let label = locale.text(TextKey::Restart).to_string();
+                self.run_task(label.clone(), async move {
+                    restart_application_command(&paths, &config).await?;
+                    Ok(label)
+                });
+            }
+        });
+    }
+
     fn render_overview(&mut self, ui: &mut egui::Ui) {
         let locale = self.config.locale;
         ui.heading(locale.text(TextKey::Overview));
@@ -307,10 +384,9 @@ impl LauncherGui {
             .show(ui, |ui| {
                 if ui.available_width() >= 960.0 {
                     ui.columns(3, |columns| {
-                        service_card(
+                        self.render_application_card(
                             &mut columns[0],
                             locale,
-                            locale.text(TextKey::Application),
                             &app_status,
                             &app_rows,
                         );
@@ -330,13 +406,7 @@ impl LauncherGui {
                         );
                     });
                 } else {
-                    service_card(
-                        ui,
-                        locale,
-                        locale.text(TextKey::Application),
-                        &app_status,
-                        &app_rows,
-                    );
+                    self.render_application_card(ui, locale, &app_status, &app_rows);
                     ui.add_space(8.0);
                     service_card(
                         ui,
@@ -762,6 +832,17 @@ fn service_card(
     status: &ServiceStatus,
     rows: &[(&str, String)],
 ) {
+    service_card_with_controls(ui, locale, title, status, rows, |_| {});
+}
+
+fn service_card_with_controls(
+    ui: &mut egui::Ui,
+    locale: Locale,
+    title: &str,
+    status: &ServiceStatus,
+    rows: &[(&str, String)],
+    controls: impl FnOnce(&mut egui::Ui),
+) {
     let margin = egui::Margin::symmetric(12, 10);
     let inner_width = (ui.available_width() - margin.sum().x - 2.0).max(120.0);
     egui::Frame::group(ui.style())
@@ -793,6 +874,7 @@ fn service_card(
             if let Some(detail) = &status.detail {
                 ui.colored_label(egui::Color32::from_rgb(176, 43, 43), detail);
             }
+            controls(ui);
         });
 }
 

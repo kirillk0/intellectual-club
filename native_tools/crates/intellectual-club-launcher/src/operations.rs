@@ -25,6 +25,23 @@ use crate::fs_utils::{
 };
 use crate::status::{PathsPayload, RuntimeStatus, ServiceState, ServiceStatus, StatusPayload};
 
+#[derive(Clone, Copy, Debug)]
+enum AppRequest {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl AppRequest {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
+    }
+}
+
 pub async fn start_command(paths: &AppPaths, config: &LauncherConfig, open: bool) -> Result<()> {
     paths.ensure_dirs()?;
     let current = read_status(&paths.status_path).ok();
@@ -32,6 +49,11 @@ pub async fn start_command(paths: &AppPaths, config: &LauncherConfig, open: bool
         .as_ref()
         .filter(|status| process_alive(status.daemon_pid))
     {
+        let payload = build_status_payload(paths, config).await;
+        if !payload.app.healthy {
+            write_app_request(paths, AppRequest::Start)?;
+            wait_for_application(paths, config, true, Duration::from_secs(90)).await?;
+        }
         println!("Already running: {}", status.app_url);
         if open {
             open_url(&status.app_url)?;
@@ -40,6 +62,7 @@ pub async fn start_command(paths: &AppPaths, config: &LauncherConfig, open: bool
     }
 
     remove_file_if_exists(&paths.stop_request_path)?;
+    remove_file_if_exists(&paths.app_request_path)?;
     remove_file_if_exists(&paths.status_path)?;
 
     let exe = env::current_exe().context("failed to resolve current executable")?;
@@ -192,6 +215,42 @@ pub async fn open_command(paths: &AppPaths, config: &LauncherConfig) -> Result<(
     } else {
         open_url(&config.app_url())
     }
+}
+
+pub async fn start_application_command(paths: &AppPaths, config: &LauncherConfig) -> Result<()> {
+    let payload = build_status_payload(paths, config).await;
+    if !payload.daemon.healthy {
+        start_command(paths, config, false).await?;
+        return Ok(());
+    }
+    if payload.app.healthy {
+        return Ok(());
+    }
+
+    write_app_request(paths, AppRequest::Start)?;
+    wait_for_application(paths, config, true, Duration::from_secs(90)).await
+}
+
+pub async fn stop_application_command(paths: &AppPaths, config: &LauncherConfig) -> Result<()> {
+    let payload = build_status_payload(paths, config).await;
+    if !payload.daemon.healthy || matches!(payload.app.state, ServiceState::Stopped) {
+        return Ok(());
+    }
+
+    write_app_request(paths, AppRequest::Stop)?;
+    wait_for_application(paths, config, false, Duration::from_secs(30)).await
+}
+
+pub async fn restart_application_command(paths: &AppPaths, config: &LauncherConfig) -> Result<()> {
+    let payload = build_status_payload(paths, config).await;
+    if !payload.daemon.healthy {
+        start_command(paths, config, false).await?;
+        return Ok(());
+    }
+    let previous_pid = payload.app.pid;
+
+    write_app_request(paths, AppRequest::Restart)?;
+    wait_for_application_restart(paths, config, previous_pid, Duration::from_secs(90)).await
 }
 
 pub async fn backup_command(
@@ -360,6 +419,7 @@ pub async fn doctor_command(paths: &AppPaths, config: &LauncherConfig) -> Result
 pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool) -> Result<()> {
     paths.ensure_dirs()?;
     remove_file_if_exists(&paths.stop_request_path)?;
+    remove_file_if_exists(&paths.app_request_path)?;
     append_log_line(
         &paths.launcher_log_path,
         &format!("[{}] daemon starting", timestamp()),
@@ -393,8 +453,8 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
     ensure_database(&pg, &config).await?;
     let database_url = config.database_url(pg.settings());
 
-    let mut app = start_app(&config, &database_url, &paths.app_log_path).await?;
-    let app_pid = app.id();
+    let mut app = Some(start_app(&config, &database_url, &paths.app_log_path).await?);
+    let app_pid = app.as_ref().and_then(|child| child.id());
     write_status(
         &paths.status_path,
         &RuntimeStatus {
@@ -402,7 +462,7 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
             daemon_pid: std::process::id(),
             app_pid,
             app_url: config.app_url(),
-            database_url,
+            database_url: database_url.clone(),
             postgres_data_dir: config.postgres_data_dir.clone(),
             started_at: timestamp(),
             updated_at: timestamp(),
@@ -421,11 +481,12 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
         &format!("[{}] daemon running", timestamp()),
     )?;
 
-    let exit_result = daemon_loop(&paths, &mut app).await;
-    let app_stop = stop_child(&mut app).await;
+    let exit_result = daemon_loop(&paths, &config, &database_url, &mut app).await;
+    let app_stop = stop_app_child(&mut app).await;
     let pg_stop = pg.stop().await.map_err(|error| anyhow!(error.to_string()));
     remove_file_if_exists(&paths.status_path)?;
     remove_file_if_exists(&paths.stop_request_path)?;
+    remove_file_if_exists(&paths.app_request_path)?;
     append_log_line(
         &paths.launcher_log_path,
         &format!("[{}] daemon stopped", timestamp()),
@@ -437,19 +498,123 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
     Ok(())
 }
 
-async fn daemon_loop(paths: &AppPaths, app: &mut Child) -> Result<()> {
+async fn daemon_loop(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    database_url: &str,
+    app: &mut Option<Child>,
+) -> Result<()> {
     loop {
         if paths.stop_request_path.exists() {
             return Ok(());
         }
-        if let Some(status) = app.try_wait().context("failed to inspect app process")? {
-            let message = format!("application exited with status {status}");
-            write_status_state(&paths.status_path, "error", Some(message.clone())).ok();
-            bail!(message);
+
+        if paths.app_request_path.exists() {
+            handle_app_request(paths, config, database_url, app).await?;
         }
-        write_status_state(&paths.status_path, "running", None).ok();
+
+        if let Some(status) = poll_app_exit(app).context("failed to inspect app process")? {
+            let message = format!("application exited with status {status}");
+            write_status_app(&paths.status_path, None, "error", Some(message.clone())).ok();
+            append_log_line(
+                &paths.launcher_log_path,
+                &format!("[{}] app error: {message}", timestamp()),
+            )
+            .ok();
+        } else if let Some(pid) = app.as_ref().and_then(|child| child.id()) {
+            write_status_app(&paths.status_path, Some(pid), "running", None).ok();
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+async fn handle_app_request(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    database_url: &str,
+    app: &mut Option<Child>,
+) -> Result<()> {
+    let request = fs::read_to_string(&paths.app_request_path)
+        .with_context(|| format!("failed to read {}", paths.app_request_path.display()))?;
+    remove_file_if_exists(&paths.app_request_path)?;
+
+    match request.trim() {
+        "start" => start_daemon_app(paths, config, database_url, app).await,
+        "stop" => stop_daemon_app(paths, app).await,
+        "restart" => {
+            stop_daemon_app(paths, app).await?;
+            start_daemon_app(paths, config, database_url, app).await
+        }
+        value => {
+            append_log_line(
+                &paths.launcher_log_path,
+                &format!("[{}] ignored unknown app request: {value}", timestamp()),
+            )
+            .ok();
+            Ok(())
+        }
+    }
+}
+
+async fn start_daemon_app(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    database_url: &str,
+    app: &mut Option<Child>,
+) -> Result<()> {
+    if let Some(child) = app.as_mut() {
+        if child.try_wait()?.is_none() {
+            if let Some(pid) = child.id() {
+                write_status_app(&paths.status_path, Some(pid), "running", None)?;
+            }
+            return Ok(());
+        }
+    }
+
+    *app = None;
+    write_status_app(&paths.status_path, None, "starting", None)?;
+    append_log_line(
+        &paths.launcher_log_path,
+        &format!("[{}] app starting", timestamp()),
+    )
+    .ok();
+
+    let child = start_app(config, database_url, &paths.app_log_path).await?;
+    let app_pid = child.id();
+    *app = Some(child);
+    write_status_app(&paths.status_path, app_pid, "starting", None)?;
+    wait_for_http(&config.app_url(), Duration::from_secs(90)).await?;
+    write_status_app(&paths.status_path, app_pid, "running", None)?;
+    append_log_line(
+        &paths.launcher_log_path,
+        &format!("[{}] app running", timestamp()),
+    )
+    .ok();
+    Ok(())
+}
+
+async fn stop_daemon_app(paths: &AppPaths, app: &mut Option<Child>) -> Result<()> {
+    let app_pid = app.as_ref().and_then(|child| child.id());
+    write_status_app(&paths.status_path, app_pid, "app_stopping", None).ok();
+    stop_app_child(app).await?;
+    write_status_app(&paths.status_path, None, "app_stopped", None)?;
+    append_log_line(
+        &paths.launcher_log_path,
+        &format!("[{}] app stopped", timestamp()),
+    )
+    .ok();
+    Ok(())
+}
+
+fn poll_app_exit(app: &mut Option<Child>) -> Result<Option<std::process::ExitStatus>> {
+    let Some(child) = app.as_mut() else {
+        return Ok(None);
+    };
+    let status = child.try_wait()?;
+    if status.is_some() {
+        *app = None;
+    }
+    Ok(status)
 }
 
 async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path) -> Result<Child> {
@@ -653,6 +818,61 @@ async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
         .with_context(|| format!("application did not open {url} within {timeout:?}"))
 }
 
+async fn wait_for_application(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    should_run: bool,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        let payload = build_status_payload(paths, config).await;
+        if should_run {
+            if payload.app.healthy {
+                return Ok(());
+            }
+        } else if matches!(payload.app.state, ServiceState::Stopped) {
+            return Ok(());
+        }
+
+        if !payload.daemon.healthy {
+            bail!("launcher daemon stopped while waiting for application");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    if should_run {
+        bail!("application did not start within {:?}", timeout)
+    } else {
+        bail!("application did not stop within {:?}", timeout)
+    }
+}
+
+async fn wait_for_application_restart(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    previous_pid: Option<u32>,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+    let mut saw_restart = previous_pid.is_none();
+    while started.elapsed() < timeout {
+        let payload = build_status_payload(paths, config).await;
+        if previous_pid.is_some() && payload.app.pid != previous_pid {
+            saw_restart = true;
+        }
+        if saw_restart && payload.app.healthy {
+            return Ok(());
+        }
+        if !payload.daemon.healthy {
+            bail!("launcher daemon stopped while waiting for application restart");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    bail!("application did not restart within {:?}", timeout)
+}
+
 async fn wait_for_tcp(addr: SocketAddr, timeout: Duration) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < timeout {
@@ -694,10 +914,13 @@ pub async fn build_status_payload(paths: &AppPaths, config: &LauncherConfig) -> 
     } else {
         false
     };
+    let runtime_state = status.as_ref().map(|status| status.state.as_str());
     let app_state = if app_healthy {
         ServiceState::Running
+    } else if matches!(runtime_state, Some("app_stopped")) {
+        ServiceState::Stopped
     } else if app_process_alive || daemon_alive {
-        match status.as_ref().map(|status| status.state.as_str()) {
+        match runtime_state {
             Some("error") => ServiceState::Error,
             _ => ServiceState::Starting,
         }
@@ -808,10 +1031,36 @@ fn write_status_state(path: &Path, state: &str, last_error: Option<String>) -> R
     let mut status = read_status(path)?;
     status.state = state.to_string();
     status.updated_at = timestamp();
-    if last_error.is_some() {
-        status.last_error = last_error;
-    }
+    status.last_error = last_error;
     write_status(path, &status)
+}
+
+fn write_status_app(
+    path: &Path,
+    app_pid: Option<u32>,
+    state: &str,
+    last_error: Option<String>,
+) -> Result<()> {
+    let mut status = read_status(path)?;
+    status.app_pid = app_pid;
+    status.state = state.to_string();
+    status.updated_at = timestamp();
+    status.last_error = last_error;
+    write_status(path, &status)
+}
+
+fn write_app_request(paths: &AppPaths, request: AppRequest) -> Result<()> {
+    paths.ensure_dirs()?;
+    fs::write(&paths.app_request_path, request.as_str())
+        .with_context(|| format!("failed to write {}", paths.app_request_path.display()))
+}
+
+async fn stop_app_child(app: &mut Option<Child>) -> Result<()> {
+    if let Some(child) = app.as_mut() {
+        stop_child(child).await?;
+    }
+    *app = None;
+    Ok(())
 }
 
 async fn stop_child(child: &mut Child) -> Result<()> {
