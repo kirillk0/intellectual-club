@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SERVER_DIR="${REPO_ROOT}/server"
+LAUNCHER="${REPO_ROOT}/build/dev/bin/intellectual-club-launcher"
+
+if [[ ! -x "${LAUNCHER}" ]]; then
+  cat >&2 <<EOF
+Missing dev launcher: ${LAUNCHER}
+
+Build dev artifacts first:
+  ./bin/build-dev-artifacts
+EOF
+  exit 1
+fi
+
+launcher_database_url() {
+  local status_json
+
+  status_json="$("${LAUNCHER}" status --json 2>/dev/null || true)"
+  [[ -n "${status_json}" ]] || return 0
+
+  python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+if not payload.get("running"):
+    sys.exit(0)
+
+postgres = payload.get("postgres") or {}
+status = payload.get("status") or {}
+
+if not postgres.get("healthy"):
+    sys.exit(0)
+
+database_url = status.get("database_url")
+if isinstance(database_url, str) and database_url.strip():
+    print(database_url.strip())
+' <<<"${status_json}"
+}
+
+database_url="$(launcher_database_url)"
+
+if [[ -z "${database_url}" ]]; then
+  "${LAUNCHER}" start
+  database_url="$(launcher_database_url)"
+fi
+
+if [[ -z "${database_url}" ]]; then
+  echo "Failed to obtain PostgreSQL URL from the dev launcher." >&2
+  "${LAUNCHER}" status --json >&2 || true
+  exit 1
+fi
+
+export IC_TEST_DATABASE_URL="${database_url}"
+
+cd "${SERVER_DIR}"
+exec mix test "$@"

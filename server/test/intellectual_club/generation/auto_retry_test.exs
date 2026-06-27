@@ -453,7 +453,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     latest_step = List.last(steps)
 
     if message.status == :generating and retry_count >= expected_count and
-         active_retry_step?(latest_step) do
+         length(steps) >= expected_count + 1 and active_retry_step?(latest_step) do
       message
     else
       if System.monotonic_time(:millisecond) < deadline do

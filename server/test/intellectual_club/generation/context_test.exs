@@ -1666,11 +1666,19 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!()
 
-    Ecto.Adapters.SQL.query!(
-      Db.repo(),
-      "UPDATE llm_providers SET type = ? WHERE id = ?",
-      ["missing_provider_type", provider.id]
-    )
+    if Db.postgres?() do
+      Ecto.Adapters.SQL.query!(
+        Db.repo(),
+        "UPDATE llm_providers SET type = $1 WHERE id = $2",
+        ["missing_provider_type", provider.id]
+      )
+    else
+      Ecto.Adapters.SQL.query!(
+        Db.repo(),
+        "UPDATE llm_providers SET type = ? WHERE id = ?",
+        ["missing_provider_type", provider.id]
+      )
+    end
 
     configuration =
       LlmConfiguration

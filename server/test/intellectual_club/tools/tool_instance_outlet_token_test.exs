@@ -120,7 +120,7 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
     repo = IntellectualClub.Db.repo()
 
     if IntellectualClub.Db.postgres?() do
-      repo.query!("UPDATE tool_instances SET secrets = $1::jsonb WHERE id = $2", [
+      repo.query!("UPDATE tool_instances SET secrets = $1::text::jsonb WHERE id = $2", [
         payload,
         tool_instance_id
       ])

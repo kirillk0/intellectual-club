@@ -1,20 +1,7 @@
 import Config
 
-data_dir = Path.expand("../../data", __DIR__)
-File.mkdir_p!(data_dir)
-test_partition = System.get_env("MIX_TEST_PARTITION") || ""
-
-# Configure your database
-#
-# The MIX_TEST_PARTITION environment variable can be used
-# to provide built-in test partitioning in CI environment.
-# Run `mix help test` for more information.
-config :intellectual_club, IntellectualClub.Repo,
-  database: Path.join(data_dir, "intellectual_club_test#{test_partition}.db"),
-  pool_size: 1,
-  default_transaction_mode: :immediate,
-  busy_timeout: 15_000,
-  pool: Ecto.Adapters.SQL.Sandbox
+# Tests require PostgreSQL and never fall back to the legacy SQLite repo.
+import_config "test_database.exs"
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
