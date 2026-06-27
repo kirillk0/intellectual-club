@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -775,6 +775,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
     if !bin_path.exists() {
         bail!("Phoenix release binary not found: {}", bin_path.display());
     }
+    let public_host = launcher_public_host();
 
     let log = OpenOptions::new()
         .create(true)
@@ -791,7 +792,9 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
         .env("PHX_SERVER", "true")
         .env("DATABASE_URL", database_url)
         .env("PORT", config.app_port.to_string())
-        .env("PHX_HOST", "localhost")
+        .env("PHX_HOST", public_host)
+        .env("PHX_SCHEME", "http")
+        .env("PHX_PORT", config.app_port.to_string())
         .env("POOL_SIZE", "10")
         .env("SECRET_KEY_BASE", &config.secret_key_base)
         .env("TOKEN_SIGNING_SECRET", &config.token_signing_secret)
@@ -1030,6 +1033,25 @@ fn resolve_app_dir(config: &LauncherConfig) -> Result<PathBuf> {
     }
     default_app_dir()
         .ok_or_else(|| anyhow!("app_dir is not configured and could not be discovered"))
+}
+
+fn launcher_public_host() -> String {
+    env::var("IC_LAUNCHER_PUBLIC_HOST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(local_lan_ipv4_host)
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn local_lan_ipv4_host() -> Option<String> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
+
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip.to_string()),
+        _ => None,
+    }
 }
 
 fn open_url(url: &str) -> Result<()> {

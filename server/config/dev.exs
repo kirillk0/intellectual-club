@@ -3,6 +3,8 @@ import Config
 data_dir = Path.expand("../../data", __DIR__)
 File.mkdir_p!(data_dir)
 
+dev_release? = System.get_env("IC_DEV_RELEASE") in ["1", "true", "TRUE", "yes", "YES"]
+
 # Configure your database
 config :intellectual_club, IntellectualClub.Repo,
   database: Path.join(data_dir, "intellectual_club_dev.db"),
@@ -24,11 +26,16 @@ config :intellectual_club, IntellectualClubWeb.Endpoint,
   code_reloader: false,
   debug_errors: true,
   secret_key_base: "jxc3+D6zxaH82CtZgqwNoBx0T/Zg5iy5tjVLC0rt2iH96Him1r9dw3De5yQJR4Xg",
-  watchers: [
-    esbuild: {Esbuild, :install_and_run, [:intellectual_club, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:intellectual_club, ~w(--watch)]},
-    npm: ["run", "build:watch", cd: Path.expand("../../frontend", __DIR__)]
-  ]
+  watchers:
+    if(dev_release?,
+      do: false,
+      else: [
+        esbuild:
+          {Esbuild, :install_and_run, [:intellectual_club, ~w(--sourcemap=inline --watch)]},
+        tailwind: {Tailwind, :install_and_run, [:intellectual_club, ~w(--watch)]},
+        npm: ["run", "build:watch", cd: Path.expand("../../frontend", __DIR__)]
+      ]
+    )
 
 # ## SSL Support
 #

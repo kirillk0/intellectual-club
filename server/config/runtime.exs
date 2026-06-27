@@ -20,8 +20,9 @@ if System.get_env("PHX_SERVER") do
   config :intellectual_club, IntellectualClubWeb.Endpoint, server: true
 end
 
-config :intellectual_club, IntellectualClubWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+endpoint_http_port = String.to_integer(System.get_env("PORT", "4000"))
+
+config :intellectual_club, IntellectualClubWeb.Endpoint, http: [port: endpoint_http_port]
 
 if demo_chunk_delay_ms = System.get_env("DEMO_CHUNK_DELAY_MS") do
   config :intellectual_club, :demo_chunk_delay_ms, String.to_integer(demo_chunk_delay_ms)
@@ -66,6 +67,24 @@ else
     ecto_repos: [IntellectualClub.Repo]
 end
 
+phx_host =
+  case System.get_env("PHX_HOST") do
+    nil ->
+      nil
+
+    value ->
+      value = String.trim(value)
+      if value == "", do: nil, else: value
+  end
+
+if config_env() != :prod && phx_host do
+  phx_scheme = System.get_env("PHX_SCHEME") || "http"
+  phx_port = System.get_env("PHX_PORT") || Integer.to_string(endpoint_http_port)
+
+  config :intellectual_club, IntellectualClubWeb.Endpoint,
+    url: [host: phx_host, port: String.to_integer(phx_port), scheme: phx_scheme]
+end
+
 if config_env() == :prod do
   token_signing_secret =
     System.get_env("TOKEN_SIGNING_SECRET") ||
@@ -100,12 +119,16 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  host = phx_host || "example.com"
+  scheme = System.get_env("PHX_SCHEME") || "https"
+
+  port =
+    System.get_env("PHX_PORT") || if(scheme == "https", do: "443", else: "#{endpoint_http_port}")
 
   config :intellectual_club, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :intellectual_club, IntellectualClubWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: String.to_integer(port), scheme: scheme],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

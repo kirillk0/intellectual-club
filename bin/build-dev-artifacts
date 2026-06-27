@@ -7,7 +7,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SERVER_DIR="${REPO_ROOT}/server"
 NATIVE_DIR="${REPO_ROOT}/native_tools"
 BUILD_DIR="${REPO_ROOT}/build/dev"
-RELEASE_SRC="${SERVER_DIR}/_build/prod/rel/intellectual_club"
+RELEASE_ENV="${IC_DEV_RELEASE_ENV:-dev}"
+RELEASE_SRC="${SERVER_DIR}/_build/${RELEASE_ENV}/rel/intellectual_club"
 RELEASE_DEST="${BUILD_DIR}/intellectual_club"
 BIN_DEST="${BUILD_DIR}/bin"
 
@@ -25,9 +26,9 @@ copy_binary() {
 }
 
 pushd "${SERVER_DIR}" >/dev/null
-MIX_ENV=prod mix deps.get --only prod
-MIX_ENV=prod mix assets.deploy
-MIX_ENV=prod mix release --overwrite
+MIX_ENV="${RELEASE_ENV}" mix deps.get
+IC_DEV_RELEASE=1 MIX_ENV="${RELEASE_ENV}" mix assets.build
+IC_DEV_RELEASE=1 MIX_ENV="${RELEASE_ENV}" mix release --overwrite
 popd >/dev/null
 
 cargo build --manifest-path "${NATIVE_DIR}/Cargo.toml" --release --locked
