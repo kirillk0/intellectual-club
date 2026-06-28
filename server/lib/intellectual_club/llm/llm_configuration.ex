@@ -59,14 +59,9 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
     end
   end
 
-  sqlite do
-    table("llm_configurations")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_configurations")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

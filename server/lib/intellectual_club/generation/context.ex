@@ -13,7 +13,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
@@ -424,7 +424,7 @@ defmodule IntellectualClub.Generation.Context do
          request_payload,
          actor
        ) do
-    case Db.repo().transaction(fn ->
+    case Repo.transaction(fn ->
            generating_message_params = %{
              chat_id: chat_id,
              parent_id: target_parent_id,

@@ -9,8 +9,6 @@ import Config
 
 config :intellectual_club,
   ecto_repos: [IntellectualClub.Repo],
-  active_repo: IntellectualClub.Repo,
-  active_data_layer: AshSqlite.DataLayer,
   generators: [timestamp_type: :utc_datetime],
   ash_domains: [
     IntellectualClub.Accounts,

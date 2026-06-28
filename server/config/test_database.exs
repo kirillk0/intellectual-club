@@ -63,11 +63,9 @@ test_database_name =
 database_url = replace_database_name.(base_database_url, test_database_name)
 
 config :intellectual_club,
-  active_repo: IntellectualClub.PostgresRepo,
-  active_data_layer: AshPostgres.DataLayer,
-  ecto_repos: [IntellectualClub.PostgresRepo]
+  ecto_repos: [IntellectualClub.Repo]
 
-config :intellectual_club, IntellectualClub.PostgresRepo,
+config :intellectual_club, IntellectualClub.Repo,
   url: database_url,
   pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
   priv: "priv/repo",

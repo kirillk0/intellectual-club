@@ -9,7 +9,7 @@ defmodule IntellectualClub.Sharing do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatShare
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationShare
   alias IntellectualClub.Tools.BotToolBinding
@@ -91,7 +91,7 @@ defmodule IntellectualClub.Sharing do
   end
 
   defp transaction(fun) when is_function(fun, 1) do
-    repo = Db.repo()
+    repo = Repo
 
     case repo.transaction(fn -> fun.(repo) end) do
       {:ok, value} -> {:ok, value}

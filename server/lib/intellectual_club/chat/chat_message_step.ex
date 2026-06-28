@@ -14,14 +14,9 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("chat_message_steps")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_message_steps")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

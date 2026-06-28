@@ -19,7 +19,7 @@ defmodule IntellectualClub.Accounts do
   json_api do
     routes do
       base_route "/users", IntellectualClub.Accounts.User do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         patch(:update)
@@ -28,7 +28,7 @@ defmodule IntellectualClub.Accounts do
       end
 
       base_route "/user-groups", IntellectualClub.Accounts.UserGroup do
-        index :admin_read
+        index(:admin_read)
         get(:admin_read)
         post(:create)
         patch(:update)
@@ -36,7 +36,7 @@ defmodule IntellectualClub.Accounts do
       end
 
       base_route "/user-knowledge-blocks", IntellectualClub.Accounts.UserKnowledgeBlock do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         patch(:update)

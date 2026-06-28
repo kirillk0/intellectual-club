@@ -8,14 +8,13 @@ defmodule IntellectualClub.Files.File do
   use IntellectualClub.Resource,
     domain: IntellectualClub.Files
 
-  sqlite do
-    table("files")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("files")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:sha256], name: "files_sha256_index")
+    end
   end
 
   attributes do

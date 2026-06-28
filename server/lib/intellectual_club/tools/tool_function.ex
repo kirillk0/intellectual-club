@@ -10,14 +10,13 @@ defmodule IntellectualClub.Tools.ToolFunction do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("tool_functions")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("tool_functions")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "tool_functions_owner_id_index")
+    end
   end
 
   attributes do

@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     ca-certificates \
-    libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
@@ -45,7 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     libssl3 \
     libncurses6 \
-    libsqlite3-0 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

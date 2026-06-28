@@ -8,7 +8,6 @@ defmodule IntellectualClub.Chat.ChatMessage do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Chat.MessageContentFts
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
@@ -75,14 +74,15 @@ defmodule IntellectualClub.Chat.ChatMessage do
     end)
   end
 
-  sqlite do
-    table("chat_messages")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_messages")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:chat_id, :created_at, :id], name: "chat_messages_chat_created_id_index")
+      index([:chat_id, :parent_id], name: "chat_messages_chat_parent_id_index")
+      index([:owner_id, :chat_id], name: "chat_messages_owner_chat_id_index")
+    end
   end
 
   attributes do
@@ -153,14 +153,6 @@ defmodule IntellectualClub.Chat.ChatMessage do
 
   actions do
     defaults([:read])
-
-    read :fts_search do
-      argument :fts_match, :string do
-        allow_nil?(false)
-      end
-
-      modify_query({MessageContentFts, :modify_message_query, []})
-    end
 
     destroy :destroy do
       primary?(true)

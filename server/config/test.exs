@@ -1,6 +1,6 @@
 import Config
 
-# Tests require PostgreSQL and never fall back to the legacy SQLite repo.
+# Tests require PostgreSQL.
 import_config "test_database.exs"
 
 # We don't run a server during test. If one is required,

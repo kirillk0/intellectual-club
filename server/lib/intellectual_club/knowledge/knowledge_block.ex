@@ -88,14 +88,13 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
 
   defp duplicate_file_bindings(_source_id, duplicated, _actor), do: {:ok, duplicated}
 
-  sqlite do
-    table("knowledge_blocks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("knowledge_blocks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:image_file_id], name: "knowledge_blocks_image_file_id_index")
+    end
   end
 
   attributes do

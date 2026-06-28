@@ -11,14 +11,14 @@ defmodule IntellectualClub.Bots.BotShare do
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
   alias IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare
 
-  sqlite do
-    table("bot_shares")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("bot_shares")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:bot_id], name: "bot_shares_bot_id_index")
+      index([:user_group_id], name: "bot_shares_user_group_id_index")
+    end
   end
 
   attributes do

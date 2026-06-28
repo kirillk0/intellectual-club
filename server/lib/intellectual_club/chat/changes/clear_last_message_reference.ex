@@ -10,12 +10,12 @@ defmodule IntellectualClub.Chat.Changes.ClearLastMessageReference do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, _opts, _context) do
     Ash.Changeset.before_action(changeset, fn changeset ->
-      repo = Db.repo()
+      repo = Repo
       chat_id = changeset.data.id
       actor = changeset.context[:private][:actor]
 

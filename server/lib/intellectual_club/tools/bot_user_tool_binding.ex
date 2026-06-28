@@ -10,14 +10,9 @@ defmodule IntellectualClub.Tools.BotUserToolBinding do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("bot_user_tool_bindings")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("bot_user_tool_bindings")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

@@ -15,7 +15,7 @@ defmodule IntellectualClub.Knowledge do
   json_api do
     routes do
       base_route "/knowledge-blocks", IntellectualClub.Knowledge.KnowledgeBlock do
-        index :search,
+        index(:search,
           default_fields: [
             :name,
             :version,
@@ -25,6 +25,7 @@ defmodule IntellectualClub.Knowledge do
             :shared_incoming,
             :shared_outgoing
           ]
+        )
 
         get(:read,
           default_fields: [
@@ -49,7 +50,7 @@ defmodule IntellectualClub.Knowledge do
       end
 
       base_route "/knowledge-tags", IntellectualClub.Knowledge.KnowledgeTag do
-        index :search
+        index(:search)
         get(:read)
         post(:create)
         patch(:update)
@@ -57,7 +58,7 @@ defmodule IntellectualClub.Knowledge do
       end
 
       base_route "/knowledge-block-tags", IntellectualClub.Knowledge.KnowledgeBlockTag do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         delete(:destroy)

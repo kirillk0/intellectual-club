@@ -60,91 +60,80 @@ postgres_url? = fn
   url -> String.starts_with?(url, ["postgres://", "postgresql://", "ecto://"])
 end
 
-use_postgres? =
+launcher_database_url = fn ->
+  repo_root = Path.expand("../..", __DIR__)
+  launcher_path = Path.join([repo_root, "build", "dev", "bin", "intellectual-club-launcher"])
+
+  with launcher_path when is_binary(launcher_path) <- System.find_executable(launcher_path),
+       {output, 0} <- System.cmd(launcher_path, ["status", "--json"], stderr_to_stdout: true),
+       true <- Regex.match?(~r/"running"\s*:\s*true/, output),
+       [_, url] <- Regex.run(~r/"database_url"\s*:\s*"([^"]+)"/, output) do
+    String.trim(url)
+  else
+    _ -> nil
+  end
+end
+
+replace_database_name = fn url, database_name ->
+  uri = URI.parse(url)
+  URI.to_string(%{uri | path: "/" <> database_name})
+end
+
+base_database_url =
+  case config_env() do
+    :test ->
+      trim_env.("IC_TEST_DATABASE_URL") || trim_env.("DATABASE_URL") || launcher_database_url.()
+
+    :prod ->
+      trim_env.("DATABASE_URL")
+
+    _ ->
+      trim_env.("DATABASE_URL") || launcher_database_url.()
+  end
+
+unless postgres_url?.(base_database_url) do
+  raise """
+  PostgreSQL DATABASE_URL is required.
+
+  Set DATABASE_URL to a PostgreSQL URL. For dev/test you can also start the dev launcher:
+
+      ./bin/build-dev-artifacts
+      build/dev/bin/intellectual-club-launcher start
+  """
+end
+
+database_url =
   if config_env() == :test do
-    launcher_database_url = fn ->
-      repo_root = Path.expand("../..", __DIR__)
-      launcher_path = Path.join([repo_root, "build", "dev", "bin", "intellectual-club-launcher"])
-
-      with launcher_path when is_binary(launcher_path) <- System.find_executable(launcher_path),
-           {output, 0} <- System.cmd(launcher_path, ["status", "--json"], stderr_to_stdout: true),
-           true <- Regex.match?(~r/"running"\s*:\s*true/, output),
-           [_, url] <- Regex.run(~r/"database_url"\s*:\s*"([^"]+)"/, output) do
-        String.trim(url)
-      else
-        _ -> nil
-      end
-    end
-
-    replace_database_name = fn url, database_name ->
-      uri = URI.parse(url)
-      URI.to_string(%{uri | path: "/" <> database_name})
-    end
-
-    base_database_url =
-      trim_env.("IC_TEST_DATABASE_URL") ||
-        trim_env.("DATABASE_URL") ||
-        launcher_database_url.()
-
-    unless postgres_url?.(base_database_url) do
-      raise """
-      PostgreSQL is required for MIX_ENV=test.
-
-      Set IC_TEST_DATABASE_URL or DATABASE_URL to a PostgreSQL URL, or start the dev launcher:
-
-          ./bin/build-dev-artifacts
-          build/dev/bin/intellectual-club-launcher start
-          cd server && mix test
-
-      You can also use the wrapper, which starts the launcher when needed:
-
-          ./bin/server-test
-      """
-    end
-
     test_partition = System.get_env("MIX_TEST_PARTITION") || ""
 
     test_database_name =
       (trim_env.("IC_TEST_DATABASE_NAME") || "intellectual_club_test") <> test_partition
 
-    database_url = replace_database_name.(base_database_url, test_database_name)
+    replace_database_name.(base_database_url, test_database_name)
+  else
+    base_database_url
+  end
 
-    config :intellectual_club,
-      active_repo: IntellectualClub.PostgresRepo,
-      active_data_layer: AshPostgres.DataLayer,
-      ecto_repos: [IntellectualClub.PostgresRepo]
+config :intellectual_club,
+  ecto_repos: [IntellectualClub.Repo]
 
-    config :intellectual_club, IntellectualClub.PostgresRepo,
-      url: database_url,
-      pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-      priv: "priv/repo",
+repo_config = [
+  url: database_url,
+  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+  priv: "priv/repo"
+]
+
+repo_config =
+  if config_env() == :test do
+    Keyword.merge(repo_config,
       pool: Ecto.Adapters.SQL.Sandbox,
       show_sensitive_data_on_connection_error: true
-
-    true
+    )
   else
-    database_url = trim_env.("DATABASE_URL")
-    use_postgres? = postgres_url?.(database_url)
-
-    if use_postgres? do
-      config :intellectual_club,
-        active_repo: IntellectualClub.PostgresRepo,
-        active_data_layer: AshPostgres.DataLayer,
-        ecto_repos: [IntellectualClub.PostgresRepo]
-
-      config :intellectual_club, IntellectualClub.PostgresRepo,
-        url: database_url,
-        pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-        priv: "priv/repo"
-    else
-      config :intellectual_club,
-        active_repo: IntellectualClub.Repo,
-        active_data_layer: AshSqlite.DataLayer,
-        ecto_repos: [IntellectualClub.Repo]
-    end
-
-    use_postgres?
+    repo_config
   end
+
+config :intellectual_club, IntellectualClub.Repo, repo_config
 
 phx_host =
   case System.get_env("PHX_HOST") do
@@ -173,18 +162,6 @@ if config_env() == :prod do
 
   config :intellectual_club,
     token_signing_secret: token_signing_secret
-
-  if !use_postgres? do
-    data_dir = runtime_data_dir
-    File.mkdir_p!(data_dir)
-
-    database_path =
-      System.get_env("DATABASE_PATH") || Path.join(data_dir, "intellectual_club.sqlite3")
-
-    config :intellectual_club, IntellectualClub.Repo,
-      database: database_path,
-      pool_size: 1
-  end
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you

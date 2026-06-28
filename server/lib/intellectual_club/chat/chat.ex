@@ -264,14 +264,26 @@ defmodule IntellectualClub.Chat.Chat do
 
   defp maybe_put_switch_target(opts, _target_id), do: opts
 
-  sqlite do
-    table("chats")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chats")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id, :updated_at, :id], name: "chats_owner_updated_id_index")
+      index([:parent_chat_id], name: "chats_parent_chat_id_index")
+      index([:parent_message_id], name: "chats_parent_message_id_index")
+      index([:parent_relation_kind], name: "chats_parent_relation_kind_index")
+    end
+
+    custom_statements do
+      statement :chats_note_trgm_index do
+        up(
+          "CREATE INDEX IF NOT EXISTS chats_note_trgm_index ON chats USING gin (note gin_trgm_ops) WHERE note <> ''"
+        )
+
+        down("DROP INDEX IF EXISTS chats_note_trgm_index")
+      end
+    end
   end
 
   attributes do

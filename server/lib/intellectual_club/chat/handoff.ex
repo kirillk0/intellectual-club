@@ -9,7 +9,7 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -133,14 +133,14 @@ defmodule IntellectualClub.Chat.Handoff do
   def summary_request, do: @summary_request
 
   defp create_target_with_summary(source, actor, rolloff, source_message_id) do
-    Db.repo().transaction(fn ->
+    Repo.transaction(fn ->
       target = create_target_chat!(source, actor, source_message_id)
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
       contents =
         case rolloff_message_contents(rolloff) do
           {:ok, contents} -> contents
-          {:error, error} -> Db.repo().rollback(error)
+          {:error, error} -> Repo.rollback(error)
         end
 
       {:ok, message} =

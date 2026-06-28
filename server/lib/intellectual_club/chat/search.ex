@@ -12,9 +12,7 @@ defmodule IntellectualClub.Chat.Search do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Listing
-  alias IntellectualClub.Chat.MessageContentFts
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
 
   require Ash.Query
 
@@ -27,7 +25,7 @@ defmodule IntellectualClub.Chat.Search do
   @searchable_trace_item_types [:input, :answer]
 
   @type bot_filter :: nil | :none | integer()
-  @type content_search :: {:contains, String.t()} | {:fts, MessageContentFts.t()}
+  @type content_search :: {:contains, String.t()}
 
   @type message_hit :: %{
           id: integer(),
@@ -273,18 +271,7 @@ defmodule IntellectualClub.Chat.Search do
   defp message_content_search(""), do: :empty
 
   defp message_content_search(term) when is_binary(term) do
-    if Db.sqlite?() do
-      case MessageContentFts.build(term) do
-        %MessageContentFts{} = query -> {:fts, query}
-        _other -> :empty
-      end
-    else
-      {:contains, term}
-    end
-  end
-
-  defp filter_trace_search(query, {:fts, %MessageContentFts{} = fts}) do
-    Ash.Query.for_read(query, :fts_search, %{fts_match: MessageContentFts.match_query(fts)})
+    {:contains, term}
   end
 
   defp filter_trace_search(query, {:contains, term}) when is_binary(term) do
@@ -524,19 +511,6 @@ defmodule IntellectualClub.Chat.Search do
     end)
   end
 
-  defp read_matching_text_contents_for_items(item_ids, {:fts, %MessageContentFts{} = fts}, actor)
-       when is_list(item_ids) do
-    item_ids
-    |> chunk_ids()
-    |> Enum.flat_map(fn chunk ->
-      ChatMessageContent
-      |> Ash.Query.filter(chat_message_item_id in ^chunk and kind == :text)
-      |> Ash.Query.for_read(:fts_search, %{fts_match: MessageContentFts.match_query(fts)})
-      |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
-      |> Ash.read!(actor: actor)
-    end)
-  end
-
   defp chunk_ids(ids) when is_list(ids) do
     ids
     |> Enum.filter(&is_integer/1)
@@ -569,11 +543,6 @@ defmodule IntellectualClub.Chat.Search do
   end
 
   defp build_snippet(text, search, radius \\ @snippet_radius)
-
-  defp build_snippet(text, {:fts, %MessageContentFts{} = fts}, radius)
-       when is_integer(radius) do
-    MessageContentFts.build_snippet(text, fts, radius)
-  end
 
   defp build_snippet(text, {:contains, term}, radius) when is_integer(radius) do
     build_exact_snippet(text, term, radius)
@@ -751,10 +720,6 @@ defmodule IntellectualClub.Chat.Search do
   end
 
   defp contains_query_term(term) when is_binary(term) do
-    if Db.postgres?() do
-      CiString.new(term)
-    else
-      term
-    end
+    CiString.new(term)
   end
 end

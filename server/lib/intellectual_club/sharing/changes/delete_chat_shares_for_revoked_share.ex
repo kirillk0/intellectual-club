@@ -8,7 +8,7 @@ defmodule IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare do
   import Ecto.Query, only: [from: 2]
 
   alias Ash.Changeset
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, opts, _context) do
@@ -45,7 +45,7 @@ defmodule IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare do
          :bot
        )
        when is_integer(bot_id) and is_integer(user_group_id) do
-    Db.repo().delete_all(
+    Repo.delete_all(
       from(s in "chat_shares",
         where: s.bot_id == ^bot_id and s.user_group_id == ^user_group_id
       )
@@ -59,7 +59,7 @@ defmodule IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare do
          :llm_configuration
        )
        when is_integer(configuration_id) and is_integer(user_group_id) do
-    Db.repo().delete_all(
+    Repo.delete_all(
       from(s in "chat_shares",
         where:
           s.llm_configuration_id == ^configuration_id and

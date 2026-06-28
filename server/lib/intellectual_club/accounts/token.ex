@@ -8,14 +8,9 @@ defmodule IntellectualClub.Accounts.Token do
     extensions: [AshAuthentication.TokenResource],
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("tokens")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("tokens")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   policies do

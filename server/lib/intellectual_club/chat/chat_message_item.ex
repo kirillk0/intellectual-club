@@ -14,14 +14,13 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
   alias IntellectualClub.Chat.Changes.ValidateToolResultItemLink
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("chat_message_items")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_message_items")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:tool_call_item_id], name: "chat_message_items_tool_call_item_id_index")
+    end
   end
 
   attributes do

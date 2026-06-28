@@ -7,13 +7,10 @@ defmodule IntellectualClub.Application do
 
   @impl true
   def start(_type, _args) do
-    active_repo = Application.fetch_env!(:intellectual_club, :active_repo)
-
     children = [
       IntellectualClubWeb.Telemetry,
-      active_repo,
-      {Ecto.Migrator,
-       repos: Application.fetch_env!(:intellectual_club, :ecto_repos), skip: skip_migrations?()},
+      IntellectualClub.Repo,
+      {Ecto.Migrator, repos: [IntellectualClub.Repo], skip: skip_migrations?()},
       {AshAuthentication.Supervisor, otp_app: :intellectual_club},
       {DNSCluster, query: Application.get_env(:intellectual_club, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: IntellectualClub.PubSub},

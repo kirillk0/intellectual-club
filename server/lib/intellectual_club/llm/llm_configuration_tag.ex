@@ -10,14 +10,9 @@ defmodule IntellectualClub.Llm.LlmConfigurationTag do
 
   require Ash.Query
 
-  sqlite do
-    table("llm_configuration_tags")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_configuration_tags")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

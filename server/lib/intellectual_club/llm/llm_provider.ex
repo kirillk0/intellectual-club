@@ -11,14 +11,9 @@ defmodule IntellectualClub.Llm.LlmProvider do
   alias IntellectualClub.Duplication
   alias IntellectualClub.Llm.Changes.ValidateProviderAuth
 
-  sqlite do
-    table("llm_providers")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_providers")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

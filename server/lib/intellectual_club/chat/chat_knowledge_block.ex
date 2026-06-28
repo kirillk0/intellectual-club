@@ -10,14 +10,13 @@ defmodule IntellectualClub.Chat.ChatKnowledgeBlock do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("chat_knowledge_blocks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_knowledge_blocks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:chat_id, :enabled], name: "chat_knowledge_blocks_chat_enabled_index")
+    end
   end
 
   attributes do

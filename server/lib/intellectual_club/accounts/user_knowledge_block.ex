@@ -10,14 +10,14 @@ defmodule IntellectualClub.Accounts.UserKnowledgeBlock do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("user_knowledge_blocks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("user_knowledge_blocks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "user_knowledge_blocks_owner_id_index")
+      index([:owner_id, :enabled], name: "user_knowledge_blocks_owner_enabled_index")
+    end
   end
 
   attributes do

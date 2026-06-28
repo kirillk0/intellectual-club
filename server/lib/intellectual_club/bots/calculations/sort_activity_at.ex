@@ -8,7 +8,7 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
 
   use Ash.Resource.Calculation
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def load(_query, _opts, _context), do: [:id, :updated_at, :created_at]
@@ -37,7 +37,7 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
 
   defp load_last_message_at_by_bot(bot_ids, actor_id) do
     {sql, params} = latest_message_sql(bot_ids, actor_id)
-    rows = Db.repo().query!(sql, params).rows || []
+    rows = Repo.query!(sql, params).rows || []
 
     Map.new(rows, fn [bot_id, raw_datetime] ->
       {bot_id, normalize_datetime(raw_datetime)}
@@ -49,12 +49,7 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
 
     {owner_clause, params} =
       if is_integer(actor_id) do
-        owner_placeholder =
-          case Db.adapter() do
-            :postgres -> "$#{length(bot_ids) + 1}"
-            _ -> "?"
-          end
-
+        owner_placeholder = "$#{length(bot_ids) + 1}"
         {" AND c.owner_id = #{owner_placeholder}", bot_ids ++ [actor_id]}
       else
         {"", bot_ids}
@@ -72,13 +67,7 @@ defmodule IntellectualClub.Bots.Calculations.SortActivityAt do
   end
 
   defp sql_placeholders(count, start_index) when is_integer(count) and count > 0 do
-    case Db.adapter() do
-      :postgres ->
-        Enum.map_join(0..(count - 1), ", ", fn offset -> "$#{start_index + offset}" end)
-
-      _ ->
-        Enum.map_join(1..count, ", ", fn _index -> "?" end)
-    end
+    Enum.map_join(0..(count - 1), ", ", fn offset -> "$#{start_index + offset}" end)
   end
 
   defp normalize_datetime(%DateTime{} = value), do: value

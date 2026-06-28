@@ -15,14 +15,9 @@ defmodule IntellectualClub.Knowledge.KnowledgeTag do
 
   require Ash.Query
 
-  sqlite do
-    table("knowledge_tags")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("knowledge_tags")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

@@ -8,14 +8,9 @@ defmodule IntellectualClub.Accounts.UserGroup do
     extensions: [AshAdmin.Resource, AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("user_groups")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("user_groups")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

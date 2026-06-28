@@ -24,14 +24,13 @@ defmodule IntellectualClub.Tools.ToolInstance do
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.Changes.ValidateToolType
 
-  sqlite do
-    table("tool_instances")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("tool_instances")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "tool_instances_owner_id_index")
+    end
   end
 
   attributes do

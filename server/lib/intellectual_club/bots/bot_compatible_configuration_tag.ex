@@ -10,14 +10,18 @@ defmodule IntellectualClub.Bots.BotCompatibleConfigurationTag do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("bot_compatible_configuration_tags")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("bot_compatible_configuration_tags")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "bot_compatible_configuration_tags_owner_id_index")
+      index([:bot_id], name: "bot_compatible_configuration_tags_bot_id_index")
+
+      index([:llm_configuration_tag_id],
+        name: "bot_compatible_configuration_tags_llm_configuration_tag_id_index"
+      )
+    end
   end
 
   attributes do

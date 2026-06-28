@@ -1,16 +1,6 @@
 import Config
 
-data_dir = Path.expand("../../data", __DIR__)
-File.mkdir_p!(data_dir)
-
 dev_release? = System.get_env("IC_DEV_RELEASE") in ["1", "true", "TRUE", "yes", "YES"]
-
-# Configure your database
-config :intellectual_club, IntellectualClub.Repo,
-  database: Path.join(data_dir, "intellectual_club_dev.db"),
-  pool_size: 5,
-  stacktrace: true,
-  show_sensitive_data_on_connection_error: true
 
 # For development, we disable any cache and enable
 # debugging without code reloading.

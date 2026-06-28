@@ -10,14 +10,15 @@ defmodule IntellectualClub.Llm.LlmConfigurationKnowledgeBlock do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("llm_configuration_knowledge_blocks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_configuration_knowledge_blocks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:llm_configuration_id, :enabled],
+        name: "llm_configuration_knowledge_blocks_config_enabled_index"
+      )
+    end
   end
 
   attributes do

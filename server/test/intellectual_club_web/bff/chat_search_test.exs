@@ -12,7 +12,6 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
 
   test "GET /api/bff/chat-search/:id/messages splits active/inactive hits", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
@@ -112,12 +111,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "рив"})
     payload = json_response(conn, 200)
 
-    if Db.sqlite?() do
-      assert payload["active"] == []
-    else
-      assert Enum.map(payload["active"] || [], & &1["content"]) == ["Привет мир"]
-    end
-
+    assert Enum.map(payload["active"] || [], & &1["content"]) == ["Привет мир"]
     assert payload["inactive"] == []
   end
 
@@ -139,29 +133,21 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     {:ok, matching} = Threads.add_message_to_end(chat, :user, "alpha beta", actor: actor)
     {:ok, _other} = Threads.add_message_to_end(chat, :assistant, "alpha only", actor: actor)
 
-    if Db.sqlite?() do
-      conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
-      payload = json_response(conn, 200)
+    exact_order_conn =
+      get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "alpha beta"})
 
-      assert Enum.map(payload["active"] || [], & &1["id"]) == [matching.id]
-      assert payload["inactive"] == []
-    else
-      exact_order_conn =
-        get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "alpha beta"})
+    exact_order_payload = json_response(exact_order_conn, 200)
 
-      exact_order_payload = json_response(exact_order_conn, 200)
+    assert Enum.map(exact_order_payload["active"] || [], & &1["id"]) == [matching.id]
+    assert exact_order_payload["inactive"] == []
 
-      assert Enum.map(exact_order_payload["active"] || [], & &1["id"]) == [matching.id]
-      assert exact_order_payload["inactive"] == []
+    reversed_conn =
+      get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
 
-      reversed_conn =
-        get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta alpha"})
+    reversed_payload = json_response(reversed_conn, 200)
 
-      reversed_payload = json_response(reversed_conn, 200)
-
-      assert reversed_payload["active"] == []
-      assert reversed_payload["inactive"] == []
-    end
+    assert reversed_payload["active"] == []
+    assert reversed_payload["inactive"] == []
   end
 
   test "GET /api/bff/chat-list/search returns meta/active/inactive match types", %{conn: conn} do

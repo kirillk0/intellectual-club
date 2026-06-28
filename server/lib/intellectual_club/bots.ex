@@ -15,7 +15,7 @@ defmodule IntellectualClub.Bots do
   json_api do
     routes do
       base_route "/bots", IntellectualClub.Bots.Bot do
-        index :read,
+        index(:read,
           default_fields: [
             :name,
             :blocks_count,
@@ -28,6 +28,7 @@ defmodule IntellectualClub.Bots do
             :updated_at,
             :sort_activity_at
           ]
+        )
 
         get(:read,
           default_fields: [
@@ -56,7 +57,7 @@ defmodule IntellectualClub.Bots do
       end
 
       base_route "/bot-knowledge-blocks", IntellectualClub.Bots.BotKnowledgeBlock do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         patch(:update)
@@ -65,7 +66,7 @@ defmodule IntellectualClub.Bots do
 
       base_route "/bot-compatible-configuration-tags",
                  IntellectualClub.Bots.BotCompatibleConfigurationTag do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         delete(:destroy)

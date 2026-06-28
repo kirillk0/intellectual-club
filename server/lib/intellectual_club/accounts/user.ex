@@ -15,14 +15,9 @@ defmodule IntellectualClub.Accounts.User do
     PreventSelfDestroy
   }
 
-  sqlite do
-    table("users")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("users")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

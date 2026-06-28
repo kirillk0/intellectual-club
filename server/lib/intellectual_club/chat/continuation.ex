@@ -9,12 +9,12 @@ defmodule IntellectualClub.Chat.Continuation do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.MessageTreeCopy
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @spec continue_chat(integer(), map()) :: {:ok, Chat.t()} | {:error, term()}
   def continue_chat(source_chat_id, actor) when is_integer(source_chat_id) do
     with {:ok, %Chat{} = source} <- Ash.get(Chat, source_chat_id, actor: actor) do
-      Db.repo().transaction(fn ->
+      Repo.transaction(fn ->
         target = create_target_chat!(source, actor)
         copy_active_branch_to_target!(source, target, actor)
       end)

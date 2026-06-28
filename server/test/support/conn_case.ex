@@ -9,10 +9,7 @@ defmodule IntellectualClubWeb.ConnCase do
 
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
-  are reverted at the end of every test. If you are using
-  PostgreSQL, you can run database tests asynchronously by setting
-  `use IntellectualClubWeb.ConnCase, async: true`. SQLite tests must keep
-  `async: false` because SQLite only supports one writer at a time.
+  are reverted at the end of every test.
   """
 
   use ExUnit.CaseTemplate

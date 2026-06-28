@@ -11,14 +11,14 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
   alias IntellectualClub.Files.Changes.DeleteAssociatedFile
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("knowledge_block_files")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("knowledge_block_files")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:knowledge_block_id], name: "knowledge_block_files_knowledge_block_id_index")
+      index([:file_id], name: "knowledge_block_files_file_id_index")
+    end
   end
 
   attributes do

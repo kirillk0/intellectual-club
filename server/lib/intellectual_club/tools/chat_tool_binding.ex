@@ -10,14 +10,14 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("chat_tool_bindings")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_tool_bindings")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "chat_tool_bindings_owner_id_index")
+      index([:chat_id, :enabled], name: "chat_tool_bindings_chat_enabled_index")
+    end
   end
 
   attributes do

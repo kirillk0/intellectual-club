@@ -10,14 +10,14 @@ defmodule IntellectualClub.Chat.MessageBookmark do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("message_bookmarks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("message_bookmarks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "message_bookmarks_owner_id_index")
+      index([:chat_message_id], name: "message_bookmarks_chat_message_id_index")
+    end
   end
 
   attributes do

@@ -9,7 +9,7 @@ defmodule IntellectualClub.Chat.BranchMove do
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.MessageTreeCopy
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmUsageRecord
 
   require Ash.Query
@@ -25,7 +25,7 @@ defmodule IntellectualClub.Chat.BranchMove do
     with {:ok, %Chat{} = source} <- fetch_source_chat(source_chat_or_id, actor),
          messages <- load_messages(source.id, actor),
          {:ok, context} <- build_move_context(source, messages, message_id) do
-      Db.repo().transaction(fn -> perform_move!(context, actor) end)
+      Repo.transaction(fn -> perform_move!(context, actor) end)
       |> unwrap_transaction()
     end
   end

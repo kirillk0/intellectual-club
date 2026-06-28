@@ -8,14 +8,17 @@ defmodule IntellectualClub.Outlets.PairingRequest do
   use IntellectualClub.Resource,
     domain: IntellectualClub.Outlets
 
-  sqlite do
-    table("outlet_pairing_requests")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("outlet_pairing_requests")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:device_code_hash], name: "outlet_pairing_requests_device_code_hash_index")
+
+      index([:status, :expires_at, :created_at],
+        name: "outlet_pairing_requests_status_expires_created_index"
+      )
+    end
   end
 
   attributes do

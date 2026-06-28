@@ -5,7 +5,7 @@ defmodule IntellectualClub.Chat.Calculations.BlocksCount do
 
   use Ash.Resource.Calculation
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def load(_query, _opts, _context), do: [:id]
@@ -29,7 +29,7 @@ defmodule IntellectualClub.Chat.Calculations.BlocksCount do
         GROUP BY chat_id
         """
 
-        rows = Db.repo().query!(sql, chat_ids).rows || []
+        rows = Repo.query!(sql, chat_ids).rows || []
 
         Map.new(rows, fn [chat_id, blocks_count] ->
           {
@@ -50,9 +50,6 @@ defmodule IntellectualClub.Chat.Calculations.BlocksCount do
   end
 
   defp sql_placeholders(count) when is_integer(count) and count > 0 do
-    case Db.adapter() do
-      :postgres -> Enum.map_join(1..count, ", ", fn index -> "$#{index}" end)
-      _ -> Enum.map_join(1..count, ", ", fn _index -> "?" end)
-    end
+    Enum.map_join(1..count, ", ", fn index -> "$#{index}" end)
   end
 end

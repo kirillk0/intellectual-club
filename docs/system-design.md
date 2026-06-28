@@ -30,7 +30,7 @@
 │                                                                          │
 │  ┌──────────────────────────┐      ┌───────────────────────────────────┐ │
 │  │     Outlet Subsystem     │      │        Scheduling (Oban)          │ │
-│  │ (Phoenix Controllers/API)│      │   DB-backed, SQLite + PostgreSQL  │ │
+│  │ (Phoenix Controllers/API)│      │        DB-backed on PostgreSQL    │ │
 │  └──────────────────────────┘      └───────────────────────────────────┘ │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -62,7 +62,7 @@ Outlet ─────────► MDM (Ash)        : ToolInstance, OutletCal
    - for the runtime trace (the latest unfinished step), a full snapshot is preferred because structural deltas become complex and unstable when stream order is non-deterministic
    - old steps are never polled because they are immutable after finalization
 7. **The SPA is served by Phoenix**. There is one build pipeline (`mix assets.*`) and one dev watcher flow, without a separate Vite dev server.
-8. **Module calculations handle aggregates** and work the same way on SQLite and PostgreSQL.
+8. **Module calculations handle aggregates** through Ash/PostgreSQL expressions.
 
 ### 1.4 Generation streaming model (trace-only)
 
@@ -110,9 +110,8 @@ Consequence: fields such as `reasoning_deltas` or `content_deltas` are only spec
 | Frontend | Vue 3 + TypeScript SPA | decoupled from server rendering |
 | Frontend build | Vite (build-only) | Outputs to `priv/static`, Phoenix serves in dev and prod |
 | Streaming (browser) | HTTP polling | Predictable UX, mobile-friendly, reconnect via snapshots |
-| Database (desktop) | SQLite via AshSqlite | Zero-config, single file |
-| Database (server) | PostgreSQL via AshPostgres | Concurrent access, production workloads |
-| Background jobs | Oban | DB-backed scheduler, supports SQLite + PostgreSQL, no Redis |
+| Database | PostgreSQL via AshPostgres | Production and desktop runtime storage, concurrent access |
+| Background jobs | Oban | PostgreSQL-backed scheduler, no Redis |
 | HTTP client | Req / Finch | LLM provider streaming, tool execution |
 | Auth | ash_authentication | Session-based auth, local-mode auto-login |
 | Token counting | Custom heuristic | `ceil(byte_size(text) / 3.5)` is good enough for rough estimates |

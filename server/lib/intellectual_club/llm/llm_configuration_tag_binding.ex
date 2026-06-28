@@ -10,14 +10,21 @@ defmodule IntellectualClub.Llm.LlmConfigurationTagBinding do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("llm_configuration_tag_bindings")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_configuration_tag_bindings")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "llm_configuration_tag_bindings_owner_id_index")
+
+      index([:llm_configuration_id],
+        name: "llm_configuration_tag_bindings_llm_configuration_id_index"
+      )
+
+      index([:llm_configuration_tag_id],
+        name: "llm_configuration_tag_bindings_llm_configuration_tag_id_index"
+      )
+    end
   end
 
   attributes do

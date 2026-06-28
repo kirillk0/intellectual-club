@@ -14,12 +14,12 @@ defmodule IntellectualClub.Tools.Changes.DeleteToolDependents do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, _opts, _context) do
     Ash.Changeset.before_action(changeset, fn changeset ->
-      repo = Db.repo()
+      repo = Repo
       tool_instance_id = changeset.data.id
 
       delete_tool_functions(repo, tool_instance_id)

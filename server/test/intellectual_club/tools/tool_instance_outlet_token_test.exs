@@ -117,19 +117,12 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
   defp write_legacy_token_secret!(tool_instance_id, token)
        when is_integer(tool_instance_id) and is_binary(token) do
     payload = Jason.encode!(%{"token" => token})
-    repo = IntellectualClub.Db.repo()
+    repo = IntellectualClub.Repo
 
-    if IntellectualClub.Db.postgres?() do
-      repo.query!("UPDATE tool_instances SET secrets = $1::text::jsonb WHERE id = $2", [
-        payload,
-        tool_instance_id
-      ])
-    else
-      repo.query!("UPDATE tool_instances SET secrets = ? WHERE id = ?", [
-        payload,
-        tool_instance_id
-      ])
-    end
+    repo.query!("UPDATE tool_instances SET secrets = $1::text::jsonb WHERE id = $2", [
+      payload,
+      tool_instance_id
+    ])
   end
 
   defp error_text(error), do: Exception.message(error)

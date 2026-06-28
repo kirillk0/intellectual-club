@@ -18,7 +18,7 @@ defmodule IntellectualClub.Llm do
   json_api do
     routes do
       base_route "/llm-providers", IntellectualClub.Llm.LlmProvider do
-        index :api_read,
+        index(:api_read,
           default_fields: [
             :name,
             :type,
@@ -29,6 +29,7 @@ defmodule IntellectualClub.Llm do
             :shared_incoming,
             :shared_outgoing
           ]
+        )
 
         get(:api_read,
           default_fields: [
@@ -50,7 +51,7 @@ defmodule IntellectualClub.Llm do
       end
 
       base_route "/llm-configurations", IntellectualClub.Llm.LlmConfiguration do
-        index :read,
+        index(:read,
           default_fields: [
             :provider_id,
             :model_name,
@@ -63,6 +64,7 @@ defmodule IntellectualClub.Llm do
             :shared_incoming,
             :shared_outgoing
           ]
+        )
 
         get(:read,
           default_fields: [
@@ -92,7 +94,7 @@ defmodule IntellectualClub.Llm do
       end
 
       base_route "/llm-configuration-tags", IntellectualClub.Llm.LlmConfigurationTag do
-        index :search
+        index(:search)
         get(:read)
         post(:create)
         patch(:update)
@@ -101,7 +103,7 @@ defmodule IntellectualClub.Llm do
 
       base_route "/llm-configuration-tag-bindings",
                  IntellectualClub.Llm.LlmConfigurationTagBinding do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         delete(:destroy)
@@ -109,7 +111,7 @@ defmodule IntellectualClub.Llm do
 
       base_route "/llm-configuration-knowledge-blocks",
                  IntellectualClub.Llm.LlmConfigurationKnowledgeBlock do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         patch(:update)

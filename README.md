@@ -4,7 +4,7 @@
 
 - `server/` — Phoenix/Ash application
 - `frontend/` — Vite SPA built into `server/priv/static/assets`
-- `data/` — SQLite databases for local development and test runs
+- `data/` — local runtime files, including file storage
 - `native_tools/` — Rust workspace for native helper binaries and outlet runners
 - `bin/` — repository-level helper scripts
 - `docs/` — system documentation
@@ -23,7 +23,7 @@ Helpful commands:
 - `./bin/dev-screen stop`
 - `./bin/run-dev-server` to run the server in the foreground
 
-SQLite databases live under `data/` at the repository root.
+Local development and tests use PostgreSQL through `DATABASE_URL` or the dev launcher database configuration.
 
 ## Docker
 

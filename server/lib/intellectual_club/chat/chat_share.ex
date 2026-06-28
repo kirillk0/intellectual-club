@@ -13,14 +13,16 @@ defmodule IntellectualClub.Chat.ChatShare do
   alias IntellectualClub.Accounts.Changes.RequireActorMembershipInRelatedUserGroup
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("chat_shares")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_shares")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:chat_id], name: "chat_shares_chat_id_index")
+      index([:user_group_id], name: "chat_shares_user_group_id_index")
+      index([:bot_id, :user_group_id], name: "chat_shares_bot_group_index")
+      index([:llm_configuration_id, :user_group_id], name: "chat_shares_config_group_index")
+    end
   end
 
   attributes do

@@ -22,7 +22,7 @@ defmodule IntellectualClub.Chat do
   json_api do
     routes do
       base_route "/chats", IntellectualClub.Chat.Chat do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         post(:copy, route: "/:id/copy")
@@ -35,14 +35,14 @@ defmodule IntellectualClub.Chat do
       end
 
       base_route "/chat-messages", IntellectualClub.Chat.ChatMessage do
-        index :read
+        index(:read)
         get(:read)
         post(:add_user_message_with_contents, route: "/add-user")
         delete(:destroy)
       end
 
       base_route "/chat-knowledge-blocks", IntellectualClub.Chat.ChatKnowledgeBlock do
-        index :read
+        index(:read)
         get(:read)
         post(:create)
         patch(:update)
@@ -50,17 +50,17 @@ defmodule IntellectualClub.Chat do
       end
 
       base_route "/chat-message-steps", IntellectualClub.Chat.ChatMessageStep do
-        index :read
+        index(:read)
         get(:read)
       end
 
       base_route "/chat-message-items", IntellectualClub.Chat.ChatMessageItem do
-        index :read
+        index(:read)
         get(:read)
       end
 
       base_route "/chat-message-contents", IntellectualClub.Chat.ChatMessageContent do
-        index :read
+        index(:read)
         get(:read)
       end
     end

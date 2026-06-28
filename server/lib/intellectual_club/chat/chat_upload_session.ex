@@ -9,14 +9,16 @@ defmodule IntellectualClub.Chat.ChatUploadSession do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("chat_upload_sessions")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_upload_sessions")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:chat_id], name: "chat_upload_sessions_chat_id_index")
+      index([:owner_id], name: "chat_upload_sessions_owner_id_index")
+      index([:status], name: "chat_upload_sessions_status_index")
+      index([:expires_at], name: "chat_upload_sessions_expires_at_index")
+    end
   end
 
   attributes do

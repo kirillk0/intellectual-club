@@ -6,7 +6,7 @@ defmodule IntellectualClub.Chat.ListingStats do
   import Ecto.Query, only: [from: 2]
 
   alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   require Ash.Query
 
@@ -26,7 +26,7 @@ defmodule IntellectualClub.Chat.ListingStats do
   @spec sidebar(any()) :: sidebar_stats()
   def sidebar(%{id: owner_id} = actor) when is_integer(owner_id) do
     rows =
-      Db.repo().all(
+      Repo.all(
         from(c in "chats",
           left_join: b in "bots",
           on: b.id == c.bot_id and b.owner_id == c.owner_id,

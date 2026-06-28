@@ -10,14 +10,9 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockTag do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("knowledge_block_tags")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("knowledge_block_tags")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

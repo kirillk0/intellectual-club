@@ -10,14 +10,24 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
     domain: IntellectualClub.Llm,
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("llm_usage_records")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_usage_records")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:configuration_owner_id_snapshot, :occurred_at],
+        name: "llm_usage_records_owner_occurred_at_index"
+      )
+
+      index(
+        [:configuration_owner_id_snapshot, :llm_configuration_external_id_snapshot, :occurred_at],
+        name: "llm_usage_records_owner_config_occurred_at_index"
+      )
+
+      index([:usage_user_id_snapshot, :occurred_at],
+        name: "llm_usage_records_user_occurred_at_index"
+      )
+    end
   end
 
   attributes do

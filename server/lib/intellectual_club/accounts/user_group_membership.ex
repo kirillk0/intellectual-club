@@ -7,14 +7,14 @@ defmodule IntellectualClub.Accounts.UserGroupMembership do
     domain: IntellectualClub.Accounts,
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("user_group_memberships")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("user_group_memberships")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:user_id], name: "user_group_memberships_user_id_index")
+      index([:user_group_id], name: "user_group_memberships_user_group_id_index")
+    end
   end
 
   attributes do

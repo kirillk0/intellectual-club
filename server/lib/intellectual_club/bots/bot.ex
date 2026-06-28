@@ -105,14 +105,25 @@ defmodule IntellectualClub.Bots.Bot do
 
   defp maybe_attach_duplicated_image(duplicated, _image_file_id, _actor), do: {:ok, duplicated}
 
-  sqlite do
-    table("bots")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("bots")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:image_file_id], name: "bots_image_file_id_index")
+      index([:default_llm_configuration_id], name: "bots_default_llm_configuration_id_index")
+      index([:handoff_message_block_id], name: "bots_handoff_message_block_id_index")
+    end
+
+    custom_statements do
+      statement :bots_name_trgm_index do
+        up(
+          "CREATE INDEX IF NOT EXISTS bots_name_trgm_index ON bots USING gin (name gin_trgm_ops)"
+        )
+
+        down("DROP INDEX IF EXISTS bots_name_trgm_index")
+      end
+    end
   end
 
   attributes do

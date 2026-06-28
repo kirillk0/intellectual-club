@@ -11,18 +11,26 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Chat.MessageContentFts
   alias IntellectualClub.Files.Changes.DeleteAssociatedFile
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
-  sqlite do
-    table("chat_message_contents")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("chat_message_contents")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:file_id], name: "chat_message_contents_file_id_index")
+    end
+
+    custom_statements do
+      statement :chat_message_contents_content_text_trgm_index do
+        up(
+          "CREATE INDEX IF NOT EXISTS chat_message_contents_content_text_trgm_index ON chat_message_contents USING gin (content_text gin_trgm_ops) WHERE kind = 'text'"
+        )
+
+        down("DROP INDEX IF EXISTS chat_message_contents_content_text_trgm_index")
+      end
+    end
   end
 
   attributes do
@@ -87,14 +95,6 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
 
   actions do
     defaults([:read])
-
-    read :fts_search do
-      argument :fts_match, :string do
-        allow_nil?(false)
-      end
-
-      modify_query({MessageContentFts, :modify_content_query, []})
-    end
 
     destroy :destroy do
       primary?(true)

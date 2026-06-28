@@ -11,14 +11,14 @@ defmodule IntellectualClub.Llm.LlmConfigurationShare do
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
   alias IntellectualClub.Sharing.Changes.DeleteChatSharesForRevokedShare
 
-  sqlite do
-    table("llm_configuration_shares")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("llm_configuration_shares")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:llm_configuration_id], name: "llm_configuration_shares_llm_configuration_id_index")
+      index([:user_group_id], name: "llm_configuration_shares_user_group_id_index")
+    end
   end
 
   attributes do

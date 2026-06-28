@@ -7,14 +7,13 @@ defmodule IntellectualClub.Notifications.WebPushSubscription do
     domain: IntellectualClub.Notifications,
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("web_push_subscriptions")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("web_push_subscriptions")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:owner_id], name: "web_push_subscriptions_owner_id_index")
+    end
   end
 
   attributes do

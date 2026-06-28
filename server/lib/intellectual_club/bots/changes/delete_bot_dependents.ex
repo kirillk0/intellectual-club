@@ -17,12 +17,12 @@ defmodule IntellectualClub.Bots.Changes.DeleteBotDependents do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, _opts, _context) do
     Ash.Changeset.before_action(changeset, fn changeset ->
-      repo = Db.repo()
+      repo = Repo
       bot_id = changeset.data.id
       owner_id = actor_id(changeset.context[:private][:actor])
 

@@ -10,14 +10,13 @@ defmodule IntellectualClub.Bots.BotKnowledgeBlock do
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
-  sqlite do
-    table("bot_knowledge_blocks")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("bot_knowledge_blocks")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
+
+    custom_indexes do
+      index([:bot_id, :enabled], name: "bot_knowledge_blocks_bot_enabled_index")
+    end
   end
 
   attributes do

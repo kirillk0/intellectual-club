@@ -7,7 +7,7 @@ defmodule IntellectualClub.Files do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
   alias IntellectualClub.Files.File
   alias IntellectualClub.Files.FilesystemStorage
 
@@ -105,7 +105,7 @@ defmodule IntellectualClub.Files do
   def delete_file_and_maybe_payload(file_id) when is_integer(file_id) do
     case Ash.get(File, file_id, authorize?: false) do
       {:ok, %File{} = file} ->
-        repo = Db.repo()
+        repo = Repo
 
         Ash.transact(
           File,

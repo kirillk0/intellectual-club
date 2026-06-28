@@ -13,12 +13,12 @@ defmodule IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, _opts, _context) do
     Ash.Changeset.before_action(changeset, fn changeset ->
-      repo = Db.repo()
+      repo = Repo
       llm_configuration_id = changeset.data.id
       owner_id = actor_id(changeset.context[:private][:actor])
 

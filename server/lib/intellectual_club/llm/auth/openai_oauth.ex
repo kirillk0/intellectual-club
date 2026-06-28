@@ -8,7 +8,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
 
   import Ecto.Query, only: [from: 2]
 
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @cache_table :ic_openai_oauth_token_cache
   @default_lock_timeout_ms 15_000
@@ -372,7 +372,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   end
 
   defp load_refresh_token(provider_id) when is_integer(provider_id) do
-    repo = Db.repo()
+    repo = Repo
 
     repo.one(
       from(p in "llm_providers",
@@ -388,7 +388,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
 
   defp persist_refresh_token(provider_id, refresh_token)
        when is_integer(provider_id) and is_binary(refresh_token) do
-    repo = Db.repo()
+    repo = Repo
     now = DateTime.utc_now()
     token = String.trim(refresh_token)
 

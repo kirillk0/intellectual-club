@@ -7,14 +7,9 @@ defmodule IntellectualClub.Notifications.WebPushSettings do
     domain: IntellectualClub.Notifications,
     authorizers: [Ash.Policy.Authorizer]
 
-  sqlite do
-    table("web_push_settings")
-    repo(IntellectualClub.Repo)
-  end
-
   postgres do
     table("web_push_settings")
-    repo(IntellectualClub.PostgresRepo)
+    repo(IntellectualClub.Repo)
   end
 
   attributes do

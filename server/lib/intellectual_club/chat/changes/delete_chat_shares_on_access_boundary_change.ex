@@ -8,7 +8,7 @@ defmodule IntellectualClub.Chat.Changes.DeleteChatSharesOnAccessBoundaryChange d
   import Ecto.Query, only: [from: 2]
 
   alias Ash.Changeset
-  alias IntellectualClub.Db
+  alias IntellectualClub.Repo
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -40,7 +40,7 @@ defmodule IntellectualClub.Chat.Changes.DeleteChatSharesOnAccessBoundaryChange d
   end
 
   defp delete_chat_shares(chat_id) when is_integer(chat_id) do
-    Db.repo().delete_all(from(s in "chat_shares", where: s.chat_id == ^chat_id))
+    Repo.delete_all(from(s in "chat_shares", where: s.chat_id == ^chat_id))
     :ok
   end
 
