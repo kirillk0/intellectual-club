@@ -47,7 +47,7 @@ defmodule IntellectualClub.Files.File do
     attribute :storage_backend, :atom do
       allow_nil?(false)
       default(:fs)
-      constraints(one_of: [:db, :fs])
+      constraints(one_of: [:fs])
     end
 
     create_timestamp(:created_at)
