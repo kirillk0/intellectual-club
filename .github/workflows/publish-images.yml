@@ -147,6 +147,7 @@ jobs:
             local tags=("-t" "${image}:sha-${GITHUB_SHA}")
             if [ "${PUSH_MAIN_TAG}" = "true" ]; then
               tags+=("-t" "${image}:main")
+              tags+=("-t" "${image}:latest")
             fi
 
             local refs=()
