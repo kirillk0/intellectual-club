@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      build_app:
+        description: Build and publish the app image
+        type: boolean
+        default: true
+      build_shell_outlet:
+        description: Build and publish the shell outlet image
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -20,35 +29,84 @@ env:
   SHELL_OUTLET_IMAGE: ghcr.io/kirillk0/intellectual-club-shell-outlet
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }} ${{ matrix.platform_key }}
+  changes:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      shell_outlet: ${{ steps.filter.outputs.shell_outlet }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed image inputs
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          INPUT_BUILD_APP: ${{ inputs.build_app }}
+          INPUT_BUILD_SHELL_OUTLET: ${{ inputs.build_shell_outlet }}
+        run: |
+          set -euo pipefail
+
+          app=false
+          shell_outlet=false
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            app="${INPUT_BUILD_APP:-true}"
+            shell_outlet="${INPUT_BUILD_SHELL_OUTLET:-true}"
+          else
+            zero_sha="0000000000000000000000000000000000000000"
+            base="${BEFORE_SHA}"
+
+            if [ -z "${base}" ] || [ "${base}" = "${zero_sha}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              if git rev-parse "${AFTER_SHA}^" >/dev/null 2>&1; then
+                base="$(git rev-parse "${AFTER_SHA}^")"
+              else
+                base="$(git rev-list --max-parents=0 "${AFTER_SHA}")"
+              fi
+            fi
+
+            echo "Changed files between ${base} and ${AFTER_SHA}:"
+            git diff --name-only "${base}" "${AFTER_SHA}" | tee /tmp/changed-files
+
+            while IFS= read -r path; do
+              case "${path}" in
+                Dockerfile|.dockerignore|server/*|frontend/*|.github/workflows/publish-images.yml)
+                  app=true
+                  ;;
+              esac
+
+              case "${path}" in
+                .dockerignore|native_tools/*|.github/workflows/publish-images.yml)
+                  shell_outlet=true
+                  ;;
+              esac
+            done </tmp/changed-files
+          fi
+
+          echo "app=${app}" >>"${GITHUB_OUTPUT}"
+          echo "shell_outlet=${shell_outlet}" >>"${GITHUB_OUTPUT}"
+          echo "app=${app}"
+          echo "shell_outlet=${shell_outlet}"
+
+  build-app:
+    name: Build app ${{ matrix.platform_key }}
     runs-on: ${{ matrix.runner }}
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: app
-            image: ghcr.io/kirillk0/intellectual-club
-            dockerfile: ./Dockerfile
-            platform: linux/amd64
+          - platform: linux/amd64
             platform_key: amd64
             runner: ubuntu-latest
-          - target: app
-            image: ghcr.io/kirillk0/intellectual-club
-            dockerfile: ./Dockerfile
-            platform: linux/arm64
-            platform_key: arm64
-            runner: ubuntu-24.04-arm
-          - target: shell-outlet
-            image: ghcr.io/kirillk0/intellectual-club-shell-outlet
-            dockerfile: ./native_tools/outlet-shell-image/Dockerfile
-            platform: linux/amd64
-            platform_key: amd64
-            runner: ubuntu-latest
-          - target: shell-outlet
-            image: ghcr.io/kirillk0/intellectual-club-shell-outlet
-            dockerfile: ./native_tools/outlet-shell-image/Dockerfile
-            platform: linux/arm64
+          - platform: linux/arm64
             platform_key: arm64
             runner: ubuntu-24.04-arm
 
@@ -70,7 +128,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.image }}
+          images: ${{ env.APP_IMAGE }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
@@ -79,31 +137,34 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.platform_key }}
-          cache-to: type=gha,scope=${{ matrix.target }}-${{ matrix.platform_key }},mode=max
+          outputs: type=image,name=${{ env.APP_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=app-${{ matrix.platform_key }}
+          cache-to: type=gha,scope=app-${{ matrix.platform_key }},mode=max
 
       - name: Export digest
         run: |
-          mkdir -p "/tmp/digests/${{ matrix.target }}"
+          mkdir -p /tmp/digests/app
           digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${{ matrix.target }}/${digest#sha256:}"
+          touch "/tmp/digests/app/${digest#sha256:}"
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.target }}-${{ matrix.platform_key }}
-          path: /tmp/digests/${{ matrix.target }}/*
+          name: digests-app-${{ matrix.platform_key }}
+          path: /tmp/digests/app/*
           if-no-files-found: error
           retention-days: 1
 
-  publish:
-    name: Publish manifests
+  publish-app:
+    name: Publish app manifest
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - changes
+      - build-app
+    if: needs.changes.outputs.app == 'true'
 
     steps:
       - name: Download app digests
@@ -113,6 +174,115 @@ jobs:
           path: /tmp/digests/app
           merge-multiple: true
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        env:
+          PUSH_MAIN_TAG: ${{ github.ref == 'refs/heads/main' }}
+          IMAGE: ${{ env.APP_IMAGE }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          tags=("-t" "${IMAGE}:sha-${GITHUB_SHA}")
+          if [ "${PUSH_MAIN_TAG}" = "true" ]; then
+            tags+=("-t" "${IMAGE}:main")
+            tags+=("-t" "${IMAGE}:latest")
+          fi
+
+          refs=()
+          for digest_file in /tmp/digests/app/*; do
+            refs+=("${IMAGE}@sha256:$(basename "${digest_file}")")
+          done
+
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "Expected 2 digests for ${IMAGE}, got ${#refs[@]}" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+
+  build-shell-outlet:
+    name: Build shell outlet ${{ matrix.platform_key }}
+    runs-on: ${{ matrix.runner }}
+    needs: changes
+    if: needs.changes.outputs.shell_outlet == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            platform_key: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SHELL_OUTLET_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./native_tools/outlet-shell-image/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.SHELL_OUTLET_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=shell-outlet-${{ matrix.platform_key }}
+          cache-to: type=gha,scope=shell-outlet-${{ matrix.platform_key }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/shell-outlet
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/shell-outlet/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-shell-outlet-${{ matrix.platform_key }}
+          path: /tmp/digests/shell-outlet/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-shell-outlet:
+    name: Publish shell outlet manifest
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - build-shell-outlet
+    if: needs.changes.outputs.shell_outlet == 'true'
+
+    steps:
       - name: Download shell outlet digests
         uses: actions/download-artifact@v4
         with:
@@ -130,38 +300,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create and push manifest lists
+      - name: Create and push manifest list
         env:
           PUSH_MAIN_TAG: ${{ github.ref == 'refs/heads/main' }}
-          APP_IMAGE: ${{ env.APP_IMAGE }}
-          SHELL_OUTLET_IMAGE: ${{ env.SHELL_OUTLET_IMAGE }}
+          IMAGE: ${{ env.SHELL_OUTLET_IMAGE }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          publish_manifest() {
-            local image="$1"
-            local digest_dir="$2"
-            shift 2
+          tags=("-t" "${IMAGE}:sha-${GITHUB_SHA}")
+          if [ "${PUSH_MAIN_TAG}" = "true" ]; then
+            tags+=("-t" "${IMAGE}:main")
+            tags+=("-t" "${IMAGE}:latest")
+          fi
 
-            local tags=("-t" "${image}:sha-${GITHUB_SHA}")
-            if [ "${PUSH_MAIN_TAG}" = "true" ]; then
-              tags+=("-t" "${image}:main")
-              tags+=("-t" "${image}:latest")
-            fi
+          refs=()
+          for digest_file in /tmp/digests/shell-outlet/*; do
+            refs+=("${IMAGE}@sha256:$(basename "${digest_file}")")
+          done
 
-            local refs=()
-            for digest_file in "${digest_dir}"/*; do
-              refs+=("${image}@sha256:$(basename "${digest_file}")")
-            done
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "Expected 2 digests for ${IMAGE}, got ${#refs[@]}" >&2
+            exit 1
+          fi
 
-            if [ "${#refs[@]}" -ne 2 ]; then
-              echo "Expected 2 digests for ${image}, got ${#refs[@]}" >&2
-              exit 1
-            fi
-
-            docker buildx imagetools create "${tags[@]}" "${refs[@]}"
-          }
-
-          publish_manifest "${APP_IMAGE}" /tmp/digests/app
-          publish_manifest "${SHELL_OUTLET_IMAGE}" /tmp/digests/shell-outlet
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
