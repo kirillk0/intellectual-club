@@ -143,6 +143,11 @@
     <main class="app-main" :class="{ 'app-main--chat': isChatRoute, 'app-main--login': isLoginRoute }">
       <StackRouterView :reopen-key="routeReopenKey" />
     </main>
+
+    <footer v-if="showCodeVersionFooter" class="app-footer">
+      <span>{{ translate('Code version') }}:</span>
+      <code data-i18n-ignore>{{ codeVersionLabel }}</code>
+    </footer>
   </div>
 </template>
 
@@ -175,6 +180,8 @@ const signingOut = ref(false);
 const isLoginRoute = computed(() => route.name === 'login');
 const isChatRoute = computed(() => route.name === 'chat');
 const isLlmConfigurationRoute = computed(() => String(route.name || '').startsWith('llm-'));
+const codeVersionLabel = computed(() => __CODE_VERSION__.label.trim());
+const showCodeVersionFooter = computed(() => Boolean(codeVersionLabel.value) && !isLoginRoute.value && !isChatRoute.value);
 type RouteTitle = string | ((route: RouteLocationNormalizedLoaded) => string);
 
 const resolveRouteTitle = (targetRoute: RouteLocationNormalizedLoaded) => {

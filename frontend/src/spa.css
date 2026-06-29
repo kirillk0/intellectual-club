@@ -698,6 +698,29 @@ fieldset {
   background: transparent;
 }
 
+.app-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  padding:
+    0
+    calc(16px + var(--app-safe-area-right))
+    10px
+    calc(16px + var(--app-safe-area-left));
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.app-footer code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-size: inherit;
+}
+
 .stack-nav {
   position: relative;
   flex: 1;
