@@ -145,7 +145,7 @@
     </main>
 
     <footer v-if="showCodeVersionFooter" class="app-footer">
-      <span>{{ translate('Code version') }}:</span>
+      <span>{{ translate('Build date') }}:</span>
       <code data-i18n-ignore>{{ codeVersionLabel }}</code>
     </footer>
   </div>

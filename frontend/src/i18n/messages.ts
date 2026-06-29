@@ -74,7 +74,7 @@ export const ruMessages: Record<string, string> = {
   'Chat note': 'Заметка чата',
   'Chat unavailable': 'Чат недоступен',
   'Chats': 'Чаты',
-  'Code version': 'Версия кода',
+  'Build date': 'Дата сборки',
   'Choose which tools should be shared with group members and which should be connected by each user.': 'Выберите, какие инструменты будут общими для участников группы, а какие каждый пользователь подключит сам.',
   'Choose a tool.': 'Выберите инструмент.',
   'Choose a tool with the required alias.': 'Выберите инструмент с нужным алиасом.',
