@@ -2,6 +2,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   use ExUnit.Case, async: true
 
   alias IntellectualClub.Llm.Providers.AnthropicMessages
+  alias IntellectualClub.Llm.Providers.GoogleInteractions
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.ResponsesWss
@@ -243,6 +244,147 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
                ]
              }
            ]
+  end
+
+  test "google interactions provider builds stateless initial request from canonical history" do
+    result =
+      GoogleInteractions.build_initial_request(%{
+        history: [%{role: "user", content: "Hello"}],
+        system_prompt: "Use tools when needed.",
+        model_name: "gemini-2.5-flash-lite",
+        parameters: %{"temperature" => 0.1, "max_tokens" => 64},
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Get weather",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"city" => %{"type" => "string"}}
+              }
+            }
+          }
+        ],
+        supports_image_input: false
+      })
+
+    assert result.raw_request["model"] == "gemini-2.5-flash-lite"
+    assert result.raw_request["stream"] == true
+    assert result.raw_request["store"] == false
+    assert result.raw_request["system_instruction"] == "Use tools when needed."
+
+    assert result.raw_request["generation_config"] == %{
+             "temperature" => 0.1,
+             "max_output_tokens" => 64
+           }
+
+    assert result.raw_request["input"] == [
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => "Hello"}]
+             }
+           ]
+
+    assert result.raw_request["tools"] == [
+             %{
+               "type" => "function",
+               "name" => "weather__get",
+               "description" => "Get weather",
+               "parameters" => %{
+                 "type" => "object",
+                 "properties" => %{"city" => %{"type" => "string"}}
+               }
+             }
+           ]
+
+    assert result.request_snapshot.model_input == result.raw_request["input"]
+    assert result.request_snapshot.system_prompt == "Use tools when needed."
+  end
+
+  test "google interactions provider rebuilds stateless followup with function results" do
+    initial =
+      GoogleInteractions.build_initial_request(%{
+        history: [%{role: "user", content: "Weather in Paris?"}],
+        system_prompt: "System",
+        model_name: "gemini-2.5-flash-lite",
+        parameters: %{"temperature" => 0},
+        tools: [],
+        supports_image_input: false
+      })
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: initial.raw_request,
+        raw_response: %{
+          "steps" => [
+            %{
+              "type" => "function_call",
+              "id" => "call_1",
+              "signature" => "sig_1",
+              "name" => "weather__get",
+              "arguments" => %{"city" => "Paris"}
+            }
+          ]
+        }
+      )
+
+    results = [
+      %{
+        call_id: "call_1",
+        name: "weather__get",
+        raw: %{
+          "type" => "function_call",
+          "id" => "call_1",
+          "signature" => "sig_1",
+          "name" => "weather__get",
+          "arguments" => %{"city" => "Paris"}
+        },
+        text: ~s({"temperature":18.5}),
+        result_raw: %{"temperature" => 18.5},
+        media_contents: [],
+        artifact_contents: []
+      }
+    ]
+
+    followup =
+      GoogleInteractions.build_followup_request(%{
+        context: %{
+          model_name: "gemini-2.5-flash-lite",
+          parameters: %{"temperature" => 0},
+          system_prompt: "System",
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: results,
+        tools: []
+      })
+
+    assert followup.raw_request["system_instruction"] == "System"
+    assert followup.raw_request["generation_config"] == %{"temperature" => 0}
+
+    assert followup.raw_request["input"] == [
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => "Weather in Paris?"}]
+             },
+             %{
+               "type" => "function_call",
+               "id" => "call_1",
+               "signature" => "sig_1",
+               "name" => "weather__get",
+               "arguments" => %{"city" => "Paris"}
+             },
+             %{
+               "type" => "function_result",
+               "call_id" => "call_1",
+               "name" => "weather__get",
+               "result" => [%{"type" => "text", "text" => ~s({"temperature":18.5})}]
+             }
+           ]
+
+    assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
+             ~s({"temperature":18.5})
   end
 
   test "anthropic provider builds initial messages request from canonical chat history" do
