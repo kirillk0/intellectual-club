@@ -50,6 +50,10 @@ defmodule IntellectualClub.Chat.Listing do
 
       _ ->
         case Map.get(chat, :last_message) do
+          %{finished_at: %DateTime{} = finished_at} -> finished_at
+          %{finished_at: %NaiveDateTime{} = finished_at} -> finished_at
+          %{updated_at: %DateTime{} = updated_at} -> updated_at
+          %{updated_at: %NaiveDateTime{} = updated_at} -> updated_at
           %{created_at: %DateTime{} = created_at} -> created_at
           %{created_at: %NaiveDateTime{} = created_at} -> created_at
           _ -> chat.created_at

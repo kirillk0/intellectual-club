@@ -253,6 +253,47 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert is_binary(idle_payload["revision"])
   end
 
+  test "GET /api/bff/chat-list sorts by last message finish time", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    long_running_chat = create_chat!(actor, "Long running")
+    {:ok, prompt} = Threads.add_message_to_end(long_running_chat, :user, "Start", actor: actor)
+
+    {:ok, long_running_message} =
+      Threads.add_message(long_running_chat, :assistant, "Done later",
+        actor: actor,
+        parent_id: prompt.id
+      )
+
+    newer_started_chat = create_chat!(actor, "Newer started")
+
+    {:ok, _newer_started_message} =
+      Threads.add_message_to_end(newer_started_chat, :user, "Started later", actor: actor)
+
+    finished_at =
+      long_running_message.finished_at
+      |> DateTime.add(60, :second)
+
+    long_running_message
+    |> Ash.Changeset.for_update(
+      :set_generation_state,
+      %{status: :done, finished_at: finished_at},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list")
+      |> json_response(200)
+
+    long_running_payload = chat_payload(payload, long_running_chat.id)
+
+    assert chat_ids(payload) == [long_running_chat.id, newer_started_chat.id]
+    assert long_running_payload["last_activity_at"] == DateTime.to_iso8601(finished_at)
+  end
+
   test "GET /api/bff/chat-list sorts empty chats by creation after chat metadata changes", %{
     conn: conn
   } do

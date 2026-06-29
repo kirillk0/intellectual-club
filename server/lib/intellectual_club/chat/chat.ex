@@ -377,7 +377,10 @@ defmodule IntellectualClub.Chat.Chat do
 
     calculate :last_activity_at,
               :utc_datetime_usec,
-              expr(last_message.created_at || created_at) do
+              expr(
+                last_message.finished_at || last_message.updated_at || last_message.created_at ||
+                  created_at
+              ) do
       public?(false)
     end
 
