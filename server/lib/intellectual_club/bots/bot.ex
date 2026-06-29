@@ -221,6 +221,10 @@ defmodule IntellectualClub.Bots.Bot do
       public?(true)
     end
 
+    has_many :chats, IntellectualClub.Chat.Chat do
+      destination_attribute(:bot_id)
+    end
+
     many_to_many :shared_groups, IntellectualClub.Accounts.UserGroup do
       through(IntellectualClub.Bots.BotShare)
       source_attribute_on_join_resource(:bot_id)
@@ -234,22 +238,25 @@ defmodule IntellectualClub.Bots.Bot do
     end
   end
 
+  aggregates do
+    count :blocks_count, :knowledge_block_bindings do
+      public?(true)
+    end
+
+    count :tools_count, :tool_bindings do
+      public?(true)
+    end
+  end
+
   calculations do
     calculate :sort_activity_at,
               :utc_datetime_usec,
-              {IntellectualClub.Bots.Calculations.SortActivityAt, []} do
-      public?(true)
-    end
-
-    calculate :blocks_count,
-              :integer,
-              {IntellectualClub.Bots.Calculations.BlocksCount, []} do
-      public?(true)
-    end
-
-    calculate :tools_count,
-              :integer,
-              {IntellectualClub.Bots.Calculations.ToolsCount, []} do
+              expr(
+                max([:chats, :messages],
+                  field: :created_at,
+                  filter: expr(owner_id == ^actor(:id))
+                ) || updated_at || created_at
+              ) do
       public?(true)
     end
 

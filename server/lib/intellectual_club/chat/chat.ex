@@ -356,6 +356,20 @@ defmodule IntellectualClub.Chat.Chat do
     end
   end
 
+  aggregates do
+    count :message_count, :messages do
+      public?(true)
+    end
+
+    count :blocks_count, :knowledge_block_bindings do
+      public?(true)
+    end
+
+    count :tools_count, :tool_bindings do
+      public?(true)
+    end
+  end
+
   calculations do
     calculate :can_edit, :boolean, expr(owner_id == ^actor(:id)) do
       public?(true)
@@ -382,22 +396,6 @@ defmodule IntellectualClub.Chat.Chat do
                   created_at
               ) do
       public?(false)
-    end
-
-    calculate :message_count, :integer, {IntellectualClub.Chat.Calculations.MessageCount, []} do
-      public?(true)
-    end
-
-    calculate :blocks_count,
-              :integer,
-              {IntellectualClub.Chat.Calculations.BlocksCount, []} do
-      public?(true)
-    end
-
-    calculate :tools_count,
-              :integer,
-              {IntellectualClub.Chat.Calculations.ToolsCount, []} do
-      public?(true)
     end
 
     calculate :active_root_message_id,
