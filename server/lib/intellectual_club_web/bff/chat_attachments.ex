@@ -153,13 +153,8 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
     Enum.reduce_while(uploads, {:ok, []}, fn
       %Plug.Upload{} = upload, {:ok, acc} ->
         with :ok <- ChatUploadPolicy.validate_upload(upload, upload_policy),
-             {:ok, payload} <- File.read(upload.path),
              {:ok, file} <-
-               Files.create_from_upload(%{
-                 filename: upload.filename,
-                 mime_type: upload.content_type,
-                 payload: payload
-               }) do
+               Files.create_from_path(upload.filename, upload.content_type, upload.path) do
           {:cont, {:ok, acc ++ [file.id]}}
         else
           {:error, reason} ->

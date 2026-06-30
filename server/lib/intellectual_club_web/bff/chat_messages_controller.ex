@@ -400,12 +400,12 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         |> put_status(:not_found)
         |> json(%{error: "Content not found"})
       else
-        case ContentFiles.load_payload_for_content(content) do
-          {:ok, {_content, file, payload}} ->
+        case ContentFiles.load_path_for_content(content) do
+          {:ok, {_content, file, path}} ->
             disposition =
               if Media.image_mime_type?(file.mime_type), do: :inline, else: :attachment
 
-            ImageControllerHelpers.send_loaded_file(conn, file, payload, disposition: disposition)
+            ImageControllerHelpers.send_file_path(conn, file, path, disposition: disposition)
 
           {:error, _reason} ->
             conn

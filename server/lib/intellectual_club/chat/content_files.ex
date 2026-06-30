@@ -23,6 +23,18 @@ defmodule IntellectualClub.Chat.ContentFiles do
     end
   end
 
+  @spec load_path_for_content(ChatMessageContent.t()) ::
+          {:ok, {ChatMessageContent.t(), StoredFile.t(), String.t()}} | {:error, term()}
+  def load_path_for_content(%ChatMessageContent{} = content) do
+    if is_integer(content.file_id) do
+      with {:ok, {file, path}} <- Files.load_path(content.file_id) do
+        {:ok, {content, file, path}}
+      end
+    else
+      {:error, :file_not_found}
+    end
+  end
+
   @spec load_payload_for_execution(String.t(), ExecutionContext.t()) ::
           {:ok, {ChatMessageContent.t() | nil, StoredFile.t(), binary()}} | {:error, term()}
   def load_payload_for_execution(file_external_id, %ExecutionContext{} = context)
@@ -38,6 +50,21 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   def load_payload_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
 
+  @spec load_path_for_execution(String.t(), ExecutionContext.t()) ::
+          {:ok, {ChatMessageContent.t() | nil, StoredFile.t(), String.t()}} | {:error, term()}
+  def load_path_for_execution(file_external_id, %ExecutionContext{} = context)
+      when is_binary(file_external_id) do
+    with {:ok, normalized_external_id} <- normalize_external_id(file_external_id) do
+      case load_chat_content_path(normalized_external_id, context) do
+        {:ok, {_content, _file, _path}} = ok -> ok
+        {:error, :not_found} -> load_available_file_path(normalized_external_id, context)
+        {:error, error} -> {:error, error}
+      end
+    end
+  end
+
+  def load_path_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
+
   defp load_chat_content_payload(normalized_external_id, %ExecutionContext{} = context) do
     with {:ok, %ChatMessageContent{} = content} <-
            find_content_for_file(normalized_external_id, context),
@@ -50,10 +77,32 @@ defmodule IntellectualClub.Chat.ContentFiles do
     end
   end
 
+  defp load_chat_content_path(normalized_external_id, %ExecutionContext{} = context) do
+    with {:ok, %ChatMessageContent{} = content} <-
+           find_content_for_file(normalized_external_id, context),
+         %StoredFile{} = file <- Map.get(content, :file),
+         {:ok, {_stored_file, path}} <- Files.load_path(file.id) do
+      {:ok, {content, file, path}}
+    else
+      nil -> {:error, :file_not_found}
+      {:error, error} -> {:error, error}
+    end
+  end
+
   defp load_available_file_payload(normalized_external_id, %ExecutionContext{} = context) do
     if available_file_external_id?(normalized_external_id, context) do
       with {:ok, {file, payload}} <- Files.load_payload_by_external_id(normalized_external_id) do
         {:ok, {nil, file, payload}}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp load_available_file_path(normalized_external_id, %ExecutionContext{} = context) do
+    if available_file_external_id?(normalized_external_id, context) do
+      with {:ok, {file, path}} <- Files.load_path_by_external_id(normalized_external_id) do
+        {:ok, {nil, file, path}}
       end
     else
       {:error, :not_found}

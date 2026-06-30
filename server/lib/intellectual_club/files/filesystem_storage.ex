@@ -54,6 +54,29 @@ defmodule IntellectualClub.Files.FilesystemStorage do
 
   def store(_sha256, _payload), do: {:error, :invalid_payload}
 
+  @spec store_path(String.t(), String.t()) :: :ok | {:error, term()}
+  def store_path(sha256, source_path) when is_binary(source_path) do
+    with {:ok, path} <- path_for(sha256),
+         :ok <- File.mkdir_p(Path.dirname(path)) do
+      if File.exists?(path) do
+        :ok
+      else
+        tmp_path = temporary_path(path)
+
+        case link_or_copy(source_path, tmp_path) do
+          :ok ->
+            finalize_tmp_path(tmp_path, path)
+
+          {:error, _reason} = error ->
+            _ = File.rm(tmp_path)
+            error
+        end
+      end
+    end
+  end
+
+  def store_path(_sha256, _source_path), do: {:error, :invalid_source_path}
+
   @spec fetch(String.t()) :: {:ok, binary()} | {:error, term()}
   def fetch(sha256) do
     with {:ok, path} <- path_for(sha256) do
@@ -86,6 +109,27 @@ defmodule IntellectualClub.Files.FilesystemStorage do
     case path_for(sha256) do
       {:ok, path} -> File.exists?(path)
       {:error, _reason} -> false
+    end
+  end
+
+  defp link_or_copy(source_path, tmp_path) do
+    case File.ln(source_path, tmp_path) do
+      :ok -> :ok
+      {:error, _reason} -> File.copy(source_path, tmp_path) |> normalize_copy_result()
+    end
+  end
+
+  defp normalize_copy_result({:ok, _bytes}), do: :ok
+  defp normalize_copy_result({:error, _reason} = error), do: error
+
+  defp finalize_tmp_path(tmp_path, path) do
+    case File.rename(tmp_path, path) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        _ = File.rm(tmp_path)
+        if File.exists?(path), do: :ok, else: {:error, reason}
     end
   end
 

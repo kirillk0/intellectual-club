@@ -21,6 +21,10 @@ defmodule IntellectualClubWeb.OutletController do
   alias IntellectualClub.Tools.Drivers.Outlet, as: OutletDriver
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
+  alias IntellectualClubWeb.RequestLimits
+
+  @body_read_length_bytes 1 * 1024 * 1024
+  @outlet_upload_root Path.expand("../../../../assets/outlet-uploads", __DIR__)
 
   def metadata(conn, _params) do
     payload = conn.body_params || %{}
@@ -181,11 +185,7 @@ defmodule IntellectualClubWeb.OutletController do
     else
       with {:ok, {:ok, _call}} <-
              with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end),
-           {:ok, body} <- read_full_body(conn),
-           :ok <- require_non_empty_body(body),
-           {:ok, filename} <- uploaded_filename(conn, payload),
-           {:ok, mime_type} <- uploaded_mime_type(conn, payload),
-           {:ok, file} <- Files.create_from_binary(filename, mime_type, body) do
+           {:ok, conn, file} <- persist_outlet_upload(conn, payload) do
         json(conn, %{
           file: %{
             file_id: file.id,
@@ -223,12 +223,12 @@ defmodule IntellectualClubWeb.OutletController do
           |> put_status(:service_unavailable)
           |> json(%{error: "Outlet runtime failed."})
 
-        {:error, message} when is_binary(message) ->
+        {:error, %Plug.Conn{} = conn, message} when is_binary(message) ->
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: message})
 
-        {:error, error} ->
+        {:error, %Plug.Conn{} = conn, error} ->
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: inspect(error)})
@@ -248,14 +248,12 @@ defmodule IntellectualClubWeb.OutletController do
     else
       case with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end) do
         {:ok, {:ok, %{execution_context: execution_context}}} ->
-          case ContentFiles.load_payload_for_execution(file_external_id, execution_context) do
-            {:ok, {_content, file, payload}} ->
+          case ContentFiles.load_path_for_execution(file_external_id, execution_context) do
+            {:ok, {_content, file, path}} ->
               disposition =
                 if Media.image_mime_type?(file.mime_type), do: :inline, else: :attachment
 
-              ImageControllerHelpers.send_loaded_file(conn, file, payload,
-                disposition: disposition
-              )
+              ImageControllerHelpers.send_file_path(conn, file, path, disposition: disposition)
 
             {:error, _reason} ->
               conn
@@ -556,21 +554,120 @@ defmodule IntellectualClubWeb.OutletController do
     if String.trim(value) == "", do: default, else: value
   end
 
-  defp read_full_body(conn, acc \\ "") do
-    case read_body(conn) do
-      {:ok, chunk, _conn} ->
-        {:ok, acc <> chunk}
-
-      {:more, chunk, conn} ->
-        read_full_body(conn, acc <> chunk)
-
-      {:error, reason} ->
-        {:error, "Failed to read request body: #{inspect(reason)}"}
+  defp persist_outlet_upload(conn, payload) when is_map(payload) do
+    with {:ok, conn, path, size_bytes} <- read_body_to_temp_file(conn) do
+      try do
+        with :ok <- require_non_empty_body(size_bytes),
+             {:ok, filename} <- uploaded_filename(conn, payload),
+             {:ok, mime_type} <- uploaded_mime_type(conn, payload),
+             {:ok, file} <- Files.create_from_path(filename, mime_type, path) do
+          {:ok, conn, file}
+        else
+          {:error, reason} -> {:error, conn, reason}
+        end
+      after
+        _ = File.rm(path)
+      end
     end
   end
 
-  defp require_non_empty_body(body) when is_binary(body) do
-    if byte_size(body) > 0, do: :ok, else: {:error, "Request body is empty."}
+  defp read_body_to_temp_file(conn) do
+    with :ok <- ensure_outlet_upload_root() do
+      path = Path.join(@outlet_upload_root, "#{Ecto.UUID.generate()}.upload")
+      max_bytes = RequestLimits.max_body_length_bytes()
+
+      case File.open(path, [:write, :binary], fn io ->
+             read_body_to_file(conn, io, 0, max_bytes)
+           end) do
+        {:ok, {:ok, conn, size_bytes}} ->
+          {:ok, conn, path, size_bytes}
+
+        {:ok, {:error, conn, reason}} ->
+          _ = File.rm(path)
+          {:error, conn, reason}
+
+        {:error, reason} ->
+          {:error, conn, "Failed to prepare upload storage: #{inspect(reason)}"}
+      end
+    else
+      {:error, reason} ->
+        {:error, conn, reason}
+    end
+  end
+
+  defp read_body_to_file(conn, io, total_bytes, max_bytes) do
+    case read_body(conn,
+           length: @body_read_length_bytes,
+           read_length: @body_read_length_bytes,
+           read_timeout: 30_000
+         ) do
+      {:ok, chunk, conn} ->
+        write_body_chunk(conn, io, total_bytes, chunk, max_bytes, false)
+
+      {:more, chunk, conn} ->
+        write_body_chunk(conn, io, total_bytes, chunk, max_bytes, true)
+
+      {:error, reason} ->
+        {:error, conn, "Failed to read request body: #{inspect(reason)}"}
+    end
+  end
+
+  defp write_body_chunk(conn, io, total_bytes, chunk, max_bytes, more?) do
+    next_total = total_bytes + byte_size(chunk)
+
+    cond do
+      next_total > max_bytes ->
+        case drain_request_body(conn) do
+          {:ok, conn} -> {:error, conn, "Request body is too large."}
+          {:error, conn, reason} -> {:error, conn, reason}
+        end
+
+      true ->
+        try do
+          :ok = IO.binwrite(io, chunk)
+
+          if more? do
+            read_body_to_file(conn, io, next_total, max_bytes)
+          else
+            {:ok, conn, next_total}
+          end
+        rescue
+          exception ->
+            {:error, conn, "Failed to write uploaded file: #{Exception.message(exception)}"}
+        catch
+          :exit, reason ->
+            {:error, conn, "Failed to write uploaded file: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  defp drain_request_body(conn) do
+    case read_body(conn,
+           length: @body_read_length_bytes,
+           read_length: @body_read_length_bytes,
+           read_timeout: 30_000
+         ) do
+      {:ok, _chunk, conn} ->
+        {:ok, conn}
+
+      {:more, _chunk, conn} ->
+        drain_request_body(conn)
+
+      {:error, reason} ->
+        {:error, conn, "Failed to read request body: #{inspect(reason)}"}
+    end
+  end
+
+  defp ensure_outlet_upload_root do
+    File.mkdir_p(@outlet_upload_root)
+    |> case do
+      :ok -> :ok
+      {:error, reason} -> {:error, "Failed to prepare upload storage: #{inspect(reason)}"}
+    end
+  end
+
+  defp require_non_empty_body(size_bytes) when is_integer(size_bytes) do
+    if size_bytes > 0, do: :ok, else: {:error, "Request body is empty."}
   end
 
   defp uploaded_filename(conn, payload) do

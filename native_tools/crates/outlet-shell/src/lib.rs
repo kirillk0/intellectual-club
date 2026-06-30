@@ -240,11 +240,12 @@ impl ShellOutlet {
             .context("failed to read image file")?;
         let mime_type = detect_image_mime(&payload)
             .ok_or_else(|| anyhow!("File content is not a valid image."))?;
+        let sha256 = sha256_file_hex(&path).await?;
         let uploaded = context
-            .upload_call_file(
+            .upload_call_file_path(
                 file_name(&path).as_deref().unwrap_or("image"),
                 mime_type,
-                payload.clone(),
+                &path,
             )
             .await?;
 
@@ -255,7 +256,7 @@ impl ShellOutlet {
         let text = format!("Image {external_id} attached from {}", path.display());
         let raw = json!({
             "path": path.to_string_lossy(),
-            "sha256": sha256_hex(&payload),
+            "sha256": sha256,
         });
 
         Ok(ToolResult {
@@ -278,7 +279,6 @@ impl ShellOutlet {
             return Err(anyhow!("local_path is required"));
         }
 
-        let downloaded = context.download_call_file(&file_id).await?;
         if let Some(parent) = target
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -287,16 +287,16 @@ impl ShellOutlet {
                 .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        tokio::fs::write(&target, &downloaded.payload)
-            .await
-            .with_context(|| format!("failed to write {}", target.display()))?;
+        let downloaded = context
+            .download_call_file_to_path(&file_id, &target)
+            .await?;
 
         Ok(ToolResult::new(
             format!("File {file_id} downloaded to {}", target.display()),
             json!({
                 "file_id": file_id,
                 "path": target.to_string_lossy(),
-                "size_bytes": downloaded.payload.len(),
+                "size_bytes": downloaded.size_bytes,
                 "content_type": downloaded.content_type,
             }),
         ))
@@ -306,17 +306,15 @@ impl ShellOutlet {
         let args: LocalPathArgs =
             serde_json::from_value(args).context("invalid upload_file arguments")?;
         let path = require_local_file(&args.local_path)?;
-        let payload = tokio::fs::read(&path)
-            .await
-            .context("failed to read upload file")?;
         let mime_type = mime_guess::from_path(&path)
             .first_raw()
             .unwrap_or("application/octet-stream");
+        let sha256 = sha256_file_hex(&path).await?;
         let uploaded = context
-            .upload_call_file(
+            .upload_call_file_path(
                 file_name(&path).as_deref().unwrap_or("file.bin"),
                 mime_type,
-                payload.clone(),
+                &path,
             )
             .await?;
         let external_id = uploaded
@@ -328,7 +326,7 @@ impl ShellOutlet {
             text: format!("File {external_id} uploaded"),
             raw: json!({
                 "path": path.to_string_lossy(),
-                "sha256": sha256_hex(&payload),
+                "sha256": sha256,
             }),
             media: Vec::new(),
             artifacts: vec![uploaded],
@@ -811,10 +809,25 @@ fn file_name(path: &Path) -> Option<String> {
         .map(|value| value.to_string_lossy().to_string())
 }
 
-fn sha256_hex(payload: &[u8]) -> String {
+async fn sha256_file_hex(path: &Path) -> Result<String> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open {}", path.display()))?;
     let mut hasher = Sha256::new();
-    hasher.update(payload);
-    hex::encode(hasher.finalize())
+    let mut buffer = vec![0_u8; 64 * 1024];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn detect_image_mime(payload: &[u8]) -> Option<&'static str> {
@@ -978,12 +991,24 @@ mod tests {
         assert_eq!(shlex_join(&["hello world".to_string()]), "'hello world'");
     }
 
-    #[test]
-    fn sha256_hex_is_stable() {
+    #[tokio::test]
+    async fn sha256_file_hex_is_stable() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "outlet-shell-sha256-{}-{suffix}.txt",
+            std::process::id()
+        ));
+        tokio::fs::write(&path, b"hello").await.unwrap();
+
         assert_eq!(
-            sha256_hex(b"hello"),
+            sha256_file_hex(&path).await.unwrap(),
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
+
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[test]

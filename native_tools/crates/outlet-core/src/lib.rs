@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,10 @@ use bytes::Bytes;
 use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use tokio::fs::File as TokioFile;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, Mutex};
+use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -97,6 +101,31 @@ impl CallContext {
         mime_type: &str,
         payload: Vec<u8>,
     ) -> Result<Value> {
+        self.upload_call_file_body(filename, mime_type, reqwest::Body::from(payload))
+            .await
+    }
+
+    pub async fn upload_call_file_path(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<Value> {
+        let file = TokioFile::open(path.as_ref())
+            .await
+            .with_context(|| format!("failed to open {}", path.as_ref().display()))?;
+        let stream = ReaderStream::new(file);
+
+        self.upload_call_file_body(filename, mime_type, reqwest::Body::wrap_stream(stream))
+            .await
+    }
+
+    async fn upload_call_file_body(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        body: reqwest::Body,
+    ) -> Result<Value> {
         let url = join_url(
             &self.server_url,
             &format!("/api/outlet/calls/{}/files", self.call_id),
@@ -115,7 +144,7 @@ impl CallContext {
                 },
             )
             .query(&[("filename", filename)])
-            .body(payload);
+            .body(body);
 
         if filename.is_ascii() {
             request = request.header("X-Filename", filename);
@@ -138,6 +167,70 @@ impl CallContext {
             .cloned()
             .filter(Value::is_object)
             .ok_or_else(|| anyhow!("outlet file upload response is invalid"))
+    }
+
+    pub async fn download_call_file_to_path(
+        &self,
+        file_id: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<DownloadedCallFileMetadata> {
+        let url = join_url(
+            &self.server_url,
+            &format!("/api/outlet/calls/{}/files/{}", self.call_id, file_id),
+        );
+
+        let mut response = self
+            .client
+            .get(url)
+            .bearer_auth(self.token.as_ref())
+            .send()
+            .await
+            .context("failed to download outlet call file")?;
+
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let content_disposition = response
+            .headers()
+            .get("content-disposition")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("file download failed: HTTP {status}: {body}"));
+        }
+
+        let mut file = TokioFile::create(path.as_ref())
+            .await
+            .with_context(|| format!("failed to create {}", path.as_ref().display()))?;
+        let mut size_bytes = 0_u64;
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("failed to read outlet file body")?
+        {
+            size_bytes += chunk.len() as u64;
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("failed to write {}", path.as_ref().display()))?;
+        }
+
+        file.flush()
+            .await
+            .with_context(|| format!("failed to flush {}", path.as_ref().display()))?;
+
+        Ok(DownloadedCallFileMetadata {
+            size_bytes,
+            content_type,
+            content_disposition,
+        })
     }
 
     pub async fn download_call_file(&self, file_id: &str) -> Result<DownloadedCallFile> {
@@ -182,6 +275,13 @@ impl CallContext {
             content_disposition,
         })
     }
+}
+
+#[derive(Debug)]
+pub struct DownloadedCallFileMetadata {
+    pub size_bytes: u64,
+    pub content_type: String,
+    pub content_disposition: String,
 }
 
 #[derive(Debug)]

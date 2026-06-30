@@ -39,7 +39,12 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
          :ok <- require_owner(block, actor),
          {:ok, upload_attrs} <- validate_file_upload(Map.get(params, "file")),
          {:ok, enabled} <- validate_optional_enabled(params),
-         {:ok, file} <- Files.create_from_upload(upload_attrs),
+         {:ok, file} <-
+           Files.create_from_path(
+             upload_attrs.filename,
+             upload_attrs.mime_type,
+             upload_attrs.path
+           ),
          {:ok, attachment} <- create_attachment(block, file, actor, enabled),
          {:ok, attachments} <- list_attachments(block, actor) do
       json(conn, %{
@@ -74,8 +79,8 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
            Helpers.parse_optional_integer(attachment_id),
          {:ok, block} <- Ash.get(KnowledgeBlock, block_id, actor: actor),
          {:ok, attachment} <- get_attachment(block.id, attachment_id, owner?(block, actor)),
-         {:ok, {file, payload}} <- Files.load_payload(attachment.file_id) do
-      ImageControllerHelpers.send_loaded_file(conn, file, payload)
+         {:ok, {file, path}} <- Files.load_path(attachment.file_id) do
+      ImageControllerHelpers.send_file_path(conn, file, path)
     else
       {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
         ImageControllerHelpers.render_not_found(conn)
@@ -182,9 +187,8 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesController do
 
     with :ok <- validate_filename(filename),
          {:ok, stat} <- File.stat(upload.path),
-         :ok <- validate_size(filename, stat.size, max_bytes),
-         {:ok, payload} <- File.read(upload.path) do
-      {:ok, %{filename: filename, mime_type: mime_type, payload: payload}}
+         :ok <- validate_size(filename, stat.size, max_bytes) do
+      {:ok, %{filename: filename, mime_type: mime_type, path: upload.path}}
     else
       {:error, message} when is_binary(message) ->
         {:error, message}

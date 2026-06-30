@@ -65,9 +65,9 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
   def send_stored_file(conn, file_id, opts \\ [])
 
   def send_stored_file(conn, file_id, opts) when is_integer(file_id) and is_list(opts) do
-    case Files.load_payload(file_id) do
-      {:ok, {file, payload}} ->
-        send_loaded_file(conn, file, payload, opts)
+    case Files.load_path(file_id) do
+      {:ok, {file, path}} ->
+        send_file_path(conn, file, path, opts)
 
       {:error, _reason} ->
         render_not_found(conn)
@@ -76,29 +76,46 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
 
   def send_stored_file(conn, _file_id, _opts), do: render_not_found(conn)
 
+  def send_file_path(conn, file, path, opts \\ [])
+
+  def send_file_path(conn, file, path, opts)
+      when is_map(file) and is_binary(path) and is_list(opts) do
+    conn = prepare_file_response(conn, file, opts)
+    etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
+
+    if etag_matches?(conn, etag) do
+      send_resp(conn, :not_modified, "")
+    else
+      send_file(conn, :ok, path)
+    end
+  end
+
   def send_loaded_file(conn, file, payload, opts \\ [])
 
   def send_loaded_file(conn, file, payload, opts) when is_map(file) and is_binary(payload) do
+    conn = prepare_file_response(conn, file, opts)
     etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
-
-    mime_type =
-      Map.get(file, :mime_type) || Map.get(file, "mime_type") || "application/octet-stream"
-
-    filename = Map.get(file, :filename) || Map.get(file, "filename")
-    disposition = Keyword.get(opts, :disposition, :attachment)
-
-    conn =
-      conn
-      |> put_resp_content_type(mime_type)
-      |> put_resp_header("cache-control", "private, no-cache")
-      |> put_resp_header("etag", etag)
-      |> maybe_put_content_disposition(filename, disposition)
 
     if etag_matches?(conn, etag) do
       send_resp(conn, :not_modified, "")
     else
       send_resp(conn, :ok, payload)
     end
+  end
+
+  defp prepare_file_response(conn, file, opts) do
+    mime_type =
+      Map.get(file, :mime_type) || Map.get(file, "mime_type") || "application/octet-stream"
+
+    filename = Map.get(file, :filename) || Map.get(file, "filename")
+    disposition = Keyword.get(opts, :disposition, :attachment)
+    etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
+
+    conn
+    |> put_resp_content_type(mime_type)
+    |> put_resp_header("cache-control", "private, no-cache")
+    |> put_resp_header("etag", etag)
+    |> maybe_put_content_disposition(filename, disposition)
   end
 
   defp maybe_put_content_disposition(conn, filename, disposition) do

@@ -137,13 +137,12 @@ defmodule IntellectualClub.Chat.Uploads do
     with {:ok, sessions} <- fetch_uploaded_sessions(chat_id, upload_ids, actor) do
       Enum.reduce_while(sessions, {:ok, %{sessions: sessions, files: []}}, fn upload,
                                                                               {:ok, acc} ->
-        with {:ok, payload} <- File.read(upload_path(upload.external_id)),
-             {:ok, file} <-
-               Files.create_from_upload(%{
-                 filename: upload.filename,
-                 mime_type: upload.mime_type,
-                 payload: payload
-               }) do
+        with {:ok, file} <-
+               Files.create_from_path(
+                 upload.filename,
+                 upload.mime_type,
+                 upload_path(upload.external_id)
+               ) do
           {:cont, {:ok, %{acc | files: acc.files ++ [file]}}}
         else
           {:error, :enoent} ->

@@ -5,8 +5,9 @@ defmodule IntellectualClubWeb.OutletControllerTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Files
   alias IntellectualClub.Outlets.Runtime
-  alias IntellectualClub.Tools.{ToolFunction, ToolInstance}
+  alias IntellectualClub.Tools.{ExecutionContext, ToolFunction, ToolInstance}
 
   require Ash.Query
 
@@ -440,6 +441,49 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert response["file"]["filename"] == filename
     assert response["file"]["mime_type"] == "text/plain"
     assert response["file"]["size_bytes"] == 7
+  end
+
+  test "GET /api/outlet/calls/:call_id/files/:file_id streams an available file" do
+    reset_runtime!()
+
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Download outlet",
+        secrets: %{"token" => "runner-download-file"}
+      })
+
+    {:ok, file} = Files.create_from_binary("download.txt", "text/plain", "download payload")
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: 1,
+      available_file_external_ids: [file.external_id]
+    }
+
+    assert :ok = Runtime.enqueue_if_absent(tool_instance, "download_file", %{}, context)
+
+    poll_response =
+      poll_outlet("runner-download-file", %{
+        "runner_id" => "runner-download",
+        "runner_session_id" => "runner-download-session",
+        "capacity" => 1,
+        "max_wait_seconds" => 0
+      })
+
+    assert poll_response["status"] == "ok"
+    [task] = poll_response["tasks"]
+    assert task["function"] == "download_file"
+
+    conn =
+      build_conn()
+      |> put_req_header("authorization", "Bearer runner-download-file")
+      |> get("/api/outlet/calls/#{task["call_id"]}/files/#{file.external_id}")
+
+    assert response(conn, 200) == "download payload"
+    assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
+    assert List.first(get_resp_header(conn, "content-disposition")) =~ "download.txt"
   end
 
   defp reset_runtime! do

@@ -13,6 +13,8 @@ defmodule IntellectualClub.Files do
 
   require Ash.Query
 
+  @hash_chunk_size_bytes 1024 * 1024
+
   resources do
     resource(File)
   end
@@ -47,6 +49,32 @@ defmodule IntellectualClub.Files do
   def create_from_binary(filename, mime_type, payload) when is_binary(payload) do
     create_from_upload(%{filename: filename, mime_type: mime_type, payload: payload})
   end
+
+  @spec create_from_path(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, File.t()} | {:error, term()}
+  def create_from_path(filename, mime_type, source_path, opts \\ [])
+
+  def create_from_path(filename, mime_type, source_path, _opts) when is_binary(source_path) do
+    with {:ok, stat} <- Elixir.File.stat(source_path),
+         :ok <- ensure_regular_file(stat),
+         {:ok, sha256} <- sha256_file_hex(source_path),
+         :ok <- FilesystemStorage.store_path(sha256, source_path) do
+      attrs = %{
+        sha256: sha256,
+        filename: normalize_filename(filename),
+        size_bytes: stat.size,
+        mime_type: normalize_mime_type(mime_type),
+        storage_backend: :fs
+      }
+
+      File
+      |> Ash.Changeset.for_create(:create, attrs, authorize?: false)
+      |> Ash.create(authorize?: false)
+    end
+  end
+
+  def create_from_path(_filename, _mime_type, _source_path, _opts),
+    do: {:error, :invalid_source_path}
 
   @spec get_by_external_id(String.t()) :: {:ok, File.t()} | {:error, term()}
   def get_by_external_id(external_id) when is_binary(external_id) do
@@ -100,6 +128,24 @@ defmodule IntellectualClub.Files do
   end
 
   def load_payload_by_external_id(_external_id), do: {:error, :invalid_external_id}
+
+  @spec load_path(integer()) :: {:ok, {File.t(), String.t()}} | {:error, term()}
+  def load_path(file_id) when is_integer(file_id) do
+    with {:ok, %File{} = file} <- Ash.get(File, file_id, authorize?: false) do
+      load_file_path(file)
+    end
+  end
+
+  def load_path(_file_id), do: {:error, :invalid_file_id}
+
+  @spec load_path_by_external_id(String.t()) :: {:ok, {File.t(), String.t()}} | {:error, term()}
+  def load_path_by_external_id(external_id) when is_binary(external_id) do
+    with {:ok, %File{} = file} <- get_by_external_id(external_id) do
+      load_file_path(file)
+    end
+  end
+
+  def load_path_by_external_id(_external_id), do: {:error, :invalid_external_id}
 
   @spec delete_file_and_maybe_payload(integer()) :: :ok | {:error, term()}
   def delete_file_and_maybe_payload(file_id) when is_integer(file_id) do
@@ -161,6 +207,20 @@ defmodule IntellectualClub.Files do
     {:error, {:unsupported_storage_backend, backend}}
   end
 
+  defp load_file_path(%File{storage_backend: :fs} = file) do
+    with {:ok, path} <- FilesystemStorage.path_for(file.sha256) do
+      if Elixir.File.exists?(path) do
+        {:ok, {file, path}}
+      else
+        {:error, :payload_not_found}
+      end
+    end
+  end
+
+  defp load_file_path(%File{storage_backend: backend}) do
+    {:error, {:unsupported_storage_backend, backend}}
+  end
+
   defp remaining_files_for_sha256(repo, sha256) do
     repo.one(from(file in "files", where: field(file, :sha256) == ^sha256, select: count("*"))) ||
       0
@@ -196,4 +256,19 @@ defmodule IntellectualClub.Files do
     :crypto.hash(:sha256, payload)
     |> Base.encode16(case: :lower)
   end
+
+  defp sha256_file_hex(path) do
+    Elixir.File.open(path, [:read, :binary], fn io ->
+      io
+      |> IO.binstream(@hash_chunk_size_bytes)
+      |> Enum.reduce(:crypto.hash_init(:sha256), fn chunk, context ->
+        :crypto.hash_update(context, chunk)
+      end)
+      |> :crypto.hash_final()
+      |> Base.encode16(case: :lower)
+    end)
+  end
+
+  defp ensure_regular_file(%Elixir.File.Stat{type: :regular}), do: :ok
+  defp ensure_regular_file(_stat), do: {:error, :invalid_source_path}
 end
