@@ -31,6 +31,16 @@ type PreparedMarkdownMath = {
   placeholders: Map<string, Extract<MathSegment, { type: 'math' }>>;
 };
 
+type MarkdownFence = {
+  char: '`' | '~';
+  len: number;
+};
+
+type MarkdownMathChunk = {
+  value: string;
+  protectMath: boolean;
+};
+
 const isWhitespace = (value: string | undefined) => value != null && /\s/u.test(value);
 
 const isDigit = (value: string | undefined) => value != null && /\d/u.test(value);
@@ -80,6 +90,122 @@ const MATH_DELIMITERS: MathDelimiter[] = [
   { left: '\\eqref{', right: '}', display: false, preserveDelimiters: true },
   DOLLAR_DELIMITER,
 ];
+
+const appendMarkdownMathChunk = (chunks: MarkdownMathChunk[], value: string, protectMath: boolean) => {
+  if (!value) return;
+
+  const previous = chunks[chunks.length - 1];
+  if (previous && previous.protectMath === protectMath) {
+    previous.value += value;
+    return;
+  }
+
+  chunks.push({ value, protectMath });
+};
+
+const stripBlockQuoteMarkers = (line: string) => {
+  let rest = line;
+
+  while (true) {
+    const match = /^ {0,3}>[ \t]?/u.exec(rest);
+    if (!match) return rest;
+    rest = rest.slice(match[0].length);
+  }
+};
+
+const matchOpeningFence = (line: string): MarkdownFence | null => {
+  const match = /^ {0,3}([`~]{3,})/u.exec(stripBlockQuoteMarkers(line));
+  if (!match) return null;
+
+  const marker = match[1] ?? '';
+  return {
+    char: marker[0] as '`' | '~',
+    len: marker.length,
+  };
+};
+
+const matchesClosingFence = (line: string, fence: MarkdownFence) => {
+  const match = /^ {0,3}([`~]{3,})[ \t]*$/u.exec(stripBlockQuoteMarkers(line));
+  if (!match) return false;
+
+  const marker = match[1] ?? '';
+  return marker[0] === fence.char && marker.length >= fence.len;
+};
+
+const splitMarkdownFencedBlocks = (input: string): MarkdownMathChunk[] => {
+  const chunks: MarkdownMathChunk[] = [];
+  const lines = input.split(/(\r?\n)/u);
+  let fence: MarkdownFence | null = null;
+
+  for (let index = 0; index < lines.length; index += 2) {
+    const line = lines[index] ?? '';
+    const lineEnding = lines[index + 1] ?? '';
+    const value = line + lineEnding;
+
+    if (fence) {
+      appendMarkdownMathChunk(chunks, value, true);
+      if (matchesClosingFence(line, fence)) fence = null;
+      continue;
+    }
+
+    const openingFence = matchOpeningFence(line);
+    if (openingFence) {
+      fence = openingFence;
+      appendMarkdownMathChunk(chunks, value, true);
+      continue;
+    }
+
+    appendMarkdownMathChunk(chunks, value, false);
+  }
+
+  return chunks;
+};
+
+const splitInlineCodeSpans = (input: string): MarkdownMathChunk[] => {
+  const chunks: MarkdownMathChunk[] = [];
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    const opening = /`+/gu.exec(input.slice(cursor));
+    if (!opening?.[0]) {
+      appendMarkdownMathChunk(chunks, input.slice(cursor), false);
+      break;
+    }
+
+    const openStart = cursor + opening.index;
+    const marker = opening[0];
+    const contentStart = openStart + marker.length;
+    const closeStart = input.indexOf(marker, contentStart);
+
+    if (closeStart === -1) {
+      appendMarkdownMathChunk(chunks, input.slice(cursor), false);
+      break;
+    }
+
+    appendMarkdownMathChunk(chunks, input.slice(cursor, openStart), false);
+    appendMarkdownMathChunk(chunks, input.slice(openStart, closeStart + marker.length), true);
+    cursor = closeStart + marker.length;
+  }
+
+  return chunks;
+};
+
+const splitMarkdownForMath = (input: string): MarkdownMathChunk[] => {
+  const chunks: MarkdownMathChunk[] = [];
+
+  splitMarkdownFencedBlocks(input).forEach((chunk) => {
+    if (chunk.protectMath) {
+      appendMarkdownMathChunk(chunks, chunk.value, true);
+      return;
+    }
+
+    splitInlineCodeSpans(chunk.value).forEach((inlineChunk) => {
+      appendMarkdownMathChunk(chunks, inlineChunk.value, inlineChunk.protectMath);
+    });
+  });
+
+  return chunks;
+};
 
 const TEMML_RENDER_OPTIONS: TemmlAutoRenderOptions = {
   throwOnError: true,
@@ -183,31 +309,19 @@ const loadTemml = async () => {
 const normalizeChatMarkdown = (input: string) => {
   const lines = input.split(/\r?\n/);
 
-  let inFence = false;
-  let fenceChar: '`' | '~' | null = null;
-  let fenceLen = 0;
+  let fence: MarkdownFence | null = null;
 
   const normalized = lines.map((line) => {
-    const fenceMatch = /^\s*([`~]{3,})/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1] ?? '';
-      const char = marker[0] as '`' | '~';
-      const len = marker.length;
-
-      if (!inFence) {
-        inFence = true;
-        fenceChar = char;
-        fenceLen = len;
-      } else if (fenceChar === char && len >= fenceLen) {
-        inFence = false;
-        fenceChar = null;
-        fenceLen = 0;
-      }
-
+    if (fence) {
+      if (matchesClosingFence(line, fence)) fence = null;
       return line;
     }
 
-    if (inFence) return line;
+    const openingFence = matchOpeningFence(line);
+    if (openingFence) {
+      fence = openingFence;
+      return line;
+    }
 
     return line.replace(/^(\s{0,3})(#{1,6})(?=[^\s#])/, '$1$2 ');
   });
@@ -324,18 +438,23 @@ const splitTextIntoMathSegments = (text: string): MathSegment[] => {
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
 const prepareMarkdownMath = (input: string): PreparedMarkdownMath => {
-  const segments = splitTextIntoMathSegments(input);
   const placeholders = new Map<string, Extract<MathSegment, { type: 'math' }>>();
   let placeholderIndex = 0;
 
-  const markdown = segments
-    .map((segment) => {
-      if (segment.type === 'text') return segment.value;
+  const markdown = splitMarkdownForMath(input)
+    .map((chunk) => {
+      if (chunk.protectMath) return chunk.value;
 
-      const placeholder = `ICTEXPLACEHOLDER${placeholderIndex}IC`;
-      placeholderIndex += 1;
-      placeholders.set(placeholder, segment);
-      return placeholder;
+      return splitTextIntoMathSegments(chunk.value)
+        .map((segment) => {
+          if (segment.type === 'text') return segment.value;
+
+          const placeholder = `ICTEXPLACEHOLDER${placeholderIndex}IC`;
+          placeholderIndex += 1;
+          placeholders.set(placeholder, segment);
+          return placeholder;
+        })
+        .join('');
     })
     .join('');
 
