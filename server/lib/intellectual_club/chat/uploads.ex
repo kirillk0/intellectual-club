@@ -6,12 +6,12 @@ defmodule IntellectualClub.Chat.Uploads do
   alias IntellectualClub.Chat.ChatUploadSession
   alias IntellectualClub.Chat.UploadPolicy
   alias IntellectualClub.Files
+  alias IntellectualClub.Files.UploadStaging
 
   require Ash.Query
 
   @default_chunk_size_bytes 5 * 1024 * 1024
   @default_ttl_seconds 24 * 60 * 60
-  @upload_root Path.expand("../../../../assets/chat-uploads", __DIR__)
 
   @type materialized_uploads :: %{
           sessions: [ChatUploadSession.t()],
@@ -346,14 +346,14 @@ defmodule IntellectualClub.Chat.Uploads do
     do: delete_upload_file(%{external_id: external_id})
 
   defp delete_upload_file(%{external_id: external_id}) when is_binary(external_id) do
-    _ = File.rm(upload_path(external_id))
+    _ = UploadStaging.cleanup_path(upload_path(external_id))
     :ok
   end
 
   defp delete_upload_file(_other), do: :ok
 
   defp ensure_upload_root do
-    File.mkdir_p(@upload_root)
+    UploadStaging.ensure_scope(:chat)
     |> case do
       :ok -> :ok
       {:error, reason} -> {:error, "Failed to prepare upload storage: #{inspect(reason)}"}
@@ -361,7 +361,7 @@ defmodule IntellectualClub.Chat.Uploads do
   end
 
   defp upload_path(external_id) when is_binary(external_id) do
-    Path.join(@upload_root, "#{external_id}.part")
+    UploadStaging.chat_upload_path(external_id)
   end
 
   defp normalize_external_id(value) when is_binary(value) do

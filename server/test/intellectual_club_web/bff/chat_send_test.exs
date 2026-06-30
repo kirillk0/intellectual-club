@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.{Chat, Threads}
+  alias IntellectualClub.Files.UploadStaging
   alias IntellectualClub.Llm.{LlmConfiguration, LlmProvider}
   alias IntellectualClub.Tools.{BotToolBinding, ChatToolBinding, ToolInstance}
 
@@ -117,6 +118,9 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
         "chunk upload"
       )
 
+    upload_path = UploadStaging.chat_upload_path(upload["upload_id"])
+    assert File.exists?(upload_path)
+
     conn =
       post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{
         "content" => "",
@@ -142,6 +146,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
 
     conn = get(conn, ~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}")
     assert json_response(conn, 404)["error"] == "Upload not found."
+    refute File.exists?(upload_path)
 
     wait_for_generation_to_finish(conn, generation_id)
   end

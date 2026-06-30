@@ -16,6 +16,7 @@ defmodule IntellectualClubWeb.OutletController do
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Files
+  alias IntellectualClub.Files.UploadStaging
   alias IntellectualClub.Outlets.{Auth, Pairing, Runtime}
   alias IntellectualClub.Tools.Discovery
   alias IntellectualClub.Tools.Drivers.Outlet, as: OutletDriver
@@ -24,7 +25,6 @@ defmodule IntellectualClubWeb.OutletController do
   alias IntellectualClubWeb.RequestLimits
 
   @body_read_length_bytes 1 * 1024 * 1024
-  @outlet_upload_root Path.expand("../../../../assets/outlet-uploads", __DIR__)
 
   def metadata(conn, _params) do
     payload = conn.body_params || %{}
@@ -566,14 +566,13 @@ defmodule IntellectualClubWeb.OutletController do
           {:error, reason} -> {:error, conn, reason}
         end
       after
-        _ = File.rm(path)
+        _ = UploadStaging.cleanup_path(path)
       end
     end
   end
 
   defp read_body_to_temp_file(conn) do
-    with :ok <- ensure_outlet_upload_root() do
-      path = Path.join(@outlet_upload_root, "#{Ecto.UUID.generate()}.upload")
+    with {:ok, path} <- UploadStaging.new_temp_path(:outlet) do
       max_bytes = RequestLimits.max_body_length_bytes()
 
       case File.open(path, [:write, :binary], fn io ->
@@ -583,7 +582,7 @@ defmodule IntellectualClubWeb.OutletController do
           {:ok, conn, path, size_bytes}
 
         {:ok, {:error, conn, reason}} ->
-          _ = File.rm(path)
+          _ = UploadStaging.cleanup_path(path)
           {:error, conn, reason}
 
         {:error, reason} ->
@@ -591,7 +590,7 @@ defmodule IntellectualClubWeb.OutletController do
       end
     else
       {:error, reason} ->
-        {:error, conn, reason}
+        {:error, conn, "Failed to prepare upload storage: #{inspect(reason)}"}
     end
   end
 
@@ -655,14 +654,6 @@ defmodule IntellectualClubWeb.OutletController do
 
       {:error, reason} ->
         {:error, conn, "Failed to read request body: #{inspect(reason)}"}
-    end
-  end
-
-  defp ensure_outlet_upload_root do
-    File.mkdir_p(@outlet_upload_root)
-    |> case do
-      :ok -> :ok
-      {:error, reason} -> {:error, "Failed to prepare upload storage: #{inspect(reason)}"}
     end
   end
 

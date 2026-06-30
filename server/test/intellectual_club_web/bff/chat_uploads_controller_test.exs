@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
 
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Files.UploadStaging
   alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
 
   test "POST /api/bff/chat-uploads/:chat_id rejects files above the bot size limit", %{
@@ -85,6 +86,35 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
     payload = json_response(conn, 200)
     assert get_in(payload, ["upload", "uploaded_bytes"]) == 11
     assert get_in(payload, ["upload", "status"]) == "uploaded"
+  end
+
+  test "DELETE /api/bff/chat-uploads/:chat_id/:upload_id removes the staged file", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+    bot = create_artifact_bot!(actor, "Abort cleanup bot")
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: "", bot_id: bot.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    upload = create_upload!(conn, chat.id, "cleanup.txt", "text/plain", 5)
+    upload_path = UploadStaging.chat_upload_path(upload["upload_id"])
+
+    assert File.exists?(upload_path)
+
+    conn =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> delete(~p"/api/bff/chat-uploads/#{chat.id}/#{upload["upload_id"]}")
+
+    payload = json_response(conn, 200)
+    assert get_in(payload, ["upload", "status"]) == "aborted"
+    refute File.exists?(upload_path)
   end
 
   test "oversized chunk is rejected without advancing upload progress", %{conn: conn} do

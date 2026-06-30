@@ -55,6 +55,11 @@ File.mkdir_p!(file_storage_path)
 
 config :intellectual_club, :file_storage_path, file_storage_path
 
+upload_staging_path = trim_env.("UPLOAD_STAGING_PATH") || Path.join(file_storage_path, ".uploads")
+File.mkdir_p!(upload_staging_path)
+
+config :intellectual_club, :upload_staging_path, upload_staging_path
+
 postgres_url? = fn
   nil -> false
   url -> String.starts_with?(url, ["postgres://", "postgresql://", "ecto://"])
