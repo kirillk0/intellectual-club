@@ -572,12 +572,30 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
       |> to_string()
       |> String.downcase()
 
+    message =
+      error
+      |> Map.get("message")
+      |> to_string()
+
     (is_integer(status_code) and MapSet.member?(@retryable_http_status_codes, status_code)) or
       MapSet.member?(@retryable_error_codes, code) or
-      MapSet.member?(@retryable_error_codes, status)
+      MapSet.member?(@retryable_error_codes, status) or
+      retryable_provider_message?(message)
   end
 
   defp retryable_provider_error_payload?(_error), do: false
+
+  defp retryable_provider_message?(message) when is_binary(message) do
+    text = message |> String.trim() |> String.downcase()
+
+    text != "" and
+      (String.contains?(text, "high demand") or
+         String.contains?(text, "try again later") or
+         String.contains?(text, "temporarily unavailable") or
+         String.contains?(text, "overloaded") or
+         String.contains?(text, "rate limit") or
+         String.contains?(text, "rate-limited"))
+  end
 
   defp coerce_int(nil), do: nil
   defp coerce_int(value) when is_boolean(value), do: nil

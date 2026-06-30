@@ -71,7 +71,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
                provider: :google_interactions,
                status_code: response.status,
                url: url,
-               retryable: MapSet.member?(@retryable_http_status_codes, response.status),
+               retryable: retryable_http_error?(response.status, response_json, body_text),
                error_kind: "http",
                error_text: extract_error_summary(response_json, body_text),
                raw_request: payload,
@@ -305,6 +305,27 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
     fallback
     |> String.trim()
     |> truncate_text(500)
+  end
+
+  defp retryable_http_error?(status_code, response_json, body_text)
+       when is_integer(status_code) do
+    MapSet.member?(@retryable_http_status_codes, status_code) or
+      (status_code == 500 and
+         transient_error_text?(extract_error_summary(response_json, body_text)))
+  end
+
+  defp retryable_http_error?(_status_code, _response_json, _body_text), do: false
+
+  defp transient_error_text?(text) when is_binary(text) do
+    text = text |> String.trim() |> String.downcase()
+
+    text != "" and
+      (String.contains?(text, "high demand") or
+         String.contains?(text, "try again later") or
+         String.contains?(text, "temporarily unavailable") or
+         String.contains?(text, "overloaded") or
+         String.contains?(text, "rate limit") or
+         String.contains?(text, "rate-limited"))
   end
 
   defp truncate_text(value, limit) when is_binary(value) and is_integer(limit) and limit > 0 do

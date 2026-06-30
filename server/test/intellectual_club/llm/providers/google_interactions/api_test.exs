@@ -158,6 +158,124 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
     assert error.raw_response["status_code"] == 429
   end
 
+  test "marks high-demand HTTP 500 errors as retryable by message heuristic" do
+    error_event =
+      "event: error\n" <>
+        "data: " <>
+        Jason.encode!(%{
+          "error" => %{
+            "message" =>
+              "gemini-3.5-flash is currently experiencing high demand, spikes in demand are usually temporary. Please try again later.",
+            "code" => "api_error"
+          },
+          "event_type" => "error"
+        })
+
+    scripts = %{
+      "/interactions" => [
+        {500, [error_event]}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gemini-3.5-flash",
+          "input" => "Hello",
+          "stream" => true,
+          "store" => false
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == 500
+    assert error.retryable == true
+    assert String.contains?(error.error_text, "high demand")
+    assert error.raw_response["status_code"] == 500
+    assert String.contains?(error.raw_response["raw_text"], "try again later")
+  end
+
+  test "keeps generic HTTP 500 errors non-retryable" do
+    scripts = %{
+      "/interactions" => [
+        {500,
+         [
+           Jason.encode!(%{
+             "error" => %{
+               "message" => "Internal server error.",
+               "code" => "api_error"
+             }
+           })
+         ]}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gemini-3.5-flash",
+          "input" => "Hello",
+          "stream" => true,
+          "store" => false
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == 500
+    assert error.retryable == false
+    assert error.error_text == "Internal server error."
+    assert error.raw_response["status_code"] == 500
+  end
+
+  test "marks high-demand streamed provider errors as retryable" do
+    scripts = %{
+      "/interactions" => [
+        {200,
+         sse_chunks([
+           %{
+             "event_type" => "error",
+             "error" => %{
+               "message" =>
+                 "gemini-3.5-flash is currently experiencing high demand. Please try again later.",
+               "code" => "api_error"
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gemini-3.5-flash",
+          "input" => "Hello",
+          "stream" => true,
+          "store" => false
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == nil
+    assert error.retryable == true
+    assert error.error_text =~ "high demand"
+    assert get_in(error.raw_response, ["error", "code"]) == "api_error"
+  end
+
   defp run_and_capture_error!(opts) when is_map(opts) do
     parent = self()
 
