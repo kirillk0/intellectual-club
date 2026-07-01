@@ -478,17 +478,27 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
 
   defp normalize_usage(usage) when is_map(usage) do
     usage = stringify_keys(usage)
+    reasoning_tokens = coerce_int(Map.get(usage, "total_thought_tokens"))
 
     %{
       input_tokens: coerce_int(Map.get(usage, "total_input_tokens")),
-      output_tokens: coerce_int(Map.get(usage, "total_output_tokens")),
+      output_tokens:
+        sum_present_ints([
+          Map.get(usage, "total_output_tokens"),
+          reasoning_tokens
+        ]),
       cached_input_tokens: coerce_int(Map.get(usage, "total_cached_tokens")),
-      reasoning_tokens: coerce_int(Map.get(usage, "total_thought_tokens")),
+      reasoning_tokens: reasoning_tokens,
       google: usage
     }
   end
 
   defp normalize_usage(_usage), do: nil
+
+  defp sum_present_ints(values) when is_list(values) do
+    values = values |> Enum.map(&coerce_int/1) |> Enum.reject(&is_nil/1)
+    if values == [], do: nil, else: Enum.sum(values)
+  end
 
   defp text_from_content_list(contents) when is_list(contents) do
     contents

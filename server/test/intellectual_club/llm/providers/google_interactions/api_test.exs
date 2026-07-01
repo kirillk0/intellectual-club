@@ -97,7 +97,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
       end)
 
     assert meta.usage.input_tokens == 5
-    assert meta.usage.output_tokens == 1
+    assert meta.usage.output_tokens == 3
     assert meta.usage.reasoning_tokens == 2
 
     assert meta.raw_response["steps"] == [
@@ -119,6 +119,8 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
 
     assert RuntimeTrace.text_for_item_type(runtime_step, :reasoning) == "Need answer."
     assert RuntimeTrace.text_for_item_type(runtime_step, :answer) == "pong"
+    assert runtime_step.output_tokens == 3
+    assert runtime_step.reasoning_tokens == 2
   end
 
   test "marks quota HTTP errors as retryable and preserves raw response" do
