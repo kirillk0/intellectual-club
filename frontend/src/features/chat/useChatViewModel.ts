@@ -34,6 +34,7 @@ import type {
   Bot,
   Chat,
   ChatBranchMessage,
+  ChatContinuationNavItem,
   ChatRelationSummary,
   ChatRelations,
   Group,
@@ -129,6 +130,7 @@ export function useChatViewModel() {
   const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
   const branch = ref<ChatBranchMessage[]>([]);
   const relations = ref<ChatRelations>(emptyChatRelations());
+  const continuationNav = ref<ChatContinuationNavItem[]>([]);
   const counters = ref<Counters>({
     prompt_token_count: 0,
     history_token_count: 0,
@@ -421,6 +423,7 @@ export function useChatViewModel() {
     chatNote.value = payload.chat?.note || '';
     branch.value = payload.branch || [];
     relations.value = payload.relations || emptyChatRelations();
+    continuationNav.value = payload.continuation_nav || [];
     if (settingsPayload) applySettingsState(settingsPayload);
     chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
@@ -442,6 +445,7 @@ export function useChatViewModel() {
       chat.value = null;
       branch.value = [];
       relations.value = emptyChatRelations();
+      continuationNav.value = [];
       chatIdleRevision.value = null;
       chatBlockCount.value = 0;
       chatToolCount.value = 0;
@@ -771,6 +775,7 @@ export function useChatViewModel() {
     canEdit,
     sharedReadonly,
     branch,
+    continuationNav,
     parentRelation,
     fallbackChildRelations,
     childRelationsForMessage,

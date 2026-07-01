@@ -31,9 +31,11 @@
         :menu-style="vm.menuStyle"
         :current-bot-id="vm.currentBotId"
         :current-bot-name="vm.currentBotName"
+        :current-chat-id="vm.chat.id"
         :chat-base-title="vm.chatBaseTitle"
         :chat-full-title="vm.chatFullTitle"
         :chat-note="vm.chatNote"
+        :continuation-nav="vm.continuationNav"
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
         :can-edit="vm.canEdit"
@@ -47,6 +49,7 @@
         @update:selectedConfig="(value) => (vm.selectedConfig = value)"
         @change-config="vm.updateConfig"
         @close="vm.backToChats"
+        @open-continuation="handleContinuationNavigate"
         @toggle-menu="vm.toggleMenu"
         @open-new-chat="vm.openNewChatModal"
         @open-config-editor="vm.openConfigEditor"
@@ -537,7 +540,7 @@
 
 <script setup lang="ts">
 import { nextTick, reactive, ref, Teleport, watch, type ComponentPublicInstance } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -671,6 +674,19 @@ const handleChatRouteClick = (event: MouseEvent, chatId: number) => {
   if (event.defaultPrevented || !isPlainLeftClick(event)) return;
   event.preventDefault();
   void vm.openChat(chatId);
+};
+
+const handleContinuationNavigate = (to: RouteLocationRaw) => {
+  const path = typeof to === 'object' && 'path' in to ? to.path : null;
+  const match = typeof path === 'string' ? path.match(/^\/chats\/(\d+)$/u) : null;
+  const chatId = match ? Number(match[1]) : 0;
+
+  if (Number.isInteger(chatId) && chatId > 0) {
+    void vm.openChat(chatId);
+    return;
+  }
+
+  void router.push(to);
 };
 
 const handleDragEnter = () => {

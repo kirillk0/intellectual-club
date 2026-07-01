@@ -171,6 +171,22 @@ export type ChatSummary = {
   can_edit?: boolean | null;
   shared_incoming?: boolean | null;
   shared_outgoing?: boolean | null;
+  continuation_nav?: ChatContinuationNavItem[];
+};
+
+export type ChatContinuationNavItem = {
+  chat_id: number;
+  label: string;
+  message_id?: number | null;
+  parent_chat_id?: number | null;
+  parent_message_id?: number | null;
+  kind?: string | null;
+  note?: string | null;
+  bot_id?: number | null;
+  bot_name?: string | null;
+  active_generation_message_id?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type ChatRelationSummary = {

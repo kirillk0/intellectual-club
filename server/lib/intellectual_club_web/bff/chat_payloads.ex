@@ -31,6 +31,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
       chat: Serializer.chat_detail(chat),
       branch: serialize_branch(messages, branch_meta_by_id, actor),
       relations: serialize_relations(Relations.relations(chat, messages, actor)),
+      continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
       active_generation_message_id: active_generation_message_id(messages),
       idle_revision: Revisions.chat_revision(chat)
     }
@@ -150,6 +151,12 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   end
 
   defp serialize_relation_entry(_entry), do: nil
+
+  def serialize_continuation_nav(entries) when is_list(entries) do
+    Enum.map(entries, &Serializer.chat_continuation_nav_item/1)
+  end
+
+  def serialize_continuation_nav(_entries), do: []
 
   defp load_chat_blocks(chat_id, actor) do
     ChatKnowledgeBlock

@@ -15,6 +15,14 @@
             <SvgIcon name="edit" size="14" />
           </button>
         </div>
+        <ContinuationNav
+          class="chat-toolbar__continuation-nav"
+          :items="continuationNav"
+          :current-chat-id="currentChatId"
+          mode="header"
+          :stack="true"
+          @navigate="emit('open-continuation', $event)"
+        />
       </div>
 
       <div class="header-actions toolbar-actions-right chat-toolbar__actions">
@@ -119,6 +127,20 @@
               <span class="chat-menu-item__label">{{ t(handoffPending ? 'Handing off…' : 'Handoff') }}</span>
             </button>
             <div class="menu-divider" aria-hidden="true"></div>
+            <div v-if="hasContinuationNav" class="menu-item chat-menu-section chat-menu-section--continuations">
+              <div class="chat-menu-section__heading">
+                <SvgIcon name="branch" size="16" />
+                <span>{{ t('Chat continuations') }}</span>
+              </div>
+              <ContinuationNav
+                class="chat-menu-continuation-nav"
+                :items="continuationNav"
+                :current-chat-id="currentChatId"
+                mode="list"
+                :stack="true"
+                @navigate="emit('open-continuation', $event)"
+              />
+            </div>
             <div class="menu-item chat-menu-section">
               <div class="chat-menu-section__heading">
                 <SvgIcon name="bot" size="16" />
@@ -196,11 +218,13 @@
 
 <script setup lang="ts">
 import { computed, type ComponentPublicInstance } from 'vue';
+import type { RouteLocationRaw } from 'vue-router';
 
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ContinuationNav from '@/components/ContinuationNav.vue';
 import { translate } from '@/i18n';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
-import type { LlmConfiguration } from '@/types/api';
+import type { ChatContinuationNavItem, LlmConfiguration } from '@/types/api';
 
 interface Props {
   selectedConfig: number | '';
@@ -220,9 +244,11 @@ interface Props {
   menuStyle: Record<string, string>;
   currentBotId: number | null;
   currentBotName: string;
+  currentChatId: number;
   chatBaseTitle: string;
   chatFullTitle: string;
   chatNote: string;
+  continuationNav: ChatContinuationNavItem[];
   creatingChat: boolean;
   deleting: boolean;
   canEdit: boolean;
@@ -245,10 +271,12 @@ const props = withDefaults(defineProps<Props>(), {
   moreConfigs: () => [],
   selectedDisabledConfig: null,
   selectedDisabledConfigReason: null,
+  continuationNav: () => [],
 });
 
 const emit = defineEmits<{
   close: [];
+  'open-continuation': [to: RouteLocationRaw];
   'update:selectedConfig': [value: number | ''];
   'change-config': [];
   'toggle-menu': [];
@@ -265,6 +293,8 @@ const emit = defineEmits<{
 }>();
 
 const configSelectorDisabled = computed(() => !props.canEdit || props.configSyncStatus === 'pending' || props.isGenerating);
+
+const hasContinuationNav = computed(() => props.continuationNav.length > 1);
 
 const configSelectorTitle = computed(() => {
   if (!props.canEdit) return t('Shared chats are read-only');
@@ -327,16 +357,19 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  justify-content: flex-start;
-  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: visible;
 }
 
 .chat-toolbar__title {
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 6px;
   overflow: hidden;
 }
@@ -347,12 +380,15 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+  line-height: 1.1;
 }
 
 .chat-toolbar__title-edit {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 7px;
   color: var(--color-text-muted);
   font-size: 14px;
 }
@@ -371,6 +407,13 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 .chat-toolbar__icon-button .svg-icon,
 .toolbar-create-button .svg-icon {
   stroke-width: 1.35;
+}
+
+.chat-toolbar__continuation-nav {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: min(55%, 180px);
+  margin: 0;
 }
 
 .chat-menu-item {
@@ -397,6 +440,10 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   text-align: left;
   padding: 8px 12px 10px;
   border-bottom: 1px solid var(--color-border);
+}
+
+.chat-menu-section--continuations {
+  display: none;
 }
 
 .chat-menu-section__heading {
@@ -451,6 +498,19 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   padding: 0;
 }
 
+.chat-menu-continuation-nav {
+  margin-top: 8px;
+  max-width: 100%;
+}
+
+.chat-menu-continuation-nav :deep(.continuation-nav__icon) {
+  display: none;
+}
+
+.chat-menu-continuation-nav :deep(.continuation-nav__items) {
+  gap: 6px;
+}
+
 @media (max-width: 720px) {
   .chat-toolbar {
     gap: 6px;
@@ -458,6 +518,10 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 
   .chat-toolbar__title-wrap {
     display: none;
+  }
+
+  .chat-menu-section--continuations {
+    display: block;
   }
 
   .chat-toolbar__actions {

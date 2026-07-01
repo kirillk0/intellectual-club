@@ -1,7 +1,7 @@
 defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   use IntellectualClubWeb.ConnCase, async: false
 
-  alias IntellectualClub.Bots.Bot
+  alias IntellectualClub.Bots.{Bot, BotShare}
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
@@ -13,8 +13,8 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
+  alias IntellectualClub.Sharing
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
@@ -431,13 +431,18 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert target_payload["relations"]["parent"]["chat_id"] == source.id
     assert target_payload["relations"]["parent"]["message_id"] == source_message.id
     assert target_payload["relations"]["parent"]["kind"] == "handoff"
+
+    assert nav_labels(source_payload) == ["1", "2"]
+    assert nav_chat_ids(source_payload) == [source.id, target.id]
+    assert nav_labels(target_payload) == ["1", "2"]
+    assert nav_chat_ids(target_payload) == [source.id, target.id]
   end
 
   test "GET /api/bff/chat-list includes relation hints", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    source = create_chat!(actor, "List source")
+    source = create_chat!(actor, "List source", note: "List source")
     {:ok, source_message} = Threads.add_message_to_end(source, :user, "Root", actor: actor)
 
     {:ok, %{chat: target}} =
@@ -452,9 +457,114 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     target_summary = Enum.find(payload["chats"], &(&1["id"] == target.id))
 
     assert source_summary["child_handoff_count"] == 1
+    assert nav_labels(source_summary) == ["1", "2"]
+    assert nav_chat_ids(source_summary) == [source.id, target.id]
     assert target_summary["parent_chat_id"] == source.id
     assert target_summary["parent_message_id"] == source_message.id
     assert target_summary["parent_relation_kind"] == "handoff"
+    assert nav_labels(target_summary) == ["1", "2"]
+    assert nav_chat_ids(target_summary) == [source.id, target.id]
+
+    summary_payload =
+      conn
+      |> get(~p"/api/bff/chat-list/#{target.id}/summary")
+      |> json_response(200)
+      |> Map.fetch!("chat")
+
+    assert nav_labels(summary_payload) == ["1", "2"]
+    assert nav_chat_ids(summary_payload) == [source.id, target.id]
+
+    search_payload =
+      conn
+      |> get(~p"/api/bff/chat-list/search", %{"q" => "Root"})
+      |> json_response(200)
+
+    search_source_summary = Enum.find(search_payload["chats"], &(&1["id"] == source.id))
+    assert nav_labels(search_source_summary) == ["1", "2"]
+    assert nav_chat_ids(search_source_summary) == [source.id, target.id]
+  end
+
+  test "continuation nav labels branched handoff families in preorder", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    source = create_chat!(actor, "Branched family")
+    {:ok, source_message} = Threads.add_message_to_end(source, :user, "Root", actor: actor)
+
+    {:ok, %{chat: child_a}} =
+      Handoff.create_handoff_chat(source, actor, "Summary A",
+        source_message_id: source_message.id
+      )
+
+    {:ok, %{chat: grandchild_a}} =
+      Handoff.create_handoff_chat(child_a, actor, "Summary A child",
+        source_message_id: child_a.last_message_id
+      )
+
+    {:ok, %{chat: child_b}} =
+      Handoff.create_handoff_chat(source, actor, "Summary B",
+        source_message_id: source_message.id
+      )
+
+    {:ok, %{chat: grandchild_b}} =
+      Handoff.create_handoff_chat(child_b, actor, "Summary B child",
+        source_message_id: child_b.last_message_id
+      )
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-state/#{grandchild_b.id}")
+      |> json_response(200)
+
+    assert nav_labels(payload) == ["1", "2a", "3a", "2b", "3b"]
+
+    assert nav_chat_ids(payload) == [
+             source.id,
+             child_a.id,
+             grandchild_a.id,
+             child_b.id,
+             grandchild_b.id
+           ]
+  end
+
+  test "continuation nav omits handoff chats inaccessible to actor", %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: recipient, password: recipient_password} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+
+    bot = create_bot!(owner, "Shared nav bot", %{})
+    configuration = create_llm_configuration!(owner, "http://127.0.0.1:9")
+    share_bot!(owner, bot, group)
+    share_configuration!(owner, configuration, group)
+
+    source =
+      create_chat!(owner, "Shared nav source",
+        note: "Shared nav source",
+        bot_id: bot.id,
+        llm_configuration_id: configuration.id
+      )
+
+    {:ok, source_message} = Threads.add_message_to_end(source, :user, "Root", actor: owner)
+
+    {:ok, %{chat: target}} =
+      Handoff.create_handoff_chat(source, owner, "Private child",
+        source_message_id: source_message.id
+      )
+
+    assert {:ok, _state} = Sharing.replace_chat_share_state(source.id, [group.id], owner)
+
+    recipient_conn = sign_in_conn(conn, recipient.username, recipient_password)
+
+    payload =
+      recipient_conn
+      |> get(~p"/api/bff/chat-state/#{source.id}")
+      |> json_response(200)
+
+    assert nav_labels(payload) == []
+
+    recipient_conn
+    |> get(~p"/api/bff/chat-state/#{target.id}")
+    |> response(404)
   end
 
   test "nested handoff expands parent history and skips child summary root" do
@@ -725,6 +835,22 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     |> Ash.create!(actor: actor)
   end
 
+  defp share_bot!(actor, bot, group) do
+    BotShare
+    |> Ash.Changeset.for_create(:create, %{bot_id: bot.id, user_group_id: group.id}, actor: actor)
+    |> Ash.create!()
+  end
+
+  defp share_configuration!(actor, configuration, group) do
+    LlmConfigurationShare
+    |> Ash.Changeset.for_create(
+      :create,
+      %{llm_configuration_id: configuration.id, user_group_id: group.id},
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
   defp create_chat_block_binding!(actor, chat, block, opts \\ []) do
     ChatKnowledgeBlock
     |> Ash.Changeset.for_create(
@@ -826,6 +952,18 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   defp message_text(%ChatMessage{} = message) do
     Previews.message_preview_text(message)
   end
+
+  defp nav_labels(%{"continuation_nav" => nav}) when is_list(nav) do
+    Enum.map(nav, & &1["label"])
+  end
+
+  defp nav_labels(_payload), do: []
+
+  defp nav_chat_ids(%{"continuation_nav" => nav}) when is_list(nav) do
+    Enum.map(nav, & &1["chat_id"])
+  end
+
+  defp nav_chat_ids(_payload), do: []
 
   defp start_scripted_server!(scripts) when is_map(scripts) do
     {:ok, agent} =

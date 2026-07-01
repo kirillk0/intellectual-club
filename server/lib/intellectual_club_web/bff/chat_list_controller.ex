@@ -7,10 +7,12 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.ListingStats
+  alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
+  alias IntellectualClubWeb.Bff.ChatPayloads
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -54,6 +56,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             activity_at: activity_at,
             child_handoff_count: Map.get(child_handoff_counts, chat.id, 0)
           )
+          |> put_continuation_nav(chat, actor)
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
@@ -95,6 +98,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             activity_at = Listing.activity_at(chat)
 
             Serializer.chat_summary(chat, activity_at: activity_at)
+            |> put_continuation_nav(chat, actor)
             |> Map.put(:message_count, entry.message_count)
             |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
             |> Map.put(:snippet, entry.snippet)
@@ -153,6 +157,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           activity_at: activity_at,
           child_handoff_count: Map.get(child_handoff_counts, chat.id, 0)
         )
+        |> put_continuation_nav(chat, actor)
         |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
         |> Map.put(:first_message_preview, first_message_preview)
         |> Map.put(:first_message_role, first_message_role)
@@ -196,5 +201,15 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: error_message})
     end
+  end
+
+  defp put_continuation_nav(payload, chat, actor) do
+    Map.put(
+      payload,
+      :continuation_nav,
+      chat
+      |> Relations.continuation_nav(actor)
+      |> ChatPayloads.serialize_continuation_nav()
+    )
   end
 end

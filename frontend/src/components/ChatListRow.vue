@@ -1,43 +1,48 @@
 <template>
-  <RouterLink custom :to="to" v-slot="{ href, navigate }">
-    <a class="row chat-list-row" :class="rowToneClass" :href="href" @click="handleClick($event, navigate)">
-      <div class="chat-result-main">
-        <div class="chat-result-title">
-          <span class="chat-result-name">{{ title }}</span>
-          <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
-        </div>
-        <div class="chat-result-meta">
-          <div class="muted">{{ metaText }}</div>
-          <span
-            v-if="generationState"
-            class="chat-result-generation-state"
-            :class="`chat-result-generation-state--${generationState}`"
-            :aria-label="generationStateLabel"
-            :title="generationStateLabel"
-          >
-            <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
-              <span></span><span></span><span></span>
-            </span>
-            <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
-            <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
-          </span>
-        </div>
-        <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
-        <div v-if="previewText" class="chat-first-preview">
-          <div class="chat-first-preview-bubble" :class="previewToneClass">
-            {{ previewText }}
+  <article class="row chat-list-row" :class="rowToneClass">
+    <div class="chat-list-row__content">
+      <RouterLink custom :to="to" v-slot="{ href, navigate }">
+        <a class="chat-list-row__primary" :href="href" @click="handleClick($event, navigate)">
+          <div class="chat-result-main">
+            <div class="chat-result-title">
+              <span class="chat-result-name">{{ title }}</span>
+              <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
+            </div>
+            <div class="chat-result-meta">
+              <div class="muted">{{ metaText }}</div>
+              <span
+                v-if="generationState"
+                class="chat-result-generation-state"
+                :class="`chat-result-generation-state--${generationState}`"
+                :aria-label="generationStateLabel"
+                :title="generationStateLabel"
+              >
+                <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
+                  <span></span><span></span><span></span>
+                </span>
+                <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
+                <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
+              </span>
+            </div>
+            <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
+            <div v-if="previewText" class="chat-first-preview">
+              <div class="chat-first-preview-bubble" :class="previewToneClass">
+                {{ previewText }}
+              </div>
+            </div>
+            <div v-if="snippet" class="chat-search-snippet">
+              {{ snippet }}
+            </div>
           </div>
-        </div>
-        <div v-if="snippet" class="chat-search-snippet">
-          {{ snippet }}
-        </div>
-      </div>
+        </a>
+      </RouterLink>
+      <slot name="meta-extra"></slot>
+    </div>
 
-      <div class="chat-result-badges">
-        <slot name="badges"></slot>
-      </div>
-    </a>
-  </RouterLink>
+    <div class="chat-result-badges">
+      <slot name="badges"></slot>
+    </div>
+  </article>
 </template>
 
 <script setup lang="ts">
@@ -107,6 +112,33 @@ const generationStateLabel = computed(() => {
 </script>
 
 <style scoped>
+.chat-list-row {
+  align-items: flex-start;
+}
+
+.chat-list-row__content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-list-row__primary {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.chat-list-row__primary:hover .chat-result-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-list-row__primary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 .chat-result-title {
   display: flex;
   align-items: baseline;
@@ -195,7 +227,7 @@ const generationStateLabel = computed(() => {
   background: var(--color-chat-assistant-bg);
 }
 
-.chat-list-row:hover .chat-first-preview-bubble {
+.chat-list-row__primary:hover .chat-first-preview-bubble {
   text-decoration: none;
 }
 

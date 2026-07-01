@@ -82,6 +82,15 @@
                   :row-role="chatResultRole(c)"
                   @navigate="openChat"
                 >
+                  <template #meta-extra>
+                    <ContinuationNav
+                      :items="c.continuation_nav || []"
+                      :current-chat-id="c.id"
+                      mode="list"
+                      :stack="true"
+                      @navigate="openChat"
+                    />
+                  </template>
                   <template #badges>
                     <span
                       v-if="c.shared_outgoing"
@@ -94,8 +103,8 @@
                     <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
                       {{ matchBadgeLabel(c.match_type) }}
                     </span>
-                    <span v-if="c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
-                    <span v-if="Number(c.child_handoff_count || 0) > 0" class="badge">
+                    <span v-if="!hasContinuationNav(c) && c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
+                    <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
                       {{ continuationCountLabel(c.child_handoff_count || 0) }}
                     </span>
                   </template>
@@ -179,6 +188,7 @@ import { api } from '../api/client';
 import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListRow from '@/components/ChatListRow.vue';
+import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
@@ -698,7 +708,12 @@ function continuationCountLabel(count: number) {
   return count === 1 ? translate('1 continuation') : translate('{count} continuations', { count });
 }
 
+function hasContinuationNav(chat: ChatSummary) {
+  return Array.isArray(chat.continuation_nav) && chat.continuation_nav.length > 1;
+}
+
 function relationMeta(chat: ChatSummary) {
+  if (hasContinuationNav(chat)) return null;
   const count = Number(chat.child_handoff_count || 0);
   const parts: string[] = [];
   if (chat.parent_relation_kind === 'handoff') parts.push('Continuation');

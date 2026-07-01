@@ -183,6 +183,17 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  def chat_continuation_nav_item(%{chat: %Chat{} = chat} = entry) do
+    chat
+    |> chat_relation_summary(
+      kind: Map.get(entry, :kind, chat.parent_relation_kind),
+      message_id: Map.get(entry, :message_id, chat.parent_message_id),
+      parent_chat_id: chat.parent_chat_id,
+      parent_message_id: chat.parent_message_id
+    )
+    |> Map.put(:label, to_string(Map.get(entry, :label, "")))
+  end
+
   def chat_block_binding(%ChatKnowledgeBlock{} = binding) do
     block = Map.get(binding, :knowledge_block)
 

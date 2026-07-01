@@ -556,7 +556,7 @@ fieldset {
     grid-column: 2;
     justify-self: center;
     min-width: 0;
-    max-width: min(34vw, 480px);
+    max-width: min(25vw, 420px);
     pointer-events: auto;
   }
 
