@@ -2,9 +2,20 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Notifications
+  alias IntellectualClub.Notifications.ActiveWebPushClients
   alias IntellectualClub.Notifications.WebPushSubscription
 
   require Ash.Query
+
+  setup do
+    ActiveWebPushClients.reset()
+
+    on_exit(fn ->
+      ActiveWebPushClients.reset()
+    end)
+
+    :ok
+  end
 
   test "GET /api/bff/web-push/config returns current client configuration", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
@@ -78,6 +89,73 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
       |> json_response(422)
 
     assert response["detail"] == "Web Push is disabled."
+  end
+
+  test "client state endpoint records and clears current user visible chat", %{conn: conn} do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: user, password: password} = user_fixture()
+
+    _settings = enable_settings!(admin)
+    endpoint = "https://push.example/current"
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(user, subscription_payload(endpoint))
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/client-state", %{
+        "endpoint" => endpoint,
+        "client_id" => "tab-1",
+        "chat_id" => 123,
+        "visible" => true
+      })
+      |> json_response(200)
+
+    assert response["status"] == "ok"
+    assert ActiveWebPushClients.active?(user.id, endpoint, 123)
+
+    hidden_response =
+      conn
+      |> recycle()
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/client-state", %{
+        "endpoint" => endpoint,
+        "client_id" => "tab-1",
+        "chat_id" => 123,
+        "visible" => false
+      })
+      |> json_response(200)
+
+    assert hidden_response["status"] == "ok"
+    refute ActiveWebPushClients.active?(user.id, endpoint, 123)
+  end
+
+  test "client state endpoint does not accept another user's subscription", %{conn: conn} do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: owner} = user_fixture()
+    %{user: user, password: password} = user_fixture()
+
+    _settings = enable_settings!(admin)
+    endpoint = "https://push.example/owned"
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(owner, subscription_payload(endpoint))
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/client-state", %{
+        "endpoint" => endpoint,
+        "client_id" => "tab-1",
+        "chat_id" => 123,
+        "visible" => true
+      })
+      |> json_response(404)
+
+    assert response["error"] == "Subscription not found"
+    refute ActiveWebPushClients.active?(user.id, endpoint, 123)
+    refute ActiveWebPushClients.active?(owner.id, endpoint, 123)
   end
 
   test "admin settings endpoints require admin access", %{conn: conn} do

@@ -34,6 +34,27 @@ self.addEventListener('push', (event) => {
   })());
 });
 
+self.addEventListener('message', (event) => {
+  const data = event.data || {};
+  if (data.type !== 'web_push_close_chat_notifications') return;
+
+  event.waitUntil((async () => {
+    const chatId = Number(data.chat_id);
+    const tag = typeof data.tag === 'string' && data.tag
+      ? data.tag
+      : Number.isInteger(chatId) && chatId > 0
+        ? `chat:${chatId}`
+        : '';
+
+    if (!tag || typeof self.registration.getNotifications !== 'function') return;
+
+    const notifications = await self.registration.getNotifications({ tag });
+    for (const notification of notifications) {
+      notification.close();
+    }
+  })());
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 

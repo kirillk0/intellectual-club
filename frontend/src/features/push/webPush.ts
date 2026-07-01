@@ -4,6 +4,8 @@ import { isStandalonePwa } from '@/pwa';
 const SERVICE_WORKER_PATH = '/service-worker.js';
 const SERVICE_WORKER_SCOPE = '/';
 const LOCAL_KEY_REVISION = 'intellectual-club:web-push:key-revision';
+const SESSION_CLIENT_ID = 'intellectual-club:web-push:client-id';
+const ACTIVE_CHAT_HEARTBEAT_MS = 20_000;
 
 export type WebPushClientConfig = {
   enabled: boolean;
@@ -28,6 +30,18 @@ type PushSubscriptionJson = {
   };
   expirationTime?: number | null;
 };
+
+type ServiceWorkerMessage = {
+  type: string;
+  [key: string]: unknown;
+};
+
+let activeWebPushChatId: number | null = null;
+let activeWebPushHeartbeatTimer: number | null = null;
+let activeWebPushListenersReady = false;
+let activeWebPushClientId: string | null = null;
+let reportedVisibleWebPushChatId: number | null = null;
+let activeWebPushClientStateQueue: Promise<void> = Promise.resolve();
 
 const isIosLike = () => {
   const platform = navigator.platform || '';
@@ -125,6 +139,35 @@ const subscriptionUsesPublicKey = (subscription: PushSubscription, publicKey: st
   return getStoredKeyRevision() === keyRevision;
 };
 
+const normalizeChatId = (chatId: number | null | undefined) =>
+  typeof chatId === 'number' && Number.isInteger(chatId) && chatId > 0 ? chatId : null;
+
+const createWebPushClientId = () => {
+  if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+};
+
+const getWebPushClientId = () => {
+  if (activeWebPushClientId) return activeWebPushClientId;
+
+  try {
+    const stored = window.sessionStorage.getItem(SESSION_CLIENT_ID);
+    if (stored) {
+      activeWebPushClientId = stored;
+      return activeWebPushClientId;
+    }
+
+    activeWebPushClientId = createWebPushClientId();
+    window.sessionStorage.setItem(SESSION_CLIENT_ID, activeWebPushClientId);
+    return activeWebPushClientId;
+  } catch {
+    activeWebPushClientId = createWebPushClientId();
+    return activeWebPushClientId;
+  }
+};
+
+const webPushChatNotificationTag = (chatId: number) => `chat:${chatId}`;
+
 export const getWebPushRegistration = async () => {
   if (!('serviceWorker' in navigator)) return null;
 
@@ -168,6 +211,114 @@ const saveSubscription = async (subscription: PushSubscription, config: WebPushC
 const deleteSubscriptionOnServer = async (endpoint: string) => {
   const query = new URLSearchParams({ endpoint });
   await api.del(`/api/bff/web-push/subscriptions?${query.toString()}`, { showErrorBanner: false });
+};
+
+const postServiceWorkerMessage = async (message: ServiceWorkerMessage) => {
+  if (!('serviceWorker' in navigator)) return;
+
+  const registration = await getWebPushRegistration().catch(() => null);
+  const worker = navigator.serviceWorker.controller || registration?.active || null;
+  worker?.postMessage(message);
+};
+
+const sendWebPushClientState = async (chatId: number, visible: boolean) => {
+  const subscription = await currentWebPushSubscription().catch(() => null);
+  if (!subscription) return;
+
+  await api.post(
+    '/api/bff/web-push/client-state',
+    {
+      endpoint: subscription.endpoint,
+      client_id: getWebPushClientId(),
+      chat_id: chatId,
+      visible,
+    },
+    { showErrorBanner: false }
+  ).catch(() => {
+    // This is a best-effort hint; stale entries expire quickly on the server.
+  });
+};
+
+const enqueueWebPushClientState = (chatId: number, visible: boolean) => {
+  activeWebPushClientStateQueue = activeWebPushClientStateQueue
+    .catch(() => undefined)
+    .then(() => sendWebPushClientState(chatId, visible));
+};
+
+const syncActiveWebPushClientState = () => {
+  const visibleChatId =
+    activeWebPushChatId !== null && document.visibilityState === 'visible'
+      ? activeWebPushChatId
+      : null;
+
+  if (visibleChatId !== null) {
+    reportedVisibleWebPushChatId = visibleChatId;
+    enqueueWebPushClientState(visibleChatId, true);
+    return;
+  }
+
+  if (reportedVisibleWebPushChatId !== null) {
+    const hiddenChatId = reportedVisibleWebPushChatId;
+    reportedVisibleWebPushChatId = null;
+    enqueueWebPushClientState(hiddenChatId, false);
+  }
+};
+
+const startActiveWebPushHeartbeat = () => {
+  if (activeWebPushHeartbeatTimer !== null) return;
+  activeWebPushHeartbeatTimer = window.setInterval(
+    syncActiveWebPushClientState,
+    ACTIVE_CHAT_HEARTBEAT_MS
+  );
+};
+
+const stopActiveWebPushHeartbeat = () => {
+  if (activeWebPushHeartbeatTimer === null) return;
+  window.clearInterval(activeWebPushHeartbeatTimer);
+  activeWebPushHeartbeatTimer = null;
+};
+
+const handleActiveWebPushClientWake = () => {
+  if (activeWebPushChatId !== null) startActiveWebPushHeartbeat();
+  syncActiveWebPushClientState();
+};
+
+const ensureActiveWebPushClientListeners = () => {
+  if (activeWebPushListenersReady) return;
+  activeWebPushListenersReady = true;
+  document.addEventListener('visibilitychange', handleActiveWebPushClientWake);
+  window.addEventListener('pageshow', handleActiveWebPushClientWake);
+  window.addEventListener('focus', handleActiveWebPushClientWake);
+};
+
+export const setActiveWebPushChat = (chatId: number | null | undefined) => {
+  activeWebPushChatId = normalizeChatId(chatId);
+  ensureActiveWebPushClientListeners();
+
+  if (activeWebPushChatId !== null) {
+    startActiveWebPushHeartbeat();
+  } else {
+    stopActiveWebPushHeartbeat();
+  }
+
+  syncActiveWebPushClientState();
+};
+
+export const clearActiveWebPushChat = () => {
+  activeWebPushChatId = null;
+  stopActiveWebPushHeartbeat();
+  syncActiveWebPushClientState();
+};
+
+export const closeWebPushNotificationsForChat = (chatId: number | null | undefined) => {
+  const normalizedChatId = normalizeChatId(chatId);
+  if (normalizedChatId === null) return;
+
+  void postServiceWorkerMessage({
+    type: 'web_push_close_chat_notifications',
+    chat_id: normalizedChatId,
+    tag: webPushChatNotificationTag(normalizedChatId),
+  });
 };
 
 export const enableWebPush = async () => {

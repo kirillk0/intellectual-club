@@ -10,6 +10,7 @@ defmodule IntellectualClub.Notifications do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Notifications.ActiveWebPushClients
   alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.Notifications.WebPushSender
   alias IntellectualClub.Notifications.WebPushSettings
@@ -131,6 +132,29 @@ defmodule IntellectualClub.Notifications do
 
   def delete_subscription(_actor, _endpoint), do: :ok
 
+  @spec record_client_state(map(), map()) :: :ok | {:error, term()}
+  def record_client_state(actor, params) when is_map(params) do
+    with {:ok, payload} <- client_state_payload(params),
+         :ok <- validate_client_state_payload(payload),
+         {:ok, %WebPushSubscription{}} <- find_subscription(payload.endpoint, actor) do
+      if payload.visible do
+        ActiveWebPushClients.upsert(
+          actor.id,
+          payload.endpoint,
+          payload.client_id,
+          payload.chat_id
+        )
+      else
+        ActiveWebPushClients.remove(payload.endpoint, payload.client_id)
+      end
+    else
+      {:ok, nil} -> {:error, :subscription_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def record_client_state(_actor, _params), do: {:error, {:validation, "Invalid client state."}}
+
   @spec deliver_generation_finished(integer(), :done | :error, keyword()) :: :ok
   def deliver_generation_finished(message_id, status, opts \\ [])
 
@@ -202,13 +226,21 @@ defmodule IntellectualClub.Notifications do
 
       delivered_count =
         subscriptions
-        |> Enum.map(&send_generation_payload(&1, payload, settings, actor))
+        |> Enum.map(&maybe_send_generation_payload(&1, payload, settings, actor, message.chat_id))
         |> Enum.count(&(&1 == :ok))
 
       mark_event_delivered(event, delivered_count, actor)
     end
 
     :ok
+  end
+
+  defp maybe_send_generation_payload(subscription, payload, settings, actor, chat_id) do
+    if ActiveWebPushClients.active?(actor.id, subscription.endpoint, chat_id) do
+      :active_client
+    else
+      send_generation_payload(subscription, payload, settings, actor)
+    end
   end
 
   defp send_generation_payload(subscription, payload, settings, actor) do
@@ -441,6 +473,39 @@ defmodule IntellectualClub.Notifications do
     end
   end
 
+  defp client_state_payload(params) do
+    payload = %{
+      endpoint:
+        normalize_required_string(Map.get(params, "endpoint", Map.get(params, :endpoint))),
+      client_id:
+        normalize_required_string(Map.get(params, "client_id", Map.get(params, :client_id))),
+      chat_id:
+        parse_optional_positive_integer(Map.get(params, "chat_id", Map.get(params, :chat_id))),
+      visible: parse_boolean(Map.get(params, "visible", Map.get(params, :visible)), false)
+    }
+
+    {:ok, payload}
+  end
+
+  defp validate_client_state_payload(%{endpoint: ""}),
+    do: {:error, {:validation, "Subscription endpoint is required."}}
+
+  defp validate_client_state_payload(%{client_id: ""}),
+    do: {:error, {:validation, "Client id is required."}}
+
+  defp validate_client_state_payload(%{visible: true, chat_id: nil}),
+    do: {:error, {:validation, "Chat id is required for visible client state."}}
+
+  defp validate_client_state_payload(%{endpoint: endpoint}) do
+    uri = URI.parse(endpoint)
+
+    if uri.scheme == "https" and is_binary(uri.host) and uri.host != "" do
+      :ok
+    else
+      {:error, {:validation, "Subscription endpoint must be an https URL."}}
+    end
+  end
+
   defp find_subscription(endpoint, actor) do
     WebPushSubscription
     |> Ash.Query.filter(owner_id == ^actor.id and endpoint == ^endpoint)
@@ -456,9 +521,16 @@ defmodule IntellectualClub.Notifications do
 
   defp destroy_subscription(subscription, actor) do
     case Ash.destroy(subscription, actor: actor) do
-      :ok -> :ok
-      {:ok, _destroyed} -> :ok
-      {:error, error} -> {:error, error}
+      :ok ->
+        ActiveWebPushClients.remove_endpoint(subscription.endpoint)
+        :ok
+
+      {:ok, _destroyed} ->
+        ActiveWebPushClients.remove_endpoint(subscription.endpoint)
+        :ok
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
@@ -520,7 +592,7 @@ defmodule IntellectualClub.Notifications do
       title: notification_title(status, locale),
       body: notification_body(message, status, locale),
       url: "/chats/#{chat_id}?focusMessage=#{message_id}",
-      tag: "generation:#{message_id}"
+      tag: "chat:#{chat_id}"
     }
   end
 
@@ -649,6 +721,15 @@ defmodule IntellectualClub.Notifications do
     case parse_integer(value) do
       parsed when is_integer(parsed) and parsed > 0 -> parsed
       _other -> default
+    end
+  end
+
+  defp parse_optional_positive_integer(nil), do: nil
+
+  defp parse_optional_positive_integer(value) do
+    case parse_integer(value) do
+      parsed when is_integer(parsed) and parsed > 0 -> parsed
+      _other -> nil
     end
   end
 

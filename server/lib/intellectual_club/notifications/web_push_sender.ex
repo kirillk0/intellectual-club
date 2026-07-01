@@ -43,7 +43,7 @@ defmodule IntellectualClub.Notifications.WebPushSender do
     Application.put_env(:web_push_elixir, :vapid_subject, settings.vapid_subject)
   end
 
-  defp topic(%{message_id: message_id}) when is_integer(message_id), do: "gen-#{message_id}"
-  defp topic(%{"message_id" => message_id}) when is_integer(message_id), do: "gen-#{message_id}"
+  defp topic(%{chat_id: chat_id}) when is_integer(chat_id), do: "chat-#{chat_id}"
+  defp topic(%{"chat_id" => chat_id}) when is_integer(chat_id), do: "chat-#{chat_id}"
   defp topic(_payload), do: nil
 end

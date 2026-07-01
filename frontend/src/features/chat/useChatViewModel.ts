@@ -13,6 +13,11 @@ import {
   useChatUiChrome,
 } from '@/features/chat/model/useChatUiChrome';
 import {
+  clearActiveWebPushChat,
+  closeWebPushNotificationsForChat,
+  setActiveWebPushChat,
+} from '@/features/push/webPush';
+import {
   type ChatIdleStatePayload,
   type ChatPromptContextPayload,
   type ChatSettingsStatePayload,
@@ -404,6 +409,8 @@ export function useChatViewModel() {
     composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
     loaded.value = true;
+    setActiveWebPushChat(chatId.value);
+    closeWebPushNotificationsForChat(chatId.value);
     startChatIdlePolling();
     if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
       void scrollToLastMessageIfLayerActive();
@@ -675,6 +682,7 @@ export function useChatViewModel() {
     () => chatId.value,
     () => {
       if (!chatId.value) return;
+      setActiveWebPushChat(chatId.value);
       stopChatIdlePolling();
       chatIdleRevision.value = null;
       artifactToolsAvailable.value = false;
@@ -714,11 +722,13 @@ export function useChatViewModel() {
     window.addEventListener('focus', composerRuntime.handleFocus);
     window.addEventListener('focus', handleChatIdleFocus);
     if (chatId.value) {
+      setActiveWebPushChat(chatId.value);
       void loadInitialChatSafe();
     }
   });
 
   onBeforeUnmount(() => {
+    clearActiveWebPushChat();
     stopChatIdlePolling();
     void composerRuntime.dispose();
     void messageActions.dispose();

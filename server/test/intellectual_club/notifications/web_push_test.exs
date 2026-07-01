@@ -14,6 +14,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Notifications
+  alias IntellectualClub.Notifications.ActiveWebPushClients
   alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.Notifications.WebPushSubscription
 
@@ -32,8 +33,10 @@ defmodule IntellectualClub.Notifications.WebPushTest do
 
     Application.put_env(:intellectual_club, :web_push_test_pid, self())
     Application.delete_env(:intellectual_club, :web_push_test_result)
+    ActiveWebPushClients.reset()
 
     on_exit(fn ->
+      ActiveWebPushClients.reset()
       restore_env(:web_push_sender, old_sender)
       restore_env(:web_push_test_pid, old_test_pid)
       restore_env(:web_push_test_result, old_test_result)
@@ -132,7 +135,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert payload.message_id == message.id
     assert payload.body == "Notifications test: Done answer"
     assert payload.url == "/chats/#{message.chat_id}?focusMessage=#{message.id}"
-    assert payload.tag == "generation:#{message.id}"
+    assert payload.tag == "chat:#{message.chat_id}"
 
     assert [%WebPushGenerationEvent{delivered_count: 1, suppressed: false}] =
              events_for(message.id, :done, actor)
@@ -188,6 +191,39 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert payload.message_id == child.id
   end
 
+  test "active visible client suppresses only matching chat subscriptions" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+    endpoint = "https://push.example/one"
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload(endpoint))
+
+    message = assistant_message!(actor, "Visible answer")
+    assert :ok = ActiveWebPushClients.upsert(actor.id, endpoint, "client-a", message.chat_id)
+
+    assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{delivered_count: 0, suppressed: false}] =
+             events_for(message.id, :done, actor)
+
+    other_message = assistant_message!(actor, "Other chat answer")
+    assert :ok = Notifications.deliver_generation_finished(other_message.id, :done)
+    assert_receive {:web_push_send, ^endpoint, other_payload, 1}
+    assert other_payload.chat_id == other_message.chat_id
+
+    assert :ok = ActiveWebPushClients.remove(endpoint, "client-a")
+
+    follow_up = assistant_message_for_chat!(actor, message.chat_id, "Later answer")
+    assert :ok = Notifications.deliver_generation_finished(follow_up.id, :done)
+    assert_receive {:web_push_send, ^endpoint, follow_up_payload, 1}
+    assert follow_up_payload.chat_id == message.chat_id
+    assert follow_up_payload.tag == "chat:#{message.chat_id}"
+  end
+
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
   defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
 
@@ -227,6 +263,13 @@ defmodule IntellectualClub.Notifications.WebPushTest do
       |> Ash.create!(actor: actor)
 
     {:ok, _user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+    {:ok, assistant_message} = Threads.add_message_to_end(chat, :assistant, text, actor: actor)
+    assistant_message
+  end
+
+  defp assistant_message_for_chat!(actor, chat_id, text) do
+    chat = Ash.get!(Chat, chat_id, actor: actor)
+    {:ok, _user_message} = Threads.add_message_to_end(chat, :user, "Follow-up", actor: actor)
     {:ok, assistant_message} = Threads.add_message_to_end(chat, :assistant, text, actor: actor)
     assistant_message
   end

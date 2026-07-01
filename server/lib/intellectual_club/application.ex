@@ -16,6 +16,7 @@ defmodule IntellectualClub.Application do
       {Phoenix.PubSub, name: IntellectualClub.PubSub},
       {IntellectualClub.Outlets.Runtime, []},
       {IntellectualClub.Tools.RateLimiter, []},
+      {IntellectualClub.Notifications.ActiveWebPushClients, []},
       {IntellectualClub.Notifications.Dispatcher, []},
       {Registry, keys: :duplicate, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
