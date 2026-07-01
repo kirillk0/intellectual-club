@@ -42,6 +42,7 @@ let activeWebPushListenersReady = false;
 let activeWebPushClientId: string | null = null;
 let reportedVisibleWebPushChatId: number | null = null;
 let activeWebPushClientStateQueue: Promise<void> = Promise.resolve();
+const reportedSeenGenerations = new Set<string>();
 
 const isIosLike = () => {
   const platform = navigator.platform || '';
@@ -167,6 +168,9 @@ const getWebPushClientId = () => {
 };
 
 const webPushChatNotificationTag = (chatId: number) => `chat:${chatId}`;
+
+const normalizeGenerationStatus = (status: string | null | undefined) =>
+  status === 'done' || status === 'error' ? status : null;
 
 export const getWebPushRegistration = async () => {
   if (!('serviceWorker' in navigator)) return null;
@@ -318,6 +322,41 @@ export const closeWebPushNotificationsForChat = (chatId: number | null | undefin
     type: 'web_push_close_chat_notifications',
     chat_id: normalizedChatId,
     tag: webPushChatNotificationTag(normalizedChatId),
+  });
+};
+
+export const markWebPushGenerationSeen = (
+  chatId: number | null | undefined,
+  messageId: number | null | undefined,
+  status: string | null | undefined
+) => {
+  const normalizedChatId = normalizeChatId(chatId);
+  const normalizedMessageId = normalizeChatId(messageId);
+  const normalizedStatus = normalizeGenerationStatus(status);
+
+  if (
+    normalizedChatId === null ||
+    normalizedMessageId === null ||
+    normalizedStatus === null ||
+    document.visibilityState !== 'visible'
+  ) {
+    return;
+  }
+
+  const key = `${normalizedChatId}:${normalizedMessageId}:${normalizedStatus}`;
+  if (reportedSeenGenerations.has(key)) return;
+  reportedSeenGenerations.add(key);
+
+  void api.post(
+    '/api/bff/web-push/message-seen',
+    {
+      chat_id: normalizedChatId,
+      message_id: normalizedMessageId,
+      status: normalizedStatus,
+    },
+    { showErrorBanner: false }
+  ).catch(() => {
+    reportedSeenGenerations.delete(key);
   });
 };
 

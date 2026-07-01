@@ -1,6 +1,8 @@
 defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Notifications
   alias IntellectualClub.Notifications.ActiveWebPushClients
   alias IntellectualClub.Notifications.WebPushSubscription
@@ -158,6 +160,62 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
     refute ActiveWebPushClients.active?(owner.id, endpoint, 123)
   end
 
+  test "message seen endpoint records current user's finished generation", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+    message = assistant_message!(user, "Finished")
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/message-seen", %{
+        "chat_id" => message.chat_id,
+        "message_id" => message.id,
+        "status" => "done"
+      })
+      |> json_response(200)
+
+    assert response["status"] == "ok"
+    assert ActiveWebPushClients.generation_seen?(user.id, message.chat_id, message.id, :done)
+  end
+
+  test "message seen endpoint rejects another user's generation", %{conn: conn} do
+    %{user: owner} = user_fixture()
+    %{user: user, password: password} = user_fixture()
+    message = assistant_message!(owner, "Finished")
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/message-seen", %{
+        "chat_id" => message.chat_id,
+        "message_id" => message.id,
+        "status" => "done"
+      })
+      |> json_response(404)
+
+    assert response["error"] == "Message not found"
+    refute ActiveWebPushClients.generation_seen?(owner.id, message.chat_id, message.id, :done)
+    refute ActiveWebPushClients.generation_seen?(user.id, message.chat_id, message.id, :done)
+  end
+
+  test "message seen endpoint rejects non-generation messages", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+    message = user_message!(user, "Hello")
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> post("/api/bff/web-push/message-seen", %{
+        "chat_id" => message.chat_id,
+        "message_id" => message.id,
+        "status" => "done"
+      })
+      |> json_response(404)
+
+    assert response["error"] == "Message not found"
+    refute ActiveWebPushClients.generation_seen?(user.id, message.chat_id, message.id, :done)
+  end
+
   test "admin settings endpoints require admin access", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
 
@@ -235,5 +293,34 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
       },
       "key_revision" => 1
     }
+  end
+
+  defp assistant_message!(actor, text) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: "Notifications test"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+    {:ok, assistant_message} = Threads.add_message_to_end(chat, :assistant, text, actor: actor)
+    assistant_message
+  end
+
+  defp user_message!(actor, text) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: "Notifications test"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, message} = Threads.add_message_to_end(chat, :user, text, actor: actor)
+    message
   end
 end

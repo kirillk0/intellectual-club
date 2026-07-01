@@ -56,6 +56,16 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
     end
   end
 
+  def message_seen(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         :ok <- Notifications.record_generation_seen(actor, params) do
+      json(conn, %{status: "ok"})
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, reason} -> render_error(conn, reason)
+    end
+  end
+
   defp user_agent(conn) do
     conn
     |> get_req_header("user-agent")
@@ -78,6 +88,12 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "Subscription not found"})
+  end
+
+  defp render_error(conn, :message_not_found) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "Message not found"})
   end
 
   defp render_error(conn, %Ash.Error.Forbidden{}) do

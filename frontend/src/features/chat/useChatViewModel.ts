@@ -15,6 +15,7 @@ import {
 import {
   clearActiveWebPushChat,
   closeWebPushNotificationsForChat,
+  markWebPushGenerationSeen,
   setActiveWebPushChat,
 } from '@/features/push/webPush';
 import {
@@ -53,8 +54,8 @@ type ChatShareState = {
   group_eligibility?: ChatShareEligibility[];
 };
 
-const CHAT_IDLE_POLL_DELAY_MS = 30_000;
-const CHAT_IDLE_POLL_RETRY_DELAY_MS = 30_000;
+const CHAT_IDLE_POLL_DELAY_MS = 5_000;
+const CHAT_IDLE_POLL_RETRY_DELAY_MS = 15_000;
 const CHAT_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
 function getQueryString(value: unknown) {
@@ -283,7 +284,9 @@ export function useChatViewModel() {
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
-    onGenerationSettled: async () => {
+    onGenerationSettled: async (messageId, status) => {
+      markWebPushGenerationSeen(chatId.value, messageId, status);
+      closeWebPushNotificationsForChat(chatId.value);
       await loadChatSafe({ mode: 'soft', includeSettings: false });
     },
   });
@@ -373,6 +376,20 @@ export function useChatViewModel() {
     applySettingsState(payload);
   };
 
+  const markLatestVisibleGenerationSeen = () => {
+    const latest = [...branch.value]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          (message.status === 'done' || message.status === 'error') &&
+          typeof message.id === 'number'
+      );
+
+    if (!latest?.id) return;
+    markWebPushGenerationSeen(chatId.value, latest.id, latest.status);
+  };
+
   const loadChat = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
     const mode = opts.mode || 'initial';
     const includeSettings = opts.includeSettings !== false;
@@ -410,6 +427,7 @@ export function useChatViewModel() {
 
     loaded.value = true;
     setActiveWebPushChat(chatId.value);
+    markLatestVisibleGenerationSeen();
     closeWebPushNotificationsForChat(chatId.value);
     startChatIdlePolling();
     if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {

@@ -104,6 +104,7 @@ defmodule IntellectualClubWeb.Router do
     post "/web-push/subscriptions", WebPushController, :upsert_subscription
     delete "/web-push/subscriptions", WebPushController, :delete_subscription
     post "/web-push/client-state", WebPushController, :client_state
+    post "/web-push/message-seen", WebPushController, :message_seen
 
     get "/admin/web-push-settings", AdminWebPushSettingsController, :show
     patch "/admin/web-push-settings", AdminWebPushSettingsController, :update

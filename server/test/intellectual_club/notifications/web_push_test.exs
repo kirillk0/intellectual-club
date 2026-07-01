@@ -25,6 +25,9 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     old_test_pid = Application.get_env(:intellectual_club, :web_push_test_pid)
     old_test_result = Application.get_env(:intellectual_club, :web_push_test_result)
 
+    old_delivery_delay =
+      Application.get_env(:intellectual_club, :web_push_generation_delivery_delay_ms)
+
     Application.put_env(
       :intellectual_club,
       :web_push_sender,
@@ -33,6 +36,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
 
     Application.put_env(:intellectual_club, :web_push_test_pid, self())
     Application.delete_env(:intellectual_club, :web_push_test_result)
+    Application.put_env(:intellectual_club, :web_push_generation_delivery_delay_ms, 0)
     ActiveWebPushClients.reset()
 
     on_exit(fn ->
@@ -40,6 +44,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
       restore_env(:web_push_sender, old_sender)
       restore_env(:web_push_test_pid, old_test_pid)
       restore_env(:web_push_test_result, old_test_result)
+      restore_env(:web_push_generation_delivery_delay_ms, old_delivery_delay)
     end)
 
     :ok
@@ -222,6 +227,42 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert_receive {:web_push_send, ^endpoint, follow_up_payload, 1}
     assert follow_up_payload.chat_id == message.chat_id
     assert follow_up_payload.tag == "chat:#{message.chat_id}"
+  end
+
+  test "generation seen during delivery delay suppresses all device notifications" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _first_subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+    {:ok, _second_subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/two"))
+
+    message = assistant_message!(actor, "Seen before push")
+
+    task =
+      Task.async(fn ->
+        Notifications.deliver_generation_finished(message.id, :done, delay_ms: 75)
+      end)
+
+    Process.sleep(15)
+
+    assert :ok =
+             ActiveWebPushClients.record_generation_seen(
+               actor.id,
+               message.chat_id,
+               message.id,
+               :done
+             )
+
+    assert :ok = Task.await(task)
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{delivered_count: 0, suppressed: false}] =
+             events_for(message.id, :done, actor)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)

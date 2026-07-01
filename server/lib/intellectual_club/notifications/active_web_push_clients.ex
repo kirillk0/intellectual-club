@@ -6,9 +6,10 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
   use GenServer
 
   @ttl_ms 45_000
+  @seen_ttl_ms 60_000
   @prune_interval_ms 15_000
 
-  defstruct clients: %{}, ttl_ms: @ttl_ms
+  defstruct clients: %{}, seen_generations: %{}, ttl_ms: @ttl_ms, seen_ttl_ms: @seen_ttl_ms
 
   @type key :: {String.t(), String.t()}
   @type client :: %{owner_id: integer(), chat_id: integer(), last_seen_at: integer()}
@@ -41,6 +42,20 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
     GenServer.call(__MODULE__, {:active?, owner_id, endpoint, chat_id})
   end
 
+  @spec record_generation_seen(integer(), integer(), integer(), :done | :error) :: :ok
+  def record_generation_seen(owner_id, chat_id, message_id, status)
+      when is_integer(owner_id) and is_integer(chat_id) and is_integer(message_id) and
+             status in [:done, :error] do
+    GenServer.call(__MODULE__, {:record_generation_seen, owner_id, chat_id, message_id, status})
+  end
+
+  @spec generation_seen?(integer(), integer(), integer(), :done | :error) :: boolean()
+  def generation_seen?(owner_id, chat_id, message_id, status)
+      when is_integer(owner_id) and is_integer(chat_id) and is_integer(message_id) and
+             status in [:done, :error] do
+    GenServer.call(__MODULE__, {:generation_seen?, owner_id, chat_id, message_id, status})
+  end
+
   @doc false
   @spec reset() :: :ok
   def reset do
@@ -50,7 +65,12 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
   @impl true
   def init(opts) do
     schedule_prune()
-    {:ok, %__MODULE__{ttl_ms: Keyword.get(opts, :ttl_ms, @ttl_ms)}}
+
+    {:ok,
+     %__MODULE__{
+       ttl_ms: Keyword.get(opts, :ttl_ms, @ttl_ms),
+       seen_ttl_ms: Keyword.get(opts, :seen_ttl_ms, @seen_ttl_ms)
+     }}
   end
 
   @impl true
@@ -59,7 +79,7 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
 
     clients =
       state.clients
-      |> prune_expired(now, state.ttl_ms)
+      |> prune_expired_clients(now, state.ttl_ms)
       |> Map.put({endpoint, client_id}, %{
         owner_id: owner_id,
         chat_id: chat_id,
@@ -86,7 +106,7 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
 
   def handle_call({:active?, owner_id, endpoint, chat_id}, _from, state) do
     now = now_ms()
-    clients = prune_expired(state.clients, now, state.ttl_ms)
+    clients = prune_expired_clients(state.clients, now, state.ttl_ms)
 
     active? =
       Enum.any?(clients, fn
@@ -97,23 +117,60 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
     {:reply, active?, %{state | clients: clients}}
   end
 
+  def handle_call(
+        {:record_generation_seen, owner_id, chat_id, message_id, status},
+        _from,
+        state
+      ) do
+    now = now_ms()
+
+    seen_generations =
+      state.seen_generations
+      |> prune_expired_timestamps(now, state.seen_ttl_ms)
+      |> Map.put({owner_id, chat_id, message_id, status}, now)
+
+    {:reply, :ok, %{state | seen_generations: seen_generations}}
+  end
+
+  def handle_call({:generation_seen?, owner_id, chat_id, message_id, status}, _from, state) do
+    now = now_ms()
+    seen_generations = prune_expired_timestamps(state.seen_generations, now, state.seen_ttl_ms)
+    key = {owner_id, chat_id, message_id, status}
+
+    {:reply, Map.has_key?(seen_generations, key), %{state | seen_generations: seen_generations}}
+  end
+
   def handle_call(:reset, _from, state) do
-    {:reply, :ok, %{state | clients: %{}}}
+    {:reply, :ok, %{state | clients: %{}, seen_generations: %{}}}
   end
 
   @impl true
   def handle_info(:prune, state) do
     schedule_prune()
-    {:noreply, %{state | clients: prune_expired(state.clients, now_ms(), state.ttl_ms)}}
+    now = now_ms()
+
+    {:noreply,
+     %{
+       state
+       | clients: prune_expired_clients(state.clients, now, state.ttl_ms),
+         seen_generations:
+           prune_expired_timestamps(state.seen_generations, now, state.seen_ttl_ms)
+     }}
   end
 
   defp schedule_prune do
     Process.send_after(self(), :prune, @prune_interval_ms)
   end
 
-  defp prune_expired(clients, now, ttl_ms) do
+  defp prune_expired_clients(clients, now, ttl_ms) do
     clients
     |> Enum.reject(fn {_key, %{last_seen_at: last_seen_at}} -> now - last_seen_at > ttl_ms end)
+    |> Map.new()
+  end
+
+  defp prune_expired_timestamps(items, now, ttl_ms) do
+    items
+    |> Enum.reject(fn {_key, last_seen_at} -> now - last_seen_at > ttl_ms end)
     |> Map.new()
   end
 

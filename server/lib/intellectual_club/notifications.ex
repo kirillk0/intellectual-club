@@ -20,6 +20,7 @@ defmodule IntellectualClub.Notifications do
   @singleton_key "default"
   @default_vapid_subject "mailto:admin@example.com"
   @notification_body_preview_length 180
+  @default_generation_delivery_delay_ms 7_000
 
   resources do
     resource(WebPushSettings)
@@ -155,6 +156,26 @@ defmodule IntellectualClub.Notifications do
 
   def record_client_state(_actor, _params), do: {:error, {:validation, "Invalid client state."}}
 
+  @spec record_generation_seen(map(), map()) :: :ok | {:error, term()}
+  def record_generation_seen(actor, params) when is_map(params) do
+    with {:ok, payload} <- generation_seen_payload(params),
+         :ok <- validate_generation_seen_payload(payload),
+         {:ok, %ChatMessage{} = message} <- fetch_seen_message(payload.message_id, actor),
+         :ok <- validate_seen_message(message, actor, payload) do
+      ActiveWebPushClients.record_generation_seen(
+        actor.id,
+        message.chat_id,
+        message.id,
+        payload.status
+      )
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def record_generation_seen(_actor, _params),
+    do: {:error, {:validation, "Invalid generation seen state."}}
+
   @spec deliver_generation_finished(integer(), :done | :error, keyword()) :: :ok
   def deliver_generation_finished(message_id, status, opts \\ [])
 
@@ -168,7 +189,7 @@ defmodule IntellectualClub.Notifications do
         :ok
 
       {:ok, %WebPushGenerationEvent{} = event} ->
-        dispatch_generation_event(event, message, status, actor)
+        maybe_dispatch_generation_event(event, message, status, actor, opts)
 
       {:duplicate, _event} ->
         :ok
@@ -233,6 +254,34 @@ defmodule IntellectualClub.Notifications do
     end
 
     :ok
+  end
+
+  defp maybe_dispatch_generation_event(event, message, status, actor, opts) do
+    maybe_wait_before_dispatch(opts)
+
+    if ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
+      mark_event_delivered(event, 0, actor)
+    else
+      dispatch_generation_event(event, message, status, actor)
+    end
+  end
+
+  defp maybe_wait_before_dispatch(opts) do
+    delay_ms =
+      opts
+      |> Keyword.get(:delay_ms, default_generation_delivery_delay_ms())
+      |> normalize_non_negative_integer(default_generation_delivery_delay_ms())
+
+    if delay_ms > 0, do: Process.sleep(delay_ms)
+  end
+
+  defp default_generation_delivery_delay_ms do
+    :intellectual_club
+    |> Application.get_env(
+      :web_push_generation_delivery_delay_ms,
+      @default_generation_delivery_delay_ms
+    )
+    |> normalize_non_negative_integer(@default_generation_delivery_delay_ms)
   end
 
   defp maybe_send_generation_payload(subscription, payload, settings, actor, chat_id) do
@@ -506,6 +555,60 @@ defmodule IntellectualClub.Notifications do
     end
   end
 
+  defp generation_seen_payload(params) do
+    payload = %{
+      chat_id:
+        parse_optional_positive_integer(Map.get(params, "chat_id", Map.get(params, :chat_id))),
+      message_id:
+        parse_optional_positive_integer(
+          Map.get(params, "message_id", Map.get(params, :message_id))
+        ),
+      status: normalize_generation_status(Map.get(params, "status", Map.get(params, :status)))
+    }
+
+    {:ok, payload}
+  end
+
+  defp validate_generation_seen_payload(%{chat_id: nil}),
+    do: {:error, {:validation, "Chat id is required."}}
+
+  defp validate_generation_seen_payload(%{message_id: nil}),
+    do: {:error, {:validation, "Message id is required."}}
+
+  defp validate_generation_seen_payload(%{status: nil}),
+    do: {:error, {:validation, "Generation status is required."}}
+
+  defp validate_generation_seen_payload(_payload), do: :ok
+
+  defp fetch_seen_message(message_id, actor) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
+      {:ok, %ChatMessage{} = message} -> {:ok, message}
+      {:ok, nil} -> {:error, :message_not_found}
+      {:error, _error} -> {:error, :message_not_found}
+    end
+  rescue
+    _exception -> {:error, :message_not_found}
+  end
+
+  defp validate_seen_message(%ChatMessage{} = message, actor, payload) do
+    cond do
+      message.owner_id != actor.id ->
+        {:error, :message_not_found}
+
+      message.role != :assistant ->
+        {:error, :message_not_found}
+
+      message.chat_id != payload.chat_id ->
+        {:error, :message_not_found}
+
+      message.status != payload.status ->
+        {:error, :message_not_found}
+
+      true ->
+        :ok
+    end
+  end
+
   defp find_subscription(endpoint, actor) do
     WebPushSubscription
     |> Ash.Query.filter(owner_id == ^actor.id and endpoint == ^endpoint)
@@ -717,6 +820,12 @@ defmodule IntellectualClub.Notifications do
 
   defp parse_boolean(_value, default), do: default
 
+  defp normalize_generation_status(:done), do: :done
+  defp normalize_generation_status("done"), do: :done
+  defp normalize_generation_status(:error), do: :error
+  defp normalize_generation_status("error"), do: :error
+  defp normalize_generation_status(_status), do: nil
+
   defp parse_positive_integer(value, default) do
     case parse_integer(value) do
       parsed when is_integer(parsed) and parsed > 0 -> parsed
@@ -752,4 +861,14 @@ defmodule IntellectualClub.Notifications do
   end
 
   defp parse_integer(_value), do: nil
+
+  defp normalize_non_negative_integer(value, _default) when is_integer(value) and value >= 0,
+    do: value
+
+  defp normalize_non_negative_integer(value, default) do
+    case parse_integer(value) do
+      parsed when is_integer(parsed) and parsed >= 0 -> parsed
+      _other -> default
+    end
+  end
 end
