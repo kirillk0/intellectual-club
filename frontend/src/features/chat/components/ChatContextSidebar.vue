@@ -104,6 +104,15 @@
           <button v-if="branchSearchTerm" type="button" @click="emit('update:branchSearchTerm', '')">
             Clear
           </button>
+          <button
+            type="button"
+            class="icon-button branch-tree-button"
+            title="Open message tree"
+            aria-label="Open message tree"
+            @click="emit('open-message-tree')"
+          >
+            <SvgIcon name="branch" />
+          </button>
         </div>
 
         <div class="stack branch-list">
@@ -295,6 +304,7 @@ const emit = defineEmits<{
   (e: 'update:leftTab', value: LeftPanelTab): void;
   (e: 'update:branchSearchTerm', value: string): void;
   (e: 'open-prompt-modal'): void;
+  (e: 'open-message-tree'): void;
   (e: 'branch-item-click', id?: number | null): void;
   (e: 'search-result-click', hit: ChatMessageSearchHit, inactive: boolean): void;
   (e: 'switch-branch-target', messageId: number, targetId: number): void;

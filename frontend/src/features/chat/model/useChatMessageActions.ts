@@ -418,6 +418,27 @@ export function useChatMessageActions(params: Params) {
     }
   };
 
+  const activateBranchHandler = async (messageId: number) => {
+    if (params.readOnly.value) return false;
+    if (!params.chatId.value || !messageId) return false;
+
+    try {
+      const payload = await api.post<{ branch: ChatBranchMessage[] }>(
+        `/api/bff/chat-branches/${params.chatId.value}/activate`,
+        {
+          message_id: messageId,
+        }
+      );
+      replaceBranch(payload.branch);
+      params.afterBranchSwitched?.();
+      return true;
+    } catch (error) {
+      console.error(error);
+      alert(errorMessage(error, 'Failed to activate the branch.'));
+      return false;
+    }
+  };
+
   const extractEditableTextContents = (msg: ChatBranchMessage) => {
     const targets: Array<{ id: number; sequence: number; text: string }> = [];
 
@@ -772,6 +793,7 @@ export function useChatMessageActions(params: Params) {
     applyWorkingPoll,
     retryLastStep,
     switchBranchHandler,
+    activateBranchHandler,
     startEdit,
     startBranch,
     startBranchToNewChat,

@@ -142,6 +142,29 @@ defmodule IntellectualClub.Chat.Threads do
   end
 
   @doc """
+  Returns all messages in the chat, sorted in stable tree order.
+  """
+  def all_messages(chat_or_id, actor, opts \\ []) do
+    chat = fetch_chat!(chat_or_id, actor)
+
+    messages =
+      chat.id
+      |> load_messages(actor)
+      |> order_messages_as_tree()
+
+    case Keyword.get(opts, :load, nil) do
+      nil ->
+        messages
+
+      load_spec ->
+        Ash.load!(messages, load_spec,
+          actor: actor,
+          strict?: Keyword.get(opts, :strict?, false)
+        )
+    end
+  end
+
+  @doc """
   Returns branch messages from root to the target message.
   """
   def branch_to_message(chat_or_id, message_id, actor, opts \\ []) when is_integer(message_id) do
@@ -474,6 +497,49 @@ defmodule IntellectualClub.Chat.Threads do
     end)
     |> Enum.into(%{}, fn {parent_id, children} ->
       {parent_id, Enum.sort_by(children, &sort_key/1)}
+    end)
+  end
+
+  defp order_messages_as_tree(messages) do
+    children = build_tree_children_index(messages)
+    roots = Map.get(children, nil, [])
+    {seen, reversed} = flatten_tree_messages(roots, children, MapSet.new(), [])
+
+    remaining =
+      messages
+      |> Enum.reject(&MapSet.member?(seen, &1.id))
+      |> Enum.sort_by(&sort_key/1)
+
+    Enum.reverse(reversed) ++ remaining
+  end
+
+  defp build_tree_children_index(messages) do
+    known_ids = messages |> Enum.map(& &1.id) |> MapSet.new()
+
+    messages
+    |> Enum.reduce(%{}, fn message, acc ->
+      parent_id =
+        if is_integer(message.parent_id) and MapSet.member?(known_ids, message.parent_id) do
+          message.parent_id
+        else
+          nil
+        end
+
+      Map.update(acc, parent_id, [message], &[message | &1])
+    end)
+    |> Enum.into(%{}, fn {parent_id, children} ->
+      {parent_id, Enum.sort_by(children, &sort_key/1)}
+    end)
+  end
+
+  defp flatten_tree_messages(messages, children, seen, acc) do
+    Enum.reduce(messages, {seen, acc}, fn message, {seen, acc} ->
+      if MapSet.member?(seen, message.id) do
+        {seen, acc}
+      else
+        seen = MapSet.put(seen, message.id)
+        flatten_tree_messages(Map.get(children, message.id, []), children, seen, [message | acc])
+      end
     end)
   end
 

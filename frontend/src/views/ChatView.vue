@@ -107,6 +107,7 @@
           @update:leftTab="(value) => (vm.leftTab = value)"
           @update:branchSearchTerm="(value) => (vm.branchSearchTerm = value)"
           @open-prompt-modal="vm.openPromptModal"
+          @open-message-tree="openMessageTree"
           @branch-item-click="vm.handleBranchItemClick"
           @search-result-click="vm.handleSearchResultClick"
           @switch-branch-target="handleContextSwitchBranchTarget"
@@ -380,6 +381,19 @@
       </button>
     </div>
 
+    <ChatMessageTreeOverlay
+      :open="messageTreeOpen"
+      :chat-id="vm.chat.id"
+      :readonly="vm.sharedReadonly"
+      :branch="vm.branch"
+      :message-meta-label="vm.messageMetaLabel"
+      :message-text="vm.messagePrimaryText"
+      :preview="vm.preview"
+      @close="closeMessageTree"
+      @go-to-message="handleMessageTreeGo"
+      @switch-to-message="handleMessageTreeSwitch"
+    />
+
     <Teleport to="body">
       <ShareWithGroupsModal
         v-model:open="vm.shareModalOpen"
@@ -554,6 +568,7 @@ import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOverlay.vue';
 import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue';
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';
 import ChatLibrarySidebar from '@/features/chat/components/ChatLibrarySidebar.vue';
@@ -572,6 +587,7 @@ const vm = reactive(useChatViewModel());
 const route = useRoute();
 const router = useRouter();
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
+const messageTreeOpen = ref(false);
 
 const FOCUS_COMPOSER_QUERY_PARAM = 'focusComposer';
 type TemplateRefValue = Element | ComponentPublicInstance | null;
@@ -641,6 +657,29 @@ watch(
 const handleContextSwitchBranchTarget = (messageId: number, targetId: number) => {
   if (vm.sharedReadonly) return;
   vm.switchBranchHandler(messageId, undefined, targetId);
+};
+
+const openMessageTree = () => {
+  messageTreeOpen.value = true;
+};
+
+const closeMessageTree = () => {
+  messageTreeOpen.value = false;
+};
+
+const handleMessageTreeGo = async (messageId: number) => {
+  closeMessageTree();
+  await nextTick();
+  vm.handleBranchItemClick(messageId);
+};
+
+const handleMessageTreeSwitch = async (messageId: number) => {
+  if (vm.sharedReadonly) return;
+
+  const switched = await vm.activateBranchHandler(messageId);
+  if (!switched) return;
+
+  await handleMessageTreeGo(messageId);
 };
 
 const dragActive = ref(false);
@@ -734,6 +773,17 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.chat-page .branch-search input {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-page .branch-tree-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
 }
 
 .chat-page .branch-search-divider {

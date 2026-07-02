@@ -48,6 +48,20 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
     end
   end
 
+  def message_tree(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- ChatParams.resource_id(id),
+         {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat(chat_id, actor) do
+      json(conn, ChatPayloads.message_tree(chat, actor))
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ChatAccess.render_error(conn, error)
+    end
+  end
+
   def idle_state(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- ChatParams.resource_id(id),

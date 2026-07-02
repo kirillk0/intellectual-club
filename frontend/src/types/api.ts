@@ -322,6 +322,7 @@ export type ChatBranchMessage = {
   parent_id?: number | null;
   role: 'user' | 'assistant';
   status: 'generating' | 'done' | 'canceled' | 'error' | string;
+  active?: boolean;
   bookmarked?: boolean;
   error_detail?: string | null;
   token_count?: number | null;
@@ -335,4 +336,9 @@ export type ChatBranchMessage = {
   prev_sibling_id?: number | null;
   next_sibling_id?: number | null;
   siblings?: { id: number; size: number; active: boolean }[];
+};
+
+export type ChatMessageTreePayload = {
+  messages: ChatBranchMessage[];
+  active_message_ids: number[];
 };

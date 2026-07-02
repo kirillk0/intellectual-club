@@ -121,6 +121,22 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     serialize_branch(messages, branch_meta_by_id, actor)
   end
 
+  def message_tree(%Chat{} = chat, actor) do
+    messages = Threads.all_messages(chat, actor, strict?: true)
+    active_message_ids = chat |> Threads.active_branch(actor) |> Enum.map(& &1.id)
+    active_message_id_set = MapSet.new(active_message_ids)
+
+    %{
+      messages:
+        messages
+        |> ChatBranchPayload.branch(%{}, actor)
+        |> Enum.map(fn message ->
+          Map.put(message, :active, MapSet.member?(active_message_id_set, Map.get(message, :id)))
+        end),
+      active_message_ids: active_message_ids
+    }
+  end
+
   def active_generation_message_id(messages) when is_list(messages) do
     Enum.find_value(messages, fn message ->
       if message.status in [:generating, "generating"], do: message.id, else: nil

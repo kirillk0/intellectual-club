@@ -870,6 +870,7 @@ export function useChatViewModel() {
     handleBranchItemClick: contextPanel.handleBranchItemClick,
     handleSearchResultClick: contextPanel.handleSearchResultClick,
     switchBranchHandler: messageActions.switchBranchHandler,
+    activateBranchHandler: messageActions.activateBranchHandler,
     openContextBlockEditor: contextPanel.openContextBlockEditor,
     openContextToolEditor: contextPanel.openContextToolEditor,
     chatWindowRef: contextPanel.chatWindowRef,
