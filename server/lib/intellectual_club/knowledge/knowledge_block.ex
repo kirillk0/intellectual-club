@@ -8,6 +8,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
+  alias IntellectualClub.Knowledge.Changes.ClearHandoffMessageBlockReferences
   alias IntellectualClub.Knowledge.Changes.SetTokenCount
   alias IntellectualClub.Knowledge.Changes.NormalizeVersion
   alias IntellectualClub.Knowledge.TagTree
@@ -245,6 +246,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       require_atomic?(false)
       change(cascade_destroy(:tag_bindings, after_action?: false))
       change(cascade_destroy(:bot_bindings, after_action?: false))
+      change({ClearHandoffMessageBlockReferences, []})
       change(cascade_destroy(:llm_configuration_bindings, after_action?: false))
       change(cascade_destroy(:chat_bindings, after_action?: false))
       change(cascade_destroy(:file_bindings, after_action?: false))
