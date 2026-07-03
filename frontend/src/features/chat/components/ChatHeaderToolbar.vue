@@ -1,7 +1,7 @@
 <template>
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
-      <div class="chat-toolbar__title-wrap">
+      <div class="chat-toolbar__title-wrap" :class="{ 'chat-toolbar__title-wrap--with-continuations': hasContinuationNav }">
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
           <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
           <button
@@ -410,10 +410,22 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 }
 
 .chat-toolbar__continuation-nav {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: max-content;
-  max-width: min(55%, 180px);
+  max-width: 100%;
   margin: 0;
+}
+
+.chat-toolbar__title-wrap--with-continuations .chat-toolbar__title {
+  flex: 0 1 auto;
+  max-width: min(21vw, 20rem);
+}
+
+@media (min-width: 721px) {
+  :global(.toolbar-host .toolbar.fill > .chat-toolbar__title-wrap.chat-toolbar__title-wrap--with-continuations) {
+    width: max-content;
+    max-width: min(58vw, max(16rem, calc(100vw - 58rem)), 56rem);
+  }
 }
 
 .chat-menu-item {
