@@ -67,6 +67,9 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
       :chat_message_id_snapshot,
       :chat_message_step_id_snapshot,
       :step_sequence,
+      :input_tokens,
+      :cached_input_tokens,
+      :output_tokens,
       :cost,
       :occurred_at
     ])
@@ -132,13 +135,31 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
         Map.get(row.cells, cell_key, %{
           message_ids: MapSet.new(),
           step_count: 0,
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          cache_hit_input_tokens: 0,
+          cache_hit_cached_input_tokens: 0,
           cost: 0.0
         })
+
+      input_tokens = numeric_tokens(record.input_tokens)
+      cached_input_tokens = numeric_tokens(record.cached_input_tokens)
+      output_tokens = numeric_tokens(record.output_tokens)
+      cache_hit_candidate? = record.step_sequence > 1 and input_tokens > 0
 
       cell = %{
         cell
         | message_ids: MapSet.put(cell.message_ids, record.chat_message_id_snapshot),
           step_count: cell.step_count + 1,
+          input_tokens: cell.input_tokens + input_tokens,
+          cached_input_tokens: cell.cached_input_tokens + cached_input_tokens,
+          output_tokens: cell.output_tokens + output_tokens,
+          cache_hit_input_tokens:
+            cell.cache_hit_input_tokens + if(cache_hit_candidate?, do: input_tokens, else: 0),
+          cache_hit_cached_input_tokens:
+            cell.cache_hit_cached_input_tokens +
+              if(cache_hit_candidate?, do: cached_input_tokens, else: 0),
           cost: cell.cost + numeric_cost(record.cost)
       }
 
@@ -168,6 +189,10 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
          %{
            message_count: MapSet.size(cell.message_ids),
            step_count: cell.step_count,
+           input_tokens: cell.input_tokens,
+           cached_input_tokens: cell.cached_input_tokens,
+           output_tokens: cell.output_tokens,
+           cache_hit_percent: cache_hit_percent(cell),
            cost: cell.cost
          }}
       end)
@@ -232,6 +257,20 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
   defp numeric_cost(value) when is_integer(value), do: value * 1.0
   defp numeric_cost(value) when is_float(value), do: value
   defp numeric_cost(_value), do: 0.0
+
+  defp numeric_tokens(value) when is_integer(value) and value >= 0, do: value
+  defp numeric_tokens(_value), do: 0
+
+  defp cache_hit_percent(%{cache_hit_input_tokens: input_tokens})
+       when not is_integer(input_tokens) or input_tokens <= 0,
+       do: nil
+
+  defp cache_hit_percent(%{
+         cache_hit_input_tokens: input_tokens,
+         cache_hit_cached_input_tokens: cached_input_tokens
+       }) do
+    cached_input_tokens / input_tokens * 100.0
+  end
 
   defp loaded_bool(%Ash.NotLoaded{}), do: false
   defp loaded_bool(value), do: value == true

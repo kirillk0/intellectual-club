@@ -27,6 +27,9 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       message_id: 201,
       step_id: 301,
       step_sequence: 1,
+      input_tokens: 100,
+      cached_input_tokens: 90,
+      output_tokens: 10,
       cost: 0.01
     })
 
@@ -39,7 +42,25 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       message_id: 201,
       step_id: 302,
       step_sequence: 2,
+      input_tokens: 100,
+      cached_input_tokens: 20,
+      output_tokens: 20,
       cost: 0.02
+    })
+
+    create_usage_record!(%{
+      usage_user: recipient,
+      configuration_owner: owner,
+      configuration: configuration,
+      provider: provider,
+      chat_id: 101,
+      message_id: 201,
+      step_id: 304,
+      step_sequence: 3,
+      input_tokens: 300,
+      cached_input_tokens: 90,
+      output_tokens: 30,
+      cost: 0.03
     })
 
     create_usage_record!(%{
@@ -51,6 +72,9 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       message_id: 202,
       step_id: 303,
       step_sequence: 1,
+      input_tokens: 50,
+      cached_input_tokens: 45,
+      output_tokens: 5,
       cost: 0.03
     })
 
@@ -68,10 +92,18 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     other_cell = owner_row["cells"][Integer.to_string(other_user.id)]
 
     assert recipient_cell["message_count"] == 1
-    assert recipient_cell["step_count"] == 2
-    assert_in_delta recipient_cell["cost"], 0.03, 0.0001
+    assert recipient_cell["step_count"] == 3
+    assert recipient_cell["input_tokens"] == 500
+    assert recipient_cell["cached_input_tokens"] == 200
+    assert recipient_cell["output_tokens"] == 60
+    assert_in_delta recipient_cell["cache_hit_percent"], 27.5, 0.0001
+    assert_in_delta recipient_cell["cost"], 0.06, 0.0001
     assert other_cell["message_count"] == 1
     assert other_cell["step_count"] == 1
+    assert other_cell["input_tokens"] == 50
+    assert other_cell["cached_input_tokens"] == 45
+    assert other_cell["output_tokens"] == 5
+    assert is_nil(other_cell["cache_hit_percent"])
     assert_in_delta other_cell["cost"], 0.03, 0.0001
 
     recipient_payload =
@@ -83,7 +115,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     assert Enum.map(recipient_payload["users"], & &1["username"]) == [recipient.username]
     [recipient_row] = recipient_payload["rows"]
     refute Map.has_key?(recipient_row["cells"], Integer.to_string(other_user.id))
-    assert recipient_row["cells"][Integer.to_string(recipient.id)]["step_count"] == 2
+    assert recipient_row["cells"][Integer.to_string(recipient.id)]["step_count"] == 3
   end
 
   defp create_provider!(actor, name) do
@@ -164,8 +196,9 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
         status: :done,
         response_final: true,
         occurred_at: ~U[2026-04-24 12:00:00.000000Z],
-        input_tokens: 10,
-        output_tokens: 5,
+        input_tokens: Map.get(attrs, :input_tokens, 10),
+        cached_input_tokens: Map.get(attrs, :cached_input_tokens, 0),
+        output_tokens: Map.get(attrs, :output_tokens, 5),
         cost: Map.fetch!(attrs, :cost)
       },
       authorize?: false
