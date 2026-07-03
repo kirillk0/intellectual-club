@@ -566,7 +566,7 @@ function patchExistingChatRows<T extends ChatSummary>(items: T[], summary: ChatS
 }
 
 function isNewChatChangeReason(reason: unknown) {
-  return ['create', 'copy', 'continue', 'branch-new-chat', 'branch-move-new-chat'].includes(String(reason || ''));
+  return ['create', 'copy', 'continue', 'branch-new-chat', 'branch-move-new-chat', 'handoff'].includes(String(reason || ''));
 }
 
 function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {

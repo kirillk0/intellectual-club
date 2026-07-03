@@ -30,6 +30,7 @@ import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
+import { publishEntityChange } from '@/features/entities/entityChanges';
 import type {
   Bot,
   Chat,
@@ -166,6 +167,34 @@ export function useChatViewModel() {
     if (!messageId) return [];
     return relations.value.children_by_message_id?.[String(messageId)] || [];
   };
+  const handoffChildForMessage = (messageId: number) =>
+    childRelationsForMessage(messageId).find((relation) => relation.kind === 'handoff' && Number.isInteger(relation.chat_id));
+
+  const navigateToHandoffChildForMessage = async (sourceChatId: number, messageId: number) => {
+    const relation = handoffChildForMessage(messageId);
+    const targetChatId = relation?.chat_id;
+    if (!targetChatId || targetChatId === sourceChatId) return false;
+
+    const patch: Record<string, unknown> = {
+      parent_chat_id: sourceChatId,
+      parent_message_id: messageId,
+      parent_relation_kind: 'handoff',
+    };
+
+    if (typeof relation.active_generation_message_id === 'number') {
+      patch.active_generation_message_id = relation.active_generation_message_id;
+    }
+
+    publishEntityChange({
+      kind: 'chat',
+      operation: 'touch',
+      id: targetChatId,
+      patch,
+      meta: { reason: 'handoff' },
+    });
+    await navigateToChat(targetChatId);
+    return true;
+  };
 
   const shareModalOpen = ref(false);
   const shareGroups = ref<Group[]>([]);
@@ -287,9 +316,13 @@ export function useChatViewModel() {
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
     onGenerationSettled: async (messageId, status) => {
+      const settledChatId = chatId.value;
       markWebPushGenerationSeen(chatId.value, messageId, status);
       closeWebPushNotificationsForChat(chatId.value);
       await loadChatSafe({ mode: 'soft', includeSettings: false });
+      if (status === 'done' && chatId.value === settledChatId) {
+        await navigateToHandoffChildForMessage(settledChatId, messageId);
+      }
     },
   });
 
