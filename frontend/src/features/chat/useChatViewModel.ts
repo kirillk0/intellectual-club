@@ -747,17 +747,19 @@ export function useChatViewModel() {
   );
 
   watch(
-    () => stack.active.value,
-    (active, wasActive) => {
+    () => [layer.active.value, loaded.value] as const,
+    ([active, isLoaded], previous) => {
       if (!chatId.value) return;
-      if (active) return;
-      if (wasActive !== true) return;
+      if (!active || !isLoaded) return;
+      const wasActive = previous?.[0];
       void (async () => {
         const handled = await libraryDraft.consumePendingNewBlockContext();
         if (handled) return;
+        if (wasActive !== false) return;
         await loadChatSafe({ mode: 'soft' });
       })();
-    }
+    },
+    { immediate: true }
   );
 
   const handleKeyNavigation = (event: KeyboardEvent) => {

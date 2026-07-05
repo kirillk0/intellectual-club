@@ -301,7 +301,7 @@ import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChan
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { useNavigationStack } from '@/features/stack/navigationStack';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   createJsonApiIncludedIndex,
@@ -357,7 +357,7 @@ const CONFIGURATION_DOCUMENT_INCLUDE = [
 
 const route = useRoute();
 const stackNav = useStackNavigation();
-const stack = useNavigationStack();
+const layer = useStackLayer();
 
 function defaultParameters() {
   return {};
@@ -974,11 +974,15 @@ const openBlockEditor = (blockId: number) => {
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
+  contextKey: () => `llm-configuration:${editor.idParam.value ?? 'new'}`,
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
     const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
     mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
     bindings.addBlocks(createdIds);
+  },
+  onBlocksRemoved: (removedIds) => {
+    bindings.removeBlocks(removedIds);
   },
   resetOn: () => editor.idParam.value,
 });
@@ -986,12 +990,12 @@ const newBlockDraft = useKnowledgeBlockNewDraft({
 const openNewBlock = newBlockDraft.openNewBlock;
 
 watch(
-  () => stack.active.value,
-  (active, wasActive) => {
-    if (active) return;
-    if (wasActive !== true) return;
+  () => [layer.active.value, loaded.value, loading.value] as const,
+  ([active, isLoaded, isLoading]) => {
+    if (!active || !isLoaded || isLoading) return;
     void newBlockDraft.consumePendingNewBlockContext();
-  }
+  },
+  { immediate: true }
 );
 
 const parametersText = ref('{}\n');

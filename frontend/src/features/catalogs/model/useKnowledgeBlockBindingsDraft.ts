@@ -141,6 +141,12 @@ export function useKnowledgeBlockBindingsDraft(params: {
     draft.value = normalizeSequences(draft.value.filter((b) => b.id !== bindingId));
   };
 
+  const removeBlocks = (blockIds: number[]) => {
+    const ids = new Set((blockIds || []).filter((id) => id > 0));
+    if (!ids.size) return;
+    draft.value = normalizeSequences(draft.value.filter((b) => !ids.has(b.block)));
+  };
+
   const setEnabled = (bindingId: number, enabled: boolean) => {
     draft.value = draft.value.map((b) => (b.id === bindingId ? { ...b, enabled } : b));
   };
@@ -183,6 +189,7 @@ export function useKnowledgeBlockBindingsDraft(params: {
     touch,
     addBlocks,
     remove,
+    removeBlocks,
     setEnabled,
     setSelection,
     move,

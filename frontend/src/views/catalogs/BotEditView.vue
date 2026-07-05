@@ -421,7 +421,7 @@ import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChan
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { publishEntityChange, useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { useNavigationStack } from '@/features/stack/navigationStack';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   mergeToolInstanceOptions,
@@ -466,7 +466,7 @@ type ShareStateResponse = {
 
 const route = useRoute();
 const stackNav = useStackNavigation();
-const stack = useNavigationStack();
+const layer = useStackLayer();
 
 const BOT_DOCUMENT_INCLUDE = [
   'knowledge_block_bindings.knowledge_block',
@@ -1041,11 +1041,15 @@ const openBlockEditor = (blockId: number) => {
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
+  contextKey: () => `bot:${editor.idParam.value ?? 'new'}`,
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
     const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
     mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
     bindings.addBlocks(createdIds);
+  },
+  onBlocksRemoved: (removedIds) => {
+    bindings.removeBlocks(removedIds);
   },
   resetOn: () => editor.idParam.value,
 });
@@ -1060,12 +1064,12 @@ const openToolEditor = (toolInstanceId: number) => {
 };
 
 watch(
-  () => stack.active.value,
-  (active, wasActive) => {
-    if (active) return;
-    if (wasActive !== true) return;
+  () => [layer.active.value, loaded.value, loading.value] as const,
+  ([active, isLoaded, isLoading]) => {
+    if (!active || !isLoaded || isLoading) return;
     void newBlockDraft.consumePendingNewBlockContext();
-  }
+  },
+  { immediate: true }
 );
 
 watch(

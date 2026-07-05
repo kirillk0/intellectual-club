@@ -176,8 +176,10 @@ import { api, isHttpError } from '@/api/client';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
+import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   currentWebPushSubscription,
@@ -212,9 +214,11 @@ type LocaleDraft = '' | 'en' | 'ru';
 type ThemeDraft = PreferredTheme;
 
 const stackNav = useStackNavigation();
+const layer = useStackLayer();
 const { currentUser } = useSessionAuth();
 
 const loading = ref(false);
+const settingsLoaded = ref(false);
 const saving = ref(false);
 const changingPassword = ref(false);
 const loadError = ref('');
@@ -235,6 +239,15 @@ const basePreferredThemeDraft = ref<ThemeDraft>('system');
 const pushConfig = ref<WebPushClientConfig | null>(null);
 const pushSupport = ref<WebPushSupportState | null>(null);
 const pushSubscribed = ref(false);
+
+function mergeKnowledgeBlocks(blocks: KnowledgeBlock[]) {
+  const byId = new Map<number, KnowledgeBlock>();
+
+  for (const block of knowledgeBlocks.value) byId.set(block.id, block);
+  for (const block of blocks) byId.set(block.id, block);
+
+  knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+}
 
 const passwordForm = reactive({
   current_password: '',
@@ -481,11 +494,6 @@ const openBlockEditor = (blockId: number) => {
   stackNav.open({ path: `/catalogs/knowledge-blocks/${blockId}`, query: { recordsetKey } });
 };
 
-const openNewBlock = () => {
-  const recordsetKey = createRecordset(linkedBlockIds.value);
-  stackNav.open({ path: '/catalogs/knowledge-blocks/new', query: { recordsetKey } });
-};
-
 const addBlocks = (blockIds: number[]) => {
   const existing = new Set(linkedBlockIds.value);
   const toAdd = (blockIds || []).filter((id) => id && !existing.has(id));
@@ -501,6 +509,37 @@ const addBlocks = (blockIds: number[]) => {
 
   userBlocks.value = [...userBlocks.value, ...added];
 };
+
+const removeBlocksByBlockIds = (blockIds: number[]) => {
+  const ids = new Set((blockIds || []).filter((id) => id > 0));
+  if (!ids.size) return;
+  userBlocks.value = userBlocks.value.filter((row) => !ids.has(row.knowledge_block_id));
+};
+
+const newBlockDraft = useKnowledgeBlockNewDraft({
+  contextKey: () => `user-settings:${currentUser.value?.id ?? 'current'}`,
+  linkedBlockIds: () => linkedBlockIds.value,
+  onBlocksCreated: async (createdIds) => {
+    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockRow(id)));
+    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
+    addBlocks(createdIds);
+  },
+  onBlocksRemoved: (removedIds) => {
+    removeBlocksByBlockIds(removedIds);
+  },
+  resetOn: () => currentUser.value?.id,
+});
+
+const openNewBlock = newBlockDraft.openNewBlock;
+
+watch(
+  () => [layer.active.value, settingsLoaded.value, loading.value] as const,
+  ([active, isLoaded, isLoading]) => {
+    if (!active || !isLoaded || isLoading) return;
+    void newBlockDraft.consumePendingNewBlockContext();
+  },
+  { immediate: true }
+);
 
 const move = (item: UserKnowledgeBlockLink, delta: number) => {
   const rows = sortedUserBlocks.value;
@@ -737,6 +776,7 @@ const loadSettings = async () => {
     baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
     resetLocaleDraft();
     resetThemeDraft();
+    settingsLoaded.value = true;
   } catch (error) {
     console.error(error);
     loadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';

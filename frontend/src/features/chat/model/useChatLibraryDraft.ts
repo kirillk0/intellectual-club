@@ -317,6 +317,13 @@ export function useChatLibraryDraft(params: Params) {
     chatBlocksDraft.value = normalizeSequences(next);
   };
 
+  const removeChatBlocksByBlockIds = (blockIds: number[]) => {
+    if (params.readOnly.value) return;
+    const ids = new Set((blockIds || []).filter((id) => id > 0));
+    if (!ids.size) return;
+    chatBlocksDraft.value = normalizeSequences(chatBlocksDraft.value.filter((binding) => !ids.has(binding.block)));
+  };
+
   const mergeKnowledgeBlockCatalogRows = (blocks: KnowledgeBlock[]) => {
     const byId = new Map<number, KnowledgeBlock>();
     for (const block of params.knowledgeBlocks.value || []) byId.set(block.id, block);
@@ -340,11 +347,15 @@ export function useChatLibraryDraft(params: Params) {
   };
 
   const newBlockDraft = useKnowledgeBlockNewDraft({
+    contextKey: () => `chat:${params.chatId.value ?? 'new'}`,
     linkedBlockIds: () => linkedChatBlockIds.value,
     onBlocksCreated: async (createdIds) => {
       const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockCatalogRow(id)));
       mergeKnowledgeBlockCatalogRows(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
       addChatBlocks(createdIds);
+    },
+    onBlocksRemoved: (removedIds) => {
+      removeChatBlocksByBlockIds(removedIds);
     },
     resetOn: () => params.chatId.value,
   });

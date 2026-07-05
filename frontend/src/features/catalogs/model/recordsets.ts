@@ -5,7 +5,14 @@ export type CrudRecordset = {
   createdAt: number;
 };
 
+export type CrudRecordsetChangedDetail = {
+  key: string;
+  id: number;
+};
+
 const STORAGE_KEY = 'ic_v2_crud_recordsets_v1';
+export const CRUD_RECORDSET_APPENDED_EVENT = 'ic:crud-recordset-appended';
+export const CRUD_RECORDSET_REMOVED_EVENT = 'ic:crud-recordset-removed';
 const MAX_RECORDSETS = 50;
 
 const recordsets = reactive(new Map<string, CrudRecordset>());
@@ -24,6 +31,30 @@ function randomKey(): string {
     return crypto.randomUUID();
   }
   return `rs_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
+
+function decodeRecordsets(value: string | null): Array<[string, CrudRecordset]> {
+  const parsed = safeParseJson(value);
+  if (!Array.isArray(parsed)) return [];
+
+  const out: Array<[string, CrudRecordset]> = [];
+  for (const item of parsed) {
+    if (!Array.isArray(item) || item.length !== 2) continue;
+    const [key, value] = item as [unknown, unknown];
+    if (typeof key !== 'string') continue;
+    if (!value || typeof value !== 'object') continue;
+    const v = value as Partial<CrudRecordset>;
+    const ids = Array.isArray(v.ids) ? v.ids.map((n) => Number(n)).filter(Number.isFinite) : [];
+    out.push([
+      key,
+      {
+        ids,
+        createdAt: typeof v.createdAt === 'number' ? v.createdAt : Date.now(),
+      },
+    ]);
+  }
+
+  return out;
 }
 
 function pruneRecordsets() {
@@ -48,26 +79,23 @@ function persistRecordsets() {
 }
 
 function restoreRecordsets() {
-  const parsed = safeParseJson(sessionStorage.getItem(STORAGE_KEY));
-  if (!Array.isArray(parsed)) return;
-
-  for (const item of parsed) {
-    if (!Array.isArray(item) || item.length !== 2) continue;
-    const [key, value] = item as [unknown, unknown];
-    if (typeof key !== 'string') continue;
-    if (!value || typeof value !== 'object') continue;
-    const v = value as Partial<CrudRecordset>;
-    const ids = Array.isArray(v.ids) ? v.ids.map((n) => Number(n)).filter(Number.isFinite) : [];
-    recordsets.set(key, {
-      ids,
-      createdAt: typeof v.createdAt === 'number' ? v.createdAt : Date.now(),
-    });
+  for (const [key, value] of decodeRecordsets(sessionStorage.getItem(STORAGE_KEY))) {
+    recordsets.set(key, value);
   }
 
   pruneRecordsets();
 }
 
 restoreRecordsets();
+
+function notifyRecordsetChanged(eventName: string, key: string, id: number) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  window.dispatchEvent(
+    new CustomEvent<CrudRecordsetChangedDetail>(eventName, {
+      detail: { key, id },
+    })
+  );
+}
 
 export function createRecordset(ids: number[]): string {
   const key = randomKey();
@@ -79,7 +107,14 @@ export function createRecordset(ids: number[]): string {
 
 export function getRecordset(key: string | null | undefined): CrudRecordset | null {
   if (!key) return null;
-  return recordsets.get(key) ?? null;
+  const existing = recordsets.get(key);
+  if (existing) return existing;
+
+  const restored = decodeRecordsets(sessionStorage.getItem(STORAGE_KEY)).find(([storedKey]) => storedKey === key);
+  if (!restored) return null;
+
+  recordsets.set(restored[0], restored[1]);
+  return restored[1];
 }
 
 export function appendRecordsetId(key: string, id: number) {
@@ -89,13 +124,16 @@ export function appendRecordsetId(key: string, id: number) {
   rs.ids = [...rs.ids, id];
   recordsets.set(key, { ...rs });
   persistRecordsets();
+  notifyRecordsetChanged(CRUD_RECORDSET_APPENDED_EVENT, key, id);
 }
 
 export function removeRecordsetId(key: string, id: number) {
   const rs = getRecordset(key);
   if (!rs) return;
+  if (!rs.ids.includes(id)) return;
   const next = rs.ids.filter((x) => x !== id);
   rs.ids = next;
   recordsets.set(key, { ...rs });
   persistRecordsets();
+  notifyRecordsetChanged(CRUD_RECORDSET_REMOVED_EVENT, key, id);
 }
