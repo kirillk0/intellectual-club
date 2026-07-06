@@ -41,6 +41,7 @@ defmodule IntellectualClubWeb.Endpoint do
     gzip: @gzip_static_assets,
     cache_control_for_etags: @static_cache_control,
     only: IntellectualClubWeb.static_paths(),
+    only_matching: IntellectualClubWeb.static_root_path_prefixes(),
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the

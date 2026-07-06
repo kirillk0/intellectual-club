@@ -21,6 +21,9 @@ defmodule IntellectualClubWeb do
     do:
       ~w(assets fonts images apple-touch-icon.png favicon.ico favicon.png manifest.webmanifest robots.txt service-worker.js)
 
+  def static_root_path_prefixes,
+    do: ~w(apple-touch-icon favicon manifest robots service-worker)
+
   def router do
     quote do
       use Phoenix.Router, helpers: false

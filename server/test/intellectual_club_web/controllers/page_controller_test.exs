@@ -53,4 +53,18 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert response(conn, 200)
     assert get_resp_header(conn, "content-type") == ["image/png"]
   end
+
+  test "GET digested favicon serves icon", %{conn: conn} do
+    static_dir = Application.app_dir(:intellectual_club, "priv/static")
+    digested_favicon = "favicon-testdigest.png"
+    digested_path = Path.join(static_dir, digested_favicon)
+
+    File.cp!(Path.join(static_dir, "favicon.png"), digested_path)
+    on_exit(fn -> File.rm(digested_path) end)
+
+    conn = get(conn, "/" <> digested_favicon <> "?vsn=d")
+
+    assert response(conn, 200)
+    assert get_resp_header(conn, "content-type") == ["image/png"]
+  end
 end
