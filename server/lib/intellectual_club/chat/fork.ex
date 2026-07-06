@@ -25,6 +25,7 @@ defmodule IntellectualClub.Chat.Fork do
   @relation_kind :fork
   @poll_interval_ms 100
   @max_parent_hops 64
+  @parent_tool_call_unique_constraint "chats_unique_parent_tool_call_item_id_index"
 
   def relation_kind, do: @relation_kind
 
@@ -39,29 +40,10 @@ defmodule IntellectualClub.Chat.Fork do
       when is_binary(task) do
     with :ok <- validate_context(context),
          {:ok, source} <- fetch_owned_chat(context.chat_id, actor),
-         :ok <- ensure_fork_allowed(tool_instance, source, actor),
-         {:ok, fork_state} <- create_subagent_state(source, task, context, actor),
-         {:ok, generation} <- start_subagent_generation(fork_state, context, actor),
-         {:ok, final} <- await_final_answer(generation.message_id, actor) do
-      text = final_text(final)
-
-      payload = %{
-        "chat_id" => fork_state.chat.id,
-        "message_id" => fork_state.message_id,
-        "generation_message_id" => generation.message_id,
-        "final_chat_id" => final.chat_id,
-        "final_message_id" => final.message_id,
-        "chain" => final.chain,
-        "url" => "/chats/#{fork_state.chat.id}"
-      }
-
-      {:ok,
-       %ExecutionResult{
-         text: text,
-         raw: %{"fork" => payload},
-         media: [],
-         artifacts: []
-       }}
+         {:ok, source_context} <- build_source_context(source, task, context, actor),
+         {:ok, fork_ref} <-
+           find_or_create_subagent(tool_instance, source_context, context, actor) do
+      run_subagent_reference(fork_ref, source_context, context, actor)
     end
   end
 
@@ -112,7 +94,7 @@ defmodule IntellectualClub.Chat.Fork do
     end
   end
 
-  defp create_subagent_state(%Chat{} = source, task, %ExecutionContext{} = context, actor) do
+  defp build_source_context(%Chat{} = source, task, %ExecutionContext{} = context, actor) do
     assistant_message_id = context.assistant_message_id || context.message_id
 
     with {:ok, branch} <-
@@ -124,43 +106,319 @@ defmodule IntellectualClub.Chat.Fork do
          followup_state = Persistence.load_step_for_followup!(context.step_id),
          {:ok, source_call} <-
            find_tool_call(followup_state.tool_calls, context.tool_call_item_id) do
-      Repo.transaction(fn ->
-        chat = create_target_chat!(source, source_message.id, task, actor)
-        ChatSettingsCopy.copy_bindings!(source.id, chat.id, actor)
+      {:ok,
+       %{
+         source: source,
+         source_message: source_message,
+         source_call: source_call,
+         branch: branch,
+         followup_state: followup_state,
+         task: task
+       }}
+    end
+  end
 
-        copied_ids = MessageTreeCopy.copy_messages!(branch, chat, actor)
-        copied_message_id = Map.fetch!(copied_ids, source_message.id)
+  defp find_or_create_subagent(
+         %ToolInstance{} = tool_instance,
+         source_context,
+         %ExecutionContext{} = context,
+         actor
+       ) do
+    with nil <- fetch_fork_chat_by_tool_call_item_id(context.tool_call_item_id, actor),
+         {:legacy, nil} <- {:legacy, claim_legacy_fork_chat(source_context, context, actor)},
+         :ok <- ensure_fork_allowed(tool_instance, source_context.source, actor) do
+      with {:ok, fork_state} <- create_subagent_state(source_context, context, actor) do
+        {:ok, {:new, fork_state}}
+      end
+    else
+      %Chat{} = chat ->
+        {:ok, {:existing, chat}}
 
-        copied_message =
-          copied_message_id
-          |> load_message_with_steps!(actor)
-          |> restore_copied_message!(actor)
+      {:legacy, %Chat{} = chat} ->
+        {:ok, {:existing, chat}}
 
-        source_step = followup_state.step
-        copied_step = copied_step_for_source!(copied_message, source_step)
-        copied_call = prepare_copied_tool_step!(copied_step, source_step, source_call, actor)
+      {:legacy, {:ambiguous, message}} ->
+        {:ok, {:error_result, message}}
 
-        result =
-          Persistence.persist_tool_result!(
-            copied_message_id,
-            copied_step.id,
-            copied_call,
-            synthetic_result(source_call, task)
-          )
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
-        followup_state = Persistence.load_step_for_followup!(copied_step.id)
+  defp fetch_fork_chat_by_tool_call_item_id(tool_call_item_id, actor)
+       when is_integer(tool_call_item_id) do
+    Chat
+    |> Ash.Query.filter(
+      parent_tool_call_item_id == ^tool_call_item_id and parent_relation_kind == ^@relation_kind
+    )
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load([:last_message])
+    |> Ash.read!(actor: actor)
+    |> List.first()
+  end
 
-        %{
-          chat: Ash.get!(Chat, chat.id, actor: actor, load: [:last_message]),
-          message_id: copied_message_id,
-          step_id: copied_step.id,
-          step_sequence: copied_step.sequence,
-          step_raw_request: copied_step.raw_request || %{},
-          runtime_step: followup_state.runtime_step,
-          results: [result]
-        }
+  defp fetch_fork_chat_by_tool_call_item_id(_tool_call_item_id, _actor), do: nil
+
+  defp claim_legacy_fork_chat(source_context, %ExecutionContext{} = context, actor) do
+    candidates =
+      Chat
+      |> Ash.Query.filter(
+        parent_chat_id == ^source_context.source.id and
+          parent_message_id == ^source_context.source_message.id and
+          parent_relation_kind == ^@relation_kind and
+          subagent == true and
+          is_nil(parent_tool_call_item_id)
+      )
+      |> Ash.Query.sort(created_at: :asc, id: :asc)
+      |> Ash.Query.load(
+        [
+          :last_message,
+          messages: [
+            steps: [
+              items: [
+                :tool_call_item_id,
+                contents: [:content_json, :content_text, :kind]
+              ]
+            ]
+          ]
+        ],
+        strict?: true
+      )
+      |> Ash.read!(actor: actor)
+      |> Enum.filter(&legacy_fork_candidate_matches?(&1, source_context))
+
+    case candidates do
+      [] ->
+        nil
+
+      [%Chat{} = chat] ->
+        claim_fork_chat!(chat, context.tool_call_item_id, actor)
+
+      _many ->
+        {:ambiguous, "Existing fork subagent is ambiguous; refusing to create a duplicate."}
+    end
+  end
+
+  defp legacy_fork_candidate_matches?(%Chat{} = chat, source_context) do
+    String.trim(to_string(chat.note || "")) == String.trim(to_string(source_context.task || "")) and
+      Enum.any?(List.wrap(Map.get(chat, :messages)), fn message ->
+        Enum.any?(List.wrap(Map.get(message, :steps)), fn step ->
+          legacy_step_matches?(step, source_context)
+        end)
       end)
-      |> unwrap_transaction()
+  end
+
+  defp legacy_step_matches?(step, source_context) do
+    items = List.wrap(Map.get(step, :items))
+
+    Enum.any?(items, &legacy_tool_call_matches?(&1, source_context.source_call)) and
+      Enum.any?(items, &legacy_fork_instruction_matches?(&1, source_context.task))
+  end
+
+  defp legacy_tool_call_matches?(item, %ToolCall{} = call) do
+    History.item_type(item) == :tool_call and
+      History.sort_seq(item) == call.sequence and
+      Enum.any?(History.opaque_payloads(item), fn opaque ->
+        raw = Map.get(opaque, "raw") || %{}
+
+        call_id =
+          [
+            Map.get(opaque, "tool_call_id"),
+            Map.get(opaque, "call_id"),
+            Map.get(raw, "call_id"),
+            Map.get(raw, "id")
+          ]
+          |> Enum.find("", &present_string?/1)
+          |> to_string()
+          |> String.trim()
+
+        name =
+          [
+            Map.get(opaque, "name"),
+            Map.get(raw, "name"),
+            get_in(raw, ["function", "name"])
+          ]
+          |> Enum.find("", &present_string?/1)
+          |> to_string()
+          |> String.trim()
+
+        call_id == call.call_id and name == call.name
+      end)
+  end
+
+  defp legacy_fork_instruction_matches?(item, task) do
+    History.item_type(item) == :tool_result and
+      Enum.any?(History.opaque_payloads(item), fn opaque ->
+        instruction =
+          case Map.get(opaque, "raw") do
+            %{"fork_instruction" => %{} = value} -> value
+            _other -> Map.get(opaque, "fork_instruction")
+          end
+
+        is_map(instruction) and
+          instruction["subagent"] == true and
+          to_string(instruction["task"] || "") == to_string(task || "")
+      end)
+  end
+
+  defp claim_fork_chat!(%Chat{} = chat, tool_call_item_id, actor)
+       when is_integer(tool_call_item_id) do
+    changeset =
+      Ash.Changeset.for_update(
+        chat,
+        :update,
+        %{parent_tool_call_item_id: tool_call_item_id},
+        actor: actor
+      )
+
+    case Ash.update(changeset, actor: actor) do
+      {:ok, %Chat{} = claimed} ->
+        Ash.load!(claimed, [:last_message], actor: actor)
+
+      {:error, %Ash.Error.Invalid{} = error} ->
+        recover_claim_race!(error, tool_call_item_id, actor)
+
+      {:error, error} ->
+        raise error
+    end
+  end
+
+  defp recover_claim_race!(%Ash.Error.Invalid{} = error, tool_call_item_id, actor) do
+    if parent_tool_call_unique_constraint_error?(error) do
+      case fetch_fork_chat_by_tool_call_item_id(tool_call_item_id, actor) do
+        %Chat{} = chat -> chat
+        nil -> raise error
+      end
+    else
+      raise error
+    end
+  end
+
+  defp parent_tool_call_unique_constraint_error?(%{errors: errors}) when is_list(errors) do
+    Enum.any?(errors, &parent_tool_call_unique_constraint_error?/1)
+  end
+
+  defp parent_tool_call_unique_constraint_error?(%{private_vars: vars}) when is_list(vars) do
+    Keyword.get(vars, :constraint) == @parent_tool_call_unique_constraint
+  end
+
+  defp parent_tool_call_unique_constraint_error?(_error), do: false
+
+  defp create_subagent_state(source_context, %ExecutionContext{} = context, actor) do
+    Repo.transaction(fn ->
+      chat =
+        create_target_chat!(
+          source_context.source,
+          source_context.source_message.id,
+          source_context.task,
+          context.tool_call_item_id,
+          actor
+        )
+
+      ChatSettingsCopy.copy_bindings!(source_context.source.id, chat.id, actor)
+
+      copied_ids = MessageTreeCopy.copy_messages!(source_context.branch, chat, actor)
+      copied_message_id = Map.fetch!(copied_ids, source_context.source_message.id)
+
+      copied_message =
+        copied_message_id
+        |> load_message_with_steps!(actor)
+        |> restore_copied_message!(actor)
+
+      source_step = source_context.followup_state.step
+      copied_step = copied_step_for_source!(copied_message, source_step)
+
+      copied_call =
+        prepare_copied_tool_step!(copied_step, source_step, source_context.source_call, actor)
+
+      result =
+        Persistence.persist_tool_result!(
+          copied_message_id,
+          copied_step.id,
+          copied_call,
+          synthetic_result(source_context.source_call, source_context.task)
+        )
+
+      followup_state = Persistence.load_step_for_followup!(copied_step.id)
+
+      %{
+        chat: Ash.get!(Chat, chat.id, actor: actor, load: [:last_message]),
+        message_id: copied_message_id,
+        step_id: copied_step.id,
+        step_sequence: copied_step.sequence,
+        step_raw_request: copied_step.raw_request || %{},
+        runtime_step: followup_state.runtime_step,
+        results: [result]
+      }
+    end)
+    |> unwrap_transaction()
+  end
+
+  defp run_subagent_reference(
+         {:new, fork_state},
+         source_context,
+         %ExecutionContext{} = parent_context,
+         actor
+       ) do
+    with {:ok, generation} <- start_subagent_generation(fork_state, parent_context, actor) do
+      finish_subagent(
+        fork_state.chat,
+        fork_state.message_id,
+        generation.message_id,
+        source_context,
+        parent_context,
+        actor
+      )
+    end
+  end
+
+  defp run_subagent_reference(
+         {:existing, %Chat{} = chat},
+         source_context,
+         %ExecutionContext{} = parent_context,
+         actor
+       ) do
+    with {:ok, message_id} <- fork_generation_message_id(chat, actor),
+         :ok <- resume_fork_generation_if_needed(message_id, actor) do
+      finish_subagent(chat, message_id, message_id, source_context, parent_context, actor)
+    end
+  end
+
+  defp run_subagent_reference(
+         {:error_result, message},
+         source_context,
+         %ExecutionContext{} = parent_context,
+         _actor
+       ) do
+    result = error_result(message)
+
+    with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
+      {:ok, result}
+    end
+  end
+
+  defp finish_subagent(
+         %Chat{} = chat,
+         message_id,
+         generation_message_id,
+         source_context,
+         %ExecutionContext{} = parent_context,
+         actor
+       ) do
+    case await_final_answer(generation_message_id, actor) do
+      {:ok, final} ->
+        result = fork_result(chat, message_id, generation_message_id, final)
+
+        with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
+          {:ok, result}
+        end
+
+      {:error, reason} ->
+        result = error_result(reason)
+
+        with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
+          {:ok, result}
+        end
     end
   end
 
@@ -206,7 +464,120 @@ defmodule IntellectualClub.Chat.Fork do
     end
   end
 
-  defp create_target_chat!(%Chat{} = source, source_message_id, task, actor) do
+  defp fork_generation_message_id(%Chat{last_message_id: message_id}, _actor)
+       when is_integer(message_id) do
+    {:ok, message_id}
+  end
+
+  defp fork_generation_message_id(%Chat{id: chat_id}, actor) when is_integer(chat_id) do
+    case Ash.get(Chat, chat_id, actor: actor, load: [:last_message]) do
+      {:ok, %Chat{last_message_id: message_id}} when is_integer(message_id) ->
+        {:ok, message_id}
+
+      {:ok, _chat} ->
+        {:error, "Existing fork subagent has no generation message."}
+
+      {:error, _error} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp fork_generation_message_id(_chat, _actor), do: {:error, "Invalid fork subagent."}
+
+  defp resume_fork_generation_if_needed(message_id, actor) when is_integer(message_id) do
+    message = Ash.get!(ChatMessage, message_id, actor: actor)
+
+    if normalize_status(message.status) == :generating and
+         GenerationSupervisor.get_generation_state(message_id) == :not_found do
+      case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
+        {:ok, _context} ->
+          :ok
+
+        {:error, :already_running} ->
+          :ok
+
+        {:error, :no_steps_to_retry} ->
+          :ok = Persistence.cancel_orphaned_generating_message!(message_id)
+          :ok
+
+        {:error, reason} ->
+          {:error, "Failed to resume fork subagent: #{inspect(reason)}"}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp fork_result(%Chat{} = chat, message_id, generation_message_id, final) do
+    text = final_text(final)
+
+    payload = %{
+      "chat_id" => chat.id,
+      "message_id" => message_id,
+      "generation_message_id" => generation_message_id,
+      "final_chat_id" => final.chat_id,
+      "final_message_id" => final.message_id,
+      "chain" => final.chain,
+      "url" => "/chats/#{chat.id}"
+    }
+
+    %ExecutionResult{
+      text: text,
+      raw: %{"fork" => payload},
+      media: [],
+      artifacts: []
+    }
+  end
+
+  defp error_result(reason) do
+    text = to_string(reason || "Subagent generation failed.")
+
+    %ExecutionResult{
+      text: text,
+      raw: %{"isError" => true, "error" => text},
+      media: [],
+      artifacts: []
+    }
+  end
+
+  defp persist_parent_tool_result(
+         %ExecutionContext{} = parent_context,
+         %ToolCall{} = source_call,
+         %ExecutionResult{} = result
+       ) do
+    payload = %{
+      text: result.text,
+      result_raw: result.raw || %{},
+      media_contents: [],
+      artifact_contents: []
+    }
+
+    try do
+      parent_message_id = parent_context.message_id || parent_context.assistant_message_id
+
+      _ =
+        Persistence.persist_tool_result!(
+          parent_message_id,
+          parent_context.step_id,
+          source_call,
+          payload
+        )
+
+      :ok
+    rescue
+      exception -> {:error, Exception.message(exception)}
+    catch
+      :exit, reason -> {:error, Exception.format_exit(reason)}
+    end
+  end
+
+  defp create_target_chat!(
+         %Chat{} = source,
+         source_message_id,
+         task,
+         parent_tool_call_item_id,
+         actor
+       ) do
     Chat
     |> Ash.Changeset.for_create(
       :create_empty,
@@ -216,6 +587,7 @@ defmodule IntellectualClub.Chat.Fork do
         llm_configuration_id: source.llm_configuration_id,
         parent_chat_id: source.id,
         parent_message_id: source_message_id,
+        parent_tool_call_item_id: parent_tool_call_item_id,
         parent_relation_kind: @relation_kind,
         subagent: true
       },
@@ -409,6 +781,9 @@ defmodule IntellectualClub.Chat.Fork do
   end
 
   defp final_text(_final), do: "Subagent completed without a final answer."
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
 
   defp ensure_fork_allowed(%ToolInstance{} = tool_instance, %Chat{} = chat, actor) do
     depth = fork_depth(chat, actor)

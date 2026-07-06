@@ -278,6 +278,13 @@ defmodule IntellectualClub.Chat.Chat do
       index([:parent_chat_id], name: "chats_parent_chat_id_index")
       index([:parent_message_id], name: "chats_parent_message_id_index")
       index([:parent_relation_kind], name: "chats_parent_relation_kind_index")
+      index([:parent_tool_call_item_id], name: "chats_parent_tool_call_item_id_index")
+
+      index([:parent_tool_call_item_id],
+        name: "chats_unique_parent_tool_call_item_id_index",
+        unique: true,
+        where: "parent_tool_call_item_id IS NOT NULL"
+      )
     end
 
     custom_statements do
@@ -339,6 +346,10 @@ defmodule IntellectualClub.Chat.Chat do
       attribute_type: :integer
 
     belongs_to :parent_message, IntellectualClub.Chat.ChatMessage,
+      allow_nil?: true,
+      attribute_type: :integer
+
+    belongs_to :parent_tool_call_item, IntellectualClub.Chat.ChatMessageItem,
       allow_nil?: true,
       attribute_type: :integer
 
@@ -443,6 +454,7 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
+        :parent_tool_call_item_id,
         :parent_relation_kind,
         :subagent
       ])
@@ -465,7 +477,13 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         relationships: [
+           :bot,
+           :llm_configuration,
+           :parent_chat,
+           :parent_message,
+           :parent_tool_call_item
+         ],
          access: :readable,
          required?: false}
       )
@@ -480,6 +498,7 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
+        :parent_tool_call_item_id,
         :parent_relation_kind,
         :subagent
       ])
@@ -501,7 +520,13 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         relationships: [
+           :bot,
+           :llm_configuration,
+           :parent_chat,
+           :parent_message,
+           :parent_tool_call_item
+         ],
          access: :readable,
          required?: false}
       )
@@ -561,6 +586,7 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
+        :parent_tool_call_item_id,
         :parent_relation_kind,
         :subagent
       ])
@@ -584,7 +610,13 @@ defmodule IntellectualClub.Chat.Chat do
 
       change(
         {RequireRelatedAccessByActor,
-         relationships: [:bot, :llm_configuration, :parent_chat, :parent_message],
+         relationships: [
+           :bot,
+           :llm_configuration,
+           :parent_chat,
+           :parent_message,
+           :parent_tool_call_item
+         ],
          access: :readable,
          required?: false}
       )

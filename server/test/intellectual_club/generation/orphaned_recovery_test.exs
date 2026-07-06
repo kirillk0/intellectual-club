@@ -2,16 +2,23 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   use IntellectualClub.DataCase, async: false
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ExecutionContext
+  alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
+
+  require Ash.Query
 
   setup do
     previous_backoff = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
@@ -297,6 +304,175 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert sleep["elapsed_milliseconds"] + sleep["remaining_milliseconds"] == requested_ms
   end
 
+  test "recover_orphaned_generations reuses an existing generating fork subagent" do
+    %{user: actor} = user_fixture()
+    task = "Check the reusable fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+    child_message = create_generating_child_message!(actor, child_chat, "Child work")
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
+    child_message = wait_for_status!(child_message.id, actor, [:done], 6_000)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat.id]
+
+    assert get_in(fork_tool_result_raw!(parent_message, parent.call.item_id), [
+             "fork",
+             "chat_id"
+           ]) == child_chat.id
+
+    assert get_in(fork_tool_result_raw!(parent_message, parent.call.item_id), [
+             "fork",
+             "final_message_id"
+           ]) == child_message.id
+  end
+
+  test "fork creates a new subagent on first execution" do
+    %{user: actor} = user_fixture()
+    task = "Create a fresh fork"
+    parent = create_parent_fork_call!(actor, task)
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: parent.chat.id,
+      message_id: parent.message.id,
+      assistant_message_id: parent.message.id,
+      step_id: parent.step_id,
+      tool_call_item_id: parent.call.item_id,
+      available_file_external_ids: []
+    }
+
+    assert {:ok, result} = Fork.create_and_run(parent.tool_instance, task, context, actor)
+
+    assert result.raw["fork"] || result.raw["isError"] == true
+    assert [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    assert is_integer(child_chat_id)
+
+    parent_message =
+      Ash.get!(ChatMessage, parent.message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+    assert raw == result.raw
+  end
+
+  test "recover_orphaned_generations writes a missing parent result for completed fork subagent" do
+    %{user: actor} = user_fixture()
+    task = "Reuse completed fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+
+    {:ok, child_message} =
+      Threads.add_message_to_end(child_chat, :assistant, "Already done", actor: actor)
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat.id]
+
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+    assert get_in(raw, ["fork", "chat_id"]) == child_chat.id
+    assert get_in(raw, ["fork", "final_message_id"]) == child_message.id
+  end
+
+  test "recover_orphaned_generations repairs a completed fork child without terminal hook" do
+    %{user: actor} = user_fixture()
+    task = "Recover terminal fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+    child = create_generating_child_message_state!(actor, child_chat, "Child work")
+
+    runtime_step =
+      RuntimeTrace.new_step(id: child.step_id, sequence: 1, raw_request: child.raw_request)
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Child final answer"})
+      |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+    :ok = Persistence.persist_completed!(child.message.id, runtime_step)
+
+    parent_message =
+      Ash.get!(ChatMessage, parent.message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    refute fork_tool_result_raw(parent_message, parent.call.item_id)
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
+
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+    assert get_in(raw, ["fork", "chat_id"]) == child_chat.id
+    assert get_in(raw, ["fork", "generation_message_id"]) == child.message.id
+    assert get_in(raw, ["fork", "final_message_id"]) == child.message.id
+  end
+
+  test "recover_orphaned_generations turns terminal fork subagent failure into a tool result" do
+    %{user: actor} = user_fixture()
+    task = "Reuse canceled fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+
+    {:ok, _child_message} =
+      Threads.add_message_to_end(child_chat, :assistant, "Stopped",
+        actor: actor,
+        status: :canceled,
+        error_detail: "Canceled by test"
+      )
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat.id]
+
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+    assert raw["isError"] == true
+    assert raw["error"] == "Subagent generation was canceled."
+  end
+
+  test "recover_orphaned_generations follows handoff from fork child into canceled generation" do
+    %{user: actor} = user_fixture()
+    task = "Recover canceled handoff fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+
+    {:ok, fork_generation_message} =
+      Threads.add_message_to_end(child_chat, :assistant, "", actor: actor)
+
+    handoff_chat = create_handoff_child_chat!(actor, child_chat, fork_generation_message)
+
+    {:ok, handoff_generation_message} =
+      Threads.add_message_to_end(handoff_chat, :assistant, "Stopped",
+        actor: actor,
+        status: :canceled,
+        error_detail: "Canceled by test"
+      )
+
+    persist_handoff_tool_result!(
+      actor,
+      fork_generation_message,
+      handoff_chat,
+      handoff_generation_message
+    )
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat.id]
+
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+    assert raw["isError"] == true
+    assert raw["error"] == "Subagent generation was canceled."
+  end
+
   test "recover_orphaned_generations continues transient retry attempt numbering" do
     %{user: actor} = user_fixture()
 
@@ -516,6 +692,221 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp create_tool_function!(actor, tool_instance, name) do
+    ToolFunction
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        tool_instance_id: tool_instance.id,
+        name: name,
+        description: "",
+        parameters_schema: %{},
+        enabled: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_parent_fork_call!(actor, task) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    tool_instance = create_agent_management_tool_instance!(actor)
+    _function = create_tool_function!(actor, tool_instance, "fork")
+    _binding = create_chat_tool_binding!(actor, chat, tool_instance)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Fork now", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => "Fork now"}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(message.id, 1, raw_request, [])
+
+    runtime_step =
+      RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: raw_request)
+      |> add_tool_call_to_runtime_step(
+        "fork_#{System.unique_integer([:positive])}",
+        "agent_management__fork",
+        %{"task" => task},
+        1
+      )
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "fork-step-response"}})
+      |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+    %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime_step)
+
+    %{chat: chat, message: message, step_id: step_id, call: call, tool_instance: tool_instance}
+  end
+
+  defp create_fork_child_chat!(actor, parent_chat, parent_message, call, task) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        note: task,
+        parent_chat_id: parent_chat.id,
+        parent_message_id: parent_message.id,
+        parent_tool_call_item_id: call.item_id,
+        parent_relation_kind: :fork,
+        subagent: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_handoff_child_chat!(actor, source_chat, source_message) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        note: source_chat.note || "",
+        parent_chat_id: source_chat.id,
+        parent_message_id: source_message.id,
+        parent_relation_kind: :handoff,
+        subagent: source_chat.subagent == true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp persist_handoff_tool_result!(actor, source_message, handoff_chat, handoff_message) do
+    step = last_step_for_message!(actor, source_message.id)
+    sequence = next_item_sequence(step.items)
+
+    call_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_step_id: step.id,
+          sequence: sequence,
+          type: :tool_call
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    call = %ToolCall{
+      item_id: call_item.id,
+      step_id: step.id,
+      sequence: sequence,
+      call_id: "handoff_#{System.unique_integer([:positive])}",
+      name: "agent_management__handoff",
+      args: %{"summary" => "Continue in the handoff chat."},
+      raw: %{}
+    }
+
+    Persistence.persist_tool_result!(source_message.id, step.id, call, %{
+      text: "Handoff started.",
+      result_raw: %{
+        "handoff" => %{
+          "chat_id" => handoff_chat.id,
+          "generation_message_id" => handoff_message.id
+        }
+      },
+      media_contents: [],
+      artifact_contents: []
+    })
+  end
+
+  defp last_step_for_message!(actor, message_id) do
+    ChatMessage
+    |> Ash.get!(message_id,
+      actor: actor,
+      load: [steps: [items: [:contents]]]
+    )
+    |> Map.get(:steps, [])
+    |> Enum.sort_by(& &1.sequence)
+    |> List.last()
+  end
+
+  defp next_item_sequence(items) do
+    items
+    |> List.wrap()
+    |> Enum.map(&(&1.sequence || 0))
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp create_generating_child_message!(actor, child_chat, prompt) do
+    create_generating_child_message_state!(actor, child_chat, prompt).message
+  end
+
+  defp create_generating_child_message_state!(actor, child_chat, prompt) do
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: child_chat.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => prompt}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(message.id, 1, raw_request, [])
+
+    %{message: message, step_id: step_id, raw_request: raw_request}
+  end
+
+  defp fork_child_ids_for_call(actor, tool_call_item_id) do
+    Chat
+    |> Ash.Query.filter(parent_tool_call_item_id == ^tool_call_item_id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.select([:id])
+    |> Ash.read!(actor: actor)
+    |> Enum.map(& &1.id)
+  end
+
+  defp fork_tool_result_raw!(message, tool_call_item_id) do
+    case fork_tool_result_raw(message, tool_call_item_id) do
+      %{} = raw -> raw
+      _other -> flunk("Expected fork tool result raw payload")
+    end
+  end
+
+  defp fork_tool_result_raw(message, tool_call_item_id) do
+    message.steps
+    |> List.wrap()
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.find(fn item ->
+      item.type == :tool_result and item.tool_call_item_id == tool_call_item_id
+    end)
+    |> case do
+      nil ->
+        nil
+
+      item ->
+        item.contents
+        |> List.wrap()
+        |> Enum.find_value(fn
+          %{kind: :opaque, content_json: %{"raw" => %{} = raw}} -> raw
+          _other -> nil
+        end)
+    end
   end
 
   defp sleep_result_payload!(message) do

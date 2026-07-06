@@ -415,44 +415,53 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = load_step_with_items!(step_id, actor)
-      calls_by_item_id = persisted_tool_calls_by_item_id(step)
-
-      call =
-        case Map.get(calls_by_item_id, call.item_id) do
-          %ToolCall{} = persisted -> persisted
-          _other -> call
-        end
-
-      case existing_tool_result_item(step, call.item_id) do
-        %ChatMessageItem{} = item ->
-          item
-          |> load_item_with_contents!(actor)
-          |> tool_result_from_item(calls_by_item_id)
-
-        nil ->
-          result = normalize_tool_execution_result(call, result)
-          sequence = tool_result_sequence(step.items || [], call)
-          responses_item = responses_item_for_result(result)
-
-          item =
-            create_item!(
-              %{
-                chat_message_step_id: step_id,
-                sequence: sequence,
-                type: :tool_result,
-                tool_call_item_id: call.item_id
-              },
-              actor
-            )
-
-          create_tool_result_contents!(item, result, responses_item, actor)
-          create_artifact_items!(step_id, result, sequence + 1, actor)
-
-          item
-          |> load_item_with_contents!(actor)
-          |> tool_result_from_item(calls_by_item_id)
-      end
+      persist_tool_result_for_step_in_transaction!(step, call, result, actor)
     end)
+  end
+
+  defp persist_tool_result_for_step_in_transaction!(
+         %ChatMessageStep{} = step,
+         %ToolCall{} = call,
+         result,
+         actor
+       ) do
+    calls_by_item_id = persisted_tool_calls_by_item_id(step)
+
+    call =
+      case Map.get(calls_by_item_id, call.item_id) do
+        %ToolCall{} = persisted -> persisted
+        _other -> call
+      end
+
+    case existing_tool_result_item(step, call.item_id) do
+      %ChatMessageItem{} = item ->
+        item
+        |> load_item_with_contents!(actor)
+        |> tool_result_from_item(calls_by_item_id)
+
+      nil ->
+        result = normalize_tool_execution_result(call, result)
+        sequence = tool_result_sequence(step.items || [], call)
+        responses_item = responses_item_for_result(result)
+
+        item =
+          create_item!(
+            %{
+              chat_message_step_id: step.id,
+              sequence: sequence,
+              type: :tool_result,
+              tool_call_item_id: call.item_id
+            },
+            actor
+          )
+
+        create_tool_result_contents!(item, result, responses_item, actor)
+        create_artifact_items!(step.id, result, sequence + 1, actor)
+
+        item
+        |> load_item_with_contents!(actor)
+        |> tool_result_from_item(calls_by_item_id)
+    end
   end
 
   def list_missing_tool_calls!(step_id) when is_integer(step_id) do
