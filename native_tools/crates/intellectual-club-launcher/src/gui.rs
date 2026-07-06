@@ -599,6 +599,16 @@ impl LauncherGui {
             if ui.button(locale.text(TextKey::Refresh)).clicked() {
                 self.refresh_log();
             }
+            if ui
+                .add_enabled(
+                    !self.log_text.is_empty(),
+                    egui::Button::new(locale.text(TextKey::Copy)),
+                )
+                .clicked()
+            {
+                ui.ctx().copy_text(self.log_text.clone());
+                self.last_message = locale.text(TextKey::LogCopied).to_string();
+            }
             if ui.button(locale.text(TextKey::Open)).clicked() {
                 self.try_open_log(self.active_log);
             }
@@ -617,7 +627,7 @@ impl LauncherGui {
             });
         ui.add_space(8.0);
 
-        let mut display_text = if self.log_text.is_empty() {
+        let display_text = if self.log_text.is_empty() {
             locale.text(TextKey::AppLogEmpty).to_string()
         } else {
             self.log_text.clone()
@@ -630,16 +640,19 @@ impl LauncherGui {
             .stick_to_bottom(true)
             .max_height(log_height)
             .show(ui, |ui| {
-                let response = ui.add(
-                    egui::TextEdit::multiline(&mut display_text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_rows(36)
-                        .desired_width(1600.0)
-                        .interactive(false),
-                );
-                if scroll_to_bottom {
-                    ui.scroll_to_rect(response.rect, Some(egui::Align::BOTTOM));
-                }
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_size(egui::vec2(1600.0, (log_height - 24.0).max(180.0)));
+                        let response = ui.add(
+                            egui::Label::new(egui::RichText::new(&display_text).monospace())
+                                .selectable(true)
+                                .extend(),
+                        );
+                        if scroll_to_bottom {
+                            ui.scroll_to_rect(response.rect, Some(egui::Align::BOTTOM));
+                        }
+                    });
             });
         self.log_scroll_to_bottom = false;
 

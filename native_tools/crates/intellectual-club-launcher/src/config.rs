@@ -196,6 +196,7 @@ impl Locale {
             (Self::Ru, TextKey::Stop) => "Остановить",
             (Self::Ru, TextKey::Restart) => "Перезапустить",
             (Self::Ru, TextKey::Open) => "Открыть",
+            (Self::Ru, TextKey::Copy) => "Копировать",
             (Self::Ru, TextKey::OpenApp) => "Открыть приложение",
             (Self::Ru, TextKey::Refresh) => "Обновить",
             (Self::Ru, TextKey::BackupNow) => "Создать бэкап",
@@ -234,6 +235,7 @@ impl Locale {
             (Self::Ru, TextKey::Reveal) => "Показать",
             (Self::Ru, TextKey::Busy) => "Выполняется",
             (Self::Ru, TextKey::AppLogEmpty) => "Лог пока пуст",
+            (Self::Ru, TextKey::LogCopied) => "Лог скопирован",
             (Self::En, TextKey::Title) => "Intellectual Club",
             (Self::En, TextKey::Overview) => "Overview",
             (Self::En, TextKey::BackupRestore) => "Backup / restore",
@@ -246,6 +248,7 @@ impl Locale {
             (Self::En, TextKey::Stop) => "Stop",
             (Self::En, TextKey::Restart) => "Restart",
             (Self::En, TextKey::Open) => "Open",
+            (Self::En, TextKey::Copy) => "Copy",
             (Self::En, TextKey::OpenApp) => "Open app",
             (Self::En, TextKey::Refresh) => "Refresh",
             (Self::En, TextKey::BackupNow) => "Create backup",
@@ -284,6 +287,7 @@ impl Locale {
             (Self::En, TextKey::Reveal) => "Reveal",
             (Self::En, TextKey::Busy) => "Running",
             (Self::En, TextKey::AppLogEmpty) => "Log is empty",
+            (Self::En, TextKey::LogCopied) => "Log copied",
         }
     }
 }
@@ -302,6 +306,7 @@ pub enum TextKey {
     Stop,
     Restart,
     Open,
+    Copy,
     OpenApp,
     Refresh,
     BackupNow,
@@ -340,6 +345,7 @@ pub enum TextKey {
     Reveal,
     Busy,
     AppLogEmpty,
+    LogCopied,
 }
 
 pub fn default_app_dir() -> Option<PathBuf> {
