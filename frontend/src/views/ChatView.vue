@@ -1291,6 +1291,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   }
 
   body:has(.chat-page) .app-header,
+  body:has(.chat-page) .app-banner-stack,
   body:has(.chat-page) .backend-status-banner,
   body:has(.chat-page) .floating-dropdown,
   body:has(.chat-page) .panel-backdrop {

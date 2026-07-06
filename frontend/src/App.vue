@@ -127,18 +127,33 @@
       <div id="toolbar-host" class="toolbar-host"></div>
     </header>
 
-    <section
-      v-if="backendStatusBanner"
-      class="backend-status-banner"
-      role="alert"
-      aria-live="polite"
-    >
-      <div class="backend-status-copy">
-        <strong>{{ backendStatusBanner.title }}</strong>
-        <span>{{ backendStatusBanner.message }}</span>
-      </div>
-      <button type="button" @click="dismissBackendStatusBanner">Dismiss</button>
-    </section>
+    <div v-if="backendStatusBanner || appUpdateAvailable" class="app-banner-stack">
+      <section
+        v-if="backendStatusBanner"
+        class="app-banner backend-status-banner"
+        role="alert"
+        aria-live="polite"
+      >
+        <div class="app-status-copy">
+          <strong>{{ backendStatusBanner.title }}</strong>
+          <span>{{ backendStatusBanner.message }}</span>
+        </div>
+        <button type="button" @click="dismissBackendStatusBanner">{{ translate('Dismiss') }}</button>
+      </section>
+
+      <section
+        v-if="appUpdateAvailable"
+        class="app-banner app-update-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="app-status-copy">
+          <strong>{{ translate('A new version is available') }}</strong>
+          <span>{{ translate('Reload when you are ready. Unsaved changes may need to be saved first.') }}</span>
+        </div>
+        <button type="button" class="primary" @click="reloadApp">{{ translate('Update') }}</button>
+      </section>
+    </div>
 
     <main class="app-main" :class="{ 'app-main--chat': isChatRoute, 'app-main--login': isLoginRoute }">
       <StackRouterView :reopen-key="routeReopenKey" />
@@ -162,6 +177,7 @@ import {
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
+import { useAppUpdateMonitor } from '@/features/pwa/appUpdate';
 import { syncExistingWebPushSubscription } from '@/features/push/webPush';
 import { effectiveLocale, translate } from '@/i18n';
 import appLogoUrl from '@/assets/icon_full_size.png';
@@ -175,6 +191,12 @@ ensureAuthInitialized();
 
 const { currentUser } = useSessionAuth();
 const { banner: backendStatusBanner, dismissBackendStatusBanner } = useBackendStatusBanner();
+const {
+  available: appUpdateAvailable,
+  reload: reloadApp,
+  start: startAppUpdateMonitor,
+  stop: stopAppUpdateMonitor,
+} = useAppUpdateMonitor();
 const signingOut = ref(false);
 
 const isLoginRoute = computed(() => route.name === 'login');
@@ -329,6 +351,7 @@ const handleServiceWorkerMessage = (event: MessageEvent) => {
 onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+  startAppUpdateMonitor();
 
   if (currentUser.value) {
     void refreshSessionUser().catch((error) => {
@@ -358,6 +381,7 @@ watch(
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside);
   navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+  stopAppUpdateMonitor();
   window.removeEventListener('resize', scheduleCssVarUpdate);
   window.removeEventListener('orientationchange', scheduleCssVarUpdate);
   if (updateRafId !== null) {
