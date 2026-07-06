@@ -410,6 +410,7 @@ defmodule IntellectualClub.Generation.Context do
               tools: tools_payload,
               supports_image_input: supports_image_input,
               provider_type: provider_type,
+              chat_id: chat_id,
               fix_role_alteration: false,
               cache_control_enabled: false
             })
@@ -444,6 +445,7 @@ defmodule IntellectualClub.Generation.Context do
               tools: tools_payload,
               supports_image_input: supports_image_input,
               provider_type: provider_type,
+              chat_id: chat_id,
               fix_role_alteration: bool_true?(Map.get(configuration, :fix_role_alteration)),
               cache_control_enabled: cache_control_enabled
             })

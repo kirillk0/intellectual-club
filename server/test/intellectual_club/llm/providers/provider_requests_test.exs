@@ -18,6 +18,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         system_prompt: "Be careful.",
         model_name: "openai/gpt-5-mini",
         parameters: %{"temperature" => 0.1},
+        chat_id: 123,
         tools: [
           %{
             "type" => "function",
@@ -37,6 +38,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.raw_request["model"] == "openai/gpt-5-mini"
     assert result.raw_request["temperature"] == 0.1
+    assert result.raw_request["session_id"] == "intellectual-club:chat:123"
     assert is_list(result.raw_request["tools"])
 
     [system_message, user_message] = result.raw_request["messages"]
@@ -589,6 +591,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       OpenRouterChatCompletion.build_followup_request(%{
         context: %{
           cache_control_enabled: true,
+          chat_id: 123,
           history_length: 2,
           model_name: "openai/gpt-5-mini",
           parameters: %{"temperature" => 0},
@@ -603,6 +606,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     old_tool_message = Enum.at(messages, 3)
     new_tool_message = List.last(messages)
 
+    assert followup.raw_request["session_id"] == "intellectual-club:chat:123"
     assert old_tool_message["tool_call_id"] == "call_old"
 
     assert Enum.all?(old_tool_message["content"], fn part ->

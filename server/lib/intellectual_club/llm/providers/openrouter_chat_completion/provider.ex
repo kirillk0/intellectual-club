@@ -65,6 +65,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
+      |> put_session_id(opts)
 
     %{
       raw_request: raw_request,
@@ -96,6 +97,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         ),
         tools: Map.get(opts, :tools, [])
       )
+      |> put_session_id(context)
 
     %{
       runtime_step: followup.runtime_step,
@@ -110,11 +112,15 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
-    request_payload = Map.get(opts, :request_payload)
+
+    request_payload =
+      (Map.get(opts, :request_payload) || %{})
+      |> RequestPayload.stringify_keys()
+      |> put_session_id(context)
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)
-    model_name = RequestPayload.model_name(RequestPayload.stringify_keys(request_payload))
+    model_name = RequestPayload.model_name(request_payload)
 
     cond do
       not is_binary(base_url) or String.trim(base_url) == "" ->
@@ -146,7 +152,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
           %{
             base_url: base_url,
             api_key: api_key,
-            request_payload: RequestPayload.stringify_keys(request_payload || %{}),
+            request_payload: request_payload,
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit
@@ -167,6 +173,39 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
     :ok
   end
+
+  defp put_session_id(%{} = raw_request, source) do
+    case session_id_from_source(source) do
+      nil -> raw_request
+      session_id -> Map.put(raw_request, "session_id", session_id)
+    end
+  end
+
+  defp put_session_id(raw_request, _source), do: raw_request
+
+  defp session_id_from_source(%{} = source) do
+    source
+    |> Map.get(:chat_id, Map.get(source, "chat_id"))
+    |> chat_session_id()
+  end
+
+  defp session_id_from_source(_source), do: nil
+
+  defp chat_session_id(chat_id) when is_integer(chat_id) and chat_id > 0 do
+    "intellectual-club:chat:#{chat_id}"
+  end
+
+  defp chat_session_id(chat_id) when is_binary(chat_id) do
+    chat_id = String.trim(chat_id)
+
+    if chat_id == "" do
+      nil
+    else
+      "intellectual-club:chat:#{chat_id}"
+    end
+  end
+
+  defp chat_session_id(_chat_id), do: nil
 
   defp sanitize_messages_for_model(messages, model_name: model_name) when is_list(messages) do
     if model_requires_strict_tool_call_ids?(model_name) do

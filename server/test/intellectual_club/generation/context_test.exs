@@ -505,6 +505,9 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert String.contains?(system_message["content"], "# Available tool instances")
     assert String.contains?(system_message["content"], "`provider_web__web_search`")
 
+    assert chat_completion_context.request_payload["session_id"] ==
+             "intellectual-club:chat:#{chat_completion_chat.id}"
+
     responses_config = create_llm_configuration!(actor, :responses)
 
     responses_chat =
