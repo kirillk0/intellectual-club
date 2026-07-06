@@ -9,7 +9,6 @@ defmodule IntellectualClub.Sharing do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatShare
-  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationShare
   alias IntellectualClub.Tools.BotToolBinding
@@ -18,6 +17,8 @@ defmodule IntellectualClub.Sharing do
   require Ash.Query
 
   @tool_modes [:shared, :per_user]
+  @transaction_resources [BotShare, BotToolBinding, ChatShare, LlmConfigurationShare]
+  @transaction_error_key {__MODULE__, :transaction_error}
 
   def list_actor_groups(actor) do
     UserGroup
@@ -37,12 +38,12 @@ defmodule IntellectualClub.Sharing do
     with {:ok, bot} <- fetch_owned_bot(bot_id, actor),
          {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor),
          {:ok, normalized_tool_modes} <- validate_tool_modes(tool_modes) do
-      transaction(fn repo ->
+      transaction(fn ->
         with :ok <- replace_bot_shares(bot, allowed_group_ids, actor),
              :ok <- replace_bot_tool_modes(bot, normalized_tool_modes, actor) do
           load_bot_share_state(bot, actor)
         else
-          {:error, reason} -> repo.rollback(reason)
+          {:error, reason} -> {:error, reason}
         end
       end)
     end
@@ -66,11 +67,11 @@ defmodule IntellectualClub.Sharing do
     with {:ok, chat} <- fetch_owned_chat(chat_id, actor),
          {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor),
          :ok <- validate_chat_share_request(chat, allowed_group_ids, actor) do
-      transaction(fn repo ->
+      transaction(fn ->
         with :ok <- replace_chat_shares(chat, allowed_group_ids, actor) do
           load_chat_share_state(chat, actor)
         else
-          {:error, reason} -> repo.rollback(reason)
+          {:error, reason} -> {:error, reason}
         end
       end)
     end
@@ -80,24 +81,35 @@ defmodule IntellectualClub.Sharing do
       when is_integer(configuration_id) and is_list(group_ids) do
     with {:ok, configuration} <- fetch_owned_llm_configuration(configuration_id, actor),
          {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor) do
-      transaction(fn repo ->
+      transaction(fn ->
         with :ok <- replace_llm_configuration_shares(configuration, allowed_group_ids, actor) do
           load_llm_configuration_share_state(configuration, actor)
         else
-          {:error, reason} -> repo.rollback(reason)
+          {:error, reason} -> {:error, reason}
         end
       end)
     end
   end
 
-  defp transaction(fun) when is_function(fun, 1) do
-    repo = Repo
+  defp transaction(fun) when is_function(fun, 0) do
+    Process.delete(@transaction_error_key)
 
-    case repo.transaction(fn -> fun.(repo) end) do
-      {:ok, value} -> {:ok, value}
-      {:error, reason} -> {:error, reason}
+    try do
+      case Ash.transact(@transaction_resources, fn -> rollback_on_error(fun.()) end) do
+        {:ok, value} -> {:ok, value}
+        {:error, reason} -> {:error, Process.get(@transaction_error_key) || reason}
+      end
+    after
+      Process.delete(@transaction_error_key)
     end
   end
+
+  defp rollback_on_error({:error, reason}) do
+    Process.put(@transaction_error_key, reason)
+    {:error, "sharing transaction failed"}
+  end
+
+  defp rollback_on_error(value), do: value
 
   defp fetch_owned_bot(bot_id, actor) do
     case Ash.get(Bot, bot_id, actor: actor) do
