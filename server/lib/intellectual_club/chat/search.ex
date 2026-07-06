@@ -602,6 +602,7 @@ defmodule IntellectualClub.Chat.Search do
 
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
+    |> Ash.Query.filter(subagent == false)
     |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
@@ -635,6 +636,7 @@ defmodule IntellectualClub.Chat.Search do
 
     ChatMessage
     |> Ash.Query.filter(owner_id == ^actor.id)
+    |> Ash.Query.filter(exists(chat, subagent == false))
     |> Ash.Query.filter(role == ^role)
     |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
@@ -703,6 +705,7 @@ defmodule IntellectualClub.Chat.Search do
        when is_list(chat_ids) and is_integer(limit) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
+    |> Ash.Query.filter(subagent == false)
     |> Ash.Query.filter(id in ^chat_ids)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)

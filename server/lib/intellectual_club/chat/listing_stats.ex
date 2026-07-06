@@ -30,7 +30,7 @@ defmodule IntellectualClub.Chat.ListingStats do
         from(c in "chats",
           left_join: b in "bots",
           on: b.id == c.bot_id and b.owner_id == c.owner_id,
-          where: c.owner_id == ^owner_id,
+          where: c.owner_id == ^owner_id and c.subagent == false,
           group_by: [c.bot_id, b.name],
           select: %{
             bot_id: c.bot_id,
@@ -74,7 +74,7 @@ defmodule IntellectualClub.Chat.ListingStats do
   @spec no_bot_last_activity_at(any()) :: DateTime.t() | NaiveDateTime.t() | nil
   def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
     Chat
-    |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id))
+    |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id) and subagent == false)
     |> Ash.Query.sort(last_activity_at: :desc, id: :desc)
     |> Ash.Query.load(:last_activity_at)
     |> Ash.Query.limit(1)

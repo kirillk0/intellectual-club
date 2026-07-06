@@ -4,6 +4,7 @@ defmodule IntellectualClub.Chat.Relations do
   """
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Chat.Handoff
 
   require Ash.Query
@@ -24,7 +25,7 @@ defmodule IntellectualClub.Chat.Relations do
   @spec relations(Chat.t(), list(map()), map()) :: map()
   def relations(%Chat{} = chat, messages, actor) when is_list(messages) do
     active_message_ids = MapSet.new(messages, & &1.id)
-    children = child_handoff_chats(chat.id, actor)
+    children = child_relation_chats(chat.id, actor)
 
     {children_by_message_id, children_without_message} =
       Enum.reduce(children, {%{}, []}, fn child, {by_message_id, without_message} ->
@@ -86,6 +87,23 @@ defmodule IntellectualClub.Chat.Relations do
   end
 
   def child_handoff_chats(_chat_id, _actor), do: []
+
+  @spec child_relation_chats(integer(), map()) :: [Chat.t()]
+  def child_relation_chats(chat_id, actor) when is_integer(chat_id) do
+    relation_kinds = [Handoff.relation_kind(), Fork.relation_kind()]
+
+    Chat
+    |> Ash.Query.filter(parent_chat_id == ^chat_id and parent_relation_kind in ^relation_kinds)
+    |> Ash.Query.sort(created_at: :asc, id: :asc)
+    |> Ash.Query.load(relation_load(), strict?: true)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, children} when is_list(children) -> children
+      _other -> []
+    end
+  end
+
+  def child_relation_chats(_chat_id, _actor), do: []
 
   @spec continuation_nav(Chat.t(), map()) :: [continuation_nav_entry()]
   def continuation_nav(%Chat{} = chat, actor) do

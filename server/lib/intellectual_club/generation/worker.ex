@@ -1320,6 +1320,7 @@ defmodule IntellectualClub.Generation.Worker do
       chat_id: Map.get(state.context, :chat_id),
       message_id: Map.get(state.context, :message_id),
       assistant_message_id: Map.get(state.context, :message_id),
+      step_id: Map.get(state.runtime_step, :id) || Map.get(state.context, :step_id),
       provider_type: Map.get(state.context, :provider_type),
       available_file_external_ids: Map.get(state.context, :available_file_external_ids, [])
     }

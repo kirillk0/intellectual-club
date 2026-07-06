@@ -93,16 +93,23 @@ defmodule IntellectualClub.Tools.DriverMetadata do
         end
         |> normalize_map()
 
-      enabled =
-        case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
-          false -> false
-          _ -> true
+      enabled_by_default =
+        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+          value when is_boolean(value) ->
+            value
+
+          _other ->
+            case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+              false -> false
+              _ -> true
+            end
         end
 
       %{
         "name" => name,
         "description" => description,
-        "enabled" => enabled,
+        "enabled" => enabled_by_default,
+        "enabled_by_default" => enabled_by_default,
         "parameters_schema" => parameters_schema
       }
     end

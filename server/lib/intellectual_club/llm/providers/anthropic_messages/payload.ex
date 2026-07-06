@@ -115,12 +115,66 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
           end
 
         _other ->
-          []
+          native_tool(tool)
       end
     end)
+    |> dedupe_tools_by_name()
   end
 
   def anthropic_tools(_tools), do: []
+
+  defp native_tool(%{"name" => name} = tool) when is_binary(name) do
+    name = String.trim(name)
+
+    cond do
+      name == "" ->
+        []
+
+      is_map(Map.get(tool, "input_schema")) ->
+        [Map.put(tool, "name", name)]
+
+      is_map(Map.get(tool, "inputSchema")) ->
+        [
+          tool
+          |> Map.put("name", name)
+          |> Map.put("input_schema", Map.get(tool, "inputSchema"))
+          |> Map.delete("inputSchema")
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp native_tool(_tool), do: []
+
+  defp dedupe_tools_by_name(tools) when is_list(tools) do
+    {tools, _seen} =
+      Enum.reduce(tools, {[], MapSet.new()}, fn
+        %{} = tool, {acc, seen} ->
+          name =
+            tool
+            |> Map.get("name")
+            |> to_string()
+            |> String.trim()
+
+          cond do
+            name == "" ->
+              {acc, seen}
+
+            MapSet.member?(seen, name) ->
+              {acc, seen}
+
+            true ->
+              {acc ++ [tool], MapSet.put(seen, name)}
+          end
+
+        _tool, acc ->
+          acc
+      end)
+
+    tools
+  end
 
   @spec tool_result_content(term(), list()) :: String.t() | list(map())
   def tool_result_content(content, media_contents) when is_list(media_contents) do

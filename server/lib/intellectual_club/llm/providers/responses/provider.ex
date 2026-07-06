@@ -228,7 +228,8 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp followup_tools_from_request(previous_raw_request, tools)
        when is_map(previous_raw_request) do
-    hosted_tools_from_request(previous_raw_request) ++ normalize_tools_list(tools)
+    (hosted_tools_from_request(previous_raw_request) ++ normalize_tools_list(tools))
+    |> dedupe_tools()
   end
 
   defp hosted_tools_from_request(payload) when is_map(payload) do
@@ -252,6 +253,36 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp normalize_tools_list(tools) when is_list(tools), do: tools
   defp normalize_tools_list(_tools), do: []
+
+  defp dedupe_tools(tools) when is_list(tools) do
+    {tools, _seen_functions, _seen_hosted} =
+      Enum.reduce(tools, {[], MapSet.new(), MapSet.new()}, fn
+        %{} = tool, {acc, seen_functions, seen_hosted} ->
+          tool = RequestPayload.stringify_keys(tool)
+          function_name = get_in(tool, ["function", "name"])
+
+          cond do
+            Map.get(tool, "type") == "function" and is_binary(function_name) and
+                function_name != "" ->
+              if MapSet.member?(seen_functions, function_name) do
+                {acc, seen_functions, seen_hosted}
+              else
+                {acc ++ [tool], MapSet.put(seen_functions, function_name), seen_hosted}
+              end
+
+            MapSet.member?(seen_hosted, tool) ->
+              {acc, seen_functions, seen_hosted}
+
+            true ->
+              {acc ++ [tool], seen_functions, MapSet.put(seen_hosted, tool)}
+          end
+
+        _tool, acc ->
+          acc
+      end)
+
+    tools
+  end
 
   defp apply_tool_results_to_trace(%RuntimeTrace.Step{} = runtime_step, results)
        when is_list(results) do

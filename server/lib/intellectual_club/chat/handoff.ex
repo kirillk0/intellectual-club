@@ -188,7 +188,8 @@ defmodule IntellectualClub.Chat.Handoff do
         llm_configuration_id: source.llm_configuration_id,
         parent_chat_id: source.id,
         parent_message_id: source_message_id,
-        parent_relation_kind: @relation_kind
+        parent_relation_kind: @relation_kind,
+        subagent: source.subagent == true
       },
       actor: actor
     )

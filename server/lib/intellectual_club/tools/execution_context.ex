@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.ExecutionContext do
     :chat_id,
     :message_id,
     :assistant_message_id,
+    :step_id,
     :provider_type,
     :available_file_external_ids,
     :tool_call_item_id,

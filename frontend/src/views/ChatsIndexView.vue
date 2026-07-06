@@ -66,49 +66,83 @@
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
               <div class="list">
-                <ChatListRow
-                  v-for="c in visibleChats"
-                  :key="c.id"
-                  :to="chatResultLink(c)"
-                  :stack="true"
-                  :title="chatLabel(c)"
-                  :config-label="c.llm_configuration_label || null"
-                  :meta-text="chatMetaText(c)"
-                  :secondary-meta="relationMeta(c)"
-                  :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
-                  :preview-role="!hasChatSearch ? c.first_message_role : null"
-                  :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
-                  :generation-state="generationStateForChat(c)"
-                  :row-role="chatResultRole(c)"
-                  @navigate="openChat"
-                >
-                  <template #meta-extra>
-                    <ContinuationNav
-                      :items="c.continuation_nav || []"
-                      :current-chat-id="c.id"
-                      mode="list"
-                      :stack="true"
-                      @navigate="openChat"
-                    />
-                  </template>
-                  <template #badges>
-                    <span
-                      v-if="c.shared_outgoing"
-                      class="share-indicator"
-                      title="Shared with groups"
-                      aria-label="Shared with groups"
+                <div v-for="c in visibleChats" :key="c.id" class="chat-list-entry">
+                  <ChatListRow
+                    :to="chatResultLink(c)"
+                    :stack="true"
+                    :title="chatLabel(c)"
+                    :config-label="c.llm_configuration_label || null"
+                    :meta-text="chatMetaText(c)"
+                    :secondary-meta="relationMeta(c)"
+                    :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
+                    :preview-role="!hasChatSearch ? c.first_message_role : null"
+                    :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
+                    :generation-state="generationStateForChat(c)"
+                    :row-role="chatResultRole(c)"
+                    @navigate="openChat"
+                  >
+                    <template #meta-extra>
+                      <ContinuationNav
+                        :items="c.continuation_nav || []"
+                        :current-chat-id="c.id"
+                        mode="list"
+                        :stack="true"
+                        @navigate="openChat"
+                      />
+                    </template>
+                    <template #badges>
+                      <span
+                        v-if="c.shared_outgoing"
+                        class="share-indicator"
+                        title="Shared with groups"
+                        aria-label="Shared with groups"
+                      >
+                        <SvgIcon name="share-outgoing" />
+                      </span>
+                      <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
+                        {{ matchBadgeLabel(c.match_type) }}
+                      </span>
+                      <span v-if="!hasContinuationNav(c) && c.parent_relation_kind === 'handoff'" class="badge">{{ translate('Continuation') }}</span>
+                      <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
+                        {{ continuationCountLabel(c.child_handoff_count || 0) }}
+                      </span>
+                    </template>
+                  </ChatListRow>
+                  <div v-if="subchatCount(c) > 0" class="subchat-toggle-row">
+                    <button
+                      class="subchat-toggle"
+                      type="button"
+                      :aria-expanded="subchatsExpanded(c)"
+                      @click="toggleSubchats(c.id)"
                     >
-                      <SvgIcon name="share-outgoing" />
-                    </span>
-                    <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
-                      {{ matchBadgeLabel(c.match_type) }}
-                    </span>
-                    <span v-if="!hasContinuationNav(c) && c.parent_relation_kind === 'handoff'" class="badge">Continuation</span>
-                    <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
-                      {{ continuationCountLabel(c.child_handoff_count || 0) }}
-                    </span>
-                  </template>
-                </ChatListRow>
+                      <SvgIcon :name="subchatsExpanded(c) ? 'arrow-down' : 'chevron-right'" size="14" />
+                      <span>{{ subchatCountLabel(subchatCount(c)) }}</span>
+                    </button>
+                  </div>
+                  <div v-if="subchatsExpanded(c)" class="subchat-list">
+                    <ChatListRow
+                      v-for="subchat in directSubchats(c)"
+                      :key="subchat.id"
+                      :to="chatResultLink(subchat)"
+                      :stack="true"
+                      :title="chatLabel(subchat)"
+                      :config-label="subchat.llm_configuration_label || null"
+                      :meta-text="chatMetaText(subchat)"
+                      :secondary-meta="relationMeta(subchat)"
+                      :preview-text="!hasChatSearch && subchat.first_message_preview ? formatPreview(subchat.first_message_preview) : null"
+                      :preview-role="!hasChatSearch ? subchat.first_message_role : null"
+                      :generation-state="generationStateForChat(subchat)"
+                      @navigate="openChat"
+                    >
+                      <template #badges>
+                        <span class="badge">{{ translate('Subchat') }}</span>
+                        <span v-if="!hasContinuationNav(subchat) && subchat.parent_relation_kind === 'fork'" class="badge">
+                          {{ translate('Fork') }}
+                        </span>
+                      </template>
+                    </ChatListRow>
+                  </div>
+                </div>
               </div>
 
               <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
@@ -307,6 +341,7 @@ const chatSearchError = ref('');
 const chatListIdleRevision = ref<string | null>(null);
 const chatListGenerationPollReconnecting = ref(false);
 const generationCompleteChatIds = ref(new Set<number>());
+const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
 const botSearchTerm = ref('');
 const bots = ref<Bot[]>([]);
@@ -547,6 +582,31 @@ function sortChatRows<T extends ChatSummary>(items: T[]): T[] {
   });
 }
 
+function directSubchats(chat: ChatSummary): ChatSummary[] {
+  return Array.isArray(chat.subchats) ? chat.subchats : [];
+}
+
+function subchatCount(chat: ChatSummary) {
+  const count = Number(chat.child_subchat_count || 0);
+  if (Number.isInteger(count) && count > 0) return count;
+  return directSubchats(chat).length;
+}
+
+function flattenChatRows(items: ChatSummary[]): ChatSummary[] {
+  return items.flatMap((chat) => [chat, ...directSubchats(chat)]);
+}
+
+function subchatsExpanded(chat: ChatSummary) {
+  return expandedSubchatParentIds.value.has(chat.id);
+}
+
+function toggleSubchats(chatId: number) {
+  const next = new Set(expandedSubchatParentIds.value);
+  if (next.has(chatId)) next.delete(chatId);
+  else next.add(chatId);
+  expandedSubchatParentIds.value = next;
+}
+
 function mergeChatRows<T extends ChatSummary>(items: T[], summary: ChatSummary): T[] {
   const index = items.findIndex((item) => item.id === summary.id);
   if (index === -1) return sortChatRows([...items, summary as T]);
@@ -554,6 +614,57 @@ function mergeChatRows<T extends ChatSummary>(items: T[], summary: ChatSummary):
   const next = [...items];
   next[index] = { ...next[index], ...summary };
   return sortChatRows(next);
+}
+
+function sortSubchatRows<T extends ChatSummary>(items: T[]): T[] {
+  return [...items].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at || '') || 0;
+    const rightTime = Date.parse(right.created_at || '') || 0;
+    return leftTime - rightTime || left.id - right.id;
+  });
+}
+
+function upsertSubchatInRows<T extends ChatSummary>(items: T[], summary: ChatSummary): T[] {
+  let changed = false;
+
+  const next = items.map((chat) => {
+    if (chat.id !== summary.parent_chat_id) return chat;
+
+    changed = true;
+    const subchats = directSubchats(chat);
+    const index = subchats.findIndex((item) => item.id === summary.id);
+    const nextSubchats =
+      index === -1
+        ? sortSubchatRows([...subchats, summary])
+        : sortSubchatRows(subchats.map((item) => (item.id === summary.id ? { ...item, ...summary } : item)));
+
+    return {
+      ...chat,
+      child_subchat_count: Math.max(Number(chat.child_subchat_count || 0), nextSubchats.length),
+      subchats: nextSubchats,
+    };
+  });
+
+  return changed ? next : items;
+}
+
+function removeSubchatFromRows<T extends ChatSummary>(items: T[], chatId: number): { rows: T[]; removed: boolean } {
+  let removed = false;
+
+  const rows = items.map((chat) => {
+    const subchats = directSubchats(chat);
+    if (!subchats.some((item) => item.id === chatId)) return chat;
+
+    removed = true;
+    const nextSubchats = subchats.filter((item) => item.id !== chatId);
+    return {
+      ...chat,
+      child_subchat_count: Math.max(0, Number(chat.child_subchat_count || subchats.length) - 1),
+      subchats: nextSubchats,
+    };
+  });
+
+  return { rows, removed };
 }
 
 function patchExistingChatRows<T extends ChatSummary>(items: T[], summary: ChatSummary): T[] {
@@ -570,6 +681,14 @@ function isNewChatChangeReason(reason: unknown) {
 }
 
 function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
+  if (summary.subagent) {
+    chats.value = upsertSubchatInRows(chats.value, summary);
+    chatSearchResults.value = upsertSubchatInRows(chatSearchResults.value, summary);
+    chatListIdleRevision.value = null;
+    syncVisibleGenerationState(visibleGenerationChats.value);
+    return;
+  }
+
   const existedInPage = chats.value.some((chat) => chat.id === summary.id);
 
   if (matchesBotFilter(summary)) {
@@ -582,18 +701,22 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
 
   chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
   chatListIdleRevision.value = null;
-  syncVisibleGenerationState(visibleChats.value);
+  syncVisibleGenerationState(visibleGenerationChats.value);
 }
 
 function removeChatFromLists(chatId: number) {
-  chats.value = chats.value.filter((chat) => chat.id !== chatId);
-  chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== chatId);
-  totalChats.value = Math.max(0, totalChats.value - 1);
+  const existedInPage = chats.value.some((chat) => chat.id === chatId);
+  const chatRows = removeSubchatFromRows(chats.value, chatId);
+  const searchRows = removeSubchatFromRows(chatSearchResults.value, chatId);
+
+  chats.value = chatRows.rows.filter((chat) => chat.id !== chatId);
+  chatSearchResults.value = searchRows.rows.filter((chat) => chat.id !== chatId);
+  if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
 
   const nextComplete = new Set(generationCompleteChatIds.value);
   if (nextComplete.delete(chatId)) generationCompleteChatIds.value = nextComplete;
   chatListIdleRevision.value = null;
-  syncVisibleGenerationState(visibleChats.value);
+  syncVisibleGenerationState(visibleGenerationChats.value);
 }
 
 const chatSummaryRefreshTimers = new Map<number, number>();
@@ -637,8 +760,9 @@ useEntityChanges((change) => {
 const filteredChats = computed(() => chats.value.filter(matchesBotFilter));
 const filteredChatSearchResults = computed(() => chatSearchResults.value.filter(matchesBotFilter));
 const visibleChats = computed(() => (hasChatSearch.value ? filteredChatSearchResults.value : filteredChats.value));
+const visibleGenerationChats = computed(() => flattenChatRows(visibleChats.value));
 const hasVisibleGeneratingChat = computed(() =>
-  visibleChats.value.some((chat) => Boolean(chat.active_generation_message_id))
+  visibleGenerationChats.value.some((chat) => Boolean(chat.active_generation_message_id))
 );
 const allBotsCount = computed(() => {
   if (chatListStats.value.total_chats > 0) return chatListStats.value.total_chats;
@@ -708,6 +832,10 @@ function continuationCountLabel(count: number) {
   return count === 1 ? translate('1 continuation') : translate('{count} continuations', { count });
 }
 
+function subchatCountLabel(count: number) {
+  return count === 1 ? translate('1 subchat') : translate('{count} subchats', { count });
+}
+
 function hasContinuationNav(chat: ChatSummary) {
   return Array.isArray(chat.continuation_nav) && chat.continuation_nav.length > 1;
 }
@@ -716,7 +844,8 @@ function relationMeta(chat: ChatSummary) {
   if (hasContinuationNav(chat)) return null;
   const count = Number(chat.child_handoff_count || 0);
   const parts: string[] = [];
-  if (chat.parent_relation_kind === 'handoff') parts.push('Continuation');
+  if (chat.parent_relation_kind === 'handoff') parts.push(translate('Continuation'));
+  if (chat.parent_relation_kind === 'fork') parts.push(translate('Fork'));
   if (count > 0) parts.push(continuationCountLabel(count));
   return parts.length ? parts.join(' · ') : null;
 }
@@ -890,7 +1019,7 @@ async function loadChats(
     if (seq !== chatListLoadSeq) return;
 
     chats.value = payload.chats || [];
-    syncVisibleGenerationState(visibleChats.value);
+    syncVisibleGenerationState(visibleGenerationChats.value);
     pageNumber.value = Number.isInteger(payload.page?.number) ? Number(payload.page?.number) : requestedPage;
     perPage.value = Number.isInteger(payload.page?.per_page) ? Number(payload.page?.per_page) : perPage.value;
     totalChats.value = Number.isInteger(payload.page?.total) ? Number(payload.page?.total) : chats.value.length;
@@ -984,7 +1113,7 @@ async function runChatSearch(
     });
     if (seq !== chatSearchSeq) return;
     chatSearchResults.value = payload.chats || [];
-    syncVisibleGenerationState(visibleChats.value);
+    syncVisibleGenerationState(visibleGenerationChats.value);
   } catch (e) {
     if (isAbortError(e)) return;
     if (seq !== chatSearchSeq) return;
@@ -1414,6 +1543,39 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.chat-list-entry {
+  display: grid;
+  gap: 6px;
+}
+
+.subchat-toggle-row {
+  display: flex;
+  padding-left: 18px;
+}
+
+.subchat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 8px;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 0;
+}
+
+.subchat-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+
+.subchat-list {
+  display: grid;
+  gap: 6px;
+  padding-left: 18px;
+  border-left: 2px solid var(--color-border-muted);
 }
 
 .badge-muted {

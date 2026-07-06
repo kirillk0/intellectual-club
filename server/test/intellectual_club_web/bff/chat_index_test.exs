@@ -433,6 +433,54 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
            ]
   end
 
+  test "GET /api/bff/chat-list hides fork subagents and returns them under parent", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    parent = create_chat!(actor, "Parent chat")
+
+    {:ok, _parent_message} =
+      Threads.add_message_to_end(parent, :user, "Parent prompt", actor: actor)
+
+    subchat =
+      create_chat!(actor, "Subagent task", %{
+        parent_chat_id: parent.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    {:ok, _subchat_message} =
+      Threads.add_message_to_end(subchat, :assistant, "Subagent answer", actor: actor)
+
+    normal = create_chat!(actor, "Normal chat")
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list")
+      |> json_response(200)
+
+    parent_payload = chat_payload(payload, parent.id)
+    subchat_payload = List.first(parent_payload["subchats"])
+
+    assert Enum.sort(chat_ids(payload)) == Enum.sort([parent.id, normal.id])
+    refute subchat.id in chat_ids(payload)
+    assert payload["page"]["total"] == 2
+    assert payload["stats"]["total_chats"] == 2
+
+    assert parent_payload["subagent"] == false
+    assert parent_payload["child_subchat_count"] == 1
+    assert length(parent_payload["subchats"]) == 1
+
+    assert subchat_payload["id"] == subchat.id
+    assert subchat_payload["subagent"] == true
+    assert subchat_payload["parent_chat_id"] == parent.id
+    assert subchat_payload["parent_relation_kind"] == "fork"
+    assert subchat_payload["message_count"] == 1
+    assert subchat_payload["first_message_preview"] == "Subagent answer"
+  end
+
   defp chat_ids(payload) do
     payload
     |> Map.get("chats", [])

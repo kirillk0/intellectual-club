@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   @behaviour IntellectualClub.Tools.Driver
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.Chat.Fork, as: AgentFork
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -36,13 +37,34 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   def supports_handoff?, do: true
 
   @impl true
-  def default_config, do: %{}
+  def default_config do
+    %{
+      "nested_forks_limit" => 0,
+      "allow_handoff_in_forks" => false
+    }
+  end
 
   @impl true
   def config_schema do
     %{
       "type" => "object",
-      "properties" => %{},
+      "properties" => %{
+        "nested_forks_limit" => %{
+          "type" => "integer",
+          "minimum" => 0,
+          "default" => 0,
+          "title" => "Nested forks limit",
+          "description" =>
+            "How many additional fork generations a forked subagent may create. " <>
+              "0 disables fork inside subagents."
+        },
+        "allow_handoff_in_forks" => %{
+          "type" => "boolean",
+          "default" => false,
+          "title" => "Allow handoff in forks",
+          "description" => "Allow forked subagents to continue work through handoff chats."
+        }
+      },
       "additionalProperties" => false
     }
   end
@@ -71,7 +93,28 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "required" => ["summary"],
           "additionalProperties" => false
         },
-        "enabled" => true
+        "enabled" => true,
+        "enabled_by_default" => true
+      },
+      %{
+        "name" => "fork",
+        "description" =>
+          "Start a linked subagent chat from the current assistant turn. " <>
+            "Pass only a brief task for this subagent; the full context is already copied.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "task" => %{
+              "type" => "string",
+              "description" =>
+                "Brief task for this specific subagent. Do not repeat the full context."
+            }
+          },
+          "required" => ["task"],
+          "additionalProperties" => false
+        },
+        "enabled" => false,
+        "enabled_by_default" => false
       },
       %{
         "name" => "sleep",
@@ -91,7 +134,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "required" => ["seconds"],
           "additionalProperties" => false
         },
-        "enabled" => true
+        "enabled" => true,
+        "enabled_by_default" => true
       }
     ]
   end
@@ -102,9 +146,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   end
 
   @impl true
-  def execute(%ToolInstance{} = _tool_instance, "handoff", args, %ExecutionContext{} = context)
+  def execute(%ToolInstance{} = tool_instance, "handoff", args, %ExecutionContext{} = context)
       when is_map(args) do
     with {:ok, summary} <- required_summary(args),
+         :ok <- AgentFork.ensure_handoff_allowed(tool_instance, context),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          {:ok, chat_id} <- required_integer(context.chat_id, "chat_id"),
          {:ok, assistant_message_id} <-
@@ -143,6 +188,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = _tool_instance, "handoff", _args, _context) do
     {:error, "Handoff requires generation execution context."}
+  end
+
+  def execute(%ToolInstance{} = tool_instance, "fork", args, %ExecutionContext{} = context)
+      when is_map(args) do
+    with {:ok, task} <- required_task(args),
+         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
+         actor = %User{id: owner_id},
+         {:ok, result} <- AgentFork.create_and_run(tool_instance, task, context, actor) do
+      {:ok, result}
+    else
+      {:error, reason} ->
+        {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "fork", _args, _context) do
+    {:error, "Fork requires generation execution context."}
   end
 
   def execute(%ToolInstance{} = _tool_instance, "sleep", args, context) when is_map(args) do
@@ -187,6 +249,17 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     |> case do
       "" -> {:error, "summary is required"}
       summary -> {:ok, summary}
+    end
+  end
+
+  defp required_task(args) when is_map(args) do
+    args
+    |> Map.get("task", Map.get(args, :task, ""))
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> {:error, "task is required"}
+      task -> {:ok, task}
     end
   end
 

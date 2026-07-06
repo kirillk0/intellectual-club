@@ -8,13 +8,18 @@ defmodule IntellectualClub.Generation.Supervisor do
   require Logger
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Worker
 
+  require Ash.Query
+
   @manual_retry_statuses [:error, :canceled]
   @retry_from_step_statuses [:done, :error, :canceled]
   @resume_retry_statuses [:generating]
+  @cancel_wait_timeout_ms 5_000
 
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -30,9 +35,20 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     :ok = Context.authorize_chat!(chat_id, actor)
     :ok = cancel_for_chat(chat_id)
-    :ok = Persistence.cancel_orphaned_generating_messages!(chat_id)
 
     context = Context.build!(chat_id, opts)
+    start_worker(context)
+  end
+
+  def start_prepared_generation(chat_id, message_id, step_id, raw_request, opts \\ [])
+      when is_integer(chat_id) and is_integer(message_id) and is_integer(step_id) and
+             is_list(opts) do
+    actor = Keyword.get(opts, :actor)
+
+    :ok = Context.authorize_chat!(chat_id, actor)
+    :ok = cancel_for_chat(chat_id)
+
+    context = Context.build_prepared!(chat_id, message_id, step_id, raw_request, opts)
     start_worker(context)
   end
 
@@ -41,7 +57,6 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
          :ok <- cancel_for_chat(context.chat_id),
-         :ok <- Persistence.cancel_orphaned_generating_messages!(context.chat_id),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
          :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
@@ -76,7 +91,6 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
          :ok <- cancel_for_chat(context.chat_id),
-         :ok <- Persistence.cancel_orphaned_generating_messages!(context.chat_id),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
          :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
@@ -230,19 +244,137 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   def cancel_generation(message_id) do
-    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
-      [{pid, _}] -> Worker.cancel(pid)
-      [] -> :not_found
-    end
+    result =
+      case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
+        [{pid, _}] ->
+          Worker.cancel(pid)
+          _ = await_worker_stopped(pid)
+          :ok
+
+        [] ->
+          :not_found
+      end
+
+    :ok = cancel_descendant_generations_for_message(message_id)
+    result
   end
 
   def cancel_for_chat(chat_id) do
-    IntellectualClub.Generation.Registry
-    |> Registry.lookup({:chat, chat_id})
-    |> Enum.each(fn {pid, _} -> Worker.cancel(pid) end)
+    active_message_ids = cancel_active_workers_for_chat(chat_id)
+    :ok = cancel_descendant_generations_for_chat(chat_id)
+
+    :ok =
+      Persistence.cancel_orphaned_generating_messages!(chat_id,
+        except_message_ids: active_message_ids
+      )
 
     :ok
   end
+
+  defp cancel_active_workers_for_chat(chat_id) when is_integer(chat_id) do
+    entries = Registry.lookup(IntellectualClub.Generation.Registry, {:chat, chat_id})
+
+    Enum.each(entries, fn {pid, _metadata} -> Worker.cancel(pid) end)
+    Enum.each(entries, fn {pid, _metadata} -> await_worker_stopped(pid) end)
+
+    entries
+    |> Enum.map(fn {_pid, metadata} -> registry_message_id(metadata) end)
+    |> Enum.filter(&is_integer/1)
+    |> Enum.uniq()
+  end
+
+  defp cancel_active_workers_for_chat(_chat_id), do: []
+
+  defp cancel_descendant_generations_for_message(message_id) when is_integer(message_id) do
+    case message_chat_id(message_id) do
+      id when is_integer(id) -> cancel_descendant_generations_for_chat(id)
+      _other -> :ok
+    end
+  end
+
+  defp cancel_descendant_generations_for_message(_message_id), do: :ok
+
+  defp cancel_descendant_generations_for_chat(chat_id) when is_integer(chat_id) do
+    chat_id
+    |> subagent_descendant_chat_ids()
+    |> Enum.each(fn descendant_chat_id ->
+      active_message_ids = cancel_active_workers_for_chat(descendant_chat_id)
+
+      :ok =
+        Persistence.cancel_orphaned_generating_messages!(descendant_chat_id,
+          except_message_ids: active_message_ids
+        )
+    end)
+
+    :ok
+  end
+
+  defp cancel_descendant_generations_for_chat(_chat_id), do: :ok
+
+  defp message_chat_id(message_id) when is_integer(message_id) do
+    ChatMessage
+    |> Ash.Query.filter(id == ^message_id)
+    |> Ash.Query.select([:id, :chat_id])
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(authorize?: false)
+    |> case do
+      %ChatMessage{chat_id: chat_id} when is_integer(chat_id) -> chat_id
+      _other -> nil
+    end
+  end
+
+  defp subagent_descendant_chat_ids(chat_id) when is_integer(chat_id) do
+    do_subagent_descendant_chat_ids([chat_id], MapSet.new(), [])
+  end
+
+  defp do_subagent_descendant_chat_ids([], _visited, acc), do: Enum.reverse(acc)
+
+  defp do_subagent_descendant_chat_ids(parent_ids, visited, acc) do
+    parent_ids =
+      parent_ids
+      |> Enum.filter(&is_integer/1)
+      |> Enum.reject(&MapSet.member?(visited, &1))
+      |> Enum.uniq()
+
+    if parent_ids == [] do
+      Enum.reverse(acc)
+    else
+      child_ids =
+        Chat
+        |> Ash.Query.filter(parent_chat_id in ^parent_ids and subagent == true)
+        |> Ash.Query.select([:id])
+        |> Ash.read!(authorize?: false)
+        |> Enum.map(& &1.id)
+        |> Enum.filter(&is_integer/1)
+        |> Enum.reject(&MapSet.member?(visited, &1))
+        |> Enum.uniq()
+
+      visited = Enum.reduce(parent_ids, visited, &MapSet.put(&2, &1))
+      do_subagent_descendant_chat_ids(child_ids, visited, child_ids ++ acc)
+    end
+  end
+
+  defp registry_message_id(%{message_id: id}) when is_integer(id), do: id
+  defp registry_message_id(%{"message_id" => id}) when is_integer(id), do: id
+  defp registry_message_id(_metadata), do: nil
+
+  defp await_worker_stopped(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      ref = Process.monitor(pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      after
+        @cancel_wait_timeout_ms ->
+          Process.demonitor(ref, [:flush])
+          :timeout
+      end
+    else
+      :ok
+    end
+  end
+
+  defp await_worker_stopped(_pid), do: :ok
 
   def get_generation_state(message_id) do
     case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do

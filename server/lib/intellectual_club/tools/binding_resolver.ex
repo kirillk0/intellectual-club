@@ -407,17 +407,24 @@ defmodule IntellectualClub.Tools.BindingResolver do
           true -> %{"type" => "object", "properties" => %{}}
         end
 
-      enabled =
-        case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
-          false -> false
-          _ -> true
+      enabled_by_default =
+        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+          value when is_boolean(value) ->
+            value
+
+          _other ->
+            case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+              false -> false
+              _ -> true
+            end
         end
 
       %{
         name: name,
         description: description,
         parameters_schema: parameters_schema,
-        enabled: enabled
+        enabled: enabled_by_default,
+        enabled_by_default: enabled_by_default
       }
     end
   end

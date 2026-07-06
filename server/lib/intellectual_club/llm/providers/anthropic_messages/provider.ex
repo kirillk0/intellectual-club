@@ -100,8 +100,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
         RequestPayload.parameters(previous_raw_request, Map.get(context, :parameters, %{})),
         messages,
         system: Map.get(previous_raw_request, "system", Map.get(context, :system_prompt)),
-        tools: Map.get(opts, :tools, [])
+        tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
+      |> put_followup_tool_choice(previous_raw_request)
       |> maybe_apply_followup_cache_control(context)
 
     %{
@@ -189,6 +190,24 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       raw_request
     end
   end
+
+  defp followup_tools_from_request(previous_raw_request, tools)
+       when is_map(previous_raw_request) do
+    RequestPayload.tools(previous_raw_request) ++ normalize_tools_list(tools)
+  end
+
+  defp normalize_tools_list(tools) when is_list(tools), do: tools
+  defp normalize_tools_list(_tools), do: []
+
+  defp put_followup_tool_choice(raw_request, previous_raw_request)
+       when is_map(raw_request) and is_map(previous_raw_request) do
+    case RequestPayload.tool_choice(previous_raw_request) do
+      nil -> raw_request
+      tool_choice -> Map.put(raw_request, "tool_choice", tool_choice)
+    end
+  end
+
+  defp put_followup_tool_choice(raw_request, _previous_raw_request), do: raw_request
 
   defp assistant_message(%{"content" => content}, _runtime_step) when is_list(content) do
     %{"role" => "assistant", "content" => content}

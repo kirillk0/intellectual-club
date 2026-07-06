@@ -482,6 +482,49 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     assert is_binary(result["snippet"])
   end
 
+  test "GET /api/bff/chat-list/search excludes fork subagent chats", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    parent =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    subchat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          note: "needle subagent note",
+          parent_chat_id: parent.id,
+          parent_relation_kind: :fork,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _subchat_message} =
+      Threads.add_message_to_end(subchat, :user, "needle subagent message", actor: actor)
+
+    visible_chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, visible_message} =
+      Threads.add_message_to_end(visible_chat, :user, "needle visible message", actor: actor)
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+    results = payload["chats"] || []
+
+    assert Enum.map(results, & &1["id"]) == [visible_chat.id]
+    assert List.first(results)["message_id"] == visible_message.id
+    refute Enum.any?(results, &(&1["id"] == subchat.id))
+  end
+
   test "GET /api/bff/chat-list/search respects per_page as total result limit", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

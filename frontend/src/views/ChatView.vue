@@ -123,7 +123,7 @@
               :to="chatRoute(vm.parentRelation.chat_id)"
               @click.capture="handleChatRouteClick($event, vm.parentRelation.chat_id)"
             >
-              <span>Continuation of</span>
+              <span>{{ parentRelationLabel(vm.parentRelation) }}</span>
               <strong>{{ relationTitle(vm.parentRelation) }}</strong>
             </RouterLink>
 
@@ -171,12 +171,12 @@
               />
               <RouterLink
                 v-for="relation in vm.childRelationsForMessage(msg.id)"
-                :key="`handoff-${msg.id}-${relation.chat_id}`"
+                :key="`relation-${msg.id}-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
                 :to="chatRoute(relation.chat_id)"
                 @click.capture="handleChatRouteClick($event, relation.chat_id)"
               >
-                <span>Continued in</span>
+                <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
               </RouterLink>
               <div
@@ -194,12 +194,12 @@
             <div v-if="vm.fallbackChildRelations.length" class="chat-relation-fallback">
               <RouterLink
                 v-for="relation in vm.fallbackChildRelations"
-                :key="`handoff-fallback-${relation.chat_id}`"
+                :key="`relation-fallback-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
                 :to="chatRoute(relation.chat_id)"
                 @click.capture="handleChatRouteClick($event, relation.chat_id)"
               >
-                <span>Continued in</span>
+                <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
               </RouterLink>
             </div>
@@ -581,6 +581,7 @@ import {
   pendingFileProgressPercent,
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
+import { translate } from '@/i18n';
 import type { ChatRelationSummary } from '@/types/api';
 
 const vm = reactive(useChatViewModel());
@@ -700,6 +701,12 @@ const pendingFileProgress = pendingFileProgressPercent;
 
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
+
+const parentRelationLabel = (relation: ChatRelationSummary) =>
+  relation.kind === 'fork' ? translate('Fork of') : translate('Continuation of');
+
+const childRelationLabel = (relation: ChatRelationSummary) =>
+  relation.kind === 'fork' ? translate('Forked into') : translate('Continued in');
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,

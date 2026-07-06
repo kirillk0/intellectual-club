@@ -141,6 +141,7 @@ export type Chat = {
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
   parent_relation_kind?: string | null;
+  subagent?: boolean | null;
   can_edit?: boolean | null;
   shared_incoming?: boolean | null;
   shared_outgoing?: boolean | null;
@@ -159,7 +160,10 @@ export type ChatSummary = {
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
   parent_relation_kind?: string | null;
+  subagent?: boolean | null;
   child_handoff_count?: number | null;
+  child_subchat_count?: number | null;
+  subchats?: ChatSummary[];
   created_at: string | null;
   updated_at?: string | null;
   last_activity_at: string | null;
@@ -184,6 +188,7 @@ export type ChatContinuationNavItem = {
   note?: string | null;
   bot_id?: number | null;
   bot_name?: string | null;
+  subagent?: boolean | null;
   active_generation_message_id?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -198,6 +203,7 @@ export type ChatRelationSummary = {
   note?: string | null;
   bot_id?: number | null;
   bot_name?: string | null;
+  subagent?: boolean | null;
   active_generation_message_id?: number | null;
   created_at?: string | null;
   updated_at?: string | null;

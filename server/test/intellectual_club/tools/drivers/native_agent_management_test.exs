@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
+  alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -18,18 +19,46 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     functions = NativeAgentManagement.fixed_functions(tool_instance)
 
-    assert Enum.map(functions, & &1["name"]) == ["handoff", "sleep"]
+    assert Enum.map(functions, & &1["name"]) == ["handoff", "fork", "sleep"]
 
     assert %{"schema" => handoff_schema} =
              Enum.find(functions, &(&1["name"] == "handoff"))
 
     assert handoff_schema["required"] == ["summary"]
+    assert Enum.find(functions, &(&1["name"] == "handoff"))["enabled_by_default"] == true
+
+    assert %{"schema" => fork_schema} =
+             fork_function = Enum.find(functions, &(&1["name"] == "fork"))
+
+    assert fork_function["enabled"] == false
+    assert fork_function["enabled_by_default"] == false
+    assert fork_schema["required"] == ["task"]
+    assert fork_schema["properties"]["task"]["type"] == "string"
+    assert String.contains?(fork_schema["properties"]["task"]["description"], "Brief task")
 
     assert %{"schema" => sleep_schema} =
              Enum.find(functions, &(&1["name"] == "sleep"))
 
     assert sleep_schema["required"] == ["seconds"]
     assert sleep_schema["properties"]["seconds"]["type"] == "number"
+    assert Enum.find(functions, &(&1["name"] == "sleep"))["enabled_by_default"] == true
+  end
+
+  test "fork is rejected by executor while disabled by default" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    result =
+      Executor.execute_llm_tool(
+        %{"agent_management" => tool_instance},
+        "agent_management__fork",
+        %{"task" => "Check one thing."},
+        %ExecutionContext{owner_id: actor.id}
+      )
+
+    assert result.text == "Tool function `fork` is disabled."
+    assert result.raw["isError"] == true
+    assert result.raw["code"] == "tool_function_disabled"
   end
 
   test "handoff creates child chat and starts generation" do

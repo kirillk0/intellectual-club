@@ -909,6 +909,92 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              ~s({"temperature":18.5})
   end
 
+  test "anthropic provider preserves provider-native tools from previous raw request on followup" do
+    native_tools = [
+      %{
+        "name" => "weather__get",
+        "description" => "Get weather",
+        "input_schema" => %{
+          "type" => "object",
+          "properties" => %{"city" => %{"type" => "string"}},
+          "required" => ["city"]
+        },
+        "cache_control" => %{"type" => "ephemeral"}
+      }
+    ]
+
+    raw_request = %{
+      "model" => "claude-sonnet-4-20250514",
+      "max_tokens" => 200,
+      "stream" => true,
+      "system" => "System",
+      "messages" => [
+        %{"role" => "user", "content" => [%{"type" => "text", "text" => "Weather?"}]}
+      ],
+      "tools" => native_tools,
+      "tool_choice" => %{"type" => "auto"}
+    }
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: raw_request,
+        raw_response: %{
+          "type" => "message",
+          "role" => "assistant",
+          "content" => [
+            %{
+              "type" => "tool_use",
+              "id" => "toolu_1",
+              "name" => "weather__get",
+              "input" => %{"city" => "Paris"}
+            }
+          ]
+        }
+      )
+
+    results = [
+      %{
+        call_id: "toolu_1",
+        name: "weather__get",
+        raw: %{
+          "type" => "tool_use",
+          "id" => "toolu_1",
+          "name" => "weather__get",
+          "input" => %{"city" => "Paris"}
+        },
+        text: ~s({"temperature":18.5}),
+        result_raw: %{"temperature" => 18.5},
+        media_contents: [],
+        artifact_contents: []
+      }
+    ]
+
+    followup =
+      AnthropicMessages.build_followup_request(%{
+        context: %{
+          model_name: "claude-sonnet-4-20250514",
+          parameters: %{"max_tokens" => 200},
+          system_prompt: "System",
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: results,
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Duplicate common schema",
+              "parameters" => %{"type" => "object"}
+            }
+          }
+        ]
+      })
+
+    assert followup.raw_request["tools"] == native_tools
+    assert followup.raw_request["tool_choice"] == %{"type" => "auto"}
+  end
+
   test "anthropic provider moves cache control marker to latest followup message" do
     initial =
       AnthropicMessages.build_initial_request(%{

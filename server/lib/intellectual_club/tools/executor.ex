@@ -6,13 +6,17 @@ defmodule IntellectualClub.Tools.Executor do
   them via the appropriate driver. Outputs are truncated to `max_output_tokens`.
   """
 
+  alias IntellectualClub.Accounts.User
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.RateLimiter
   alias IntellectualClub.Tools.Registry
+  alias IntellectualClub.Tools.ToolFunction
 
   @null_byte <<0>>
   @truncation_notice "Truncated because length limit"
+
+  require Ash.Query
 
   @spec execute_llm_tool(
           map(),
@@ -60,9 +64,20 @@ defmodule IntellectualClub.Tools.Executor do
 
   defp execute_tool_instance(tool_instance, function_name, args, execution_context) do
     result =
-      case RateLimiter.await_slot(tool_instance) do
-        :ok -> execute_driver(tool_instance, function_name, args, execution_context)
-        {:error, :busy} -> busy_result()
+      case function_enabled_for_execution(tool_instance, function_name, execution_context) do
+        :ok ->
+          case RateLimiter.await_slot(tool_instance) do
+            :ok -> execute_driver(tool_instance, function_name, args, execution_context)
+            {:error, :busy} -> busy_result()
+          end
+
+        {:error, message} ->
+          %ExecutionResult{
+            text: message,
+            raw: %{"isError" => true, "error" => message, "code" => "tool_function_disabled"},
+            media: [],
+            artifacts: []
+          }
       end
       |> sanitize_execution_result()
 
@@ -123,6 +138,105 @@ defmodule IntellectualClub.Tools.Executor do
         }
     end
   end
+
+  defp function_enabled_for_execution(tool_instance, function_name, execution_context) do
+    tool_type = tool_instance.type |> to_string() |> String.trim()
+    driver = Registry.driver_for_type!(tool_type)
+
+    case driver.functions_mode() do
+      :fixed ->
+        if fixed_function_enabled?(driver, tool_instance, function_name, execution_context) do
+          :ok
+        else
+          {:error, "Tool function `#{function_name}` is disabled."}
+        end
+
+      :stored ->
+        if stored_function_enabled?(tool_instance, function_name, execution_context) do
+          :ok
+        else
+          {:error, "Tool function `#{function_name}` is disabled."}
+        end
+    end
+  rescue
+    _exception -> :ok
+  end
+
+  defp fixed_function_enabled?(driver, tool_instance, function_name, execution_context) do
+    fixed =
+      if function_exported?(driver, :fixed_functions, 1) do
+        driver.fixed_functions(tool_instance)
+        |> List.wrap()
+        |> Enum.find(&(fixed_function_name(&1) == function_name))
+      end
+
+    case fixed do
+      nil ->
+        true
+
+      fixed ->
+        default_enabled = fixed_function_default_enabled?(fixed)
+
+        case fixed_function_override(tool_instance, function_name, execution_context) do
+          enabled when is_boolean(enabled) -> enabled
+          _other -> default_enabled
+        end
+    end
+  end
+
+  defp stored_function_enabled?(tool_instance, function_name, execution_context) do
+    case fixed_function_override(tool_instance, function_name, execution_context) do
+      false -> false
+      _other -> true
+    end
+  end
+
+  defp fixed_function_override(%{id: tool_instance_id}, function_name, execution_context)
+       when is_integer(tool_instance_id) and is_binary(function_name) do
+    actor = execution_actor(execution_context)
+
+    ToolFunction
+    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id and name == ^function_name)
+    |> Ash.Query.select([:enabled])
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(actor: actor)
+    |> case do
+      {:ok, %ToolFunction{enabled: enabled}} when is_boolean(enabled) -> enabled
+      _other -> nil
+    end
+  end
+
+  defp fixed_function_override(_tool_instance, _function_name, _execution_context), do: nil
+
+  defp execution_actor(%{owner_id: owner_id}) when is_integer(owner_id) and owner_id > 0 do
+    %User{id: owner_id}
+  end
+
+  defp execution_actor(_context), do: nil
+
+  defp fixed_function_name(raw) when is_map(raw) do
+    raw
+    |> Map.get("name", Map.get(raw, :name, ""))
+    |> to_string()
+    |> String.trim()
+  end
+
+  defp fixed_function_name(_raw), do: ""
+
+  defp fixed_function_default_enabled?(raw) when is_map(raw) do
+    case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+      value when is_boolean(value) ->
+        value
+
+      _other ->
+        case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+          false -> false
+          _ -> true
+        end
+    end
+  end
+
+  defp fixed_function_default_enabled?(_raw), do: true
 
   defp busy_result do
     %ExecutionResult{

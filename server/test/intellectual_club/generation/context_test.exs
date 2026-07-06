@@ -797,6 +797,66 @@ defmodule IntellectualClub.Generation.ContextTest do
            ]
   end
 
+  test "fixed tool functions honor enabled_by_default and explicit overrides" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    agent_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-agent-management",
+          name: "Agent management",
+          alias: "agent",
+          config: %{},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    create_chat_tool_binding!(actor, chat, agent_tool, 0)
+
+    names =
+      chat
+      |> BindingResolver.resolve_for_chat(actor)
+      |> tool_payload_names()
+
+    assert "agent__handoff" in names
+    assert "agent__sleep" in names
+    refute "agent__fork" in names
+
+    ToolFunction
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        tool_instance_id: agent_tool.id,
+        name: "fork",
+        description: "",
+        parameters_schema: %{},
+        enabled: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    names =
+      chat
+      |> BindingResolver.resolve_for_chat(actor)
+      |> tool_payload_names()
+
+    assert "agent__fork" in names
+  end
+
   test "user bot tool binding shadows creator binding with the same alias" do
     %{user: actor} = user_fixture()
     bot = create_tool_context_bot!(actor, "User override bot")
@@ -2812,6 +2872,10 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!(actor: actor)
     end)
+  end
+
+  defp tool_payload_names(%{tools_payload: tools_payload}) when is_list(tools_payload) do
+    Enum.map(tools_payload, &get_in(&1, ["function", "name"]))
   end
 
   defp create_bot_tool_binding!(actor, bot, tool, sharing_mode, sequence) do

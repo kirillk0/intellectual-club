@@ -84,6 +84,14 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert schema["properties"]["summary"]["type"] == "string"
 
     assert %{"parameters_schema" => schema} =
+             fork_function = Enum.find(metadata["fixed_functions"], &(&1["name"] == "fork"))
+
+    assert fork_function["enabled"] == false
+    assert fork_function["enabled_by_default"] == false
+    assert schema["required"] == ["task"]
+    assert schema["properties"]["task"]["type"] == "string"
+
+    assert %{"parameters_schema" => schema} =
              Enum.find(metadata["fixed_functions"], &(&1["name"] == "sleep"))
 
     assert schema["required"] == ["seconds"]

@@ -244,6 +244,109 @@ defmodule IntellectualClub.Generation.Context do
     end
   end
 
+  def build_prepared!(chat_id, message_id, step_id, raw_request, opts \\ [])
+      when is_integer(chat_id) and is_integer(message_id) and is_integer(step_id) and
+             is_list(opts) do
+    actor = Keyword.get(opts, :actor)
+    request_payload = RequestPayload.stringify_keys(raw_request || %{})
+
+    chat =
+      Ash.get!(Chat, chat_id,
+        actor: actor,
+        load: [:bot, :last_message, llm_configuration: [:provider]]
+      )
+
+    message =
+      Ash.get!(ChatMessage, message_id,
+        actor: actor,
+        load: [llm_configuration: [:provider]]
+      )
+
+    step =
+      ChatMessageStep
+      |> Ash.Query.filter(id == ^step_id and chat_message_id == ^message_id)
+      |> Ash.Query.limit(1)
+      |> Ash.read_one!(actor: actor)
+
+    llm_configuration =
+      case resolve_retry_configuration(message, chat, actor) do
+        {:ok, configuration} ->
+          configuration
+
+        {:error, reason} ->
+          raise "Failed to resolve prepared generation configuration: #{inspect(reason)}"
+      end
+
+    tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+    provider = llm_configuration && Map.get(llm_configuration, :provider)
+    provider_type = provider_type_for_configuration(llm_configuration)
+    adapter_module = ProviderRegistry.fetch_or_missing(provider_type)
+    request_snapshot = adapter_module.request_snapshot(request_payload)
+
+    cache_control_enabled =
+      adapter_module.supports_cache_control?() and
+        bool_true?(llm_configuration && llm_configuration.supports_cache_control) and
+        is_integer(Map.get(request_snapshot, :history_length))
+
+    available_file_external_ids =
+      case Keyword.get(opts, :available_file_external_ids) do
+        value when is_list(value) ->
+          value
+          |> Enum.map(&to_string/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        _other ->
+          available_file_external_ids_for_chat(chat, actor, tool_resolution)
+      end
+
+    %__MODULE__{
+      owner_id: actor && actor.id,
+      chat_id: chat.id,
+      bot_id: chat.bot_id,
+      message_id: message.id,
+      step_id: step.id,
+      llm_configuration_id: llm_configuration && llm_configuration.id,
+      history_mode: :prepared_raw,
+      history: [],
+      system_prompt: Map.get(request_snapshot, :system_prompt) || "",
+      provider_id: provider && Map.get(provider, :id),
+      provider_type: provider_type,
+      provider_base_url: provider && Map.get(provider, :base_url),
+      provider_api_key: provider && Map.get(provider, :api_key),
+      provider_auth_method: provider && Map.get(provider, :auth_method),
+      provider_oauth_refresh_token: provider && Map.get(provider, :oauth_refresh_token),
+      adapter_module: adapter_module,
+      model_name: payload_model_name(request_payload, llm_configuration),
+      parameters: payload_parameters(request_payload, llm_configuration),
+      timeout_ms: configuration_timeout_ms(llm_configuration),
+      context_length: configuration_context_length(llm_configuration),
+      supports_image_input:
+        bool_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
+      fix_role_alteration:
+        bool_true?(llm_configuration && Map.get(llm_configuration, :fix_role_alteration)),
+      messages: Map.get(request_snapshot, :model_input, []),
+      request_payload: request_payload,
+      tools_payload: RequestPayload.tools(request_payload),
+      tool_instances_by_alias: tool_resolution.tool_instances_by_alias,
+      available_file_external_ids: available_file_external_ids,
+      max_tool_rounds: max_tool_rounds_for_chat(chat),
+      context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
+      cache_control_enabled: cache_control_enabled,
+      history_length: Map.get(request_snapshot, :history_length),
+      initial_step_sequence: step.sequence,
+      initial_step_status: step.status,
+      completion_effect: Keyword.get(opts, :completion_effect),
+      chunk_delay_ms:
+        Keyword.get(
+          opts,
+          :chunk_delay_ms,
+          Application.get_env(:intellectual_club, :demo_chunk_delay_ms, 40)
+        )
+    }
+  end
+
   def build!(chat_id, opts \\ []) do
     actor = Keyword.get(opts, :actor)
 

@@ -270,6 +270,11 @@ defmodule IntellectualClub.Chat.Chat do
 
     custom_indexes do
       index([:owner_id, :updated_at, :id], name: "chats_owner_updated_id_index")
+
+      index([:owner_id, :subagent, :updated_at, :id],
+        name: "chats_owner_subagent_updated_id_index"
+      )
+
       index([:parent_chat_id], name: "chats_parent_chat_id_index")
       index([:parent_message_id], name: "chats_parent_message_id_index")
       index([:parent_relation_kind], name: "chats_parent_relation_kind_index")
@@ -299,7 +304,13 @@ defmodule IntellectualClub.Chat.Chat do
     attribute :parent_relation_kind, :atom do
       allow_nil?(true)
       public?(true)
-      constraints(one_of: [:handoff])
+      constraints(one_of: [:handoff, :fork])
+    end
+
+    attribute :subagent, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
     end
 
     create_timestamp(:created_at)
@@ -432,7 +443,8 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
-        :parent_relation_kind
+        :parent_relation_kind,
+        :subagent
       ])
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -468,7 +480,8 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
-        :parent_relation_kind
+        :parent_relation_kind,
+        :subagent
       ])
 
       argument :knowledge_block_bindings, {:array, :map} do
@@ -548,7 +561,8 @@ defmodule IntellectualClub.Chat.Chat do
         :note,
         :parent_chat_id,
         :parent_message_id,
-        :parent_relation_kind
+        :parent_relation_kind,
+        :subagent
       ])
 
       require_atomic?(false)

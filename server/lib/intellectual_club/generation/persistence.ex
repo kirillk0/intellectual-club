@@ -501,11 +501,22 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Enum.map(&%{id: &1.id, owner_id: &1.owner_id})
   end
 
-  def cancel_orphaned_generating_messages!(chat_id) when is_integer(chat_id) do
+  def cancel_orphaned_generating_messages!(chat_id, opts \\ [])
+
+  def cancel_orphaned_generating_messages!(chat_id, opts)
+      when is_integer(chat_id) and is_list(opts) do
+    except_message_ids =
+      opts
+      |> Keyword.get(:except_message_ids, [])
+      |> List.wrap()
+      |> Enum.filter(&is_integer/1)
+      |> MapSet.new()
+
     ChatMessage
     |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
     |> Ash.Query.select([:id])
     |> Ash.read!(authorize?: false)
+    |> Enum.reject(&MapSet.member?(except_message_ids, &1.id))
     |> Enum.each(&cancel_orphaned_generating_message!(&1.id))
 
     :ok

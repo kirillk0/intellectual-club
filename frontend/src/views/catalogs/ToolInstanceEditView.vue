@@ -542,6 +542,7 @@ type ToolDriverMeta = {
     name: string;
     description: string;
     enabled: boolean;
+    enabled_by_default?: boolean;
     parameters_schema: unknown;
   }>;
 };
