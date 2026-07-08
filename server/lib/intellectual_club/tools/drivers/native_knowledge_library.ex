@@ -21,6 +21,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
   @default_max_context_blocks 40
   @default_list_max_results 50
+  @frontmatter_field_pattern ~r/^\s*([A-Za-z0-9_-]+)\s*:\s*(.*)\s*$/u
 
   @impl true
   def type, do: "native-knowledge-library"
@@ -160,13 +161,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       %{
         "name" => "list_blocks",
         "description" =>
-          "List knowledge blocks available in this library. Use q to filter by block name or version.",
+          "List knowledge blocks available in this library. Use q to filter by block name, version, or parsed skill description.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
             "q" => %{
               "type" => "string",
-              "description" => "Optional case-insensitive filter for block name or version."
+              "description" =>
+                "Optional case-insensitive filter for block name, version, or parsed skill description."
             },
             "max_results" => %{
               "type" => "integer",
@@ -259,9 +261,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       block_lines =
         visible
         |> Enum.map(fn block ->
-          version = block.version |> to_string() |> String.trim()
-          suffix = if version == "", do: "", else: " (#{version})"
-          "- #{block.name}#{suffix}"
+          "- #{format_prompt_block_ref(block)}"
         end)
 
       [
@@ -318,7 +318,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
       block_lines =
         Enum.map(returned, fn block ->
-          "- #{format_block_ref(block)}"
+          "- #{format_block_listing(block)}"
         end)
 
       text =
@@ -760,12 +760,24 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     else
       Enum.filter(blocks, fn block ->
         haystack =
-          [block.name, block.version]
+          [block.name, block.version, skill_description(block)]
           |> Enum.map_join(" ", &String.downcase(to_string(&1 || "")))
 
         String.contains?(haystack, q)
       end)
     end
+  end
+
+  defp format_prompt_block_ref(%KnowledgeBlock{} = block) do
+    version = block.version |> to_string() |> String.trim()
+    suffix = if version == "", do: "", else: " (#{version})"
+    append_skill_description("#{block.name}#{suffix}", block)
+  end
+
+  defp format_block_listing(%KnowledgeBlock{} = block) do
+    block
+    |> format_block_ref()
+    |> append_skill_description(block)
   end
 
   defp format_block_ref(%KnowledgeBlock{} = block) do
@@ -774,13 +786,115 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     "#{block.name} (block_id: #{block.id}#{version_part}, tokens: #{block.token_count || 0})"
   end
 
+  defp append_skill_description(value, %KnowledgeBlock{} = block) do
+    case skill_description(block) do
+      "" -> value
+      description -> "#{value} - description: #{description}"
+    end
+  end
+
   defp block_raw(%KnowledgeBlock{} = block) do
     %{
       "block_id" => block.id,
       "name" => block.name,
       "version" => block.version || "",
-      "token_count" => block.token_count || 0
+      "token_count" => block.token_count || 0,
+      "description" => skill_description(block)
     }
+  end
+
+  defp skill_description(%KnowledgeBlock{} = block) do
+    block
+    |> Map.get(:content, "")
+    |> skill_frontmatter_description()
+  end
+
+  defp skill_frontmatter_description(content) when is_binary(content) do
+    lines = String.split(content, ~r/\r\n|\n|\r/, trim: false)
+
+    with [first | rest] <- lines,
+         true <- skill_frontmatter_delimiter?(first),
+         {frontmatter, [_closing | _body]} <-
+           Enum.split_while(rest, fn line -> not skill_frontmatter_delimiter?(line) end),
+         name when is_binary(name) <- frontmatter_field(frontmatter, "name"),
+         description when is_binary(description) <- frontmatter_field(frontmatter, "description"),
+         name <- normalize_skill_description(name),
+         description <- normalize_skill_description(description),
+         true <- name != "" and description != "" do
+      description
+    else
+      _other -> ""
+    end
+  end
+
+  defp skill_frontmatter_description(_content), do: ""
+
+  defp skill_frontmatter_delimiter?(line) when is_binary(line), do: String.trim(line) == "---"
+  defp skill_frontmatter_delimiter?(_line), do: false
+
+  defp frontmatter_field(lines, field) when is_list(lines) and is_binary(field) do
+    lines
+    |> Enum.with_index()
+    |> Enum.reduce_while(nil, fn {line, index}, _acc ->
+      case Regex.run(@frontmatter_field_pattern, line, capture: :all_but_first) do
+        [^field, value] ->
+          {:halt, parse_frontmatter_field_value(value, Enum.drop(lines, index + 1))}
+
+        _other ->
+          {:cont, nil}
+      end
+    end)
+  end
+
+  defp parse_frontmatter_field_value(value, following_lines) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      String.starts_with?(value, "|") ->
+        parse_frontmatter_block_scalar(following_lines, "\n")
+
+      String.starts_with?(value, ">") ->
+        parse_frontmatter_block_scalar(following_lines, " ")
+
+      String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
+        parse_frontmatter_double_quoted(value)
+
+      String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
+        value
+        |> trim_wrapping_quotes()
+        |> String.replace("''", "'")
+
+      true ->
+        value
+    end
+  end
+
+  defp parse_frontmatter_block_scalar(following_lines, separator) do
+    following_lines
+    |> Enum.take_while(fn line ->
+      String.trim(line) == "" or String.match?(line, ~r/^\s+/u)
+    end)
+    |> Enum.map(&String.trim/1)
+    |> Enum.join(separator)
+  end
+
+  defp parse_frontmatter_double_quoted(value) do
+    case Jason.decode(value) do
+      {:ok, decoded} when is_binary(decoded) -> decoded
+      _other -> trim_wrapping_quotes(value)
+    end
+  end
+
+  defp trim_wrapping_quotes(value) when is_binary(value) do
+    value
+    |> String.slice(1, max(String.length(value) - 2, 0))
+  end
+
+  defp normalize_skill_description(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
   end
 
   defp block_attachment_section(%KnowledgeBlock{} = block) do

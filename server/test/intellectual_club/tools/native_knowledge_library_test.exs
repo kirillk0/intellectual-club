@@ -119,6 +119,53 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     assert NativeKnowledgeLibrary.available_file_external_ids(tool) == [attached_file.external_id]
   end
 
+  test "lists parsed SKILL.md descriptions in tool output and prompt context" do
+    %{user: owner} = user_fixture()
+
+    tag = create_tag!(owner, "Skill Library")
+
+    skill_description =
+      "Use when the user asks for research: gather sources and summarize."
+
+    skill_content = """
+    ---
+    name: "research-skill"
+    description: "#{skill_description}"
+    ---
+
+    # Research Skill
+
+    Read sources and prepare a concise answer.
+    """
+
+    block = create_block!(owner, "Research Skill", "v1", skill_content)
+    attach_tag!(owner, block, tag)
+
+    tool = create_library_tool!(owner, tag.id)
+
+    assert {:ok, {list_text, list_raw}} =
+             NativeKnowledgeLibrary.execute(tool, "list_blocks", %{"max_results" => 10})
+
+    assert list_text =~ "Research Skill"
+    assert list_text =~ "description: #{skill_description}"
+    assert [%{"block_id" => block_id, "description" => ^skill_description}] = list_raw["blocks"]
+    assert block_id == block.id
+
+    assert {:ok, {filtered_text, filtered_raw}} =
+             NativeKnowledgeLibrary.execute(tool, "list_blocks", %{"q" => "gather sources"})
+
+    assert filtered_text =~ "Research Skill"
+    assert filtered_raw["total_blocks"] == 1
+
+    context =
+      NativeKnowledgeLibrary.instance_prompt_context(%{
+        tool
+        | config: Map.put(tool.config, "max_context_blocks", 10)
+      })
+
+    assert context =~ "- Research Skill (v1) - description: #{skill_description}"
+  end
+
   test "search distributes limited snippets across matching blocks before filling extras" do
     %{user: owner} = user_fixture()
 
