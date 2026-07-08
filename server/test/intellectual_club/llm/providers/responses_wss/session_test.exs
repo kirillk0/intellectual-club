@@ -11,7 +11,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       "instructions" => "Be precise.",
       "stream" => true,
       "background" => false,
-      "store" => false
+      "store" => false,
+      "prompt_cache_key" => "intellectual-club:chat:123"
     }
 
     assert {:ok, wire} = Session.wire_payload(payload, base_session_state())
@@ -21,7 +22,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
              "model" => "gpt-4.1",
              "input" => [],
              "instructions" => "Be precise.",
-             "store" => false
+             "store" => false,
+             "prompt_cache_key" => "intellectual-club:chat:123"
            }
   end
 

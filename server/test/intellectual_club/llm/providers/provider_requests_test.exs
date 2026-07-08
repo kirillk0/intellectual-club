@@ -99,12 +99,14 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
             }
           }
         ],
-        supports_image_input: false
+        supports_image_input: false,
+        chat_id: 123
       })
 
     assert result.raw_request["model"] == "gpt-5"
     assert result.raw_request["max_output_tokens"] == 200
     assert result.raw_request["store"] == false
+    assert result.raw_request["prompt_cache_key"] == "intellectual-club:chat:123"
     assert result.raw_request["instructions"] == "Use tools when needed."
     assert is_list(result.raw_request["input"])
     assert is_list(result.raw_request["tools"])
@@ -133,10 +135,14 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       model_name: "gpt-5",
       parameters: %{"max_tokens" => 200},
       tools: [],
-      supports_image_input: false
+      supports_image_input: false,
+      chat_id: 123
     }
 
     assert ResponsesWss.build_initial_request(opts) == Responses.build_initial_request(opts)
+
+    assert ResponsesWss.build_initial_request(opts).raw_request["prompt_cache_key"] ==
+             "intellectual-club:chat:123"
 
     raw_request = %{"model" => "gpt-5", "input" => [], "instructions" => "System"}
     assert ResponsesWss.request_snapshot(raw_request) == Responses.request_snapshot(raw_request)
@@ -685,7 +691,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
           model_name: "gpt-5",
           parameters: %{},
           system_prompt: "System",
-          supports_image_input: false
+          supports_image_input: false,
+          chat_id: 123
         },
         runtime_step: runtime_step,
         results: results,
@@ -710,6 +717,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            end)
 
     assert followup.request_snapshot.system_prompt == "System"
+    assert followup.raw_request["prompt_cache_key"] == "intellectual-club:chat:123"
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})
