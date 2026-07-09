@@ -18,6 +18,10 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert "native-agent-management" in Registry.list_types()
   end
 
+  test "lists native game tools tool type" do
+    assert "native-game-tools" in Registry.list_types()
+  end
+
   test "resolves legacy MCP HTTP tool type for existing data" do
     assert Registry.driver_for_type!("mcp_http") == McpHttp
   end
@@ -29,6 +33,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
       "mcp-http",
       "native-agent-management",
       "native-brave-search",
+      "native-game-tools",
       "native-knowledge-library",
       "native-web-reader"
     ]
@@ -43,6 +48,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
       "mcp-http",
       "native-artifact-reader",
       "native-brave-search",
+      "native-game-tools",
       "native-knowledge-library",
       "native-web-reader",
       "outlet",
@@ -65,6 +71,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert by_type["mcp-http"] == false
     assert by_type["native-agent-management"] == false
     assert by_type["native-brave-search"] == false
+    assert by_type["native-game-tools"] == false
     assert by_type["native-knowledge-library"] == false
     assert by_type["native-web-reader"] == false
   end
