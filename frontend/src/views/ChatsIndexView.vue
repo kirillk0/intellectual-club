@@ -959,6 +959,7 @@ function normalizeChatListStats(value: unknown): ChatListStats {
 }
 
 let chatListLoadSeq = 0;
+let chatListVisibleLoadSeq = 0;
 let previousVisibleGeneratingChatIds = new Set<number>();
 
 function syncVisibleGenerationState(nextChats: ChatSummary[]) {
@@ -986,8 +987,9 @@ function syncVisibleGenerationState(nextChats: ChatSummary[]) {
 async function loadChats(
   opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean } = {}
 ) {
-  const seq = ++chatListLoadSeq;
   const silent = Boolean(opts.silent);
+  const seq = silent ? chatListLoadSeq : ++chatListLoadSeq;
+  const visibleSeq = silent ? chatListVisibleLoadSeq : ++chatListVisibleLoadSeq;
   if (!silent) {
     loading.value = true;
     error.value = null;
@@ -1028,6 +1030,7 @@ async function loadChats(
     chatListIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     startChatListIdlePolling();
   } catch (e) {
+    if (isAbortError(e)) return;
     if (seq !== chatListLoadSeq) return;
     if (!silent) {
       error.value = e instanceof Error ? e.message : 'Failed to load chats.';
@@ -1036,7 +1039,7 @@ async function loadChats(
     if (opts.rethrowSilent) throw e;
     console.warn('Failed to refresh chats list while polling generation state.', e);
   } finally {
-    if (!silent && seq === chatListLoadSeq) {
+    if (!silent && visibleSeq === chatListVisibleLoadSeq) {
       loading.value = false;
     }
   }
@@ -1065,7 +1068,12 @@ function abortActiveChatSearch() {
 }
 
 function isAbortError(error: unknown) {
-  return error instanceof DOMException && error.name === 'AbortError';
+  return (
+    error != null &&
+    typeof error === 'object' &&
+    'name' in error &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
 }
 
 function resetChatSearch() {
@@ -1210,7 +1218,13 @@ function chatListIdleProbeParams() {
 }
 
 function canRunChatListIdleProbe() {
-  return document.visibilityState === 'visible' && !chatListPollingActive && !hasVisibleGeneratingChat.value;
+  return (
+    document.visibilityState === 'visible' &&
+    !loading.value &&
+    !chatSearchLoading.value &&
+    !chatListPollingActive &&
+    !hasVisibleGeneratingChat.value
+  );
 }
 
 async function runChatListIdleProbe(signal: AbortSignal) {
@@ -1264,7 +1278,7 @@ function startChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolea
       scheduleNext(CHAT_LIST_IDLE_POLL_DELAY_MS);
     } catch (error) {
       if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
-      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (isAbortError(error)) return;
       console.warn('Failed to refresh chats list while idle polling.', error);
       scheduleNext(CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS);
     } finally {
@@ -1323,7 +1337,7 @@ function startChatListPolling(opts: { immediate?: boolean } = {}) {
       scheduleNext(CHAT_LIST_POLL_SUCCESS_DELAY_MS);
     } catch (error) {
       if (!chatListPollingActive || chatListPollToken !== token) return;
-      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (isAbortError(error)) return;
       console.warn('Failed to refresh chats list while polling generation state.', error);
       chatListGenerationPollReconnecting.value = true;
       scheduleNext(CHAT_LIST_POLL_RETRY_DELAY_MS);
