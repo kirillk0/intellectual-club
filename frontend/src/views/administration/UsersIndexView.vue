@@ -47,7 +47,7 @@
               </div>
               <div class="catalog-row__subtitle">
                 {{ user.is_admin ? 'Administrator' : 'Standard user' }}
-                <span v-if="lastChangeLabel(user)"> · {{ lastChangeLabel(user) }}</span>
+                <span v-if="activityOrChangeLabel(user)"> · {{ activityOrChangeLabel(user) }}</span>
               </div>
             </div>
             <div class="catalog-row__meta">
@@ -112,7 +112,9 @@ function normalize(text: string) {
   return text.trim().toLowerCase();
 }
 
-function lastChangeLabel(user: AdminUser) {
+function activityOrChangeLabel(user: AdminUser) {
+  const active = formatRelativeDateTime(user.last_activity_at);
+  if (active) return `Active ${active}`;
   const updated = formatRelativeDateTime(user.updated_at);
   if (updated) return `Updated ${updated}`;
   const created = formatRelativeDateTime(user.created_at);

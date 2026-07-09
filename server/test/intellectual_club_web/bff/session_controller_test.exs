@@ -5,6 +5,8 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Accounts.User
+
   test "POST /api/bff/auth/login signs in and returns current user", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
 
@@ -21,10 +23,14 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
     assert get_in(response, ["user", "preferred_locale"]) == nil
     assert get_in(response, ["user", "preferred_theme"]) == "system"
+
+    refreshed = Ash.get!(User, user.id, authorize?: false)
+    assert %DateTime{} = refreshed.last_activity_at
   end
 
   test "POST /api/bff/auth/login returns 401 for invalid credentials", %{conn: conn} do
     %{user: user} = user_fixture()
+    before = Ash.get!(User, user.id, authorize?: false)
 
     response =
       conn
@@ -35,6 +41,9 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
       |> json_response(401)
 
     assert response["detail"] == "Incorrect username or password."
+
+    after_attempt = Ash.get!(User, user.id, authorize?: false)
+    assert after_attempt.last_activity_at == before.last_activity_at
   end
 
   test "POST /api/bff/auth/login localizes controlled errors", %{conn: conn} do
@@ -63,6 +72,7 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
 
   test "GET /api/bff/auth/me returns current user for authenticated request", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
+    before = Ash.get!(User, user.id, authorize?: false)
 
     response =
       conn
@@ -75,6 +85,31 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert get_in(response, ["user", "is_admin"]) == user.is_admin
     assert get_in(response, ["user", "preferred_locale"]) == nil
     assert get_in(response, ["user", "preferred_theme"]) == "system"
+
+    refreshed = Ash.get!(User, user.id, authorize?: false)
+    assert %DateTime{} = refreshed.last_activity_at
+    assert DateTime.compare(refreshed.updated_at, before.updated_at) == :eq
+  end
+
+  test "authenticated API activity is throttled", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+
+    conn
+    |> sign_in_conn(user.username, password)
+    |> get("/api/bff/auth/me")
+    |> json_response(200)
+
+    first_activity = Ash.get!(User, user.id, authorize?: false).last_activity_at
+    assert %DateTime{} = first_activity
+
+    conn
+    |> recycle()
+    |> sign_in_conn(user.username, password)
+    |> get("/api/bff/auth/me")
+    |> json_response(200)
+
+    second_activity = Ash.get!(User, user.id, authorize?: false).last_activity_at
+    assert DateTime.compare(second_activity, first_activity) == :eq
   end
 
   test "POST /api/bff/auth/logout clears authenticated session", %{conn: conn} do

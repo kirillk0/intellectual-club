@@ -66,6 +66,10 @@ defmodule IntellectualClubWeb.AshJsonApi.AdminAccountsTest do
 
   defp ids_from_included(_response, _type), do: []
 
+  defp resource_by_id(%{"data" => data}, id) when is_list(data) do
+    Enum.find(data, &(&1["id"] == to_string(id)))
+  end
+
   defp error_details(%{"errors" => errors}) when is_list(errors) do
     Enum.map(errors, fn error ->
       error["detail"] || error["title"] || ""
@@ -94,7 +98,16 @@ defmodule IntellectualClubWeb.AshJsonApi.AdminAccountsTest do
     assert ids_from_included(response, "user-groups") == [group.id]
 
     response["data"]
-    |> Enum.each(&assert_timestamp_attributes/1)
+    |> Enum.each(fn resource ->
+      assert_timestamp_attributes(resource)
+      assert Map.has_key?(resource["attributes"], "last_activity_at")
+    end)
+
+    assert is_binary(
+             get_in(resource_by_id(response, admin.id), ["attributes", "last_activity_at"])
+           )
+
+    assert get_in(resource_by_id(response, regular.id), ["attributes", "last_activity_at"]) == nil
   end
 
   test "GET /api/ash/users returns 403 for non-admins", %{conn: conn} do

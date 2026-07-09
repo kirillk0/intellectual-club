@@ -116,6 +116,7 @@ function parseAdminUser(resource: JsonApiResource, includedIndex = createJsonApi
     ...summary,
     created_at: optionalStringAttr(resource, 'created_at'),
     updated_at: optionalStringAttr(resource, 'updated_at'),
+    last_activity_at: optionalStringAttr(resource, 'last_activity_at'),
     groups,
   };
 }

@@ -15,6 +15,10 @@ defmodule IntellectualClub.Accounts.User do
     PreventSelfDestroy
   }
 
+  defp mark_updated(changeset, _context) do
+    Ash.Changeset.force_change_attribute(changeset, :updated_at, DateTime.utc_now())
+  end
+
   postgres do
     table("users")
     repo(IntellectualClub.Repo)
@@ -53,8 +57,13 @@ defmodule IntellectualClub.Accounts.User do
       constraints(trim?: true, allow_empty?: false)
     end
 
+    attribute :last_activity_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     create_timestamp(:created_at, public?: true)
-    update_timestamp(:updated_at, public?: true)
+    create_timestamp(:updated_at, public?: true)
   end
 
   relationships do
@@ -87,7 +96,7 @@ defmodule IntellectualClub.Accounts.User do
     name("User")
     label_field(:username)
     relationship_display_fields([:username])
-    table_columns([:id, :username, :is_admin, :created_at, :updated_at])
+    table_columns([:id, :username, :is_admin, :last_activity_at, :created_at, :updated_at])
     read_actions([:read])
     create_actions([:create])
     update_actions([:update, :reset_password])
@@ -151,6 +160,7 @@ defmodule IntellectualClub.Accounts.User do
 
       validate(PreventSelfAdminDemotion)
       change(manage_relationship(:groups, type: :append_and_remove, value_is_key: :id))
+      change(&mark_updated/2)
       change(load(:groups))
     end
 
@@ -175,6 +185,7 @@ defmodule IntellectualClub.Accounts.User do
                 strategy_name: :password}
 
       change {AshAuthentication.Strategy.Password.HashPasswordChange, strategy_name: :password}
+      change(&mark_updated/2)
     end
 
     update :change_password do
@@ -206,6 +217,7 @@ defmodule IntellectualClub.Accounts.User do
 
       change({ValidatePasswordChange, strategy_name: :password})
       change({AshAuthentication.Strategy.Password.HashPasswordChange, strategy_name: :password})
+      change(&mark_updated/2)
     end
 
     update :update_settings do
@@ -215,6 +227,13 @@ defmodule IntellectualClub.Accounts.User do
 
       validate(attribute_in(:preferred_locale, [nil, "en", "ru"]))
       validate(attribute_in(:preferred_theme, ["system", "light", "dark"]))
+      change(&mark_updated/2)
+    end
+
+    update :touch_activity do
+      description("Update last activity timestamp for the current user")
+      accept([:last_activity_at])
+      require_atomic?(false)
     end
 
     destroy :destroy do
@@ -258,7 +277,7 @@ defmodule IntellectualClub.Accounts.User do
       authorize_if expr(id == ^actor(:id))
     end
 
-    policy action([:get_current, :update_settings]) do
+    policy action([:get_current, :update_settings, :touch_activity]) do
       authorize_if expr(id == ^actor(:id))
     end
 

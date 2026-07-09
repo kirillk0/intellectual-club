@@ -25,6 +25,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale
   end
 
@@ -33,6 +34,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale
   end
 
@@ -42,6 +44,7 @@ defmodule IntellectualClubWeb.Router do
     plug :protect_from_forgery
     plug :load_from_session
     plug :set_actor, :user
+    plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale
   end
 

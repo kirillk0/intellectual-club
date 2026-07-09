@@ -135,6 +135,7 @@
 
       <div v-if="!isNew" class="card stack">
         <h3 style="margin: 0">Details</h3>
+        <div class="muted">Last activity: {{ detailValue(userMeta.last_activity_at) }}</div>
         <div class="muted">Created: {{ detailValue(userMeta.created_at) }}</div>
         <div class="muted">Updated: {{ detailValue(userMeta.updated_at) }}</div>
         <div v-if="isSelf" class="muted">This is the account used for the current session.</div>
@@ -327,9 +328,10 @@ const form = reactive<UserForm>({
 });
 
 const base = ref<UserForm>(cloneForm(form));
-const userMeta = reactive<Pick<AdminUser, 'created_at' | 'updated_at'>>({
+const userMeta = reactive<Pick<AdminUser, 'created_at' | 'updated_at' | 'last_activity_at'>>({
   created_at: null,
   updated_at: null,
+  last_activity_at: null,
 });
 
 const passwordForm = reactive({
@@ -411,6 +413,7 @@ function applyUser(user: AdminUser) {
   base.value = cloneForm(form);
   userMeta.created_at = user.created_at ?? null;
   userMeta.updated_at = user.updated_at ?? null;
+  userMeta.last_activity_at = user.last_activity_at ?? null;
 }
 
 function publishTouchedGroups(previousGroupIds: number[], nextGroupIds: number[]) {
@@ -520,6 +523,7 @@ async function load() {
       base.value = cloneForm(form);
       userMeta.created_at = null;
       userMeta.updated_at = null;
+      userMeta.last_activity_at = null;
       resetPasswordForm();
       return;
     }

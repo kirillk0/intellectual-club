@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.Bff.SessionController do
 
   use IntellectualClubWeb, :controller
 
+  alias IntellectualClub.Accounts
   alias IntellectualClub.Accounts.User
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
@@ -32,6 +33,8 @@ defmodule IntellectualClubWeb.Bff.SessionController do
            "password" => password
          }) do
       {:ok, user} ->
+        _ = Accounts.touch_user_activity(user)
+
         conn
         |> AshAuthentication.Plug.Helpers.store_in_session(user)
         |> assign(:current_user, user)

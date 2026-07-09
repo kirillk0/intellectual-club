@@ -125,10 +125,10 @@ const translatePatternRu = (key: string): string | null => {
     [/^Add \((\d+)\)$/u, (match) => `${ruMessages.Add ?? 'Add'} (${match[1]})`],
     [/^(Blocks|Tools|Tags|Config tags|Files|Functions|First messages|Groups) \((\d+)\)$/u, (match) =>
       `${countedLabels[match[1]] ?? match[1]} (${match[2]})`],
-    [/^(Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
-    [/^· (Created|Updated) (.+)$/u, (match) => `· ${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
+    [/^(Active|Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
+    [/^· (Active|Created|Updated) (.+)$/u, (match) => `· ${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
     [/^· (~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens$/u, (match) => `· ${match[1]}${match[2]} ${tokenLabel(match[2])}`],
-    [/^(.+ · )(Created|Updated) (.+)$/u, (match) =>
+    [/^(.+ · )(Active|Created|Updated) (.+)$/u, (match) =>
       `${match[1]}${ruMessages[match[2]] ?? match[2]} ${match[3]}`],
     [/^(~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
     [/^(\d+) members?$/u, (match) => `${match[1]} ${memberLabel(match[1])}`],
