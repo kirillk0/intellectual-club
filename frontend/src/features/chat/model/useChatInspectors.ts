@@ -20,6 +20,7 @@ import type {
   ChatBranchMessage,
   ChatMessageContent,
   ChatMessageStep,
+  ChatUsageStats,
 } from '@/types/api';
 
 type ScrollToLastMessage = (opts?: {
@@ -221,6 +222,24 @@ export function useChatInspectors(params: Params) {
     stepDetailsResponseError.value = '';
     stepDetailsResponsePayload.value = null;
     stepDetailsResponseToken.value += 1;
+  };
+
+  const messageStatsOpen = ref(false);
+  const messageStatsMessageId = ref<number | null>(null);
+  const messageStats = computed<ChatUsageStats | null>(() => {
+    const message = params.branchMessageById(messageStatsMessageId.value);
+    return message?.usage?.total ?? null;
+  });
+
+  const openMessageStats = (message: ChatBranchMessage) => {
+    if (!message.id) return;
+    messageStatsMessageId.value = message.id;
+    messageStatsOpen.value = true;
+  };
+
+  const closeMessageStats = () => {
+    messageStatsOpen.value = false;
+    messageStatsMessageId.value = null;
   };
 
   const retryFromStep = async () => {
@@ -777,8 +796,12 @@ export function useChatInspectors(params: Params) {
     stepDetailsResponseLoading,
     stepDetailsResponseError,
     stepDetailsResponsePayload,
+    messageStatsOpen,
+    messageStats,
     openStepDetails,
     closeStepDetails,
+    openMessageStats,
+    closeMessageStats,
     retryFromStep,
     contentFullOpen,
     contentFullTitle,

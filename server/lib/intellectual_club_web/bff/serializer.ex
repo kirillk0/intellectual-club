@@ -322,7 +322,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       llm_configuration_id: message.llm_configuration_id,
       bookmarked: MapSet.member?(bookmarked_message_ids, message.id),
       content: Map.get(extras, :content, %{parts: [], media: []}),
-      usage: Map.get(extras, :usage, %{latest_step: nil, total_cost: nil}),
+      usage: Map.get(extras, :usage, usage_summary([])),
       working: Map.get(extras, :working, working_summary([])),
       prev_sibling_id: Map.get(meta, :prev_sibling),
       next_sibling_id: Map.get(meta, :next_sibling),
@@ -445,6 +445,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     %{
       latest_step: latest_step_with_usage_summary(summaries),
+      total: total_step_usage_summary(summaries),
       total_cost: total_step_cost(summaries)
     }
   end
@@ -722,6 +723,52 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   defp step_has_token_usage?(_summary), do: false
 
+  defp total_step_usage_summary(summaries) when is_list(summaries) do
+    total_cost = total_step_cost(summaries)
+
+    %{
+      input_tokens: total_integer_metric(summaries, :input_tokens),
+      output_tokens: total_integer_metric(summaries, :output_tokens),
+      cached_input_tokens: total_integer_metric(summaries, :cached_input_tokens),
+      reasoning_tokens: total_integer_metric(summaries, :reasoning_tokens),
+      time_to_first_token_ms: total_integer_metric(summaries, :time_to_first_token_ms),
+      tokens_per_second: total_tokens_per_second(summaries),
+      cost: total_cost
+    }
+  end
+
+  defp total_integer_metric(summaries, key) when is_list(summaries) do
+    {total, count} =
+      Enum.reduce(summaries, {0, 0}, fn summary, {total, count} ->
+        case integer_value(Map.get(summary, key)) do
+          nil -> {total, count}
+          value -> {total + value, count + 1}
+        end
+      end)
+
+    if count == 0, do: nil, else: total
+  end
+
+  defp total_tokens_per_second(summaries) when is_list(summaries) do
+    {output_tokens, output_seconds} =
+      Enum.reduce(summaries, {0, 0.0}, fn summary, {total_tokens, total_seconds} ->
+        with tokens when is_integer(tokens) and tokens > 0 <-
+               integer_value(Map.get(summary, :output_tokens)),
+             speed when is_number(speed) and speed > 0 <-
+               numeric_value(Map.get(summary, :tokens_per_second)) do
+          {total_tokens + tokens, total_seconds + tokens / speed}
+        else
+          _other -> {total_tokens, total_seconds}
+        end
+      end)
+
+    if output_tokens > 0 and output_seconds > 0 do
+      output_tokens / output_seconds
+    else
+      nil
+    end
+  end
+
   defp total_step_cost(summaries) when is_list(summaries) do
     {total, count} =
       Enum.reduce(summaries, {0.0, 0}, fn summary, {total, count} ->
@@ -745,6 +792,17 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp numeric_value(_value), do: nil
+
+  defp integer_value(value) when is_integer(value) and value >= 0, do: value
+
+  defp integer_value(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _other -> nil
+    end
+  end
+
+  defp integer_value(_value), do: nil
 
   defp normalize_datetime_value(%DateTime{} = value), do: datetime_iso(value)
   defp normalize_datetime_value(%NaiveDateTime{} = value), do: datetime_iso(value)

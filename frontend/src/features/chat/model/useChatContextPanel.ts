@@ -11,6 +11,7 @@ import type {
   LinkedBlock,
 } from '@/features/chat/types';
 import { displayTimestampIso, formatRelativeDateTime } from '@/utils/dates';
+import { formatStepMetric } from '@/utils/stepStats';
 import type { ActiveToolBinding as ApiActiveToolBinding, Bot, ChatBranchMessage, LlmConfiguration } from '@/types/api';
 import type { PromptBinding, PromptBlock } from '@/features/chat/model/chatViewModel.shared';
 
@@ -94,11 +95,6 @@ export function useChatContextPanel(params: Params) {
 
     return items;
   });
-
-  const formatStepMetric = (value: unknown) => {
-    if (value == null || value === '') return '—';
-    return String(value);
-  };
 
   const promptTokenCount = computed(() =>
     linkedBlocks.value.reduce((sum, item) => sum + (item.block.token_count || 0), 0)

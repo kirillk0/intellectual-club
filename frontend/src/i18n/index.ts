@@ -76,7 +76,11 @@ const translatePatternRu = (key: string): string | null => {
   };
 
   const tokenLabel = (value: string) => {
-    const number = Number(value.replace(/\s/gu, '').replace(',', '.'));
+    const withoutSpaces = value.replace(/[\s\u00a0\u202f]/gu, '');
+    const decimalComma =
+      /^\d+,\d+$/u.test(withoutSpaces) && !/^\d{1,3}(,\d{3})+$/u.test(withoutSpaces);
+    const normalized = decimalComma ? withoutSpaces.replace(',', '.') : withoutSpaces.replace(/,/gu, '');
+    const number = Number(normalized);
     if (!Number.isInteger(number)) return 'токена';
 
     const absolute = Math.abs(number);
@@ -123,10 +127,10 @@ const translatePatternRu = (key: string): string | null => {
       `${countedLabels[match[1]] ?? match[1]} (${match[2]})`],
     [/^(Created|Updated) (.+)$/u, (match) => `${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
     [/^· (Created|Updated) (.+)$/u, (match) => `· ${ruMessages[match[1]] ?? match[1]} ${match[2]}`],
-    [/^· (~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) => `· ${match[1]}${match[2]} ${tokenLabel(match[2])}`],
+    [/^· (~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens$/u, (match) => `· ${match[1]}${match[2]} ${tokenLabel(match[2])}`],
     [/^(.+ · )(Created|Updated) (.+)$/u, (match) =>
       `${match[1]}${ruMessages[match[2]] ?? match[2]} ${match[3]}`],
-    [/^(~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
+    [/^(~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens$/u, (match) => `${match[1]}${match[2]} ${tokenLabel(match[2])}`],
     [/^(\d+) members?$/u, (match) => `${match[1]} ${memberLabel(match[1])}`],
     [/^(\d+) blocks? · (\d+) tools?$/u, (match) =>
       `${match[1]} ${blockLabel(match[1])} · ${match[2]} ${toolLabel(match[2])}`],
@@ -143,6 +147,7 @@ const translatePatternRu = (key: string): string | null => {
     [/^Add bookmark for message (\d+)$/u, (match) => `Добавить закладку к сообщению ${match[1]}`],
     [/^Remove bookmark for message (\d+)$/u, (match) => `Удалить закладку у сообщения ${match[1]}`],
     [/^More actions for message (\d+)$/u, (match) => `Дополнительные действия для сообщения ${match[1]}`],
+    [/^Show message stats for message (\d+)$/u, (match) => `Показать статистику сообщения ${match[1]}`],
     [/^Download (.+)$/u, (match) => `Скачать ${match[1]}`],
     [/^Open attachment (.+)$/u, (match) => `Открыть вложение ${match[1]}`],
     [/^Branch message (\d+) to new chat$/u, (match) => `Создать ветку от сообщения ${match[1]} в новом чате`],
@@ -164,9 +169,9 @@ const translatePatternRu = (key: string): string | null => {
       ]
         .filter(Boolean)
         .join(' · ')],
-    [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens$/u, (match) =>
+    [/^(.+ · )(~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens$/u, (match) =>
       `${match[1]}${match[2]}${match[3]} ${tokenLabel(match[3])}`],
-    [/^(.+ · )(~?)(\d+(?:[.,]\d+)?) tokens( · .+)$/u, (match) =>
+    [/^(.+ · )(~?)(\d[\d\s\u00a0\u202f,]*(?:[.]\d+)?) tokens( · .+)$/u, (match) =>
       `${match[1]}${match[2]}${match[3]} ${tokenLabel(match[3])}${match[4]}`],
   ];
 

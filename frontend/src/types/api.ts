@@ -270,20 +270,23 @@ export type ChatMessageItem = {
   contents?: ChatMessageContent[] | null;
 };
 
-export type ChatMessageStep = {
-  id: number;
-  sequence: number;
-  created_at?: string | null;
-  finished_at?: string | null;
+export type ChatUsageStats = {
   time_to_first_token_ms?: number | null;
   tokens_per_second?: number | null;
-  status?: string | null;
-  response_final?: boolean | null;
   input_tokens?: number | null;
   output_tokens?: number | null;
   cached_input_tokens?: number | null;
   reasoning_tokens?: number | null;
   cost?: number | null;
+};
+
+export type ChatMessageStep = ChatUsageStats & {
+  id: number;
+  sequence: number;
+  created_at?: string | null;
+  finished_at?: string | null;
+  status?: string | null;
+  response_final?: boolean | null;
   items?: ChatMessageItem[] | null;
 };
 
@@ -301,6 +304,7 @@ export type ChatMessageContentPart = {
 
 export type ChatMessageUsage = {
   latest_step?: Omit<ChatMessageStep, 'items'> | null;
+  total?: ChatUsageStats | null;
   total_cost?: number | null;
 };
 

@@ -1,8 +1,12 @@
+import { formatTokenCount } from '@/utils/tokens';
+
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
 export const formatStepMetric = (value: unknown): string => {
   if (value == null || value === '') return '—';
+  const num = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(num)) return formatTokenCount(num);
   return String(value);
 };
 

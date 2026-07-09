@@ -227,6 +227,10 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
           status: :done,
           input_tokens: 120,
           output_tokens: 20,
+          cached_input_tokens: 12,
+          reasoning_tokens: 4,
+          time_to_first_token_ms: 250,
+          tokens_per_second: 10.0,
           cost: 0.01
         },
         %{
@@ -242,7 +246,53 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert usage.latest_step.id == 101
     assert usage.latest_step.input_tokens == 120
     assert usage.latest_step.output_tokens == 20
+    assert usage.total.input_tokens == 120
+    assert usage.total.output_tokens == 20
+    assert usage.total.cached_input_tokens == 12
+    assert usage.total.reasoning_tokens == 4
+    assert usage.total.time_to_first_token_ms == 250
+    assert usage.total.tokens_per_second == 10.0
+    assert usage.total.cost == 0.01
     assert usage.total_cost == 0.01
+  end
+
+  test "usage summary totals step stats across all steps" do
+    usage =
+      Serializer.usage_summary([
+        %{
+          id: 101,
+          sequence: 1,
+          status: :done,
+          input_tokens: 120,
+          output_tokens: 20,
+          cached_input_tokens: 12,
+          reasoning_tokens: 4,
+          time_to_first_token_ms: 250,
+          tokens_per_second: 10.0,
+          cost: 0.01
+        },
+        %{
+          id: 102,
+          sequence: 2,
+          status: :done,
+          input_tokens: 80,
+          output_tokens: 10,
+          cached_input_tokens: 8,
+          reasoning_tokens: 2,
+          time_to_first_token_ms: 150,
+          tokens_per_second: 5.0,
+          cost: 0.02
+        }
+      ])
+
+    assert usage.total.input_tokens == 200
+    assert usage.total.output_tokens == 30
+    assert usage.total.cached_input_tokens == 20
+    assert usage.total.reasoning_tokens == 6
+    assert usage.total.time_to_first_token_ms == 400
+    assert_in_delta usage.total.tokens_per_second, 7.5, 0.0001
+    assert usage.total.cost == 0.03
+    assert usage.total_cost == 0.03
   end
 
   test "usage summary falls back to latest step when no token usage exists" do

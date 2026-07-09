@@ -135,6 +135,21 @@
           :style="moreMenuStyle"
         >
           <button
+            v-if="hasMessageStats"
+            class="menu-item message-actions-menu__item"
+            type="button"
+            role="menuitem"
+            :aria-label="`Show message stats for message ${index + 1}`"
+            title="Stats"
+            @click="emitMessageStats"
+          >
+            <span class="message-actions-menu__icon">
+              <SvgIcon name="bar-chart" size="16" />
+            </span>
+            <span class="message-actions-menu__label">Stats</span>
+          </button>
+          <button
+            v-if="!readonly"
             class="menu-item message-actions-menu__item"
             :class="{ 'message-actions-menu__item--active': Boolean(msg.bookmarked) }"
             type="button"
@@ -153,6 +168,7 @@
             <span class="message-actions-menu__label">Bookmark</span>
           </button>
           <button
+            v-if="!readonly"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -166,6 +182,7 @@
             <span class="message-actions-menu__label">Edit</span>
           </button>
           <button
+            v-if="!readonly"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -195,6 +212,7 @@
             <span class="message-actions-menu__label">{{ moveBranchToNewChatLabel }}</span>
           </button>
           <button
+            v-if="!readonly"
             class="menu-item message-actions-menu__item danger"
             type="button"
             role="menuitem"
@@ -273,6 +291,7 @@ const emit = defineEmits<{
   (e: 'branch'): void;
   (e: 'branch-new-chat'): void;
   (e: 'move-branch-new-chat'): void;
+  (e: 'message-stats'): void;
   (e: 'retry'): void;
   (e: 'delete'): void;
   (e: 'switch-branch', direction: 'prev' | 'next'): void;
@@ -288,7 +307,28 @@ const bookmarkPressed = computed(() => Boolean(msg.value.bookmarked));
 const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
 );
-const showMoreActions = computed(() => !props.readonly);
+const hasMessageStatsValue = (value: unknown) => {
+  if (value == null || value === '') return false;
+  if (typeof value === 'number') return Number.isFinite(value);
+  return true;
+};
+
+const hasMessageStats = computed(() => {
+  const stats = msg.value.usage?.total;
+  if (!stats) return false;
+
+  return [
+    stats.input_tokens,
+    stats.cached_input_tokens,
+    stats.output_tokens,
+    stats.reasoning_tokens,
+    stats.time_to_first_token_ms,
+    stats.tokens_per_second,
+    stats.cost,
+  ].some(hasMessageStatsValue);
+});
+
+const showMoreActions = computed(() => !props.readonly || hasMessageStats.value);
 const moreMenuOpen = ref(false);
 const moreMenuRef = ref<HTMLElement | null>(null);
 const moreMenuButtonRef = ref<HTMLElement | null>(null);
@@ -502,6 +542,12 @@ const emitMoveBranchNewChat = () => {
   if (moveBranchToNewChatDisabled.value) return;
   closeMoreMenu();
   emit('move-branch-new-chat');
+};
+
+const emitMessageStats = () => {
+  if (!hasMessageStats.value) return;
+  closeMoreMenu();
+  emit('message-stats');
 };
 
 const emitDelete = () => {

@@ -153,6 +153,7 @@
                 @branch="vm.startBranch(msg)"
                 @branch-new-chat="vm.startBranchToNewChat(msg)"
                 @move-branch-new-chat="vm.moveBranchToNewChat(msg)"
+                @message-stats="vm.openMessageStats(msg)"
                 @retry="vm.retryLastStep(msg)"
                 @delete="vm.confirmAndDeleteMessage(msg, idx)"
                 @switch-branch="(direction) => vm.switchBranchHandler(msg.id!, direction)"
@@ -486,6 +487,14 @@
     </Teleport>
 
     <Teleport to="body">
+      <ChatMessageStatsModal
+        :open="vm.messageStatsOpen"
+        :stats="vm.messageStats"
+        @close="vm.closeMessageStats"
+      />
+    </Teleport>
+
+    <Teleport to="body">
       <ChatStepRawModal
         :open="vm.contentFullOpen"
         :title="vm.contentFullTitle"
@@ -563,6 +572,7 @@ import ChatAttachmentPreviewModal from '@/components/chat/ChatAttachmentPreviewM
 import ChatEditMessageModal from '@/components/chat/ChatEditMessageModal.vue';
 import ChatPromptModal from '@/components/chat/ChatPromptModal.vue';
 import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
+import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
