@@ -438,10 +438,11 @@ const updateMoreMenuPosition = () => {
   const rect = button.getBoundingClientRect();
   const viewportPadding = 8;
   const gap = 6;
-  const preferredWidth = 190;
-  const minWidth = 170;
-  const maxWidth = Math.max(minWidth, window.innerWidth - viewportPadding * 2);
-  const width = Math.min(preferredWidth, maxWidth);
+  const preferredWidth = 320;
+  const availableWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+  const minWidth = Math.min(260, availableWidth);
+  const maxWidth = Math.max(minWidth, availableWidth);
+  const width = Math.max(minWidth, Math.min(preferredWidth, maxWidth));
   const menuHeight = moreMenuRef.value?.scrollHeight ?? 0;
   const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gap - viewportPadding);
   const spaceAbove = Math.max(0, rect.top - gap - viewportPadding);
@@ -662,7 +663,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 }
 
 .message-actions-menu {
-  min-width: 170px;
+  min-width: min(260px, calc(100vw - 16px));
 }
 
 .message-actions-menu__item {
@@ -714,7 +715,9 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 .message-actions-menu__label {
   flex: 1;
   min-width: 0;
-  overflow-wrap: break-word;
-  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
