@@ -2195,6 +2195,8 @@ select.full {
   justify-content: center;
   padding: 12px;
   z-index: 3000;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .modal {
@@ -2207,6 +2209,7 @@ select.full {
   display: grid;
   gap: 14px;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .modal textarea {

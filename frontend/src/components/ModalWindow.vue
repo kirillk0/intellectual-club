@@ -30,6 +30,86 @@
 <script lang="ts">
 let nextModalId = 0;
 const openModalStack: number[] = [];
+
+type DocumentScrollLockSnapshot = {
+  scrollX: number;
+  scrollY: number;
+  rootOverflow: string;
+  rootOverscrollBehavior: string;
+  bodyPosition: string;
+  bodyTop: string;
+  bodyLeft: string;
+  bodyRight: string;
+  bodyWidth: string;
+  bodyOverflow: string;
+  bodyOverscrollBehavior: string;
+  bodyPaddingRight: string;
+};
+
+let documentScrollLockCount = 0;
+let documentScrollLockSnapshot: DocumentScrollLockSnapshot | null = null;
+
+function lockDocumentScroll() {
+  documentScrollLockCount += 1;
+  if (documentScrollLockCount > 1) return;
+
+  const root = document.documentElement;
+  const body = document.body;
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const scrollbarWidth = root.clientWidth > 0 ? Math.max(0, window.innerWidth - root.clientWidth) : 0;
+  const bodyPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
+
+  documentScrollLockSnapshot = {
+    scrollX,
+    scrollY,
+    rootOverflow: root.style.overflow,
+    rootOverscrollBehavior: root.style.overscrollBehavior,
+    bodyPosition: body.style.position,
+    bodyTop: body.style.top,
+    bodyLeft: body.style.left,
+    bodyRight: body.style.right,
+    bodyWidth: body.style.width,
+    bodyOverflow: body.style.overflow,
+    bodyOverscrollBehavior: body.style.overscrollBehavior,
+    bodyPaddingRight: body.style.paddingRight,
+  };
+
+  root.style.overflow = 'hidden';
+  root.style.overscrollBehavior = 'none';
+  body.style.position = 'fixed';
+  body.style.top = `-${scrollY}px`;
+  body.style.left = `-${scrollX}px`;
+  body.style.right = '0';
+  body.style.width = '100%';
+  body.style.overflow = 'hidden';
+  body.style.overscrollBehavior = 'none';
+  if (scrollbarWidth > 0) body.style.paddingRight = `${bodyPaddingRight + scrollbarWidth}px`;
+}
+
+function unlockDocumentScroll() {
+  if (documentScrollLockCount === 0) return;
+  documentScrollLockCount -= 1;
+  if (documentScrollLockCount > 0) return;
+
+  const snapshot = documentScrollLockSnapshot;
+  documentScrollLockSnapshot = null;
+  if (!snapshot) return;
+
+  const root = document.documentElement;
+  const body = document.body;
+  root.style.overflow = snapshot.rootOverflow;
+  root.style.overscrollBehavior = snapshot.rootOverscrollBehavior;
+  body.style.position = snapshot.bodyPosition;
+  body.style.top = snapshot.bodyTop;
+  body.style.left = snapshot.bodyLeft;
+  body.style.right = snapshot.bodyRight;
+  body.style.width = snapshot.bodyWidth;
+  body.style.overflow = snapshot.bodyOverflow;
+  body.style.overscrollBehavior = snapshot.bodyOverscrollBehavior;
+  body.style.paddingRight = snapshot.bodyPaddingRight;
+  window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+}
 </script>
 
 <script setup lang="ts">
@@ -93,6 +173,7 @@ const emit = defineEmits<{
 const modalId = nextModalId++;
 const modalRef = ref<HTMLElement | null>(null);
 const attrs = useAttrs();
+let documentScrollLocked = false;
 
 const modalAttrs = computed(() => {
   const { 'aria-label': _ariaLabel, 'aria-labelledby': _ariaLabelledby, ...rest } = attrs;
@@ -128,6 +209,18 @@ function pushToStack() {
 
 function isTopModal() {
   return openModalStack[openModalStack.length - 1] === modalId;
+}
+
+function acquireDocumentScrollLock() {
+  if (documentScrollLocked) return;
+  documentScrollLocked = true;
+  lockDocumentScroll();
+}
+
+function releaseDocumentScrollLock() {
+  if (!documentScrollLocked) return;
+  documentScrollLocked = false;
+  unlockDocumentScroll();
 }
 
 function emitCancel() {
@@ -209,6 +302,7 @@ watch(
   (open) => {
     if (open) {
       pushToStack();
+      acquireDocumentScrollLock();
       window.addEventListener('keydown', handleKeydown);
       focusModalIfNeeded();
       return;
@@ -216,6 +310,7 @@ watch(
 
     window.removeEventListener('keydown', handleKeydown);
     removeFromStack();
+    releaseDocumentScrollLock();
   },
   { immediate: true }
 );
@@ -223,5 +318,6 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown);
   removeFromStack();
+  releaseDocumentScrollLock();
 });
 </script>

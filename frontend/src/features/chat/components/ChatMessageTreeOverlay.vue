@@ -705,7 +705,13 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: 0;
   max-height: min(78vh, 760px);
+}
+
+:global(.message-tree-detail-modal) {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .message-tree-detail__header {
@@ -727,11 +733,13 @@ watch(
 }
 
 .message-tree-detail__text {
+  flex: 1 1 auto;
   min-height: 180px;
   max-height: min(54vh, 520px);
   margin: 0;
   padding: 12px;
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface-muted);
@@ -740,6 +748,8 @@ watch(
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .message-tree-detail__footer {
