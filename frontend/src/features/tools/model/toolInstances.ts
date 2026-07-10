@@ -17,6 +17,7 @@ const TOOL_TYPE_ICONS: Record<string, string> = {
   'mcp-http': 'tool-plug',
   'native-artifact-reader': 'tool-artifact',
   'native-brave-search': 'tool-search',
+  'native-game-tools': 'tool-dice',
   'native-knowledge-library': 'tool-book',
   'native-web-reader': 'tool-globe',
   outlet: 'tool-outlet',

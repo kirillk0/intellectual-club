@@ -59,6 +59,7 @@ import ToolOutletIcon from './svg/tool-outlet.svg?component';
 import ToolPlugIcon from './svg/tool-plug.svg?component';
 import ToolSearchIcon from './svg/tool-search.svg?component';
 import ToolTerminalIcon from './svg/tool-terminal.svg?component';
+import ToolDiceIcon from './svg/tool-dice.svg?component';
 
 const iconMap: Record<string, Component> = {
   'copy': CopyIcon,
@@ -115,6 +116,7 @@ const iconMap: Record<string, Component> = {
   'tool-plug': ToolPlugIcon,
   'tool-search': ToolSearchIcon,
   'tool-terminal': ToolTerminalIcon,
+  'tool-dice': ToolDiceIcon,
 };
 
 const props = defineProps<{
