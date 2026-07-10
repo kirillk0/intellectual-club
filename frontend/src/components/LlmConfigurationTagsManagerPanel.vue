@@ -1,7 +1,19 @@
 <template>
   <section class="card stack llm-config-tags-panel">
     <div class="llm-config-tags-panel__header">
-      <strong>{{ title }}</strong>
+      <button
+        v-if="collapsible"
+        type="button"
+        class="llm-config-tags-panel__section-toggle"
+        :aria-expanded="expanded"
+        :aria-label="expanded ? 'Collapse section' : 'Expand section'"
+        :title="expanded ? 'Collapse section' : 'Expand section'"
+        @click="emit('update:expanded', !expanded)"
+      >
+        <SvgIcon name="chevron-right" class="llm-config-tags-panel__section-toggle-icon" />
+        <strong>{{ title }}</strong>
+      </button>
+      <strong v-else>{{ title }}</strong>
       <div class="llm-config-tags-panel__header-actions">
         <button
           type="button"
@@ -20,49 +32,51 @@
       </div>
     </div>
 
-    <form v-if="editorMode" class="llm-config-tags-panel__editor" @submit.prevent="submitEditor">
-      <div class="llm-config-tags-panel__editor-title">{{ editorTitle }}</div>
-      <p v-if="editorContext" class="muted llm-config-tags-panel__editor-context">{{ editorContext }}</p>
+    <template v-if="!collapsible || expanded">
+      <form v-if="editorMode" class="llm-config-tags-panel__editor" @submit.prevent="submitEditor">
+        <div class="llm-config-tags-panel__editor-title">{{ editorTitle }}</div>
+        <p v-if="editorContext" class="muted llm-config-tags-panel__editor-context">{{ editorContext }}</p>
 
-      <label class="llm-config-tags-panel__editor-field">
-        <span>Name</span>
-        <input
-          ref="editorInputRef"
-          v-model="editorName"
-          type="text"
-          class="full"
-          placeholder="Tag name"
-          :disabled="mutationLoading"
-          @input="editorError = null"
-        />
-      </label>
+        <label class="llm-config-tags-panel__editor-field">
+          <span>Name</span>
+          <input
+            ref="editorInputRef"
+            v-model="editorName"
+            type="text"
+            class="full"
+            placeholder="Tag name"
+            :disabled="mutationLoading"
+            @input="editorError = null"
+          />
+        </label>
 
-      <p v-if="editorError" class="error-text">{{ editorError }}</p>
+        <p v-if="editorError" class="error-text">{{ editorError }}</p>
 
-      <div class="llm-config-tags-panel__editor-actions">
-        <button type="button" :disabled="mutationLoading" @click="cancelEditor">Cancel</button>
-        <button type="submit" class="primary" :disabled="submitDisabled">{{ editorSubmitLabel }}</button>
-      </div>
-    </form>
+        <div class="llm-config-tags-panel__editor-actions">
+          <button type="button" :disabled="mutationLoading" @click="cancelEditor">Cancel</button>
+          <button type="submit" class="primary" :disabled="submitDisabled">{{ editorSubmitLabel }}</button>
+        </div>
+      </form>
 
-    <p v-if="tagsLoading" class="muted">Loading…</p>
-    <p v-else-if="tagsError" class="error-text">{{ tagsError }}</p>
-    <LlmConfigurationTagsList
-      v-else
-      :tags="tags"
-      :selectedId="selectedId"
-      :showNoTagsOption="showNoTagsOption"
-      :noTagsSelected="noTagsSelected"
-      :noTagsLabel="noTagsLabel"
-      :showItemActions="true"
-      :actionsDisabled="mutationLoading"
-      @select="emit('select', $event)"
-      @select-no-tags="emit('select-no-tags')"
-      @edit="openEditModal"
-      @delete="deleteTag"
-    />
+      <p v-if="tagsLoading" class="muted">Loading…</p>
+      <p v-else-if="tagsError" class="error-text">{{ tagsError }}</p>
+      <LlmConfigurationTagsList
+        v-else
+        :tags="tags"
+        :selectedId="selectedId"
+        :showNoTagsOption="showNoTagsOption"
+        :noTagsSelected="noTagsSelected"
+        :noTagsLabel="noTagsLabel"
+        :showItemActions="true"
+        :actionsDisabled="mutationLoading"
+        @select="emit('select', $event)"
+        @select-no-tags="emit('select-no-tags')"
+        @edit="openEditModal"
+        @delete="deleteTag"
+      />
 
-    <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
+      <p v-if="!tagsLoading && !tagsError && !tags.length" class="muted">No tags.</p>
+    </template>
   </section>
 
   <ModalWindow
@@ -109,6 +123,7 @@ import { computed, nextTick, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import LlmConfigurationTagsList, { type LlmConfigurationTagListItem } from '@/components/LlmConfigurationTagsList.vue';
 import ModalWindow from '@/components/ModalWindow.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 import {
   fieldErrorsFromJsonApiErrors,
   formErrorsFromJsonApiErrors,
@@ -132,6 +147,8 @@ const props = withDefaults(
     hasActiveFilter?: boolean;
     showNoTagsOption?: boolean;
     noTagsLabel?: string;
+    collapsible?: boolean;
+    expanded?: boolean;
   }>(),
   {
     title: 'Tags',
@@ -140,6 +157,8 @@ const props = withDefaults(
     hasActiveFilter: false,
     showNoTagsOption: true,
     noTagsLabel: 'No tags',
+    collapsible: false,
+    expanded: true,
   }
 );
 
@@ -147,6 +166,7 @@ const emit = defineEmits<{
   (e: 'select', id: number): void;
   (e: 'select-no-tags'): void;
   (e: 'clear-filter'): void;
+  (e: 'update:expanded', value: boolean): void;
 }>();
 
 const mutationError = ref<string | null>(null);
@@ -259,6 +279,7 @@ function cancelEditModal() {
 }
 
 function startCreate() {
+  if (props.collapsible && !props.expanded) emit('update:expanded', true);
   editorMode.value = 'create';
   editorTagId.value = null;
   editorName.value = '';
@@ -382,6 +403,31 @@ async function deleteTag(tagId: number) {
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
+}
+
+.llm-config-tags-panel__section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.llm-config-tags-panel__section-toggle:hover,
+.llm-config-tags-panel__section-toggle:focus-visible {
+  color: var(--color-primary);
+}
+
+.llm-config-tags-panel__section-toggle-icon {
+  transition: transform 120ms ease;
+}
+
+.llm-config-tags-panel__section-toggle[aria-expanded='true'] .llm-config-tags-panel__section-toggle-icon {
+  transform: rotate(90deg);
 }
 
 .llm-config-tags-panel__add-button {

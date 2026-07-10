@@ -32,53 +32,124 @@
           <div class="llm-configurations-sidebar-stack">
             <section class="card stack llm-config-provider-filter-card">
               <div class="llm-config-filter-header">
-                <strong>Provider</strong>
+                <button
+                  type="button"
+                  class="llm-config-filter-section-toggle"
+                  :aria-expanded="providerFilterExpanded"
+                  :aria-label="providerFilterExpanded ? 'Collapse section' : 'Expand section'"
+                  :title="providerFilterExpanded ? 'Collapse section' : 'Expand section'"
+                  @click="providerFilterExpanded = !providerFilterExpanded"
+                >
+                  <SvgIcon name="chevron-right" class="llm-config-filter-section-toggle__icon" />
+                  <strong>Provider</strong>
+                </button>
                 <button type="button" class="link" :disabled="loading || !hasActiveProviderFilter" @click="clearProvider">
                   Clear
                 </button>
               </div>
 
-              <p v-if="loading" class="muted">Loading…</p>
-              <div v-else class="provider-filter-list" aria-label="Filter by provider">
-                <button
-                  type="button"
-                  class="provider-filter-option"
-                  :class="{ active: !selectedProviderFilter }"
-                  :aria-pressed="!selectedProviderFilter"
-                  @click="clearProvider"
-                >
-                  <span class="provider-filter-option__name">All providers</span>
-                  <span class="provider-filter-option__count">{{ configs.length }}</span>
-                </button>
+              <template v-if="providerFilterExpanded">
+                <p v-if="loading" class="muted">Loading…</p>
+                <div v-else class="provider-filter-list" aria-label="Filter by provider">
+                  <button
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: !selectedProviderFilter }"
+                    :aria-pressed="!selectedProviderFilter"
+                    @click="clearProvider"
+                  >
+                    <span class="provider-filter-option__name">All providers</span>
+                    <span class="provider-filter-option__count">{{ configs.length }}</span>
+                  </button>
 
-                <button
-                  v-if="hasNoProviderConfigs || selectedNoProvider"
-                  type="button"
-                  class="provider-filter-option"
-                  :class="{ active: selectedNoProvider }"
-                  :aria-pressed="selectedNoProvider"
-                  @click="selectProvider('none')"
-                >
-                  <span class="provider-filter-option__name">No provider</span>
-                  <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
-                </button>
+                  <button
+                    v-if="hasNoProviderConfigs || selectedNoProvider"
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: selectedNoProvider }"
+                    :aria-pressed="selectedNoProvider"
+                    @click="selectProvider('none')"
+                  >
+                    <span class="provider-filter-option__name">No provider</span>
+                    <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
+                  </button>
 
+                  <button
+                    v-for="provider in providerFilterOptions"
+                    :key="provider.id"
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: selectedProviderId === provider.id }"
+                    :aria-pressed="selectedProviderId === provider.id"
+                    @click="selectProvider(String(provider.id))"
+                  >
+                    <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
+                    <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+                  </button>
+                </div>
+              </template>
+            </section>
+
+            <section class="card stack llm-config-enabled-filter-card">
+              <div class="llm-config-filter-header">
                 <button
-                  v-for="provider in providerFilterOptions"
-                  :key="provider.id"
                   type="button"
-                  class="provider-filter-option"
-                  :class="{ active: selectedProviderId === provider.id }"
-                  :aria-pressed="selectedProviderId === provider.id"
-                  @click="selectProvider(String(provider.id))"
+                  class="llm-config-filter-section-toggle"
+                  :aria-expanded="enabledFilterExpanded"
+                  :aria-label="enabledFilterExpanded ? 'Collapse section' : 'Expand section'"
+                  :title="enabledFilterExpanded ? 'Collapse section' : 'Expand section'"
+                  @click="enabledFilterExpanded = !enabledFilterExpanded"
                 >
-                  <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
-                  <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+                  <SvgIcon name="chevron-right" class="llm-config-filter-section-toggle__icon" />
+                  <strong>Status</strong>
+                </button>
+                <button type="button" class="link" :disabled="loading || !hasActiveEnabledFilter" @click="clearEnabled">
+                  Clear
                 </button>
               </div>
+
+              <template v-if="enabledFilterExpanded">
+                <p v-if="loading" class="muted">Loading…</p>
+                <div v-else class="provider-filter-list" aria-label="Filter by status">
+                  <button
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: !selectedEnabledFilter }"
+                    :aria-pressed="!selectedEnabledFilter"
+                    @click="clearEnabled"
+                  >
+                    <span class="provider-filter-option__name">All</span>
+                    <span class="provider-filter-option__count">{{ configs.length }}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: selectedEnabledFilter === 'enabled' }"
+                    :aria-pressed="selectedEnabledFilter === 'enabled'"
+                    @click="selectEnabled('enabled')"
+                  >
+                    <span class="provider-filter-option__name">Enabled</span>
+                    <span class="provider-filter-option__count">{{ enabledConfigCount }}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="provider-filter-option"
+                    :class="{ active: selectedEnabledFilter === 'disabled' }"
+                    :aria-pressed="selectedEnabledFilter === 'disabled'"
+                    @click="selectEnabled('disabled')"
+                  >
+                    <span class="provider-filter-option__name">Disabled</span>
+                    <span class="provider-filter-option__count">{{ disabledConfigCount }}</span>
+                  </button>
+                </div>
+              </template>
             </section>
 
             <LlmConfigurationTagsManagerPanel
+              v-model:expanded="tagsFilterExpanded"
+              collapsible
               :selectedId="selectedTagId"
               :noTagsSelected="selectedNoTags"
               :hasActiveFilter="hasActiveTagFilter"
@@ -157,7 +228,17 @@
       <aside v-if="isMobile && tagsOverlayOpen" class="sidebar overlay align-left llm-configurations-filter-overlay">
         <section class="card stack llm-config-provider-filter-card">
           <div class="llm-config-filter-header">
-            <strong>Provider</strong>
+            <button
+              type="button"
+              class="llm-config-filter-section-toggle"
+              :aria-expanded="providerFilterExpanded"
+              :aria-label="providerFilterExpanded ? 'Collapse section' : 'Expand section'"
+              :title="providerFilterExpanded ? 'Collapse section' : 'Expand section'"
+              @click="providerFilterExpanded = !providerFilterExpanded"
+            >
+              <SvgIcon name="chevron-right" class="llm-config-filter-section-toggle__icon" />
+              <strong>Provider</strong>
+            </button>
             <div class="llm-config-filter-header__actions">
               <button type="button" class="link" :disabled="loading || !hasActiveProviderFilter" @click="clearProvider">
                 Clear
@@ -168,47 +249,108 @@
             </div>
           </div>
 
-          <p v-if="loading" class="muted">Loading…</p>
-          <div v-else class="provider-filter-list" aria-label="Filter by provider">
-            <button
-              type="button"
-              class="provider-filter-option"
-              :class="{ active: !selectedProviderFilter }"
-              :aria-pressed="!selectedProviderFilter"
-              @click="clearProvider"
-            >
-              <span class="provider-filter-option__name">All providers</span>
-              <span class="provider-filter-option__count">{{ configs.length }}</span>
-            </button>
+          <template v-if="providerFilterExpanded">
+            <p v-if="loading" class="muted">Loading…</p>
+            <div v-else class="provider-filter-list" aria-label="Filter by provider">
+              <button
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: !selectedProviderFilter }"
+                :aria-pressed="!selectedProviderFilter"
+                @click="clearProvider"
+              >
+                <span class="provider-filter-option__name">All providers</span>
+                <span class="provider-filter-option__count">{{ configs.length }}</span>
+              </button>
 
-            <button
-              v-if="hasNoProviderConfigs || selectedNoProvider"
-              type="button"
-              class="provider-filter-option"
-              :class="{ active: selectedNoProvider }"
-              :aria-pressed="selectedNoProvider"
-              @click="selectProvider('none')"
-            >
-              <span class="provider-filter-option__name">No provider</span>
-              <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
-            </button>
+              <button
+                v-if="hasNoProviderConfigs || selectedNoProvider"
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: selectedNoProvider }"
+                :aria-pressed="selectedNoProvider"
+                @click="selectProvider('none')"
+              >
+                <span class="provider-filter-option__name">No provider</span>
+                <span class="provider-filter-option__count">{{ noProviderConfigCount }}</span>
+              </button>
 
+              <button
+                v-for="provider in providerFilterOptions"
+                :key="provider.id"
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: selectedProviderId === provider.id }"
+                :aria-pressed="selectedProviderId === provider.id"
+                @click="selectProvider(String(provider.id))"
+              >
+                <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
+                <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+              </button>
+            </div>
+          </template>
+        </section>
+
+        <section class="card stack llm-config-enabled-filter-card">
+          <div class="llm-config-filter-header">
             <button
-              v-for="provider in providerFilterOptions"
-              :key="provider.id"
               type="button"
-              class="provider-filter-option"
-              :class="{ active: selectedProviderId === provider.id }"
-              :aria-pressed="selectedProviderId === provider.id"
-              @click="selectProvider(String(provider.id))"
+              class="llm-config-filter-section-toggle"
+              :aria-expanded="enabledFilterExpanded"
+              :aria-label="enabledFilterExpanded ? 'Collapse section' : 'Expand section'"
+              :title="enabledFilterExpanded ? 'Collapse section' : 'Expand section'"
+              @click="enabledFilterExpanded = !enabledFilterExpanded"
             >
-              <span class="provider-filter-option__name" data-i18n-ignore>{{ provider.name }}</span>
-              <span class="provider-filter-option__count">{{ providerConfigCount(provider.id) }}</span>
+              <SvgIcon name="chevron-right" class="llm-config-filter-section-toggle__icon" />
+              <strong>Status</strong>
+            </button>
+            <button type="button" class="link" :disabled="loading || !hasActiveEnabledFilter" @click="clearEnabled">
+              Clear
             </button>
           </div>
+
+          <template v-if="enabledFilterExpanded">
+            <p v-if="loading" class="muted">Loading…</p>
+            <div v-else class="provider-filter-list" aria-label="Filter by status">
+              <button
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: !selectedEnabledFilter }"
+                :aria-pressed="!selectedEnabledFilter"
+                @click="clearEnabled"
+              >
+                <span class="provider-filter-option__name">All</span>
+                <span class="provider-filter-option__count">{{ configs.length }}</span>
+              </button>
+
+              <button
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: selectedEnabledFilter === 'enabled' }"
+                :aria-pressed="selectedEnabledFilter === 'enabled'"
+                @click="selectEnabled('enabled')"
+              >
+                <span class="provider-filter-option__name">Enabled</span>
+                <span class="provider-filter-option__count">{{ enabledConfigCount }}</span>
+              </button>
+
+              <button
+                type="button"
+                class="provider-filter-option"
+                :class="{ active: selectedEnabledFilter === 'disabled' }"
+                :aria-pressed="selectedEnabledFilter === 'disabled'"
+                @click="selectEnabled('disabled')"
+              >
+                <span class="provider-filter-option__name">Disabled</span>
+                <span class="provider-filter-option__count">{{ disabledConfigCount }}</span>
+              </button>
+            </div>
+          </template>
         </section>
 
         <LlmConfigurationTagsManagerPanel
+          v-model:expanded="tagsFilterExpanded"
+          collapsible
           :selectedId="selectedTagId"
           :noTagsSelected="selectedNoTags"
           :hasActiveFilter="hasActiveTagFilter"
@@ -283,6 +425,9 @@ const search = ref(String(route.query.q || ''));
 
 const isMobile = ref(false);
 const tagsOverlayOpen = ref(false);
+const providerFilterExpanded = ref(true);
+const enabledFilterExpanded = ref(true);
+const tagsFilterExpanded = ref(true);
 
 function updateIsMobile() {
   isMobile.value = window.matchMedia('(max-width: 860px)').matches;
@@ -326,7 +471,22 @@ const selectedProviderId = computed(() => {
 });
 const selectedNoProvider = computed(() => selectedProviderFilter.value === 'none');
 const hasActiveProviderFilter = computed(() => Boolean(selectedProviderFilter.value));
-const hasActiveCatalogFilter = computed(() => hasActiveTagFilter.value || hasActiveProviderFilter.value);
+
+type EnabledFilter = '' | 'enabled' | 'disabled';
+
+function normalizeEnabledFilter(value: unknown): EnabledFilter {
+  const source = Array.isArray(value) ? value[0] : value;
+  const normalized = String(source ?? '').trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'enabled') return 'enabled';
+  if (normalized === 'false' || normalized === '0' || normalized === 'disabled') return 'disabled';
+  return '';
+}
+
+const selectedEnabledFilter = computed(() => normalizeEnabledFilter(route.query.enabled));
+const hasActiveEnabledFilter = computed(() => Boolean(selectedEnabledFilter.value));
+const hasActiveCatalogFilter = computed(
+  () => hasActiveTagFilter.value || hasActiveProviderFilter.value || hasActiveEnabledFilter.value
+);
 
 watch(
   () => route.query.q,
@@ -405,6 +565,8 @@ function providerName(providerId: number | null) {
 
 const hasNoProviderConfigs = computed(() => configs.value.some((config) => !config.provider_id));
 const noProviderConfigCount = computed(() => configs.value.filter((config) => !config.provider_id).length);
+const enabledConfigCount = computed(() => configs.value.filter((config) => config.enabled).length);
+const disabledConfigCount = computed(() => configs.value.length - enabledConfigCount.value);
 
 const providerConfigCounts = computed(() => {
   const counts = new Map<number, number>();
@@ -450,6 +612,15 @@ const visibleConfigs = computed(() => {
   const q = normalize(search.value);
 
   return configs.value.filter((config) => {
+    const matchesEnabled =
+      selectedEnabledFilter.value === 'enabled'
+        ? config.enabled
+        : selectedEnabledFilter.value === 'disabled'
+          ? !config.enabled
+          : true;
+
+    if (!matchesEnabled) return false;
+
     const matchesProvider = selectedNoProvider.value
       ? !config.provider_id
       : selectedProviderId.value
@@ -526,6 +697,21 @@ function selectProvider(value: string) {
 function clearProvider() {
   const next: LocationQueryRaw = { ...route.query };
   delete next.provider;
+  router.replace({ query: next }).catch(() => {});
+}
+
+function selectEnabled(value: Exclude<EnabledFilter, ''>) {
+  const next: LocationQueryRaw = { ...route.query };
+
+  delete next.enabled;
+  if (value !== selectedEnabledFilter.value) next.enabled = value === 'enabled' ? 'true' : 'false';
+
+  router.replace({ query: next }).catch(() => {});
+}
+
+function clearEnabled() {
+  const next: LocationQueryRaw = { ...route.query };
+  delete next.enabled;
   router.replace({ query: next }).catch(() => {});
 }
 
@@ -709,12 +895,43 @@ watch(
   gap: 8px;
 }
 
+.llm-configurations-filter-overlay > .stack {
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow-y: visible;
+}
+
 .llm-config-filter-header,
 .llm-config-filter-header__actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.llm-config-filter-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.llm-config-filter-section-toggle:hover,
+.llm-config-filter-section-toggle:focus-visible {
+  color: var(--color-primary);
+}
+
+.llm-config-filter-section-toggle__icon {
+  transition: transform 120ms ease;
+}
+
+.llm-config-filter-section-toggle[aria-expanded='true'] .llm-config-filter-section-toggle__icon {
+  transform: rotate(90deg);
 }
 
 .provider-filter-list {
