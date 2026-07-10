@@ -6,6 +6,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   use IntellectualClubWeb, :controller
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
@@ -66,7 +67,8 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- ChatParams.resource_id(id),
          {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat_for_idle(chat_id, actor) do
-      revision = Revisions.chat_revision(chat)
+      child_relations = Relations.child_relation_chats(chat.id, actor)
+      revision = Revisions.chat_revision(chat, child_relations)
 
       if Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")

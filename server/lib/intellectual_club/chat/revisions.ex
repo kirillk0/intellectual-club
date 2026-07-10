@@ -22,6 +22,11 @@ defmodule IntellectualClub.Chat.Revisions do
 
   @spec chat_revision(Chat.t()) :: String.t()
   def chat_revision(%Chat{} = chat) do
+    chat_revision(chat, [])
+  end
+
+  @spec chat_revision(Chat.t(), [Chat.t()]) :: String.t()
+  def chat_revision(%Chat{} = chat, related_chats) when is_list(related_chats) do
     last_message = loaded_last_message(chat)
 
     [
@@ -31,7 +36,8 @@ defmodule IntellectualClub.Chat.Revisions do
       Map.get(chat, :last_message_id),
       active_generation_message_id(chat),
       message_status_revision_value(last_message),
-      datetime_revision_value(Map.get(last_message || %{}, :updated_at))
+      datetime_revision_value(Map.get(last_message || %{}, :updated_at)),
+      relation_revision_rows(related_chats)
     ]
     |> hash()
   end
@@ -71,6 +77,25 @@ defmodule IntellectualClub.Chat.Revisions do
       message_status_revision_value(last_message),
       datetime_revision_value(Map.get(last_message || %{}, :updated_at))
     ]
+  end
+
+  defp relation_revision_rows(chats) when is_list(chats) do
+    chats
+    |> Enum.sort_by(& &1.id)
+    |> Enum.map(fn chat ->
+      last_message = loaded_last_message(chat)
+
+      [
+        chat.id,
+        Map.get(chat, :parent_message_id),
+        Map.get(chat, :parent_relation_kind),
+        datetime_revision_value(chat.updated_at),
+        Map.get(chat, :last_message_id),
+        active_generation_message_id(chat),
+        message_status_revision_value(last_message),
+        datetime_revision_value(Map.get(last_message || %{}, :updated_at))
+      ]
+    end)
   end
 
   defp loaded_last_message(%Chat{} = chat) do

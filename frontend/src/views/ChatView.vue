@@ -179,6 +179,10 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
+                <ChatGenerationStateIndicator
+                  :state="childRelationGenerationState(relation)"
+                  class="chat-relation-banner__generation-state"
+                />
               </RouterLink>
               <div
                 v-if="vm.handoffPending && idx === vm.branch.length - 1"
@@ -202,6 +206,10 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
+                <ChatGenerationStateIndicator
+                  :state="childRelationGenerationState(relation)"
+                  class="chat-relation-banner__generation-state"
+                />
               </RouterLink>
             </div>
             <div
@@ -576,6 +584,7 @@ import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
+import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOverlay.vue';
@@ -718,6 +727,11 @@ const parentRelationLabel = (relation: ChatRelationSummary) =>
 const childRelationLabel = (relation: ChatRelationSummary) =>
   relation.kind === 'fork' ? translate('Forked into') : translate('Continued in');
 
+const childRelationGenerationState = (relation: ChatRelationSummary): 'generating' | 'error' | null => {
+  if (typeof relation.active_generation_message_id === 'number') return 'generating';
+  return relation.last_message_status === 'error' ? 'error' : null;
+};
+
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,
   state: { stack: true },
@@ -780,8 +794,6 @@ const handleComposerPaste = (event: ClipboardEvent) => {
     event.preventDefault();
   }
 };
-
-
 </script>
 
 <style>
@@ -902,17 +914,22 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   background: var(--color-info-bg-strong);
 }
 
-.chat-page .chat-relation-banner span {
+.chat-page .chat-relation-banner > span:not(.chat-generation-state) {
   flex: 0 0 auto;
   color: var(--color-text-muted);
 }
 
 .chat-page .chat-relation-banner strong {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+
+.chat-page .chat-relation-banner__generation-state {
+  margin-left: auto;
 }
 
 .chat-page .chat-relation-banner--parent {

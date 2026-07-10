@@ -89,6 +89,84 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
     assert changed_payload["active_generation_message_id"] == generating_message.id
   end
 
+  test "GET /api/bff/chat-state/:id tracks generation state changes in fork children", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    parent = create_chat!(actor, "Parent chat")
+    {:ok, parent_message} = Threads.add_message_to_end(parent, :user, "Delegate", actor: actor)
+
+    initial_idle =
+      conn
+      |> get(~p"/api/bff/chat-state/#{parent.id}/idle-state")
+      |> json_response(200)
+
+    child =
+      create_chat!(actor, "Fork child", %{
+        parent_chat_id: parent.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    {:ok, child_message} = Threads.add_message_to_end(child, :user, "Work", actor: actor)
+
+    generating_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: child.id, parent_id: child_message.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    generating_idle =
+      conn
+      |> get(~p"/api/bff/chat-state/#{parent.id}/idle-state?revision=#{initial_idle["revision"]}")
+      |> json_response(200)
+
+    assert generating_idle["revision"] != initial_idle["revision"]
+
+    generating_state =
+      conn
+      |> get(~p"/api/bff/chat-state/#{parent.id}")
+      |> json_response(200)
+
+    generating_relation = child_relation(generating_state, parent_message.id, child.id)
+    assert generating_relation["active_generation_message_id"] == generating_message.id
+    assert generating_relation["last_message_status"] == "generating"
+    assert generating_state["idle_revision"] == generating_idle["revision"]
+
+    generating_message
+    |> Ash.Changeset.for_update(
+      :set_generation_state,
+      %{status: :error, error_detail: "Provider failed"},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    error_idle =
+      conn
+      |> get(
+        ~p"/api/bff/chat-state/#{parent.id}/idle-state?revision=#{generating_idle["revision"]}"
+      )
+      |> json_response(200)
+
+    assert error_idle["revision"] != generating_idle["revision"]
+
+    error_state =
+      conn
+      |> get(~p"/api/bff/chat-state/#{parent.id}")
+      |> json_response(200)
+
+    error_relation = child_relation(error_state, parent_message.id, child.id)
+    assert error_relation["active_generation_message_id"] == nil
+    assert error_relation["last_message_status"] == "error"
+    assert error_state["idle_revision"] == error_idle["revision"]
+  end
+
   test "GET /api/bff/chat-state/:id/idle-state matches state access errors", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: actor, password: password} = user_fixture()
@@ -105,9 +183,14 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
              json_response(state_conn, state_conn.status)
   end
 
-  defp create_chat!(actor, _title) do
+  defp child_relation(payload, parent_message_id, child_id) do
+    payload["relations"]["children_by_message_id"][Integer.to_string(parent_message_id)]
+    |> Enum.find(&(&1["chat_id"] == child_id))
+  end
+
+  defp create_chat!(actor, _title, attrs \\ %{}) do
     Chat
-    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+    |> Ash.Changeset.for_create(:create, Map.put(attrs, :note, ""), actor: actor)
     |> Ash.create!(actor: actor)
   end
 

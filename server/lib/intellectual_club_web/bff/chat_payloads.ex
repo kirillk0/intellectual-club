@@ -26,14 +26,16 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   def state(%Chat{} = chat, actor) do
     chat = Ash.load!(chat, [:last_message], actor: actor)
     {messages, branch_meta_by_id} = load_branch(chat, actor)
+    child_relations = Relations.child_relation_chats(chat.id, actor)
+    relations = Relations.relations(chat, messages, actor, child_relations)
 
     %{
       chat: Serializer.chat_detail(chat),
       branch: serialize_branch(messages, branch_meta_by_id, actor),
-      relations: serialize_relations(Relations.relations(chat, messages, actor)),
+      relations: serialize_relations(relations),
       continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
       active_generation_message_id: active_generation_message_id(messages),
-      idle_revision: Revisions.chat_revision(chat)
+      idle_revision: Revisions.chat_revision(chat, child_relations)
     }
   end
 

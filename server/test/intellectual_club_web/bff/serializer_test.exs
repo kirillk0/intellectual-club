@@ -9,7 +9,22 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClubWeb.Bff.Serializer
+
+  test "chat_relation_summary includes the loaded last message status" do
+    serialized =
+      Serializer.chat_relation_summary(%Chat{
+        id: 10,
+        note: "Child",
+        subagent: true,
+        parent_relation_kind: :handoff,
+        last_message: %ChatMessage{id: 20, status: :error}
+      })
+
+    assert serialized.active_generation_message_id == nil
+    assert serialized.last_message_status == "error"
+  end
 
   test "branch_message sorts nested steps, items, and contents by sequence" do
     message =

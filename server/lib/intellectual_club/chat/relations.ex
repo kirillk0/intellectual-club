@@ -24,8 +24,13 @@ defmodule IntellectualClub.Chat.Relations do
 
   @spec relations(Chat.t(), list(map()), map()) :: map()
   def relations(%Chat{} = chat, messages, actor) when is_list(messages) do
+    relations(chat, messages, actor, child_relation_chats(chat.id, actor))
+  end
+
+  @spec relations(Chat.t(), list(map()), map(), [Chat.t()]) :: map()
+  def relations(%Chat{} = chat, messages, actor, children)
+      when is_list(messages) and is_list(children) do
     active_message_ids = MapSet.new(messages, & &1.id)
-    children = child_relation_chats(chat.id, actor)
 
     {children_by_message_id, children_without_message} =
       Enum.reduce(children, {%{}, []}, fn child, {by_message_id, without_message} ->

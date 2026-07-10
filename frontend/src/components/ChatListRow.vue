@@ -10,19 +10,7 @@
             </div>
             <div class="chat-result-meta">
               <div class="muted">{{ metaText }}</div>
-              <span
-                v-if="generationState"
-                class="chat-result-generation-state"
-                :class="`chat-result-generation-state--${generationState}`"
-                :aria-label="generationStateLabel"
-                :title="generationStateLabel"
-              >
-                <span v-if="generationState === 'generating'" class="typing-indicator" aria-hidden="true">
-                  <span></span><span></span><span></span>
-                </span>
-                <span v-else-if="generationState === 'reconnecting'" class="reconnect-indicator" aria-hidden="true"></span>
-                <SvgIcon v-else-if="generationState === 'done'" name="check" size="14" />
-              </span>
+              <ChatGenerationStateIndicator :state="generationState" />
             </div>
             <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
             <div v-if="previewText" class="chat-first-preview">
@@ -48,7 +36,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { RouterLink, type RouteLocationRaw } from 'vue-router';
-import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 
 type GenerationState = 'generating' | 'reconnecting' | 'done';
 
@@ -103,12 +91,6 @@ const previewToneClass = computed(() => ({
   'chat-preview--user': props.previewRole === 'user',
   'chat-preview--assistant': props.previewRole === 'assistant',
 }));
-
-const generationStateLabel = computed(() => {
-  if (props.generationState === 'done') return 'Generation complete';
-  if (props.generationState === 'reconnecting') return 'Reconnecting';
-  return 'Generating';
-});
 </script>
 
 <style scoped>
@@ -156,27 +138,6 @@ const generationStateLabel = computed(() => {
 .chat-result-secondary {
   margin-top: 2px;
   font-size: 0.85rem;
-}
-
-.chat-result-generation-state {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  min-height: 18px;
-}
-
-.chat-result-generation-state--done {
-  color: var(--color-success);
-}
-
-.chat-result-generation-state--reconnecting {
-  color: var(--color-warning-text);
-}
-
-.chat-result-generation-state--reconnecting .reconnect-indicator {
-  width: 14px;
-  height: 14px;
 }
 
 .chat-result-name {

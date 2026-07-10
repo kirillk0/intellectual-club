@@ -57,7 +57,9 @@ type ChatShareState = {
 };
 
 const CHAT_IDLE_POLL_DELAY_MS = 5_000;
+const CHAT_IDLE_ACTIVE_POLL_DELAY_MS = 1_500;
 const CHAT_IDLE_POLL_RETRY_DELAY_MS = 15_000;
+const CHAT_IDLE_ACTIVE_POLL_RETRY_DELAY_MS = 3_000;
 const CHAT_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 
 function getQueryString(value: unknown) {
@@ -167,6 +169,14 @@ export function useChatViewModel() {
     if (!messageId) return [];
     return relations.value.children_by_message_id?.[String(messageId)] || [];
   };
+  const hasActiveChildGeneration = computed(() => {
+    const groupedChildren = Object.values(relations.value.children_by_message_id || {}).flat();
+    const fallbackChildren = relations.value.children_without_message || [];
+
+    return [...groupedChildren, ...fallbackChildren].some(
+      (relation) => typeof relation.active_generation_message_id === 'number'
+    );
+  });
   const handoffChildForMessage = (messageId: number) =>
     childRelationsForMessage(messageId).find((relation) => relation.kind === 'handoff' && Number.isInteger(relation.chat_id));
 
@@ -524,9 +534,20 @@ export function useChatViewModel() {
     return (
       loaded.value &&
       Boolean(chat.value) &&
-      document.visibilityState === 'visible' &&
-      activeGenerationId.value == null
+      document.visibilityState === 'visible'
     );
+  }
+
+  function chatIdlePollDelay() {
+    return activeGenerationId.value != null || hasActiveChildGeneration.value
+      ? CHAT_IDLE_ACTIVE_POLL_DELAY_MS
+      : CHAT_IDLE_POLL_DELAY_MS;
+  }
+
+  function chatIdlePollRetryDelay() {
+    return activeGenerationId.value != null || hasActiveChildGeneration.value
+      ? CHAT_IDLE_ACTIVE_POLL_RETRY_DELAY_MS
+      : CHAT_IDLE_POLL_RETRY_DELAY_MS;
   }
 
   function chatIdleProbeParams() {
@@ -579,12 +600,12 @@ export function useChatViewModel() {
       try {
         await runChatIdleProbe(controller.signal);
         if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
-        scheduleNext(CHAT_IDLE_POLL_DELAY_MS);
+        scheduleNext(chatIdlePollDelay());
       } catch (error) {
         if (!chatIdlePollingActive || chatIdlePollToken !== token) return;
         if (error instanceof DOMException && error.name === 'AbortError') return;
         console.warn('Failed to refresh chat while idle polling.', error);
-        scheduleNext(CHAT_IDLE_POLL_RETRY_DELAY_MS);
+        scheduleNext(chatIdlePollRetryDelay());
       } finally {
         if (chatIdlePollAbortController === controller) {
           chatIdlePollAbortController = null;
@@ -601,7 +622,7 @@ export function useChatViewModel() {
       }
     }
 
-    scheduleNext(CHAT_IDLE_POLL_DELAY_MS);
+    scheduleNext(chatIdlePollDelay());
   }
 
   function restartChatIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
@@ -724,6 +745,14 @@ export function useChatViewModel() {
   const backToChats = async () => {
     await goToChats();
   };
+
+  watch(
+    () => activeGenerationId.value,
+    (messageId, previousMessageId) => {
+      if (messageId == null || previousMessageId != null) return;
+      restartChatIdlePolling({ immediate: true, throttle: true });
+    }
+  );
 
   watch(
     () => [ui.leftOpen.value, ui.rightOpen.value, ui.leftTab.value],

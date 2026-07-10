@@ -183,6 +183,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       bot_name: chat_bot_name(chat),
       subagent: chat.subagent == true,
       active_generation_message_id: active_generation_message_id(chat),
+      last_message_status: last_message_status(chat),
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at)
     }
@@ -581,6 +582,14 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     case Map.get(chat, :last_message) do
       %ChatMessage{id: id, status: :generating} when is_integer(id) -> id
       %ChatMessage{id: id, status: "generating"} when is_integer(id) -> id
+      _ -> nil
+    end
+  end
+
+  defp last_message_status(%Chat{} = chat) do
+    case Map.get(chat, :last_message) do
+      %ChatMessage{status: status} when is_atom(status) -> Atom.to_string(status)
+      %ChatMessage{status: status} when is_binary(status) -> status
       _ -> nil
     end
   end
