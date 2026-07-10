@@ -686,8 +686,9 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       )
 
     step = first_step!(assistant_message.id, actor)
+    create_steering_item!(step.id, 2, "Focus on the final result.", actor)
     long_final = String.duplicate("long-final-output ", 6_000)
-    create_answer_item!(step.id, 2, long_final, actor)
+    create_answer_item!(step.id, 3, long_final, actor)
 
     assert {:ok, %{chat: target}} =
              Handoff.create_handoff_chat(source, actor, "Continue after mixed assistant output.",
@@ -698,7 +699,9 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     text = message_text(message)
 
     assert Regex.scan(~r/\*\*assistant\*\* \(/, text) |> length() == 2
+    assert Regex.scan(~r/\*\*user\*\* \(/, text) |> length() == 2
     assert String.contains?(text, "Short commentary.")
+    assert String.contains?(text, "Focus on the final result.")
     assert String.contains?(text, "[truncated to 200 tokens]")
 
     assert String.contains?(
@@ -904,11 +907,19 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   end
 
   defp create_answer_item!(step_id, sequence, text, actor) do
+    create_text_item!(step_id, sequence, :answer, text, actor)
+  end
+
+  defp create_steering_item!(step_id, sequence, text, actor) do
+    create_text_item!(step_id, sequence, :steering, text, actor)
+  end
+
+  defp create_text_item!(step_id, sequence, type, text, actor) do
     item =
       ChatMessageItem
       |> Ash.Changeset.for_create(
         :create,
-        %{chat_message_step_id: step_id, sequence: sequence, type: :answer},
+        %{chat_message_step_id: step_id, sequence: sequence, type: type},
         actor: actor
       )
       |> Ash.create!(actor: actor)

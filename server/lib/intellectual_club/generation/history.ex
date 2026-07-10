@@ -102,6 +102,7 @@ defmodule IntellectualClub.Generation.History do
   def item_type(value) when is_binary(value) do
     case value do
       "input" -> :input
+      "steering" -> :steering
       "answer" -> :answer
       "reasoning" -> :reasoning
       "tool_call" -> :tool_call

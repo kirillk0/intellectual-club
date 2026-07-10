@@ -24,6 +24,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
     with {:ok, _chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
          upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor),
          {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
+         :ok <- validate_send_payload(content, prepared_uploads),
          {:ok, :ok} <-
            create_user_message_with_prepared_attachments(
              chat_id,
@@ -36,6 +37,18 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
            ),
          {:ok, context} <- GenerationSupervisor.start_generation(chat_id, actor: actor) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
+    end
+  end
+
+  defp validate_send_payload(content, prepared_uploads) when is_map(prepared_uploads) do
+    has_uploads? =
+      [:upload_ids, :copy_content_ids, :legacy_uploads]
+      |> Enum.any?(fn key -> List.wrap(Map.get(prepared_uploads, key, [])) != [] end)
+
+    if to_string(content || "") != "" or has_uploads? do
+      :ok
+    else
+      {:error, "A user message must contain text or an attachment."}
     end
   end
 

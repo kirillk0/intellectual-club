@@ -18,7 +18,7 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.Tools.RateLimiter, []},
       {IntellectualClub.Notifications.ActiveWebPushClients, []},
       {IntellectualClub.Notifications.Dispatcher, []},
-      {Registry, keys: :duplicate, name: IntellectualClub.Generation.Registry},
+      {Registry, keys: :unique, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
       # Start a worker by calling: IntellectualClub.Worker.start_link(arg)
       # {IntellectualClub.Worker, arg},

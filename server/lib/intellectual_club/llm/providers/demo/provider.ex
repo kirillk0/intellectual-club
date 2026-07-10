@@ -9,6 +9,7 @@ defmodule IntellectualClub.Llm.Providers.Demo do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.Steering
 
   @type_id "demo"
 
@@ -77,6 +78,20 @@ defmodule IntellectualClub.Llm.Providers.Demo do
       raw_request: raw_request,
       request_snapshot: request_snapshot(raw_request)
     }
+  end
+
+  @impl true
+  def inject_steering(raw_request, steering_items, _context)
+      when is_map(raw_request) and is_list(steering_items) do
+    payload = RequestPayload.stringify_keys(raw_request)
+
+    messages =
+      RequestPayload.messages(payload) ++
+        Enum.map(Steering.texts(steering_items), &%{"role" => "user", "content" => &1})
+
+    raw_request = Map.put(payload, "messages", messages)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
 
   @impl true

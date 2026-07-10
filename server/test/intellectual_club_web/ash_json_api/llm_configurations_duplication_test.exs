@@ -87,6 +87,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
           context_length: 16_384,
           supports_cache_control: true,
           supports_image_input: false,
+          supports_steering: false,
           fix_role_alteration: true,
           tag_bindings: [
             %{llm_configuration_tag_id: tag_a.id},
@@ -118,6 +119,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
     duplicated_configuration =
       Ash.get!(LlmConfiguration, duplicated_configuration_id, actor: actor)
 
+    assert duplicated_configuration.supports_steering == false
     assert duplicated_configuration.fix_role_alteration == true
 
     duplicated_bindings =

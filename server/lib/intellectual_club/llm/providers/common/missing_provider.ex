@@ -3,6 +3,8 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.Common.Steering
+
   @impl true
   def type, do: "missing"
 
@@ -53,6 +55,17 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
       raw_request: raw_request,
       request_snapshot: request_snapshot(raw_request)
     }
+  end
+
+  @impl true
+  def inject_steering(raw_request, steering_items, _context)
+      when is_map(raw_request) and is_list(steering_items) do
+    raw_request =
+      Map.update(raw_request, "steering", Steering.texts(steering_items), fn existing ->
+        List.wrap(existing) ++ Steering.texts(steering_items)
+      end)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
 
   @impl true

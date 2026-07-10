@@ -307,6 +307,15 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
           _other -> []
         end
 
+      :steering ->
+        content = content_blocks(History.item_text(item), opts)
+
+        if content == [] do
+          []
+        else
+          [%{"type" => "user_input", "content" => content}]
+        end
+
       _other ->
         []
     end

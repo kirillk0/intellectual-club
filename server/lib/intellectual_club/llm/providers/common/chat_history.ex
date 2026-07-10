@@ -109,6 +109,25 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
   defp messages_from_step(step, opts) do
     items = step |> History.items() |> Enum.sort_by(&History.sort_seq/1)
 
+    items
+    |> Enum.chunk_by(&(History.item_type(&1) == :steering))
+    |> Enum.flat_map(fn [first | _rest] = trace_items ->
+      if History.item_type(first) == :steering do
+        Enum.flat_map(trace_items, &steering_message/1)
+      else
+        messages_from_trace_items(trace_items, opts)
+      end
+    end)
+  end
+
+  defp steering_message(item) do
+    case History.item_text(item) do
+      "" -> []
+      text -> [%{"role" => "user", "content" => text}]
+    end
+  end
+
+  defp messages_from_trace_items(items, opts) do
     {answer_parts, tool_calls, tool_results} =
       Enum.reduce(items, {[], [], []}, fn item, {answers_acc, calls_acc, results_acc} ->
         case History.item_type(item) do

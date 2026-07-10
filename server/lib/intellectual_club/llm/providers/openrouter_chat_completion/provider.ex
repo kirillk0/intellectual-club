@@ -9,6 +9,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ModelDiscovery
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace
 
@@ -104,6 +105,24 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
       raw_request: raw_request,
       request_snapshot: request_snapshot(raw_request)
     }
+  end
+
+  @impl true
+  def inject_steering(raw_request, steering_items, context)
+      when is_map(raw_request) and is_list(steering_items) and is_map(context) do
+    payload = RequestPayload.stringify_keys(raw_request)
+
+    messages =
+      payload
+      |> RequestPayload.messages()
+      |> Kernel.++(
+        Enum.map(Steering.texts(steering_items), &%{"role" => "user", "content" => &1})
+      )
+      |> ChatAdapterHelpers.apply_followup_cache_control(context)
+
+    raw_request = Map.put(payload, "messages", messages)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
 
   @impl true

@@ -1881,7 +1881,21 @@ defmodule IntellectualClub.Generation.ContextTest do
     _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
 
     canceled_step = create_step!(assistant.id, 2, actor, %{status: :canceled})
-    _ = create_item_with_text!(canceled_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        canceled_step.id,
+        1,
+        :answer,
+        "Checking tomorrow.",
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "in_progress",
+          "content" => []
+        },
+        actor
+      )
 
     _ =
       create_item_with_text_and_opaque!(
@@ -1927,14 +1941,40 @@ defmodule IntellectualClub.Generation.ContextTest do
                "tool_call_id" => "call_weather",
                "content" => ~s({"temperature":18.5})
              },
+             %{"role" => "assistant", "content" => "Checking tomorrow."},
              %{"role" => "user", "content" => canceled_turn_aborted_marker()},
              %{"role" => "user", "content" => "And tomorrow?"}
            ]
 
     refute Enum.any?(context.messages, fn message ->
              message["role"] == "assistant" and
-               String.contains?(message["content"] || "", "Checking tomorrow.")
+               Enum.any?(message["tool_calls"] || [], &(&1["id"] == "call_tomorrow"))
            end)
+  end
+
+  test "continue from a canceled leaf includes the turn-aborted marker" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} =
+      Threads.add_message_to_end(chat, :user, "Start a long answer", actor: actor)
+
+    assistant =
+      create_assistant_message!(chat, user_message, actor, status: :canceled)
+
+    canceled_step = create_step!(assistant.id, 1, actor, %{status: :canceled})
+    _partial = create_item_with_text!(canceled_step.id, 1, :answer, "Discard this partial", actor)
+
+    history = Context.history_for_generation!(chat.id, actor: actor, parent_id: assistant.id)
+
+    [partial_message, marker] = Enum.take(history, -2)
+
+    assert partial_message == %{role: :assistant, content: "Discard this partial"}
+    assert marker == %{role: :user, content: canceled_turn_aborted_marker()}
   end
 
   test "keeps completed prefix of errored assistant messages in chat provider history" do
@@ -2032,7 +2072,21 @@ defmodule IntellectualClub.Generation.ContextTest do
     _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
 
     error_step = create_step!(assistant.id, 2, actor, %{status: :error})
-    _ = create_item_with_text!(error_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        error_step.id,
+        1,
+        :answer,
+        "Checking tomorrow.",
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "in_progress",
+          "content" => []
+        },
+        actor
+      )
 
     _ =
       create_item_with_text_and_opaque!(
@@ -2078,13 +2132,14 @@ defmodule IntellectualClub.Generation.ContextTest do
                "tool_call_id" => "call_weather",
                "content" => ~s({"temperature":18.5})
              },
+             %{"role" => "assistant", "content" => "Checking tomorrow."},
              %{"role" => "user", "content" => error_turn_aborted_marker("Provider timeout")},
              %{"role" => "user", "content" => "And tomorrow?"}
            ]
 
     refute Enum.any?(context.messages, fn message ->
              message["role"] == "assistant" and
-               String.contains?(message["content"] || "", "Checking tomorrow.")
+               Enum.any?(message["tool_calls"] || [], &(&1["id"] == "call_tomorrow"))
            end)
   end
 
@@ -2465,7 +2520,21 @@ defmodule IntellectualClub.Generation.ContextTest do
     _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
 
     canceled_step = create_step!(assistant.id, 2, actor, %{status: :canceled})
-    _ = create_item_with_text!(canceled_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        canceled_step.id,
+        1,
+        :answer,
+        "Checking tomorrow.",
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "in_progress",
+          "content" => []
+        },
+        actor
+      )
 
     _ =
       create_item_with_text_and_opaque!(
@@ -2510,11 +2579,24 @@ defmodule IntellectualClub.Generation.ContextTest do
                "type" => "message",
                "role" => "assistant",
                "status" => "completed",
-               "phase" => "final_answer",
+               "phase" => "commentary",
                "content" => [
                  %{
                    "type" => "output_text",
                    "text" => "It is 18.5°C in Paris.",
+                   "annotations" => []
+                 }
+               ]
+             },
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "phase" => "final_answer",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "Checking tomorrow.",
                    "annotations" => []
                  }
                ]
@@ -2629,7 +2711,21 @@ defmodule IntellectualClub.Generation.ContextTest do
     _ = create_item_with_text!(completed_step.id, 3, :answer, "It is 18.5°C in Paris.", actor)
 
     error_step = create_step!(assistant.id, 2, actor, %{status: :error})
-    _ = create_item_with_text!(error_step.id, 1, :answer, "Checking tomorrow.", actor)
+
+    _ =
+      create_item_with_text_and_opaque!(
+        error_step.id,
+        1,
+        :answer,
+        "Checking tomorrow.",
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "in_progress",
+          "content" => []
+        },
+        actor
+      )
 
     _ =
       create_item_with_text_and_opaque!(
@@ -2674,11 +2770,24 @@ defmodule IntellectualClub.Generation.ContextTest do
                "type" => "message",
                "role" => "assistant",
                "status" => "completed",
-               "phase" => "final_answer",
+               "phase" => "commentary",
                "content" => [
                  %{
                    "type" => "output_text",
                    "text" => "It is 18.5°C in Paris.",
+                   "annotations" => []
+                 }
+               ]
+             },
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "phase" => "final_answer",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "Checking tomorrow.",
                    "annotations" => []
                  }
                ]

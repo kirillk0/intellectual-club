@@ -37,7 +37,17 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       public?(true)
 
       constraints(
-        one_of: [:input, :reasoning, :answer, :tool_call, :tool_result, :artifact, :error, :other]
+        one_of: [
+          :input,
+          :steering,
+          :reasoning,
+          :answer,
+          :tool_call,
+          :tool_result,
+          :artifact,
+          :error,
+          :other
+        ]
       )
     end
 

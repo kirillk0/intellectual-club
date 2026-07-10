@@ -17,6 +17,11 @@ import {
   type WorkingPayload,
 } from '@/features/chat/model/chatViewModel.shared';
 import { publishChatChange } from '@/features/chat/chatEvents';
+import {
+  isSteeringContentPart,
+  primaryChatMessageText,
+  sortedChatMessageContentParts,
+} from '@/features/chat/model/chatMessageContent';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import type { Chat, ChatBranchMessage, ChatMessageStep } from '@/types/api';
 
@@ -95,12 +100,7 @@ export function useChatMessageActions(params: Params) {
   const confirm = (message: string) => window.confirm(message);
   const alert = (message: string) => window.alert(message);
 
-  const messagePrimaryText = (msg: ChatBranchMessage) => {
-    const texts = (msg.content?.parts || [])
-      .map((part) => String(part.text ?? ''))
-      .filter((text) => String(text).trim() !== '');
-    return texts.at(-1) ?? '';
-  };
+  const messagePrimaryText = (msg: ChatBranchMessage) => primaryChatMessageText(msg);
 
   const copyMessage = async (msg: ChatBranchMessage) => {
     try {
@@ -442,7 +442,8 @@ export function useChatMessageActions(params: Params) {
   const extractEditableTextContents = (msg: ChatBranchMessage) => {
     const targets: Array<{ id: number; sequence: number; text: string }> = [];
 
-    for (const part of [...(msg.content?.parts || [])].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))) {
+    for (const part of sortedChatMessageContentParts(msg)) {
+      if (msg.role === 'assistant' && isSteeringContentPart(part)) continue;
       if (typeof part.content_id !== 'number') continue;
       targets.push({
         id: part.content_id,

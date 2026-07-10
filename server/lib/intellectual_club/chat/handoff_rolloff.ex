@@ -509,7 +509,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
 
   defp message_entries(%ChatMessage{role: role} = message)
        when role in [:assistant, "assistant"] do
-    message_item_entries(message, [:answer, :artifact])
+    message_item_entries(message, [:answer, :artifact, :steering])
   end
 
   defp message_entries(_message), do: []
@@ -523,11 +523,12 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
       |> Map.get(:items, [])
       |> ordered()
       |> Enum.filter(&(Map.get(&1, :type) in item_types))
-      |> Enum.map(&item_text(message, &1))
+      |> Enum.map(&{Map.get(&1, :type), item_text(message, &1)})
     end)
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> Enum.map(fn text ->
-      %{role: :assistant, timestamp: message.created_at, text: text}
+    |> Enum.reject(fn {_type, text} -> String.trim(text) == "" end)
+    |> Enum.map(fn {type, text} ->
+      role = if type in [:steering, "steering"], do: :user, else: :assistant
+      %{role: role, timestamp: message.created_at, text: text}
     end)
   end
 

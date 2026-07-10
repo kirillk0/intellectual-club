@@ -159,6 +159,11 @@
           </label>
 
           <label style="display: flex; align-items: center; gap: 10px">
+            <input v-model="form.supports_steering" type="checkbox" :disabled="sharedReadonly" />
+            Supports steering
+          </label>
+
+          <label style="display: flex; align-items: center; gap: 10px">
             <input v-model="form.fix_role_alteration" type="checkbox" :disabled="sharedReadonly" />
             Fix role alteration
           </label>
@@ -339,6 +344,7 @@ type ConfigurationForm = {
   context_length: number | null;
   supports_cache_control: boolean;
   supports_image_input: boolean;
+  supports_steering: boolean;
   fix_role_alteration: boolean;
   can_edit: boolean;
   shared_incoming: boolean;
@@ -395,6 +401,7 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
       typeof attrs.context_length === 'number' ? attrs.context_length : toIntId(attrs.context_length as any),
     supports_cache_control: Boolean(attrs.supports_cache_control),
     supports_image_input: Boolean(attrs.supports_image_input),
+    supports_steering: attrs.supports_steering !== false,
     fix_role_alteration: Boolean(attrs.fix_role_alteration),
     can_edit: attrs.can_edit !== false,
     shared_incoming: Boolean(attrs.shared_incoming),
@@ -500,6 +507,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: null,
     supports_cache_control: false,
     supports_image_input: false,
+    supports_steering: true,
     fix_role_alteration: false,
     can_edit: true,
     shared_incoming: false,
@@ -516,6 +524,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: form.context_length,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
+    supports_steering: form.supports_steering,
     fix_role_alteration: form.fix_role_alteration,
     ...(tagBindingsPayload.value === undefined ? {} : { tag_bindings: tagBindingsPayload.value }),
     ...(bindings.payload.value === undefined ? {} : { knowledge_block_bindings: bindings.payload.value }),
@@ -530,6 +539,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     context_length: form.context_length,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
+    supports_steering: form.supports_steering,
     fix_role_alteration: form.fix_role_alteration,
     can_edit: form.can_edit,
     shared_incoming: form.shared_incoming,

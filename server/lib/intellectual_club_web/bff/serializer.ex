@@ -81,6 +81,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       tag_names: loaded_names(Map.get(configuration, :tags)),
       context_length: configuration.context_length,
       supports_image_input: configuration.supports_image_input,
+      supports_steering: configuration.supports_steering,
       can_edit: loaded_value(Map.get(configuration, :can_edit)),
       shared_incoming: loaded_value(Map.get(configuration, :shared_incoming)),
       shared_outgoing: loaded_value(Map.get(configuration, :shared_outgoing))
@@ -351,6 +352,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       step_sequence: step.sequence,
       item_id: item.id,
       item_sequence: item.sequence,
+      item_type: item_type,
       content_id: content.id,
       sequence: content.sequence,
       text: Map.get(serialized, :content_text),

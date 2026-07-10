@@ -35,6 +35,7 @@ defmodule IntellectualClub.Generation.Worker do
     :status,
     :runtime_step,
     :stream_task,
+    :stream_ref,
     :tool_task,
     :retry_timer_ref,
     :step_attempt,
@@ -60,6 +61,10 @@ defmodule IntellectualClub.Generation.Worker do
 
   def cancel(pid) do
     GenServer.cast(pid, :cancel)
+  end
+
+  def steer(pid, text) when is_binary(text) do
+    GenServer.call(pid, {:steer, text}, 30_000)
   end
 
   @doc false
@@ -99,13 +104,8 @@ defmodule IntellectualClub.Generation.Worker do
 
   @impl true
   def init(%{context: context}) do
-    Registry.register(IntellectualClub.Generation.Registry, {:message, context.message_id}, %{
-      chat_id: context.chat_id
-    })
-
-    Registry.register(IntellectualClub.Generation.Registry, {:chat, context.chat_id}, %{
-      message_id: context.message_id
-    })
+    register_generation_key!({:message, context.message_id}, %{chat_id: context.chat_id})
+    register_generation_key!({:chat, context.chat_id}, %{message_id: context.message_id})
 
     started_at = DateTime.utc_now()
 
@@ -124,6 +124,10 @@ defmodule IntellectualClub.Generation.Worker do
     {runtime_step, continue} =
       case {Map.get(context, :initial_resume_mode), Map.get(context, :initial_step_status),
             context.step_id} do
+        {:steered_waiting_provider, _status, step_id} when is_integer(step_id) ->
+          restart = Persistence.load_step_for_provider_restart!(step_id)
+          {restart.runtime_step, :start_stream}
+
         {:completed_tool_step, _status, step_id} when is_integer(step_id) ->
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_completed_tool_step}
@@ -165,6 +169,7 @@ defmodule IntellectualClub.Generation.Worker do
       tools_limited_to_handoff: false,
       runtime_step: runtime_step,
       stream_task: nil,
+      stream_ref: nil,
       retry_timer_ref: nil,
       provider_session: provider_session
     }
@@ -205,10 +210,11 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp start_stream_task(state) do
     me = self()
+    stream_ref = make_ref()
 
     task =
       Task.async(fn ->
-        emit = fn event -> send(me, {:provider_event, event}) end
+        emit = fn event -> send(me, {:provider_event, stream_ref, event}) end
 
         state.adapter.stream_generate(
           %{
@@ -222,18 +228,24 @@ defmodule IntellectualClub.Generation.Worker do
         )
       end)
 
-    %{state | stream_task: task, retry_timer_ref: nil}
+    %{state | stream_task: task, stream_ref: stream_ref, retry_timer_ref: nil}
   end
 
   @impl true
-  def handle_info({:provider_event, {:trace, trace_event}}, state) do
+  def handle_info(
+        {:provider_event, stream_ref, {:trace, trace_event}},
+        %{stream_ref: stream_ref} = state
+      ) do
     runtime_step = RuntimeTrace.apply_event(state.runtime_step, trace_event)
     maybe_broadcast_text_delta(state, trace_event)
     {:noreply, %{state | runtime_step: runtime_step}}
   end
 
   @impl true
-  def handle_info({:provider_event, {:response_complete, meta}}, state) do
+  def handle_info(
+        {:provider_event, stream_ref, {:response_complete, meta}},
+        %{stream_ref: stream_ref} = state
+      ) do
     runtime_step =
       state.runtime_step
       |> apply_trace_meta(meta)
@@ -288,7 +300,10 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
-  def handle_info({:provider_event, {:response_error, meta}}, state) do
+  def handle_info(
+        {:provider_event, stream_ref, {:response_error, meta}},
+        %{stream_ref: stream_ref} = state
+      ) do
     error_text =
       Map.get(meta, :error_text) || Map.get(meta, "error_text") || "Provider error"
 
@@ -302,8 +317,22 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
-  def handle_info(:retry_current_step, state) do
+  def handle_info(
+        {:retry_current_step, retry_token},
+        %{retry_timer_ref: {_timer_ref, retry_token}} = state
+      ) do
     state = start_stream_task(%{state | retry_timer_ref: nil})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:retry_current_step, _stale_retry_token}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info(:retry_current_step, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info({:provider_event, _stale_stream_ref, _event}, state) do
     {:noreply, state}
   end
 
@@ -397,11 +426,41 @@ defmodule IntellectualClub.Generation.Worker do
 
     _ =
       safe_persist(state.context.message_id, :canceled, fn ->
-        Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
+        if durable_waiting_tools_step?(state.runtime_step) do
+          Persistence.persist_canceled_from_step!(
+            state.context.message_id,
+            state.runtime_step.id
+          )
+        else
+          Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
+        end
       end)
 
     broadcast(state, {:canceled, state.context.message_id})
     {:stop, :normal, %{state | status: :canceled}}
+  end
+
+  @impl true
+  def handle_call({:steer, text}, _from, state) do
+    cond do
+      text == "" ->
+        {:reply, {:error, :empty_steering}, state}
+
+      Map.get(state.context, :supports_steering) != true ->
+        {:reply, {:error, :steering_not_supported}, state}
+
+      state.status != :generating ->
+        {:reply, {:error, :generation_not_active}, state}
+
+      state.runtime_step.status in [:waiting_provider, "waiting_provider"] ->
+        steer_waiting_provider(state, text)
+
+      state.runtime_step.status in [:waiting_tools, "waiting_tools"] ->
+        steer_waiting_tools(state, text)
+
+      true ->
+        {:reply, {:error, :generation_not_active}, state}
+    end
   end
 
   @impl true
@@ -421,6 +480,116 @@ defmodule IntellectualClub.Generation.Worker do
        step: RuntimeTrace.snapshot(state.runtime_step)
      }, state}
   end
+
+  defp steer_waiting_provider(state, text) do
+    steering_items = [%{text: text, placement: :before_response}]
+    retry_pending? = not is_nil(state.retry_timer_ref)
+
+    with {:ok, injected} <-
+           inject_steering_request(state, state.runtime_step.raw_request, steering_items),
+         {:ok, persisted} <-
+           safe_persist_value(state.context.message_id, :steering_before_response, fn ->
+             Persistence.persist_steering_before_provider!(
+               state.context.message_id,
+               state.runtime_step.id,
+               text,
+               injected.raw_request
+             )
+           end) do
+      state =
+        state
+        |> cancel_retry_timer()
+        |> cancel_stream_task()
+        |> stop_provider_session()
+
+      provider_session = start_provider_session(state.adapter, state.context)
+
+      state =
+        state
+        |> Map.put(:provider_session, provider_session)
+        |> Map.put(:runtime_step, persisted.runtime_step)
+        |> Map.update!(:step_attempt, fn attempt ->
+          if retry_pending?, do: attempt, else: attempt + 1
+        end)
+        |> start_stream_task()
+
+      broadcast(state, {:steering, state.context.message_id})
+
+      {:reply,
+       {:ok,
+        %{
+          message_id: state.context.message_id,
+          step_id: state.runtime_step.id,
+          item_id: persisted.item_id
+        }}, state}
+    else
+      {:error, reason} -> {:reply, {:error, normalize_steering_error(reason)}, state}
+    end
+  end
+
+  defp steer_waiting_tools(state, text) do
+    with {:ok, persisted} <-
+           safe_persist_value(state.context.message_id, :steering_handoff_check, fn ->
+             Persistence.load_step_for_followup!(state.runtime_step.id)
+           end),
+         false <- Enum.any?(persisted.tool_calls, &handoff_tool_call?(state, &1)),
+         {:ok, steering} <-
+           safe_persist_value(state.context.message_id, :steering_after_response, fn ->
+             Persistence.persist_steering_after_provider!(
+               state.context.message_id,
+               state.runtime_step.id,
+               text
+             )
+           end) do
+      state = %{state | runtime_step: steering.runtime_step}
+      broadcast(state, {:steering, state.context.message_id})
+
+      {:reply,
+       {:ok,
+        %{
+          message_id: state.context.message_id,
+          step_id: state.runtime_step.id,
+          item_id: steering.item_id
+        }}, state}
+    else
+      true -> {:reply, {:error, :terminal_handoff_in_progress}, state}
+      {:error, reason} -> {:reply, {:error, normalize_steering_error(reason)}, state}
+    end
+  end
+
+  defp inject_steering_request(state, raw_request, steering_items)
+       when is_map(raw_request) and is_list(steering_items) do
+    try do
+      case state.adapter.inject_steering(raw_request, steering_items, state.context) do
+        %{raw_request: %{} = raw_request} = injected ->
+          {:ok, %{injected | raw_request: raw_request}}
+
+        %{"raw_request" => %{} = raw_request} ->
+          {:ok, %{raw_request: raw_request}}
+
+        {:ok, %{raw_request: %{} = raw_request} = injected} ->
+          {:ok, %{injected | raw_request: raw_request}}
+
+        other ->
+          {:error, {:invalid_steering_request, other}}
+      end
+    rescue
+      exception -> {:error, exception}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  defp normalize_steering_error(reason)
+       when reason in [
+              :empty_steering,
+              :steering_not_supported,
+              :generation_not_active,
+              :terminal_handoff_in_progress
+            ],
+       do: reason
+
+  defp normalize_steering_error(reason), do: {:steering_failed, reason}
 
   defp finalize_done_from_step(state, step_id) when is_integer(step_id) do
     case safe_persist(state.context.message_id, :done, fn ->
@@ -534,10 +703,18 @@ defmodule IntellectualClub.Generation.Worker do
 
       case persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
         {:ok, state} ->
-          timer_ref = Process.send_after(self(), :retry_current_step, delay_ms)
+          state = cancel_stream_task(state)
+          retry_token = make_ref()
+
+          timer_ref =
+            Process.send_after(self(), {:retry_current_step, retry_token}, delay_ms)
 
           {:retrying,
-           %{state | stream_task: nil, retry_timer_ref: timer_ref, step_attempt: attempt + 1}}
+           %{
+             state
+             | retry_timer_ref: {timer_ref, retry_token},
+               step_attempt: attempt + 1
+           }}
 
         {:error, reason} ->
           Logger.warning(
@@ -768,16 +945,28 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp cancel_retry_timer(%{retry_timer_ref: nil} = state), do: state
 
-  defp cancel_retry_timer(%{retry_timer_ref: timer_ref} = state) do
+  defp cancel_retry_timer(%{retry_timer_ref: {timer_ref, retry_token}} = state) do
+    _ = Process.cancel_timer(timer_ref)
+
+    receive do
+      {:retry_current_step, ^retry_token} -> :ok
+    after
+      0 -> :ok
+    end
+
+    %{state | retry_timer_ref: nil}
+  end
+
+  defp cancel_retry_timer(%{retry_timer_ref: timer_ref} = state) when is_reference(timer_ref) do
     _ = Process.cancel_timer(timer_ref)
     %{state | retry_timer_ref: nil}
   end
 
-  defp cancel_stream_task(%{stream_task: nil} = state), do: state
+  defp cancel_stream_task(%{stream_task: nil} = state), do: %{state | stream_ref: nil}
 
   defp cancel_stream_task(%{stream_task: task} = state) do
     _ = Task.shutdown(task, :brutal_kill)
-    %{state | stream_task: nil}
+    %{state | stream_task: nil, stream_ref: nil}
   end
 
   defp cancel_tool_task(%{tool_task: nil} = state), do: state
@@ -823,6 +1012,13 @@ defmodule IntellectualClub.Generation.Worker do
       )
 
       nil
+  end
+
+  defp register_generation_key!(key, value) do
+    case Registry.register(IntellectualClub.Generation.Registry, key, value) do
+      {:ok, _owner} -> :ok
+      {:error, {:already_registered, pid}} -> exit({:already_running, pid})
+    end
   end
 
   defp stop_provider_session(%{provider_session: nil} = state), do: state
@@ -1202,22 +1398,24 @@ defmodule IntellectualClub.Generation.Worker do
             finalize_handoff_tool_step(next_state, payload)
 
           nil ->
-            followup =
-              state.adapter.build_followup_request(%{
-                context: next_state.context,
-                runtime_step: persisted.runtime_step,
-                results: persisted.results,
-                tools: current_tools_payload(next_state)
-              })
-
-            case safe_persist(state.context.message_id, :step_done, fn ->
-                   Persistence.mark_step_done!(state.runtime_step.id)
-                 end) do
-              :ok ->
-                continue_after_tool_step(next_state, followup, opts)
-
+            with {:ok, followup} <- build_followup_with_steering(next_state, persisted),
+                 {:ok, next_step} <-
+                   safe_persist_value(state.context.message_id, :step_done, fn ->
+                     Persistence.complete_step_and_start_next!(
+                       state.context.message_id,
+                       state.runtime_step.id,
+                       state.step_sequence + 1,
+                       followup.raw_request
+                     )
+                   end) do
+              continue_after_tool_step(next_state, followup, next_step, opts)
+            else
               {:error, reason} ->
-                finalize_error(state, "Failed to mark tool step done: #{inspect(reason)}", %{})
+                finalize_error(
+                  state,
+                  "Failed to prepare tool follow-up: #{inspect(reason)}",
+                  %{}
+                )
             end
         end
 
@@ -1264,6 +1462,30 @@ defmodule IntellectualClub.Generation.Worker do
   defp handoff_payload_from_raw(%{handoff: %{} = payload}), do: payload
   defp handoff_payload_from_raw(_raw), do: nil
 
+  defp build_followup_with_steering(state, persisted) do
+    try do
+      followup =
+        state.adapter.build_followup_request(%{
+          context: state.context,
+          runtime_step: persisted.runtime_step,
+          results: persisted.results,
+          tools: current_tools_payload(state)
+        })
+
+      case Map.get(persisted, :steering_items, []) do
+        [] ->
+          {:ok, followup}
+
+        steering_items ->
+          inject_steering_request(state, followup.raw_request, steering_items)
+      end
+    rescue
+      exception -> {:error, exception}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
   defp map_get(map, key) when is_map(map) and is_binary(key) do
     Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
   rescue
@@ -1272,8 +1494,9 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp map_get(_map, _key), do: nil
 
-  defp continue_after_tool_step(next_state, followup, opts) do
-    {raw_request, step_id} = start_next_step_metadata(next_state, followup.raw_request)
+  defp continue_after_tool_step(next_state, followup, next_step, opts) do
+    raw_request = followup.raw_request
+    step_id = next_step.step_id
     next_sequence = next_state.step_sequence + 1
 
     runtime_step =
@@ -1299,19 +1522,6 @@ defmodule IntellectualClub.Generation.Worker do
       |> Map.put(:stream_task, nil)
 
     {:noreply, start_stream_task(state)}
-  end
-
-  defp start_next_step_metadata(state, raw_request)
-       when is_map(state) and is_map(raw_request) do
-    next_sequence = state.step_sequence + 1
-    now = DateTime.utc_now()
-
-    step_id =
-      Persistence.ensure_step_started!(state.context.message_id, next_sequence, raw_request,
-        started_at: now
-      )
-
-    {raw_request, step_id}
   end
 
   defp tool_execution_context(state) do

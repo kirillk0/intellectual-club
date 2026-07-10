@@ -60,7 +60,15 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   end
 
   @type item_type ::
-          :input | :answer | :reasoning | :tool_call | :tool_result | :artifact | :error | :other
+          :input
+          | :steering
+          | :answer
+          | :reasoning
+          | :tool_call
+          | :tool_result
+          | :artifact
+          | :error
+          | :other
   @type content_kind :: :text | :opaque | :media
 
   @type trace_event ::

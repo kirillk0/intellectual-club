@@ -120,6 +120,12 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       default(false)
     end
 
+    attribute :supports_steering, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(true)
+    end
+
     attribute :fix_role_alteration, :boolean do
       allow_nil?(false)
       public?(true)
@@ -221,6 +227,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :context_length,
         :supports_cache_control,
         :supports_image_input,
+        :supports_steering,
         :fix_role_alteration
       ])
 
@@ -291,6 +298,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
           context_length: source.context_length,
           supports_cache_control: source.supports_cache_control,
           supports_image_input: source.supports_image_input,
+          supports_steering: source.supports_steering,
           fix_role_alteration: source.fix_role_alteration
         })
         |> Ash.Changeset.manage_relationship(
@@ -327,6 +335,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :context_length,
         :supports_cache_control,
         :supports_image_input,
+        :supports_steering,
         :fix_role_alteration
       ])
 

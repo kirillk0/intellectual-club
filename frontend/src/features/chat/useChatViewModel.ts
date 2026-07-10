@@ -309,6 +309,17 @@ export function useChatViewModel() {
 
   let getOpenWorkingPollRequest: (messageId: number) => string | null = () => null;
   let applyWorkingPoll: Parameters<typeof useChatComposerRuntime>[0]['applyWorkingPoll'] = () => {};
+  const activeGenerationSupportsSteering = computed(() => {
+    const messageId = activeGenerationId.value;
+    if (!messageId) return false;
+
+    const message = branch.value.find((item) => item.id === messageId && item.role === 'assistant');
+    const configurationId = message?.llm_configuration_id;
+    if (typeof configurationId !== 'number' || !Number.isFinite(configurationId)) return false;
+
+    const configuration = llmConfigurations.value.find((item) => item.id === configurationId);
+    return configuration?.supports_steering === true;
+  });
 
   const composerRuntime = useChatComposerRuntime({
     chatId,
@@ -319,6 +330,7 @@ export function useChatViewModel() {
     waitForConfigSync: headerControls.waitForConfigSync,
     activeGenerationId,
     cancelingGenerationId,
+    supportsSteering: activeGenerationSupportsSteering,
     draftReady: computed(() => loaded.value && Boolean(chat.value)),
     autoScrollEnabled: computed(() => layer.active.value),
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
@@ -959,12 +971,20 @@ export function useChatViewModel() {
     onPendingFilesSelected: composerRuntime.onPendingFilesSelected,
     removePendingFile: composerRuntime.removePendingFile,
     sending: composerRuntime.sending,
+    steeringGenerationId: composerRuntime.steeringGenerationId,
+    hasSendPayload: composerRuntime.hasSendPayload,
+    canSteerGeneration: composerRuntime.canSteerGeneration,
     sendButtonLabel: composerRuntime.sendButtonLabel,
+    cancelButtonLabel: composerRuntime.cancelButtonLabel,
+    steerButtonLabel: composerRuntime.steerButtonLabel,
     activeGenerationId,
     cancelingGenerationId,
     generationPollReconnecting: composerRuntime.generationPollReconnecting,
     handleCancelPointerDown: composerRuntime.handleCancelPointerDown,
-    send: composerRuntime.send,
+    sendMessage: composerRuntime.sendMessage,
+    continueGeneration: composerRuntime.continueGeneration,
+    steerGeneration: composerRuntime.steerGeneration,
+    submitComposer: composerRuntime.submitComposer,
     cancelActiveGeneration: composerRuntime.cancelActiveGeneration,
     editingMessage: messageActions.editingMessage,
     modalMode: messageActions.modalMode,

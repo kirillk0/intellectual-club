@@ -59,16 +59,22 @@ defmodule IntellectualClub.Generation.Supervisor do
          :ok <- cancel_for_chat(context.chat_id),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
+         steering_specs when is_list(steering_specs) <-
+           Persistence.steering_specs_for_step!(context.step_id),
+         {:ok, request_payload, steering_specs} <-
+           prepare_retry_steering(context, steering_specs),
          :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
       step_id =
         Persistence.ensure_step_started!(
           context.message_id,
           step_sequence,
-          context.request_payload || %{},
+          request_payload,
           []
         )
 
-      context = %{context | step_id: step_id}
+      :ok = Persistence.restore_steering_specs!(step_id, steering_specs)
+
+      context = %{context | step_id: step_id, request_payload: request_payload}
       start_worker(context)
     else
       nil ->
@@ -93,16 +99,22 @@ defmodule IntellectualClub.Generation.Supervisor do
          :ok <- cancel_for_chat(context.chat_id),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
+         steering_specs when is_list(steering_specs) <-
+           Persistence.steering_specs_for_step!(context.step_id),
+         {:ok, request_payload, steering_specs} <-
+           prepare_retry_steering(context, steering_specs),
          :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
       step_id =
         Persistence.ensure_step_started!(
           context.message_id,
           step_sequence,
-          context.request_payload || %{},
+          request_payload,
           []
         )
 
-      context = %{context | step_id: step_id}
+      :ok = Persistence.restore_steering_specs!(step_id, steering_specs)
+
+      context = %{context | step_id: step_id, request_payload: request_payload}
       start_worker(context)
     else
       nil ->
@@ -124,6 +136,9 @@ defmodule IntellectualClub.Generation.Supervisor do
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence) do
       case orphaned_resume_strategy(context) do
+        :restart_steered_step ->
+          start_worker(%{context | initial_resume_mode: :steered_waiting_provider})
+
         :resume_waiting_tools ->
           start_worker(%{context | initial_resume_mode: :waiting_tools})
 
@@ -169,12 +184,25 @@ defmodule IntellectualClub.Generation.Supervisor do
       waiting_tools_status?(context.initial_step_status) and is_integer(context.step_id) ->
         :resume_waiting_tools
 
+      context.initial_step_status in [:waiting_provider, "waiting_provider"] and
+        is_integer(context.step_id) and steered_waiting_provider_step?(context.step_id) ->
+        :restart_steered_step
+
       completed_step_status?(context.initial_step_status) and is_integer(context.step_id) ->
         completed_step_resume_strategy(context.step_id)
 
       true ->
         :restart_step
     end
+  end
+
+  defp steered_waiting_provider_step?(step_id) when is_integer(step_id) do
+    case Persistence.step_steering_state!(step_id) do
+      %{before_response_count: count} when count > 0 -> true
+      _other -> false
+    end
+  rescue
+    _exception -> false
   end
 
   defp completed_step_resume_strategy(step_id) when is_integer(step_id) do
@@ -257,6 +285,20 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     :ok = cancel_descendant_generations_for_message(message_id)
     result
+  end
+
+  def steer_generation(message_id, text) when is_integer(message_id) and is_binary(text) do
+    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
+      [{pid, _}] ->
+        try do
+          Worker.steer(pid, text)
+        catch
+          :exit, _reason -> {:error, :generation_not_active}
+        end
+
+      [] ->
+        {:error, :generation_not_active}
+    end
   end
 
   def cancel_for_chat(chat_id), do: cancel_for_chat(chat_id, [])
@@ -421,8 +463,62 @@ defmodule IntellectualClub.Generation.Supervisor do
       {:error, {:already_started, _pid}} ->
         {:error, :already_running}
 
+      {:error, {:already_running, _pid}} ->
+        {:error, :already_running}
+
       other ->
         other
     end
   end
+
+  defp prepare_retry_steering(context, steering_specs)
+       when is_map(context) and is_list(steering_specs) do
+    request_payload = Map.get(context, :request_payload) || %{}
+
+    trailing =
+      Enum.filter(steering_specs, fn spec ->
+        Map.get(spec, :placement, Map.get(spec, "placement")) in [
+          :after_response,
+          "after_response"
+        ]
+      end)
+
+    if trailing == [] do
+      {:ok, request_payload, steering_specs}
+    else
+      adapter =
+        Map.get(context, :adapter_module) ||
+          IntellectualClub.Llm.Providers.Common.Registry.fetch_or_missing(
+            Map.get(context, :provider_type)
+          )
+
+      injected = adapter.inject_steering(request_payload, trailing, context)
+
+      with {:ok, raw_request} <- steering_raw_request(injected) do
+        restored_specs =
+          Enum.map(steering_specs, fn spec ->
+            case Map.get(spec, :placement, Map.get(spec, "placement")) do
+              value when value in [:after_response, "after_response"] ->
+                spec
+                |> Map.new()
+                |> Map.put(:placement, :before_response)
+
+              _other ->
+                spec
+            end
+          end)
+
+        {:ok, raw_request, restored_specs}
+      end
+    end
+  rescue
+    exception -> {:error, {:steering_retry_failed, exception}}
+  catch
+    kind, reason -> {:error, {:steering_retry_failed, {kind, reason}}}
+  end
+
+  defp steering_raw_request(%{raw_request: %{} = raw_request}), do: {:ok, raw_request}
+  defp steering_raw_request(%{"raw_request" => %{} = raw_request}), do: {:ok, raw_request}
+  defp steering_raw_request({:ok, value}), do: steering_raw_request(value)
+  defp steering_raw_request(other), do: {:error, {:invalid_steering_request, other}}
 end

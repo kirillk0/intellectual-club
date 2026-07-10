@@ -9,6 +9,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Llm.LlmUsageRecord
@@ -468,6 +469,277 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert {:error, _error} = Ash.get(ChatMessageItem, first_call.item_id, actor: actor)
   end
 
+  test "provider trace sequences are shifted past every leading steering item" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Leading steering ordering")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    %{runtime_step: runtime_step} =
+      Persistence.persist_steering_before_provider!(
+        assistant_message.id,
+        step_id,
+        "Change direction",
+        %{
+          "model" => "demo-model",
+          "messages" => [%{"role" => "user", "content" => "Change direction"}]
+        }
+      )
+
+    runtime_step =
+      runtime_step
+      |> RuntimeTrace.apply_event({:ensure_item, "reasoning", :reasoning, 1})
+      |> RuntimeTrace.apply_event({:set_text, "reasoning", :reasoning, 1, "Private reasoning"})
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 2})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 2, "Final answer"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_steered"}})
+
+    %{step: persisted_step} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    items = Enum.sort_by(persisted_step.items, & &1.sequence)
+
+    assert Enum.map(items, &{&1.sequence, &1.type}) == [
+             {1, :steering},
+             {2, :reasoning},
+             {3, :answer}
+           ]
+  end
+
+  test "cancel keeps durable steering, partial provider output, and usage" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Cancel steered generation")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    %{runtime_step: runtime_step} =
+      Persistence.persist_steering_before_provider!(
+        assistant_message.id,
+        step_id,
+        "Do not continue",
+        %{
+          "model" => "demo-model",
+          "messages" => [%{"role" => "user", "content" => "Do not continue"}]
+        }
+      )
+
+    runtime_step =
+      runtime_step
+      |> RuntimeTrace.apply_event({:ensure_item, "reasoning", :reasoning, 1})
+      |> RuntimeTrace.apply_event({:set_text, "reasoning", :reasoning, 1, "Partial reasoning"})
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 2})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Partial answer"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "partial"}})
+      |> RuntimeTrace.apply_event(
+        {:set_step_usage, %{"input_tokens" => 20, "output_tokens" => 5}}
+      )
+
+    :ok = Persistence.persist_canceled!(assistant_message.id, runtime_step)
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    assert message.status == :canceled
+    assert message.token_count > 0
+    assert [step] = message.steps
+    assert step.status == :canceled
+    assert step.raw_response == %{"id" => "partial"}
+    assert step.input_tokens == 20
+    assert step.output_tokens == 5
+    assert %DateTime{} = step.first_token_at
+
+    items = Enum.sort_by(step.items, & &1.sequence)
+    assert Enum.map(items, & &1.type) == [:steering, :reasoning, :answer]
+    assert persisted_item_text(Enum.find(items, &(&1.type == :reasoning))) == "Partial reasoning"
+    assert persisted_item_text(Enum.find(items, &(&1.type == :answer))) == "Partial answer"
+  end
+
+  test "terminal error keeps partial provider output and usage" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Errored generation")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        id: step_id,
+        sequence: 1,
+        raw_request: %{"model" => "demo-model", "messages" => []}
+      )
+      |> RuntimeTrace.apply_event({:ensure_item, "reasoning", :reasoning, 1})
+      |> RuntimeTrace.apply_event({:set_text, "reasoning", :reasoning, 1, "Partial reasoning"})
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 2})
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Partial answer"})
+      |> RuntimeTrace.apply_event({:ensure_item, "error", :error, 3})
+      |> RuntimeTrace.apply_event({:set_text, "error", :error, 1, "Stream failed"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "partial-error"}})
+      |> RuntimeTrace.apply_event(
+        {:set_step_usage, %{"input_tokens" => 30, "output_tokens" => 7}}
+      )
+
+    :ok = Persistence.persist_error!(assistant_message.id, runtime_step, "Stream failed")
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    assert message.status == :error
+    assert message.error_detail == "Stream failed"
+    assert message.token_count > 0
+    assert [step] = message.steps
+    assert step.status == :error
+    assert step.raw_response == %{"id" => "partial-error"}
+    assert step.input_tokens == 30
+    assert step.output_tokens == 7
+    assert %DateTime{} = step.first_token_at
+
+    items = Enum.sort_by(step.items, & &1.sequence)
+    assert Enum.map(items, & &1.type) == [:reasoning, :answer, :error]
+    assert persisted_item_text(Enum.find(items, &(&1.type == :reasoning))) == "Partial reasoning"
+    assert persisted_item_text(Enum.find(items, &(&1.type == :answer))) == "Partial answer"
+    assert persisted_item_text(Enum.find(items, &(&1.type == :error))) == "Stream failed"
+  end
+
+  test "canceling while tools run keeps the durable provider trace and tool results" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Cancel during tools")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    runtime_step =
+      tool_call_runtime_step(step_id, "call_1", "demo__echo", %{"value" => "one"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_1"}})
+
+    %{step: provider_step, tool_calls: [call]} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    %{item_id: steering_item_id} =
+      Persistence.persist_steering_after_provider!(
+        assistant_message.id,
+        step_id,
+        "Keep the completed work"
+      )
+
+    result = %{
+      text: "tool output",
+      result_raw: %{"ok" => true},
+      media_contents: [],
+      artifact_contents: []
+    }
+
+    persisted_result =
+      Persistence.persist_tool_result!(assistant_message.id, step_id, call, result)
+
+    :ok = Persistence.persist_canceled_from_step!(assistant_message.id, step_id)
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    assert message.status == :canceled
+    assert [step] = message.steps
+    assert step.status == :canceled
+    assert step.raw_response == provider_step.raw_response
+
+    items_by_id = Map.new(step.items, &{&1.id, &1})
+    assert Map.has_key?(items_by_id, call.item_id)
+    assert Map.has_key?(items_by_id, persisted_result.item_id)
+    assert Map.has_key?(items_by_id, steering_item_id)
+
+    assert step.items |> Enum.map(& &1.type) |> Enum.sort() == [
+             :steering,
+             :tool_call,
+             :tool_result
+           ]
+  end
+
+  test "retrying a step promotes trailing steering into the retried provider request" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Retry trailing steering")
+
+    raw_request = %{
+      "messages" => [%{"role" => "user", "content" => "Original request"}]
+    }
+
+    step_id = Persistence.ensure_step_started!(assistant_message.id, 1, raw_request, [])
+
+    %{item_id: trailing_item_id} =
+      Persistence.persist_steering_after_provider!(
+        assistant_message.id,
+        step_id,
+        "Apply this on retry"
+      )
+
+    step = Ash.get!(ChatMessageStep, step_id, actor: actor)
+
+    _step =
+      step
+      |> Ash.Changeset.for_update(:update, %{status: :error}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+    _message =
+      assistant_message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :error, error_detail: "retry", token_count: 0},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert {:ok, _context} =
+             GenerationSupervisor.retry_from_step(assistant_message.id, step_id,
+               actor: actor,
+               chunk_delay_ms: 0
+             )
+
+    message = wait_for_message_status!(assistant_message.id, actor, :done, 4_000)
+    assert [retried_step] = message.steps
+    refute Enum.any?(retried_step.items, &(&1.id == trailing_item_id))
+
+    assert List.last(retried_step.raw_request["messages"]) == %{
+             "role" => "user",
+             "content" => "Apply this on retry"
+           }
+
+    steering = Enum.find(retried_step.items, &(&1.type == :steering))
+
+    assert Enum.any?(steering.contents, fn content ->
+             content.kind == :opaque and
+               content.content_json == %{"placement" => "before_response"}
+           end)
+  end
+
   test "persist_tool_result! links results idempotently and list_missing_tool_calls! uses persisted links" do
     %{user: actor} = user_fixture()
     assistant_message = create_generating_assistant_message!(actor, "Tool result persistence")
@@ -508,6 +780,73 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert persisted_result.tool_call_item_id == call.item_id
     assert persisted_result.responses_item["id"] == retry_result.responses_item["id"]
     assert Persistence.list_missing_tool_calls!(step_id) == []
+  end
+
+  test "after-response steering survives tool recovery and the next-step transition" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Steering after tools")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model", "messages" => []},
+        []
+      )
+
+    runtime_step =
+      tool_call_runtime_step(step_id, "call_steer", "demo__echo", %{"value" => "one"})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "resp_steer"}})
+
+    %{tool_calls: [call]} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    %{item_id: steering_item_id} =
+      Persistence.persist_steering_after_provider!(
+        assistant_message.id,
+        step_id,
+        "Use the tool result differently"
+      )
+
+    Persistence.persist_tool_result!(assistant_message.id, step_id, call, %{
+      text: "tool output",
+      result_raw: %{"ok" => true},
+      media_contents: [],
+      artifact_contents: []
+    })
+
+    followup = Persistence.load_step_for_followup!(step_id)
+
+    assert [%{item_id: ^steering_item_id, text: "Use the tool result differently"}] =
+             followup.steering_items
+
+    next_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => "Use the tool result differently"}]
+    }
+
+    transition =
+      Persistence.complete_step_and_start_next!(
+        assistant_message.id,
+        step_id,
+        2,
+        next_request
+      )
+
+    assert transition.step_sequence == 2
+    assert transition.raw_request == next_request
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [source_step, next_step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert source_step.status == :done
+    assert next_step.status == :waiting_provider
+    assert next_step.raw_request == next_request
+    assert Enum.any?(source_step.items, &(&1.id == steering_item_id and &1.type == :steering))
   end
 
   test "persist_tool_result! gives parallel tool results non-conflicting stable sequences" do
@@ -625,6 +964,39 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp wait_for_message_status!(message_id, actor, status, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_message_status!(message_id, actor, status, deadline)
+  end
+
+  defp persisted_item_text(nil), do: ""
+
+  defp persisted_item_text(item) do
+    item.contents
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.map_join("", &to_string(&1.content_text || ""))
+  end
+
+  defp do_wait_for_message_status!(message_id, actor, status, deadline) do
+    message =
+      Ash.get!(ChatMessage, message_id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    if message.status == status do
+      message
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(20)
+        do_wait_for_message_status!(message_id, actor, status, deadline)
+      else
+        flunk("Message did not reach status #{inspect(status)}")
+      end
+    end
   end
 
   defp create_item!(step_id, sequence, type, actor) do

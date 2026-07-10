@@ -48,6 +48,11 @@ defmodule IntellectualClub.TestSupport.LlmProviders.SelfContainedTestProvider do
   end
 
   @impl true
+  def inject_steering(raw_request, _steering_items, _context) do
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
+  end
+
+  @impl true
   def request_snapshot(_raw_request),
     do: %{model_input: [], system_prompt: "", history_length: nil}
 

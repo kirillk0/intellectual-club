@@ -23,6 +23,7 @@ defmodule IntellectualClub.Generation.Persistence do
   @opaque_sequence 10_000
   @tool_result_sequence_base 1_000_000
   @tool_result_sequence_stride 1_000
+  @steering_sequence_base 2_000_000_000
   @transaction_resources [
     ChatMessage,
     ChatMessageStep,
@@ -187,6 +188,35 @@ defmodule IntellectualClub.Generation.Persistence do
         now,
         actor
       )
+    end)
+
+    :ok
+  end
+
+  def persist_canceled_from_step!(message_id, step_id)
+      when is_integer(message_id) and is_integer(step_id) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+
+      now = DateTime.utc_now()
+      answer_text = text_for_item_type(step, :answer)
+
+      message_id
+      |> load_message!(actor)
+      |> update_message!(
+        %{
+          status: :canceled,
+          token_count: TokenCounter.estimate(answer_text),
+          finished_at: now
+        },
+        actor
+      )
+
+      update_step!(step, %{status: :canceled, finished_at: now}, actor)
+      persist_usage_record!(step.id, nil, :canceled, now, actor)
     end)
 
     :ok
@@ -409,6 +439,195 @@ defmodule IntellectualClub.Generation.Persistence do
     :ok
   end
 
+  def persist_steering_before_provider!(message_id, step_id, text, raw_request)
+      when is_integer(message_id) and is_integer(step_id) and is_binary(text) and
+             is_map(raw_request) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+
+      step.items
+      |> List.wrap()
+      |> Enum.reject(&(&1.type == :steering))
+      |> ordered_by_sequence()
+      |> Enum.reverse()
+      |> Enum.each(&Ash.destroy!(&1, actor: actor))
+
+      steering = create_steering_item!(step, text, :before_response, actor)
+
+      step =
+        update_step!(
+          step,
+          %{
+            status: :waiting_provider,
+            raw_request: normalize_json_map(raw_request),
+            raw_response: nil,
+            response_final: false,
+            input_tokens: nil,
+            output_tokens: nil,
+            cached_input_tokens: nil,
+            reasoning_tokens: nil,
+            cost: nil,
+            first_token_at: nil,
+            finished_at: nil
+          },
+          actor
+        )
+
+      %{
+        item_id: steering.id,
+        step: load_step_with_items!(step.id, actor),
+        runtime_step:
+          step.id
+          |> load_step_with_items!(actor)
+          |> runtime_step_from_persisted_step(&(&1.type == :steering))
+      }
+    end)
+  end
+
+  def persist_steering_after_provider!(message_id, step_id, text)
+      when is_integer(message_id) and is_integer(step_id) and is_binary(text) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      steering = create_steering_item!(step, text, :after_response, actor)
+      step = load_step_with_items!(step.id, actor)
+
+      %{
+        item_id: steering.id,
+        step: step,
+        runtime_step:
+          runtime_step_from_persisted_step(
+            step,
+            &(&1.type not in [:tool_result, :artifact])
+          )
+      }
+    end)
+  end
+
+  def complete_step_and_start_next!(message_id, step_id, next_sequence, raw_request)
+      when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
+             next_sequence > 0 and is_map(raw_request) do
+    actor = actor_for_message!(message_id)
+    now = DateTime.utc_now()
+    raw_request = normalize_json_map(raw_request)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      step = update_step!(step, %{status: :done, finished_at: now}, actor)
+      persist_usage_record!(step.id, nil, :done, now, actor)
+
+      next_step =
+        case get_step_by_sequence(message_id, next_sequence, actor) do
+          nil ->
+            create_step!(
+              %{
+                chat_message_id: message_id,
+                sequence: next_sequence,
+                status: :waiting_provider,
+                raw_request: raw_request,
+                raw_response: nil,
+                response_final: false,
+                input_tokens: nil,
+                output_tokens: nil,
+                cached_input_tokens: nil,
+                reasoning_tokens: nil,
+                cost: nil,
+                first_token_at: nil,
+                finished_at: nil
+              },
+              actor
+            )
+
+          %ChatMessageStep{} = existing ->
+            update_step!(
+              existing,
+              %{
+                status: :waiting_provider,
+                raw_request: raw_request,
+                raw_response: nil,
+                response_final: false,
+                input_tokens: nil,
+                output_tokens: nil,
+                cached_input_tokens: nil,
+                reasoning_tokens: nil,
+                cost: nil,
+                first_token_at: nil,
+                finished_at: nil
+              },
+              actor
+            )
+        end
+
+      %{step_id: next_step.id, step_sequence: next_step.sequence, raw_request: raw_request}
+    end)
+  end
+
+  def load_step_for_provider_restart!(step_id) when is_integer(step_id) do
+    actor = actor_for_step!(step_id)
+    step = load_step_with_items!(step_id, actor)
+
+    %{
+      step: step,
+      runtime_step: runtime_step_from_persisted_step(step, &(&1.type == :steering))
+    }
+  end
+
+  def step_steering_state!(step_id) when is_integer(step_id) do
+    actor = actor_for_step!(step_id)
+    step = load_step_with_items!(step_id, actor)
+
+    placements =
+      step
+      |> ordered_items()
+      |> Enum.filter(&(&1.type == :steering))
+      |> Enum.map(&steering_item_placement/1)
+
+    %{
+      before_response_count: Enum.count(placements, &(&1 == :before_response)),
+      after_response_count: Enum.count(placements, &(&1 == :after_response))
+    }
+  end
+
+  def steering_specs_for_step!(step_id) when is_integer(step_id) do
+    actor = actor_for_step!(step_id)
+
+    step_id
+    |> load_step_with_items!(actor)
+    |> ordered_items()
+    |> Enum.filter(&(&1.type == :steering))
+    |> Enum.map(&steering_item_payload/1)
+  end
+
+  def restore_steering_specs!(step_id, specs) when is_integer(step_id) and is_list(specs) do
+    actor = actor_for_step!(step_id)
+
+    transaction!(fn ->
+      step = load_step_with_items!(step_id, actor)
+
+      Enum.each(specs, fn spec ->
+        text = to_string(Map.get(spec, :text, Map.get(spec, "text", "")))
+
+        placement =
+          case Map.get(spec, :placement, Map.get(spec, "placement")) do
+            value when value in [:before_response, "before_response"] -> :before_response
+            _other -> :after_response
+          end
+
+        if text != "" do
+          create_steering_item!(step, text, placement, actor)
+        end
+      end)
+    end)
+
+    :ok
+  end
+
   def persist_tool_result!(message_id, step_id, %ToolCall{} = call, result)
       when is_integer(message_id) and is_integer(step_id) do
     actor = actor_for_message!(message_id)
@@ -486,7 +705,12 @@ defmodule IntellectualClub.Generation.Persistence do
         step
         |> ordered_items()
         |> Enum.filter(&(&1.type == :tool_result))
-        |> Enum.map(&tool_result_from_item(&1, calls_by_item_id))
+        |> Enum.map(&tool_result_from_item(&1, calls_by_item_id)),
+      steering_items:
+        step
+        |> ordered_items()
+        |> Enum.filter(&(&1.type == :steering and steering_item_placement(&1) == :after_response))
+        |> Enum.map(&steering_item_payload/1)
     }
   end
 
@@ -651,16 +875,25 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp replace_step_items!(%ChatMessageStep{} = step, items, actor) when is_list(items) do
-    step
-    |> load_step_with_items!(actor)
+    persisted_step = load_step_with_items!(step, actor)
+
+    persisted_step
     |> Map.get(:items, [])
+    |> Enum.reject(&(&1.type == :steering))
     |> ordered_by_sequence()
     |> Enum.reverse()
     |> Enum.each(&Ash.destroy!(&1, actor: actor))
 
+    leading_steering_count =
+      persisted_step
+      |> Map.get(:items, [])
+      |> Enum.count(&(&1.type == :steering and steering_item_placement(&1) == :before_response))
+
     normalized_items =
       items
       |> Enum.filter(&is_map/1)
+      |> Enum.reject(&(normalize_item_type(Map.get(&1, :type)) == :steering))
+      |> Enum.map(&offset_provider_item_sequence(&1, leading_steering_count))
       |> Enum.sort_by(&positive_int(Map.get(&1, :sequence), 0))
 
     {calls_by_call_id, calls_by_sequence} =
@@ -963,6 +1196,119 @@ defmodule IntellectualClub.Generation.Persistence do
       |> Ash.Changeset.for_create(:create, attrs, actor: actor)
       |> Ash.create!(actor: actor)
     end)
+  end
+
+  defp create_steering_item!(%ChatMessageStep{} = step, text, placement, actor)
+       when is_binary(text) and placement in [:before_response, :after_response] do
+    step = load_step_with_items!(step, actor)
+
+    sequence =
+      case placement do
+        :before_response ->
+          step.items
+          |> List.wrap()
+          |> Enum.filter(
+            &(&1.type == :steering and steering_item_placement(&1) == :before_response)
+          )
+          |> Enum.map(& &1.sequence)
+          |> Enum.max(fn -> 0 end)
+          |> Kernel.+(1)
+
+        :after_response ->
+          trailing_count =
+            step.items
+            |> List.wrap()
+            |> Enum.count(
+              &(&1.type == :steering and steering_item_placement(&1) == :after_response)
+            )
+
+          @steering_sequence_base + trailing_count
+      end
+
+    item =
+      create_item!(
+        %{
+          chat_message_step_id: step.id,
+          sequence: sequence,
+          type: :steering,
+          tool_call_item_id: nil
+        },
+        actor
+      )
+
+    create_contents!(
+      item,
+      [
+        %{
+          external_id: Ash.UUID.generate(),
+          sequence: 1,
+          kind: :text,
+          content_text: text,
+          content_json: nil,
+          file_id: nil
+        },
+        %{
+          external_id: Ash.UUID.generate(),
+          sequence: @opaque_sequence,
+          kind: :opaque,
+          content_text: "",
+          content_json: %{"placement" => Atom.to_string(placement)},
+          file_id: nil
+        }
+      ],
+      actor
+    )
+
+    load_item_with_contents!(item, actor)
+  end
+
+  defp steering_item_payload(%ChatMessageItem{} = item) do
+    %{
+      item_id: item.id,
+      text:
+        item
+        |> ordered_contents()
+        |> Enum.filter(&(&1.kind == :text))
+        |> Enum.map_join("", &to_string(&1.content_text || "")),
+      placement: steering_item_placement(item)
+    }
+  end
+
+  defp steering_item_placement(%ChatMessageItem{} = item) do
+    item
+    |> ordered_contents()
+    |> Enum.find_value(fn
+      %{kind: :opaque, content_json: %{} = json} ->
+        case Map.get(json, "placement", Map.get(json, :placement)) do
+          "before_response" -> :before_response
+          :before_response -> :before_response
+          "after_response" -> :after_response
+          :after_response -> :after_response
+          _other -> nil
+        end
+
+      _other ->
+        nil
+    end)
+    |> case do
+      nil -> :after_response
+      placement -> placement
+    end
+  end
+
+  defp offset_provider_item_sequence(item, 0) when is_map(item), do: item
+
+  defp offset_provider_item_sequence(item, offset)
+       when is_map(item) and is_integer(offset) and offset > 0 do
+    sequence = positive_int(Map.get(item, :sequence), 1)
+    Map.put(item, :sequence, sequence + offset)
+  end
+
+  defp ensure_step_belongs_to_message!(%ChatMessageStep{chat_message_id: message_id}, message_id),
+    do: :ok
+
+  defp ensure_step_belongs_to_message!(%ChatMessageStep{}, _message_id) do
+    raise ArgumentError, "Step does not belong to message"
   end
 
   defp create_step!(attrs, actor) when is_map(attrs) do
@@ -1646,6 +1992,7 @@ defmodule IntellectualClub.Generation.Persistence do
   defp normalize_item_type(value)
        when value in [
               :input,
+              :steering,
               :reasoning,
               :answer,
               :tool_call,
@@ -1659,6 +2006,7 @@ defmodule IntellectualClub.Generation.Persistence do
   defp normalize_item_type(value) when is_binary(value) do
     case value do
       "input" -> :input
+      "steering" -> :steering
       "reasoning" -> :reasoning
       "answer" -> :answer
       "tool_call" -> :tool_call

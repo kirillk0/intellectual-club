@@ -55,6 +55,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
   @callback supports_cache_control?() :: boolean()
   @callback build_initial_request(map()) :: initial_request_result()
   @callback build_followup_request(map()) :: followup_request_result()
+  @callback inject_steering(map(), list(), map()) :: initial_request_result()
   @callback request_snapshot(map()) :: request_snapshot()
   @callback stream_generate(map(), (term() -> any())) :: :ok
 

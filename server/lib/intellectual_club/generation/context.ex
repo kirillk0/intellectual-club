@@ -13,9 +13,10 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Repo
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
+  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
@@ -49,6 +50,7 @@ defmodule IntellectualClub.Generation.Context do
     :timeout_ms,
     :context_length,
     :supports_image_input,
+    :supports_steering,
     :fix_role_alteration,
     :messages,
     :request_payload,
@@ -219,6 +221,7 @@ defmodule IntellectualClub.Generation.Context do
         context_length: configuration_context_length(llm_configuration),
         supports_image_input:
           bool_true?(llm_configuration && llm_configuration.supports_image_input),
+        supports_steering: configuration_supports_steering?(llm_configuration),
         fix_role_alteration:
           bool_true?(llm_configuration && llm_configuration.fix_role_alteration),
         messages: request_snapshot.model_input,
@@ -324,6 +327,7 @@ defmodule IntellectualClub.Generation.Context do
       context_length: configuration_context_length(llm_configuration),
       supports_image_input:
         bool_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
+      supports_steering: configuration_supports_steering?(llm_configuration),
       fix_role_alteration:
         bool_true?(llm_configuration && Map.get(llm_configuration, :fix_role_alteration)),
       messages: Map.get(request_snapshot, :model_input, []),
@@ -497,6 +501,7 @@ defmodule IntellectualClub.Generation.Context do
       timeout_ms: timeout_ms,
       context_length: configuration_context_length(chat.llm_configuration),
       supports_image_input: supports_image_input,
+      supports_steering: configuration_supports_steering?(chat.llm_configuration),
       fix_role_alteration:
         bool_true?(
           chat.llm_configuration && Map.get(chat.llm_configuration, :fix_role_alteration)
@@ -644,6 +649,12 @@ defmodule IntellectualClub.Generation.Context do
   defp sort_seq(_other), do: 0
 
   defp bool_true?(value), do: value in [true, "true", 1]
+
+  defp configuration_supports_steering?(%{} = configuration) do
+    Map.get(configuration, :supports_steering, true) != false
+  end
+
+  defp configuration_supports_steering?(_configuration), do: false
 
   defp load_retry_message(message_id, actor) when is_integer(message_id) do
     load = [
@@ -919,6 +930,9 @@ defmodule IntellectualClub.Generation.Context do
 
       {acc, message}
     end)
+    |> then(fn {acc, previous_message} ->
+      {maybe_insert_terminal_turn_aborted_marker(acc, previous_message), previous_message}
+    end)
     |> elem(0)
     |> Enum.reverse()
   end
@@ -936,6 +950,18 @@ defmodule IntellectualClub.Generation.Context do
 
   defp maybe_insert_turn_aborted_marker(acc, _previous_message, _current_message), do: acc
 
+  defp maybe_insert_terminal_turn_aborted_marker(acc, previous_message)
+       when is_list(acc) and is_map(previous_message) do
+    if assistant_role?(Map.get(previous_message, :role)) and
+         aborted_status?(Map.get(previous_message, :status)) do
+      [turn_aborted_marker(previous_message) | acc]
+    else
+      acc
+    end
+  end
+
+  defp maybe_insert_terminal_turn_aborted_marker(acc, _previous_message), do: acc
+
   defp history_message_for_generation(%{} = message) do
     case Map.get(message, :role) do
       :user ->
@@ -952,19 +978,65 @@ defmodule IntellectualClub.Generation.Context do
   defp history_message_for_generation(_other), do: nil
 
   defp assistant_message_for_generation(%{} = message) do
-    if done_status?(Map.get(message, :status)) do
+    message_status = Map.get(message, :status)
+
+    if done_status?(message_status) do
       message
     else
-      done_steps =
+      visible_steps =
         message
         |> Map.get(:steps, [])
-        |> Enum.filter(&done_status?(Map.get(&1, :status)))
+        |> Enum.flat_map(fn step ->
+          if done_status?(Map.get(step, :status)) do
+            [step]
+          else
+            visible_items = incomplete_history_items(step, message_status)
 
-      if done_steps == [] do
+            if visible_items == [] do
+              []
+            else
+              [Map.put(step, :items, visible_items)]
+            end
+          end
+        end)
+
+      if visible_steps == [] do
         nil
       else
-        %{message | steps: done_steps}
+        %{message | steps: visible_steps}
       end
+    end
+  end
+
+  defp incomplete_history_items(step, message_status) when is_map(step) do
+    allowed_types =
+      if aborted_status?(message_status) do
+        [:answer, :steering]
+      else
+        [:steering]
+      end
+
+    step
+    |> Map.get(:items, Map.get(step, "items", []))
+    |> Enum.flat_map(fn item ->
+      if History.item_type(item) in allowed_types and History.item_text(item) != "" do
+        [sanitize_incomplete_history_item(item)]
+      else
+        []
+      end
+    end)
+  end
+
+  defp sanitize_incomplete_history_item(item) when is_map(item) do
+    if History.item_type(item) == :answer do
+      text_contents =
+        item
+        |> History.contents()
+        |> Enum.filter(&(History.content_kind(&1) == :text))
+
+      Map.put(item, :contents, text_contents)
+    else
+      item
     end
   end
 

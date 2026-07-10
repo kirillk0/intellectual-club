@@ -147,6 +147,7 @@ defmodule IntellectualClubWeb.Router do
     delete "/chat-uploads/:chat_id/:upload_id", ChatUploadsController, :delete
 
     post "/chat-messages/:id/cancel", ChatMessagesController, :cancel
+    post "/chat-messages/:id/steer", ChatMessagesController, :steer
     post "/chat-messages/:id/retry-last-step", ChatMessagesController, :retry_last_step
 
     post "/chat-messages/:message_id/steps/:step_id/retry-from-step",

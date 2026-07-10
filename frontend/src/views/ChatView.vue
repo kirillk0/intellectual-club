@@ -241,7 +241,7 @@
             v-else
             class="chat-input-form"
             :class="{ 'chat-input-form--dragging': dragActive }"
-            @submit.prevent="vm.activeGenerationId ? vm.cancelActiveGeneration() : vm.send()"
+            @submit.prevent="vm.submitComposer()"
             @dragenter.prevent="handleDragEnter"
             @dragover.prevent="handleDragOver"
             @dragleave.prevent="handleDragLeave"
@@ -287,8 +287,8 @@
                 v-model="vm.draft"
                 placeholder="Type your message"
                 @paste="handleComposerPaste"
-                @keydown.enter.ctrl.exact.prevent="vm.activeGenerationId ? vm.cancelActiveGeneration() : vm.send()"
-                @keydown.enter.meta.exact.prevent="vm.activeGenerationId ? vm.cancelActiveGeneration() : vm.send()"
+                @keydown.enter.ctrl.exact.prevent="vm.submitComposer()"
+                @keydown.enter.meta.exact.prevent="vm.submitComposer()"
               ></textarea>
               <div class="chat-composer__actions">
                 <button
@@ -302,15 +302,36 @@
                   Attach
                 </button>
                 <button
+                  v-if="vm.activeGenerationId && vm.canSteerGeneration"
+                  class="chat-composer__send"
+                  type="button"
+                  :disabled="
+                    vm.steeringGenerationId === vm.activeGenerationId ||
+                    vm.cancelingGenerationId === vm.activeGenerationId
+                  "
+                  @click="vm.steerGeneration"
+                >
+                  {{ vm.steerButtonLabel }}
+                </button>
+                <button
+                  v-if="vm.activeGenerationId"
+                  class="chat-composer__cancel"
+                  type="button"
+                  :disabled="
+                    vm.cancelingGenerationId === vm.activeGenerationId ||
+                    vm.steeringGenerationId === vm.activeGenerationId
+                  "
+                  @pointerdown="vm.handleCancelPointerDown"
+                  @click="vm.cancelActiveGeneration"
+                >
+                  {{ vm.cancelButtonLabel }}
+                </button>
+                <button
+                  v-else
                   class="chat-composer__send"
                   type="submit"
-                  :disabled="
-                    vm.sending ||
-                    vm.isConfigSyncPending ||
-	                    Boolean(vm.activeGenerationId && vm.cancelingGenerationId === vm.activeGenerationId)
-                  "
+                  :disabled="vm.sending || vm.isConfigSyncPending"
                   :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
-                  @pointerdown="vm.activeGenerationId ? vm.handleCancelPointerDown : null"
                 >
                   {{ vm.sendButtonLabel }}
                 </button>
@@ -1268,6 +1289,27 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 .chat-composer__send:disabled:hover {
   background: var(--color-text-muted);
+}
+
+.chat-composer__cancel {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border: 1px solid var(--color-danger-border);
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-composer__cancel:hover {
+  background: color-mix(in srgb, var(--color-danger-bg) 75%, var(--color-danger-border));
+}
+
+.chat-composer__cancel:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .chat-composer__attach {

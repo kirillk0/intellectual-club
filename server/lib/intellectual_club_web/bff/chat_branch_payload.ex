@@ -12,7 +12,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   require Ash.Query
 
-  @display_item_types [:input, :answer, :artifact]
+  @display_item_types [:input, :steering, :answer, :artifact]
   @display_content_kinds [:text, :media]
   @chunk_size 500
 
@@ -353,6 +353,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
                   step_sequence: step_sequence,
                   item_id: item_id,
                   item_sequence: item_sequence,
+                  item_type: item_type,
                   content_id: map_get(content, :id, "id"),
                   sequence: map_get(content, :sequence, "sequence"),
                   text: to_string(map_get(content, :content_text, "content_text", "")),
@@ -501,7 +502,10 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     do: text_item_for_role?(item.type, role)
 
   defp text_item_for_role?(item_type, "user"), do: atom_to_string(item_type) == "input"
-  defp text_item_for_role?(item_type, "assistant"), do: atom_to_string(item_type) == "answer"
+
+  defp text_item_for_role?(item_type, "assistant"),
+    do: atom_to_string(item_type) in ["answer", "steering"]
+
   defp text_item_for_role?(_item_type, _role), do: false
 
   defp media_item_for_role?(%ChatMessageItem{} = item, role),

@@ -104,6 +104,21 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
                   out ++
                     Media.media_followup_input_items(History.media_contents_for_item(item), opts)
 
+                :steering ->
+                  text = History.item_text(item)
+
+                  if text == "" do
+                    []
+                  else
+                    [
+                      %{
+                        "type" => "message",
+                        "role" => "user",
+                        "content" => [%{"type" => "input_text", "text" => text}]
+                      }
+                    ]
+                  end
+
                 :artifact ->
                   []
 

@@ -67,7 +67,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
       previous_messages
       |> Kernel.++([assistant_tool_message(raw_response, runtime_step, results)])
       |> Kernel.++(tool_result_messages(results, opts))
-      |> maybe_apply_cache_control(opts)
+      |> apply_followup_cache_control(opts)
 
     %{
       messages: next_messages,
@@ -94,7 +94,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
 
   defp maybe_fix_role_alteration(messages, _fix_role_alteration), do: messages
 
-  defp maybe_apply_cache_control(messages, opts) when is_list(messages) and is_map(opts) do
+  def apply_followup_cache_control(messages, opts) when is_list(messages) and is_map(opts) do
     cache_control_enabled = Map.get(opts, :cache_control_enabled, false)
     history_length = Map.get(opts, :history_length)
 
@@ -109,7 +109,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     end
   end
 
-  defp maybe_apply_cache_control(messages, _opts), do: messages
+  def apply_followup_cache_control(messages, _opts), do: messages
 
   defp clear_dynamic_cache_markers(messages, history_length) do
     messages

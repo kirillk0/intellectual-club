@@ -40,6 +40,7 @@ type Params = {
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
+  supportsSteering: ComputedRef<boolean>;
   draftReady?: ComputedRef<boolean>;
   autoScrollEnabled?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
@@ -53,6 +54,8 @@ export function useChatComposerRuntime(params: Params) {
   const pendingFiles = ref<PendingChatFile[]>([]);
   const draft = ref('');
   const sending = ref(false);
+  const sendingMode = ref<'send' | 'continue' | null>(null);
+  const steeringGenerationId = ref<number | null>(null);
   const generationPollReconnecting = ref(false);
   const draftReady = computed(() => params.draftReady?.value ?? true);
   const chatDraftStorageKey = computed(() => {
@@ -74,14 +77,16 @@ export function useChatComposerRuntime(params: Params) {
     clearValueOnInvalidation: true,
   });
 
-  const sendButtonLabel = computed(() => {
-    if (params.activeGenerationId.value) {
-      return params.cancelingGenerationId.value === params.activeGenerationId.value
-        ? translate('Cancelling…')
-        : translate('Cancel');
-    }
+  const hasDraftText = computed(() => draft.value !== '');
+  const hasSendPayload = computed(() => hasDraftText.value || pendingFiles.value.length > 0);
+  const canSteerGeneration = computed(
+    () => Boolean(params.activeGenerationId.value) && params.supportsSteering.value && hasDraftText.value
+  );
 
+  const sendButtonLabel = computed(() => {
     if (sending.value) {
+      if (sendingMode.value === 'continue') return translate('Continuing…');
+
       const uploadProgress = overallPendingUploadProgress(pendingFiles.value);
       if (uploadProgress.active) {
         return translate('Uploading… {progress}%', {
@@ -92,10 +97,40 @@ export function useChatComposerRuntime(params: Params) {
       return translate('Sending…');
     }
 
-    return translate('Send');
+    return hasSendPayload.value ? translate('Send') : translate('Continue');
   });
 
+  const cancelButtonLabel = computed(() =>
+    params.cancelingGenerationId.value === params.activeGenerationId.value
+      ? translate('Cancelling…')
+      : translate('Cancel')
+  );
+
+  const steerButtonLabel = computed(() =>
+    steeringGenerationId.value === params.activeGenerationId.value
+      ? translate('Steering…')
+      : translate('Steer')
+  );
+
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
+
+  const steeringErrorMessage = (error: unknown) => {
+    if (isHttpError(error) && error.bodyJson && typeof error.bodyJson === 'object') {
+      const code = (error.bodyJson as { code?: unknown }).code;
+      const messageByCode: Record<string, string> = {
+        empty_steering: 'Steering content must not be empty.',
+        steering_not_supported: 'Steering is not supported by this configuration.',
+        generation_not_active: 'Generation is no longer active.',
+        terminal_handoff_in_progress: 'Steering is unavailable during a terminal handoff.',
+      };
+
+      if (typeof code === 'string' && messageByCode[code]) {
+        return translate(messageByCode[code]);
+      }
+    }
+
+    return errorMessage(error, translate('Failed to steer generation.'));
+  };
 
   const waitForAnimationFrame = () =>
     new Promise<void>((resolve) => {
@@ -660,13 +695,33 @@ export function useChatComposerRuntime(params: Params) {
     resumeSyncIfNeeded();
   };
 
-  const send = async () => {
+  type GenerationStartPayload = {
+    branch: ChatBranchMessage[];
+    generation: { message_id: number };
+  };
+
+  const applyGenerationStart = async (payload: GenerationStartPayload) => {
+    params.branch.value = payload.branch || [];
+
+    const messageId = payload.generation?.message_id;
+    if (messageId) {
+      await startPolling(messageId);
+    }
+
+    if (canAutoScroll()) {
+      void params.scrollToLastMessage({ behavior: 'smooth', block: 'end' });
+    }
+  };
+
+  const sendMessage = async () => {
     if (params.readOnly.value) return;
     if (!params.chatId.value || sending.value) return;
     if (params.activeGenerationId.value) return;
+    if (!hasSendPayload.value) return;
 
     const draftStorageKeyBeforeSend = chatDraftStorageKey.value;
     sending.value = true;
+    sendingMode.value = 'send';
     params.loadError.value = '';
 
     try {
@@ -680,43 +735,111 @@ export function useChatComposerRuntime(params: Params) {
       const hasUserText = content !== '';
       const uploadIds = pendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(pendingFiles) : [];
       const hasPendingFiles = uploadIds.length > 0;
+      if (!hasUserText && !hasPendingFiles) return;
 
-      const payload =
-        hasUserText || hasPendingFiles
-          ? await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-              `/api/bff/chat-generation/${params.chatId.value}/send`,
-              buildSendPayload(content, uploadIds)
-            )
-          : await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-              `/api/bff/chat-generation/${params.chatId.value}/generate`,
-              {}
-            );
+      const payload = await api.post<GenerationStartPayload>(
+        `/api/bff/chat-generation/${params.chatId.value}/send`,
+        buildSendPayload(content, uploadIds)
+      );
 
-      params.branch.value = payload.branch || [];
-      draft.value = '';
+      if (draft.value === content) draft.value = '';
       if (hasPendingFiles) pendingFiles.value = [];
-      chatTextDraft.clear(draftStorageKeyBeforeSend);
+      if (draft.value === '') chatTextDraft.clear(draftStorageKeyBeforeSend);
 
-      const messageId = payload.generation?.message_id;
-      if (messageId) {
-        await startPolling(messageId);
-      }
-
-      if (canAutoScroll()) {
-        void params.scrollToLastMessage({ behavior: 'smooth', block: 'end' });
-      }
+      await applyGenerationStart(payload);
     } catch (error) {
       console.error(error);
       params.loadError.value = errorMessage(error, translate('Failed to send message.'));
     } finally {
       sending.value = false;
+      sendingMode.value = null;
     }
+  };
+
+  const continueGeneration = async () => {
+    if (params.readOnly.value) return;
+    if (!params.chatId.value || sending.value) return;
+    if (params.activeGenerationId.value || hasSendPayload.value) return;
+
+    sending.value = true;
+    sendingMode.value = 'continue';
+    params.loadError.value = '';
+
+    try {
+      const configReady = await params.waitForConfigSync();
+      if (!configReady) {
+        params.loadError.value = translate('Configuration change is still syncing. Please wait.');
+        return;
+      }
+
+      const payload = await api.post<GenerationStartPayload>(
+        `/api/bff/chat-generation/${params.chatId.value}/generate`,
+        {}
+      );
+      await applyGenerationStart(payload);
+    } catch (error) {
+      console.error(error);
+      params.loadError.value = errorMessage(error, translate('Failed to send message.'));
+    } finally {
+      sending.value = false;
+      sendingMode.value = null;
+    }
+  };
+
+  const steerGeneration = async () => {
+    if (params.readOnly.value) return;
+    const messageId = params.activeGenerationId.value;
+    if (!messageId || !canSteerGeneration.value) return;
+    if (steeringGenerationId.value || params.cancelingGenerationId.value === messageId) return;
+
+    const content = draft.value;
+    if (content === '') return;
+
+    const draftStorageKeyBeforeSteer = chatDraftStorageKey.value;
+    steeringGenerationId.value = messageId;
+    params.loadError.value = '';
+
+    try {
+      await api.post<{ status: 'ok'; message_id: number; step_id: number }>(
+        `/api/bff/chat-messages/${messageId}/steer`,
+        { content }
+      );
+
+      if (draft.value === content) {
+        draft.value = '';
+        chatTextDraft.clear(draftStorageKeyBeforeSteer);
+      }
+
+      if (params.activeGenerationId.value === messageId) {
+        void startPolling(messageId);
+      }
+    } catch (error) {
+      console.error(error);
+      params.loadError.value = steeringErrorMessage(error);
+    } finally {
+      if (steeringGenerationId.value === messageId) steeringGenerationId.value = null;
+    }
+  };
+
+  const submitComposer = async () => {
+    if (params.activeGenerationId.value) {
+      if (canSteerGeneration.value) await steerGeneration();
+      return;
+    }
+
+    if (hasSendPayload.value) {
+      await sendMessage();
+      return;
+    }
+
+    await continueGeneration();
   };
 
   const cancelActiveGeneration = async () => {
     if (params.readOnly.value) return;
     const messageId = params.activeGenerationId.value;
     if (!messageId || params.cancelingGenerationId.value === messageId) return;
+    if (steeringGenerationId.value === messageId) return;
     params.cancelingGenerationId.value = messageId;
 
     try {
@@ -782,8 +905,13 @@ export function useChatComposerRuntime(params: Params) {
     cancelingGenerationId: params.cancelingGenerationId,
     draft,
     sending,
+    steeringGenerationId,
     generationPollReconnecting,
+    hasSendPayload,
+    canSteerGeneration,
     sendButtonLabel,
+    cancelButtonLabel,
+    steerButtonLabel,
     findPendingFile,
     ensurePendingFilesUploaded,
     removePendingFileFromCollection,
@@ -794,7 +922,10 @@ export function useChatComposerRuntime(params: Params) {
     handlePageShow,
     handleFocus,
     syncServerGenerationState,
-    send,
+    sendMessage,
+    continueGeneration,
+    steerGeneration,
+    submitComposer,
     cancelActiveGeneration,
     handleCancelPointerDown,
     onPendingFilesSelected,

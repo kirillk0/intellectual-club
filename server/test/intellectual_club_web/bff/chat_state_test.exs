@@ -100,6 +100,56 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     assert Enum.any?(all_text_contents(assistant), &String.contains?(&1, "TAIL"))
   end
 
+  test "GET /api/bff/chat-state/:id keeps partial answers visible after cancel and error", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    for {status, partial_text} <- [
+          {:canceled, "Partial answer before cancel"},
+          {:error, "Partial answer before error"}
+        ] do
+      chat =
+        Chat
+        |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+        |> Ash.create!(actor: actor)
+
+      {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hi", actor: actor)
+
+      assistant_message =
+        ChatMessage
+        |> Ash.Changeset.for_create(
+          :add_message,
+          %{
+            chat_id: chat.id,
+            role: :assistant,
+            parent_id: user_message.id,
+            status: status,
+            error_detail: if(status == :error, do: "Stream failed", else: nil),
+            token_count: 3
+          },
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
+
+      step = create_chat_message_step!(assistant_message.id, 1, status, actor)
+      item = create_chat_message_item!(step.id, 1, :answer, actor)
+      _content = create_chat_message_text_content!(item.id, 1, partial_text, actor)
+
+      payload =
+        conn
+        |> get(~p"/api/bff/chat-state/#{chat.id}")
+        |> json_response(200)
+
+      assistant =
+        Enum.find(payload["branch"] || [], &(&1["id"] == assistant_message.id))
+
+      assert assistant["status"] == Atom.to_string(status)
+      assert partial_text in all_text_contents(assistant)
+    end
+  end
+
   test "GET /api/bff/chat-state/:id includes retry error diagnostics in working summary", %{
     conn: conn
   } do
@@ -219,6 +269,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
              )
 
     assert cfg_payload["context_length"] == 8192
+    assert cfg_payload["supports_steering"] == true
   end
 
   test "GET /api/bff/chat-state/:id/settings includes configuration and bot tag metadata in options",

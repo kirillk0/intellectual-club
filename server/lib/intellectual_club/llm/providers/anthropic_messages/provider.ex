@@ -12,6 +12,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
 
   @type_id "anthropic_messages"
@@ -113,6 +114,25 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   end
 
   @impl true
+  def inject_steering(raw_request, steering_items, context)
+      when is_map(raw_request) and is_list(steering_items) and is_map(context) do
+    payload = RequestPayload.stringify_keys(raw_request)
+    steering_blocks = Enum.map(Steering.texts(steering_items), &%{"type" => "text", "text" => &1})
+
+    messages =
+      payload
+      |> RequestPayload.messages()
+      |> append_steering_blocks(steering_blocks)
+
+    raw_request =
+      payload
+      |> Map.put("messages", messages)
+      |> maybe_apply_followup_cache_control(context)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
+  end
+
+  @impl true
   def request_snapshot(raw_request), do: Payload.request_snapshot(raw_request)
 
   @impl true
@@ -208,6 +228,37 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   end
 
   defp put_followup_tool_choice(raw_request, _previous_raw_request), do: raw_request
+
+  defp append_steering_blocks(messages, []), do: messages
+
+  defp append_steering_blocks(messages, steering_blocks) when is_list(messages) do
+    case List.pop_at(messages, -1) do
+      {nil, _messages} ->
+        [%{"role" => "user", "content" => steering_blocks}]
+
+      {%{} = last_message, preceding_messages} ->
+        last_message = RequestPayload.stringify_keys(last_message)
+
+        if Map.get(last_message, "role") == "user" do
+          content = anthropic_content_blocks(Map.get(last_message, "content"))
+          preceding_messages ++ [Map.put(last_message, "content", content ++ steering_blocks)]
+        else
+          messages ++ [%{"role" => "user", "content" => steering_blocks}]
+        end
+
+      {_last_message, _preceding_messages} ->
+        messages ++ [%{"role" => "user", "content" => steering_blocks}]
+    end
+  end
+
+  defp anthropic_content_blocks(content) when is_list(content),
+    do: Enum.map(content, &RequestPayload.stringify_keys/1)
+
+  defp anthropic_content_blocks(content) when is_binary(content) do
+    if content == "", do: [], else: [%{"type" => "text", "text" => content}]
+  end
+
+  defp anthropic_content_blocks(_content), do: []
 
   defp assistant_message(%{"content" => content}, _runtime_step) when is_list(content) do
     %{"role" => "assistant", "content" => content}

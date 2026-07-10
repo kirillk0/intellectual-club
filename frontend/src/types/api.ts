@@ -97,6 +97,7 @@ export type LlmConfiguration = {
   tag_names?: string[];
   context_length?: number | null;
   supports_image_input?: boolean | null;
+  supports_steering?: boolean | null;
   can_edit?: boolean;
   shared_incoming?: boolean;
   shared_outgoing?: boolean;
@@ -298,6 +299,7 @@ export type ChatMessageContentPart = {
   step_sequence?: number | null;
   item_id?: number | null;
   item_sequence?: number | null;
+  item_type?: string | null;
   content_id: number;
   sequence: number;
   text: string;

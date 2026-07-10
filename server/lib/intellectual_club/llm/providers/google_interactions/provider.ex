@@ -9,6 +9,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
+  alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Api
   alias IntellectualClub.Llm.Providers.GoogleInteractions.ModelDiscovery
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Payload
@@ -105,6 +106,24 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
       raw_request: raw_request,
       request_snapshot: request_snapshot(raw_request)
     }
+  end
+
+  @impl true
+  def inject_steering(raw_request, steering_items, _context)
+      when is_map(raw_request) and is_list(steering_items) do
+    payload = RequestPayload.stringify_keys(raw_request)
+
+    steering_steps =
+      steering_items
+      |> Steering.texts()
+      |> Enum.map(fn text ->
+        %{"type" => "user_input", "content" => [%{"type" => "text", "text" => text}]}
+      end)
+
+    raw_request =
+      Map.put(payload, "input", Payload.previous_input_steps(payload) ++ steering_steps)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
 
   @impl true

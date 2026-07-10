@@ -13,6 +13,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.RoleAlterationFix
+  alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Responses.Api
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Llm.Providers.Responses.ModelDiscovery
@@ -136,6 +137,28 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       raw_request: raw_request,
       request_snapshot: request_snapshot(raw_request)
     }
+  end
+
+  @impl true
+  def inject_steering(raw_request, steering_items, _context)
+      when is_map(raw_request) and is_list(steering_items) do
+    payload = RequestPayload.stringify_keys(raw_request)
+
+    steering_input_items =
+      steering_items
+      |> Steering.texts()
+      |> Enum.map(fn text ->
+        %{
+          "type" => "message",
+          "role" => "user",
+          "content" => [%{"type" => "input_text", "text" => text}]
+        }
+      end)
+
+    raw_request =
+      Map.put(payload, "input", RequestPayload.input(payload) ++ steering_input_items)
+
+    %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
 
   @impl true

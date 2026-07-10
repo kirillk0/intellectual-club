@@ -106,6 +106,42 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     end
   end
 
+  def steer(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
+      message_id = String.to_integer(id)
+      content = params |> Map.get("content", "") |> to_string()
+
+      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+        case if(content == "",
+               do: {:error, :empty_steering},
+               else: GenerationSupervisor.steer_generation(message_id, content)
+             ) do
+          {:ok, payload} ->
+            json(conn, Map.put(payload, :status, "ok"))
+
+          {:error, :empty_steering} ->
+            render_steering_error(conn, :unprocessable_entity, :empty_steering)
+
+          {:error, :steering_not_supported} ->
+            render_steering_error(conn, :unprocessable_entity, :steering_not_supported)
+
+          {:error, :generation_not_active} ->
+            render_steering_error(conn, :conflict, :generation_not_active)
+
+          {:error, :terminal_handoff_in_progress} ->
+            render_steering_error(conn, :conflict, :terminal_handoff_in_progress)
+
+          {:error, {:steering_failed, reason}} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{code: "steering_failed", error: "Failed to steer: #{inspect(reason)}"})
+        end
+      else
+        {:error, error} -> render_access_error(conn, error)
+      end
+    end
+  end
+
   def retry_last_step(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
@@ -1061,4 +1097,17 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     |> put_status(:unprocessable_entity)
     |> json(%{error: Exception.message(error)})
   end
+
+  defp render_steering_error(conn, status, code) when is_atom(code) do
+    conn
+    |> put_status(status)
+    |> json(%{code: Atom.to_string(code), error: steering_error_message(code)})
+  end
+
+  defp steering_error_message(:empty_steering), do: "Steering content must not be empty."
+  defp steering_error_message(:steering_not_supported), do: "Steering is not supported."
+  defp steering_error_message(:generation_not_active), do: "Generation is not active."
+
+  defp steering_error_message(:terminal_handoff_in_progress),
+    do: "Steering is unavailable while handoff is in progress."
 end

@@ -20,7 +20,13 @@
 
       <div ref="messageContentEl" class="message-content" @click="handleMessageContentClick">
         <template v-for="(part, partIdx) in messageParts" :key="part.key">
-          <div class="message-answer-part">
+          <div
+            class="message-answer-part"
+            :class="{ 'message-steering-part': part.steering }"
+          >
+            <div v-if="part.steering" class="message-steering-label">
+              {{ translate('Steering') }}
+            </div>
             <span v-if="part.showTimestamp && part.timestamp" class="message-answer-time">
               {{ part.timestamp }}
             </span>
@@ -236,6 +242,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch, type ComponentPublicInstance } from 'vue';
 
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
+import {
+  isSteeringContentPart,
+  sortedChatMessageContentParts,
+} from '@/features/chat/model/chatMessageContent';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
 import type { ChatBranchMessage, ChatMessageContent, ChatMessageStep } from '@/types/api';
 import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
@@ -353,14 +363,16 @@ type MessagePart = {
   html: string;
   timestamp: string;
   showTimestamp: boolean;
+  steering: boolean;
 };
 
 const messageParts = computed<MessagePart[]>(() => {
   const parts: MessagePart[] = [];
 
-  for (const [index, part] of [...(msg.value.content?.parts || [])].sort(sortBySequence).entries()) {
+  for (const [index, part] of sortedChatMessageContentParts(msg.value).entries()) {
     const text = String(part.text ?? '');
-    if (!text.trim()) continue;
+    const steering = msg.value.role === 'assistant' && isSteeringContentPart(part);
+    if (!text.trim() && !steering) continue;
 
     parts.push({
       key:
@@ -370,6 +382,7 @@ const messageParts = computed<MessagePart[]>(() => {
       html: renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true }),
       timestamp: formatTimeOfDay(part.created_at),
       showTimestamp: msg.value.role === 'assistant',
+      steering,
     });
   }
 
@@ -643,6 +656,25 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   content: '';
   display: block;
   clear: both;
+}
+
+.message-steering-part {
+  align-self: flex-end;
+  width: min(88%, 760px);
+  margin-left: auto;
+  padding: 9px 11px;
+  border: 1px solid var(--color-chat-user-border);
+  border-radius: 10px;
+  background: var(--color-chat-user-bg);
+}
+
+.message-steering-label {
+  margin-bottom: 4px;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .message-answer-divider {

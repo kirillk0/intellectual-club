@@ -43,6 +43,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
   def build_followup_request(opts), do: Responses.build_followup_request(opts)
 
   @impl true
+  def inject_steering(raw_request, steering_items, context),
+    do: Responses.inject_steering(raw_request, steering_items, context)
+
+  @impl true
   def request_snapshot(raw_request), do: Responses.request_snapshot(raw_request)
 
   @impl true

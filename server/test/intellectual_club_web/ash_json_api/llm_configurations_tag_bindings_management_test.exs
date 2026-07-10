@@ -73,7 +73,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
   defp ids_from_included(_resp, _type), do: []
 
-  test "POST GET and PATCH /api/ash/llm-configurations handle fix_role_alteration", %{
+  test "POST GET and PATCH expose mutable configuration capabilities", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -109,6 +109,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "parameters" => %{},
             "enabled" => true,
             "timeout_seconds" => 300,
+            "supports_steering" => false,
             "fix_role_alteration" => true
           }
         }
@@ -117,6 +118,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     configuration_id = create_response["data"]["id"]
 
+    assert get_in(create_response, ["data", "attributes", "supports_steering"]) == false
     assert get_in(create_response, ["data", "attributes", "fix_role_alteration"]) == true
 
     get_response =
@@ -124,6 +126,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       |> json_api_get("/api/ash/llm-configurations/#{configuration_id}")
       |> json_response(200)
 
+    assert get_in(get_response, ["data", "attributes", "supports_steering"]) == false
     assert get_in(get_response, ["data", "attributes", "fix_role_alteration"]) == true
 
     patch_response =
@@ -132,14 +135,19 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
         "data" => %{
           "type" => "llm-configurations",
           "id" => configuration_id,
-          "attributes" => %{"fix_role_alteration" => false}
+          "attributes" => %{
+            "supports_steering" => true,
+            "fix_role_alteration" => false
+          }
         }
       })
       |> json_response(200)
 
+    assert get_in(patch_response, ["data", "attributes", "supports_steering"]) == true
     assert get_in(patch_response, ["data", "attributes", "fix_role_alteration"]) == false
 
     configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
+    assert configuration.supports_steering == true
     assert configuration.fix_role_alteration == false
   end
 

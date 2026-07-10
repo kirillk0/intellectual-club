@@ -575,7 +575,8 @@ const providerItems = (step: ChatMessageStep) => {
       item.type !== 'tool_result' &&
       item.type !== 'artifact' &&
       item.type !== 'answer' &&
-      item.type !== 'input'
+      item.type !== 'input' &&
+      item.type !== 'steering'
   );
 };
 

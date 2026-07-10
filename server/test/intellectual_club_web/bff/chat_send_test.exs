@@ -41,7 +41,7 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     wait_for_generation_to_finish(conn, generation_id)
   end
 
-  test "POST /api/bff/chat-generation/:id/send with empty content does not create user message",
+  test "POST /api/bff/chat-generation/:id/send rejects an empty user payload",
        %{
          conn: conn
        } do
@@ -51,15 +51,12 @@ defmodule IntellectualClubWeb.Bff.ChatSendTest do
     chat = create_chat!(actor, "Empty send chat")
 
     conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/send", %{"content" => ""})
-    payload = json_response(conn, 200)
+    payload = json_response(conn, 422)
 
-    generation_id = get_in(payload, ["generation", "message_id"])
-    assert is_integer(generation_id)
+    assert payload["error"] =~ "must contain text or an attachment"
 
-    branch = payload["branch"] || []
-    refute Enum.any?(branch, &(&1["role"] == "user"))
-
-    wait_for_generation_to_finish(conn, generation_id)
+    chat = Ash.get!(Chat, chat.id, actor: actor, load: [:last_message])
+    assert chat.last_message == nil
   end
 
   test "POST /api/bff/chat-generation/:id/send with file-only multipart creates user media content",
