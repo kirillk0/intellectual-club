@@ -346,9 +346,20 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     assert {:ok, result} = Fork.create_and_run(parent.tool_instance, task, context, actor)
 
-    assert result.raw["fork"] || result.raw["isError"] == true
-    assert [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
-    assert is_integer(child_chat_id)
+    assert %{
+             "chat_id" => child_chat_id,
+             "message_id" => child_message_id,
+             "generation_message_id" => child_message_id,
+             "final_chat_id" => child_chat_id,
+             "final_message_id" => child_message_id
+           } = result.raw["fork"]
+
+    refute result.raw["isError"]
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+
+    child_message = Ash.get!(ChatMessage, child_message_id, actor: actor)
+    assert child_message.status == :done
+    assert child_message.error_detail == nil
 
     parent_message =
       Ash.get!(ChatMessage, parent.message.id,

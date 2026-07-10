@@ -65,6 +65,66 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert GenerationSupervisor.get_generation_state(handoff_message.id) == :not_found
   end
 
+  test "prepared generation preserves its message while canceling other orphans" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Prepared", actor: actor)
+
+    target_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    orphan_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => "Prepared"}],
+      "stream" => true
+    }
+
+    target_step_id = Persistence.ensure_step_started!(target_message.id, 1, raw_request, [])
+    _orphan_step_id = Persistence.ensure_step_started!(orphan_message.id, 1, raw_request, [])
+
+    assert {:ok, _context} =
+             GenerationSupervisor.start_prepared_generation(
+               chat.id,
+               target_message.id,
+               target_step_id,
+               raw_request,
+               actor: actor,
+               chunk_delay_ms: 60_000
+             )
+
+    try do
+      target_message = Ash.get!(ChatMessage, target_message.id, actor: actor)
+      orphan_message = Ash.get!(ChatMessage, orphan_message.id, actor: actor)
+
+      assert target_message.status == :generating
+      assert target_message.error_detail == nil
+
+      assert orphan_message.status == :canceled
+      assert orphan_message.error_detail == "Orphaned generation (worker not found)"
+
+      assert {:ok, %{status: :generating}} =
+               GenerationSupervisor.get_generation_state(target_message.id)
+    after
+      _ = GenerationSupervisor.cancel_generation(target_message.id)
+    end
+  end
+
   defp create_chat!(actor, attrs \\ %{}) do
     Chat
     |> Ash.Changeset.for_create(

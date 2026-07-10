@@ -46,7 +46,7 @@ defmodule IntellectualClub.Generation.Supervisor do
     actor = Keyword.get(opts, :actor)
 
     :ok = Context.authorize_chat!(chat_id, actor)
-    :ok = cancel_for_chat(chat_id)
+    :ok = cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id])
 
     context = Context.build_prepared!(chat_id, message_id, step_id, raw_request, opts)
     start_worker(context)
@@ -259,13 +259,16 @@ defmodule IntellectualClub.Generation.Supervisor do
     result
   end
 
-  def cancel_for_chat(chat_id) do
+  def cancel_for_chat(chat_id), do: cancel_for_chat(chat_id, [])
+
+  defp cancel_for_chat(chat_id, opts) do
     active_message_ids = cancel_active_workers_for_chat(chat_id)
+    orphan_exception_message_ids = Keyword.get(opts, :orphan_exception_message_ids, [])
     :ok = cancel_descendant_generations_for_chat(chat_id)
 
     :ok =
       Persistence.cancel_orphaned_generating_messages!(chat_id,
-        except_message_ids: active_message_ids
+        except_message_ids: Enum.uniq(active_message_ids ++ orphan_exception_message_ids)
       )
 
     :ok
