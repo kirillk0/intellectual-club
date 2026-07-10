@@ -5,6 +5,7 @@
 <script setup lang="ts">
 import { provide, shallowReactive, toRef, watch } from 'vue';
 import { routeLocationKey, type RouteLocationNormalizedLoaded } from 'vue-router';
+import { invalidateServerStateQueries } from '@/features/serverState/queryClient';
 import { provideStackLayer } from '@/features/stack/useStackLayer';
 
 const props = defineProps<{ active: boolean; depth: number; route: RouteLocationNormalizedLoaded }>();
@@ -19,6 +20,13 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => props.active,
+  (active, wasActive) => {
+    if (active && wasActive === false) void invalidateServerStateQueries();
+  }
+);
+
 provideStackLayer({
   active: toRef(props, 'active'),
   depth: toRef(props, 'depth'),
@@ -26,4 +34,3 @@ provideStackLayer({
 
 provide(routeLocationKey, layerRoute);
 </script>
-

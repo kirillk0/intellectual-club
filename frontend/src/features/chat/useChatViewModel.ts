@@ -30,7 +30,7 @@ import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
-import { publishEntityChange } from '@/features/entities/entityChanges';
+import { publishChatChange } from '@/features/chat/chatEvents';
 import type {
   Bot,
   Chat,
@@ -185,8 +185,7 @@ export function useChatViewModel() {
       patch.active_generation_message_id = relation.active_generation_message_id;
     }
 
-    publishEntityChange({
-      kind: 'chat',
+    publishChatChange({
       operation: 'touch',
       id: targetChatId,
       patch,
@@ -367,7 +366,6 @@ export function useChatViewModel() {
     readOnly: sharedReadonly,
     knowledgeBlocks,
     toolLibrary,
-    routeFullPath: () => route.fullPath,
     stackOpen: stackNav.open,
     reloadChat: () => loadChat({ mode: 'soft' }),
   });
@@ -752,12 +750,8 @@ export function useChatViewModel() {
       if (!chatId.value) return;
       if (!active || !isLoaded) return;
       const wasActive = previous?.[0];
-      void (async () => {
-        const handled = await libraryDraft.consumePendingNewBlockContext();
-        if (handled) return;
-        if (wasActive !== false) return;
-        await loadChatSafe({ mode: 'soft' });
-      })();
+      if (wasActive !== false) return;
+      void loadChatSafe({ mode: 'soft' });
     },
     { immediate: true }
   );

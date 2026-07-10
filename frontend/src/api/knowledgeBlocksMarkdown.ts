@@ -116,7 +116,8 @@ export async function exportKnowledgeBlocksMarkdownArchive(
 export function previewKnowledgeBlocksMarkdownImport(tagId: number, files: File[]) {
   return api.post<MarkdownImportPreviewResponse>(
     '/api/bff/knowledge-blocks/markdown-import/preview',
-    buildImportFormData(tagId, files)
+    buildImportFormData(tagId, files),
+    { invalidateServerState: false }
   );
 }
 

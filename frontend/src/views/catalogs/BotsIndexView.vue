@@ -75,17 +75,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import type { ImageAsset } from '@/types/api';
 
@@ -106,9 +107,17 @@ const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const bots = ref<BotRow[]>([]);
+const botsQuery = useQuery<BotRow[]>({
+  queryKey: serverStateKeys.collection('bots', 'index'),
+  queryFn: ({ signal }) => fetchBots(signal),
+});
+
+const bots = computed(() => botsQuery.data.value ?? []);
+const loading = computed(() => botsQuery.isPending.value);
+const error = computed(() => {
+  if (botsQuery.data.value || !botsQuery.error.value) return null;
+  return botsQuery.error.value instanceof Error ? botsQuery.error.value.message : 'Failed to load bots.';
+});
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
   get: () => botSortMode.value,
@@ -206,55 +215,24 @@ function createBot() {
   stackNav.open({ path: `/catalogs/bots/new`, query: { recordsetKey } });
 }
 
+async function fetchBots(signal?: AbortSignal): Promise<BotRow[]> {
+  const botsParams = new URLSearchParams();
+  botsParams.set('sort', 'name');
+  botsParams.set(
+    'fields[bots]',
+    'name,blocks_count,tools_count,sort_activity_at,image,shared_incoming,shared_outgoing'
+  );
+
+  const botsPayload = await jsonApiList('/api/ash/bots', botsParams, { signal });
+
+  return (botsPayload.data || [])
+    .map((resource) => parseRow(resource))
+    .filter((bot): bot is BotRow => Boolean(bot));
+}
+
 async function loadBots() {
-  loading.value = true;
-  error.value = null;
-  try {
-    const botsParams = new URLSearchParams();
-    botsParams.set('sort', 'name');
-    botsParams.set(
-      'fields[bots]',
-      'name,blocks_count,tools_count,sort_activity_at,image,shared_incoming,shared_outgoing'
-    );
-
-    const botsPayload = await jsonApiList('/api/ash/bots', botsParams);
-
-    bots.value = (botsPayload.data || [])
-      .map((resource) => parseRow(resource))
-      .filter((b): b is BotRow => Boolean(b));
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load bots.';
-  } finally {
-    loading.value = false;
-  }
+  await botsQuery.refetch({ cancelRefetch: true });
 }
-
-async function fetchBotRow(id: number) {
-  try {
-    const botsParams = new URLSearchParams();
-    botsParams.set(
-      'fields[bots]',
-      'name,blocks_count,tools_count,sort_activity_at,image,shared_incoming,shared_outgoing'
-    );
-    const payload = await jsonApiGet(`/api/ash/bots/${id}`, botsParams);
-    return parseRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh bot row.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(bots, {
-  kind: 'bot',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchBotRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
-
-onMounted(() => {
-  loadBots();
-});
 </script>
 
 <style scoped>

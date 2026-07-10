@@ -20,6 +20,11 @@
     />
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
     <KnowledgeBlockReadonlyBanner v-if="sharedReadonly" />
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
@@ -107,6 +112,7 @@ import {
   type JsonApiResource,
 } from '@/api/jsonApi';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockFilesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockFilesSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
@@ -119,6 +125,7 @@ import type {
 } from '@/features/catalogs/components/knowledge-block/types';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import {
   useKnowledgeBlockFileBindingsDraft,
   type KnowledgeBlockFileDraftItem,
@@ -327,19 +334,36 @@ const loadError = editor.loadError;
 const numericId = editor.numericId;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 
-const fileBindings = useKnowledgeBlockFileBindingsDraft();
+const fileBindings = useKnowledgeBlockFileBindingsDraft({
+  enabled: computed(() => !editor.deleting.value),
+});
 const fileAttachments = fileBindings.draft;
 const filesLoading = fileBindings.loading;
 const filesError = fileBindings.error;
 const filesDirty = fileBindings.dirty;
 const suppressFilesAutoLoad = ref(false);
+const remoteUpdateAvailable = computed(
+  () => editor.remoteUpdateAvailable.value || fileBindings.remoteUpdateAvailable.value
+);
+
+const reloadRemoteDocument = async () => {
+  const reloadEditor = editor.remoteUpdateAvailable.value;
+  const reloadFiles = fileBindings.remoteUpdateAvailable.value;
+  if (reloadEditor) await editor.reloadRemoteDocument();
+  if (reloadFiles) await fileBindings.reloadRemoteFiles();
+};
+
+const keepEditingRemoteDocument = () => {
+  if (editor.remoteUpdateAvailable.value) editor.keepEditingRemoteDocument();
+  if (fileBindings.remoteUpdateAvailable.value) fileBindings.keepEditingRemoteFiles();
+};
 
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
-const blockTab = ref<KnowledgeBlockTab>('code');
+const blockTab = useEditorTabState<KnowledgeBlockTab>('knowledge-block', 'code');
 const initializedTabForId = ref<string | null>(null);
 const codeEditorRef = ref<KnowledgeBlockCodeEditorExpose | null>(null);
 
@@ -407,6 +431,7 @@ const knowledgeBlockContentDraft = useLocalTextDraft({
   isDraft: computed(() => form.content !== editor.base.value.content && !sharedReadonly.value),
 });
 const dirty = computed(() => editor.dirty.value || tagsDirty.value || filesDirty.value);
+editor.registerDirtySource(() => tagsDirty.value || filesDirty.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 useUnsavedChangesGuard(guardDirty);

@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, type ApiRequestOptions } from './client';
 import type { KnowledgeBlockAttachment } from '@/types/api';
 
 export type KnowledgeBlockFilesResponse = {
@@ -17,8 +17,8 @@ function buildFileFormData(file: File, options: UploadKnowledgeBlockFileOptions 
   return formData;
 }
 
-export function listKnowledgeBlockFiles(id: number) {
-  return api.get<KnowledgeBlockFilesResponse>(`/api/bff/knowledge-blocks/${id}/files`);
+export function listKnowledgeBlockFiles(id: number, options?: ApiRequestOptions) {
+  return api.get<KnowledgeBlockFilesResponse>(`/api/bff/knowledge-blocks/${id}/files`, options);
 }
 
 export function uploadKnowledgeBlockFile(id: number, file: File, options: UploadKnowledgeBlockFileOptions = {}) {

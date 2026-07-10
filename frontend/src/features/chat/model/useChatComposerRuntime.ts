@@ -22,7 +22,7 @@ import {
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
-import { publishEntityChange } from '@/features/entities/entityChanges';
+import { publishChatChange } from '@/features/chat/chatEvents';
 import { translate } from '@/i18n';
 import type { ChatBranchMessage } from '@/types/api';
 
@@ -563,8 +563,7 @@ export function useChatComposerRuntime(params: Params) {
         stopPolling();
         await params.onGenerationSettled?.(messageId, response.status);
         if (params.chatId.value) {
-          publishEntityChange({
-            kind: 'chat',
+          publishChatChange({
             operation: 'touch',
             id: params.chatId.value,
             meta: { reason: 'generation-settled', status: response.status },
@@ -591,8 +590,7 @@ export function useChatComposerRuntime(params: Params) {
     stopPolling({ resetConnectionState: !sameGeneration });
     params.activeGenerationId.value = messageId;
     if (params.chatId.value) {
-      publishEntityChange({
-        kind: 'chat',
+      publishChatChange({
         operation: 'touch',
         id: params.chatId.value,
         patch: { active_generation_message_id: messageId },

@@ -20,6 +20,11 @@
     />
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
     <div v-if="sharedReadonly" class="card share-banner">
       <strong>Shared with you.</strong> This tool is read-only. Duplicate it to create an editable copy.
     </div>
@@ -487,15 +492,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import { api, isHttpError } from '@/api/client';
 import {
   createJsonApiIncludedIndex,
-  jsonApiGet,
   jsonApiList,
   relationshipId,
   relatedResources,
@@ -504,8 +510,9 @@ import {
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { publishEntityChange } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { translate } from '@/i18n';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -690,9 +697,22 @@ const isNewRoute = computed(() => {
   return !id || String(id) === 'new';
 });
 
-const toolTypesLoading = ref(false);
-const toolTypesError = ref<string | null>(null);
-const toolTypes = ref<ToolDriverMeta[]>([]);
+const toolTypesQuery = useQuery<ToolDriverMeta[]>({
+  queryKey: serverStateKeys.reference('tool-types', 'driver-metadata'),
+  queryFn: async ({ signal }) => {
+    const payload = await api.get<{ types: ToolDriverMeta[] }>('/api/bff/tools/types', { signal });
+    return Array.isArray(payload?.types) ? payload.types : [];
+  },
+});
+
+const toolTypes = computed(() => toolTypesQuery.data.value ?? []);
+const toolTypesLoading = computed(() => toolTypesQuery.isPending.value);
+const toolTypesError = computed(() => {
+  if (toolTypesQuery.data.value || !toolTypesQuery.error.value) return null;
+  return toolTypesQuery.error.value instanceof Error
+    ? toolTypesQuery.error.value.message
+    : 'Failed to load tool metadata.';
+});
 const toolTypesByType = computed<Record<string, ToolDriverMeta>>(() => {
   const out: Record<string, ToolDriverMeta> = {};
   for (const item of toolTypes.value || []) {
@@ -702,22 +722,6 @@ const toolTypesByType = computed<Record<string, ToolDriverMeta>>(() => {
   }
   return out;
 });
-
-async function loadToolTypes() {
-  toolTypesLoading.value = true;
-  toolTypesError.value = null;
-
-  try {
-    const payload = await api.get<{ types: ToolDriverMeta[] }>('/api/bff/tools/types');
-    toolTypes.value = Array.isArray(payload?.types) ? payload.types : [];
-  } catch (e) {
-    console.error(e);
-    toolTypesError.value = e instanceof Error ? e.message : 'Failed to load tool metadata.';
-    toolTypes.value = [];
-  } finally {
-    toolTypesLoading.value = false;
-  }
-}
 
 const editor = useCrudEditor<ToolInstanceForm>({
   type: 'tool-instances',
@@ -809,6 +813,9 @@ const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;
 const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
 const saving = editor.saving;
 const dirty = editor.dirty;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
@@ -859,7 +866,7 @@ const createNew = () => {
 };
 const goList = editor.goList;
 
-const toolTab = ref<'settings' | 'description' | 'credentials' | 'functions'>('settings');
+const toolTab = useEditorTabState<'settings' | 'description' | 'credentials' | 'functions'>('tool-instance', 'settings');
 const descriptionHasText = computed(() => String(form.description || '').trim() !== '');
 const functionsTabCount = computed(() => functions.value.length);
 
@@ -921,10 +928,7 @@ type KnowledgeTagRow = {
 
 const knowledgeTagPickerOpen = ref(false);
 const knowledgeTagPickerFieldKey = ref<string | null>(null);
-const knowledgeTagsLoading = ref(false);
-const knowledgeTagsError = ref<string | null>(null);
-const knowledgeTagsLoaded = ref(false);
-const knowledgeTags = ref<KnowledgeTagRow[]>([]);
+const knowledgeTagsQueryEnabled = ref(false);
 
 function configWidget(schema: JsonSchema): string {
   const xUi = schema['x-ui'];
@@ -952,24 +956,36 @@ function parseKnowledgeTagRow(resource: JsonApiResource): KnowledgeTagRow | null
   };
 }
 
-async function loadKnowledgeTags() {
-  if (knowledgeTagsLoading.value || knowledgeTagsLoaded.value) return;
-  knowledgeTagsLoading.value = true;
-  knowledgeTagsError.value = null;
-
-  try {
+const knowledgeTagsQuery = useQuery<KnowledgeTagRow[]>({
+  queryKey: serverStateKeys.reference('knowledge-tags', 'tree'),
+  enabled: knowledgeTagsQueryEnabled,
+  queryFn: async ({ signal }) => {
     const params = new URLSearchParams();
     params.set('sort', 'full_name');
-    const payload = await jsonApiList('/api/ash/knowledge-tags', params);
-    knowledgeTags.value = (payload.data || [])
+    const payload = await jsonApiList('/api/ash/knowledge-tags', params, { signal });
+    return (payload.data || [])
       .map(parseKnowledgeTagRow)
       .filter((tag): tag is KnowledgeTagRow => Boolean(tag));
-    knowledgeTagsLoaded.value = true;
-  } catch (e) {
-    console.error(e);
-    knowledgeTagsError.value = e instanceof Error ? e.message : 'Failed to load knowledge tags.';
-  } finally {
-    knowledgeTagsLoading.value = false;
+  },
+});
+
+const knowledgeTags = computed(() => knowledgeTagsQuery.data.value ?? []);
+const knowledgeTagsLoading = computed(
+  () => knowledgeTagsQueryEnabled.value && knowledgeTagsQuery.isPending.value
+);
+const knowledgeTagsError = computed(() => {
+  if (!knowledgeTagsQueryEnabled.value) return null;
+  if (knowledgeTagsQuery.data.value || !knowledgeTagsQuery.error.value) return null;
+  return knowledgeTagsQuery.error.value instanceof Error
+    ? knowledgeTagsQuery.error.value.message
+    : 'Failed to load knowledge tags.';
+});
+
+async function loadKnowledgeTags() {
+  const shouldRetry = knowledgeTagsQueryEnabled.value && knowledgeTagsQuery.isError.value;
+  knowledgeTagsQueryEnabled.value = true;
+  if (shouldRetry) {
+    await knowledgeTagsQuery.refetch({ cancelRefetch: false });
   }
 }
 
@@ -1431,23 +1447,6 @@ watch(
   { immediate: true }
 );
 
-async function refreshToolMeta() {
-  const toolId = editor.numericId.value;
-  if (!toolId) return;
-
-  try {
-    const payload = await jsonApiGet(`/api/ash/tool-instances/${toolId}`);
-    const patch = fromApi(payload.data);
-    if (typeof patch.last_discovered_at === 'string') form.last_discovered_at = patch.last_discovered_at;
-    if (typeof patch.last_discovery_error === 'string') form.last_discovery_error = patch.last_discovery_error;
-    if (Array.isArray(patch.secrets_present)) {
-      form.secrets_present = patch.secrets_present;
-    }
-  } catch (e) {
-    console.warn('Failed to refresh tool metadata', e);
-  }
-}
-
 async function runDiscover() {
   const toolId = editor.numericId.value;
   if (!toolId) return;
@@ -1475,7 +1474,6 @@ async function runDiscover() {
     };
 
     await editor.load();
-    publishEntityChange({ kind: 'tool-instance', operation: 'touch', id: toolId, meta: { reason: 'discovery' } });
   } catch (e) {
     console.error(e);
     const message =
@@ -1486,7 +1484,6 @@ async function runDiscover() {
           : 'Discovery failed.';
 
     form.last_discovery_error = message;
-    publishEntityChange({ kind: 'tool-instance', operation: 'touch', id: toolId, meta: { reason: 'discovery-error' } });
   } finally {
     discovering.value = false;
   }
@@ -1544,8 +1541,9 @@ const saveWithValidation = async () => {
 
   if (!validateRequiredConfigFields()) return;
 
-  await editor.save();
-  await refreshToolMeta();
+  const saved = await editor.save();
+  if (!saved) return;
+  await editor.reloadRemoteDocument();
   editor.base.value = JSON.parse(JSON.stringify(form)) as ToolInstanceForm;
   resetConfigText();
 };
@@ -1562,18 +1560,16 @@ watch(
 watch(
   () => toolTypes.value,
   () => {
-    syncDefaultsForFormAndBase();
-    resetConfigText();
+    if (!dirty.value && !configError.value) {
+      syncDefaultsForFormAndBase();
+      resetConfigText();
+    }
 
     if (functionsMode.value === 'fixed') {
       setFixedFunctions();
     }
   }
 );
-
-onMounted(() => {
-  loadToolTypes();
-});
 
 </script>
 

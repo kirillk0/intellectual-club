@@ -66,14 +66,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
@@ -90,9 +91,19 @@ const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const providers = ref<ProviderRow[]>([]);
+const providersQuery = useQuery<ProviderRow[]>({
+  queryKey: serverStateKeys.collection('llm-providers', 'index'),
+  queryFn: ({ signal }) => fetchProviders(signal),
+});
+
+const providers = computed(() => providersQuery.data.value ?? []);
+const loading = computed(() => providersQuery.isPending.value);
+const error = computed(() => {
+  if (providersQuery.data.value || !providersQuery.error.value) return null;
+  return providersQuery.error.value instanceof Error
+    ? providersQuery.error.value.message
+    : 'Failed to load providers.';
+});
 
 const search = ref(String(route.query.q || ''));
 
@@ -154,45 +165,17 @@ function createProvider() {
   stackNav.open({ path: `/catalogs/llm-providers/new`, query: { recordsetKey } });
 }
 
+async function fetchProviders(signal?: AbortSignal): Promise<ProviderRow[]> {
+  const params = new URLSearchParams();
+  params.set('sort', 'name');
+  params.set('fields[llm-providers]', 'name,type,base_url,shared_incoming,shared_outgoing');
+  const payload = await jsonApiList('/api/ash/llm-providers', params, { signal });
+  return (payload.data || []).map(parseRow).filter((provider): provider is ProviderRow => Boolean(provider));
+}
+
 async function loadProviders() {
-  loading.value = true;
-  error.value = null;
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'name');
-    params.set('fields[llm-providers]', 'name,type,base_url,shared_incoming,shared_outgoing');
-    const payload = await jsonApiList('/api/ash/llm-providers', params);
-    providers.value = (payload.data || []).map(parseRow).filter((p): p is ProviderRow => Boolean(p));
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load providers.';
-  } finally {
-    loading.value = false;
-  }
+  await providersQuery.refetch({ cancelRefetch: true });
 }
-
-async function fetchProviderRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set('fields[llm-providers]', 'name,type,base_url,shared_incoming,shared_outgoing');
-    const payload = await jsonApiGet(`/api/ash/llm-providers/${id}`, params);
-    return parseRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh provider row.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(providers, {
-  kind: 'llm-provider',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchProviderRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
-
-onMounted(() => {
-  loadProviders();
-});
 </script>
 
 <style scoped>

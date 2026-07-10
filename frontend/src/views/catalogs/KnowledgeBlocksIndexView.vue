@@ -173,6 +173,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
@@ -190,9 +191,9 @@ import {
   type MarkdownImportSummary,
 } from '@/api/knowledgeBlocksMarkdown';
 import { parseImageAsset } from '@/features/media/image';
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
@@ -207,17 +208,20 @@ type KnowledgeBlockRow = {
   shared_outgoing: boolean;
 };
 
+type KnowledgeBlockFilters = {
+  q: string;
+  tagId: number | null;
+  noTags: boolean;
+};
+
 const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const blocks = ref<KnowledgeBlockRow[]>([]);
 const transferError = ref<string | null>(null);
 const transferStatus = ref<string | null>(null);
 
-const search = ref(String(route.query.q || ''));
+const search = ref(queryString(route.query.q));
 
 const isMobile = ref(false);
 const tagsOverlayOpen = ref(false);
@@ -244,6 +248,11 @@ function closeTagsOverlay() {
   tagsOverlayOpen.value = false;
 }
 
+function queryString(value: unknown) {
+  const source = Array.isArray(value) ? value[0] : value;
+  return typeof source === 'string' ? source : '';
+}
+
 const selectedTagId = computed(() => toIntId(route.query.tag as any));
 const selectedNoTags = computed(() => parseBooleanQuery(route.query.no_tags));
 const hasActiveTagFilter = computed(() => Boolean(selectedTagId.value) || selectedNoTags.value);
@@ -262,7 +271,7 @@ function parseBooleanQuery(value: unknown): boolean {
 watch(
   () => route.query.q,
   (q) => {
-    const next = String(q || '');
+    const next = queryString(q);
     if (next !== search.value) search.value = next;
   }
 );
@@ -275,14 +284,6 @@ watch(
     router.replace({ query: next }).catch(() => {});
   }
 );
-
-function formatVersion(value: string) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  if (/^v\d+/i.test(text)) return text;
-  if (/^\d+$/.test(text)) return `v${text}`;
-  return text;
-}
 
 function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
   const id = toIntId(resource.id);
@@ -299,13 +300,30 @@ function parseRow(resource: JsonApiResource): KnowledgeBlockRow | null {
   };
 }
 
-const visibleBlocks = computed(() => blocks.value);
+const blockFilters = computed<KnowledgeBlockFilters>(() => ({
+  q: queryString(route.query.q).trim(),
+  tagId: selectedNoTags.value ? null : selectedTagId.value,
+  noTags: selectedNoTags.value,
+}));
 
-function rowMatchesSearch(row: KnowledgeBlockRow) {
-  const q = String(route.query.q || '').trim().toLowerCase();
-  if (!q) return true;
-  return `${row.name} ${formatVersion(row.version)}`.toLowerCase().includes(q);
-}
+const blocksQuery = useQuery<KnowledgeBlockRow[]>({
+  queryKey: computed(() =>
+    serverStateKeys.collection('knowledge-blocks', 'index', {
+      q: blockFilters.value.q,
+      tagId: blockFilters.value.tagId,
+      noTags: blockFilters.value.noTags,
+    })
+  ),
+  queryFn: ({ signal }) => fetchBlocks(blockFilters.value, signal),
+});
+
+const blocks = computed(() => blocksQuery.data.value ?? []);
+const visibleBlocks = computed(() => blocks.value);
+const loading = computed(() => blocksQuery.isPending.value);
+const error = computed(() => {
+  if (blocksQuery.data.value || !blocksQuery.error.value) return null;
+  return blocksQuery.error.value instanceof Error ? blocksQuery.error.value.message : 'Failed to load blocks.';
+});
 
 function describeTransferError(error: unknown, fallback: string) {
   return getApiErrorMessage(error, fallback);
@@ -511,63 +529,20 @@ function createBlock() {
   stackNav.open({ path: `/catalogs/knowledge-blocks/new`, query });
 }
 
-let lastBlocksRequestId = 0;
+async function fetchBlocks(filters: KnowledgeBlockFilters, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  params.set('sort', 'name');
+  params.set('fields[knowledge-blocks]', 'name,version,token_count,image,shared_incoming,shared_outgoing');
+  if (filters.q) params.set('q', filters.q);
+  if (filters.noTags) params.set('no_tags', 'true');
+  else if (filters.tagId) params.set('tag_id', String(filters.tagId));
+
+  const payload = await jsonApiList('/api/ash/knowledge-blocks', params, { signal });
+  return (payload.data || []).map(parseRow).filter((block): block is KnowledgeBlockRow => Boolean(block));
+}
 
 async function loadBlocks() {
-  const requestId = ++lastBlocksRequestId;
-  loading.value = true;
-  error.value = null;
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'name');
-    params.set('fields[knowledge-blocks]', 'name,version,token_count,image,shared_incoming,shared_outgoing');
-    const q = String(route.query.q || '').trim();
-    if (q) params.set('q', q);
-    if (selectedNoTags.value) params.set('no_tags', 'true');
-    else if (selectedTagId.value) params.set('tag_id', String(selectedTagId.value));
-
-    const payload = await jsonApiList('/api/ash/knowledge-blocks', params);
-    if (requestId !== lastBlocksRequestId) return;
-
-    blocks.value = (payload.data || []).map(parseRow).filter((b): b is KnowledgeBlockRow => Boolean(b));
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load blocks.';
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function fetchBlockRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set('fields[knowledge-blocks]', 'name,version,token_count,image,shared_incoming,shared_outgoing');
-    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${id}`, params);
-    return parseRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh knowledge block row.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(blocks, {
-  kind: 'knowledge-block',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchBlockRow(change.id),
-  include: (row, _change, current) => {
-    if (!rowMatchesSearch(row)) return false;
-    if (!hasActiveTagFilter.value) return true;
-
-    scheduleReloadBlocks();
-    return Boolean(current);
-  },
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
-
-let reloadTimer: number | null = null;
-function scheduleReloadBlocks() {
-  if (reloadTimer) window.clearTimeout(reloadTimer);
-  reloadTimer = window.setTimeout(() => void loadBlocks(), 250);
+  await blocksQuery.refetch({ cancelRefetch: true });
 }
 
 onMounted(() => {
@@ -584,14 +559,6 @@ watch(
   (mobile) => {
     if (!mobile) closeTagsOverlay();
   }
-);
-
-watch(
-  () => [route.query.q, route.query.tag, route.query.no_tags],
-  () => {
-    scheduleReloadBlocks();
-  },
-  { immediate: true }
 );
 
 watch(

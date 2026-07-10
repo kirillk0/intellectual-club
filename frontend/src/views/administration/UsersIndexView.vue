@@ -65,7 +65,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -73,8 +74,8 @@ import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { listAdminUsers } from '@/api/adminAshApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { useSessionAuth } from '@/features/auth/session';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUser } from '@/types/api';
@@ -85,9 +86,19 @@ const stackNav = useStackNavigation();
 
 const { currentUser } = useSessionAuth();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const users = ref<AdminUser[]>([]);
+const usersQuery = useQuery<AdminUser[]>({
+  queryKey: serverStateKeys.collection('users', 'administration-index'),
+  queryFn: ({ signal }) => listAdminUsers(signal),
+});
+
+const users = computed(() => usersQuery.data.value ?? []);
+const loading = computed(() => usersQuery.isPending.value);
+const error = computed(() => {
+  if (usersQuery.data.value || !usersQuery.error.value) return null;
+  return usersQuery.error.value instanceof Error
+    ? usersQuery.error.value.message
+    : 'Failed to load users.';
+});
 
 const search = ref(String(route.query.q || ''));
 
@@ -131,13 +142,6 @@ const visibleUsers = computed(() => {
   );
 });
 
-function normalizeUserRow(value: unknown): AdminUser | null {
-  if (!value || typeof value !== 'object') return null;
-  const user = value as AdminUser;
-  if (!Number.isInteger(user.id) || user.id <= 0) return null;
-  return user;
-}
-
 function openUser(id: number) {
   const ids = visibleUsers.value.map((user) => user.id);
   const recordsetKey = createRecordset(ids);
@@ -151,27 +155,6 @@ function createUser() {
 }
 
 async function loadUsers() {
-  loading.value = true;
-  error.value = null;
-
-  try {
-    users.value = await listAdminUsers();
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load users.';
-  } finally {
-    loading.value = false;
-  }
+  await usersQuery.refetch({ cancelRefetch: true });
 }
-
-useLiveEntityRows(users, {
-  kind: 'admin-user',
-  getId: (row) => row.id,
-  resolveRow: (change) => normalizeUserRow(change.row),
-  compare: (a, b) => a.username.localeCompare(b.username) || a.id - b.id,
-});
-
-onMounted(() => {
-  loadUsers();
-});
 </script>

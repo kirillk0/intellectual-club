@@ -194,13 +194,14 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -236,9 +237,17 @@ const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const tools = ref<ToolInstanceRow[]>([]);
+const toolsQuery = useQuery<ToolInstanceRow[]>({
+  queryKey: serverStateKeys.collection('tool-instances', 'index'),
+  queryFn: ({ signal }) => fetchTools(signal),
+});
+
+const tools = computed(() => toolsQuery.data.value ?? []);
+const loading = computed(() => toolsQuery.isPending.value);
+const error = computed(() => {
+  if (toolsQuery.data.value || !toolsQuery.error.value) return null;
+  return toolsQuery.error.value instanceof Error ? toolsQuery.error.value.message : 'Failed to load tools.';
+});
 
 const search = ref(String(route.query.q || ''));
 const selectedToolType = ref(normalizeType(route.query.type));
@@ -427,53 +436,24 @@ function createTool() {
   stackNav.open({ path: `/catalogs/tools/new`, query: { recordsetKey } });
 }
 
+async function fetchTools(signal?: AbortSignal): Promise<ToolInstanceRow[]> {
+  const params = new URLSearchParams();
+  params.set('sort', 'name');
+  params.set(
+    'fields[tool-instances]',
+    'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
+  );
+  const payload = await jsonApiList('/api/ash/tool-instances', params, { signal });
+  return (payload.data || []).map(parseRow).filter((tool): tool is ToolInstanceRow => Boolean(tool));
+}
+
 async function loadTools() {
-  loading.value = true;
-  error.value = null;
-
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'name');
-    params.set(
-      'fields[tool-instances]',
-      'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
-    );
-    const payload = await jsonApiList('/api/ash/tool-instances', params);
-    tools.value = (payload.data || []).map(parseRow).filter((t): t is ToolInstanceRow => Boolean(t));
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load tools.';
-  } finally {
-    loading.value = false;
-  }
+  await toolsQuery.refetch({ cancelRefetch: true });
 }
-
-async function fetchToolRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set(
-      'fields[tool-instances]',
-      'name,description,alias,type,config,max_output_tokens,rps_limit,last_discovered_at,last_discovery_error,outlet_online,shared_incoming,shared_outgoing'
-    );
-    const payload = await jsonApiGet(`/api/ash/tool-instances/${id}`, params);
-    return parseRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh tool row.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(tools, {
-  kind: 'tool-instance',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchToolRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
 
 onMounted(() => {
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
-  loadTools();
 });
 
 onBeforeUnmount(() => {

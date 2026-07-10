@@ -63,15 +63,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { getAdminUserGroup, listAdminUserGroups } from '@/api/adminAshApi';
+import { listAdminUserGroups } from '@/api/adminAshApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { AdminUserGroup } from '@/types/api';
@@ -80,9 +81,19 @@ const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const groups = ref<AdminUserGroup[]>([]);
+const groupsQuery = useQuery<AdminUserGroup[]>({
+  queryKey: serverStateKeys.collection('user-groups', 'administration-index'),
+  queryFn: ({ signal }) => listAdminUserGroups(signal),
+});
+
+const groups = computed(() => groupsQuery.data.value ?? []);
+const loading = computed(() => groupsQuery.isPending.value);
+const error = computed(() => {
+  if (groupsQuery.data.value || !groupsQuery.error.value) return null;
+  return groupsQuery.error.value instanceof Error
+    ? groupsQuery.error.value.message
+    : 'Failed to load groups.';
+});
 
 const search = ref(String(route.query.q || ''));
 
@@ -133,22 +144,6 @@ const visibleGroups = computed(() => {
   );
 });
 
-function normalizeGroupRow(value: unknown): AdminUserGroup | null {
-  if (!value || typeof value !== 'object') return null;
-  const group = value as AdminUserGroup;
-  if (!Number.isInteger(group.id) || group.id <= 0) return null;
-  return group;
-}
-
-async function fetchGroupRow(groupId: number): Promise<AdminUserGroup | null> {
-  try {
-    return normalizeGroupRow(await getAdminUserGroup(groupId));
-  } catch (error) {
-    console.warn('Failed to refresh user group row.', error);
-    return null;
-  }
-}
-
 function openGroup(id: number) {
   const ids = visibleGroups.value.map((group) => group.id);
   const recordsetKey = createRecordset(ids);
@@ -162,27 +157,6 @@ function createGroup() {
 }
 
 async function loadGroups() {
-  loading.value = true;
-  error.value = null;
-
-  try {
-    groups.value = await listAdminUserGroups();
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load groups.';
-  } finally {
-    loading.value = false;
-  }
+  await groupsQuery.refetch({ cancelRefetch: true });
 }
-
-useLiveEntityRows(groups, {
-  kind: 'admin-user-group',
-  getId: (row) => row.id,
-  resolveRow: (change) => normalizeGroupRow(change.row) ?? fetchGroupRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
-
-onMounted(() => {
-  loadGroups();
-});
 </script>

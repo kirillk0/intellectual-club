@@ -19,6 +19,12 @@
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
 
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
+
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
 
@@ -60,8 +66,8 @@
 
       <div v-if="!isNew" class="card stack">
         <h3 style="margin: 0">Details</h3>
-        <div class="muted">Created: {{ detailValue(groupMeta.created_at) }}</div>
-        <div class="muted">Updated: {{ detailValue(groupMeta.updated_at) }}</div>
+        <div class="muted">Created: {{ detailValue(form.created_at) }}</div>
+        <div class="muted">Updated: {{ detailValue(form.updated_at) }}</div>
       </div>
     </fieldset>
   </div>
@@ -70,65 +76,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useQuery } from '@tanstack/vue-query';
+import { computed } from 'vue';
 import CrudHeader from '@/components/CrudHeader.vue';
-import { isHttpError } from '@/api/client';
-import {
-  createAdminUserGroup,
-  deleteAdminUserGroup,
-  getAdminUserGroup,
-  listAdminUsers,
-  updateAdminUserGroup,
-} from '@/api/adminAshApi';
-import {
-  appendRecordsetId,
-  removeRecordsetId,
-} from '@/features/catalogs/model/recordsets';
-import { publishEntityChange } from '@/features/entities/entityChanges';
-import { useCrudRecordsetNavigation } from '@/features/catalogs/model/useCrudRecordsetNavigation';
-import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompare';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
+import { listAdminUsers } from '@/api/adminAshApi';
+import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { useNavigationStack } from '@/features/stack/navigationStack';
-import { useStackNavigation } from '@/features/stack/useStackNavigation';
-import {
-  fieldErrorsFromJsonApiErrors,
-  formErrorsFromJsonApiErrors,
-  getJsonApiErrors,
-  toIntId,
-} from '@/api/jsonApi';
+import { serverStateKeys } from '@/features/serverState/queryClient';
+import { toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { formatRelativeDateTime } from '@/utils/dates';
-import type { AdminUser, AdminUserGroup } from '@/types/api';
+import type { AdminUser } from '@/types/api';
 
 type GroupForm = {
   name: string;
   user_ids: number[];
+  created_at: string | null;
+  updated_at: string | null;
 };
-
-type ErrorMap = Record<string, string[]>;
-
-function pickQuery(query: Record<string, string | number | boolean | null | undefined>) {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(query)) {
-    if (value === null || value === undefined) continue;
-    out[key] = String(value);
-  }
-  return out;
-}
-
-function pickLocationQueryValue(raw: unknown): string | undefined {
-  if (Array.isArray(raw)) {
-    const first = raw.find((item) => item !== null && item !== undefined);
-    return first === null || first === undefined ? undefined : String(first);
-  }
-
-  if (raw === null || raw === undefined) return undefined;
-  return String(raw);
-}
-
-function cloneForm(form: GroupForm): GroupForm {
-  return JSON.parse(JSON.stringify(form)) as GroupForm;
-}
 
 function normalizeIdList(ids: number[]) {
   return Array.from(
@@ -149,191 +114,89 @@ function normalizeUsers(users: AdminUser[]) {
     .sort((a, b) => a.username.localeCompare(b.username) || a.id - b.id);
 }
 
-function createErrorState() {
-  const formErrors = ref<string[]>([]);
-  const fieldErrors = ref<ErrorMap>({});
-
-  const clear = () => {
-    formErrors.value = [];
-    fieldErrors.value = {};
-  };
-
-  const clearField = (field: string) => {
-    if (!fieldErrors.value[field]) return;
-    const next = { ...fieldErrors.value };
-    delete next[field];
-    fieldErrors.value = next;
-  };
-
-  const hasField = (field: string) => Boolean(fieldErrors.value[field]?.length);
-  const messageFor = (field: string) => (fieldErrors.value[field] || []).join(' ');
-
-  const setFromHttpError = (error: unknown) => {
-    if (!isHttpError(error)) return false;
-
-    const jsonApiErrors = getJsonApiErrors(error);
-    if (jsonApiErrors?.length) {
-      formErrors.value = formErrorsFromJsonApiErrors(jsonApiErrors);
-      fieldErrors.value = fieldErrorsFromJsonApiErrors(jsonApiErrors);
-      return true;
-    }
-
-    const body = error.bodyJson;
-    const nextFieldErrors: ErrorMap = {};
-    const nextFormErrors: string[] = [];
-
-    if (body && typeof body === 'object') {
-      const payload = body as { error?: unknown; detail?: unknown; errors?: unknown };
-
-      if (payload.errors && typeof payload.errors === 'object') {
-        for (const [key, value] of Object.entries(payload.errors as Record<string, unknown>)) {
-          const messages = Array.isArray(value)
-            ? value.map((item) => String(item || '').trim()).filter((item) => item !== '')
-            : [];
-
-          if (!messages.length) continue;
-
-          if (key === '_form') {
-            nextFormErrors.push(...messages);
-          } else {
-            nextFieldErrors[key] = messages;
-          }
-        }
-      }
-
-      if (!nextFormErrors.length && typeof payload.error === 'string' && payload.error.trim() !== '') {
-        nextFormErrors.push(payload.error.trim());
-      }
-    }
-
-    formErrors.value = nextFormErrors;
-    fieldErrors.value = nextFieldErrors;
-    return true;
-  };
-
-  return {
-    formErrors,
-    fieldErrors,
-    clear,
-    clearField,
-    hasField,
-    messageFor,
-    setFromHttpError,
-  };
+function relationshipIds(resource: JsonApiResource, name: string) {
+  const data = resource.relationships?.[name]?.data;
+  if (!Array.isArray(data)) return [];
+  return normalizeIdList(
+    data
+      .map((item) => toIntId(item.id))
+      .filter((id): id is number => typeof id === 'number')
+  );
 }
 
-function extractErrorMessage(error: unknown, fallback: string) {
-  if (!isHttpError(error)) {
-    return error instanceof Error ? error.message : fallback;
-  }
-
-  const jsonApiErrors = getJsonApiErrors(error);
-  if (jsonApiErrors?.length) {
-    const message = jsonApiErrors
-      .map((item) => String(item.detail || item.title || '').trim())
-      .filter((item) => item !== '')
-      .join(' ');
-    if (message) return message;
-  }
-
-  const body = error.bodyJson;
-  if (body && typeof body === 'object') {
-    const payload = body as { error?: unknown; detail?: unknown; errors?: unknown };
-
-    if (payload.errors && typeof payload.errors === 'object') {
-      const messages = Object.values(payload.errors as Record<string, unknown>)
-        .flatMap((value) =>
-          Array.isArray(value)
-            ? value.map((item) => String(item || '').trim()).filter((item) => item !== '')
-            : []
-        )
-        .filter((message) => message !== '');
-
-      if (messages.length) return messages.join(' ');
-    }
-
-    if (typeof payload.error === 'string' && payload.error.trim() !== '') return payload.error.trim();
-    if (typeof payload.detail === 'string' && payload.detail.trim() !== '') return payload.detail.trim();
-  }
-
-  return fallback;
+function optionalStringAttribute(resource: JsonApiResource, name: string) {
+  const value = resource.attributes?.[name];
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
-const route = useRoute();
-const stack = useNavigationStack();
-const stackNav = useStackNavigation();
-
-const idParam = computed(() => route.params.id as string | undefined);
-const isNew = computed(() => !idParam.value || idParam.value === 'new');
-const numericId = computed(() => {
-  if (isNew.value) return undefined;
-  const id = toIntId(idParam.value);
-  return id ?? undefined;
+const usersQuery = useQuery<AdminUser[]>({
+  queryKey: serverStateKeys.reference('users', 'administration-group-editor'),
+  queryFn: ({ signal }) => listAdminUsers(signal),
 });
 
-const recordsetKey = computed(
-  () => pickLocationQueryValue(route.query.recordsetKey) ?? pickLocationQueryValue(route.query.navKey)
-);
-const explicitReturnTo = computed(() => pickLocationQueryValue(route.query.returnTo) ?? null);
-const returnTo = computed(() => explicitReturnTo.value);
-
-const form = reactive<GroupForm>({
-  name: '',
-  user_ids: [],
+const availableUsers = computed(() => normalizeUsers(usersQuery.data.value || []));
+const usersError = computed(() => {
+  if (usersQuery.data.value || !usersQuery.error.value) return null;
+  return usersQuery.error.value instanceof Error
+    ? usersQuery.error.value.message
+    : 'Failed to load users.';
 });
 
-const base = ref<GroupForm>(cloneForm(form));
-const groupMeta = reactive<Pick<AdminUserGroup, 'created_at' | 'updated_at'>>({
-  created_at: null,
-  updated_at: null,
+const editor = useCrudEditor<GroupForm>({
+  type: 'user-groups',
+  basePath: '/api/ash/user-groups',
+  indexPath: '/administration/user-groups',
+  editPath: (id) => `/administration/user-groups/${id}`,
+  defaultForm: () => ({
+    name: '',
+    user_ids: [],
+    created_at: null,
+    updated_at: null,
+  }),
+  fromApi: (resource) => ({
+    name: String(resource.attributes?.name || ''),
+    user_ids: relationshipIds(resource, 'users'),
+    created_at: optionalStringAttribute(resource, 'created_at'),
+    updated_at: optionalStringAttribute(resource, 'updated_at'),
+  }),
+  toAttributes: (form) => ({
+    name: form.name,
+    users: normalizeIdList(form.user_ids),
+  }),
+  normalizeForDirty: (form) => ({
+    name: form.name,
+    user_ids: normalizeIdList(form.user_ids),
+  }),
+  documentQuery: () => {
+    const params = new URLSearchParams();
+    params.set('include', 'users');
+    return params;
+  },
 });
 
-const loaded = ref(false);
-const loading = ref(false);
-const saving = ref(false);
-const deleting = ref(false);
-const loadError = ref<string | null>(null);
-const usersError = ref<string | null>(null);
-const availableUsers = ref<AdminUser[]>([]);
-
-const saveErrors = createErrorState();
+const form = editor.form;
+const loaded = editor.loaded;
+const loading = computed(() => editor.loading.value || usersQuery.isPending.value);
+const saving = editor.saving;
+const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
+const isNew = editor.isNew;
+const totalCount = editor.totalCount;
+const positionNumber = editor.positionNumber;
+const navDisabled = editor.navDisabled;
+const goPrev = editor.goPrev;
+const goNext = editor.goNext;
+const createNew = editor.createNew;
+const goList = editor.goList;
+const remove = editor.remove;
+const saveErrors = editor.errors;
 const saveFormErrors = computed(() => saveErrors.formErrors.value);
-
-const dirty = useJsonDirtyCompare(() => form, () => base.value);
+const dirty = editor.dirty;
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 
 useUnsavedChangesGuard(dirty);
-
-const editorQuery = computed(() => {
-  const query = pickQuery({
-    recordsetKey: recordsetKey.value,
-  });
-
-  return query;
-});
-
-const navigateTo = (id: number) => {
-  const target = { path: `/administration/user-groups/${id}`, query: editorQuery.value };
-  if (stack.active.value) {
-    return stackNav.replace(target);
-  }
-  return stackNav.push(target);
-};
-
-const { totalCount, positionNumber, navDisabled, goPrev, goNext } = useCrudRecordsetNavigation({
-  recordsetKey,
-  currentId: numericId,
-  isNew,
-  navigate: navigateTo,
-});
-
-function applyGroup(group: AdminUserGroup) {
-  form.name = String(group.name || '');
-  form.user_ids = normalizeIdList((group.users || []).map((user) => Number(user.id)));
-  base.value = cloneForm(form);
-  groupMeta.created_at = group.created_at ?? null;
-  groupMeta.updated_at = group.updated_at ?? null;
-}
 
 function toggleUser(userId: number) {
   form.user_ids = normalizeIdList(
@@ -345,147 +208,16 @@ function toggleUser(userId: number) {
 }
 
 function reset() {
-  Object.assign(form, cloneForm(base.value));
-  saveErrors.clear();
-}
-
-function goList() {
-  if (stack.active.value) {
-    stackNav.close();
-    return;
-  }
-
-  stackNav.push(returnTo.value || '/administration/user-groups');
-}
-
-function createNew() {
-  stackNav.push({ path: '/administration/user-groups/new', query: editorQuery.value });
+  editor.reset();
 }
 
 function detailValue(value?: string | null) {
   return formatRelativeDateTime(value) || '—';
 }
 
-async function loadUsers() {
-  try {
-    availableUsers.value = normalizeUsers(await listAdminUsers());
-    usersError.value = null;
-  } catch (error) {
-    console.error(error);
-    availableUsers.value = [];
-    usersError.value = extractErrorMessage(error, 'Failed to load users.');
-  }
-}
-
-async function load() {
-  loading.value = true;
-  loadError.value = null;
-  saveErrors.clear();
-
-  try {
-    await loadUsers();
-
-    if (isNew.value) {
-      form.name = '';
-      form.user_ids = [];
-      base.value = cloneForm(form);
-      groupMeta.created_at = null;
-      groupMeta.updated_at = null;
-      return;
-    }
-
-    if (numericId.value === undefined) {
-      loadError.value = 'Invalid id.';
-      return;
-    }
-
-    applyGroup(await getAdminUserGroup(numericId.value));
-  } catch (error) {
-    console.error(error);
-    loadError.value = extractErrorMessage(error, 'Failed to load group.');
-  } finally {
-    loading.value = false;
-    loaded.value = true;
-  }
-}
-
 async function save() {
-  if (saving.value) return;
-  saveErrors.clear();
-  saving.value = true;
-
-  try {
-    if (isNew.value) {
-      const createdGroup = await createAdminUserGroup({
-        name: form.name,
-        user_ids: form.user_ids,
-      });
-
-      applyGroup(createdGroup);
-      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: createdGroup.id, row: createdGroup });
-
-      if (recordsetKey.value) appendRecordsetId(recordsetKey.value, createdGroup.id);
-
-      await stackNav.replace({
-        path: `/administration/user-groups/${createdGroup.id}`,
-        query: editorQuery.value,
-      });
-    } else {
-      if (numericId.value === undefined) return;
-
-      const updatedGroup = await updateAdminUserGroup(numericId.value, {
-        name: form.name,
-        user_ids: form.user_ids,
-      });
-
-      applyGroup(updatedGroup);
-      publishEntityChange({ kind: 'admin-user-group', operation: 'upsert', id: updatedGroup.id, row: updatedGroup });
-    }
-  } catch (error) {
-    if (!saveErrors.setFromHttpError(error)) {
-      console.error(error);
-      alert(extractErrorMessage(error, 'Failed to save group.'));
-    }
-  } finally {
-    saving.value = false;
-  }
+  await editor.save();
 }
-
-async function remove() {
-  if (deleting.value || isNew.value || numericId.value === undefined) return;
-  if (!window.confirm(`Delete group "${form.name}"?`)) return;
-
-  deleting.value = true;
-
-  try {
-    await deleteAdminUserGroup(numericId.value);
-    publishEntityChange({ kind: 'admin-user-group', operation: 'delete', id: numericId.value });
-
-    if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
-
-    if (stack.active.value) {
-      stackNav.close();
-    } else {
-      await stackNav.replace(returnTo.value || '/administration/user-groups');
-    }
-  } catch (error) {
-    console.error(error);
-    alert(extractErrorMessage(error, 'Failed to delete group.'));
-  } finally {
-    deleting.value = false;
-  }
-}
-
-onMounted(() => {
-  load();
-});
-
-watch(
-  () => idParam.value,
-  () => {
-    void load();
-  }
-);
 </script>
 
 <style scoped>

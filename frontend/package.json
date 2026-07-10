@@ -7,6 +7,8 @@
     "node": ">=24.16.0 <25"
   },
   "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
     "typecheck": "vue-tsc --noEmit",
     "build:vite": "vite build",
     "build": "npm run typecheck && npm run build:vite",
@@ -21,6 +23,7 @@
     "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.1",
+    "@tanstack/vue-query": "^5.101.2",
     "dompurify": "^3.4.10",
     "marked": "^18.0.5",
     "prismjs": "^1.30.0",
@@ -32,9 +35,12 @@
   "devDependencies": {
     "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^6.0.7",
+    "@vue/test-utils": "^2.4.11",
+    "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vite-svg-loader": "^5.1.1",
+    "vitest": "^4.1.10",
     "vue-tsc": "^3.3.5"
   }
 }

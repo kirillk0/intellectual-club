@@ -33,6 +33,11 @@
     </CrudHeader>
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
     <div v-if="sharedReadonly" class="card share-banner">
       <strong>Shared with you.</strong> This bot is read-only. Duplicate it to create an editable copy.
     </div>
@@ -389,11 +394,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
 import BotShareWizardModal, { type BotShareToolBinding } from '@/components/BotShareWizardModal.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
@@ -403,6 +410,7 @@ import { deleteBotImage, uploadBotImage } from '@/api/images';
 import BotKnowledgeBlocksSection from '@/features/catalogs/components/BotKnowledgeBlocksSection.vue';
 import BotToolsSection from '@/features/catalogs/components/BotToolsSection.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import {
   useKnowledgeBlockBindingsDraft,
   type KnowledgeBlockLinkItem,
@@ -419,9 +427,8 @@ import {
 } from '@/features/catalogs/model/useBotUserToolOverrides';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { publishEntityChange, useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { useStackLayer } from '@/features/stack/useStackLayer';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   mergeToolInstanceOptions,
@@ -430,7 +437,6 @@ import {
 } from '@/features/tools/model/toolInstances';
 import {
   createJsonApiIncludedIndex,
-  jsonApiGet,
   jsonApiList,
   relatedResource,
   relatedResources,
@@ -466,9 +472,9 @@ type ShareStateResponse = {
 
 const route = useRoute();
 const stackNav = useStackNavigation();
-const layer = useStackLayer();
 
 const BOT_DOCUMENT_INCLUDE = [
+  'default_llm_configuration',
   'knowledge_block_bindings.knowledge_block',
   'handoff_message_block',
   'compatible_configuration_tag_bindings.llm_configuration_tag',
@@ -643,18 +649,43 @@ const editor = useCrudEditor<BotForm>({
 const bindings = useKnowledgeBlockBindingsDraft({});
 const toolBindings = useBotToolBindings();
 
-const allConfigurationTags = ref<ConfigurationTagRow[]>([]);
-const configurationTagsCatalogLoaded = ref(false);
-const configurationTagsLoading = ref(false);
-const configurationTagsError = ref<string | null>(null);
+const includedConfigurationTags = ref<ConfigurationTagRow[]>([]);
 const compatibleTagBindingsLoading = ref(false);
 const compatibleTagBindingsError = ref<string | null>(null);
 const currentCompatibleTagBindings = ref<CompatibleTagBindingRow[]>([]);
 const draftCompatibleTagIds = ref<number[]>([]);
 const compatibleTagsPickerOpen = ref(false);
-const llmConfigurationOptions = ref<LlmConfigurationOption[]>([]);
-const llmConfigurationsLoading = ref(false);
-const llmConfigurationsError = ref<string | null>(null);
+const includedLlmConfigurationOptions = ref<LlmConfigurationOption[]>([]);
+
+const configurationTagsQuery = useQuery<ConfigurationTagRow[]>({
+  queryKey: serverStateKeys.reference('llm-configuration-tags', 'editable-list'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('editable_only', 'true');
+    params.set('fields[llm-configuration-tags]', 'name');
+    const payload = await jsonApiList('/api/ash/llm-configuration-tags', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseConfigurationTagRow(resource))
+      .filter((tag): tag is ConfigurationTagRow => Boolean(tag));
+  },
+});
+
+const allConfigurationTags = computed(() => {
+  const byId = new Map<number, ConfigurationTagRow>();
+  for (const tag of includedConfigurationTags.value) byId.set(tag.id, tag);
+  for (const tag of configurationTagsQuery.data.value || []) byId.set(tag.id, tag);
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
+const configurationTagsLoading = computed(() => configurationTagsQuery.isPending.value);
+const configurationTagsError = computed(() => {
+  if (configurationTagsQuery.data.value || !configurationTagsQuery.error.value) return null;
+  const message =
+    configurationTagsQuery.error.value instanceof Error
+      ? configurationTagsQuery.error.value.message
+      : 'Failed to load tags.';
+  return message.startsWith('HTTP 403') || message.startsWith('HTTP 401') ? null : message;
+});
 
 function parseLlmConfigurationOption(resource: JsonApiResource | null | undefined): LlmConfigurationOption | null {
   if (!resource) return null;
@@ -676,25 +707,34 @@ function configurationOptionLabel(config: LlmConfigurationOption) {
   return config.enabled ? label : `${label} (disabled)`;
 }
 
-async function loadLlmConfigurations() {
-  llmConfigurationsLoading.value = true;
-  llmConfigurationsError.value = null;
-
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'model_name');
-    qs.set('fields[llm-configurations]', 'model_name,note,enabled');
-    const payload = await jsonApiList('/api/ash/llm-configurations', qs);
-    llmConfigurationOptions.value = (payload.data || [])
+const llmConfigurationsQuery = useQuery<LlmConfigurationOption[]>({
+  queryKey: serverStateKeys.reference('llm-configurations', 'bot-editor'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'model_name');
+    params.set('fields[llm-configurations]', 'model_name,note,enabled');
+    const payload = await jsonApiList('/api/ash/llm-configurations', params, { signal });
+    return (payload.data || [])
       .map(parseLlmConfigurationOption)
       .filter((item): item is LlmConfigurationOption => Boolean(item));
-  } catch (error) {
-    console.error(error);
-    llmConfigurationsError.value = error instanceof Error ? error.message : 'Failed to load configurations.';
-  } finally {
-    llmConfigurationsLoading.value = false;
-  }
-}
+  },
+});
+
+const llmConfigurationOptions = computed(() => {
+  const byId = new Map<number, LlmConfigurationOption>();
+  for (const option of includedLlmConfigurationOptions.value) byId.set(option.id, option);
+  for (const option of llmConfigurationsQuery.data.value || []) byId.set(option.id, option);
+  return Array.from(byId.values()).sort(
+    (a, b) => configurationOptionLabel(a).localeCompare(configurationOptionLabel(b)) || a.id - b.id
+  );
+});
+const llmConfigurationsLoading = computed(() => llmConfigurationsQuery.isPending.value);
+const llmConfigurationsError = computed(() => {
+  if (llmConfigurationsQuery.data.value || !llmConfigurationsQuery.error.value) return null;
+  return llmConfigurationsQuery.error.value instanceof Error
+    ? llmConfigurationsQuery.error.value.message
+    : 'Failed to load configurations.';
+});
 
 const attachedCompatibleTags = computed(() => {
   const tagMap = new Map<number, ConfigurationTagRow>();
@@ -710,10 +750,10 @@ const attachedCompatibleTags = computed(() => {
 function mergeConfigurationTags(tags: ConfigurationTagRow[]) {
   const byId = new Map<number, ConfigurationTagRow>();
 
-  for (const tag of allConfigurationTags.value) byId.set(tag.id, tag);
+  for (const tag of includedConfigurationTags.value) byId.set(tag.id, tag);
   for (const tag of tags) byId.set(tag.id, tag);
 
-  allConfigurationTags.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  includedConfigurationTags.value = Array.from(byId.values());
 }
 
 const compatibleTagBindingsDirty = computed(() => {
@@ -738,44 +778,16 @@ function resetCompatibleTagBindings(bindings: CompatibleTagBindingRow[] = []) {
   compatibleTagBindingsError.value = null;
 }
 
-async function loadConfigurationTags() {
-  configurationTagsLoading.value = true;
-  configurationTagsError.value = null;
-
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('editable_only', 'true');
-    qs.set('fields[llm-configuration-tags]', 'name');
-    const payload = await jsonApiList('/api/ash/llm-configuration-tags', qs);
-    mergeConfigurationTags(
-      (payload.data || [])
-        .map((resource) => {
-          const id = toIntId(resource.id);
-          if (!id) return null;
-          const attrs = (resource.attributes || {}) as Record<string, unknown>;
-          return { id, name: String(attrs.name || '').trim() } satisfies ConfigurationTagRow;
-        })
-        .filter((tag): tag is ConfigurationTagRow => Boolean(tag))
-    );
-    configurationTagsCatalogLoaded.value = true;
-  } catch (error) {
-    console.error(error);
-    const message = error instanceof Error ? error.message : 'Failed to load tags.';
-    if (message.startsWith('HTTP 403') || message.startsWith('HTTP 401')) {
-      configurationTagsError.value = null;
-    } else {
-      configurationTagsError.value = message;
-    }
-    configurationTagsCatalogLoaded.value = false;
-  } finally {
-    configurationTagsLoading.value = false;
-  }
-}
-
 function applyBotDocument(payload: JsonApiSingleResponse) {
   const includedIndex = createJsonApiIncludedIndex(payload.included);
   const root = payload.data;
+
+  includedKnowledgeBlocks.value = [];
+  includedConfigurationTags.value = [];
+  includedToolLibrary.value = [];
+  includedLlmConfigurationOptions.value = [
+    parseLlmConfigurationOption(relatedResource(root, 'default_llm_configuration', includedIndex)),
+  ].filter((option): option is LlmConfigurationOption => Boolean(option));
 
   const knowledgeBlockBindingResources = relatedResources(root, 'knowledge_block_bindings', includedIndex);
   bindings.hydrate(
@@ -842,6 +854,9 @@ const removeCompatibleTag = (tagId: number) => {
 const dirty = computed(
   () => editor.dirty.value || bindings.dirty.value || compatibleTagBindingsDirty.value || toolBindings.dirty.value
 );
+editor.registerDirtySource(
+  () => bindings.dirty.value || compatibleTagBindingsDirty.value || toolBindings.dirty.value
+);
 const saving = computed(() => editor.saving.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
@@ -855,13 +870,16 @@ const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;
 const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
-const botTab = ref<'blocks' | 'firstMessages' | 'tools' | 'context' | 'configTags'>('blocks');
+const botTab = useEditorTabState<'blocks' | 'firstMessages' | 'tools' | 'context' | 'configTags'>('bot', 'blocks');
 const blocksTabCount = computed(() => bindings.draft.value.length);
 const toolsTabCount = computed(() => toolBindings.sortedToolBindings.value.length);
 const configTagsTabCount = computed(() => draftCompatibleTagIds.value.length);
@@ -903,7 +921,6 @@ const handleImageSelected = async (event: Event) => {
   try {
     const response = await uploadBotImage(botId, file);
     form.image = response.image;
-    publishEntityChange({ kind: 'bot', operation: 'touch', id: botId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert(getApiErrorMessage(error, 'Failed to upload image.'));
@@ -918,7 +935,6 @@ const removeImage = async () => {
   try {
     const response = await deleteBotImage(botId);
     form.image = response.image;
-    publishEntityChange({ kind: 'bot', operation: 'touch', id: botId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert('Failed to remove image.');
@@ -944,51 +960,36 @@ const moveFirstMessage = (idx: number, delta: number) => {
   form.first_messages = list;
 };
 
-const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
+const includedKnowledgeBlocks = ref<KnowledgeBlock[]>([]);
+
+const knowledgeBlocksQuery = useQuery<KnowledgeBlock[]>({
+  queryKey: serverStateKeys.reference('knowledge-blocks', 'bot-editor'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+    const payload = await jsonApiList('/api/ash/knowledge-blocks', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseKnowledgeBlockOption(resource))
+      .filter((block): block is KnowledgeBlock => Boolean(block));
+  },
+});
+
+const knowledgeBlocks = computed(() => {
+  const byId = new Map<number, KnowledgeBlock>();
+  for (const block of includedKnowledgeBlocks.value) byId.set(block.id, block);
+  for (const block of knowledgeBlocksQuery.data.value || []) byId.set(block.id, block);
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
 
 function mergeKnowledgeBlocks(blocks: KnowledgeBlock[]) {
   const byId = new Map<number, KnowledgeBlock>();
 
-  for (const block of knowledgeBlocks.value) byId.set(block.id, block);
+  for (const block of includedKnowledgeBlocks.value) byId.set(block.id, block);
   for (const block of blocks) byId.set(block.id, block);
 
-  knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  includedKnowledgeBlocks.value = Array.from(byId.values());
 }
-
-async function loadKnowledgeBlocks() {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-    const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
-    mergeKnowledgeBlocks(
-      (payload.data || [])
-        .map((resource) => parseKnowledgeBlockOption(resource))
-        .filter((block): block is KnowledgeBlock => Boolean(block))
-    );
-  } catch (e) {
-    console.warn('Failed to load knowledge blocks', e);
-  }
-}
-
-async function fetchKnowledgeBlockOption(blockId: number) {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, qs);
-    return parseKnowledgeBlockOption(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh bot knowledge block option.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(knowledgeBlocks, {
-  kind: 'knowledge-block',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchKnowledgeBlockOption(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
 
 const linkedBlockIds = computed(() => bindings.linkedBlockIds.value);
 
@@ -1041,17 +1042,14 @@ const openBlockEditor = (blockId: number) => {
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
-  contextKey: () => `bot:${editor.idParam.value ?? 'new'}`,
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
-    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
-    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
+    await knowledgeBlocksQuery.refetch({ cancelRefetch: true });
     bindings.addBlocks(createdIds);
   },
   onBlocksRemoved: (removedIds) => {
     bindings.removeBlocks(removedIds);
   },
-  resetOn: () => editor.idParam.value,
 });
 
 const openNewBlock = newBlockDraft.openNewBlock;
@@ -1063,79 +1061,39 @@ const openToolEditor = (toolInstanceId: number) => {
   stackNav.open({ path: `/catalogs/tools/${toolInstanceId}`, query: { recordsetKey } });
 };
 
-watch(
-  () => [layer.active.value, loaded.value, loading.value] as const,
-  ([active, isLoaded, isLoading]) => {
-    if (!active || !isLoaded || isLoading) return;
-    void newBlockDraft.consumePendingNewBlockContext();
+const includedToolLibrary = ref<ToolInstanceOption[]>([]);
+
+const toolLibraryQuery = useQuery<ToolInstanceOption[]>({
+  queryKey: serverStateKeys.reference('tool-instances', 'bot-editor'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
+    const payload = await jsonApiList('/api/ash/tool-instances', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseToolInstanceOption(resource))
+      .filter((tool): tool is ToolInstanceOption => Boolean(tool));
   },
-  { immediate: true }
-);
-
-watch(
-  () => compatibleTagsPickerOpen.value,
-  (open) => {
-    if (!open) return;
-    if (configurationTagsCatalogLoaded.value || configurationTagsLoading.value || sharedReadonly.value) return;
-    void loadConfigurationTags();
-  }
-);
-
-onMounted(() => {
-  void loadKnowledgeBlocks();
-  void loadLlmConfigurations();
-  void loadToolLibrary();
 });
 
-const toolLibraryLoading = ref(false);
-const toolLibraryError = ref<string | null>(null);
-const toolLibrary = ref<ToolInstanceOption[]>([]);
+const toolLibrary = computed(() =>
+  mergeToolInstanceOptions(includedToolLibrary.value, toolLibraryQuery.data.value || [])
+);
+const toolLibraryLoading = computed(() => toolLibraryQuery.isPending.value);
+const toolLibraryError = computed(() => {
+  if (toolLibraryQuery.data.value || !toolLibraryQuery.error.value) return null;
+  return toolLibraryQuery.error.value instanceof Error
+    ? toolLibraryQuery.error.value.message
+    : 'Failed to load tools.';
+});
 
 function mergeToolLibrary(tools: ToolInstanceOption[]) {
-  toolLibrary.value = mergeToolInstanceOptions(toolLibrary.value, tools);
+  includedToolLibrary.value = mergeToolInstanceOptions(includedToolLibrary.value, tools);
 }
 
 async function loadToolLibrary() {
-  toolLibraryLoading.value = true;
-  toolLibraryError.value = null;
-
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
-    const payload = await jsonApiList('/api/ash/tool-instances', qs);
-    mergeToolLibrary(
-      (payload.data || [])
-        .map((resource) => parseToolInstanceOption(resource))
-        .filter((tool): tool is ToolInstanceOption => Boolean(tool))
-    );
-  } catch (e) {
-    console.error(e);
-    toolLibraryError.value = e instanceof Error ? e.message : 'Failed to load tools.';
-  } finally {
-    toolLibraryLoading.value = false;
-  }
+  await toolLibraryQuery.refetch({ cancelRefetch: true });
 }
-
-async function fetchToolLibraryOption(toolInstanceId: number) {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
-    const payload = await jsonApiGet(`/api/ash/tool-instances/${toolInstanceId}`, qs);
-    return parseToolInstanceOption(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh bot tool option.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(toolLibrary, {
-  kind: 'tool-instance',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchToolLibraryOption(change.id),
-  merge: (current, incoming) => mergeToolInstanceOptions(current ? [current] : [], [incoming])[0] ?? incoming,
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
 
 const toolInstanceLibrary = useToolInstanceLibrary(toolLibrary);
 const toolLibraryById = toolInstanceLibrary.toolLibraryById;
@@ -1214,10 +1172,39 @@ function removeToolBindingById(id: number) {
 }
 
 const shareModalOpen = ref(false);
-const shareLoading = ref(false);
 const shareSaving = ref(false);
 const shareGroups = ref<Group[]>([]);
 const sharedGroupIds = ref<number[]>([]);
+
+const shareGroupsQuery = useQuery<Group[]>({
+  queryKey: serverStateKeys.reference('user-groups', 'share-picker'),
+  queryFn: async ({ signal }) => {
+    const payload = await api.get<{ groups: Group[] }>('/api/bff/me/groups', { signal });
+    return Array.isArray(payload.groups) ? payload.groups : [];
+  },
+});
+
+const botSharesQueryKey = computed(() =>
+  serverStateKeys.detail('bot-shares', editor.numericId.value ?? 'new', 'share-modal')
+);
+const botSharesQuery = useQuery<ShareStateResponse>({
+  queryKey: botSharesQueryKey,
+  enabled: computed(
+    () =>
+      !isNew.value &&
+      !sharedReadonly.value &&
+      !editor.deleting.value &&
+      editor.numericId.value != null
+  ),
+  queryFn: ({ queryKey, signal }) => {
+    const botId = toIntId(String(queryKey[3] ?? ''));
+    if (!botId) throw new Error('Invalid bot id.');
+    return api.get<ShareStateResponse>(`/api/bff/bots/${botId}/shares`, { signal });
+  },
+});
+const shareLoading = computed(
+  () => shareGroupsQuery.isFetching.value || botSharesQuery.isFetching.value
+);
 
 const shareToolBindings = computed<BotShareToolBinding[]>(() =>
   toolBindings.sortedToolBindings.value.map((binding) => ({
@@ -1233,22 +1220,23 @@ const shareToolBindings = computed<BotShareToolBinding[]>(() =>
 async function loadShareContext() {
   if (isNew.value || sharedReadonly.value || editor.numericId.value == null) return;
 
-  shareLoading.value = true;
+  const requestedId = editor.numericId.value;
   try {
-    const [groupsPayload, sharePayload] = await Promise.all([
-      api.get<{ groups: Group[] }>('/api/bff/me/groups'),
-      api.get<ShareStateResponse>(`/api/bff/bots/${editor.numericId.value}/shares`),
+    const [groupsResult, sharesResult] = await Promise.all([
+      shareGroupsQuery.refetch({ cancelRefetch: true }),
+      botSharesQuery.refetch({ cancelRefetch: true }),
     ]);
+    if (editor.numericId.value !== requestedId) return;
+    if (groupsResult.error) throw groupsResult.error;
+    if (sharesResult.error) throw sharesResult.error;
 
-    shareGroups.value = Array.isArray(groupsPayload.groups) ? groupsPayload.groups : [];
-    sharedGroupIds.value = Array.isArray(sharePayload.group_ids)
-      ? sharePayload.group_ids.filter((id): id is number => typeof id === 'number')
+    shareGroups.value = groupsResult.data || [];
+    sharedGroupIds.value = Array.isArray(sharesResult.data?.group_ids)
+      ? sharesResult.data.group_ids.filter((id): id is number => typeof id === 'number')
       : [];
   } catch (error) {
     console.error(error);
     alert(error instanceof Error ? error.message : 'Failed to load sharing settings.');
-  } finally {
-    shareLoading.value = false;
   }
 }
 
@@ -1270,8 +1258,8 @@ async function saveSharing(payload: { groupIds: number[]; toolModes: Record<stri
     sharedGroupIds.value = Array.isArray(response.group_ids)
       ? response.group_ids.filter((id): id is number => typeof id === 'number')
       : [];
+    serverStateQueryClient.setQueryData(botSharesQueryKey.value, response);
     shareModalOpen.value = false;
-    await editor.load();
   } catch (error) {
     console.error(error);
     alert(error instanceof Error ? error.message : 'Failed to save sharing settings.');

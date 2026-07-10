@@ -217,9 +217,10 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListRow from '@/components/ChatListRow.vue';
 import ContinuationNav from '@/components/ContinuationNav.vue';
@@ -229,9 +230,10 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
-import { useEntityChanges, useLiveEntityRows } from '@/features/entities/entityChanges';
+import { useChatChanges } from '@/features/chat/chatEvents';
 import { parseImageAsset } from '@/features/media/image';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { translate } from '@/i18n';
 import type { Bot, ChatSummary, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
@@ -327,7 +329,6 @@ function sameQueryValue(current: unknown, next: string | undefined) {
 
 const loading = ref(true);
 const creating = ref(false);
-const loadingBots = ref(false);
 const error = ref<string | null>(null);
 const chats = ref<ChatSummary[]>([]);
 const pageNumber = ref(readChatListPageQuery(route.query.page));
@@ -344,7 +345,18 @@ const generationCompleteChatIds = ref(new Set<number>());
 const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
 const botSearchTerm = ref('');
-const bots = ref<Bot[]>([]);
+const botsQuery = useQuery<Bot[]>({
+  queryKey: serverStateKeys.reference('bots', 'chat-selector'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[bots]', 'name,sort_activity_at,image');
+    const payload = await jsonApiList('/api/ash/bots', params, { signal });
+    return (payload.data || []).map(parseBot).filter((bot): bot is Bot => Boolean(bot));
+  },
+});
+const bots = computed(() => botsQuery.data.value ?? []);
+const loadingBots = computed(() => botsQuery.isFetching.value);
 const chatListStats = ref<ChatListStats>({
   total_chats: 0,
   no_bot_chat_count: 0,
@@ -745,9 +757,7 @@ function refreshChatSummary(chatId: number, changeReason?: unknown) {
   chatSummaryRefreshTimers.set(chatId, timer);
 }
 
-useEntityChanges((change) => {
-  if (change.kind !== 'chat') return;
-
+useChatChanges((change) => {
   if (change.operation === 'delete') {
     clearChatSummaryRefresh(change.id);
     removeChatFromLists(change.id);
@@ -1145,14 +1155,14 @@ async function runChatSearch(
 }
 
 async function refreshChatIndex() {
-  const refreshBots = loadBots({ showError: true });
+  const botsRefresh = refreshBots({ showError: true });
   if (hasChatSearch.value) {
     const term = chatSearchTerm.value.trim();
-    await Promise.all([term ? runChatSearch(term) : Promise.resolve(), refreshBots]);
+    await Promise.all([term ? runChatSearch(term) : Promise.resolve(), botsRefresh]);
     return;
   }
 
-  await Promise.all([loadChats(), refreshBots]);
+  await Promise.all([loadChats(), botsRefresh]);
 }
 
 let chatListPollTimer: number | null = null;
@@ -1392,43 +1402,12 @@ function handleChatListFocus() {
   restartChatListIdlePolling({ immediate: true, throttle: true });
 }
 
-async function loadBots(opts: { showError?: boolean } = {}) {
-  if (loadingBots.value) return;
-  loadingBots.value = true;
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'name');
-    params.set('fields[bots]', 'name,sort_activity_at,image');
-    const payload = await jsonApiList('/api/ash/bots', params);
-    bots.value = (payload.data || []).map(parseBot).filter((bot): bot is Bot => Boolean(bot));
-  } catch (e) {
-    console.error(e);
-    if (opts.showError) {
-      error.value = e instanceof Error ? e.message : 'Failed to load bots.';
-    }
-  } finally {
-    loadingBots.value = false;
+async function refreshBots(opts: { showError?: boolean } = {}) {
+  const result = await botsQuery.refetch({ cancelRefetch: true });
+  if (result.error && opts.showError) {
+    error.value = result.error instanceof Error ? result.error.message : 'Failed to load bots.';
   }
 }
-
-async function fetchBotOptionRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set('fields[bots]', 'name,sort_activity_at,image');
-    const payload = await jsonApiGet(`/api/ash/bots/${id}`, params);
-    return parseBot(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh chat list bot option.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(bots, {
-  kind: 'bot',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchBotOptionRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
 
 watch(
   () => chatSearchTerm.value,
@@ -1482,7 +1461,7 @@ async function openCreateChatModal() {
   const initialSelection = createChatInitialBotSelection();
   botModalValue.value = initialSelection;
   botModalOpen.value = true;
-  await loadBots({ showError: true });
+  await refreshBots({ showError: true });
 
   if (!botModalOpen.value || botModalValue.value !== initialSelection) return;
   botModalValue.value = createChatInitialBotSelection();
@@ -1517,7 +1496,6 @@ async function createChat(selectedBotId: number | string | '' = '') {
 onMounted(() => {
   updateIsMobile();
   void loadChats();
-  void loadBots();
   if (hasChatSearch.value) {
     void runChatSearch(chatSearchTerm.value.trim());
   }

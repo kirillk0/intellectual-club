@@ -46,7 +46,6 @@ import { computed, ref } from 'vue';
 import { getApiErrorMessage } from '@/api/client';
 import { deleteKnowledgeBlockImage, uploadKnowledgeBlockImage } from '@/api/images';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
-import { publishEntityChange } from '@/features/entities/entityChanges';
 import { translate } from '@/i18n';
 import type { ImageAsset } from '@/types/api';
 import { formatFileBytes } from '@/utils/fileSize';
@@ -82,7 +81,6 @@ const handleImageSelected = async (event: Event) => {
   try {
     const response = await uploadKnowledgeBlockImage(blockId, file);
     emit('update:image', response.image);
-    publishEntityChange({ kind: 'knowledge-block', operation: 'touch', id: blockId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert(getApiErrorMessage(error, 'Failed to upload image.'));
@@ -97,7 +95,6 @@ const removeImage = async () => {
   try {
     const response = await deleteKnowledgeBlockImage(blockId);
     emit('update:image', response.image);
-    publishEntityChange({ kind: 'knowledge-block', operation: 'touch', id: blockId, meta: { reason: 'image' } });
   } catch (error) {
     console.error(error);
     alert('Failed to remove image.');

@@ -174,8 +174,8 @@ function userGroupAttributes(input: AdminUserGroupInput) {
   };
 }
 
-export async function listAdminUsers(): Promise<AdminUser[]> {
-  const payload = await jsonApiList(USERS_BASE_PATH, userListParams());
+export async function listAdminUsers(signal?: AbortSignal): Promise<AdminUser[]> {
+  const payload = await jsonApiList(USERS_BASE_PATH, userListParams(), { signal });
   const includedIndex = createJsonApiIncludedIndex(payload.included);
 
   return payload.data
@@ -183,8 +183,8 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
     .filter((user): user is AdminUser => Boolean(user));
 }
 
-export async function getAdminUser(id: number): Promise<AdminUser> {
-  const payload = await jsonApiGet(`${USERS_BASE_PATH}/${id}`, userDocumentParams());
+export async function getAdminUser(id: number, signal?: AbortSignal): Promise<AdminUser> {
+  const payload = await jsonApiGet(`${USERS_BASE_PATH}/${id}`, userDocumentParams(), { signal });
   return requireAdminUser(payload);
 }
 
@@ -241,8 +241,8 @@ export async function deleteAdminUser(id: number): Promise<void> {
   await jsonApiDelete(USERS_BASE_PATH, id);
 }
 
-export async function listAdminUserGroups(): Promise<AdminUserGroup[]> {
-  const payload = await jsonApiList(USER_GROUPS_BASE_PATH, userGroupListParams());
+export async function listAdminUserGroups(signal?: AbortSignal): Promise<AdminUserGroup[]> {
+  const payload = await jsonApiList(USER_GROUPS_BASE_PATH, userGroupListParams(), { signal });
   const includedIndex = createJsonApiIncludedIndex(payload.included);
 
   return payload.data
@@ -250,8 +250,8 @@ export async function listAdminUserGroups(): Promise<AdminUserGroup[]> {
     .filter((group): group is AdminUserGroup => Boolean(group));
 }
 
-export async function getAdminUserGroup(id: number): Promise<AdminUserGroup> {
-  const payload = await jsonApiGet(`${USER_GROUPS_BASE_PATH}/${id}`, userGroupDocumentParams());
+export async function getAdminUserGroup(id: number, signal?: AbortSignal): Promise<AdminUserGroup> {
+  const payload = await jsonApiGet(`${USER_GROUPS_BASE_PATH}/${id}`, userGroupDocumentParams(), { signal });
   return requireAdminUserGroup(payload);
 }
 

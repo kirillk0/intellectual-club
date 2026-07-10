@@ -44,7 +44,7 @@ export const router = createRouter({
       path: '/administration/users/:id(\\d+|new)',
       name: 'admin-user',
       component: () => import('./views/administration/UserEditView.vue'),
-      meta: { requiresAdmin: true, title: 'User' },
+      meta: { requiresAdmin: true, title: 'User', stackEntityParams: ['id'] },
     },
     {
       path: '/administration/user-groups',
@@ -56,7 +56,7 @@ export const router = createRouter({
       path: '/administration/user-groups/:id(\\d+|new)',
       name: 'admin-user-group',
       component: () => import('./views/administration/UserGroupEditView.vue'),
-      meta: { requiresAdmin: true, title: 'User Group' },
+      meta: { requiresAdmin: true, title: 'User Group', stackEntityParams: ['id'] },
     },
     {
       path: '/administration/web-push',
@@ -87,7 +87,7 @@ export const router = createRouter({
       path: '/catalogs/knowledge-blocks/:id(\\d+|new)',
       name: 'knowledge-block',
       component: () => import('./views/catalogs/KnowledgeBlockEditView.vue'),
-      meta: { title: 'Knowledge Block' },
+      meta: { title: 'Knowledge Block', stackEntityParams: ['id'] },
     },
     {
       path: '/catalogs/knowledge-tags',
@@ -107,7 +107,7 @@ export const router = createRouter({
       path: '/catalogs/llm-providers/:id(\\d+|new)',
       name: 'llm-provider',
       component: LlmProviderEditView,
-      meta: { title: 'LLM Provider' },
+      meta: { title: 'LLM Provider', stackEntityParams: ['id'] },
     },
     {
       path: '/catalogs/llm-configurations',
@@ -125,21 +125,21 @@ export const router = createRouter({
       path: '/catalogs/llm-configurations/:id(\\d+|new)',
       name: 'llm-configuration',
       component: LlmConfigurationEditView,
-      meta: { title: 'LLM Configuration' },
+      meta: { title: 'LLM Configuration', stackEntityParams: ['id'] },
     },
     { path: '/catalogs/bots', name: 'bots', component: BotsIndexView, meta: { title: 'Bots' } },
     {
       path: '/catalogs/bots/:id(\\d+|new)',
       name: 'bot',
       component: BotEditView,
-      meta: { title: 'Bot' },
+      meta: { title: 'Bot', stackEntityParams: ['id'] },
     },
     { path: '/catalogs/tools', name: 'tools', component: ToolInstancesIndexView, meta: { title: 'Tools' } },
     {
       path: '/catalogs/tools/:id(\\d+|new)',
       name: 'tool',
       component: ToolInstanceEditView,
-      meta: { title: 'Tool' },
+      meta: { title: 'Tool', stackEntityParams: ['id'] },
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
@@ -172,16 +172,17 @@ router.beforeEach((to) => {
 
 const getHistoryState = () => (router.options.history.state as any) ?? window.history.state;
 
-router.afterEach((to, from) => {
+router.afterEach((to, from, failure) => {
+  // Vue Router resolves ordinary navigation failures instead of throwing them.
+  // Never commit a failed layer transition; its owner clears the tokenized pending push.
+  if (failure) return;
+
   const { isAuthenticated } = useSessionAuth();
   rememberPwaRoute(to, isAuthenticated.value);
 
   const stack = useNavigationStack();
-
-  if (stack.pendingPush.value !== null) {
-    const scrollY = stack.pendingPush.value;
-    stack.push(from, scrollY);
-    stack.clearPendingPush();
+  const pending = stack.commitPendingPush(from);
+  if (pending) {
     nextTick(() => {
       window.scrollTo({ top: 0, left: 0 });
     });

@@ -179,6 +179,7 @@ import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
 import { useAppUpdateMonitor } from '@/features/pwa/appUpdate';
 import { syncExistingWebPushSubscription } from '@/features/push/webPush';
+import { clearServerStateQueries } from '@/features/serverState/queryClient';
 import { effectiveLocale, translate } from '@/i18n';
 import appLogoUrl from '@/assets/icon_full_size.png';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -373,7 +374,10 @@ onMounted(() => {
 
 watch(
   () => currentUser.value?.id,
-  () => {
+  (userId, previousUserId) => {
+    if (previousUserId !== undefined && userId !== previousUserId) {
+      clearServerStateQueries();
+    }
     syncWebPushForCurrentUser();
   }
 );
@@ -397,6 +401,7 @@ onBeforeUnmount(() => {
 const handleSignOut = async () => {
   if (signingOut.value) return;
   signingOut.value = true;
+  clearServerStateQueries();
 
   try {
     await signOut();

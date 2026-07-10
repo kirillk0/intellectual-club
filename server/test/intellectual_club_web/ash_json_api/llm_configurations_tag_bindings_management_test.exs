@@ -417,5 +417,40 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert ids_from_included(resp2, "llm-providers") == [provider.id]
     assert ids_from_included(resp2, "llm-configuration-tags") == [tag1.id]
     assert ids_from_included(resp2, "knowledge-blocks") == [block1.id]
+
+    resp3 =
+      conn
+      |> json_api_patch(
+        "/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}",
+        %{
+          "data" => %{
+            "type" => "llm-configurations",
+            "id" => "#{configuration.id}",
+            "attributes" => %{"tag_bindings" => []}
+          }
+        }
+      )
+      |> json_response(200)
+
+    bindings3 =
+      LlmConfigurationTagBinding
+      |> Ash.Query.filter(llm_configuration_id == ^configuration.id)
+      |> Ash.read!(actor: actor)
+
+    assert bindings3 == []
+    assert relationship_ids(resp3, "tag_bindings") == []
+    assert ids_from_included(resp3, "llm-configuration-tag-bindings") == []
+    assert ids_from_included(resp3, "llm-configuration-tags") == []
+
+    get_response =
+      conn
+      |> json_api_get(
+        "/api/ash/llm-configurations/#{configuration.id}?#{@configuration_include_query}"
+      )
+      |> json_response(200)
+
+    assert relationship_ids(get_response, "tag_bindings") == []
+    assert ids_from_included(get_response, "llm-configuration-tag-bindings") == []
+    assert ids_from_included(get_response, "llm-configuration-tags") == []
   end
 end

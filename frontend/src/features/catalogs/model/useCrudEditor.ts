@@ -1,4 +1,5 @@
-import { computed, onMounted, reactive, ref, watch, type Reactive } from 'vue';
+import { computed, reactive, ref, watch, type Reactive } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import type { JsonApiResource, JsonApiSingleResponse } from '@/api/jsonApi';
 import {
@@ -14,7 +15,7 @@ import { appendRecordsetId, removeRecordsetId } from './recordsets';
 import { useCrudRecordsetNavigation } from './useCrudRecordsetNavigation';
 import { useFormErrors } from './useFormErrors';
 import { useJsonDirtyCompare } from './useJsonDirtyCompare';
-import { publishJsonApiEntityChange } from '@/features/entities/entityChanges';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 
 function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -23,6 +24,16 @@ function deepClone<T>(value: T): T {
 type QueryValue = string | number | boolean | null | undefined;
 type CrudFormState<TForm extends Record<string, unknown>> = Reactive<TForm>;
 type CrudDirtyForm<TForm extends Record<string, unknown>> = TForm | CrudFormState<TForm>;
+
+export type CrudEditorLayerChange = {
+  type: string;
+  id: number;
+  operation: 'upsert' | 'delete';
+};
+
+export type CrudEditorLayerResult = {
+  changes: CrudEditorLayerChange[];
+};
 
 function pickQuery(query: Record<string, QueryValue>) {
   const out: Record<string, string> = {};
@@ -90,6 +101,12 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   const deleting = ref(false);
   const duplicating = ref(false);
   const loadError = ref<string | null>(null);
+  const remoteUpdateAvailable = ref(false);
+  const remoteDocument = ref<JsonApiSingleResponse | null>(null);
+  const externalDirtySources: Array<() => boolean> = [];
+  let canonicalFingerprint = '';
+  let dismissedRemoteFingerprint = '';
+  let sessionVersion = 0;
 
   const errors = useFormErrors();
 
@@ -97,6 +114,27 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     () => (options.normalizeForDirty ? options.normalizeForDirty(form) : form),
     () => (options.normalizeForDirty ? options.normalizeForDirty(base.value) : base.value)
   );
+
+  const hasDirtyDraft = () => dirty.value || externalDirtySources.some((source) => source());
+
+  const registerDirtySource = (source: () => boolean) => {
+    externalDirtySources.push(source);
+    return () => {
+      const index = externalDirtySources.indexOf(source);
+      if (index >= 0) externalDirtySources.splice(index, 1);
+    };
+  };
+
+  const recordLayerChange = (change: CrudEditorLayerChange) => {
+    stackNav.updateLayerResult<CrudEditorLayerResult>((current) => ({
+      changes: [
+        ...(current?.changes || []).filter(
+          (item) => item.type !== change.type || item.id !== change.id
+        ),
+        change,
+      ],
+    }));
+  };
 
   const editorQuery = computed(() => {
     const query = pickQuery({
@@ -150,41 +188,151 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     options.onDocument?.(payload, { mode });
   };
 
-  const load = async () => {
+  const documentFingerprint = (payload: JsonApiSingleResponse) => JSON.stringify(payload);
+
+  const detailQueryKey = computed(() =>
+    serverStateKeys.detail(options.type, numericId.value ?? 'new', 'editor-document')
+  );
+
+  const detailQuery = useQuery<JsonApiSingleResponse>({
+    queryKey: detailQueryKey,
+    enabled: computed(() => numericId.value !== undefined && !deleting.value),
+    queryFn: ({ queryKey, signal }) => {
+      const requestedId = toIntId(String(queryKey[3] ?? ''));
+      if (!requestedId) throw new Error('Invalid id.');
+      return jsonApiGet(`${options.basePath}/${requestedId}`, documentQuery('load'), { signal });
+    },
+  });
+
+  const applyCanonicalDocument = (
+    payload: JsonApiSingleResponse,
+    mode: 'load' | 'save' | 'duplicate'
+  ) => {
+    Object.assign(form, deepClone(options.defaultForm()), options.fromApi(payload.data));
+    base.value = deepClone(form);
+    handleDocument(payload, mode);
+    canonicalFingerprint = documentFingerprint(payload);
+    dismissedRemoteFingerprint = '';
+    remoteDocument.value = null;
+    remoteUpdateAvailable.value = false;
+    loadError.value = null;
+    loading.value = false;
+    loaded.value = true;
+  };
+
+  const startSession = () => {
+    sessionVersion += 1;
     errors.clear();
     loadError.value = null;
-    loading.value = true;
+    remoteDocument.value = null;
+    remoteUpdateAvailable.value = false;
+    canonicalFingerprint = '';
+    dismissedRemoteFingerprint = '';
+    Object.assign(form, deepClone(options.defaultForm()));
+    base.value = deepClone(options.defaultForm());
 
-    try {
-      if (isNew.value) {
-        Object.assign(form, options.defaultForm());
-        base.value = deepClone(options.defaultForm());
-        return;
-      }
-
-      if (numericId.value === undefined) {
-        Object.assign(form, options.defaultForm());
-        base.value = deepClone(options.defaultForm());
-        loadError.value = 'Invalid id.';
-        return;
-      }
-
-      const payload = await jsonApiGet(`${options.basePath}/${numericId.value}`, documentQuery('load'));
-      const resource = payload.data;
-      Object.assign(form, options.fromApi(resource));
-      base.value = deepClone(form);
-      handleDocument(payload, 'load');
-    } catch (error) {
-      console.error(error);
-      loadError.value = error instanceof Error ? error.message : 'Failed to load record.';
-    } finally {
+    if (isNew.value) {
       loading.value = false;
       loaded.value = true;
+      return;
+    }
+
+    if (numericId.value === undefined) {
+      loading.value = false;
+      loaded.value = true;
+      loadError.value = 'Invalid id.';
+      return;
+    }
+
+    loading.value = true;
+    loaded.value = false;
+  };
+
+  const applyQueryDocument = (payload: JsonApiSingleResponse | undefined) => {
+    if (!payload || numericId.value === undefined) return;
+    if (toIntId(payload.data.id) !== numericId.value) return;
+
+    const nextFingerprint = documentFingerprint(payload);
+    if (nextFingerprint === canonicalFingerprint) {
+      loading.value = false;
+      loaded.value = true;
+      return;
+    }
+
+    if (!loaded.value || loading.value) {
+      applyCanonicalDocument(payload, 'load');
+      return;
+    }
+
+    if (saving.value) return;
+
+    if (hasDirtyDraft()) {
+      if (nextFingerprint === dismissedRemoteFingerprint) return;
+      remoteDocument.value = payload;
+      remoteUpdateAvailable.value = true;
+      return;
+    }
+
+    applyCanonicalDocument(payload, 'load');
+  };
+
+  const load = async () => {
+    startSession();
+    if (numericId.value === undefined) return;
+    await detailQuery.refetch({ cancelRefetch: true });
+  };
+
+  const reloadRemoteDocument = async () => {
+    const pending = remoteDocument.value;
+    if (pending) {
+      applyCanonicalDocument(pending, 'load');
+    }
+
+    if (numericId.value !== undefined) {
+      const result = await detailQuery.refetch({ cancelRefetch: true });
+      if (result.data) applyCanonicalDocument(result.data, 'load');
     }
   };
 
+  const keepEditingRemoteDocument = () => {
+    if (remoteDocument.value) dismissedRemoteFingerprint = documentFingerprint(remoteDocument.value);
+    remoteDocument.value = null;
+    remoteUpdateAvailable.value = false;
+  };
+
+  watch(
+    () => idParam.value,
+    () => startSession(),
+    { immediate: true }
+  );
+
+  watch(
+    () => detailQuery.data.value,
+    (payload) => {
+      const observedSession = sessionVersion;
+      queueMicrotask(() => {
+        if (observedSession !== sessionVersion) return;
+        applyQueryDocument(payload);
+      });
+    },
+    { immediate: true }
+  );
+
+  watch(
+    () => detailQuery.error.value,
+    (error) => {
+      if (!error || !loading.value) return;
+      console.error(error);
+      loadError.value = error instanceof Error ? error.message : 'Failed to load record.';
+      loading.value = false;
+      loaded.value = true;
+    }
+  );
+
   const save = async () => {
     if (saving.value) return false;
+    const writeSession = sessionVersion;
+    const writeId = numericId.value;
     errors.clear();
     loadError.value = null;
     saving.value = true;
@@ -194,29 +342,34 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
 
       if (isNew.value) {
         const created = await jsonApiCreate(options.basePath, options.type, attrs, documentQuery('save'));
+        if (sessionVersion !== writeSession) return false;
         const newId = toIntId(created.data.id);
-        Object.assign(form, options.fromApi(created.data));
-        base.value = deepClone(form);
-        handleDocument(created, 'save');
-        publishJsonApiEntityChange('upsert', created.data);
+        if (newId) {
+          serverStateQueryClient.setQueryData(
+            serverStateKeys.detail(options.type, newId, 'editor-document'),
+            created
+          );
+          recordLayerChange({ type: options.type, id: newId, operation: 'upsert' });
+        }
+        applyCanonicalDocument(created, 'save');
 
         if (newId) {
           if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
           await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
         }
       } else {
-        if (numericId.value === undefined) return false;
+        if (writeId === undefined) return false;
         const updated = await jsonApiUpdate(
           options.basePath,
           options.type,
-          numericId.value,
+          writeId,
           attrs,
           documentQuery('save')
         );
-        Object.assign(form, options.fromApi(updated.data));
-        base.value = deepClone(form);
-        handleDocument(updated, 'save');
-        publishJsonApiEntityChange('upsert', updated.data);
+        if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
+        serverStateQueryClient.setQueryData(detailQueryKey.value, updated);
+        applyCanonicalDocument(updated, 'save');
+        recordLayerChange({ type: options.type, id: writeId, operation: 'upsert' });
       }
 
       return true;
@@ -237,11 +390,17 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     errors.clear();
     loadError.value = null;
     deleting.value = true;
+    let deleteSucceeded = false;
 
     try {
       const id = numericId.value;
       await jsonApiDelete(options.basePath, id);
-      publishJsonApiEntityChange('delete', { type: options.type, id: String(id) });
+      deleteSucceeded = true;
+      recordLayerChange({ type: options.type, id, operation: 'delete' });
+      serverStateQueryClient.removeQueries({
+        queryKey: serverStateKeys.detail(options.type, id, 'editor-document'),
+        exact: true,
+      });
       if (recordsetKey.value) removeRecordsetId(recordsetKey.value, id);
       if (stack.active.value) {
         stackNav.close();
@@ -252,7 +411,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       console.error(error);
       alert('Failed to delete record.');
     } finally {
-      deleting.value = false;
+      if (!deleteSucceeded) deleting.value = false;
     }
   };
 
@@ -264,21 +423,28 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       return;
     }
     duplicating.value = true;
+    const duplicateSession = sessionVersion;
+    const sourceId = numericId.value;
     errors.clear();
     loadError.value = null;
 
     try {
       const duplicated = await jsonApiCreate(
-        options.duplicatePath(numericId.value),
+        options.duplicatePath(sourceId),
         options.type,
         {},
         documentQuery('duplicate')
       );
+      if (sessionVersion !== duplicateSession || numericId.value !== sourceId) return;
       const newId = toIntId(duplicated.data?.id);
-      Object.assign(form, options.fromApi(duplicated.data));
-      base.value = deepClone(form);
-      handleDocument(duplicated, 'duplicate');
-      publishJsonApiEntityChange('upsert', duplicated.data);
+      if (newId) {
+        serverStateQueryClient.setQueryData(
+          serverStateKeys.detail(options.type, newId, 'editor-document'),
+          duplicated
+        );
+        recordLayerChange({ type: options.type, id: newId, operation: 'upsert' });
+      }
+      applyCanonicalDocument(duplicated, 'duplicate');
 
       if (newId) {
         if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
@@ -293,28 +459,19 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     }
   };
 
-  onMounted(() => {
-    load();
-  });
-
-  watch(
-    () => idParam.value,
-    () => {
-      void load();
-    }
-  );
-
   return {
     form,
     base,
     loaded,
     loading,
     loadError,
+    remoteUpdateAvailable,
     saving,
     deleting,
     duplicating,
     errors,
     dirty,
+    registerDirtySource,
     idParam,
     isNew,
     numericId,
@@ -327,6 +484,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     goPrev,
     goNext,
     load,
+    reloadRemoteDocument,
+    keepEditingRemoteDocument,
     reset,
     save,
     remove,

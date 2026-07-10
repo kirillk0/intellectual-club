@@ -796,6 +796,10 @@ export const ruMessages: Record<string, string> = {
   'tokens': 'токены',
   'users': 'пользователи',
   'value': 'значение',
+  'Keep editing': 'Продолжить редактирование',
+  'Reload server version': 'Загрузить версию с сервера',
+  'This record changed on the server.': 'Эта запись изменилась на сервере.',
+  'Your unsaved changes were kept.': 'Несохраненные изменения сохранены в форме.',
   'Zoom in': 'Увеличить',
   'Zoom out': 'Уменьшить'
 };

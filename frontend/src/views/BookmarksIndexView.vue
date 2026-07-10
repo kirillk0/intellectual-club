@@ -62,7 +62,7 @@ import ChatListRow from '@/components/ChatListRow.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
-import { useEntityChanges } from '@/features/entities/entityChanges';
+import { useChatChanges } from '@/features/chat/chatEvents';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -179,9 +179,7 @@ async function refreshBookmarkedChat(chatId: number) {
   }
 }
 
-useEntityChanges((change) => {
-  if (change.kind !== 'chat') return;
-
+useChatChanges((change) => {
   if (change.operation === 'delete') {
     bookmarks.value = bookmarks.value.filter((entry) => entry.chat.id !== change.id);
     return;

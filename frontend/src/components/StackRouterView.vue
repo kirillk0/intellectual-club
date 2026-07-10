@@ -44,13 +44,16 @@ const routeIdentity = (candidate: RouteLocationNormalizedLoaded) => {
 const sameRouteIdentity = (a: RouteLocationNormalizedLoaded, b: RouteLocationNormalizedLoaded) =>
   routeIdentity(a) === routeIdentity(b);
 
-// Key router views by route record identity (name + matched patterns), so param/query changes
-// don't remount the entire view. This preserves editor UI state (e.g. active tabs) when
-// paging records or saving new ones.
+// Entity params opt specific routes into remounting when their edited record changes.
+// Other params and query values continue to update the existing component instance.
 const routeViewIdentity = (candidate: RouteLocationNormalizedLoaded) => {
   const name = candidate.name == null ? '' : String(candidate.name);
   const matched = candidate.matched.map((record) => `${String(record.name ?? '')}:${record.path}`).join('|');
-  return `${name}::${matched}`;
+  const entityParams = (candidate.meta.stackEntityParams ?? []).map((param) => [
+    param,
+    candidate.params[param] ?? null,
+  ]);
+  return `${name}::${matched}::${JSON.stringify(entityParams)}`;
 };
 
 const layerKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) =>

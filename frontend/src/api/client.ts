@@ -2,6 +2,7 @@ import {
   clearBackendStatusBanner,
   showBackendStatusBanner,
 } from '@/features/app/backendStatusBanner';
+import { invalidateServerStateQueries } from '@/features/serverState/queryClient';
 import { getEffectiveLocale, translate } from '@/i18n';
 
 export function getCsrfToken(): string | null {
@@ -94,6 +95,7 @@ function buildHttpErrorMessage(params: {
 export type ApiRequestOptions = RequestInit & {
   redirectOnUnauthorized?: boolean;
   showErrorBanner?: boolean;
+  invalidateServerState?: boolean;
   timeoutMs?: number | null;
   retry?: false | {
     attempts?: number;
@@ -428,6 +430,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   const {
     redirectOnUnauthorized = true,
     showErrorBanner = true,
+    invalidateServerState = true,
     timeoutMs,
     retry,
     signal,
@@ -513,16 +516,24 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
       clearBackendStatusBanner();
     }
 
-    if (response.status === 204) return undefined as T;
+    let result: T | undefined;
 
-    const bodyText = await response.text().catch(() => '');
-    if (!bodyText) return undefined as T;
-
-    try {
-      return JSON.parse(bodyText) as T;
-    } catch {
-      return undefined as T;
+    if (response.status !== 204) {
+      const bodyText = await response.text().catch(() => '');
+      if (bodyText) {
+        try {
+          result = JSON.parse(bodyText) as T;
+        } catch {
+          result = undefined;
+        }
+      }
     }
+
+    if (isWrite && invalidateServerState) {
+      await invalidateServerStateQueries();
+    }
+
+    return result as T;
   }
 }
 

@@ -86,7 +86,6 @@
               @select="selectTag"
               @select-no-tags="selectNoTags"
               @clear-filter="clearTag"
-              @changed="loadTagBindings"
             />
           </div>
         </aside>
@@ -217,7 +216,6 @@
           @select="selectTag"
           @select-no-tags="selectNoTags"
           @clear-filter="clearTag"
-          @changed="loadTagBindings"
         />
       </aside>
 
@@ -237,14 +235,15 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsManagerPanel.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { jsonApiGet, jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiList, relationshipId, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useEntityChanges, useLiveEntityRows } from '@/features/entities/entityChanges';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
@@ -274,11 +273,11 @@ const route = useRoute();
 const router = useRouter();
 const stackNav = useStackNavigation();
 
-const loading = ref(false);
-const error = ref<string | null>(null);
-const configs = ref<ConfigRow[]>([]);
-const providers = ref<ProviderRow[]>([]);
-const tagsByConfigId = ref(new Map<number, ConfigTagRow[]>());
+type IndexSnapshot = {
+  configs: ConfigRow[];
+  providers: ProviderRow[];
+  tagsByConfigId: Map<number, ConfigTagRow[]>;
+};
 
 const search = ref(String(route.query.q || ''));
 
@@ -376,6 +375,22 @@ function parseProviderRow(resource: JsonApiResource): ProviderRow | null {
     name: String(attrs.name || '').trim(),
   };
 }
+
+const indexQuery = useQuery<IndexSnapshot>({
+  queryKey: serverStateKeys.collection('llm-configurations', 'index'),
+  queryFn: ({ signal }) => fetchIndexSnapshot(signal),
+});
+
+const configs = computed(() => indexQuery.data.value?.configs ?? []);
+const providers = computed(() => indexQuery.data.value?.providers ?? []);
+const tagsByConfigId = computed(() => indexQuery.data.value?.tagsByConfigId ?? new Map<number, ConfigTagRow[]>());
+const loading = computed(() => indexQuery.isPending.value);
+const error = computed(() => {
+  if (indexQuery.data.value || !indexQuery.error.value) return null;
+  return indexQuery.error.value instanceof Error
+    ? indexQuery.error.value.message
+    : 'Failed to load configurations.';
+});
 
 const providersById = computed(() => {
   const map = new Map<number, string>();
@@ -542,150 +557,99 @@ function openUsage() {
   stackNav.open({ path: '/catalogs/llm-configurations/usage' });
 }
 
-async function loadConfigs() {
+async function fetchConfigs(signal?: AbortSignal) {
   const params = new URLSearchParams();
   params.set('sort', 'model_name');
   params.set(
     'fields[llm-configurations]',
     'provider_id,model_name,note,enabled,shared_incoming,shared_outgoing'
   );
-  const payload = await jsonApiList('/api/ash/llm-configurations', params);
-  configs.value = (payload.data || []).map(parseRow).filter((c): c is ConfigRow => Boolean(c));
+  const payload = await jsonApiList('/api/ash/llm-configurations', params, { signal });
+  return (payload.data || []).map(parseRow).filter((config): config is ConfigRow => Boolean(config));
 }
 
-async function fetchConfigRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set(
-      'fields[llm-configurations]',
-      'provider_id,model_name,note,enabled,shared_incoming,shared_outgoing'
-    );
-    const payload = await jsonApiGet(`/api/ash/llm-configurations/${id}`, params);
-    return parseRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh configuration row.', error);
-    return null;
-  }
-}
-
-async function loadProviders() {
+async function fetchProviders(signal?: AbortSignal) {
   const params = new URLSearchParams();
   params.set('sort', 'name');
   params.set('fields[llm-providers]', 'name');
-  const payload = await jsonApiList('/api/ash/llm-providers', params);
-  providers.value = (payload.data || []).map(parseProviderRow).filter((p): p is ProviderRow => Boolean(p));
+  const payload = await jsonApiList('/api/ash/llm-providers', params, { signal });
+  return (payload.data || []).map(parseProviderRow).filter((provider): provider is ProviderRow => Boolean(provider));
 }
 
-async function fetchProviderRow(id: number) {
-  try {
-    const params = new URLSearchParams();
-    params.set('fields[llm-providers]', 'name');
-    const payload = await jsonApiGet(`/api/ash/llm-providers/${id}`, params);
-    return parseProviderRow(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh provider row.', error);
-    return null;
+async function fetchTagBindings(signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  params.set('sort', 'llm_configuration_id');
+  params.set('include', 'llm_configuration_tag');
+  params.set('fields[llm-configuration-tag-bindings]', 'llm_configuration_id,llm_configuration_tag_id');
+  params.set('fields[llm-configuration-tags]', 'name');
+
+  const payload = await jsonApiList('/api/ash/llm-configuration-tag-bindings', params, { signal });
+
+  const tagsById = new Map<number, ConfigTagRow>();
+
+  for (const resource of payload.included || []) {
+    if (resource.type !== 'llm-configuration-tags') continue;
+    const id = toIntId(resource.id);
+    if (!id) continue;
+    const attrs = (resource.attributes || {}) as Record<string, unknown>;
+    tagsById.set(id, { id, name: String(attrs.name || '').trim() });
   }
+
+  const next = new Map<number, ConfigTagRow[]>();
+
+  for (const resource of payload.data || []) {
+    const attrs = (resource.attributes || {}) as Record<string, unknown>;
+    const configId =
+      relationshipId(resource, 'llm_configuration') ??
+      (typeof attrs.llm_configuration_id === 'number'
+        ? attrs.llm_configuration_id
+        : toIntId(attrs.llm_configuration_id as any));
+    const tagId =
+      relationshipId(resource, 'llm_configuration_tag') ??
+      (typeof attrs.llm_configuration_tag_id === 'number'
+        ? attrs.llm_configuration_tag_id
+        : toIntId(attrs.llm_configuration_tag_id as any));
+
+    if (!configId || !tagId) continue;
+
+    const tag = tagsById.get(tagId) || { id: tagId, name: `Tag #${tagId}` };
+    const current = next.get(configId) || [];
+    current.push(tag);
+    next.set(configId, current);
+  }
+
+  for (const [configId, tags] of next.entries()) {
+    tags.sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+    next.set(configId, tags);
+  }
+
+  return next;
 }
 
-async function loadTagBindings() {
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'llm_configuration_id');
-    params.set('include', 'llm_configuration_tag');
-    params.set('fields[llm-configuration-tag-bindings]', 'llm_configuration_id,llm_configuration_tag_id');
-    params.set('fields[llm-configuration-tags]', 'name');
-
-    const payload = await jsonApiList('/api/ash/llm-configuration-tag-bindings', params);
-
-    const tagsById = new Map<number, ConfigTagRow>();
-
-    for (const resource of payload.included || []) {
-      if (resource.type !== 'llm-configuration-tags') continue;
-      const id = toIntId(resource.id);
-      if (!id) continue;
-      const attrs = (resource.attributes || {}) as Record<string, unknown>;
-      tagsById.set(id, { id, name: String(attrs.name || '').trim() });
-    }
-
-    const next = new Map<number, ConfigTagRow[]>();
-
-    for (const resource of payload.data || []) {
-      const attrs = (resource.attributes || {}) as Record<string, unknown>;
-      const configId =
-        relationshipId(resource, 'llm_configuration') ??
-        (typeof attrs.llm_configuration_id === 'number'
-          ? attrs.llm_configuration_id
-          : toIntId(attrs.llm_configuration_id as any));
-      const tagId =
-        relationshipId(resource, 'llm_configuration_tag') ??
-        (typeof attrs.llm_configuration_tag_id === 'number'
-          ? attrs.llm_configuration_tag_id
-          : toIntId(attrs.llm_configuration_tag_id as any));
-
-      if (!configId || !tagId) continue;
-
-      const tag = tagsById.get(tagId) || { id: tagId, name: `Tag #${tagId}` };
-      const current = next.get(configId) || [];
-      current.push(tag);
-      next.set(configId, current);
-    }
-
-    for (const [configId, tags] of next.entries()) {
-      tags.sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
-      next.set(configId, tags);
-    }
-
-    tagsByConfigId.value = next;
-  } catch (e) {
-    console.error(e);
-  }
+async function fetchIndexSnapshot(signal?: AbortSignal): Promise<IndexSnapshot> {
+  const [configs, providers, tagsByConfigId] = await Promise.all([
+    fetchConfigs(signal),
+    fetchProviders(signal),
+    fetchTagBindings(signal),
+  ]);
+  return { configs, providers, tagsByConfigId };
 }
 
 async function loadData() {
-  loading.value = true;
-  error.value = null;
-  try {
-    await Promise.all([loadConfigs(), loadProviders(), loadTagBindings()]);
-    ensureSelectedProviderIsAvailable();
-  } catch (e) {
-    console.error(e);
-    error.value = e instanceof Error ? e.message : 'Failed to load configurations.';
-  } finally {
-    loading.value = false;
-  }
+  await indexQuery.refetch({ cancelRefetch: true });
 }
 
-useLiveEntityRows(configs, {
-  kind: 'llm-configuration',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchConfigRow(change.id),
-  compare: (a, b) => configLabel(a).localeCompare(configLabel(b)) || a.id - b.id,
-});
-
-useLiveEntityRows(providers, {
-  kind: 'llm-provider',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchProviderRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
-
-useEntityChanges((change) => {
-  if (change.kind !== 'llm-configuration') return;
-  if (change.operation === 'delete') {
-    const next = new Map(tagsByConfigId.value);
-    next.delete(change.id);
-    tagsByConfigId.value = next;
-    return;
-  }
-
-  void loadTagBindings();
-});
+watch(
+  () => indexQuery.data.value,
+  (snapshot) => {
+    if (snapshot) ensureSelectedProviderIsAvailable();
+  },
+  { immediate: true }
+);
 
 onMounted(() => {
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
-  void loadData();
 });
 
 onBeforeUnmount(() => {

@@ -1,4 +1,5 @@
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 
 import {
   createJsonApiIncludedIndex,
@@ -11,6 +12,7 @@ import {
   type JsonApiResource,
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 
 export type KnowledgeTagRow = {
   id: number;
@@ -65,16 +67,38 @@ export function useKnowledgeBlockTagsDraft(params: {
   defaultTagId: MaybeRefOrGetter<number | null | undefined>;
 }) {
   const tagModalOpen = ref(false);
-  const allTagsLoading = ref(false);
-  const allTagsLoaded = ref(false);
-  const allTagsError = ref<string | null>(null);
-  const allTags = ref<KnowledgeTagRow[]>([]);
   const tagBindingsLoading = ref(false);
   const tagBindingsError = ref<string | null>(null);
   const originalTagBindings = ref<TagBinding[]>([]);
   const draftTagBindings = ref<TagBinding[]>([]);
   const includedTags = ref<KnowledgeTagRow[]>([]);
   let tempTagBindingId = -1;
+
+  const allTagsQuery = useQuery<KnowledgeTagRow[]>({
+    queryKey: serverStateKeys.reference('knowledge-tags', 'tree'),
+    queryFn: async ({ signal }) => {
+      const params = new URLSearchParams();
+      params.set('sort', 'full_name');
+      const payload = await jsonApiList('/api/ash/knowledge-tags', params, { signal });
+      return (payload.data || []).map(parseTagRow).filter((tag): tag is KnowledgeTagRow => Boolean(tag));
+    },
+  });
+
+  const allTags = computed(() => {
+    const byId = new Map<number, KnowledgeTagRow>();
+    for (const tag of includedTags.value) byId.set(tag.id, tag);
+    for (const tag of allTagsQuery.data.value || []) byId.set(tag.id, tag);
+    return Array.from(byId.values()).sort((a, b) => {
+      const left = a.full_name || a.name;
+      const right = b.full_name || b.name;
+      return left.localeCompare(right) || a.id - b.id;
+    });
+  });
+  const allTagsLoading = computed(() => allTagsQuery.isPending.value);
+  const allTagsError = computed(() => {
+    if (allTagsQuery.data.value || !allTagsQuery.error.value) return null;
+    return allTagsQuery.error.value instanceof Error ? allTagsQuery.error.value.message : 'Failed to load tags.';
+  });
 
   const tagsDirty = computed(() => {
     const base = stableIds(originalTagBindings.value.map((b) => b.tagId));
@@ -103,13 +127,8 @@ export function useKnowledgeBlockTagsDraft(params: {
   function mergeKnownTags(tags: KnowledgeTagRow[]) {
     const byId = new Map<number, KnowledgeTagRow>();
     for (const tag of includedTags.value || []) byId.set(tag.id, tag);
-    for (const tag of allTags.value || []) byId.set(tag.id, tag);
     for (const tag of tags || []) byId.set(tag.id, tag);
-    allTags.value = Array.from(byId.values()).sort((a, b) => {
-      const left = a.full_name || a.name;
-      const right = b.full_name || b.name;
-      return left.localeCompare(right) || a.id - b.id;
-    });
+    includedTags.value = Array.from(byId.values());
   }
 
   const attachedTagIds = computed(() => {
@@ -155,7 +174,10 @@ export function useKnowledgeBlockTagsDraft(params: {
     await Promise.all(
       missingIds.map(async (tagId) => {
         try {
-          const payload = await jsonApiGet(`/api/ash/knowledge-tags/${tagId}`);
+          const payload = await serverStateQueryClient.fetchQuery({
+            queryKey: serverStateKeys.detail('knowledge-tags', tagId, 'row'),
+            queryFn: ({ signal }) => jsonApiGet(`/api/ash/knowledge-tags/${tagId}`, undefined, { signal }),
+          });
           const tag = parseTagRow(payload.data);
           if (tag) loadedTags.push(tag);
         } catch (error) {
@@ -167,36 +189,8 @@ export function useKnowledgeBlockTagsDraft(params: {
     if (loadedTags.length) mergeKnownTags(loadedTags);
   }
 
-  async function loadAllTags() {
-    if (allTagsLoading.value || allTagsLoaded.value) return;
-    allTagsLoading.value = true;
-    allTagsError.value = null;
-
-    try {
-      const tagParams = new URLSearchParams();
-      tagParams.set('sort', 'full_name');
-      const payload = await jsonApiList('/api/ash/knowledge-tags', tagParams);
-      allTags.value = (payload.data || []).map(parseTagRow).filter((t): t is KnowledgeTagRow => Boolean(t));
-      allTagsLoaded.value = true;
-    } catch (e) {
-      console.error(e);
-      const message = e instanceof Error ? e.message : 'Failed to load tags.';
-      if (message.startsWith('HTTP 403') || message.startsWith('HTTP 401')) {
-        allTags.value = [];
-        allTagsLoaded.value = true;
-        allTagsError.value = null;
-      } else {
-        allTagsError.value = message;
-        allTagsLoaded.value = false;
-      }
-    } finally {
-      allTagsLoading.value = false;
-    }
-  }
-
   function openTagModal() {
     tagModalOpen.value = true;
-    if (!allTagsLoading.value && !allTagsLoaded.value) void loadAllTags();
   }
 
   function addTag(tagId: number) {
@@ -235,7 +229,6 @@ export function useKnowledgeBlockTagsDraft(params: {
       originalTagBindings.value = [];
       draftTagBindings.value = [];
       includedTags.value = [];
-      allTagsError.value = null;
       tagBindingsError.value = null;
     },
     { immediate: true }

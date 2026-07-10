@@ -4,7 +4,7 @@ import {
   jsonApiUpdate,
   type JsonApiMutationResponse,
 } from '@/api/jsonApi';
-import { publishEntityChange } from '@/features/entities/entityChanges';
+import { publishChatChange } from '@/features/chat/chatEvents';
 
 const CHAT_BASE_PATH = '/api/ash/chats';
 const CHAT_TYPE = 'chats';
@@ -20,30 +20,30 @@ function requireChatId(payload: JsonApiMutationResponse): number {
 export async function createChatRecord(attributes: ChatAttributes = {}): Promise<number> {
   const payload = await jsonApiCreate(CHAT_BASE_PATH, CHAT_TYPE, attributes);
   const id = requireChatId(payload);
-  publishEntityChange({ kind: 'chat', operation: 'touch', id, patch: attributes, meta: { reason: 'create' } });
+  publishChatChange({ operation: 'touch', id, patch: attributes, meta: { reason: 'create' } });
   return id;
 }
 
 export async function copyChatRecord(sourceChatId: number): Promise<number> {
   const payload = await jsonApiCreate(`${CHAT_BASE_PATH}/${sourceChatId}/copy`, CHAT_TYPE, {});
   const id = requireChatId(payload);
-  publishEntityChange({ kind: 'chat', operation: 'touch', id, meta: { reason: 'copy' } });
+  publishChatChange({ operation: 'touch', id, meta: { reason: 'copy' } });
   return id;
 }
 
 export async function continueChatRecord(sourceChatId: number): Promise<number> {
   const payload = await jsonApiCreate(`${CHAT_BASE_PATH}/${sourceChatId}/continue`, CHAT_TYPE, {});
   const id = requireChatId(payload);
-  publishEntityChange({ kind: 'chat', operation: 'touch', id, meta: { reason: 'continue' } });
+  publishChatChange({ operation: 'touch', id, meta: { reason: 'continue' } });
   return id;
 }
 
 export async function updateChatRecord(chatId: number, attributes: ChatAttributes): Promise<void> {
   await jsonApiUpdate(CHAT_BASE_PATH, CHAT_TYPE, chatId, attributes);
-  publishEntityChange({ kind: 'chat', operation: 'touch', id: chatId, patch: attributes, meta: { reason: 'update' } });
+  publishChatChange({ operation: 'touch', id: chatId, patch: attributes, meta: { reason: 'update' } });
 }
 
 export async function deleteChatRecord(chatId: number): Promise<void> {
   await jsonApiDelete(CHAT_BASE_PATH, chatId);
-  publishEntityChange({ kind: 'chat', operation: 'delete', id: chatId });
+  publishChatChange({ operation: 'delete', id: chatId });
 }

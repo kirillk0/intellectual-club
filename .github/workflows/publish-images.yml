@@ -95,7 +95,7 @@ jobs:
           echo "shell_outlet=${shell_outlet}"
 
   test:
-    name: Run server tests
+    name: Run frontend and server tests
     runs-on: ubuntu-latest
     needs: changes
 
@@ -121,6 +121,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npm run typecheck
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1

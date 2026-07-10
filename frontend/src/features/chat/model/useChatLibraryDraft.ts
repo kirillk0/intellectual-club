@@ -1,10 +1,9 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
-import { jsonApiGet, jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
 import {
   moveToolBindingInList,
@@ -14,7 +13,7 @@ import {
   setToolBindingEnabledInList,
   validateNewToolBinding,
 } from '@/features/tools/model/toolBindings';
-import { parseToolInstanceOption, useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
+import { useToolInstanceLibrary } from '@/features/tools/model/toolInstances';
 import type {
   ChatKnowledgeBlock,
   ChatToolBinding,
@@ -34,7 +33,6 @@ type Params = {
   readOnly: ComputedRef<boolean>;
   knowledgeBlocks: Ref<KnowledgeBlock[]>;
   toolLibrary: Ref<ToolInstanceOption[]>;
-  routeFullPath: () => string;
   stackOpen: (payload: { path: string; query?: Record<string, string> }) => void;
   reloadChat: () => Promise<void>;
 };
@@ -331,23 +329,7 @@ export function useChatLibraryDraft(params: Params) {
     params.knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
   };
 
-  const loadKnowledgeBlocksCatalog = async () => {
-    try {
-      const qs = new URLSearchParams();
-      qs.set('sort', 'name');
-      qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-      const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
-      const nextBlocks = (payload.data || [])
-        .map(parseKnowledgeBlockCatalogResource)
-        .filter((block): block is KnowledgeBlock => Boolean(block));
-      params.knowledgeBlocks.value = nextBlocks;
-    } catch (error) {
-      console.warn('Failed to load knowledge blocks', error);
-    }
-  };
-
   const newBlockDraft = useKnowledgeBlockNewDraft({
-    contextKey: () => `chat:${params.chatId.value ?? 'new'}`,
     linkedBlockIds: () => linkedChatBlockIds.value,
     onBlocksCreated: async (createdIds) => {
       const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockCatalogRow(id)));
@@ -357,7 +339,6 @@ export function useChatLibraryDraft(params: Params) {
     onBlocksRemoved: (removedIds) => {
       removeChatBlocksByBlockIds(removedIds);
     },
-    resetOn: () => params.chatId.value,
   });
 
   const fetchKnowledgeBlockCatalogRow = async (blockId: number) => {
@@ -372,32 +353,6 @@ export function useChatLibraryDraft(params: Params) {
     }
   };
 
-  const fetchToolLibraryRow = async (toolInstanceId: number) => {
-    try {
-      const qs = new URLSearchParams();
-      qs.set('fields[tool-instances]', 'name,description,alias,type,outlet_online,can_edit');
-      const payload = await jsonApiGet(`/api/ash/tool-instances/${toolInstanceId}`, qs);
-      return parseToolInstanceOption(payload.data);
-    } catch (error) {
-      console.warn('Failed to refresh chat tool option.', error);
-      return null;
-    }
-  };
-
-  useLiveEntityRows(params.knowledgeBlocks, {
-    kind: 'knowledge-block',
-    getId: (row) => row.id,
-    resolveRow: (change) => fetchKnowledgeBlockCatalogRow(change.id),
-    compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-  });
-
-  useLiveEntityRows(params.toolLibrary, {
-    kind: 'tool-instance',
-    getId: (row) => row.id,
-    resolveRow: (change) => fetchToolLibraryRow(change.id),
-    compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-  });
-
   return {
     chatBlocks,
     chatToolBindings,
@@ -408,7 +363,6 @@ export function useChatLibraryDraft(params: Params) {
     chatBlocksPickerSelection,
     linkedChatBlockIds,
     hydrate,
-    consumePendingNewBlockContext: newBlockDraft.consumePendingNewBlockContext,
     cancelChatChanges,
     saveChatChanges,
     openChatBlocksPicker,

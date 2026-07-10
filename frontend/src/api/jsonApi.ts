@@ -1,4 +1,4 @@
-import { api, isHttpError, type HttpError } from './client';
+import { api, isHttpError, type ApiRequestOptions, type HttpError } from './client';
 
 export type JsonApiErrorObject = {
   id?: string;
@@ -60,6 +60,13 @@ function jsonApiHeaders(): HeadersInit {
     accept: 'application/vnd.api+json',
     'content-type': 'application/vnd.api+json',
   };
+}
+
+function jsonApiRequestOptions(options: ApiRequestOptions = {}): ApiRequestOptions {
+  const headers = new Headers(options.headers || {});
+  if (!headers.has('accept')) headers.set('accept', 'application/vnd.api+json');
+  if (!headers.has('content-type')) headers.set('content-type', 'application/vnd.api+json');
+  return { ...options, headers };
 }
 
 export function toIntId(id: string | number | null | undefined): number | null {
@@ -147,20 +154,22 @@ export function formErrorsFromJsonApiErrors(errors: JsonApiErrorObject[]): strin
 
 export async function jsonApiList<TAttributes extends Record<string, unknown> = Record<string, unknown>>(
   path: string,
-  params?: URLSearchParams
+  params?: URLSearchParams,
+  options?: ApiRequestOptions
 ): Promise<JsonApiListResponse<TAttributes>> {
   const qs = params?.toString();
   const url = qs ? `${path}?${qs}` : path;
-  return api.get<JsonApiListResponse<TAttributes>>(url, { headers: jsonApiHeaders() });
+  return api.get<JsonApiListResponse<TAttributes>>(url, jsonApiRequestOptions(options));
 }
 
 export async function jsonApiGet<TAttributes extends Record<string, unknown> = Record<string, unknown>>(
   path: string,
-  params?: URLSearchParams
+  params?: URLSearchParams,
+  options?: ApiRequestOptions
 ): Promise<JsonApiSingleResponse<TAttributes>> {
   const qs = params?.toString();
   const url = qs ? `${path}?${qs}` : path;
-  return api.get<JsonApiSingleResponse<TAttributes>>(url, { headers: jsonApiHeaders() });
+  return api.get<JsonApiSingleResponse<TAttributes>>(url, jsonApiRequestOptions(options));
 }
 
 export async function jsonApiCreate<TAttributes extends Record<string, unknown> = Record<string, unknown>>(

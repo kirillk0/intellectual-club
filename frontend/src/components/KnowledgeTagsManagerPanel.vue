@@ -132,7 +132,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import ModalWindow from '@/components/ModalWindow.vue';
 import {
@@ -147,6 +148,7 @@ import {
   toIntId,
   type JsonApiResource,
 } from '@/api/jsonApi';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 
 type TagEditorMode = 'create-root' | 'create-child';
 
@@ -179,9 +181,19 @@ const emit = defineEmits<{
   (e: 'clear-filter'): void;
 }>();
 
-const tagsLoading = ref(false);
-const tagsError = ref<string | null>(null);
-const tags = ref<KnowledgeTagTreeItem[]>([]);
+const tagsQuery = useQuery<KnowledgeTagTreeItem[]>({
+  queryKey: serverStateKeys.reference('knowledge-tags', 'tree'),
+  queryFn: ({ signal }) => fetchTags(signal),
+});
+
+const tags = computed(() => tagsQuery.data.value ?? []);
+const tagMutationError = ref<string | null>(null);
+const tagsLoading = computed(() => tagsQuery.isPending.value);
+const tagsError = computed(() => {
+  if (tagMutationError.value) return tagMutationError.value;
+  if (tagsQuery.data.value || !tagsQuery.error.value) return null;
+  return tagsQuery.error.value instanceof Error ? tagsQuery.error.value.message : 'Failed to load tags.';
+});
 const mutationLoading = ref(false);
 const tagFilter = ref('');
 
@@ -438,21 +450,11 @@ function startCreateChild(tagId: number) {
   void focusEditorInput();
 }
 
-async function loadTags() {
-  tagsLoading.value = true;
-  tagsError.value = null;
-
-  try {
-    const params = new URLSearchParams();
-    params.set('sort', 'full_name');
-    const payload = await jsonApiList('/api/ash/knowledge-tags', params);
-    tags.value = (payload.data || []).map(parseTagRow).filter((tag): tag is KnowledgeTagTreeItem => Boolean(tag));
-  } catch (error) {
-    console.error(error);
-    tagsError.value = error instanceof Error ? error.message : 'Failed to load tags.';
-  } finally {
-    tagsLoading.value = false;
-  }
+async function fetchTags(signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  params.set('sort', 'full_name');
+  const payload = await jsonApiList('/api/ash/knowledge-tags', params, { signal });
+  return (payload.data || []).map(parseTagRow).filter((tag): tag is KnowledgeTagTreeItem => Boolean(tag));
 }
 
 async function submitEditor() {
@@ -466,7 +468,7 @@ async function submitEditor() {
 
   mutationLoading.value = true;
   editorError.value = null;
-  tagsError.value = null;
+  tagMutationError.value = null;
 
   try {
     if (editorMode.value === 'create-root') {
@@ -484,7 +486,6 @@ async function submitEditor() {
     }
 
     resetEditor();
-    await loadTags();
   } catch (error) {
     console.error(error);
     editorError.value = describeMutationError(error, 'Failed to save tag.');
@@ -510,7 +511,7 @@ async function submitEditModal() {
 
   mutationLoading.value = true;
   editModalError.value = null;
-  tagsError.value = null;
+  tagMutationError.value = null;
 
   try {
     await jsonApiUpdate('/api/ash/knowledge-tags', 'knowledge-tags', tag.id, {
@@ -519,7 +520,6 @@ async function submitEditModal() {
     });
 
     resetEditModal();
-    await loadTags();
   } catch (error) {
     console.error(error);
     editModalError.value = describeMutationError(error, 'Failed to save tag.');
@@ -535,7 +535,7 @@ async function deleteTag(tagId: number) {
 
   mutationLoading.value = true;
   editorError.value = null;
-  tagsError.value = null;
+  tagMutationError.value = null;
 
   try {
     const shouldClearFilter = props.selectedId === tagId;
@@ -545,22 +545,16 @@ async function deleteTag(tagId: number) {
     if (editorTagId.value === tagId) resetEditor();
     if (editModalTagId.value === tagId) resetEditModal();
 
-    await loadTags();
-
     if (shouldClearFilter) {
       emit('clear-filter');
     }
   } catch (error) {
     console.error(error);
-    tagsError.value = describeMutationError(error, 'Failed to delete tag.');
+    tagMutationError.value = describeMutationError(error, 'Failed to delete tag.');
   } finally {
     mutationLoading.value = false;
   }
 }
-
-onMounted(() => {
-  void loadTags();
-});
 </script>
 
 <style scoped>

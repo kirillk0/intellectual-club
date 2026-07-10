@@ -33,6 +33,11 @@
     </CrudHeader>
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
     <div v-if="sharedReadonly" class="card share-banner">
       <strong>Shared with you.</strong> This configuration is read-only. Duplicate it to create an editable copy.
     </div>
@@ -284,10 +289,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, h, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, h, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
@@ -295,17 +302,16 @@ import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import { useKnowledgeBlockBindingsDraft } from '@/features/catalogs/model/useKnowledgeBlockBindingsDraft';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { useStackLayer } from '@/features/stack/useStackLayer';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   createJsonApiIncludedIndex,
-  jsonApiGet,
   jsonApiList,
   relatedResource,
   relatedResources,
@@ -357,7 +363,6 @@ const CONFIGURATION_DOCUMENT_INCLUDE = [
 
 const route = useRoute();
 const stackNav = useStackNavigation();
-const layer = useStackLayer();
 
 function defaultParameters() {
   return {};
@@ -542,15 +547,38 @@ const bindings = useKnowledgeBlockBindingsDraft({
   defaultSelection: 'bottom',
 });
 
-const allTags = ref<ConfigurationTagRow[]>([]);
-const tagsCatalogLoaded = ref(false);
-const tagsLoading = ref(false);
-const tagsError = ref<string | null>(null);
+const includedTags = ref<ConfigurationTagRow[]>([]);
 const tagBindingsLoading = ref(false);
 const tagBindingsError = ref<string | null>(null);
 const currentTagBindings = ref<ConfigurationTagBindingRow[]>([]);
 const draftTagIds = ref<number[]>(parseDefaultTagIds());
 const tagsPickerOpen = ref(false);
+
+const tagsQuery = useQuery<ConfigurationTagRow[]>({
+  queryKey: serverStateKeys.reference('llm-configuration-tags', 'editable-list'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('editable_only', 'true');
+    params.set('fields[llm-configuration-tags]', 'name');
+    const payload = await jsonApiList('/api/ash/llm-configuration-tags', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseConfigurationTagRow(resource))
+      .filter((tag): tag is ConfigurationTagRow => Boolean(tag));
+  },
+});
+
+const allTags = computed(() => {
+  const byId = new Map<number, ConfigurationTagRow>();
+  for (const tag of includedTags.value) byId.set(tag.id, tag);
+  for (const tag of tagsQuery.data.value || []) byId.set(tag.id, tag);
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
+const tagsLoading = computed(() => tagsQuery.isPending.value);
+const tagsError = computed(() => {
+  if (tagsQuery.data.value || !tagsQuery.error.value) return null;
+  return tagsQuery.error.value instanceof Error ? tagsQuery.error.value.message : 'Failed to load tags.';
+});
 
 const attachedTags = computed(() => {
   const tagMap = new Map<number, ConfigurationTagRow>();
@@ -566,10 +594,10 @@ const attachedTags = computed(() => {
 function mergeConfigurationTags(tags: ConfigurationTagRow[]) {
   const byId = new Map<number, ConfigurationTagRow>();
 
-  for (const tag of allTags.value) byId.set(tag.id, tag);
+  for (const tag of includedTags.value) byId.set(tag.id, tag);
   for (const tag of tags) byId.set(tag.id, tag);
 
-  allTags.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  includedTags.value = Array.from(byId.values());
 }
 
 const tagBindingsDirty = computed(() => {
@@ -600,41 +628,6 @@ function resetTagBindingsToLoaded(bindings: ConfigurationTagBindingRow[]) {
   tagBindingsError.value = null;
 }
 
-async function loadConfigurationTags() {
-  tagsLoading.value = true;
-  tagsError.value = null;
-
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('editable_only', 'true');
-    qs.set('fields[llm-configuration-tags]', 'name');
-    const payload = await jsonApiList('/api/ash/llm-configuration-tags', qs);
-    mergeConfigurationTags(
-      (payload.data || [])
-        .map((resource) => {
-          const id = toIntId(resource.id);
-          if (!id) return null;
-          const attrs = (resource.attributes || {}) as Record<string, unknown>;
-          return { id, name: String(attrs.name || '').trim() } satisfies ConfigurationTagRow;
-        })
-        .filter((tag): tag is ConfigurationTagRow => Boolean(tag))
-    );
-    tagsCatalogLoaded.value = true;
-  } catch (error) {
-    console.error(error);
-    const message = error instanceof Error ? error.message : 'Failed to load tags.';
-    if (message.startsWith('HTTP 403') || message.startsWith('HTTP 401')) {
-      tagsError.value = null;
-    } else {
-      tagsError.value = message;
-    }
-    tagsCatalogLoaded.value = false;
-  } finally {
-    tagsLoading.value = false;
-  }
-}
-
 const toggleTag = (tagId: number) => {
   const next = new Set(draftTagIds.value);
   if (next.has(tagId)) next.delete(tagId);
@@ -647,6 +640,7 @@ const removeTag = (tagId: number) => {
 };
 
 const dirty = computed(() => editor.dirty.value || bindings.dirty.value || tagBindingsDirty.value);
+editor.registerDirtySource(() => bindings.dirty.value || tagBindingsDirty.value);
 const saving = computed(() => editor.saving.value);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
@@ -660,13 +654,16 @@ const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;
 const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;
 const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
-const configTab = ref<'settings' | 'parameters' | 'tags' | 'blocks'>('settings');
+const configTab = useEditorTabState<'settings' | 'parameters' | 'tags' | 'blocks'>('llm-configuration', 'settings');
 const tagsTabCount = computed(() => draftTagIds.value.length);
 const blocksTabCount = computed(() => bindings.draft.value.length);
 const parametersEditorReadonly = computed(
@@ -687,20 +684,35 @@ const cancelChanges = () => {
   resetParametersText();
 };
 
-const providerOptions = ref<ProviderOption[]>([]);
-const modelOptions = ref<ProviderModelOption[]>([]);
-const modelsLoading = ref(false);
-const modelsError = ref<string | null>(null);
-const modelsProviderId = ref<number | null>(null);
-let modelLoadSeq = 0;
+const includedProviderOptions = ref<ProviderOption[]>([]);
+
+const providersQuery = useQuery<ProviderOption[]>({
+  queryKey: serverStateKeys.reference('llm-providers', 'configuration-editor'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[llm-providers]', 'name');
+    const payload = await jsonApiList('/api/ash/llm-providers', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseProviderOption(resource))
+      .filter((provider): provider is ProviderOption => Boolean(provider));
+  },
+});
+
+const providerOptions = computed(() => {
+  const byId = new Map<number, ProviderOption>();
+  for (const option of includedProviderOptions.value) byId.set(option.id, option);
+  for (const option of providersQuery.data.value || []) byId.set(option.id, option);
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
 
 function mergeProviderOptions(options: ProviderOption[]) {
   const byId = new Map<number, ProviderOption>();
 
-  for (const option of providerOptions.value) byId.set(option.id, option);
+  for (const option of includedProviderOptions.value) byId.set(option.id, option);
   for (const option of options) byId.set(option.id, option);
 
-  providerOptions.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  includedProviderOptions.value = Array.from(byId.values());
 }
 
 const providerModel = computed({
@@ -709,6 +721,27 @@ const providerModel = computed({
     form.provider_id = value ? Number(value) : null;
   },
 });
+
+const modelsQuery = useQuery<ProviderModelOption[]>({
+  queryKey: computed(() =>
+    serverStateKeys.reference('llm-provider-models', 'by-provider', { providerId: form.provider_id })
+  ),
+  enabled: computed(() => Boolean(form.provider_id)),
+  queryFn: async ({ queryKey, signal }) => {
+    const identity = queryKey[4] as { providerId?: unknown } | null;
+    const providerId = toIntId(identity?.providerId as any);
+    if (!providerId) return [];
+    const payload = await api.get<{ models?: ProviderModelOption[] }>(
+      `/api/bff/llm-providers/${providerId}/models`,
+      { showErrorBanner: false, signal }
+    );
+    return normalizeModelOptions(Array.isArray(payload.models) ? payload.models : []);
+  },
+});
+
+const modelOptions = computed(() => modelsQuery.data.value ?? []);
+const modelsLoading = computed(() => modelsQuery.isPending.value && Boolean(form.provider_id));
+const modelsError = computed(() => (modelsQuery.error.value ? 'Model list unavailable.' : null));
 
 const modelOptionsById = computed(() => {
   const map = new Map<string, ProviderModelOption>();
@@ -776,97 +809,36 @@ const contextLengthModel = computed({
   },
 });
 
-async function loadProviders() {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('fields[llm-providers]', 'name');
-    const payload = await jsonApiList('/api/ash/llm-providers', qs);
-    mergeProviderOptions(
-      (payload.data || [])
-        .map((r) => parseProviderOption(r))
-        .filter((p): p is ProviderOption => Boolean(p))
-    );
-  } catch (e) {
-    console.warn('Failed to load providers', e);
-  }
-}
+const includedKnowledgeBlocks = ref<KnowledgeBlock[]>([]);
 
-async function loadProviderModels(providerId: number | null) {
-  const currentSeq = ++modelLoadSeq;
-  modelOptions.value = [];
-  modelsError.value = null;
-  modelsProviderId.value = providerId;
+const knowledgeBlocksQuery = useQuery<KnowledgeBlock[]>({
+  queryKey: serverStateKeys.reference('knowledge-blocks', 'configuration-editor'),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[knowledge-blocks]', 'name,version,token_count,image');
+    const payload = await jsonApiList('/api/ash/knowledge-blocks', params, { signal });
+    return (payload.data || [])
+      .map((resource) => parseKnowledgeBlockOption(resource))
+      .filter((block): block is KnowledgeBlock => Boolean(block));
+  },
+});
 
-  if (!providerId) {
-    modelsLoading.value = false;
-    return;
-  }
-
-  modelsLoading.value = true;
-
-  try {
-    const payload = await api.get<{ models?: ProviderModelOption[] }>(
-      `/api/bff/llm-providers/${providerId}/models`,
-      { showErrorBanner: false }
-    );
-
-    if (currentSeq !== modelLoadSeq) return;
-    modelOptions.value = normalizeModelOptions(Array.isArray(payload.models) ? payload.models : []);
-  } catch (error) {
-    if (currentSeq !== modelLoadSeq) return;
-    console.warn('Failed to load provider models', error);
-    modelsError.value = 'Model list unavailable.';
-  } finally {
-    if (currentSeq === modelLoadSeq) {
-      modelsLoading.value = false;
-    }
-  }
-}
-
-const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
+const knowledgeBlocks = computed(() => {
+  const byId = new Map<number, KnowledgeBlock>();
+  for (const block of includedKnowledgeBlocks.value) byId.set(block.id, block);
+  for (const block of knowledgeBlocksQuery.data.value || []) byId.set(block.id, block);
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+});
 
 function mergeKnowledgeBlocks(blocks: KnowledgeBlock[]) {
   const byId = new Map<number, KnowledgeBlock>();
 
-  for (const block of knowledgeBlocks.value) byId.set(block.id, block);
+  for (const block of includedKnowledgeBlocks.value) byId.set(block.id, block);
   for (const block of blocks) byId.set(block.id, block);
 
-  knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+  includedKnowledgeBlocks.value = Array.from(byId.values());
 }
-
-async function loadKnowledgeBlocks() {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('sort', 'name');
-    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-    const payload = await jsonApiList('/api/ash/knowledge-blocks', qs);
-    mergeKnowledgeBlocks(
-      (payload.data || []).map((r) => parseKnowledgeBlockOption(r)).filter((b): b is KnowledgeBlock => Boolean(b))
-    );
-  } catch (e) {
-    console.warn('Failed to load knowledge blocks', e);
-  }
-}
-
-async function fetchKnowledgeBlockOption(blockId: number) {
-  try {
-    const qs = new URLSearchParams();
-    qs.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, qs);
-    return parseKnowledgeBlockOption(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh configuration knowledge block option.', error);
-    return null;
-  }
-}
-
-useLiveEntityRows(knowledgeBlocks, {
-  kind: 'knowledge-block',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchKnowledgeBlockOption(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
-});
 
 function applyConfigurationDocument(payload: JsonApiSingleResponse) {
   const includedIndex = createJsonApiIncludedIndex(payload.included);
@@ -974,29 +946,17 @@ const openBlockEditor = (blockId: number) => {
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
-  contextKey: () => `llm-configuration:${editor.idParam.value ?? 'new'}`,
   linkedBlockIds: () => linkedBlockIds.value,
   onBlocksCreated: async (createdIds) => {
-    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockOption(id)));
-    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
+    await knowledgeBlocksQuery.refetch({ cancelRefetch: true });
     bindings.addBlocks(createdIds);
   },
   onBlocksRemoved: (removedIds) => {
     bindings.removeBlocks(removedIds);
   },
-  resetOn: () => editor.idParam.value,
 });
 
 const openNewBlock = newBlockDraft.openNewBlock;
-
-watch(
-  () => [layer.active.value, loaded.value, loading.value] as const,
-  ([active, isLoaded, isLoading]) => {
-    if (!active || !isLoaded || isLoading) return;
-    void newBlockDraft.consumePendingNewBlockContext();
-  },
-  { immediate: true }
-);
 
 const parametersText = ref('{}\n');
 const parametersError = ref<string | null>(null);
@@ -1043,53 +1003,69 @@ watch(
   }
 );
 
-watch(
-  () => tagsPickerOpen.value,
-  (open) => {
-    if (!open) return;
-    if (tagsCatalogLoaded.value || tagsLoading.value || sharedReadonly.value) return;
-    void loadConfigurationTags();
-  }
-);
-
-watch(
-  () => form.provider_id,
-  (providerId) => {
-    void loadProviderModels(providerId);
-  },
-  { immediate: true }
-);
-
-onMounted(() => {
-  void loadProviders();
-  void loadKnowledgeBlocks();
-});
-
 const shareModalOpen = ref(false);
-const shareLoading = ref(false);
 const shareSaving = ref(false);
 const shareGroups = ref<Group[]>([]);
 const sharedGroupIds = ref<number[]>([]);
 
+const shareGroupsQuery = useQuery<Group[]>({
+  queryKey: serverStateKeys.reference('user-groups', 'share-picker'),
+  queryFn: async ({ signal }) => {
+    const payload = await api.get<{ groups: Group[] }>('/api/bff/me/groups', { signal });
+    return Array.isArray(payload.groups) ? payload.groups : [];
+  },
+});
+
+type ConfigurationShareState = { group_ids?: number[] };
+const configurationSharesQueryKey = computed(() =>
+  serverStateKeys.detail(
+    'llm-configuration-shares',
+    editor.numericId.value ?? 'new',
+    'share-modal'
+  )
+);
+const configurationSharesQuery = useQuery<ConfigurationShareState>({
+  queryKey: configurationSharesQueryKey,
+  enabled: computed(
+    () =>
+      !isNew.value &&
+      !sharedReadonly.value &&
+      !editor.deleting.value &&
+      editor.numericId.value != null
+  ),
+  queryFn: ({ queryKey, signal }) => {
+    const configurationId = toIntId(String(queryKey[3] ?? ''));
+    if (!configurationId) throw new Error('Invalid configuration id.');
+    return api.get<ConfigurationShareState>(
+      `/api/bff/llm-configurations/${configurationId}/shares`,
+      { signal }
+    );
+  },
+});
+const shareLoading = computed(
+  () => shareGroupsQuery.isFetching.value || configurationSharesQuery.isFetching.value
+);
+
 async function loadShareContext() {
   if (isNew.value || sharedReadonly.value || editor.numericId.value == null) return;
 
-  shareLoading.value = true;
+  const requestedId = editor.numericId.value;
   try {
-    const [groupsPayload, sharePayload] = await Promise.all([
-      api.get<{ groups: Group[] }>('/api/bff/me/groups'),
-      api.get<{ group_ids?: number[] }>(`/api/bff/llm-configurations/${editor.numericId.value}/shares`),
+    const [groupsResult, sharesResult] = await Promise.all([
+      shareGroupsQuery.refetch({ cancelRefetch: true }),
+      configurationSharesQuery.refetch({ cancelRefetch: true }),
     ]);
+    if (editor.numericId.value !== requestedId) return;
+    if (groupsResult.error) throw groupsResult.error;
+    if (sharesResult.error) throw sharesResult.error;
 
-    shareGroups.value = Array.isArray(groupsPayload.groups) ? groupsPayload.groups : [];
-    sharedGroupIds.value = Array.isArray(sharePayload.group_ids)
-      ? sharePayload.group_ids.filter((id): id is number => typeof id === 'number')
+    shareGroups.value = groupsResult.data || [];
+    sharedGroupIds.value = Array.isArray(sharesResult.data?.group_ids)
+      ? sharesResult.data.group_ids.filter((id): id is number => typeof id === 'number')
       : [];
   } catch (error) {
     console.error(error);
     alert(error instanceof Error ? error.message : 'Failed to load sharing settings.');
-  } finally {
-    shareLoading.value = false;
   }
 }
 
@@ -1103,7 +1079,7 @@ async function saveSharing(groupIds: number[]) {
 
   shareSaving.value = true;
   try {
-    const response = await api.put<{ group_ids?: number[] }>(
+    const response = await api.put<ConfigurationShareState>(
       `/api/bff/llm-configurations/${editor.numericId.value}/shares`,
       { group_ids: groupIds }
     );
@@ -1111,6 +1087,7 @@ async function saveSharing(groupIds: number[]) {
     sharedGroupIds.value = Array.isArray(response.group_ids)
       ? response.group_ids.filter((id): id is number => typeof id === 'number')
       : [];
+    serverStateQueryClient.setQueryData(configurationSharesQueryKey.value, response);
     shareModalOpen.value = false;
   } catch (error) {
     console.error(error);

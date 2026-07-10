@@ -168,6 +168,7 @@
 </template>
 
 <script setup lang="ts">
+import { useQuery } from '@tanstack/vue-query';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
@@ -177,9 +178,8 @@ import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
-import { useLiveEntityRows } from '@/features/entities/entityChanges';
 import { parseImageAsset } from '@/features/media/image';
-import { useStackLayer } from '@/features/stack/useStackLayer';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import {
   currentWebPushSubscription,
@@ -193,7 +193,6 @@ import {
 import {
   jsonApiCreate,
   jsonApiDelete,
-  jsonApiGet,
   jsonApiList,
   jsonApiUpdate,
   relationshipId,
@@ -214,18 +213,15 @@ type LocaleDraft = '' | 'en' | 'ru';
 type ThemeDraft = PreferredTheme;
 
 const stackNav = useStackNavigation();
-const layer = useStackLayer();
 const { currentUser } = useSessionAuth();
 
-const loading = ref(false);
-const settingsLoaded = ref(false);
+const settingsLoading = ref(false);
 const saving = ref(false);
 const changingPassword = ref(false);
-const loadError = ref('');
+const settingsLoadError = ref('');
 const pushLoading = ref(false);
 const pushError = ref('');
 
-const knowledgeBlocks = ref<KnowledgeBlock[]>([]);
 const userBlocks = ref<UserKnowledgeBlock[]>([]);
 const pickerOpen = ref(false);
 const pickerSelection = ref<number[]>([]);
@@ -239,15 +235,6 @@ const basePreferredThemeDraft = ref<ThemeDraft>('system');
 const pushConfig = ref<WebPushClientConfig | null>(null);
 const pushSupport = ref<WebPushSupportState | null>(null);
 const pushSubscribed = ref(false);
-
-function mergeKnowledgeBlocks(blocks: KnowledgeBlock[]) {
-  const byId = new Map<number, KnowledgeBlock>();
-
-  for (const block of knowledgeBlocks.value) byId.set(block.id, block);
-  for (const block of blocks) byId.set(block.id, block);
-
-  knowledgeBlocks.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
-}
 
 const passwordForm = reactive({
   current_password: '',
@@ -414,23 +401,27 @@ const parseKnowledgeBlock = (resource: JsonApiResource): KnowledgeBlock | null =
   };
 };
 
-const fetchKnowledgeBlockRow = async (blockId: number) => {
-  try {
+const knowledgeBlocksQuery = useQuery<KnowledgeBlock[]>({
+  queryKey: serverStateKeys.reference('knowledge-blocks', 'user-settings'),
+  queryFn: async ({ signal }) => {
     const params = new URLSearchParams();
+    params.set('sort', 'name');
     params.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-    const payload = await jsonApiGet(`/api/ash/knowledge-blocks/${blockId}`, params);
-    return parseKnowledgeBlock(payload.data);
-  } catch (error) {
-    console.warn('Failed to refresh settings knowledge block option.', error);
-    return null;
-  }
-};
+    const payload = await jsonApiList('/api/ash/knowledge-blocks', params, { signal });
+    return (payload.data || [])
+      .map(parseKnowledgeBlock)
+      .filter((row): row is KnowledgeBlock => Boolean(row));
+  },
+});
 
-useLiveEntityRows(knowledgeBlocks, {
-  kind: 'knowledge-block',
-  getId: (row) => row.id,
-  resolveRow: (change) => fetchKnowledgeBlockRow(change.id),
-  compare: (a, b) => a.name.localeCompare(b.name) || a.id - b.id,
+const knowledgeBlocks = computed(() => knowledgeBlocksQuery.data.value ?? []);
+const loading = computed(() => settingsLoading.value || knowledgeBlocksQuery.isPending.value);
+const loadError = computed(() => {
+  if (settingsLoadError.value) return settingsLoadError.value;
+  if (knowledgeBlocksQuery.data.value || !knowledgeBlocksQuery.error.value) return '';
+  return knowledgeBlocksQuery.error.value instanceof Error
+    ? knowledgeBlocksQuery.error.value.message
+    : 'Failed to load knowledge blocks.';
 });
 
 const parseUserKnowledgeBlock = (
@@ -517,29 +508,16 @@ const removeBlocksByBlockIds = (blockIds: number[]) => {
 };
 
 const newBlockDraft = useKnowledgeBlockNewDraft({
-  contextKey: () => `user-settings:${currentUser.value?.id ?? 'current'}`,
   linkedBlockIds: () => linkedBlockIds.value,
-  onBlocksCreated: async (createdIds) => {
-    const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockRow(id)));
-    mergeKnowledgeBlocks(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
+  onBlocksCreated: (createdIds) => {
     addBlocks(createdIds);
   },
   onBlocksRemoved: (removedIds) => {
     removeBlocksByBlockIds(removedIds);
   },
-  resetOn: () => currentUser.value?.id,
 });
 
 const openNewBlock = newBlockDraft.openNewBlock;
-
-watch(
-  () => [layer.active.value, settingsLoaded.value, loading.value] as const,
-  ([active, isLoaded, isLoading]) => {
-    if (!active || !isLoaded || isLoading) return;
-    void newBlockDraft.consumePendingNewBlockContext();
-  },
-  { immediate: true }
-);
 
 const move = (item: UserKnowledgeBlockLink, delta: number) => {
   const rows = sortedUserBlocks.value;
@@ -752,22 +730,11 @@ const disableNotifications = async () => {
 };
 
 const loadSettings = async () => {
-  loading.value = true;
-  loadError.value = '';
+  settingsLoading.value = true;
+  settingsLoadError.value = '';
 
   try {
-    const blockParams = new URLSearchParams();
-    blockParams.set('sort', 'name');
-    blockParams.set('fields[knowledge-blocks]', 'name,version,token_count,image');
-
-    const [blocksPayload, userBlocksPayload] = await Promise.all([
-      jsonApiList('/api/ash/knowledge-blocks', blockParams),
-      jsonApiList('/api/ash/user-knowledge-blocks'),
-    ]);
-
-    knowledgeBlocks.value = (blocksPayload.data || [])
-      .map(parseKnowledgeBlock)
-      .filter((row): row is KnowledgeBlock => Boolean(row));
+    const userBlocksPayload = await jsonApiList('/api/ash/user-knowledge-blocks');
 
     userBlocks.value = (userBlocksPayload.data || [])
       .map((resource) => parseUserKnowledgeBlock(resource))
@@ -776,12 +743,11 @@ const loadSettings = async () => {
     baseBlocksSnapshot.value = snapshotUserBlocks(userBlocks.value);
     resetLocaleDraft();
     resetThemeDraft();
-    settingsLoaded.value = true;
   } catch (error) {
     console.error(error);
-    loadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';
+    settingsLoadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';
   } finally {
-    loading.value = false;
+    settingsLoading.value = false;
   }
 };
 

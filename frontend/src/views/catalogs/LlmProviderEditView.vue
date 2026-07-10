@@ -20,6 +20,11 @@
     />
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
     <div v-if="sharedReadonly" class="card share-banner">
       <strong>Shared with you.</strong> This provider is read-only. Duplicate it to create an editable copy.
     </div>
@@ -198,12 +203,16 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { jsonApiGet, type JsonApiResource } from '@/api/jsonApi';
+import { serverStateKeys } from '@/features/serverState/queryClient';
+import type { JsonApiResource } from '@/api/jsonApi';
 
 type ProviderForm = {
   name: string;
@@ -262,9 +271,20 @@ function fromApi(resource: JsonApiResource): Partial<ProviderForm> {
 
 const clearApiKey = ref(false);
 const clearOauthRefreshToken = ref(false);
-const providerTypes = ref<ProviderTypeMetadata[]>([]);
-const providerTypesLoaded = ref(false);
-const providerTypesLoadError = ref('');
+const providerTypesQuery = useQuery<ProviderTypeMetadata[]>({
+  queryKey: serverStateKeys.reference('llm-provider-types', 'metadata'),
+  queryFn: async ({ signal }) => {
+    const payload = await api.get<ProviderTypesResponse>('/api/bff/llm-provider-types', { signal });
+    return Array.isArray(payload.types) ? payload.types : [];
+  },
+});
+
+const providerTypes = computed(() => providerTypesQuery.data.value ?? []);
+const providerTypesLoaded = computed(() => providerTypesQuery.data.value !== undefined);
+const providerTypesLoadError = computed(() => {
+  if (providerTypesQuery.data.value || !providerTypesQuery.error.value) return '';
+  return 'Provider type metadata could not be loaded.';
+});
 
 const editor = useCrudEditor<ProviderForm>({
   type: 'llm-providers',
@@ -324,11 +344,14 @@ const isNew = editor.isNew;
 const loaded = editor.loaded;
 const loading = editor.loading;
 const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
 const saving = editor.saving;
 const dirty = editor.dirty;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
-const providerTab = ref<'settings' | 'credentials'>('settings');
+const providerTab = useEditorTabState<'settings' | 'credentials'>('llm-provider', 'settings');
 const apiKeyPresent = computed(() => (form.credentials_present || []).includes('api_key'));
 const oauthRefreshTokenPresent = computed(() =>
   (form.credentials_present || []).includes('oauth_refresh_token')
@@ -400,21 +423,6 @@ const baseUrlPlaceholder = computed(
   () => currentProviderType.value?.default_base_url || baseUrlSuggestions.value[0] || ''
 );
 
-async function loadProviderTypes() {
-  try {
-    const payload = await api.get<ProviderTypesResponse>('/api/bff/llm-provider-types');
-    providerTypes.value = Array.isArray(payload.types) ? payload.types : [];
-    providerTypesLoaded.value = true;
-    providerTypesLoadError.value = '';
-  } catch (error) {
-    providerTypesLoaded.value = false;
-    providerTypesLoadError.value = 'Provider type metadata could not be loaded.';
-    console.warn('Failed to load provider type metadata', error);
-  }
-}
-
-void loadProviderTypes();
-
 watch(
   () => form.type,
   (type) => {
@@ -434,6 +442,7 @@ watch(
 watch(
   () => providerTypes.value,
   () => {
+    if (dirty.value) return;
     const providerType = currentProviderType.value;
     if (!providerType) return;
 
@@ -484,26 +493,12 @@ const navDisabled = editor.navDisabled;
 const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 
-async function refreshProviderCredentialsStatus() {
-  const providerId = editor.numericId.value;
-  if (!providerId) return;
-
-  try {
-    const payload = await jsonApiGet(`/api/ash/llm-providers/${providerId}`);
-    const patch = fromApi(payload.data);
-    if (Array.isArray(patch.credentials_present)) {
-      form.credentials_present = patch.credentials_present;
-    }
-  } catch (error) {
-    console.warn('Failed to refresh provider credentials status', error);
-  }
-}
-
 const save = async () => {
-  await editor.save();
+  const saved = await editor.save();
+  if (!saved) return;
   clearApiKey.value = false;
   clearOauthRefreshToken.value = false;
-  await refreshProviderCredentialsStatus();
+  await editor.reloadRemoteDocument();
 };
 const reset = () => {
   clearApiKey.value = false;

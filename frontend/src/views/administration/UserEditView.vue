@@ -19,6 +19,12 @@
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
 
+    <RemoteUpdateNotice
+      v-if="remoteUpdateAvailable"
+      @reload="reloadRemoteDocument"
+      @keep-editing="keepEditingRemoteDocument"
+    />
+
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
 
@@ -135,9 +141,9 @@
 
       <div v-if="!isNew" class="card stack">
         <h3 style="margin: 0">Details</h3>
-        <div class="muted">Last activity: {{ detailValue(userMeta.last_activity_at) }}</div>
-        <div class="muted">Created: {{ detailValue(userMeta.created_at) }}</div>
-        <div class="muted">Updated: {{ detailValue(userMeta.updated_at) }}</div>
+        <div class="muted">Last activity: {{ detailValue(form.last_activity_at) }}</div>
+        <div class="muted">Created: {{ detailValue(form.created_at) }}</div>
+        <div class="muted">Updated: {{ detailValue(form.updated_at) }}</div>
         <div v-if="isSelf" class="muted">This is the account used for the current session.</div>
       </div>
     </fieldset>
@@ -147,68 +153,40 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
+import { computed, reactive, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import { isHttpError } from '@/api/client';
 import {
-  createAdminUser,
-  deleteAdminUser,
-  getAdminUser,
   listAdminUserGroups,
   resetAdminUserPassword,
-  updateAdminUser,
 } from '@/api/adminAshApi';
 import { fetchCurrentUser, useSessionAuth } from '@/features/auth/session';
-import {
-  appendRecordsetId,
-  removeRecordsetId,
-} from '@/features/catalogs/model/recordsets';
-import { publishEntityChange } from '@/features/entities/entityChanges';
-import { useCrudRecordsetNavigation } from '@/features/catalogs/model/useCrudRecordsetNavigation';
-import { useJsonDirtyCompare } from '@/features/catalogs/model/useJsonDirtyCompare';
+import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { useNavigationStack } from '@/features/stack/navigationStack';
-import { useStackNavigation } from '@/features/stack/useStackNavigation';
+import { serverStateKeys } from '@/features/serverState/queryClient';
 import {
   fieldErrorsFromJsonApiErrors,
   formErrorsFromJsonApiErrors,
   getJsonApiErrors,
   toIntId,
+  type JsonApiResource,
 } from '@/api/jsonApi';
 import { formatRelativeDateTime } from '@/utils/dates';
-import type { AdminUser, AdminUserGroup, AdminUserGroupSummary } from '@/types/api';
+import type { AdminUserGroup, AdminUserGroupSummary } from '@/types/api';
 
 type UserForm = {
   username: string;
   is_admin: boolean;
   group_ids: number[];
+  created_at: string | null;
+  updated_at: string | null;
+  last_activity_at: string | null;
 };
 
 type ErrorMap = Record<string, string[]>;
-
-function pickQuery(query: Record<string, string | number | boolean | null | undefined>) {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(query)) {
-    if (value === null || value === undefined) continue;
-    out[key] = String(value);
-  }
-  return out;
-}
-
-function pickLocationQueryValue(raw: unknown): string | undefined {
-  if (Array.isArray(raw)) {
-    const first = raw.find((item) => item !== null && item !== undefined);
-    return first === null || first === undefined ? undefined : String(first);
-  }
-
-  if (raw === null || raw === undefined) return undefined;
-  return String(raw);
-}
-
-function cloneForm(form: UserForm): UserForm {
-  return JSON.parse(JSON.stringify(form)) as UserForm;
-}
 
 function normalizeIdList(ids: number[]) {
   return Array.from(
@@ -302,126 +280,138 @@ function createErrorState() {
 }
 
 const route = useRoute();
-const stack = useNavigationStack();
-const stackNav = useStackNavigation();
-
+const routeIsNew = computed(() => !route.params.id || route.params.id === 'new');
 const { currentUser } = useSessionAuth();
-
-const idParam = computed(() => route.params.id as string | undefined);
-const isNew = computed(() => !idParam.value || idParam.value === 'new');
-const numericId = computed(() => {
-  if (isNew.value) return undefined;
-  const id = toIntId(idParam.value);
-  return id ?? undefined;
-});
-
-const recordsetKey = computed(
-  () => pickLocationQueryValue(route.query.recordsetKey) ?? pickLocationQueryValue(route.query.navKey)
-);
-const explicitReturnTo = computed(() => pickLocationQueryValue(route.query.returnTo) ?? null);
-const returnTo = computed(() => explicitReturnTo.value);
-
-const form = reactive<UserForm>({
-  username: '',
-  is_admin: false,
-  group_ids: [],
-});
-
-const base = ref<UserForm>(cloneForm(form));
-const userMeta = reactive<Pick<AdminUser, 'created_at' | 'updated_at' | 'last_activity_at'>>({
-  created_at: null,
-  updated_at: null,
-  last_activity_at: null,
-});
 
 const passwordForm = reactive({
   password: '',
   password_confirmation: '',
 });
 
-const loaded = ref(false);
-const loading = ref(false);
-const saving = ref(false);
-const resettingPassword = ref(false);
-const deleting = ref(false);
-const loadError = ref<string | null>(null);
-const groupsError = ref<string | null>(null);
-const availableGroups = ref<AdminUserGroupSummary[]>([]);
+function relationshipIds(resource: JsonApiResource, name: string) {
+  const data = resource.relationships?.[name]?.data;
+  if (!Array.isArray(data)) return [];
+  return normalizeIdList(
+    data
+      .map((item) => toIntId(item.id))
+      .filter((id): id is number => typeof id === 'number')
+  );
+}
 
-const saveErrors = createErrorState();
+function optionalStringAttribute(resource: JsonApiResource, name: string) {
+  const value = resource.attributes?.[name];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+const groupsQuery = useQuery<AdminUserGroup[]>({
+  queryKey: serverStateKeys.reference('user-groups', 'administration-user-editor'),
+  queryFn: ({ signal }) => listAdminUserGroups(signal),
+});
+
+const availableGroups = computed<AdminUserGroupSummary[]>(() =>
+  normalizeGroupOptions(groupsQuery.data.value || [])
+);
+const groupsError = computed(() => {
+  if (groupsQuery.data.value || !groupsQuery.error.value) return null;
+  return groupsQuery.error.value instanceof Error
+    ? groupsQuery.error.value.message
+    : 'Failed to load groups.';
+});
+
+const editor = useCrudEditor<UserForm>({
+  type: 'users',
+  basePath: '/api/ash/users',
+  indexPath: '/administration/users',
+  editPath: (id) => `/administration/users/${id}`,
+  defaultForm: () => ({
+    username: '',
+    is_admin: false,
+    group_ids: [],
+    created_at: null,
+    updated_at: null,
+    last_activity_at: null,
+  }),
+  fromApi: (resource) => ({
+    username: String(resource.attributes?.username || ''),
+    is_admin: resource.attributes?.is_admin === true,
+    group_ids: relationshipIds(resource, 'groups'),
+    created_at: optionalStringAttribute(resource, 'created_at'),
+    updated_at: optionalStringAttribute(resource, 'updated_at'),
+    last_activity_at: optionalStringAttribute(resource, 'last_activity_at'),
+  }),
+  toAttributes: (form) => ({
+    username: form.username,
+    is_admin: form.is_admin,
+    groups: normalizeIdList(form.group_ids),
+    ...(routeIsNew.value
+      ? {
+          password: passwordForm.password,
+          password_confirmation: passwordForm.password_confirmation,
+        }
+      : {}),
+  }),
+  normalizeForDirty: (form) => ({
+    username: form.username,
+    is_admin: form.is_admin,
+    group_ids: normalizeIdList(form.group_ids),
+  }),
+  documentQuery: () => {
+    const params = new URLSearchParams();
+    params.set('include', 'groups');
+    return params;
+  },
+});
+
+const form = editor.form;
+const loaded = editor.loaded;
+const loading = computed(() => editor.loading.value || groupsQuery.isPending.value);
+const saving = editor.saving;
+const loadError = editor.loadError;
+const remoteUpdateAvailable = editor.remoteUpdateAvailable;
+const reloadRemoteDocument = editor.reloadRemoteDocument;
+const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
+const isNew = editor.isNew;
+const numericId = editor.numericId;
+const totalCount = editor.totalCount;
+const positionNumber = editor.positionNumber;
+const navDisabled = editor.navDisabled;
+const goPrev = editor.goPrev;
+const goNext = editor.goNext;
+const createNew = editor.createNew;
+const goList = editor.goList;
+const remove = editor.remove;
+
+const saveErrors = editor.errors;
 const resetErrors = createErrorState();
 const saveFormErrors = computed(() => saveErrors.formErrors.value);
 const resetFormErrors = computed(() => resetErrors.formErrors.value);
-const activePasswordFormErrors = computed(() => (isNew.value ? saveFormErrors.value : resetFormErrors.value));
-
-const baseDirty = useJsonDirtyCompare(() => form, () => base.value);
-const dirty = computed(() => {
-  if (!isNew.value) return baseDirty.value;
-  return (
-    baseDirty.value ||
-    passwordForm.password.trim() !== '' ||
-    passwordForm.password_confirmation.trim() !== ''
-  );
-});
-
+const passwordDraftDirty = computed(
+  () =>
+    isNew.value &&
+    (passwordForm.password.trim() !== '' || passwordForm.password_confirmation.trim() !== '')
+);
+editor.registerDirtySource(() => passwordDraftDirty.value);
+const dirty = computed(() => editor.dirty.value || passwordDraftDirty.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 const isSelf = computed(() => !isNew.value && numericId.value === currentUser.value?.id);
 const passwordMismatch = computed(() => {
   if (passwordForm.password === '' && passwordForm.password_confirmation === '') return false;
   return passwordForm.password !== passwordForm.password_confirmation;
 });
-
 const activePasswordErrors = computed(() => (isNew.value ? saveErrors : resetErrors));
-const canResetPassword = computed(() => {
-  return (
+const activePasswordFormErrors = computed(() =>
+  isNew.value ? saveFormErrors.value : resetFormErrors.value
+);
+const canResetPassword = computed(
+  () =>
     !isNew.value &&
     passwordForm.password.trim() !== '' &&
     passwordForm.password_confirmation.trim() !== '' &&
     !passwordMismatch.value
-  );
-});
+);
+const resettingPassword = ref(false);
 
 useUnsavedChangesGuard(dirty);
-
-const editorQuery = computed(() => {
-  const query = pickQuery({
-    recordsetKey: recordsetKey.value,
-  });
-
-  return query;
-});
-
-const navigateTo = (id: number) => {
-  const target = { path: `/administration/users/${id}`, query: editorQuery.value };
-  if (stack.active.value) {
-    return stackNav.replace(target);
-  }
-  return stackNav.push(target);
-};
-
-const { totalCount, positionNumber, navDisabled, goPrev, goNext } = useCrudRecordsetNavigation({
-  recordsetKey,
-  currentId: numericId,
-  isNew,
-  navigate: navigateTo,
-});
-
-function applyUser(user: AdminUser) {
-  form.username = String(user.username || '');
-  form.is_admin = Boolean(user.is_admin);
-  form.group_ids = normalizeIdList((user.groups || []).map((group) => Number(group.id)));
-  base.value = cloneForm(form);
-  userMeta.created_at = user.created_at ?? null;
-  userMeta.updated_at = user.updated_at ?? null;
-  userMeta.last_activity_at = user.last_activity_at ?? null;
-}
-
-function publishTouchedGroups(previousGroupIds: number[], nextGroupIds: number[]) {
-  const ids = new Set([...previousGroupIds, ...nextGroupIds]);
-  for (const groupId of ids) {
-    publishEntityChange({ kind: 'admin-user-group', operation: 'touch', id: groupId });
-  }
-}
 
 function toggleGroup(groupId: number) {
   form.group_ids = normalizeIdList(
@@ -437,26 +427,21 @@ function resetPasswordForm() {
   passwordForm.password_confirmation = '';
 }
 
+watch(
+  () => editor.idParam.value,
+  () => {
+    resetPasswordForm();
+    resetErrors.clear();
+  },
+  { immediate: true }
+);
+
 function reset() {
-  Object.assign(form, cloneForm(base.value));
-  saveErrors.clear();
+  editor.reset();
 
   if (isNew.value) {
     resetPasswordForm();
   }
-}
-
-function goList() {
-  if (stack.active.value) {
-    stackNav.close();
-    return;
-  }
-
-  stackNav.push(returnTo.value || '/administration/users');
-}
-
-function createNew() {
-  stackNav.push({ path: '/administration/users/new', query: editorQuery.value });
 }
 
 function detailValue(value?: string | null) {
@@ -500,52 +485,8 @@ function extractErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-async function load() {
-  loading.value = true;
-  loadError.value = null;
-  groupsError.value = null;
-  saveErrors.clear();
-  resetErrors.clear();
-
-  try {
-    try {
-      availableGroups.value = normalizeGroupOptions(await listAdminUserGroups());
-    } catch (error) {
-      console.error(error);
-      availableGroups.value = [];
-      groupsError.value = extractErrorMessage(error, 'Failed to load groups.');
-    }
-
-    if (isNew.value) {
-      form.username = '';
-      form.is_admin = false;
-      form.group_ids = [];
-      base.value = cloneForm(form);
-      userMeta.created_at = null;
-      userMeta.updated_at = null;
-      userMeta.last_activity_at = null;
-      resetPasswordForm();
-      return;
-    }
-
-    if (numericId.value === undefined) {
-      loadError.value = 'Invalid id.';
-      return;
-    }
-
-    applyUser(await getAdminUser(numericId.value));
-    resetPasswordForm();
-  } catch (error) {
-    console.error(error);
-    loadError.value = extractErrorMessage(error, 'Failed to load user.');
-  } finally {
-    loading.value = false;
-    loaded.value = true;
-  }
-}
-
-async function syncCurrentSessionIfNeeded(updatedUser: AdminUser) {
-  if (updatedUser.id !== currentUser.value?.id) return;
+async function syncCurrentSessionIfNeeded(userId: number | undefined) {
+  if (userId !== currentUser.value?.id) return;
   await fetchCurrentUser();
 }
 
@@ -554,87 +495,16 @@ async function save() {
   saveErrors.clear();
 
   if (isNew.value && passwordMismatch.value) {
-    saveErrors.fieldErrors.value = {
-      ...saveErrors.fieldErrors.value,
-      password_confirmation: ['Passwords do not match.'],
-    };
+    saveErrors.setField('password_confirmation', 'Passwords do not match.');
     return;
   }
 
-  saving.value = true;
+  const currentId = numericId.value;
+  const saved = await editor.save();
+  if (!saved) return;
 
-  try {
-    const previousGroupIds = [...base.value.group_ids];
-
-    if (isNew.value) {
-      const createdUser = await createAdminUser({
-        username: form.username,
-        is_admin: form.is_admin,
-        group_ids: form.group_ids,
-        password: passwordForm.password,
-        password_confirmation: passwordForm.password_confirmation,
-      });
-
-      applyUser(createdUser);
-      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: createdUser.id, row: createdUser });
-      publishTouchedGroups(previousGroupIds, form.group_ids);
-      resetPasswordForm();
-
-      if (recordsetKey.value) appendRecordsetId(recordsetKey.value, createdUser.id);
-
-      await stackNav.replace({
-        path: `/administration/users/${createdUser.id}`,
-        query: editorQuery.value,
-      });
-    } else {
-      if (numericId.value === undefined) return;
-
-      const updatedUser = await updateAdminUser(numericId.value, {
-        username: form.username,
-        is_admin: form.is_admin,
-        group_ids: form.group_ids,
-      });
-
-      applyUser(updatedUser);
-      publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: updatedUser.id, row: updatedUser });
-      publishTouchedGroups(previousGroupIds, form.group_ids);
-      await syncCurrentSessionIfNeeded(updatedUser);
-    }
-  } catch (error) {
-    if (!saveErrors.setFromHttpError(error)) {
-      console.error(error);
-      alert(extractErrorMessage(error, 'Failed to save user.'));
-    }
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function remove() {
-  if (deleting.value || isNew.value || numericId.value === undefined) return;
-  if (!window.confirm(`Delete user "${form.username}"?`)) return;
-
-  deleting.value = true;
-
-  try {
-    const previousGroupIds = [...base.value.group_ids];
-    await deleteAdminUser(numericId.value);
-    publishEntityChange({ kind: 'admin-user', operation: 'delete', id: numericId.value });
-    publishTouchedGroups(previousGroupIds, []);
-
-    if (recordsetKey.value) removeRecordsetId(recordsetKey.value, numericId.value);
-
-    if (stack.active.value) {
-      stackNav.close();
-    } else {
-      await stackNav.replace(returnTo.value || '/administration/users');
-    }
-  } catch (error) {
-    console.error(error);
-    alert(extractErrorMessage(error, 'Failed to delete user.'));
-  } finally {
-    deleting.value = false;
-  }
+  resetPasswordForm();
+  await syncCurrentSessionIfNeeded(currentId);
 }
 
 async function resetPassword() {
@@ -657,8 +527,8 @@ async function resetPassword() {
       password_confirmation: passwordForm.password_confirmation,
     });
 
-    userMeta.updated_at = updatedUser.updated_at ?? userMeta.updated_at;
-    publishEntityChange({ kind: 'admin-user', operation: 'upsert', id: updatedUser.id, row: updatedUser });
+    if (numericId.value !== updatedUser.id) return;
+    form.updated_at = updatedUser.updated_at ?? form.updated_at;
     resetPasswordForm();
   } catch (error) {
     if (!resetErrors.setFromHttpError(error)) {
@@ -669,17 +539,6 @@ async function resetPassword() {
     resettingPassword.value = false;
   }
 }
-
-onMounted(() => {
-  load();
-});
-
-watch(
-  () => idParam.value,
-  () => {
-    void load();
-  }
-);
 </script>
 
 <style scoped>
