@@ -592,6 +592,8 @@ export const ruMessages: Record<string, string> = {
   'Shared with groups': 'Доступно группам',
   'Shared with you': 'Доступно вам',
   'Shared with you.': 'Доступно вам.',
+  'Sharing settings': 'Настройки общего доступа',
+  'Sharing settings. Shared with groups.': 'Настройки общего доступа. Доступно группам.',
   'Show base URL options': 'Показать настройки базового URL',
   'Show bots filter': 'Показать фильтр ботов',
   'Show context': 'Показать контекст',

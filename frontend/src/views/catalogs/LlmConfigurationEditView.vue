@@ -19,16 +19,11 @@
       @duplicate="duplicate"
     >
       <template #extra-actions>
-        <button
+        <ShareToolbarButton
           v-if="!isNew && !sharedReadonly"
-          class="icon-button crud-icon-button"
-          type="button"
-          aria-label="Share…"
-          title="Share…"
+          :shared="hasOutgoingShares"
           @click="openShareModal"
-        >
-          <SvgIcon name="share-outgoing" size="16" />
-        </button>
+        />
       </template>
     </CrudHeader>
 
@@ -301,7 +296,7 @@ import { api } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
-import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
@@ -1051,6 +1046,10 @@ const configurationSharesQuery = useQuery<ConfigurationShareState>({
       { signal }
     );
   },
+});
+const hasOutgoingShares = computed(() => {
+  const groupIds = configurationSharesQuery.data.value?.group_ids;
+  return Array.isArray(groupIds) ? groupIds.length > 0 : form.shared_outgoing;
 });
 const shareLoading = computed(
   () => shareGroupsQuery.isFetching.value || configurationSharesQuery.isFetching.value

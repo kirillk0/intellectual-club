@@ -19,16 +19,11 @@
       @duplicate="duplicate"
     >
       <template #extra-actions>
-        <button
+        <ShareToolbarButton
           v-if="!isNew && !sharedReadonly"
-          class="icon-button crud-icon-button"
-          type="button"
-          aria-label="Share…"
-          title="Share…"
+          :shared="hasOutgoingShares"
           @click="openShareModal"
-        >
-          <SvgIcon name="share-outgoing" size="16" />
-        </button>
+        />
       </template>
     </CrudHeader>
 
@@ -401,7 +396,7 @@ import { api, getApiErrorMessage } from '@/api/client';
 import BotShareWizardModal, { type BotShareToolBinding } from '@/components/BotShareWizardModal.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
-import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
@@ -1201,6 +1196,10 @@ const botSharesQuery = useQuery<ShareStateResponse>({
     if (!botId) throw new Error('Invalid bot id.');
     return api.get<ShareStateResponse>(`/api/bff/bots/${botId}/shares`, { signal });
   },
+});
+const hasOutgoingShares = computed(() => {
+  const groupIds = botSharesQuery.data.value?.group_ids;
+  return Array.isArray(groupIds) ? groupIds.length > 0 : form.shared_outgoing;
 });
 const shareLoading = computed(
   () => shareGroupsQuery.isFetching.value || botSharesQuery.isFetching.value
