@@ -31,6 +31,25 @@ Run the desktop app:
 cargo run --manifest-path native_tools/Cargo.toml -p outlet-shell-desktop
 ```
 
+## Desktop Shell Releases
+
+The `Publish Outlet Shell Desktop` GitHub Actions workflow builds and publishes:
+
+- a macOS arm64 application bundle;
+- a Windows x64 executable;
+- SHA-256 checksums for both archives.
+
+Every push to `main` that changes the desktop app, its local dependencies, the
+Cargo workspace manifests, or the release workflow builds and publishes a new
+release automatically. The tag combines the commit UTC timestamp and short SHA:
+
+```text
+outlet-shell-desktop-20260711T074742Z-45940cc0a1a8
+```
+
+Re-running the workflow for the same commit reuses the existing release without
+requiring a version or a manually created tag.
+
 Run OpenAI OAuth:
 
 ```bash

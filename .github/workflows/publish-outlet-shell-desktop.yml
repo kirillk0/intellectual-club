@@ -1,0 +1,279 @@
+name: Publish Outlet Shell Desktop
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-outlet-shell-desktop.yml
+      - native_tools/Cargo.lock
+      - native_tools/Cargo.toml
+      - native_tools/crates/outlet-core/**
+      - native_tools/crates/outlet-shell/**
+      - native_tools/crates/outlet-shell-desktop/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-outlet-shell-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit_epoch: ${{ steps.release.outputs.commit_epoch }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+      package_version: ${{ steps.release.outputs.package_version }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_timestamp: ${{ steps.release.outputs.release_timestamp }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Generate release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit_sha="$(git rev-parse HEAD)"
+          short_sha="${commit_sha:0:12}"
+          commit_epoch="$(git show -s --format=%ct "${commit_sha}")"
+          release_timestamp="$(date -u --date="@${commit_epoch}" '+%Y%m%dT%H%M%SZ')"
+          release_id="${release_timestamp}-${short_sha}"
+          release_tag="outlet-shell-desktop-${release_id}"
+          package_version="$({
+            sed -nE 's/^version = "([^"]+)"$/\1/p' \
+              native_tools/crates/outlet-shell-desktop/Cargo.toml
+          } | head -n 1)"
+
+          if [ -z "${package_version}" ]; then
+            echo "Could not read the desktop package version" >&2
+            exit 1
+          fi
+
+          {
+            echo "commit_epoch=${commit_epoch}"
+            echo "commit_sha=${commit_sha}"
+            echo "package_version=${package_version}"
+            echo "release_id=${release_id}"
+            echo "release_tag=${release_tag}"
+            echo "release_timestamp=${release_timestamp}"
+            echo "short_sha=${short_sha}"
+          } >>"${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.platform_name }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_name: macOS arm64
+            platform_key: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - platform_name: Windows x64
+            platform_key: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native_tools -> target
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --manifest-path native_tools/Cargo.toml --locked --release --package outlet-shell-desktop --target ${{ matrix.target }}
+
+      - name: Package macOS application
+        if: matrix.platform_key == 'macos-arm64'
+        shell: bash
+        env:
+          COMMIT_EPOCH: ${{ needs.prepare.outputs.commit_epoch }}
+          PACKAGE_VERSION: ${{ needs.prepare.outputs.package_version }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          binary="native_tools/target/aarch64-apple-darwin/release/outlet-shell-desktop"
+          app="dist/Outlet Shell.app"
+          executable="${app}/Contents/MacOS/outlet-shell-desktop"
+          archive="dist/outlet-shell-desktop-${RELEASE_ID}-macos-arm64.zip"
+          bundle_version="${PACKAGE_VERSION%%[-+]*}"
+
+          test "$(lipo -archs "${binary}")" = "arm64"
+          mkdir -p "${app}/Contents/MacOS"
+          install -m 755 "${binary}" "${executable}"
+
+          plutil -create xml1 "${app}/Contents/Info.plist"
+          plutil -insert CFBundleDisplayName -string "Outlet Shell" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleExecutable -string "outlet-shell-desktop" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleIdentifier -string "org.intellectualclub.outlet-shell" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleName -string "Outlet Shell" "${app}/Contents/Info.plist"
+          plutil -insert CFBundlePackageType -string "APPL" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleShortVersionString -string "${bundle_version}" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleVersion -string "${COMMIT_EPOCH}" "${app}/Contents/Info.plist"
+          plutil -insert CFBundleGetInfoString -string "Outlet Shell ${RELEASE_ID}" "${app}/Contents/Info.plist"
+          plutil -insert LSApplicationCategoryType -string "public.app-category.utilities" "${app}/Contents/Info.plist"
+          plutil -insert LSMinimumSystemVersion -string "11.0" "${app}/Contents/Info.plist"
+          plutil -insert NSHighResolutionCapable -bool true "${app}/Contents/Info.plist"
+
+          codesign --force --deep --sign - "${app}"
+          codesign --verify --deep --strict "${app}"
+          ditto -c -k --sequesterRsrc --keepParent "${app}" "${archive}"
+
+      - name: Package Windows application
+        if: matrix.platform_key == 'windows-x64'
+        shell: pwsh
+        env:
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $binary = Join-Path $PWD "native_tools\target\x86_64-pc-windows-msvc\release\outlet-shell-desktop.exe"
+          $archive = Join-Path $PWD "dist\outlet-shell-desktop-$env:RELEASE_ID-windows-x64.zip"
+
+          $bytes = [System.IO.File]::ReadAllBytes($binary)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw "Expected an x86_64 PE executable, found machine type 0x$($machine.ToString('x4'))"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          Compress-Archive -LiteralPath $binary -DestinationPath $archive -CompressionLevel Optimal
+
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v4
+        with:
+          name: outlet-shell-desktop-${{ matrix.platform_key }}
+          path: dist/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged applications
+        uses: actions/download-artifact@v4
+        with:
+          pattern: outlet-shell-desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TIMESTAMP: ${{ needs.prepare.outputs.release_timestamp }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(dist/*.zip)
+          if [ "${#assets[@]}" -ne 2 ]; then
+            echo "Expected two release archives, found ${#assets[@]}" >&2
+            exit 1
+          fi
+
+          (
+            cd dist
+            sha256sum -- *.zip >SHA256SUMS.txt
+          )
+
+          tagged_sha="$(
+            gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null || true
+          )"
+          if [ -n "${tagged_sha}" ] && [ "${tagged_sha}" != "${COMMIT_SHA}" ]; then
+            echo "Tag ${RELEASE_TAG} points to ${tagged_sha}, expected ${COMMIT_SHA}" >&2
+            exit 1
+          fi
+
+          release_json="$(
+            gh release view "${RELEASE_TAG}" --json assets,isDraft 2>/dev/null || true
+          )"
+          if [ -n "${release_json}" ]; then
+            expected_assets=()
+            for asset in "${assets[@]}"; do
+              expected_assets+=("$(basename "${asset}")")
+            done
+            expected_assets+=("SHA256SUMS.txt")
+
+            all_assets_present=true
+            for expected_asset in "${expected_assets[@]}"; do
+              if ! jq -e --arg name "${expected_asset}" \
+                'any(.assets[]; .name == $name)' \
+                <<<"${release_json}" >/dev/null; then
+                all_assets_present=false
+                break
+              fi
+            done
+
+            is_draft="$(jq -r .isDraft <<<"${release_json}")"
+            if [ "${all_assets_present}" = true ]; then
+              if [ "${is_draft}" = true ]; then
+                gh release edit "${RELEASE_TAG}" --draft=false
+              fi
+              echo "Release ${RELEASE_TAG} already contains all expected assets"
+              exit 0
+            fi
+
+            gh release upload "${RELEASE_TAG}" \
+              "${assets[@]}" dist/SHA256SUMS.txt \
+              --clobber
+
+            if [ "${is_draft}" = true ]; then
+              gh release edit "${RELEASE_TAG}" --draft=false
+            fi
+          else
+            tag_flag=(--target "${COMMIT_SHA}")
+            if [ -n "${tagged_sha}" ]; then
+              tag_flag=(--verify-tag)
+            fi
+
+            gh release create "${RELEASE_TAG}" \
+              "${assets[@]}" dist/SHA256SUMS.txt \
+              "${tag_flag[@]}" \
+              --notes "Automated build from commit ${COMMIT_SHA}." \
+              --title "Outlet Shell Desktop ${RELEASE_TIMESTAMP} (${SHORT_SHA})"
+          fi
