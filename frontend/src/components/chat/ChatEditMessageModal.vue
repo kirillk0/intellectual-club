@@ -20,7 +20,6 @@
     submit-shortcut="auto"
     @cancel="emit('cancel')"
     @submit="handleTextareaSubmit"
-    @backdrop-touchmove="handleBackdropTouchMove"
     @dragenter.prevent="handleDragEnter"
     @dragover.prevent="handleDragOver"
     @dragleave.prevent="handleDragLeave"
@@ -215,12 +214,6 @@ const dragDepth = ref(0);
 const selectedContentIndex = ref(0);
 const modalHeightPx = ref(0);
 const mobileLayer = ref(false);
-const previousBodyOverflow = ref<string | null>(null);
-const previousHtmlOverflow = ref<string | null>(null);
-const lockedScrollX = ref(0);
-const lockedScrollY = ref(0);
-const scrollLockActive = ref(false);
-const overflowLockApplied = ref(false);
 
 const contents = computed(() => (Array.isArray(props.modelValue) ? props.modelValue : []));
 const existingAttachments = computed(() => props.existingAttachments || []);
@@ -305,33 +298,6 @@ const isTouchFullscreenViewport = () => {
   return window.matchMedia('(hover: none)').matches;
 };
 
-const applyDocumentOverflowLock = () => {
-  if (overflowLockApplied.value) return;
-
-  document.body.style.overflow = 'hidden';
-  document.documentElement.style.overflow = 'hidden';
-  overflowLockApplied.value = true;
-};
-
-const releaseDocumentOverflowLock = () => {
-  if (!overflowLockApplied.value) return;
-
-  document.body.style.overflow = previousBodyOverflow.value ?? '';
-  document.documentElement.style.overflow = previousHtmlOverflow.value ?? '';
-  overflowLockApplied.value = false;
-};
-
-const updateDocumentScrollLockMode = () => {
-  if (!scrollLockActive.value) return;
-
-  if (mobileLayer.value) {
-    releaseDocumentOverflowLock();
-    return;
-  }
-
-  applyDocumentOverflowLock();
-};
-
 const updateMobileLayer = () => {
   const next = isTouchFullscreenViewport();
   if (mobileLayer.value !== next) {
@@ -343,7 +309,6 @@ const updateMobileLayer = () => {
     clearViewportSyncTimeouts();
   }
 
-  updateDocumentScrollLockMode();
   return next;
 };
 
@@ -370,7 +335,6 @@ const syncViewport = () => {
   }
 
   computeModalHeight();
-  enforceWindowScrollLock();
 };
 
 const scheduleModalHeightRecalc = () => {
@@ -406,35 +370,9 @@ const handleVisualViewportChange = () => {
   scheduleModalHeightRecalc();
 };
 
-const lockDocumentScroll = () => {
-  if (scrollLockActive.value) {
-    updateDocumentScrollLockMode();
-    return;
-  }
-
-  if (previousBodyOverflow.value === null) {
-    previousBodyOverflow.value = document.body.style.overflow;
-  }
-  if (previousHtmlOverflow.value === null) {
-    previousHtmlOverflow.value = document.documentElement.style.overflow;
-  }
-
-  lockedScrollX.value = window.scrollX;
-  lockedScrollY.value = window.scrollY;
-  scrollLockActive.value = true;
-
-  updateDocumentScrollLockMode();
-};
-
-const unlockDocumentScroll = () => {
-  if (!scrollLockActive.value) return;
-
-  releaseDocumentOverflowLock();
-
-  previousBodyOverflow.value = null;
-  previousHtmlOverflow.value = null;
-  scrollLockActive.value = false;
-  window.scrollTo(lockedScrollX.value, lockedScrollY.value);
+const handleDocumentFocusChange = () => {
+  if (!props.open || updateMobileLayer()) return;
+  scheduleModalHeightRecalc();
 };
 
 const attachViewportListeners = () => {
@@ -442,6 +380,8 @@ const attachViewportListeners = () => {
   window.addEventListener('orientationchange', handleViewportResize);
   window.visualViewport?.addEventListener('resize', handleVisualViewportChange);
   window.visualViewport?.addEventListener('scroll', handleVisualViewportChange);
+  document.addEventListener('focusin', handleDocumentFocusChange);
+  document.addEventListener('focusout', handleDocumentFocusChange);
 };
 
 const detachViewportListeners = () => {
@@ -449,54 +389,9 @@ const detachViewportListeners = () => {
   window.removeEventListener('orientationchange', handleViewportResize);
   window.visualViewport?.removeEventListener('resize', handleVisualViewportChange);
   window.visualViewport?.removeEventListener('scroll', handleVisualViewportChange);
-};
-
-const enforceWindowScrollLock = () => {
-  if (!props.open || mobileLayer.value) return;
-
-  if (window.scrollX !== lockedScrollX.value || window.scrollY !== lockedScrollY.value) {
-    window.scrollTo(lockedScrollX.value, lockedScrollY.value);
-  }
-};
-
-const handleDocumentFocusChange = () => {
-  if (!props.open || updateMobileLayer()) return;
-  scheduleModalHeightRecalc();
-};
-
-const attachScrollLockListeners = () => {
-  window.addEventListener('scroll', enforceWindowScrollLock, { passive: true });
-  document.addEventListener('scroll', enforceWindowScrollLock, { passive: true, capture: true });
-  document.addEventListener('focusin', handleDocumentFocusChange);
-  document.addEventListener('focusout', handleDocumentFocusChange);
-  document.addEventListener('touchmove', handleBackdropTouchMove, { passive: false, capture: true });
-};
-
-const detachScrollLockListeners = () => {
-  window.removeEventListener('scroll', enforceWindowScrollLock);
-  document.removeEventListener('scroll', enforceWindowScrollLock, true);
   document.removeEventListener('focusin', handleDocumentFocusChange);
   document.removeEventListener('focusout', handleDocumentFocusChange);
-  document.removeEventListener('touchmove', handleBackdropTouchMove, true);
   clearViewportSyncTimeouts();
-};
-
-const handleBackdropTouchMove = (event: TouchEvent) => {
-  if (mobileLayer.value) return;
-
-  const target = event.target as HTMLElement | null;
-  if (!target) {
-    if (event.cancelable) event.preventDefault();
-    return;
-  }
-
-  if (target.closest('.message-edit-textarea, .attachment-list')) {
-    return;
-  }
-
-  if (event.cancelable) {
-    event.preventDefault();
-  }
 };
 
 watch(
@@ -504,9 +399,7 @@ watch(
   (open) => {
     if (open) {
       updateMobileLayer();
-      lockDocumentScroll();
       attachViewportListeners();
-      attachScrollLockListeners();
       if (!mobileLayer.value) {
         scheduleModalHeightRecalc();
       }
@@ -514,16 +407,12 @@ watch(
     }
 
     detachViewportListeners();
-    detachScrollLockListeners();
-    unlockDocumentScroll();
   },
   { immediate: true }
 );
 
 onBeforeUnmount(() => {
   detachViewportListeners();
-  detachScrollLockListeners();
-  unlockDocumentScroll();
 });
 
 const openFilePicker = () => {
@@ -839,11 +728,6 @@ const handleDrop = (event: DragEvent) => {
   font-size: 0.86rem;
   color: var(--color-info-text);
   pointer-events: none;
-}
-
-:global(.edit-message-modal-backdrop) {
-  overscroll-behavior: none;
-  overflow: hidden;
 }
 
 :global(.modal-backdrop--compact) {
