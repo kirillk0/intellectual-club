@@ -222,16 +222,16 @@ jobs:
           )
 
           tagged_sha="$(
-            gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null || true
-          )"
+            gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null
+          )" || tagged_sha=""
           if [ -n "${tagged_sha}" ] && [ "${tagged_sha}" != "${COMMIT_SHA}" ]; then
             echo "Tag ${RELEASE_TAG} points to ${tagged_sha}, expected ${COMMIT_SHA}" >&2
             exit 1
           fi
 
           release_json="$(
-            gh release view "${RELEASE_TAG}" --json assets,isDraft 2>/dev/null || true
-          )"
+            gh release view "${RELEASE_TAG}" --json assets,isDraft 2>/dev/null
+          )" || release_json=""
           if [ -n "${release_json}" ]; then
             expected_assets=()
             for asset in "${assets[@]}"; do
