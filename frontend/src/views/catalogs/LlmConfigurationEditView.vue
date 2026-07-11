@@ -107,6 +107,56 @@
         </div>
 
         <div v-if="configTab === 'settings'" class="stack">
+          <div :class="{ 'field-error': errors.hasField('temperature') }">
+            <label for="llm-configuration-temperature-mode">Temperature</label>
+            <select
+              id="llm-configuration-temperature-mode"
+              v-model="temperatureMode"
+              class="full"
+              :disabled="sharedReadonly"
+            >
+              <option value="default">Default</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input
+              v-if="temperatureMode === 'custom'"
+              v-model.number="temperatureModel"
+              class="full standard-parameter-value"
+              type="number"
+              min="0"
+              max="2"
+              step="any"
+              aria-label="Temperature"
+              :disabled="sharedReadonly"
+            />
+            <div v-if="errors.hasField('temperature')" class="error-text">
+              {{ errors.messageFor('temperature') }}
+            </div>
+          </div>
+
+          <label :class="{ 'field-error': errors.hasField('reasoning_effort') }">
+            Reasoning effort
+            <select
+              id="llm-configuration-reasoning-effort"
+              v-model="reasoningEffortModel"
+              class="full"
+              :disabled="sharedReadonly"
+            >
+              <option value="">Default</option>
+              <option v-for="option in reasoningEffortOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <div v-if="errors.hasField('reasoning_effort')" class="error-text">
+              {{ errors.messageFor('reasoning_effort') }}
+            </div>
+          </label>
+
+          <div class="muted small-text">
+            Default leaves the corresponding request parameter unset, so values from Advanced JSON remain unchanged.
+          </div>
+          <div class="muted small-text">Available reasoning effort levels depend on the selected model.</div>
+
           <label :class="{ 'field-error': errors.hasField('timeout_seconds') }">
             Timeout (seconds)
             <input
@@ -334,6 +384,8 @@ type ConfigurationForm = {
   model_name: string;
   note: string;
   parameters: Record<string, unknown>;
+  temperature: number | null;
+  reasoning_effort: ReasoningEffort | null;
   enabled: boolean;
   timeout_seconds: number;
   context_length: number | null;
@@ -345,6 +397,9 @@ type ConfigurationForm = {
   shared_incoming: boolean;
   shared_outgoing: boolean;
 };
+
+type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+type TemperatureMode = 'default' | 'custom';
 
 type ProviderOption = { id: number; name: string };
 type ProviderModelOption = {
@@ -364,6 +419,30 @@ const CONFIGURATION_DOCUMENT_INCLUDE = [
 
 const route = useRoute();
 const stackNav = useStackNavigation();
+
+const reasoningEffortOptions: Array<{ value: ReasoningEffort; label: string }> = [
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'XHigh' },
+  { value: 'max', label: 'Max' },
+];
+
+const reasoningEffortValues = new Set<ReasoningEffort>(reasoningEffortOptions.map((option) => option.value));
+
+function normalizeTemperature(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
+  return typeof value === 'string' && reasoningEffortValues.has(value as ReasoningEffort)
+    ? (value as ReasoningEffort)
+    : null;
+}
 
 function defaultParameters() {
   return {};
@@ -390,6 +469,8 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
     model_name: String(attrs.model_name || ''),
     note: String(attrs.note || ''),
     parameters,
+    temperature: normalizeTemperature(attrs.temperature),
+    reasoning_effort: normalizeReasoningEffort(attrs.reasoning_effort),
     enabled: typeof attrs.enabled === 'boolean' ? attrs.enabled : Boolean(attrs.enabled),
     timeout_seconds: typeof attrs.timeout_seconds === 'number' ? attrs.timeout_seconds : Number(attrs.timeout_seconds || 300),
     context_length:
@@ -497,6 +578,8 @@ const editor = useCrudEditor<ConfigurationForm>({
     model_name: '',
     note: '',
     parameters: defaultParameters(),
+    temperature: null,
+    reasoning_effort: null,
     enabled: true,
     timeout_seconds: 300,
     context_length: null,
@@ -514,6 +597,8 @@ const editor = useCrudEditor<ConfigurationForm>({
     model_name: form.model_name,
     note: form.note || null,
     parameters: form.parameters || {},
+    temperature: form.temperature,
+    reasoning_effort: form.reasoning_effort,
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
@@ -529,6 +614,8 @@ const editor = useCrudEditor<ConfigurationForm>({
     model_name: form.model_name,
     note: form.note,
     parameters: form.parameters,
+    temperature: form.temperature,
+    reasoning_effort: form.reasoning_effort,
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
@@ -654,6 +741,27 @@ useUnsavedChangesGuard(guardDirty);
 
 const form = editor.form;
 const errors = editor.errors;
+const temperatureMode = computed<TemperatureMode>({
+  get: () => (form.temperature === null ? 'default' : 'custom'),
+  set: (value) => {
+    form.temperature = value === 'custom' ? (form.temperature ?? 1.0) : null;
+    errors.clearField('temperature');
+  },
+});
+const temperatureModel = computed<number | undefined>({
+  get: () => (typeof form.temperature === 'number' ? form.temperature : undefined),
+  set: (value) => {
+    form.temperature = typeof value === 'number' && Number.isFinite(value) ? value : null;
+    errors.clearField('temperature');
+  },
+});
+const reasoningEffortModel = computed<ReasoningEffort | ''>({
+  get: () => form.reasoning_effort ?? '',
+  set: (value) => {
+    form.reasoning_effort = normalizeReasoningEffort(value);
+    errors.clearField('reasoning_effort');
+  },
+});
 const formErrors = computed(() => errors.formErrors.value);
 const isNew = editor.isNew;
 const loaded = editor.loaded;
@@ -1123,5 +1231,9 @@ async function saveSharing(groupIds: number[]) {
 .small-text {
   margin-top: 4px;
   font-size: 0.85rem;
+}
+
+.standard-parameter-value {
+  margin-top: 8px;
 }
 </style>

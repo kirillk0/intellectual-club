@@ -37,6 +37,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
   def supports_cache_control?, do: Responses.supports_cache_control?()
 
   @impl true
+  def apply_standard_parameters(parameters, settings),
+    do: Responses.apply_standard_parameters(parameters, settings)
+
+  @impl true
   def build_initial_request(opts), do: Responses.build_initial_request(opts)
 
   @impl true

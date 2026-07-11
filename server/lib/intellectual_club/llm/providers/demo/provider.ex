@@ -46,6 +46,9 @@ defmodule IntellectualClub.Llm.Providers.Demo do
   def supports_cache_control?, do: false
 
   @impl true
+  def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       ChatAdapterHelpers.build_initial_messages(

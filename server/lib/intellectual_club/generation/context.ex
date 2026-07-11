@@ -433,7 +433,14 @@ defmodule IntellectualClub.Generation.Context do
           provider_auth_method = provider.auth_method
           provider_oauth_refresh_token = provider.oauth_refresh_token
           model_name = configuration.model_name
-          parameters = configuration.parameters || %{}
+          raw_parameters = configuration.parameters || %{}
+
+          parameters =
+            adapter_module.apply_standard_parameters(raw_parameters, %{
+              temperature: Map.get(configuration, :temperature),
+              reasoning_effort: Map.get(configuration, :reasoning_effort)
+            })
+
           timeout_ms = max(1, configuration.timeout_seconds || 300) * 1000
 
           cache_control_enabled =

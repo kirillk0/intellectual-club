@@ -63,6 +63,14 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   def supports_cache_control?, do: false
 
   @impl true
+  def apply_standard_parameters(parameters, settings)
+      when is_map(parameters) and is_map(settings) do
+    parameters
+    |> maybe_put_temperature(Map.get(settings, :temperature))
+    |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     input_items =
       HistoryInput.build_input_items(Map.get(opts, :history, []),
@@ -172,6 +180,28 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   def request_snapshot(_raw_request), do: %{model_input: [], system_prompt: ""}
+
+  defp maybe_put_temperature(parameters, nil), do: parameters
+
+  defp maybe_put_temperature(parameters, temperature) do
+    parameters
+    |> RequestPayload.stringify_keys()
+    |> Map.put("temperature", temperature)
+  end
+
+  defp maybe_put_reasoning_effort(parameters, nil), do: parameters
+
+  defp maybe_put_reasoning_effort(parameters, effort) do
+    parameters = RequestPayload.stringify_keys(parameters)
+
+    reasoning =
+      case Map.get(parameters, "reasoning") do
+        %{} = value -> value
+        _other -> %{}
+      end
+
+    Map.put(parameters, "reasoning", Map.put(reasoning, "effort", to_string(effort)))
+  end
 
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do

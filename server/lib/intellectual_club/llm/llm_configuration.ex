@@ -89,6 +89,18 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       default(%{})
     end
 
+    attribute :temperature, :float do
+      allow_nil?(true)
+      public?(true)
+      constraints(min: 0.0, max: 2.0)
+    end
+
+    attribute :reasoning_effort, :atom do
+      allow_nil?(true)
+      public?(true)
+      constraints(one_of: [:none, :minimal, :low, :medium, :high, :xhigh, :max])
+    end
+
     attribute :enabled, :boolean do
       allow_nil?(false)
       public?(true)
@@ -222,6 +234,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :model_name,
         :note,
         :parameters,
+        :temperature,
+        :reasoning_effort,
         :enabled,
         :timeout_seconds,
         :context_length,
@@ -293,6 +307,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
           model_name: source.model_name,
           note: source.note,
           parameters: source.parameters,
+          temperature: source.temperature,
+          reasoning_effort: source.reasoning_effort,
           enabled: source.enabled,
           timeout_seconds: source.timeout_seconds,
           context_length: source.context_length,
@@ -330,6 +346,8 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :model_name,
         :note,
         :parameters,
+        :temperature,
+        :reasoning_effort,
         :enabled,
         :timeout_seconds,
         :context_length,

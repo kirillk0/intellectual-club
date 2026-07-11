@@ -52,6 +52,14 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   def supports_cache_control?, do: true
 
   @impl true
+  def apply_standard_parameters(parameters, settings)
+      when is_map(parameters) and is_map(settings) do
+    parameters
+    |> maybe_put_temperature(Map.get(settings, :temperature))
+    |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       opts
@@ -127,6 +135,35 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   @impl true
   def request_snapshot(raw_request), do: ChatAdapterHelpers.request_snapshot(raw_request)
+
+  defp maybe_put_temperature(parameters, nil), do: parameters
+
+  defp maybe_put_temperature(parameters, temperature) do
+    parameters
+    |> RequestPayload.stringify_keys()
+    |> Map.put("temperature", temperature)
+  end
+
+  defp maybe_put_reasoning_effort(parameters, nil), do: parameters
+
+  defp maybe_put_reasoning_effort(parameters, effort) do
+    parameters = RequestPayload.stringify_keys(parameters)
+
+    reasoning =
+      case Map.get(parameters, "reasoning") do
+        %{} = value -> value
+        _other -> %{}
+      end
+
+    reasoning =
+      reasoning
+      |> Map.drop(["max_tokens", "enabled"])
+      |> Map.put("effort", to_string(effort))
+
+    parameters
+    |> Map.delete("reasoning_effort")
+    |> Map.put("reasoning", reasoning)
+  end
 
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do

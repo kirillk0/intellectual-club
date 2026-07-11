@@ -55,6 +55,14 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   def supports_cache_control?, do: true
 
   @impl true
+  def apply_standard_parameters(parameters, settings)
+      when is_map(parameters) and is_map(settings) do
+    parameters
+    |> maybe_put_temperature(Map.get(settings, :temperature))
+    |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     {system, messages} =
       opts
@@ -134,6 +142,54 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
 
   @impl true
   def request_snapshot(raw_request), do: Payload.request_snapshot(raw_request)
+
+  defp maybe_put_temperature(parameters, nil), do: parameters
+
+  defp maybe_put_temperature(parameters, temperature) do
+    parameters
+    |> RequestPayload.stringify_keys()
+    |> Map.put("temperature", temperature)
+  end
+
+  defp maybe_put_reasoning_effort(parameters, nil), do: parameters
+
+  defp maybe_put_reasoning_effort(parameters, :none) do
+    parameters = RequestPayload.stringify_keys(parameters)
+
+    parameters
+    |> Map.put("thinking", %{"type" => "disabled"})
+    |> delete_output_effort()
+  end
+
+  defp maybe_put_reasoning_effort(parameters, effort) do
+    parameters = RequestPayload.stringify_keys(parameters)
+
+    output_config =
+      parameters
+      |> output_config()
+      |> Map.put("effort", to_string(effort))
+
+    parameters
+    |> Map.put("thinking", %{"type" => "adaptive"})
+    |> Map.put("output_config", output_config)
+  end
+
+  defp output_config(parameters) do
+    case Map.get(parameters, "output_config") do
+      %{} = value -> value
+      _other -> %{}
+    end
+  end
+
+  defp delete_output_effort(parameters) do
+    case Map.get(parameters, "output_config") do
+      %{} = output_config ->
+        Map.put(parameters, "output_config", Map.delete(output_config, "effort"))
+
+      _other ->
+        parameters
+    end
+  end
 
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do

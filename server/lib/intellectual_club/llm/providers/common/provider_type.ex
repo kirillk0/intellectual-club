@@ -46,6 +46,13 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
           required(:supports_image_input) => boolean() | nil
         }
 
+  @type reasoning_effort :: :none | :minimal | :low | :medium | :high | :xhigh | :max
+
+  @type standard_parameter_settings :: %{
+          required(:temperature) => number() | nil,
+          required(:reasoning_effort) => reasoning_effort() | nil
+        }
+
   @callback type() :: String.t()
   @callback label() :: String.t()
   @callback metadata() :: metadata()
@@ -53,6 +60,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
   @callback list_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
 
   @callback supports_cache_control?() :: boolean()
+  @callback apply_standard_parameters(map(), standard_parameter_settings()) :: map()
   @callback build_initial_request(map()) :: initial_request_result()
   @callback build_followup_request(map()) :: followup_request_result()
   @callback inject_steering(map(), list(), map()) :: initial_request_result()

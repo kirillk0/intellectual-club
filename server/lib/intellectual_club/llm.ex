@@ -74,6 +74,8 @@ defmodule IntellectualClub.Llm do
             :model_name,
             :note,
             :parameters,
+            :temperature,
+            :reasoning_effort,
             :enabled,
             :timeout_seconds,
             :context_length,

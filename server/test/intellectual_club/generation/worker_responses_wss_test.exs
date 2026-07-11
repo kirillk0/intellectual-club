@@ -106,6 +106,8 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     refute Map.has_key?(first_request, "previous_response_id")
     assert is_list(first_request["input"])
     assert length(first_request["input"]) >= 1
+    assert first_request["temperature"] == 0
+    assert first_request["reasoning"] == %{"effort" => "low", "summary" => "auto"}
 
     assert tool_followup_request["type"] == "response.create"
     assert tool_followup_request["previous_response_id"] == "resp_tool"
@@ -113,10 +115,19 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     assert [%{"type" => "function_call_output", "call_id" => "call_web_1"}] =
              tool_followup_request["input"]
 
+    assert tool_followup_request["temperature"] == 0
+
+    assert tool_followup_request["reasoning"] == %{
+             "effort" => "low",
+             "summary" => "auto"
+           }
+
     assert next_message_request["type"] == "response.create"
     refute Map.has_key?(next_message_request, "previous_response_id")
     assert is_list(next_message_request["input"])
     assert length(next_message_request["input"]) > length(tool_followup_request["input"])
+    assert next_message_request["temperature"] == 0
+    assert next_message_request["reasoning"] == %{"effort" => "low", "summary" => "auto"}
   end
 
   defp assistant_message(text) when is_binary(text) do
@@ -152,7 +163,9 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
         %{
           provider_id: provider.id,
           model_name: "test-model",
-          parameters: %{},
+          parameters: %{"reasoning" => %{"summary" => "auto"}},
+          temperature: 0,
+          reasoning_effort: :low,
           timeout_seconds: 5
         },
         actor: actor

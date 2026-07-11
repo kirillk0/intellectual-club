@@ -27,6 +27,9 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     assert get_in(context.request_payload, ["messages", Access.at(0), "content"]) ==
              "hello step 3"
 
+    assert context.request_payload["temperature"] == 0
+    assert context.request_payload["reasoning"] == %{"effort" => "low"}
+
     assert_single_retry_step_query(queries)
   end
 
@@ -98,6 +101,8 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
             status: retryable_step_status(status),
             raw_request: %{
               "model" => "demo-model",
+              "temperature" => 0,
+              "reasoning" => %{"effort" => "low"},
               "messages" => [
                 %{"role" => "user", "content" => "hello step #{sequence}"}
               ],

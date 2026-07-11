@@ -54,6 +54,14 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   def supports_cache_control?, do: false
 
   @impl true
+  def apply_standard_parameters(parameters, settings)
+      when is_map(parameters) and is_map(settings) do
+    parameters
+    |> maybe_put_temperature(Map.get(settings, :temperature))
+    |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     input_steps =
       Payload.build_input_steps(Map.get(opts, :history, []),
@@ -128,6 +136,40 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
 
   @impl true
   def request_snapshot(raw_request), do: Payload.request_snapshot(raw_request)
+
+  defp maybe_put_temperature(parameters, nil), do: parameters
+
+  defp maybe_put_temperature(parameters, temperature) do
+    parameters = RequestPayload.stringify_keys(parameters)
+    generation_config = generation_config(parameters)
+
+    parameters
+    |> Map.delete("temperature")
+    |> Map.put("generation_config", Map.put(generation_config, "temperature", temperature))
+  end
+
+  defp maybe_put_reasoning_effort(parameters, nil), do: parameters
+
+  defp maybe_put_reasoning_effort(parameters, effort) do
+    parameters = RequestPayload.stringify_keys(parameters)
+
+    generation_config =
+      parameters
+      |> generation_config()
+      |> Map.delete("thinking_budget")
+      |> Map.put("thinking_level", to_string(effort))
+
+    parameters
+    |> Map.drop(["thinking_level", "thinking_budget"])
+    |> Map.put("generation_config", generation_config)
+  end
+
+  defp generation_config(parameters) do
+    case Map.get(parameters, "generation_config") do
+      %{} = value -> value
+      _other -> %{}
+    end
+  end
 
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do

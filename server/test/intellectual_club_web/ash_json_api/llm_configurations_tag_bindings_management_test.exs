@@ -107,6 +107,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "provider_id" => provider.id,
             "model_name" => "role-fix-model",
             "parameters" => %{},
+            "temperature" => 0.7,
+            "reasoning_effort" => "minimal",
             "enabled" => true,
             "timeout_seconds" => 300,
             "supports_steering" => false,
@@ -120,6 +122,10 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     assert get_in(create_response, ["data", "attributes", "supports_steering"]) == false
     assert get_in(create_response, ["data", "attributes", "fix_role_alteration"]) == true
+    assert get_in(create_response, ["data", "attributes", "temperature"]) == 0.7
+
+    assert get_in(create_response, ["data", "attributes", "reasoning_effort"]) ==
+             "minimal"
 
     get_response =
       conn
@@ -128,6 +134,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     assert get_in(get_response, ["data", "attributes", "supports_steering"]) == false
     assert get_in(get_response, ["data", "attributes", "fix_role_alteration"]) == true
+    assert get_in(get_response, ["data", "attributes", "temperature"]) == 0.7
+    assert get_in(get_response, ["data", "attributes", "reasoning_effort"]) == "minimal"
 
     patch_response =
       conn
@@ -137,7 +145,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
           "id" => configuration_id,
           "attributes" => %{
             "supports_steering" => true,
-            "fix_role_alteration" => false
+            "fix_role_alteration" => false,
+            "temperature" => 0,
+            "reasoning_effort" => "max"
           }
         }
       })
@@ -145,10 +155,37 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     assert get_in(patch_response, ["data", "attributes", "supports_steering"]) == true
     assert get_in(patch_response, ["data", "attributes", "fix_role_alteration"]) == false
+    assert get_in(patch_response, ["data", "attributes", "temperature"]) == 0.0
+    assert get_in(patch_response, ["data", "attributes", "reasoning_effort"]) == "max"
 
     configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
     assert configuration.supports_steering == true
     assert configuration.fix_role_alteration == false
+    assert configuration.temperature == 0.0
+    assert configuration.reasoning_effort == :max
+
+    reset_response =
+      conn
+      |> json_api_patch("/api/ash/llm-configurations/#{configuration_id}", %{
+        "data" => %{
+          "type" => "llm-configurations",
+          "id" => configuration_id,
+          "attributes" => %{
+            "temperature" => nil,
+            "reasoning_effort" => nil
+          }
+        }
+      })
+      |> json_response(200)
+
+    assert get_in(reset_response, ["data", "attributes", "temperature"]) == nil
+    assert get_in(reset_response, ["data", "attributes", "reasoning_effort"]) == nil
+
+    reset_configuration =
+      Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
+
+    assert reset_configuration.temperature == nil
+    assert reset_configuration.reasoning_effort == nil
   end
 
   test "GET /api/ash/llm-configurations/:id includes provider, tags, and knowledge blocks", %{

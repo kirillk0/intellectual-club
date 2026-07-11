@@ -292,6 +292,74 @@ defmodule IntellectualClub.Generation.ContextTest do
            ]
   end
 
+  test "projects standard parameters before building and persisting the initial request" do
+    %{user: actor} = user_fixture()
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Responses standard parameters",
+          type: :responses,
+          base_url: "https://api.openai.com/v1",
+          api_key: "provider-key"
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          provider_id: provider.id,
+          model_name: "gpt-5",
+          parameters: %{
+            "temperature" => 1.6,
+            "reasoning" => %{"effort" => "high", "summary" => "auto"},
+            "max_tokens" => 64
+          },
+          temperature: 0.2,
+          reasoning_effort: :minimal
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{llm_configuration_id: configuration.id, note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, _} = Threads.add_message_to_end(chat, :user, "Think briefly", actor: actor)
+
+    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.parameters == %{
+             "temperature" => 0.2,
+             "reasoning" => %{"effort" => "minimal", "summary" => "auto"},
+             "max_tokens" => 64
+           }
+
+    assert context.request_payload["temperature"] == 0.2
+
+    assert context.request_payload["reasoning"] == %{
+             "effort" => "minimal",
+             "summary" => "auto"
+           }
+
+    assert context.request_payload["max_output_tokens"] == 64
+
+    step = Ash.get!(ChatMessageStep, context.step_id, actor: actor)
+    assert step.raw_request == context.request_payload
+  end
+
   test "includes fixed driver functions in tools payload without discovery" do
     %{user: actor} = user_fixture()
 

@@ -82,6 +82,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
           model_name: "duplicate-model",
           note: "source note",
           parameters: %{"temperature" => 0.3},
+          temperature: 0.7,
+          reasoning_effort: :minimal,
           enabled: true,
           timeout_seconds: 45,
           context_length: 16_384,
@@ -121,6 +123,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
 
     assert duplicated_configuration.supports_steering == false
     assert duplicated_configuration.fix_role_alteration == true
+    assert duplicated_configuration.temperature == 0.7
+    assert duplicated_configuration.reasoning_effort == :minimal
 
     duplicated_bindings =
       LlmConfigurationKnowledgeBlock

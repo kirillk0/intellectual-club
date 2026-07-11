@@ -34,6 +34,9 @@ defmodule IntellectualClub.TestSupport.LlmProviders.SelfContainedTestProvider do
   def supports_cache_control?, do: false
 
   @impl true
+  def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
+
+  @impl true
   def build_initial_request(_opts) do
     %{raw_request: %{}, request_snapshot: request_snapshot(%{})}
   end

@@ -68,6 +68,10 @@ defmodule IntellectualClub.Llm.Providers.Common.RegistryTest do
              Registry.fetch("self_contained_test_provider")
   end
 
+  test "all discovered providers implement standard parameter projection" do
+    assert Enum.all?(Registry.all(), &function_exported?(&1, :apply_standard_parameters, 2))
+  end
+
   test "returns controlled error for unknown provider types" do
     assert Registry.fetch("unknown_provider_type") == {:error, :unknown_provider_type}
   end
