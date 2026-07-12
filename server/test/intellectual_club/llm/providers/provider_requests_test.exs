@@ -19,6 +19,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         model_name: "openai/gpt-5-mini",
         parameters: %{"temperature" => 0.1},
         chat_id: 123,
+        conversation_affinity_id: 77,
         tools: [
           %{
             "type" => "function",
@@ -38,7 +39,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.raw_request["model"] == "openai/gpt-5-mini"
     assert result.raw_request["temperature"] == 0.1
-    assert result.raw_request["session_id"] == "intellectual-club:chat:123"
+    assert result.raw_request["session_id"] == "intellectual-club:chat:77"
     assert is_list(result.raw_request["tools"])
 
     [system_message, user_message] = result.raw_request["messages"]
@@ -100,19 +101,25 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
           }
         ],
         supports_image_input: false,
-        chat_id: 123
+        chat_id: 123,
+        owner_id: 456
       })
 
     assert result.raw_request["model"] == "gpt-5"
     assert result.raw_request["max_output_tokens"] == 200
     assert result.raw_request["store"] == false
-    assert result.raw_request["prompt_cache_key"] == "intellectual-club:chat:123"
+    assert result.raw_request["prompt_cache_key"] == "intellectual-club:user:456"
     assert result.raw_request["instructions"] == "Use tools when needed."
     assert is_list(result.raw_request["input"])
     assert is_list(result.raw_request["tools"])
 
     assert result.request_snapshot.model_input == result.raw_request["input"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
+
+    assert Responses.apply_prompt_cache_key(
+             %{"prompt_cache_key" => "intellectual-club:chat:123"},
+             %{owner_id: 456}
+           ) == %{"prompt_cache_key" => "intellectual-club:user:456"}
   end
 
   test "responses_wss provider metadata and request building delegate to responses provider" do
@@ -136,13 +143,14 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       parameters: %{"max_tokens" => 200},
       tools: [],
       supports_image_input: false,
-      chat_id: 123
+      chat_id: 123,
+      owner_id: 456
     }
 
     assert ResponsesWss.build_initial_request(opts) == Responses.build_initial_request(opts)
 
     assert ResponsesWss.build_initial_request(opts).raw_request["prompt_cache_key"] ==
-             "intellectual-club:chat:123"
+             "intellectual-club:user:456"
 
     raw_request = %{"model" => "gpt-5", "input" => [], "instructions" => "System"}
     assert ResponsesWss.request_snapshot(raw_request) == Responses.request_snapshot(raw_request)
@@ -598,6 +606,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         context: %{
           cache_control_enabled: true,
           chat_id: 123,
+          conversation_affinity_id: 77,
           history_length: 2,
           model_name: "openai/gpt-5-mini",
           parameters: %{"temperature" => 0},
@@ -612,7 +621,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     old_tool_message = Enum.at(messages, 3)
     new_tool_message = List.last(messages)
 
-    assert followup.raw_request["session_id"] == "intellectual-club:chat:123"
+    assert followup.raw_request["session_id"] == "intellectual-club:chat:77"
     assert old_tool_message["tool_call_id"] == "call_old"
 
     assert Enum.all?(old_tool_message["content"], fn part ->
@@ -692,7 +701,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
           parameters: %{},
           system_prompt: "System",
           supports_image_input: false,
-          chat_id: 123
+          chat_id: 123,
+          owner_id: 456
         },
         runtime_step: runtime_step,
         results: results,
@@ -717,7 +727,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            end)
 
     assert followup.request_snapshot.system_prompt == "System"
-    assert followup.raw_request["prompt_cache_key"] == "intellectual-club:chat:123"
+    assert followup.raw_request["prompt_cache_key"] == "intellectual-club:user:456"
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})

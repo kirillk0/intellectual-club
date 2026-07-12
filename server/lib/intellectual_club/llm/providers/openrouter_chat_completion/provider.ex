@@ -241,7 +241,14 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   defp session_id_from_source(%{} = source) do
     source
-    |> Map.get(:chat_id, Map.get(source, "chat_id"))
+    |> Map.get(
+      :conversation_affinity_id,
+      Map.get(
+        source,
+        "conversation_affinity_id",
+        Map.get(source, :chat_id, Map.get(source, "chat_id"))
+      )
+    )
     |> chat_session_id()
   end
 

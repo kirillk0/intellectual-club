@@ -28,6 +28,15 @@ defmodule IntellectualClub.Chat.Relations do
           message_id: integer() | nil
         }
 
+  @max_lineage_hops 100
+
+  @spec lineage_root_id(Chat.t(), map()) :: integer() | nil
+  def lineage_root_id(%Chat{id: id} = chat, actor) when is_integer(id) do
+    do_lineage_root_id(chat, actor, MapSet.new(), 0)
+  end
+
+  def lineage_root_id(_chat, _actor), do: nil
+
   @spec relations(Chat.t(), list(map()), map()) :: map()
   def relations(%Chat{} = chat, messages, actor) when is_list(messages) do
     relations(chat, messages, actor, child_relation_chats(chat.id, actor))
@@ -130,6 +139,31 @@ defmodule IntellectualClub.Chat.Relations do
 
   def continuation_nav(_chat, _actor), do: []
 
+  defp do_lineage_root_id(%Chat{id: id}, _actor, _visited, hops)
+       when hops >= @max_lineage_hops do
+    id
+  end
+
+  defp do_lineage_root_id(%Chat{id: id, parent_chat_id: parent_id}, actor, visited, hops)
+       when is_integer(id) do
+    cond do
+      MapSet.member?(visited, id) ->
+        id
+
+      not is_integer(parent_id) ->
+        id
+
+      true ->
+        case fetch_lineage_chat(parent_id, actor) do
+          %Chat{} = parent ->
+            do_lineage_root_id(parent, actor, MapSet.put(visited, id), hops + 1)
+
+          nil ->
+            id
+        end
+    end
+  end
+
   defp continuation_root(%Chat{id: id} = chat, actor, visited) when is_integer(id) do
     if MapSet.member?(visited, id) do
       chat
@@ -196,6 +230,18 @@ defmodule IntellectualClub.Chat.Relations do
     |> Ash.Query.filter(id == ^chat_id)
     |> Ash.Query.limit(1)
     |> Ash.Query.load(relation_load(), strict?: true)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, [%Chat{} = chat]} -> chat
+      _other -> nil
+    end
+  end
+
+  defp fetch_lineage_chat(chat_id, actor) when is_integer(chat_id) do
+    Chat
+    |> Ash.Query.filter(id == ^chat_id)
+    |> Ash.Query.select([:id, :parent_chat_id])
+    |> Ash.Query.limit(1)
     |> Ash.read(actor: actor)
     |> case do
       {:ok, [%Chat{} = chat]} -> chat

@@ -64,7 +64,11 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
-    request_payload = stringify_keys(Map.get(opts, :request_payload, %{}) || %{})
+
+    request_payload =
+      (Map.get(opts, :request_payload, %{}) || %{})
+      |> stringify_keys()
+      |> Responses.apply_prompt_cache_key(context)
 
     token_result =
       Auth.get_bearer_token_with_meta(%{

@@ -12,6 +12,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
@@ -31,6 +32,7 @@ defmodule IntellectualClub.Generation.Context do
   defstruct [
     :owner_id,
     :chat_id,
+    :conversation_affinity_id,
     :bot_id,
     :message_id,
     :step_id,
@@ -201,6 +203,7 @@ defmodule IntellectualClub.Generation.Context do
       context = %__MODULE__{
         owner_id: actor && actor.id,
         chat_id: chat.id,
+        conversation_affinity_id: Relations.lineage_root_id(chat, actor),
         bot_id: chat.bot_id,
         message_id: message.id,
         step_id: retry_step.id,
@@ -307,6 +310,7 @@ defmodule IntellectualClub.Generation.Context do
     %__MODULE__{
       owner_id: actor && actor.id,
       chat_id: chat.id,
+      conversation_affinity_id: Relations.lineage_root_id(chat, actor),
       bot_id: chat.bot_id,
       message_id: message.id,
       step_id: step.id,
@@ -359,6 +363,9 @@ defmodule IntellectualClub.Generation.Context do
         actor: actor,
         load: [:bot, :last_message, llm_configuration: [:provider]]
       )
+
+    owner_id = actor && actor.id
+    conversation_affinity_id = Relations.lineage_root_id(chat, actor)
 
     target_parent_id = generation_parent_id(opts, chat)
 
@@ -415,6 +422,8 @@ defmodule IntellectualClub.Generation.Context do
               supports_image_input: supports_image_input,
               provider_type: provider_type,
               chat_id: chat_id,
+              owner_id: owner_id,
+              conversation_affinity_id: conversation_affinity_id,
               fix_role_alteration: false,
               cache_control_enabled: false
             })
@@ -457,6 +466,8 @@ defmodule IntellectualClub.Generation.Context do
               supports_image_input: supports_image_input,
               provider_type: provider_type,
               chat_id: chat_id,
+              owner_id: owner_id,
+              conversation_affinity_id: conversation_affinity_id,
               fix_role_alteration: bool_true?(Map.get(configuration, :fix_role_alteration)),
               cache_control_enabled: cache_control_enabled
             })
@@ -487,8 +498,9 @@ defmodule IntellectualClub.Generation.Context do
       )
 
     %__MODULE__{
-      owner_id: actor && actor.id,
+      owner_id: owner_id,
       chat_id: chat_id,
+      conversation_affinity_id: conversation_affinity_id,
       bot_id: chat.bot_id,
       message_id: generating_message.id,
       step_id: initial_step.id,

@@ -604,6 +604,60 @@ defmodule IntellectualClub.Generation.ContextTest do
              responses_context.request_payload["instructions"],
              "`provider_web__web_search`"
            )
+
+    assert responses_context.request_payload["prompt_cache_key"] ==
+             "intellectual-club:user:#{actor.id}"
+  end
+
+  test "openrouter session affinity follows the root chat lineage" do
+    %{user: actor} = user_fixture()
+    configuration = create_llm_configuration!(actor, :openrouter_chat_completion)
+
+    root =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{llm_configuration_id: configuration.id, note: "Root"},
+        actor: actor
+      )
+      |> Ash.create!()
+
+    fork =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          llm_configuration_id: configuration.id,
+          note: "Fork",
+          parent_chat_id: root.id,
+          parent_relation_kind: :fork,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    handoff =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          llm_configuration_id: configuration.id,
+          note: "Handoff",
+          parent_chat_id: fork.id,
+          parent_relation_kind: :handoff,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    {:ok, _message} = Threads.add_message_to_end(handoff, :user, "Continue", actor: actor)
+
+    context = Context.build!(handoff.id, actor: actor, chunk_delay_ms: 0)
+
+    assert context.conversation_affinity_id == root.id
+    assert context.request_payload["session_id"] == "intellectual-club:chat:#{root.id}"
   end
 
   test "synthetic tool context includes outlet runner instance context when online" do

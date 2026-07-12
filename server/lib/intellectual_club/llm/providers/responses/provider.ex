@@ -88,7 +88,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         instructions: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
-      |> put_prompt_cache_key(opts)
+      |> apply_prompt_cache_key(opts)
 
     %{
       raw_request: raw_request,
@@ -138,7 +138,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
           RequestPayload.instructions(previous_raw_request) |> fallback_instructions(context),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> put_prompt_cache_key(context)
+      |> apply_prompt_cache_key(context)
 
     %{
       runtime_step: runtime_step,
@@ -211,6 +211,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       opts
       |> Map.get(:request_payload, %{})
       |> RequestPayload.stringify_keys()
+      |> apply_prompt_cache_key(context)
 
     token_result =
       Auth.get_bearer_token_with_meta(%{
@@ -265,38 +266,39 @@ defmodule IntellectualClub.Llm.Providers.Responses do
     end
   end
 
-  defp put_prompt_cache_key(%{} = raw_request, source) do
+  @doc false
+  def apply_prompt_cache_key(%{} = raw_request, source) do
     case prompt_cache_key_from_source(source) do
       nil -> raw_request
       prompt_cache_key -> Map.put(raw_request, "prompt_cache_key", prompt_cache_key)
     end
   end
 
-  defp put_prompt_cache_key(raw_request, _source), do: raw_request
+  def apply_prompt_cache_key(raw_request, _source), do: raw_request
 
   defp prompt_cache_key_from_source(%{} = source) do
     source
-    |> Map.get(:chat_id, Map.get(source, "chat_id"))
-    |> chat_prompt_cache_key()
+    |> Map.get(:owner_id, Map.get(source, "owner_id"))
+    |> user_prompt_cache_key()
   end
 
   defp prompt_cache_key_from_source(_source), do: nil
 
-  defp chat_prompt_cache_key(chat_id) when is_integer(chat_id) and chat_id > 0 do
-    "intellectual-club:chat:#{chat_id}"
+  defp user_prompt_cache_key(owner_id) when is_integer(owner_id) and owner_id > 0 do
+    "intellectual-club:user:#{owner_id}"
   end
 
-  defp chat_prompt_cache_key(chat_id) when is_binary(chat_id) do
-    chat_id = String.trim(chat_id)
+  defp user_prompt_cache_key(owner_id) when is_binary(owner_id) do
+    owner_id = String.trim(owner_id)
 
-    if chat_id == "" do
+    if owner_id == "" do
       nil
     else
-      "intellectual-club:chat:#{chat_id}"
+      "intellectual-club:user:#{owner_id}"
     end
   end
 
-  defp chat_prompt_cache_key(_chat_id), do: nil
+  defp user_prompt_cache_key(_owner_id), do: nil
 
   defp fallback_instructions("", context), do: Map.get(context, :system_prompt, "")
   defp fallback_instructions(instructions, _context), do: instructions
