@@ -19,21 +19,35 @@
       />
 
       <div ref="messageContentEl" class="message-content" @click="handleMessageContentClick">
-        <template v-for="(part, partIdx) in messageParts" :key="part.key">
+        <template v-for="(entry, entryIdx) in messageTimeline" :key="entry.key">
           <div
+            v-if="entry.kind === 'content'"
             class="message-answer-part"
-            :class="{ 'message-steering-part': part.steering }"
+            :class="{ 'message-steering-part': entry.steering }"
           >
-            <div v-if="part.steering" class="message-steering-label">
+            <div v-if="entry.steering" class="message-steering-label">
               {{ translate('Steering') }}
             </div>
-            <span v-if="part.showTimestamp && part.timestamp" class="message-answer-time">
-              {{ part.timestamp }}
+            <span v-if="entry.showTimestamp && entry.timestamp" class="message-answer-time">
+              {{ entry.timestamp }}
             </span>
-            <div v-html="part.html"></div>
+            <div v-html="entry.html"></div>
           </div>
+          <RouterLink
+            v-else
+            class="message-fork-card"
+            :to="chatRoute(entry.relation.chat_id)"
+            @click.capture="emit('child-relation-navigate', $event, entry.relation.chat_id)"
+          >
+            <span>{{ translate('Forked into') }}</span>
+            <strong>{{ relationTitle(entry.relation) }}</strong>
+            <ChatGenerationStateIndicator
+              :state="childRelationGenerationState(entry.relation)"
+              class="message-fork-card__generation-state"
+            />
+          </RouterLink>
           <hr
-            v-if="msg.role === 'assistant' && partIdx < messageParts.length - 1"
+            v-if="msg.role === 'assistant' && entryIdx < messageTimeline.length - 1"
             class="message-answer-divider"
             aria-hidden="true"
           />
@@ -240,14 +254,21 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch, type ComponentPublicInstance } from 'vue';
+import { RouterLink } from 'vue-router';
 
+import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import {
   isSteeringContentPart,
   sortedChatMessageContentParts,
 } from '@/features/chat/model/chatMessageContent';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
-import type { ChatBranchMessage, ChatMessageContent, ChatMessageStep } from '@/types/api';
+import type {
+  ChatBranchMessage,
+  ChatMessageContent,
+  ChatMessageStep,
+  ChatRelationSummary,
+} from '@/types/api';
 import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
@@ -269,6 +290,7 @@ interface Props {
   pollReconnecting?: boolean;
   workingOpen?: boolean;
   workingState?: OpenWorkingState | null;
+  forkRelations?: ChatRelationSummary[];
   canDelete?: boolean;
   deleteTitle?: string;
   readonly?: boolean;
@@ -288,6 +310,7 @@ const props = withDefaults(defineProps<Props>(), {
   pollReconnecting: false,
   workingOpen: false,
   workingState: null,
+  forkRelations: () => [],
   canDelete: false,
   deleteTitle: 'Delete',
   readonly: false,
@@ -309,6 +332,7 @@ const emit = defineEmits<{
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
   (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent; contents?: ChatMessageContent[] }): void;
+  (e: 'child-relation-navigate', event: MouseEvent, chatId: number): void;
 }>();
 
 const msg = computed(() => props.message);
@@ -359,12 +383,29 @@ const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => {
 };
 
 type MessagePart = {
+  kind: 'content';
   key: string;
   html: string;
   timestamp: string;
   showTimestamp: boolean;
   steering: boolean;
+  stepSequence: number;
+  itemSequence: number;
+  sequence: number;
+  stableId: number;
 };
+
+type ForkPart = {
+  kind: 'fork';
+  key: string;
+  relation: ChatRelationSummary;
+  stepSequence: number;
+  itemSequence: number;
+  sequence: number;
+  stableId: number;
+};
+
+type MessageTimelineEntry = MessagePart | ForkPart;
 
 const messageParts = computed<MessagePart[]>(() => {
   const parts: MessagePart[] = [];
@@ -375,6 +416,7 @@ const messageParts = computed<MessagePart[]>(() => {
     if (!text.trim() && !steering) continue;
 
     parts.push({
+      kind: 'content',
       key:
         typeof part.content_id === 'number' && part.content_id > 0
           ? `content-${part.content_id}`
@@ -383,6 +425,10 @@ const messageParts = computed<MessagePart[]>(() => {
       timestamp: formatTimeOfDay(part.created_at),
       showTimestamp: msg.value.role === 'assistant',
       steering,
+      stepSequence: part.step_sequence || 0,
+      itemSequence: part.item_sequence || 0,
+      sequence: part.sequence || 0,
+      stableId: part.content_id || index,
     });
   }
 
@@ -394,6 +440,40 @@ const messageParts = computed<MessagePart[]>(() => {
   }
 
   return parts;
+});
+
+const messageTimeline = computed<MessageTimelineEntry[]>(() => {
+  const forks: ForkPart[] = props.forkRelations.map((relation) => ({
+    kind: 'fork',
+    key: `fork-${relation.chat_id}`,
+    relation,
+    stepSequence: relation.parent_step_sequence || 0,
+    itemSequence: relation.parent_item_sequence || 0,
+    sequence: 0,
+    stableId: relation.parent_tool_call_item_id || relation.chat_id,
+  }));
+
+  return [...messageParts.value, ...forks].sort((left, right) =>
+    left.stepSequence - right.stepSequence ||
+    left.itemSequence - right.itemSequence ||
+    left.sequence - right.sequence ||
+    left.stableId - right.stableId
+  );
+});
+
+const relationTitle = (relation: ChatRelationSummary) =>
+  String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
+
+const childRelationGenerationState = (
+  relation: ChatRelationSummary
+): 'generating' | 'error' | null => {
+  if (typeof relation.active_generation_message_id === 'number') return 'generating';
+  return relation.last_message_status === 'error' ? 'error' : null;
+};
+
+const chatRoute = (chatId: number) => ({
+  path: `/chats/${chatId}`,
+  state: { stack: true },
 });
 
 const messageMediaContents = computed(() =>
@@ -656,6 +736,43 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   content: '';
   display: block;
   clear: both;
+}
+
+.message-fork-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-info-border);
+  border-radius: 8px;
+  background: var(--color-info-bg);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.message-fork-card:hover {
+  border-color: var(--color-info-border-strong);
+  background: var(--color-info-bg-strong);
+}
+
+.message-fork-card > span {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.message-fork-card strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.message-fork-card__generation-state {
+  margin-left: auto;
 }
 
 .message-steering-part {

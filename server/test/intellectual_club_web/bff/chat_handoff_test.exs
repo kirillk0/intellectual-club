@@ -438,6 +438,59 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert nav_chat_ids(target_payload) == [source.id, target.id]
   end
 
+  test "GET /api/bff/chat-state/:id positions fork relations at their tool call item", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    source = create_chat!(actor, "Fork source")
+
+    {:ok, assistant_message} =
+      Threads.add_message_to_end(source, :assistant, "Before fork", actor: actor)
+
+    step = first_step!(assistant_message.id, actor)
+
+    tool_call_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: 2, type: :tool_call},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    fork =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          note: "Investigate independently",
+          parent_chat_id: source.id,
+          parent_message_id: assistant_message.id,
+          parent_tool_call_item_id: tool_call_item.id,
+          parent_relation_kind: :fork,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
+
+    assert [relation] =
+             payload["relations"]["children_by_message_id"][
+               Integer.to_string(assistant_message.id)
+             ]
+
+    assert relation["chat_id"] == fork.id
+    assert relation["kind"] == "fork"
+    assert relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert relation["parent_step_id"] == step.id
+    assert relation["parent_step_sequence"] == step.sequence
+    assert relation["parent_item_sequence"] == tool_call_item.sequence
+  end
+
   test "GET /api/bff/chat-list includes relation hints", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

@@ -164,7 +164,11 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   defp serialize_relation_entry(%{chat: %Chat{} = chat} = entry) do
     Serializer.chat_relation_summary(chat,
       kind: Map.get(entry, :kind),
-      message_id: Map.get(entry, :message_id)
+      message_id: Map.get(entry, :message_id),
+      parent_tool_call_item_id: Map.get(entry, :parent_tool_call_item_id),
+      parent_step_id: Map.get(entry, :parent_step_id),
+      parent_step_sequence: Map.get(entry, :parent_step_sequence),
+      parent_item_sequence: Map.get(entry, :parent_item_sequence)
     )
   end
 

@@ -142,6 +142,7 @@
                 :moving-branch-to-new-chat-message-id="vm.movingBranchToNewChatMessageId"
                 :working-open="vm.isWorkingOpen(msg.id)"
                 :working-state="vm.workingStateFor(msg.id)"
+                :fork-relations="vm.positionedForkRelationsForMessage(msg.id)"
                 :can-delete="vm.canDeleteMessage(msg, idx)"
                 :delete-title="vm.deleteMessageTitle(msg, idx)"
                 :register-ref="(el) => vm.setMessageRef(msg.id, el)"
@@ -169,9 +170,10 @@
                 "
                 @content-open="vm.openContentFull"
                 @attachment-open="vm.openAttachmentPreview"
+                @child-relation-navigate="handleChatRouteClick"
               />
               <RouterLink
-                v-for="relation in vm.childRelationsForMessage(msg.id)"
+                v-for="relation in vm.trailingChildRelationsForMessage(msg.id)"
                 :key="`relation-${msg.id}-${relation.chat_id}`"
                 class="chat-relation-banner chat-relation-banner--child"
                 :to="chatRoute(relation.chat_id)"

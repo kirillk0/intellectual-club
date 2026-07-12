@@ -4,6 +4,8 @@ defmodule IntellectualClub.Chat.Relations do
   """
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Chat.Handoff
 
@@ -12,7 +14,11 @@ defmodule IntellectualClub.Chat.Relations do
   @type relation_entry :: %{
           chat: Chat.t(),
           kind: atom() | String.t() | nil,
-          message_id: integer() | nil
+          message_id: integer() | nil,
+          parent_tool_call_item_id: integer() | nil,
+          parent_step_id: integer() | nil,
+          parent_step_sequence: integer() | nil,
+          parent_item_sequence: integer() | nil
         }
 
   @type continuation_nav_entry :: %{
@@ -67,7 +73,7 @@ defmodule IntellectualClub.Chat.Relations do
     |> Ash.read(actor: actor)
     |> case do
       {:ok, [%Chat{} = parent]} ->
-        %{chat: parent, kind: chat.parent_relation_kind, message_id: chat.parent_message_id}
+        relation_entry(parent, chat)
 
       _other ->
         nil
@@ -212,8 +218,35 @@ defmodule IntellectualClub.Chat.Relations do
   end
 
   defp child_entry(%Chat{} = child) do
-    %{chat: child, kind: child.parent_relation_kind, message_id: child.parent_message_id}
+    relation_entry(child, child)
   end
 
-  defp relation_load, do: [:bot, :last_message]
+  defp relation_entry(%Chat{} = chat, %Chat{} = relation_source) do
+    item = loaded_relation(relation_source.parent_tool_call_item)
+    step = if item, do: loaded_relation(item.chat_message_step), else: nil
+
+    %{
+      chat: chat,
+      kind: relation_source.parent_relation_kind,
+      message_id: relation_source.parent_message_id,
+      parent_tool_call_item_id: relation_source.parent_tool_call_item_id,
+      parent_step_id: step && step.id,
+      parent_step_sequence: step && step.sequence,
+      parent_item_sequence: item && item.sequence
+    }
+  end
+
+  defp loaded_relation(%Ash.NotLoaded{}), do: nil
+  defp loaded_relation(value), do: value
+
+  defp relation_load do
+    step_query = Ash.Query.select(ChatMessageStep, [:id, :sequence])
+
+    item_query =
+      ChatMessageItem
+      |> Ash.Query.select([:id, :chat_message_step_id, :sequence])
+      |> Ash.Query.load(chat_message_step: step_query)
+
+    [:bot, :last_message, parent_tool_call_item: item_query]
+  end
 end

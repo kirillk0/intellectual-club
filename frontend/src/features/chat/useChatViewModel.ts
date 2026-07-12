@@ -169,6 +169,23 @@ export function useChatViewModel() {
     if (!messageId) return [];
     return relations.value.children_by_message_id?.[String(messageId)] || [];
   };
+  const positionedForkRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] =>
+    childRelationsForMessage(messageId).filter(
+      (relation) =>
+        relation.kind === 'fork' &&
+        Number.isInteger(relation.parent_tool_call_item_id) &&
+        Number.isInteger(relation.parent_step_sequence) &&
+        Number.isInteger(relation.parent_item_sequence)
+    );
+  const trailingChildRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] => {
+    const positionedChatIds = new Set(
+      positionedForkRelationsForMessage(messageId).map((relation) => relation.chat_id)
+    );
+
+    return childRelationsForMessage(messageId).filter(
+      (relation) => !positionedChatIds.has(relation.chat_id)
+    );
+  };
   const hasActiveChildGeneration = computed(() => {
     const groupedChildren = Object.values(relations.value.children_by_message_id || {}).flat();
     const fallbackChildren = relations.value.children_without_message || [];
@@ -849,6 +866,8 @@ export function useChatViewModel() {
     parentRelation,
     fallbackChildRelations,
     childRelationsForMessage,
+    positionedForkRelationsForMessage,
+    trailingChildRelationsForMessage,
     counters,
     bots,
     llmConfigurations,
