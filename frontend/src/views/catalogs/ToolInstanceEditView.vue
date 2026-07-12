@@ -262,20 +262,16 @@
           </div>
         </div>
 
-        <div v-else-if="toolTab === 'description'" class="stack">
-          <label :class="{ 'field-error': errors.hasField('description') }">
-            Description
-            <textarea
-              v-model="form.description"
-              class="full"
-              rows="12"
-              placeholder="Describe when and how the model should use this tool."
-              @input="errors.clearField('description')"
-            ></textarea>
-            <div v-if="errors.hasField('description')" class="error-text">{{ errors.messageFor('description') }}</div>
-            <div class="muted" style="margin-top: 4px">Visible to the model when this tool is available.</div>
-          </label>
-        </div>
+        <MarkdownEditor
+          v-else-if="toolTab === 'description'"
+          v-model:content="form.description"
+          :content-error="errors.hasField('description') ? errors.messageFor('description') : null"
+          :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
+          label="Description"
+          placeholder="Describe when and how the model should use this tool."
+          hint="Visible to the model when this tool is available."
+          @clear-content-error="errors.clearField('description')"
+        />
 
 	        <div v-else-if="toolTab === 'credentials'" class="stack">
 	          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
@@ -492,7 +488,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, h, nextTick, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
@@ -519,6 +515,13 @@ import { formatRelativeDateTime } from '@/utils/dates';
 import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
+
+const MarkdownEditor = defineAsyncComponent({
+  loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
+  loadingComponent: {
+    setup: () => () => h('div', { class: 'muted', 'aria-live': 'polite' }, 'Loading editor…'),
+  },
+});
 
 type JsonSchema = {
   type?: string;

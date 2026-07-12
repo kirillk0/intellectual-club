@@ -2,7 +2,7 @@
   <div class="stack">
     <div class="knowledge-block-code-field">
       <div class="knowledge-block-code-field__header">
-        <div class="knowledge-block-code-field__label">Content</div>
+        <div class="knowledge-block-code-field__label">{{ translate(label) }}</div>
         <button
           class="knowledge-block-content-editor__expand"
           type="button"
@@ -23,7 +23,10 @@
       >
         <div ref="editorRootRef" class="knowledge-block-content-editor__host" data-i18n-ignore></div>
       </div>
-      <div class="muted knowledge-block-content-editor__hint">
+      <div v-if="hint" class="muted knowledge-block-content-editor__hint">
+        {{ translate(hint) }}
+      </div>
+      <div v-else class="muted knowledge-block-content-editor__hint">
         Lines starting with <code>//// </code> are treated as comments and removed from the compiled prompt.
       </div>
       <div v-if="contentError" class="error-text">{{ contentError }}</div>
@@ -40,7 +43,7 @@
     >
       <div class="knowledge-block-editor-modal__top">
         <div class="knowledge-block-editor-modal__header">
-          <h3>{{ translate('Content') }}</h3>
+          <h3>{{ translate(label) }}</h3>
           <div class="knowledge-block-editor-modal__actions">
             <button type="button" @click="closeFullscreen">{{ translate('Done') }}</button>
             <button
@@ -111,11 +114,21 @@ import { CODEMIRROR_RU_PHRASES } from '@/utils/codeMirrorPhrases';
 import { markdownCodeHighlightingExtensions } from '@/utils/markdownCodeMirror';
 import type { KnowledgeBlockCodeEditorExpose } from './types';
 
-const props = defineProps<{
-  content: string;
-  contentError: string | null;
-  readonly: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    content: string;
+    contentError: string | null;
+    readonly: boolean;
+    label?: string;
+    placeholder?: string;
+    hint?: string;
+  }>(),
+  {
+    label: 'Content',
+    placeholder: 'Write the knowledge block content...',
+    hint: '',
+  }
+);
 
 const emit = defineEmits<{
   (e: 'update:content', value: string): void;
@@ -145,9 +158,9 @@ function readonlyExtensions() {
 function localizedExtensions() {
   return [
     EditorState.phrases.of(effectiveLocale.value === 'ru' ? CODEMIRROR_RU_PHRASES : {}),
-    placeholder(translate('Write the knowledge block content...')),
+    placeholder(translate(props.placeholder)),
     EditorView.contentAttributes.of({
-      'aria-label': translate('Content'),
+      'aria-label': translate(props.label),
       spellcheck: 'true',
       autocorrect: 'on',
       autocapitalize: 'sentences',
