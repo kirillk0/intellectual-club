@@ -42,7 +42,6 @@ defmodule IntellectualClub.Chat.Handoff do
       GenerationSupervisor.start_generation(source_chat_id,
         actor: actor,
         parent_id: prompt_message.id,
-        tools_payload_override: [],
         completion_effect: :manual_handoff
       )
     end

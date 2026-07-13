@@ -85,7 +85,6 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
            GenerationSupervisor.start_generation(chat_id,
              actor: actor,
              parent_id: prompt_message.id,
-             tools_payload_override: [],
              completion_effect: :manual_handoff
            ) do
       {:ok, branch_generation_payload(chat_id, context, actor)}

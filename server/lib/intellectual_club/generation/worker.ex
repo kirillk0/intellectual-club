@@ -384,12 +384,14 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp handle_persisted_tool_calls(state, tool_calls) when is_list(tool_calls) do
     max_tool_rounds = max_tool_rounds(state)
+    manual_handoff? = manual_handoff_generation?(state)
 
     {context_limit_reached, total_tokens, length, soft_limit} =
       context_soft_limit_reached(state)
 
     cond do
-      can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
+      not manual_handoff? and
+          can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
         runtime_step = %{state.runtime_step | status: :waiting_tools}
         state = %{state | runtime_step: runtime_step}
 
@@ -399,6 +401,11 @@ defmodule IntellectualClub.Generation.Worker do
 
       state.refusal_round + 1 > @max_refusal_rounds ->
         finalize_tool_loop_exhausted(state, max_tool_rounds)
+
+      manual_handoff? ->
+        soft_refuse_tool_calls(state, tool_calls, manual_handoff_refusal_payload(),
+          allow_handoff?: false
+        )
 
       true ->
         refusal =
@@ -1129,6 +1136,21 @@ defmodule IntellectualClub.Generation.Worker do
   defp can_execute_tools?(state, max_tool_rounds, context_limit_reached)
        when is_integer(max_tool_rounds) and is_boolean(context_limit_reached) do
     state.tool_round < max_tool_rounds and not context_limit_reached
+  end
+
+  defp manual_handoff_generation?(%{context: %{completion_effect: effect}}) do
+    effect in [:manual_handoff, "manual_handoff"]
+  end
+
+  defp manual_handoff_generation?(_state), do: false
+
+  defp manual_handoff_refusal_payload do
+    %{
+      text:
+        "[tool error] Tool call refused while preparing a handoff summary. " <>
+          "Create the handoff summary using the information already available.",
+      raw: %{"error" => "manual_handoff_tool_call_refused"}
+    }
   end
 
   defp context_limit_refusal_instruction(true) do

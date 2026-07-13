@@ -155,9 +155,11 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       ]
     }
 
-    {base_url, _agent} = start_scripted_server!(scripts)
+    {base_url, agent} = start_scripted_server!(scripts)
     configuration = create_llm_configuration!(actor, base_url)
     source = create_chat!(actor, "Manual source", llm_configuration_id: configuration.id)
+    tool = create_tool_instance!(actor)
+    create_chat_tool_binding!(actor, source, tool)
 
     {:ok, source_message} =
       Threads.add_message_to_end(source, :user, "Summarize me", actor: actor)
@@ -229,6 +231,10 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     refute String.contains?(target_text, "You are preparing a handoff summary")
 
     refute Enum.any?(target_messages, &(&1.status == :generating))
+
+    requests = Agent.get(agent, & &1.requests)
+    [request] = Map.get(requests, "/chat/completions", [])
+    assert "agent_management__handoff" in request_tool_names(request)
   end
 
   test "POST /api/bff/chat-generation/:id/handoff rejects non-owner", %{conn: conn} do
@@ -243,13 +249,42 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert conn.status in [403, 404]
   end
 
-  test "manual handoff generation sends persisted summary prompt with chat system prefix",
+  test "manual handoff keeps tools and refuses their calls while preserving the prompt prefix",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
     scripts = %{
       "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-summary-tool-call",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "",
+                   "tool_calls" => [
+                     %{
+                       "id" => "call_manual_handoff_1",
+                       "type" => "function",
+                       "function" => %{
+                         "name" => "agent_management__sleep",
+                         "arguments" => Jason.encode!(%{"seconds" => 0})
+                       }
+                     }
+                   ]
+                 },
+                 "finish_reason" => "tool_calls"
+               }
+             ]
+           }
+         ])},
         {200,
          sse_chunks([
            %{
@@ -277,6 +312,8 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     source = create_chat!(actor, "Manual source", llm_configuration_id: configuration.id)
     block = create_knowledge_block!(actor, "Chat prefix", "Chat system prefix content.")
     create_chat_block_binding!(actor, source, block, enabled: true)
+    tool = create_tool_instance!(actor)
+    create_chat_tool_binding!(actor, source, tool)
 
     {:ok, _source_message} =
       Threads.add_message_to_end(source, :user, "Original user context", actor: actor)
@@ -299,9 +336,15 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert summary_message.id == context.message_id
     assert message_text(summary_message) == "Summary from same prompt prefix."
 
+    refusal_text =
+      "[tool error] Tool call refused while preparing a handoff summary. " <>
+        "Create the handoff summary using the information already available."
+
+    assert tool_result_texts(summary_message) == [refusal_text]
+
     requests = Agent.get(agent, & &1.requests)
-    [request] = Map.get(requests, "/chat/completions", [])
-    messages = request["messages"]
+    [first_request, second_request] = Map.get(requests, "/chat/completions", [])
+    messages = first_request["messages"]
 
     assert [%{"role" => "system", "content" => system_content} | rest] = messages
     assert String.contains?(system_content, "Chat system prefix content.")
@@ -313,7 +356,15 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert String.contains?(summary_request, "You are preparing a handoff summary")
     assert String.contains?(summary_request, "Create the handoff summary now.")
 
-    refute Map.has_key?(request, "tools")
+    assert "agent_management__sleep" in request_tool_names(first_request)
+    assert second_request["tools"] == first_request["tools"]
+    assert second_request["tool_choice"] == first_request["tool_choice"]
+
+    assert Enum.any?(second_request["messages"], fn message ->
+             message["role"] == "tool" and
+               message["tool_call_id"] == "call_manual_handoff_1" and
+               message["content"] == refusal_text
+           end)
   end
 
   test "manual handoff uses bot handoff message block content as summary prompt", %{conn: conn} do
@@ -1164,6 +1215,24 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
   defp message_text(%ChatMessage{} = message) do
     Previews.message_preview_text(message)
+  end
+
+  defp tool_result_texts(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.filter(&(&1.type == :tool_result))
+    |> Enum.flat_map(&List.wrap(&1.contents))
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.map(&(&1.content_text || ""))
+  end
+
+  defp request_tool_names(request) when is_map(request) do
+    request
+    |> Map.get("tools", [])
+    |> List.wrap()
+    |> Enum.map(fn tool -> get_in(tool, ["function", "name"]) end)
+    |> Enum.filter(&is_binary/1)
   end
 
   defp nav_labels(%{"continuation_nav" => nav}) when is_list(nav) do
