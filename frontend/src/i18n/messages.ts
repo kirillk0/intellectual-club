@@ -133,6 +133,7 @@ export const ruMessages: Record<string, string> = {
   'Context usage': 'Использование контекста',
   'Context:': 'Контекст:',
   'Copied': 'Скопировано',
+  'Copied all': 'Скопировано всё',
   'Copy': 'Копировать',
   'Copy the outlet token manually:': 'Скопируйте outlet-токен вручную:',
   'Copy the thinking manually:': 'Скопируйте ход рассуждений вручную:',

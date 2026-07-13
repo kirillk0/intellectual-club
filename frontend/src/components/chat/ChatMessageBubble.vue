@@ -94,7 +94,9 @@
           <span v-if="totalCostLabel != null"> · ${{ totalCostLabel }}</span>
         </div>
         <div class="message-actions">
-          <span v-if="copied" class="copy-hint">Copied</span>
+          <span v-if="copied" class="copy-hint">
+            {{ translate(copiedAll ? 'Copied all' : 'Copied') }}
+          </span>
           <div class="spacer"></div>
           <button
             v-if="!readonly && msg.prev_sibling_id"
@@ -282,6 +284,7 @@ interface Props {
   index: number;
   metaLabel?: string;
   copied?: boolean;
+  copiedAll?: boolean;
   retrying?: boolean;
   bookmarking?: boolean;
   branchingAssistantId?: number | null;
@@ -302,6 +305,7 @@ type TemplateRefValue = Element | ComponentPublicInstance | null;
 const props = withDefaults(defineProps<Props>(), {
   metaLabel: '—',
   copied: false,
+  copiedAll: false,
   retrying: false,
   bookmarking: false,
   branchingAssistantId: null,

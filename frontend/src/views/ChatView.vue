@@ -133,6 +133,7 @@
                 :index="idx"
                 :meta-label="vm.messageMetaLabel(msg) || '—'"
                 :copied="vm.copiedMessageId === msg.id"
+                :copied-all="vm.copiedAllMessageId === msg.id"
                 :retrying="vm.retryingMessageId === msg.id"
                 :bookmarking="vm.isBookmarkingMessage(msg.id)"
                 :readonly="vm.sharedReadonly"

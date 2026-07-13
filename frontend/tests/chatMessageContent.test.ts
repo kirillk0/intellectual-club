@@ -1,4 +1,5 @@
 import {
+  fullChatMessageText,
   isSteeringContentPart,
   primaryChatMessageText,
   sortedChatMessageContentParts,
@@ -53,5 +54,6 @@ describe('chat message content', () => {
 
     expect(isSteeringContentPart(steering)).toBe(true);
     expect(primaryChatMessageText(message)).toBe('final answer');
+    expect(fullChatMessageText(message)).toBe('first answer\n\nfinal answer');
   });
 });

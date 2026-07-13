@@ -75,4 +75,31 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(entries[1]?.text()).toContain('Investigate independently');
     expect(entries[2]?.text()).toContain('After the fork');
   });
+
+  it('distinguishes copying the final answer from copying all answer items', async () => {
+    setPreferredLocale('ru');
+    const message: ChatBranchMessage = {
+      id: 10,
+      role: 'assistant',
+      status: 'done',
+      content: {
+        parts: [],
+        media: [],
+      },
+    };
+
+    const wrapper = mount(ChatMessageBubble, {
+      props: {
+        message,
+        index: 0,
+        copied: true,
+      },
+    });
+
+    expect(wrapper.get('.copy-hint').text()).toBe('Скопировано');
+
+    await wrapper.setProps({ copiedAll: true });
+
+    expect(wrapper.get('.copy-hint').text()).toBe('Скопировано всё');
+  });
 });

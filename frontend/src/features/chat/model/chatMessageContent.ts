@@ -28,11 +28,14 @@ export const compareChatMessageContentParts = (
 export const sortedChatMessageContentParts = (message: ChatBranchMessage) =>
   [...(message.content?.parts || [])].sort(compareChatMessageContentParts);
 
-export const primaryChatMessageText = (message: ChatBranchMessage) => {
-  const texts = sortedChatMessageContentParts(message)
+const primaryChatMessageTexts = (message: ChatBranchMessage) =>
+  sortedChatMessageContentParts(message)
     .filter((part) => message.role !== 'assistant' || !isSteeringContentPart(part))
     .map((part) => String(part.text ?? ''))
     .filter((text) => text.trim() !== '');
 
-  return texts.at(-1) ?? '';
-};
+export const primaryChatMessageText = (message: ChatBranchMessage) =>
+  primaryChatMessageTexts(message).at(-1) ?? '';
+
+export const fullChatMessageText = (message: ChatBranchMessage) =>
+  primaryChatMessageTexts(message).join('\n\n');

@@ -18,6 +18,7 @@ import {
 } from '@/features/chat/model/chatViewModel.shared';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import {
+  fullChatMessageText,
   isSteeringContentPart,
   primaryChatMessageText,
   sortedChatMessageContentParts,
@@ -62,6 +63,7 @@ export type OpenWorkingState = {
 
 export function useChatMessageActions(params: Params) {
   const copiedMessageId = ref<number | null>(null);
+  const copiedAllMessageId = ref<number | null>(null);
   const retryingMessageId = ref<number | null>(null);
   const branchingAssistantId = ref<number | null>(null);
   const branchingNewChatMessageId = ref<number | null>(null);
@@ -70,6 +72,7 @@ export function useChatMessageActions(params: Params) {
   const bookmarkingMessageIds = ref<Set<number>>(new Set());
   const openWorking = ref<OpenWorkingState | null>(null);
   let workingLoadVersion = 0;
+  let copyStateResetTimer: number | null = null;
 
   const editingMessage = ref<ChatBranchMessage | null>(null);
   const modalMode = ref<EditModalMode>('edit');
@@ -104,13 +107,22 @@ export function useChatMessageActions(params: Params) {
 
   const copyMessage = async (msg: ChatBranchMessage) => {
     try {
-      const copied = await copyTextWithFallback(messagePrimaryText(msg), {
+      const repeatedCopy = copiedMessageId.value === msg.id;
+      const text = repeatedCopy ? fullChatMessageText(msg) : messagePrimaryText(msg);
+      const copied = await copyTextWithFallback(text, {
         promptLabel: 'Copy the message text manually:',
       });
       if (!copied) return;
       copiedMessageId.value = msg.id;
-      window.setTimeout(() => {
-        if (copiedMessageId.value === msg.id) copiedMessageId.value = null;
+      copiedAllMessageId.value = repeatedCopy ? msg.id : null;
+
+      if (copyStateResetTimer !== null) window.clearTimeout(copyStateResetTimer);
+      copyStateResetTimer = window.setTimeout(() => {
+        if (copiedMessageId.value === msg.id) {
+          copiedMessageId.value = null;
+          copiedAllMessageId.value = null;
+        }
+        copyStateResetTimer = null;
       }, 1200);
     } catch (error) {
       console.warn(error);
@@ -759,11 +771,16 @@ export function useChatMessageActions(params: Params) {
 
   const dispose = async () => {
     clearWorking();
+    if (copyStateResetTimer !== null) {
+      window.clearTimeout(copyStateResetTimer);
+      copyStateResetTimer = null;
+    }
     await params.clearPendingFilesCollection(editPendingFiles);
   };
 
   return {
     copiedMessageId,
+    copiedAllMessageId,
     retryingMessageId,
     branchingAssistantId,
     branchingNewChatMessageId,

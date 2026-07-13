@@ -965,6 +965,7 @@ export function useChatViewModel() {
     chatWindowRef: contextPanel.chatWindowRef,
     setMessageRef: contextPanel.setMessageRef,
     copiedMessageId: messageActions.copiedMessageId,
+    copiedAllMessageId: messageActions.copiedAllMessageId,
     retryingMessageId: messageActions.retryingMessageId,
     branchingAssistantId: messageActions.branchingAssistantId,
     branchingNewChatMessageId: messageActions.branchingNewChatMessageId,
