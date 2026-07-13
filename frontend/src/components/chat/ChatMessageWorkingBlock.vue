@@ -115,66 +115,47 @@
               </span>
             </div>
 
-            <div v-for="item in providerItems(currentStep)" :key="item.id" class="working-item">
-              <div class="working-item-title-row">
-                <div class="working-item-title">{{ itemTitle(item.type) }}</div>
-                <button
-                  v-if="canCopyThinking(item)"
-                  type="button"
-                  class="working-copy-button"
-                  :class="{ copied: copiedThinkingItemId === item.id }"
-                  :aria-label="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
-                  :title="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
-                  @click.stop.prevent="copyThinking(item)"
-                >
-                  <SvgIcon name="copy" size="16" />
-                </button>
+            <template v-for="item in traceItems(currentStep)" :key="item.id">
+              <div v-if="isCompactPreviewItem(item)" class="working-item working-item-preview">
+                <span class="working-item-preview-label">{{ itemTitle(item.type) }}:</span>
+                <span class="working-item-preview-text">{{ compactItemPreview(item) || translate('No data') }}</span>
               </div>
 
-              <div
-                v-if="item.type === 'reasoning' && itemText(item).trim()"
-                class="working-item-body"
-                v-html="renderHtml(itemText(item))"
-              ></div>
-
-              <div v-else-if="item.type === 'tool_call'" class="working-item-body">
-                <div class="muted" style="margin-bottom: 6px">
-                  Calling <code>{{ toolCallInfo(item).name || 'unknown' }}</code>
+              <div v-else class="working-item">
+                <div class="working-item-title-row">
+                  <div class="working-item-title">{{ itemTitle(item.type) }}</div>
+                  <button
+                    v-if="canCopyThinking(item)"
+                    type="button"
+                    class="working-copy-button"
+                    :class="{ copied: copiedThinkingItemId === item.id }"
+                    :aria-label="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
+                    :title="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
+                    @click.stop.prevent="copyThinking(item)"
+                  >
+                    <SvgIcon name="copy" size="16" />
+                  </button>
                 </div>
-                <div v-if="toolCallInfo(item).arguments !== null">
-                  <div class="muted" style="margin-bottom: 4px">Arguments</div>
-                  <pre class="code-block working-json-block"><code class="language-json">{{
-                    formatJson(toolCallInfo(item).arguments)
-                  }}</code></pre>
+
+                <div
+                  v-if="item.type === 'reasoning' && itemText(item).trim()"
+                  class="working-item-body"
+                  v-html="renderHtml(itemText(item))"
+                ></div>
+
+                <div v-else-if="item.type === 'tool_call'" class="working-item-body">
+                  <div class="muted" style="margin-bottom: 6px">
+                    Calling <code>{{ toolCallInfo(item).name || 'unknown' }}</code>
+                  </div>
+                  <div v-if="toolCallInfo(item).arguments !== null">
+                    <div class="muted" style="margin-bottom: 4px">Arguments</div>
+                    <pre class="code-block working-json-block"><code class="language-json">{{
+                      formatJson(toolCallInfo(item).arguments)
+                    }}</code></pre>
+                  </div>
                 </div>
-              </div>
 
-              <div
-                v-else-if="item.type === 'error' && itemText(item).trim()"
-                class="working-item-body"
-              >
-                <div class="error-text" v-html="renderHtml(itemText(item))"></div>
-              </div>
-
-              <div v-else-if="unknownContentValue(item) !== null" class="working-item-body working-item-json">
-                <JsonTreeView
-                  :value="unknownContentValue(item)"
-                  :download-filename="unknownContentDownloadFilename(item)"
-                  preserve-expanded-on-value-change
-                />
-              </div>
-
-              <div v-else class="working-item-body muted">No data</div>
-            </div>
-
-            <template v-if="isStepClosed(currentStep) && toolResultItems(currentStep).length">
-              <div class="working-step-sep"></div>
-            </template>
-
-            <template v-if="isStepClosed(currentStep) && toolResultItems(currentStep).length">
-              <div v-for="item in toolResultItems(currentStep)" :key="item.id" class="working-item">
-                <div class="working-item-title">{{ itemTitle(item.type) }}</div>
-                <div class="working-item-body">
+                <div v-else-if="item.type === 'tool_result'" class="working-item-body">
                   <div v-if="itemText(item).trim()">
                     <pre class="code-block working-tool-result">{{ itemText(item) }}</pre>
                     <button
@@ -193,11 +174,8 @@
                     @preview="(payload) => emit('attachment-open', payload)"
                   />
                 </div>
-              </div>
 
-              <div v-for="item in artifactItems(currentStep)" :key="item.id" class="working-item">
-                <div class="working-item-title">{{ itemTitle(item.type) }}</div>
-                <div class="working-item-body">
+                <div v-else-if="item.type === 'artifact'" class="working-item-body">
                   <ChatMediaList
                     v-if="toolItemMedia(item).length"
                     :message-id="props.messageId"
@@ -206,9 +184,27 @@
                   />
                   <div v-else class="muted">No data</div>
                 </div>
-              </div>
 
-              <div class="working-step-sep"></div>
+                <div
+                  v-else-if="item.type === 'error' && itemText(item).trim()"
+                  class="working-item-body"
+                >
+                  <div class="error-text" v-html="renderHtml(itemText(item))"></div>
+                </div>
+
+                <div
+                  v-else-if="unknownContentValue(item) !== null"
+                  class="working-item-body working-item-json"
+                >
+                  <JsonTreeView
+                    :value="unknownContentValue(item)"
+                    :download-filename="unknownContentDownloadFilename(item)"
+                    preserve-expanded-on-value-change
+                  />
+                </div>
+
+                <div v-else class="working-item-body muted">No data</div>
+              </div>
             </template>
           </div>
         </template>
@@ -441,19 +437,19 @@ const stepNumber = (step: ChatMessageStep, index: number) => {
 };
 
 const itemTitle = (type: string) => {
-  if (type === 'reasoning') return 'Thinking';
-  if (type === 'answer') return 'Answering';
-  if (type === 'tool_call') return 'Tool call';
-  if (type === 'tool_result') return 'Tool result';
-  if (type === 'error') return 'Error';
+  if (type === 'reasoning') return translate('Thinking');
+  if (type === 'answer') return translate('Answering');
+  if (type === 'steering') return translate('Steering');
+  if (type === 'tool_call') return translate('Tool call');
+  if (type === 'tool_result') return translate('Tool result');
+  if (type === 'artifact') return translate('Artifact');
+  if (type === 'error') return translate('Error');
   return type || 'Item';
 };
 
-const isResponseFinal = (step: ChatMessageStep) => Boolean(step.response_final);
 const isMessageFinished = computed(
   () => Boolean(props.messageStatus) && props.messageStatus !== 'generating'
 );
-const isStepClosed = (step: ChatMessageStep) => isResponseFinal(step) || isMessageFinished.value;
 
 const parseIsoMs = (iso?: string | null): number | null => {
   if (!iso) return null;
@@ -568,30 +564,22 @@ const renderHtml = (text: string) => {
   return html;
 };
 
-const providerItems = (step: ChatMessageStep) => {
-  const list = orderedItems(step);
-  return list.filter(
-    (item) =>
-      item.type !== 'tool_result' &&
-      item.type !== 'artifact' &&
-      item.type !== 'answer' &&
-      item.type !== 'input' &&
-      item.type !== 'steering'
-  );
-};
-
-const toolResultItems = (step: ChatMessageStep) => {
-  const list = orderedItems(step);
-  return list.filter((item) => item.type === 'tool_result');
-};
-
-const artifactItems = (step: ChatMessageStep) => {
-  const list = orderedItems(step);
-  return list.filter((item) => item.type === 'artifact');
-};
+const traceItems = (step: ChatMessageStep) => orderedItems(step).filter((item) => item.type !== 'input');
 
 const itemText = (item: Pick<ChatMessageItem, 'type' | 'contents'>) =>
   joinItemTextContents(item.type, item.contents);
+
+const compactPreviewTypes = new Set(['answer', 'steering']);
+const compactPreviewCharacterLimit = 50;
+
+const isCompactPreviewItem = (item: Pick<ChatMessageItem, 'type'>) => compactPreviewTypes.has(item.type);
+
+const compactItemPreview = (item: Pick<ChatMessageItem, 'type' | 'contents'>) => {
+  const text = itemText(item).trim().replace(/\s+/gu, ' ');
+  const characters = Array.from(text);
+  if (characters.length <= compactPreviewCharacterLimit) return text;
+  return `${characters.slice(0, compactPreviewCharacterLimit).join('')}…`;
+};
 
 const canCopyThinking = (item: Pick<ChatMessageItem, 'id' | 'type' | 'contents'>) =>
   item.type === 'reasoning' && itemText(item).trim() !== '';
@@ -906,6 +894,26 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-text-muted);
+}
+
+.working-item-preview {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  font-size: 0.9em;
+}
+
+.working-item-preview-label {
+  flex: none;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.working-item-preview-text {
+  min-width: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .working-copy-button {
