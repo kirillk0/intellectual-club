@@ -180,8 +180,8 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
 
     [first_request, second_request] = chat_requests
     assert is_list(first_request["tools"])
-    refute Map.has_key?(second_request, "tools")
-    refute Map.has_key?(second_request, "tool_choice")
+    assert second_request["tools"] == first_request["tools"]
+    assert second_request["tool_choice"] == first_request["tool_choice"]
 
     assert Enum.any?(List.wrap(second_request["messages"]), fn msg ->
              msg["role"] == "tool" and msg["content"] == refusal_text and
@@ -189,13 +189,21 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
            end)
   end
 
-  test "responses api uses soft refusal when context soft limit is reached" do
-    tool_call = %{
+  test "responses api keeps tools and repeats soft refusal after context soft limit" do
+    first_tool_call = %{
       "id" => "fc_1",
       "type" => "function_call",
       "call_id" => "call_web_1",
       "name" => "web__read_url",
       "arguments" => Jason.encode!(%{"url" => "https://example.com"})
+    }
+
+    second_tool_call = %{
+      "id" => "fc_2",
+      "type" => "function_call",
+      "call_id" => "call_web_2",
+      "name" => "web__read_url",
+      "arguments" => Jason.encode!(%{"url" => "https://example.org"})
     }
 
     refusal_text =
@@ -212,12 +220,30 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
                "id" => "resp-tool",
                "object" => "response",
                "model" => "test-responses-model",
-               "output" => [tool_call],
+               "output" => [first_tool_call],
                "usage" => %{
                  "input_tokens" => 4,
                  "output_tokens" => 3,
                  "input_tokens_details" => %{"cached_tokens" => 1},
                  "output_tokens_details" => %{"reasoning_tokens" => 2}
+               }
+             }
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp-tool-again",
+               "object" => "response",
+               "model" => "test-responses-model",
+               "output" => [second_tool_call],
+               "usage" => %{
+                 "input_tokens" => 5,
+                 "output_tokens" => 2,
+                 "input_tokens_details" => %{"cached_tokens" => 2},
+                 "output_tokens_details" => %{"reasoning_tokens" => 1}
                }
              }
            }
@@ -246,9 +272,9 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
                  }
                ],
                "usage" => %{
-                 "input_tokens" => 5,
+                 "input_tokens" => 6,
                  "output_tokens" => 4,
-                 "input_tokens_details" => %{"cached_tokens" => 2},
+                 "input_tokens_details" => %{"cached_tokens" => 3},
                  "output_tokens_details" => %{"reasoning_tokens" => 3}
                }
              }
@@ -280,36 +306,50 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
 
     message =
       wait_for_message!(message_id, actor, fn msg ->
-        msg.status == :done and length(msg.steps) == 2
+        msg.status == :done and length(msg.steps) == 3
       end)
 
     assert message.status == :done
     assert message_answer_text(message) == "Final answer after context soft limit refusal."
-    assert refusal_text in tool_result_texts(message)
+    assert Enum.count(tool_result_texts(message), &(&1 == refusal_text)) == 2
 
-    [tool_step, final_step] = Enum.sort_by(message.steps, & &1.sequence)
-    assert_soft_refusal_result_linked!(tool_step, refusal_text, handoff_available: false)
+    [first_tool_step, second_tool_step, final_step] = Enum.sort_by(message.steps, & &1.sequence)
 
-    assert tool_step.input_tokens == 4
-    assert tool_step.output_tokens == 3
-    assert tool_step.cached_input_tokens == 1
-    assert tool_step.reasoning_tokens == 2
+    assert_soft_refusal_result_linked!(first_tool_step, refusal_text, handoff_available: false)
 
-    assert final_step.input_tokens == 5
+    assert_soft_refusal_result_linked!(second_tool_step, refusal_text, handoff_available: false)
+
+    assert first_tool_step.input_tokens == 4
+    assert first_tool_step.output_tokens == 3
+    assert first_tool_step.cached_input_tokens == 1
+    assert first_tool_step.reasoning_tokens == 2
+
+    assert second_tool_step.input_tokens == 5
+    assert second_tool_step.output_tokens == 2
+    assert second_tool_step.cached_input_tokens == 2
+    assert second_tool_step.reasoning_tokens == 1
+
+    assert final_step.input_tokens == 6
     assert final_step.output_tokens == 4
-    assert final_step.cached_input_tokens == 2
+    assert final_step.cached_input_tokens == 3
     assert final_step.reasoning_tokens == 3
 
     requests = Agent.get(agent, & &1.requests)
     responses_requests = Map.get(requests, "/responses", [])
-    assert length(responses_requests) == 2
+    assert length(responses_requests) == 3
 
-    [first_request, second_request] = responses_requests
+    [first_request, second_request, final_request] = responses_requests
     assert is_list(first_request["tools"])
-    refute Map.has_key?(second_request, "tools")
+    assert second_request["tools"] == first_request["tools"]
+    assert final_request["tools"] == first_request["tools"]
 
     assert Enum.any?(List.wrap(second_request["input"]), fn item ->
              item["type"] == "function_call_output" and item["call_id"] == "call_web_1" and
+               item["output"] == refusal_text
+           end)
+
+    assert Enum.any?(List.wrap(final_request["input"]), fn item ->
+             item["type"] == "function_call_output" and item["call_id"] == "call_web_2" and
                item["output"] == refusal_text
            end)
   end
@@ -328,7 +368,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
 
     refusal_text =
       "[tool error] Context limit reached (7/10 > 5). " <>
-        "Non-handoff tools are no longer available. " <>
+        "Non-handoff tool calls will be refused. " <>
         "If more work is needed, call the available handoff tool with a continuation summary; " <>
         "otherwise provide the final answer using the information already available."
 
@@ -425,7 +465,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     [first_request, second_request] = responses_requests
     assert "web__read_url" in request_tool_names(first_request)
     assert "agent_management__handoff" in request_tool_names(first_request)
-    assert request_tool_names(second_request) == ["agent_management__handoff"]
+    assert second_request["tools"] == first_request["tools"]
 
     assert Enum.any?(List.wrap(second_request["input"]), fn item ->
              item["type"] == "function_call_output" and item["call_id"] == "call_web_1" and

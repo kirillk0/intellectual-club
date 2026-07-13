@@ -42,8 +42,6 @@ defmodule IntellectualClub.Generation.Worker do
     :step_sequence,
     :tool_round,
     :refusal_round,
-    :tools_disabled,
-    :tools_limited_to_handoff,
     :provider_session
   ]
 
@@ -165,8 +163,6 @@ defmodule IntellectualClub.Generation.Worker do
       step_sequence: initial_step_sequence,
       tool_round: 0,
       refusal_round: 0,
-      tools_disabled: false,
-      tools_limited_to_handoff: false,
       runtime_step: runtime_step,
       stream_task: nil,
       stream_ref: nil,
@@ -1097,16 +1093,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp maybe_broadcast_text_delta(_state, _event), do: :ok
 
   defp current_tools_payload(state) do
-    cond do
-      state.tools_disabled ->
-        []
-
-      state.tools_limited_to_handoff ->
-        handoff_tools_payload(state)
-
-      true ->
-        state.context.tools_payload || []
-    end
+    state.context.tools_payload || []
   end
 
   defp handoff_tools_payload(state) do
@@ -1141,11 +1128,11 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp can_execute_tools?(state, max_tool_rounds, context_limit_reached)
        when is_integer(max_tool_rounds) and is_boolean(context_limit_reached) do
-    not state.tools_disabled and state.tool_round < max_tool_rounds and not context_limit_reached
+    state.tool_round < max_tool_rounds and not context_limit_reached
   end
 
   defp context_limit_refusal_instruction(true) do
-    "Non-handoff tools are no longer available. " <>
+    "Non-handoff tool calls will be refused. " <>
       "If more work is needed, call the available handoff tool with a continuation summary; " <>
       "otherwise provide the final answer using the information already available."
   end
@@ -1266,8 +1253,7 @@ defmodule IntellectualClub.Generation.Worker do
       if handoff_calls == [] do
         handle_tool_results(state, refusal_results,
           tool_round_delta: 0,
-          refusal_round_delta: 1,
-          handoff_only_tools?: true
+          refusal_round_delta: 1
         )
       else
         state = start_tool_task(state, handoff_calls, refusal_results)
@@ -1278,8 +1264,7 @@ defmodule IntellectualClub.Generation.Worker do
 
       handle_tool_results(state, results,
         tool_round_delta: 0,
-        refusal_round_delta: 1,
-        disable_tools: true
+        refusal_round_delta: 1
       )
     end
   end
@@ -1376,18 +1361,6 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
-    tools_disabled = state.tools_disabled or Keyword.get(opts, :disable_tools, false)
-
-    tools_limited_to_handoff =
-      not tools_disabled and
-        (state.tools_limited_to_handoff or Keyword.get(opts, :handoff_only_tools?, false))
-
-    next_state = %{
-      state
-      | tools_disabled: tools_disabled,
-        tools_limited_to_handoff: tools_limited_to_handoff
-    }
-
     case safe_persist_value(state.context.message_id, :tool_results, fn ->
            maybe_persist_tool_results(state, results, opts)
            Persistence.load_step_for_followup!(state.runtime_step.id)
@@ -1395,10 +1368,10 @@ defmodule IntellectualClub.Generation.Worker do
       {:ok, persisted} ->
         case handoff_payload(persisted.results) do
           %{} = payload ->
-            finalize_handoff_tool_step(next_state, payload)
+            finalize_handoff_tool_step(state, payload)
 
           nil ->
-            with {:ok, followup} <- build_followup_with_steering(next_state, persisted),
+            with {:ok, followup} <- build_followup_with_steering(state, persisted),
                  {:ok, next_step} <-
                    safe_persist_value(state.context.message_id, :step_done, fn ->
                      Persistence.complete_step_and_start_next!(
@@ -1408,7 +1381,7 @@ defmodule IntellectualClub.Generation.Worker do
                        followup.raw_request
                      )
                    end) do
-              continue_after_tool_step(next_state, followup, next_step, opts)
+              continue_after_tool_step(state, followup, next_step, opts)
             else
               {:error, reason} ->
                 finalize_error(
