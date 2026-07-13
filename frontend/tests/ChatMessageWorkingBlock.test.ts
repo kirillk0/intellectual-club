@@ -96,4 +96,62 @@ describe('ChatMessageWorkingBlock canonical trace', () => {
     const labels = wrapper.findAll('.working-item-preview-label').map((label) => label.text());
     expect(labels).toEqual(['Отвечает:', 'Направление:']);
   });
+
+  it('renders tool call arguments with the collapsible JSON viewer', () => {
+    const longValue = 'x'.repeat(200);
+    const toolCall: ChatMessageItem = {
+      id: 7,
+      sequence: 1,
+      type: 'tool_call',
+      contents: [
+        {
+          id: 70,
+          sequence: 1,
+          kind: 'opaque',
+          content_json: {
+            name: 'reader__read_url',
+            arguments: JSON.stringify({ request: { url: longValue } }),
+          },
+        },
+      ],
+    };
+    const step: ChatMessageStep = {
+      id: 20,
+      sequence: 1,
+      status: 'done',
+      items: [toolCall],
+    };
+
+    const wrapper = mount(ChatMessageWorkingBlock, {
+      props: {
+        messageId: 10,
+        messageStatus: 'done',
+        summary: { step_count: 1, completed_step_duration_ms: 0 },
+        stepIndex: [step],
+        selectedStep: step,
+        open: true,
+      },
+      global: {
+        stubs: {
+          ChatMediaList: true,
+          JsonTreeView: {
+            name: 'JsonTreeView',
+            props: {
+              value: { default: null },
+              downloadFilename: String,
+              preserveExpandedOnValueChange: Boolean,
+            },
+            template: '<div class="json-tree-view-stub" />',
+          },
+          SvgIcon: true,
+        },
+      },
+    });
+
+    const viewer = wrapper.getComponent({ name: 'JsonTreeView' });
+    expect(viewer.props('value')).toEqual({ request: { url: longValue } });
+    expect(viewer.props('downloadFilename')).toBe('tool-call-7-arguments.json');
+    expect(viewer.props('preserveExpandedOnValueChange')).toBe(true);
+    expect(wrapper.find('.working-json-block').exists()).toBe(false);
+  });
 });

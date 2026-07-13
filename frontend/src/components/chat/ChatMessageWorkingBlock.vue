@@ -147,11 +147,13 @@
                   <div class="muted" style="margin-bottom: 6px">
                     Calling <code>{{ toolCallInfo(item).name || 'unknown' }}</code>
                   </div>
-                  <div v-if="toolCallInfo(item).arguments !== null">
+                  <div v-if="toolCallInfo(item).arguments !== null" class="working-item-json">
                     <div class="muted" style="margin-bottom: 4px">Arguments</div>
-                    <pre class="code-block working-json-block"><code class="language-json">{{
-                      formatJson(toolCallInfo(item).arguments)
-                    }}</code></pre>
+                    <JsonTreeView
+                      :value="toolCallInfo(item).arguments"
+                      :download-filename="toolCallArgumentsDownloadFilename(item)"
+                      preserve-expanded-on-value-change
+                    />
                   </div>
                 </div>
 
@@ -673,14 +675,6 @@ const openFullText = (item: ChatMessageItem) => {
   emit('content-open', { messageId: props.messageId, contentId, title: 'Tool result full text' });
 };
 
-const formatJson = (value: unknown) => {
-  try {
-    return JSON.stringify(value ?? null, null, 2);
-  } catch {
-    return String(value);
-  }
-};
-
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -708,6 +702,11 @@ const toolCallInfo = (item: Pick<ChatMessageItem, 'contents'>) => {
           : '';
   const argsSource = rec.arguments ?? rawFunction?.arguments ?? rawTool?.arguments ?? null;
   return { name, arguments: normalizeToolCallArguments(argsSource), raw: rawTool ?? raw };
+};
+
+const toolCallArgumentsDownloadFilename = (item: Pick<ChatMessageItem, 'id' | 'sequence'>) => {
+  const id = typeof item.id === 'number' && item.id > 0 ? item.id : item.sequence || 'unknown';
+  return `tool-call-${id}-arguments.json`;
 };
 
 const normalizeToolCallArguments = (value: unknown): unknown | null => {
@@ -966,11 +965,6 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 .working-tool-result {
   max-height: 240px;
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.working-json-block {
   white-space: pre-wrap;
   word-break: break-word;
 }
