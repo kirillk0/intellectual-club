@@ -26,7 +26,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     if History.trace_message?(message) do
       case History.message_role(message) do
         "user" ->
-          input_contents = History.project_contents_for_item_type(message, :input)
+          input_contents =
+            History.project_contents_for_item_types(message, History.user_input_item_types())
 
           [
             %{
@@ -43,7 +44,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
             |> Enum.flat_map(&messages_from_step(&1, opts))
 
           if emitted == [] do
-            fallback_text = History.project_text_for_item_type(message, :answer)
+            fallback_text =
+              History.project_text_for_item_types(message, History.assistant_answer_item_types())
 
             if String.trim(fallback_text) == "" do
               []
@@ -131,7 +133,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     {answer_parts, tool_calls, tool_results} =
       Enum.reduce(items, {[], [], []}, fn item, {answers_acc, calls_acc, results_acc} ->
         case History.item_type(item) do
-          :answer ->
+          type when type in [:answer, :handoff_summary] ->
             {[History.item_text(item) | answers_acc], calls_acc, results_acc}
 
           :tool_call ->

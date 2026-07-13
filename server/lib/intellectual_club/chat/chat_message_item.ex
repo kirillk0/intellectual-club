@@ -39,9 +39,12 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       constraints(
         one_of: [
           :input,
+          :handoff_request,
+          :handoff_context,
           :steering,
           :reasoning,
           :answer,
+          :handoff_summary,
           :tool_call,
           :tool_result,
           :artifact,

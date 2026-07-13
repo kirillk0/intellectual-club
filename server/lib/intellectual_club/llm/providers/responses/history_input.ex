@@ -29,7 +29,8 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
     if History.trace_message?(message) do
       case History.message_role(message) do
         "user" ->
-          input_contents = History.project_contents_for_item_type(message, :input)
+          input_contents =
+            History.project_contents_for_item_types(message, History.user_input_item_types())
 
           [
             %{
@@ -60,7 +61,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
                 :reasoning ->
                   []
 
-                :answer ->
+                type when type in [:answer, :handoff_summary] ->
                   text = History.item_text(item)
 
                   if String.trim(text) == "" do
@@ -121,7 +122,8 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
             end)
 
           if out == [] do
-            fallback_text = History.project_text_for_item_type(message, :answer)
+            fallback_text =
+              History.project_text_for_item_types(message, History.assistant_answer_item_types())
 
             if String.trim(fallback_text) == "" do
               []
@@ -360,7 +362,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   defp last_non_empty_answer_item_index(indexed_items) when is_list(indexed_items) do
     Enum.reduce(indexed_items, nil, fn {item, index}, acc ->
       case History.item_type(item) do
-        :answer ->
+        type when type in [:answer, :handoff_summary] ->
           if item |> History.item_text() |> String.trim() == "", do: acc, else: index
 
         _other ->

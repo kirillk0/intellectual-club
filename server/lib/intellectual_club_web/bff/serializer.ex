@@ -332,7 +332,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       finished_at: datetime_iso(Map.get(message, :finished_at)),
       llm_configuration_id: message.llm_configuration_id,
       bookmarked: MapSet.member?(bookmarked_message_ids, message.id),
-      content: Map.get(extras, :content, %{parts: [], media: []}),
+      content: Map.get(extras, :content, %{items: [], parts: [], media: []}),
       usage: Map.get(extras, :usage, usage_summary([])),
       working: Map.get(extras, :working, working_summary([])),
       prev_sibling_id: Map.get(meta, :prev_sibling),
@@ -370,6 +370,16 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  def display_item_snapshot(%ChatMessageItem{} = item, %ChatMessageStep{} = step) do
+    %{
+      step_id: step.id,
+      step_sequence: step.sequence,
+      item_id: item.id,
+      item_sequence: item.sequence,
+      item_type: atom_to_string(item.type)
+    }
+  end
+
   def media_content_snapshot(
         %ChatMessageContent{} = content,
         %ChatMessageItem{} = item,
@@ -382,7 +392,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       step_id: step.id,
       step_sequence: step.sequence,
       item_id: item.id,
-      item_sequence: item.sequence
+      item_sequence: item.sequence,
+      item_type: item_type
     })
   end
 
@@ -951,7 +962,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   defp content_visible_in_bff?(content, item_type) do
     kind = map_get(content, :kind, "kind") |> atom_to_string()
-    not (kind == "opaque" and item_type in ["reasoning", "answer"])
+    not (kind == "opaque" and item_type in ["reasoning", "answer", "handoff_summary"])
   end
 
   defp maybe_put_compact(map, _key, nil) when is_map(map), do: map

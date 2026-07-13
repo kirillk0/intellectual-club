@@ -221,6 +221,95 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
            ]
   end
 
+  test "handoff item types preserve the ordinary user and assistant wire format" do
+    history = [
+      %{
+        role: :user,
+        steps: [%{sequence: 1, items: [trace_item(1, :handoff_request, "Prepare transfer")]}]
+      },
+      %{
+        role: :assistant,
+        steps: [%{sequence: 1, items: [trace_item(1, :handoff_summary, "Transfer ready")]}]
+      },
+      %{
+        role: :user,
+        steps: [%{sequence: 1, items: [trace_item(1, :handoff_context, "Continue here")]}]
+      }
+    ]
+
+    assert HistoryInput.build_input_items(history) == [
+             user_responses_message("Prepare transfer"),
+             assistant_responses_message("Transfer ready", "final_answer"),
+             user_responses_message("Continue here")
+           ]
+
+    assert ChatHistory.build_messages(history) == [
+             %{"role" => "user", "content" => "Prepare transfer"},
+             %{"role" => "assistant", "content" => "Transfer ready"},
+             %{"role" => "user", "content" => "Continue here"}
+           ]
+
+    assert GooglePayload.build_input_steps(history) == [
+             google_user_input("Prepare transfer"),
+             google_model_output("Transfer ready"),
+             google_user_input("Continue here")
+           ]
+
+    base_opts = %{
+      history: history,
+      system_prompt: nil,
+      parameters: %{},
+      tools: [],
+      supports_image_input: false,
+      cache_control_enabled: false
+    }
+
+    responses = Responses.build_initial_request(Map.put(base_opts, :model_name, "gpt-5"))
+
+    assert responses.raw_request["input"] == [
+             user_responses_message("Prepare transfer"),
+             assistant_responses_message("Transfer ready", "final_answer"),
+             user_responses_message("Continue here")
+           ]
+
+    openrouter =
+      OpenRouterChatCompletion.build_initial_request(
+        Map.put(base_opts, :model_name, "openai/gpt-5")
+      )
+
+    assert openrouter.raw_request["messages"] == [
+             %{"role" => "user", "content" => "Prepare transfer"},
+             %{"role" => "assistant", "content" => "Transfer ready"},
+             %{"role" => "user", "content" => "Continue here"}
+           ]
+
+    anthropic =
+      AnthropicMessages.build_initial_request(Map.put(base_opts, :model_name, "claude-sonnet-4"))
+
+    assert anthropic.raw_request["messages"] == [
+             %{
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => "Prepare transfer"}]
+             },
+             %{
+               "role" => "assistant",
+               "content" => [%{"type" => "text", "text" => "Transfer ready"}]
+             },
+             %{"role" => "user", "content" => [%{"type" => "text", "text" => "Continue here"}]}
+           ]
+
+    google =
+      GoogleInteractions.build_initial_request(
+        Map.put(base_opts, :model_name, "gemini-2.5-flash")
+      )
+
+    assert google.raw_request["input"] == [
+             google_user_input("Prepare transfer"),
+             google_model_output("Transfer ready"),
+             google_user_input("Continue here")
+           ]
+  end
+
   test "leading canonical steering stays before a restarted provider response" do
     history = [
       %{

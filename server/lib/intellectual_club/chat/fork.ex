@@ -1081,7 +1081,7 @@ defmodule IntellectualClub.Chat.Fork do
     |> trace_value(:items, [])
     |> List.wrap()
     |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
-    |> Enum.filter(&(History.item_type(&1) == :answer))
+    |> Enum.filter(&History.assistant_answer_item?/1)
     |> Enum.map(&History.item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
@@ -1214,7 +1214,7 @@ defmodule IntellectualClub.Chat.Fork do
 
         text =
           message
-          |> History.project_text_for_item_type(:answer)
+          |> History.project_text_for_item_types(History.assistant_answer_item_types())
           |> case do
             value when is_binary(value) and value != "" -> final_text(%{text: value})
             _other -> result.text

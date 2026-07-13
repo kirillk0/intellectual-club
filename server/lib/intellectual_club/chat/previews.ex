@@ -26,13 +26,13 @@ defmodule IntellectualClub.Chat.Previews do
 
   @spec message_preview_text(map()) :: String.t()
   def message_preview_text(message) when is_map(message) do
-    wanted_type =
+    wanted_types =
       case Map.get(message, :role) do
-        :user -> :input
-        "user" -> :input
-        :assistant -> :answer
-        "assistant" -> :answer
-        _ -> nil
+        :user -> [:input, :handoff_request, :handoff_context]
+        "user" -> [:input, :handoff_request, :handoff_context]
+        :assistant -> [:answer, :handoff_summary]
+        "assistant" -> [:answer, :handoff_summary]
+        _ -> []
       end
 
     {texts, media_count} =
@@ -44,7 +44,7 @@ defmodule IntellectualClub.Chat.Previews do
         |> Map.get(:items, [])
         |> Enum.sort_by(&sort_seq/1)
       end)
-      |> Enum.filter(fn item -> wanted_type != nil and Map.get(item, :type) == wanted_type end)
+      |> Enum.filter(&(Map.get(&1, :type) in wanted_types))
       |> Enum.reduce({[], 0}, fn item, {texts, media_count} ->
         contents = Map.get(item, :contents) || []
 

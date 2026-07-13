@@ -232,6 +232,7 @@ defmodule IntellectualClub.Generation.Worker do
         {:provider_event, stream_ref, {:trace, trace_event}},
         %{stream_ref: stream_ref} = state
       ) do
+    trace_event = semantic_trace_event(state, trace_event)
     runtime_step = RuntimeTrace.apply_event(state.runtime_step, trace_event)
     maybe_broadcast_text_delta(state, trace_event)
     {:noreply, %{state | runtime_step: runtime_step}}
@@ -1093,11 +1094,44 @@ defmodule IntellectualClub.Generation.Worker do
     broadcast(state, {:content_delta, state.context.message_id, delta})
   end
 
+  defp maybe_broadcast_text_delta(
+         state,
+         {:append_text, _item_key, :handoff_summary, _seq, delta}
+       ) do
+    broadcast(state, {:content_delta, state.context.message_id, delta})
+  end
+
   defp maybe_broadcast_text_delta(state, {:append_text, _item_key, :reasoning, _seq, delta}) do
     broadcast(state, {:reasoning_delta, state.context.message_id, delta})
   end
 
   defp maybe_broadcast_text_delta(_state, _event), do: :ok
+
+  defp semantic_trace_event(state, {:ensure_item, key, :answer, sequence}) do
+    {:ensure_item, key, semantic_answer_item_type(state), sequence}
+  end
+
+  defp semantic_trace_event(state, {:append_text, key, :answer, sequence, text}) do
+    {:append_text, key, semantic_answer_item_type(state), sequence, text}
+  end
+
+  defp semantic_trace_event(state, {:set_text, key, :answer, sequence, text}) do
+    {:set_text, key, semantic_answer_item_type(state), sequence, text}
+  end
+
+  defp semantic_trace_event(state, {:set_opaque, key, :answer, sequence, payload}) do
+    {:set_opaque, key, semantic_answer_item_type(state), sequence, payload}
+  end
+
+  defp semantic_trace_event(state, {:set_media, key, :answer, sequence, media}) do
+    {:set_media, key, semantic_answer_item_type(state), sequence, media}
+  end
+
+  defp semantic_trace_event(_state, event), do: event
+
+  defp semantic_answer_item_type(state) do
+    if manual_handoff_generation?(state), do: :handoff_summary, else: :answer
+  end
 
   defp current_tools_payload(state) do
     state.context.tools_payload || []

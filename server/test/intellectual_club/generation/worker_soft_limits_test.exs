@@ -8,6 +8,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
@@ -832,7 +833,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     |> Map.get(:steps, [])
     |> Enum.sort_by(& &1.sequence)
     |> Enum.flat_map(&Map.get(&1, :items, []))
-    |> Enum.filter(&(&1.type == :input))
+    |> Enum.filter(&History.user_input_item?/1)
     |> Enum.flat_map(&Map.get(&1, :contents, []))
     |> Enum.filter(&(&1.kind == :text))
     |> Enum.sort_by(& &1.sequence)

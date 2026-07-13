@@ -10,6 +10,29 @@ defmodule IntellectualClub.Generation.History do
   alias IntellectualClub.Chat.Media
 
   @allowed_roles ["user", "assistant"]
+  @user_input_item_types [:input, :handoff_request, :handoff_context]
+  @assistant_answer_item_types [:answer, :handoff_summary]
+
+  @doc """
+  Returns item types that project as user input in provider histories.
+  """
+  def user_input_item_types, do: @user_input_item_types
+
+  @doc """
+  Returns item types that project as assistant answers in provider histories.
+  """
+  def assistant_answer_item_types, do: @assistant_answer_item_types
+
+  @doc """
+  Returns true when an item or item type projects as user input.
+  """
+  def user_input_item?(item_or_type), do: item_type(item_or_type) in @user_input_item_types
+
+  @doc """
+  Returns true when an item or item type projects as an assistant answer.
+  """
+  def assistant_answer_item?(item_or_type),
+    do: item_type(item_or_type) in @assistant_answer_item_types
 
   @doc """
   Normalizes legacy `%{role, content}` history messages.
@@ -102,8 +125,11 @@ defmodule IntellectualClub.Generation.History do
   def item_type(value) when is_binary(value) do
     case value do
       "input" -> :input
+      "handoff_request" -> :handoff_request
+      "handoff_context" -> :handoff_context
       "steering" -> :steering
       "answer" -> :answer
+      "handoff_summary" -> :handoff_summary
       "reasoning" -> :reasoning
       "tool_call" -> :tool_call
       "tool_result" -> :tool_result
@@ -159,9 +185,16 @@ defmodule IntellectualClub.Generation.History do
   Extracts ordered text for all items of a given type from a persisted message.
   """
   def project_text_for_item_type(message, wanted_type) do
+    project_text_for_item_types(message, [wanted_type])
+  end
+
+  @doc """
+  Extracts ordered text for all items matching any of the given types.
+  """
+  def project_text_for_item_types(message, wanted_types) when is_list(wanted_types) do
     message
     |> ordered_items()
-    |> Enum.filter(&(item_type(&1) == wanted_type))
+    |> Enum.filter(&(item_type(&1) in wanted_types))
     |> Enum.map(&item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
@@ -171,9 +204,16 @@ defmodule IntellectualClub.Generation.History do
   Extracts ordered contents for all items of a given type from a persisted message.
   """
   def project_contents_for_item_type(message, wanted_type) do
+    project_contents_for_item_types(message, [wanted_type])
+  end
+
+  @doc """
+  Extracts ordered contents for all items matching any of the given types.
+  """
+  def project_contents_for_item_types(message, wanted_types) when is_list(wanted_types) do
     message
     |> ordered_items()
-    |> Enum.filter(&(item_type(&1) == wanted_type))
+    |> Enum.filter(&(item_type(&1) in wanted_types))
     |> Enum.flat_map(&contents/1)
     |> Enum.sort_by(&sort_seq/1)
   end

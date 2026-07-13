@@ -325,7 +325,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   end
 
   defp assistant_message(_raw_response, %RuntimeTrace.Step{} = runtime_step) do
-    answer = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+    answer = RuntimeTrace.text_for_item_types(runtime_step, [:answer, :handoff_summary])
 
     content =
       if String.trim(answer) == "" do

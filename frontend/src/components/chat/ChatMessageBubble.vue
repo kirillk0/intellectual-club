@@ -1,6 +1,33 @@
 <template>
-  <div class="message" :class="msg.role">
-    <div class="bubble" :class="{ typing: msg.status === 'generating' }" :ref="setBubbleEl">
+  <div class="message" :class="[msg.role, { 'handoff-system-event': Boolean(handoffEventKind) }]">
+    <div
+      class="bubble"
+      :class="{ typing: msg.status === 'generating', 'handoff-system-event__bubble': Boolean(handoffEventKind) }"
+      :ref="setBubbleEl"
+    >
+      <button
+        v-if="handoffEventKind"
+        class="handoff-system-event__toggle"
+        type="button"
+        :aria-expanded="handoffEventOpen"
+        :aria-label="handoffEventToggleLabel"
+        @click="toggleHandoffEvent"
+      >
+        <span class="handoff-system-event__icon"><SvgIcon name="branch" size="16" /></span>
+        <span class="handoff-system-event__label">{{ handoffEventLabel }}</span>
+        <ChatGenerationStateIndicator
+          v-if="handoffEventGenerationState"
+          :state="handoffEventGenerationState"
+          class="handoff-system-event__generation-state"
+        />
+        <SvgIcon
+          name="chevron-right"
+          class="handoff-system-event__chevron"
+          :class="{ 'handoff-system-event__chevron--open': handoffEventOpen }"
+        />
+      </button>
+
+      <div v-show="!handoffEventKind || handoffEventOpen" class="message-expanded-body">
       <ChatMessageWorkingBlock
         v-if="msg.role === 'assistant'"
         :message-id="messageId"
@@ -33,6 +60,32 @@
             </span>
             <div v-html="entry.html"></div>
           </div>
+          <template v-else-if="entry.kind === 'handoff'">
+            <div v-if="handoffEventKind" class="message-answer-part handoff-system-event__content">
+              <span v-if="entry.showTimestamp && entry.timestamp" class="message-answer-time">
+                {{ entry.timestamp }}
+              </span>
+              <div v-if="entry.html" v-html="entry.html"></div>
+              <ChatMediaList
+                v-if="entry.media.length"
+                :message-id="messageId"
+                :contents="entry.media"
+                @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
+              />
+            </div>
+            <details v-else class="handoff-inline-event">
+              <summary>{{ handoffItemLabel(entry.itemType) }}</summary>
+              <div class="handoff-inline-event__content">
+                <div v-if="entry.html" v-html="entry.html"></div>
+                <ChatMediaList
+                  v-if="entry.media.length"
+                  :message-id="messageId"
+                  :contents="entry.media"
+                  @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
+                />
+              </div>
+            </details>
+          </template>
           <RouterLink
             v-else
             class="message-fork-card"
@@ -57,9 +110,9 @@
       </div>
 
       <ChatMediaList
-        v-if="messageMediaContents.length"
+        v-if="regularMessageMediaContents.length"
         :message-id="messageId"
-        :contents="messageMediaContents"
+        :contents="regularMessageMediaContents"
         @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
       />
 
@@ -114,7 +167,7 @@
             <SvgIcon name="copy" />
           </button>
           <button
-            v-if="!readonly"
+            v-if="!readonly && !hasHandoffSystemEvent"
             class="icon-button message-action"
             type="button"
             :disabled="branchDisabled"
@@ -148,6 +201,7 @@
             <SvgIcon name="more-horizontal" />
           </button>
         </div>
+      </div>
       </div>
 
       <Teleport to="body">
@@ -192,7 +246,7 @@
             <span class="message-actions-menu__label">Bookmark</span>
           </button>
           <button
-            v-if="!readonly"
+            v-if="!readonly && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -206,7 +260,7 @@
             <span class="message-actions-menu__label">Edit</span>
           </button>
           <button
-            v-if="!readonly"
+            v-if="!readonly && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -236,7 +290,7 @@
             <span class="message-actions-menu__label">{{ moveBranchToNewChatLabel }}</span>
           </button>
           <button
-            v-if="!readonly"
+            v-if="!readonly && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item danger"
             type="button"
             role="menuitem"
@@ -263,8 +317,13 @@ import { RouterLink } from 'vue-router';
 import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import {
+  chatMessageContainsHandoffSystemEvent,
+  chatMessageDisplayItems,
+  chatMessageHandoffSystemEventKind,
+  isHandoffSystemEventItemType,
   isSteeringContentPart,
   sortedChatMessageContentParts,
+  type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
 import type {
@@ -300,6 +359,7 @@ interface Props {
   canDelete?: boolean;
   deleteTitle?: string;
   readonly?: boolean;
+  expectedHandoffEventKind?: HandoffSystemEventKind | null;
   registerRef?: (el: HTMLElement | null) => void;
 }
 
@@ -322,6 +382,7 @@ const props = withDefaults(defineProps<Props>(), {
   canDelete: false,
   deleteTitle: 'Delete',
   readonly: false,
+  expectedHandoffEventKind: null,
 });
 
 const emit = defineEmits<{
@@ -345,6 +406,34 @@ const emit = defineEmits<{
 
 const msg = computed(() => props.message);
 const messageId = computed(() => msg.value.id ?? null);
+const handoffEventKind = computed(
+  () => chatMessageHandoffSystemEventKind(msg.value) || props.expectedHandoffEventKind
+);
+const hasHandoffSystemEvent = computed(
+  () => chatMessageContainsHandoffSystemEvent(msg.value) || Boolean(props.expectedHandoffEventKind)
+);
+const handoffEventOpen = ref(false);
+const handoffEventLabel = computed(() => {
+  if (handoffEventKind.value === 'handoff_request') return translate('Handoff to a new chat requested');
+  if (msg.value.status === 'generating') return translate('Preparing handoff summary…');
+  if (msg.value.status === 'error') return translate('Handoff failed');
+  if (msg.value.status === 'canceled') return translate('Handoff canceled');
+  return translate('Handoff summary prepared');
+});
+const handoffEventToggleLabel = computed(() =>
+  translate(handoffEventOpen.value ? 'Hide handoff details' : 'Show handoff details')
+);
+const handoffEventGenerationState = computed<'generating' | 'error' | null>(() => {
+  if (msg.value.status === 'generating') return 'generating';
+  if (msg.value.status === 'error') return 'error';
+  return null;
+});
+const handoffItemLabel = (itemType: HandoffSystemEventKind) =>
+  translate(itemType === 'handoff_request' ? 'Handoff request' : 'Handoff summary');
+const toggleHandoffEvent = () => {
+  handoffEventOpen.value = !handoffEventOpen.value;
+  if (!handoffEventOpen.value) moreMenuOpen.value = false;
+};
 const bookmarkPressed = computed(() => Boolean(msg.value.bookmarked));
 const bookmarkLabel = computed(() =>
   msg.value.bookmarked ? `Remove bookmark for message ${props.index + 1}` : `Add bookmark for message ${props.index + 1}`
@@ -379,7 +468,11 @@ const messageContentEl = ref<HTMLElement | null>(null);
 let enhanceMessageContentToken = 0;
 
 const canRetry = computed(
-  () => !props.readonly && Boolean(messageId.value) && (msg.value.working?.step_count || 0) > 0
+  () =>
+    !props.readonly &&
+    !hasHandoffSystemEvent.value &&
+    Boolean(messageId.value) &&
+    (msg.value.working?.step_count || 0) > 0
 );
 
 const shouldHighlightCode = computed(() => msg.value.status !== 'generating');
@@ -403,6 +496,20 @@ type MessagePart = {
   stableId: number;
 };
 
+type HandoffPart = {
+  kind: 'handoff';
+  key: string;
+  html: string;
+  media: ChatMessageContent[];
+  timestamp: string;
+  showTimestamp: boolean;
+  itemType: HandoffSystemEventKind;
+  stepSequence: number;
+  itemSequence: number;
+  sequence: number;
+  stableId: number;
+};
+
 type ForkPart = {
   kind: 'fork';
   key: string;
@@ -414,12 +521,23 @@ type ForkPart = {
   stableId: number;
 };
 
-type MessageTimelineEntry = MessagePart | ForkPart;
+type MessageTimelineEntry = MessagePart | HandoffPart | ForkPart;
 
-const messageParts = computed<MessagePart[]>(() => {
-  const parts: MessagePart[] = [];
+const displayItemIdentity = (value: {
+  step_id?: number | null;
+  step_sequence?: number | null;
+  item_id?: number | null;
+  item_sequence?: number | null;
+  item_type?: string | null;
+}) =>
+  `${value.step_id ?? ''}:${value.item_id ?? ''}:${value.step_sequence ?? ''}:${value.item_sequence ?? ''}:${value.item_type ?? ''}`;
 
-  for (const [index, part] of sortedChatMessageContentParts(msg.value).entries()) {
+const messageParts = computed<Array<MessagePart | HandoffPart>>(() => {
+  const parts: Array<MessagePart | HandoffPart> = [];
+  const sortedParts = sortedChatMessageContentParts(msg.value);
+
+  for (const [index, part] of sortedParts.entries()) {
+    if (isHandoffSystemEventItemType(part.item_type)) continue;
     const text = String(part.text ?? '');
     const steering = msg.value.role === 'assistant' && isSteeringContentPart(part);
     if (!text.trim() && !steering) continue;
@@ -440,6 +558,44 @@ const messageParts = computed<MessagePart[]>(() => {
       stableId: part.content_id || index,
     });
   }
+
+  const mediaContents = (msg.value.content?.media || [])
+    .slice()
+    .sort(sortBySequence)
+    .filter((content) => content.kind === 'media');
+
+  for (const [index, item] of chatMessageDisplayItems(msg.value).entries()) {
+    if (!isHandoffSystemEventItemType(item.item_type)) continue;
+
+    const identity = displayItemIdentity(item);
+    const itemParts = sortedParts.filter((part) => displayItemIdentity(part) === identity);
+    const itemMedia = mediaContents.filter((content) => displayItemIdentity(content) === identity);
+    const text = itemParts.map((part) => String(part.text ?? '')).join('\n\n');
+    const firstPart = itemParts[0];
+
+    parts.push({
+      kind: 'handoff',
+      key: `handoff-${identity || index}`,
+      html: text
+        ? renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true })
+        : '',
+      media: itemMedia,
+      timestamp: formatTimeOfDay(firstPart?.created_at),
+      showTimestamp: msg.value.role === 'assistant',
+      itemType: item.item_type,
+      stepSequence: item.step_sequence || 0,
+      itemSequence: item.item_sequence || 0,
+      sequence: 0,
+      stableId: item.item_id || index,
+    });
+  }
+
+  parts.sort((left, right) =>
+    left.stepSequence - right.stepSequence ||
+    left.itemSequence - right.itemSequence ||
+    left.sequence - right.sequence ||
+    left.stableId - right.stableId
+  );
 
   if (msg.value.role === 'assistant' && msg.value.status !== 'generating' && parts.length > 0) {
     parts[parts.length - 1] = {
@@ -510,6 +666,10 @@ const messageMediaContents = computed(() =>
   (msg.value.content?.media || []).slice().sort(sortBySequence).filter((content) => content.kind === 'media')
 );
 
+const regularMessageMediaContents = computed(() =>
+  messageMediaContents.value.filter((content) => !isHandoffSystemEventItemType(content.item_type))
+);
+
 const previewAttachmentContents = computed(() => messageMediaContents.value);
 
 const branchDisabled = computed(() => {
@@ -531,7 +691,9 @@ const hasSiblingBranches = computed(() => {
   return Boolean(msg.value.prev_sibling_id || msg.value.next_sibling_id);
 });
 
-const canMoveBranchToNewChat = computed(() => !props.readonly && hasSiblingBranches.value);
+const canMoveBranchToNewChat = computed(
+  () => !props.readonly && !hasHandoffSystemEvent.value && hasSiblingBranches.value
+);
 
 const moveBranchToNewChatDisabled = computed(() => {
   if (!messageId.value) return true;
@@ -651,19 +813,19 @@ const emitBookmark = () => {
 };
 
 const emitEdit = () => {
-  if (!messageId.value || msg.value.status === 'generating') return;
+  if (!messageId.value || msg.value.status === 'generating' || hasHandoffSystemEvent.value) return;
   closeMoreMenu();
   emit('edit');
 };
 
 const emitBranchNewChat = () => {
-  if (branchToNewChatDisabled.value) return;
+  if (branchToNewChatDisabled.value || hasHandoffSystemEvent.value) return;
   closeMoreMenu();
   emit('branch-new-chat');
 };
 
 const emitMoveBranchNewChat = () => {
-  if (moveBranchToNewChatDisabled.value) return;
+  if (moveBranchToNewChatDisabled.value || hasHandoffSystemEvent.value) return;
   closeMoreMenu();
   emit('move-branch-new-chat');
 };
@@ -675,7 +837,7 @@ const emitMessageStats = () => {
 };
 
 const emitDelete = () => {
-  if (!props.canDelete) return;
+  if (!props.canDelete || hasHandoffSystemEvent.value) return;
   closeMoreMenu();
   emit('delete');
 };
@@ -686,6 +848,7 @@ watch(showMoreActions, (visible) => {
 
 watch(messageId, () => {
   closeMoreMenu();
+  handoffEventOpen.value = false;
 });
 
 const scheduleEnhanceMessageContent = () => {
@@ -762,6 +925,114 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 </script>
 
 <style scoped>
+.message-expanded-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.message.handoff-system-event {
+  align-items: stretch;
+}
+
+.message .bubble.handoff-system-event__bubble {
+  padding: 0;
+  overflow: hidden;
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
+  box-shadow: none;
+}
+
+.handoff-system-event__toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.handoff-system-event__toggle:hover {
+  background: var(--color-info-bg-strong);
+}
+
+.handoff-system-event__toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.handoff-system-event__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  background: var(--color-info-bg-strong);
+  color: var(--color-link);
+}
+
+.handoff-system-event__label {
+  min-width: 0;
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.handoff-system-event__generation-state {
+  flex: 0 0 auto;
+}
+
+.handoff-system-event__chevron {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  transition: transform 140ms ease;
+}
+
+.handoff-system-event__chevron--open {
+  transform: rotate(90deg);
+}
+
+.handoff-system-event__bubble > .message-expanded-body {
+  padding: 2px 11px 10px;
+  border-top: 1px solid var(--color-info-border);
+}
+
+.handoff-system-event__content {
+  padding-top: 8px;
+}
+
+.handoff-inline-event {
+  border: 1px solid var(--color-info-border);
+  border-radius: 8px;
+  background: var(--color-info-bg);
+  overflow: hidden;
+}
+
+.handoff-inline-event > summary {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.handoff-inline-event[open] > summary {
+  border-bottom: 1px solid var(--color-info-border);
+}
+
+.handoff-inline-event__content {
+  padding: 9px 10px;
+}
+
 .message-answer-part::after {
   content: '';
   display: block;

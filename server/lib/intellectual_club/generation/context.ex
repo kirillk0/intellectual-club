@@ -606,13 +606,13 @@ defmodule IntellectualClub.Generation.Context do
   defp project_message_text(message) do
     role = Map.get(message, :role)
 
-    wanted_type =
+    wanted_types =
       case role do
-        :user -> :input
-        "user" -> :input
-        :assistant -> :answer
-        "assistant" -> :answer
-        _ -> nil
+        :user -> History.user_input_item_types()
+        "user" -> History.user_input_item_types()
+        :assistant -> History.assistant_answer_item_types()
+        "assistant" -> History.assistant_answer_item_types()
+        _ -> []
       end
 
     steps = Map.get(message, :steps) || []
@@ -624,8 +624,7 @@ defmodule IntellectualClub.Generation.Context do
       items |> Enum.sort_by(&sort_seq/1)
     end)
     |> Enum.filter(fn item ->
-      item_type = Map.get(item, :type)
-      wanted_type != nil and item_type == wanted_type
+      History.item_type(item) in wanted_types
     end)
     |> Enum.map(&item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
@@ -1030,7 +1029,7 @@ defmodule IntellectualClub.Generation.Context do
   defp incomplete_history_items(step, message_status) when is_map(step) do
     allowed_types =
       if aborted_status?(message_status) do
-        [:answer, :steering]
+        [:answer, :handoff_summary, :steering]
       else
         [:steering]
       end
@@ -1047,7 +1046,7 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp sanitize_incomplete_history_item(item) when is_map(item) do
-    if History.item_type(item) == :answer do
+    if History.assistant_answer_item?(item) do
       text_contents =
         item
         |> History.contents()

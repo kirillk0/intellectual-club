@@ -61,8 +61,11 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
   @type item_type ::
           :input
+          | :handoff_request
+          | :handoff_context
           | :steering
           | :answer
+          | :handoff_summary
           | :reasoning
           | :tool_call
           | :tool_result
@@ -265,6 +268,19 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
   def text_for_item_type(%Step{} = _step, _type), do: ""
 
+  @spec text_for_item_types(Step.t(), [item_type()]) :: String.t()
+  def text_for_item_types(%Step{} = step, item_types) when is_list(item_types) do
+    step.items_by_key
+    |> Map.values()
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.filter(&(&1.type in item_types))
+    |> Enum.map(&item_text/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.join("\n\n")
+  end
+
+  def text_for_item_types(%Step{} = _step, _types), do: ""
+
   defp status_string(nil), do: nil
   defp status_string(value) when is_atom(value), do: Atom.to_string(value)
   defp status_string(value) when is_binary(value), do: value
@@ -273,7 +289,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   defp maybe_mark_first_token(%Step{first_token_at: %DateTime{}} = step, _item_type, _text),
     do: step
 
-  defp maybe_mark_first_token(%Step{} = step, :answer, text) do
+  defp maybe_mark_first_token(%Step{} = step, item_type, text)
+       when item_type in [:answer, :handoff_summary] do
     if to_string(text || "") == "" do
       step
     else

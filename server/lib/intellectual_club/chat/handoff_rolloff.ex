@@ -498,7 +498,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
   end
 
   defp message_entries(%ChatMessage{role: role} = message) when role in [:user, "user"] do
-    text = message_text(message, [:input])
+    text = message_text(message, [:input, :handoff_request, :handoff_context])
 
     if String.trim(text) == "" do
       []
@@ -509,7 +509,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
 
   defp message_entries(%ChatMessage{role: role} = message)
        when role in [:assistant, "assistant"] do
-    message_item_entries(message, [:answer, :artifact, :steering])
+    message_item_entries(message, [:answer, :handoff_summary, :artifact, :steering])
   end
 
   defp message_entries(_message), do: []

@@ -4,6 +4,44 @@ import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import { setPreferredLocale } from '@/i18n';
 import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 
+const handoffMessage = (
+  id: number,
+  role: 'user' | 'assistant',
+  itemType: 'handoff_request' | 'handoff_summary' | 'handoff_context',
+  text: string,
+  status: ChatBranchMessage['status'] = 'done'
+): ChatBranchMessage => ({
+  id,
+  role,
+  status,
+  content: {
+    items: [
+      {
+        step_id: id * 10,
+        step_sequence: 1,
+        item_id: id * 100,
+        item_sequence: 1,
+        item_type: itemType,
+      },
+    ],
+    parts: text
+      ? [
+          {
+            content_id: id * 1000,
+            sequence: 1,
+            text,
+            item_type: itemType,
+            step_id: id * 10,
+            step_sequence: 1,
+            item_id: id * 100,
+            item_sequence: 1,
+          },
+        ]
+      : [],
+    media: [],
+  },
+});
+
 describe('ChatMessageBubble fork timeline', () => {
   beforeEach(() => {
     setPreferredLocale('en');
@@ -11,6 +49,7 @@ describe('ChatMessageBubble fork timeline', () => {
 
   afterEach(() => {
     setPreferredLocale(null);
+    document.body.innerHTML = '';
   });
 
   it('renders a fork between answer items at the originating tool call position', () => {
@@ -19,6 +58,7 @@ describe('ChatMessageBubble fork timeline', () => {
       role: 'assistant',
       status: 'done',
       content: {
+        items: [],
         parts: [
           {
             content_id: 2,
@@ -84,6 +124,7 @@ describe('ChatMessageBubble fork timeline', () => {
       role: 'assistant',
       status: 'done',
       content: {
+        items: [],
         parts: [
           {
             content_id: 2,
@@ -151,6 +192,7 @@ describe('ChatMessageBubble fork timeline', () => {
       role: 'assistant',
       status: 'done',
       content: {
+        items: [],
         parts: [],
         media: [],
       },
@@ -169,5 +211,164 @@ describe('ChatMessageBubble fork timeline', () => {
     await wrapper.setProps({ copiedAll: true });
 
     expect(wrapper.get('.copy-hint').text()).toBe('Скопировано всё');
+  });
+
+  it('renders request and summary as two independently collapsed system events', async () => {
+    const request = mount(ChatMessageBubble, {
+      props: { message: handoffMessage(20, 'user', 'handoff_request', 'Internal request'), index: 0 },
+    });
+    const summary = mount(ChatMessageBubble, {
+      props: { message: handoffMessage(21, 'assistant', 'handoff_summary', 'Transfer summary'), index: 1 },
+    });
+
+    const requestToggle = request.get('.handoff-system-event__toggle');
+    const summaryToggle = summary.get('.handoff-system-event__toggle');
+
+    expect(requestToggle.text()).toContain('Handoff to a new chat requested');
+    expect(summaryToggle.text()).toContain('Handoff summary prepared');
+    expect(requestToggle.attributes('aria-expanded')).toBe('false');
+    expect(summaryToggle.attributes('aria-expanded')).toBe('false');
+    expect(request.get('.message-expanded-body').attributes('style')).toContain('display: none');
+    expect(summary.get('.message-expanded-body').attributes('style')).toContain('display: none');
+
+    await requestToggle.trigger('click');
+
+    expect(requestToggle.attributes('aria-expanded')).toBe('true');
+    expect(request.get('.message-expanded-body').attributes('style')).not.toContain('display: none');
+    expect(request.get('.message-content').text()).toContain('Internal request');
+    expect(summaryToggle.attributes('aria-expanded')).toBe('false');
+  });
+
+  it.each([
+    ['generating', 'Preparing handoff summary…'],
+    ['error', 'Handoff failed'],
+    ['canceled', 'Handoff canceled'],
+  ] as const)('shows the %s summary status in the compact row', (status, label) => {
+    const message = handoffMessage(22, 'assistant', 'handoff_summary', '', status);
+    if (status === 'error') message.error_detail = 'Provider error';
+
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message, index: 0 },
+    });
+
+    expect(wrapper.get('.handoff-system-event__toggle').text()).toContain(label);
+    expect(wrapper.get('.handoff-system-event__toggle').attributes('aria-expanded')).toBe('false');
+  });
+
+  it('treats an empty expected assistant message as a pending handoff summary', () => {
+    const message: ChatBranchMessage = {
+      id: 23,
+      role: 'assistant',
+      status: 'generating',
+      content: { items: [], parts: [], media: [] },
+    };
+
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message, index: 0, expectedHandoffEventKind: 'handoff_summary' },
+    });
+
+    expect(wrapper.get('.handoff-system-event__toggle').text()).toContain('Preparing handoff summary…');
+  });
+
+  it('renders handoff context as an ordinary editable user message', () => {
+    const wrapper = mount(ChatMessageBubble, {
+      props: {
+        message: handoffMessage(24, 'user', 'handoff_context', 'Continue from this context'),
+        index: 0,
+      },
+    });
+
+    expect(wrapper.find('.handoff-system-event__toggle').exists()).toBe(false);
+    expect(wrapper.get('.message-content').text()).toContain('Continue from this context');
+    expect(wrapper.find('[aria-label="Branch from message 1"]').exists()).toBe(true);
+  });
+
+  it('groups handoff items inline inside mixed messages without changing ordinary items', () => {
+    const message: ChatBranchMessage = {
+      id: 25,
+      role: 'user',
+      status: 'done',
+      content: {
+        items: [
+          {
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+            item_type: 'input',
+          },
+          {
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 11,
+            item_sequence: 2,
+            item_type: 'handoff_request',
+          },
+        ],
+        parts: [
+          {
+            content_id: 1,
+            sequence: 1,
+            text: 'Ordinary content',
+            item_type: 'input',
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+          },
+          {
+            content_id: 2,
+            sequence: 1,
+            text: 'Internal request',
+            item_type: 'handoff_request',
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 11,
+            item_sequence: 2,
+          },
+        ],
+        media: [],
+      },
+    };
+
+    const wrapper = mount(ChatMessageBubble, { props: { message, index: 0 } });
+
+    expect(wrapper.find('.handoff-system-event__toggle').exists()).toBe(false);
+    expect(wrapper.get('.message-answer-part').text()).toContain('Ordinary content');
+    expect(wrapper.get('.handoff-inline-event').attributes('open')).toBeUndefined();
+    expect(wrapper.get('.handoff-inline-event > summary').text()).toBe('Handoff request');
+    expect(wrapper.get('.handoff-inline-event__content').text()).toContain('Internal request');
+  });
+
+  it('keeps only read-only actions for messages containing handoff events', async () => {
+    const message = handoffMessage(26, 'assistant', 'handoff_summary', 'Transfer summary', 'error');
+    message.working = { step_count: 1, completed_step_duration_ms: 0 };
+    message.usage = { total: { input_tokens: 10 } };
+
+    const wrapper = mount(ChatMessageBubble, {
+      attachTo: document.body,
+      props: {
+        message,
+        index: 0,
+        canDelete: true,
+      },
+    });
+
+    await wrapper.get('.handoff-system-event__toggle').trigger('click');
+
+    expect(wrapper.find('[aria-label="Copy message 1"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Branch from message 1"]').exists()).toBe(false);
+    expect(wrapper.find('.retry-link').exists()).toBe(false);
+
+    await wrapper.get('[aria-label="More actions for message 1"]').trigger('click');
+
+    const menuText = document.body.querySelector('.message-actions-menu')?.textContent || '';
+    expect(menuText).toContain('Stats');
+    expect(menuText).toContain('Bookmark');
+    expect(menuText).not.toContain('Edit');
+    expect(menuText).not.toContain('Branch to new chat');
+    expect(menuText).not.toContain('Delete');
+
+    wrapper.unmount();
   });
 });

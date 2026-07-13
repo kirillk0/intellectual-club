@@ -50,7 +50,10 @@ defmodule IntellectualClub.Chat.Threads do
       |> Ash.Changeset.for_create(:add_message, params, actor: actor)
       |> Ash.create!()
 
-    _ = persist_message_trace!(message, role, contents, actor)
+    _ =
+      persist_message_trace!(message, role, contents, actor,
+        item_type: Keyword.get(opts, :item_type)
+      )
 
     _chat = set_last_message!(chat, message.id, actor)
     {:ok, message}
@@ -78,7 +81,8 @@ defmodule IntellectualClub.Chat.Threads do
       contents: Keyword.get(opts, :contents),
       llm_configuration_id: Keyword.get(opts, :llm_configuration_id),
       status: Keyword.get(opts, :status, :done),
-      error_detail: Keyword.get(opts, :error_detail)
+      error_detail: Keyword.get(opts, :error_detail),
+      item_type: Keyword.get(opts, :item_type)
     )
   end
 
@@ -691,15 +695,16 @@ defmodule IntellectualClub.Chat.Threads do
   @doc """
   Persists the simple display trace for a user or assistant message.
   """
-  def persist_message_trace!(message, role, contents, actor) do
+  def persist_message_trace!(message, role, contents, actor, opts \\ []) when is_list(opts) do
     item_type =
-      case role do
-        :user -> :input
-        "user" -> :input
-        :assistant -> :answer
-        "assistant" -> :answer
-        _ -> :other
-      end
+      Keyword.get(opts, :item_type) ||
+        case role do
+          :user -> :input
+          "user" -> :input
+          :assistant -> :answer
+          "assistant" -> :answer
+          _ -> :other
+        end
 
     with {:ok, step} <-
            ChatMessageStep

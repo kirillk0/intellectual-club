@@ -240,6 +240,45 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert %DateTime{} = step.finished_at
   end
 
+  test "persist_completed! keeps mixed answer types and counts handoff summary text" do
+    %{user: actor} = user_fixture()
+    assistant_message = create_generating_assistant_message!(actor, "Mixed handoff output")
+
+    step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "demo-model"},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: %{"model" => "demo-model"})
+      |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
+      |> RuntimeTrace.apply_event({:ensure_item, "handoff-summary", :handoff_summary, 2})
+      |> RuntimeTrace.apply_event(
+        {:set_text, "handoff-summary", :handoff_summary, 1, "Transfer summary text"}
+      )
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Ordinary answer"})
+
+    assert %DateTime{} = runtime_step.first_token_at
+    :ok = Persistence.persist_completed!(assistant_message.id, runtime_step)
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    assert message.token_count > 0
+    assert [step] = message.steps
+
+    assert Enum.map(Enum.sort_by(step.items, & &1.sequence), & &1.type) == [
+             :answer,
+             :handoff_summary
+           ]
+  end
+
   test "persist_completed! records durable usage for assistant steps" do
     %{user: actor} = user_fixture()
     provider = create_provider!(actor, "Usage provider")

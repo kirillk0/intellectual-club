@@ -728,7 +728,7 @@ defmodule IntellectualClub.Notifications do
     |> Enum.flat_map(fn step ->
       step.items
       |> List.wrap()
-      |> Enum.filter(&(&1.type == :answer))
+      |> Enum.filter(&(&1.type in [:answer, :handoff_summary]))
       |> Enum.sort_by(&(&1.sequence || 0), :desc)
     end)
     |> Enum.find_value("", &answer_item_text/1)

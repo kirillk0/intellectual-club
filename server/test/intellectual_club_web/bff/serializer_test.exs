@@ -110,6 +110,32 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert_in_delta serialized.tokens_per_second, 10.0, 0.0001
   end
 
+  test "display item and media snapshots keep handoff item identity" do
+    step = %ChatMessageStep{id: 101, sequence: 2}
+    item = %ChatMessageItem{id: 202, sequence: 3, type: :handoff_summary}
+
+    assert Serializer.display_item_snapshot(item, step) == %{
+             step_id: 101,
+             step_sequence: 2,
+             item_id: 202,
+             item_sequence: 3,
+             item_type: "handoff_summary"
+           }
+
+    content = %ChatMessageContent{
+      id: 303,
+      external_id: "content-303",
+      sequence: 4,
+      kind: :media,
+      content_json: %{"media_type" => "image", "url" => "https://example.test/image.png"}
+    }
+
+    snapshot = Serializer.media_content_snapshot(content, item, step)
+    assert snapshot.item_type == "handoff_summary"
+    assert snapshot.item_id == item.id
+    assert snapshot.step_id == step.id
+  end
+
   test "working summary includes completed duration and active step start" do
     step_1_started_at = ~U[2026-04-16 10:00:00.000000Z]
     step_1_finished_at = ~U[2026-04-16 10:00:02.250000Z]

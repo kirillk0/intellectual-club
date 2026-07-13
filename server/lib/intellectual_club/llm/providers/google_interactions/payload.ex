@@ -226,7 +226,9 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   defp trace_steps_from_history_entry(message, opts) do
     case History.message_role(message) do
       "user" ->
-        contents = History.project_contents_for_item_type(message, :input)
+        contents =
+          History.project_contents_for_item_types(message, History.user_input_item_types())
+
         [%{"type" => "user_input", "content" => content_blocks(contents, opts)}]
 
       "assistant" ->
@@ -237,7 +239,8 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
           |> Enum.flat_map(&steps_from_trace_step(&1, opts))
 
         if steps == [] do
-          fallback_text = History.project_text_for_item_type(message, :answer)
+          fallback_text =
+            History.project_text_for_item_types(message, History.assistant_answer_item_types())
 
           if String.trim(fallback_text) == "" do
             []
@@ -286,7 +289,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
           [%{"type" => "thought", "summary" => summary}]
         end
 
-      :answer ->
+      type when type in [:answer, :handoff_summary] ->
         content = content_blocks(History.item_text(item), opts)
 
         if content == [] do

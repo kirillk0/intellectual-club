@@ -48,7 +48,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
                 message_id: message_id,
                 runtime: true,
                 status: status_string(runtime.status),
-                content: Map.get(payload, :content, %{parts: [], media: []}),
+                content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
                 usage: Map.get(payload, :usage, Serializer.usage_summary([])),
                 working: Map.get(payload, :working, Serializer.working_summary([])),
                 token_count: if(message, do: message.token_count, else: nil),
@@ -309,10 +309,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           |> put_status(:unprocessable_entity)
           |> json(%{error: "Cannot edit a generating message."})
         else
-          wanted_type = wanted_item_type(message.role)
-          editable_contents = editable_text_contents(message, wanted_type)
+          wanted_types = wanted_item_types(message.role)
+          editable_contents = editable_text_contents(message, wanted_types)
 
-          editable_media = editable_media_contents(message, media_item_type(message.role))
+          editable_media = editable_media_contents(message, media_item_types(message.role))
           upload_policy = ChatUploadPolicy.load_for_chat(message.chat_id, actor)
 
           with {:ok, text_updates} <-
@@ -473,20 +473,20 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
   end
 
-  defp wanted_item_type(:user), do: :input
-  defp wanted_item_type(:assistant), do: :answer
-  defp wanted_item_type("user"), do: :input
-  defp wanted_item_type("assistant"), do: :answer
-  defp wanted_item_type(_other), do: :other
+  defp wanted_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  defp wanted_item_types(:assistant), do: [:answer, :handoff_summary]
+  defp wanted_item_types("user"), do: [:input, :handoff_request, :handoff_context]
+  defp wanted_item_types("assistant"), do: [:answer, :handoff_summary]
+  defp wanted_item_types(_other), do: [:other]
 
-  defp media_item_type(:user), do: :input
-  defp media_item_type("user"), do: :input
-  defp media_item_type(:assistant), do: :artifact
-  defp media_item_type("assistant"), do: :artifact
-  defp media_item_type(_other), do: :other
+  defp media_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  defp media_item_types("user"), do: [:input, :handoff_request, :handoff_context]
+  defp media_item_types(:assistant), do: [:artifact, :handoff_summary]
+  defp media_item_types("assistant"), do: [:artifact, :handoff_summary]
+  defp media_item_types(_other), do: [:other]
 
-  defp editable_text_contents(message, wanted_type)
-       when is_map(message) and wanted_type in [:input, :answer, :other] do
+  defp editable_text_contents(message, wanted_types)
+       when is_map(message) and is_list(wanted_types) do
     steps = Map.get(message, :steps) || []
 
     steps
@@ -497,7 +497,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       items
       |> Enum.sort_by(&sort_seq/1)
       |> Enum.filter(fn item ->
-        Map.get(item, :type) == wanted_type
+        Map.get(item, :type) in wanted_types
       end)
     end)
     |> Enum.flat_map(fn item ->
@@ -509,8 +509,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     end)
   end
 
-  defp editable_media_contents(message, wanted_type)
-       when is_map(message) and wanted_type in [:input, :artifact, :other] do
+  defp editable_media_contents(message, wanted_types)
+       when is_map(message) and is_list(wanted_types) do
     steps = Map.get(message, :steps) || []
 
     steps
@@ -521,7 +521,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       items
       |> Enum.sort_by(&sort_seq/1)
       |> Enum.filter(fn item ->
-        Map.get(item, :type) == wanted_type
+        Map.get(item, :type) in wanted_types
       end)
     end)
     |> Enum.flat_map(fn item ->
@@ -716,7 +716,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   defp decode_json_list(_other), do: []
 
   defp ensure_media_item!(%ChatMessage{} = message, actor) do
-    item_type = media_item_type(message.role)
+    item_types = media_item_types(message.role)
+    item_type = List.first(item_types) || :other
     steps = (message.steps || []) |> Enum.sort_by(&sort_seq/1)
 
     step =
@@ -726,7 +727,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     existing_item =
       (step.items || [])
       |> Enum.sort_by(&sort_seq/1)
-      |> Enum.find(fn item -> Map.get(item, :type) == item_type end)
+      |> Enum.find(fn item -> Map.get(item, :type) in item_types end)
 
     existing_item ||
       create_message_item!(
@@ -827,7 +828,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp message_primary_text(%ChatMessage{} = message) do
-    wanted_type = wanted_item_type(message.role)
+    wanted_types = wanted_item_types(message.role)
     steps = message.steps || []
 
     steps
@@ -836,7 +837,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       items = Map.get(step, :items) || []
       Enum.sort_by(items, &sort_seq/1)
     end)
-    |> Enum.filter(fn item -> Map.get(item, :type) == wanted_type end)
+    |> Enum.filter(fn item -> Map.get(item, :type) in wanted_types end)
     |> Enum.map(&item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
@@ -885,7 +886,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           message_id: message_id,
           runtime: false,
           status: status_string(message.status),
-          content: Map.get(payload, :content, %{parts: [], media: []}),
+          content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
           usage: Map.get(payload, :usage, Serializer.usage_summary([])),
           working: Map.get(payload, :working, Serializer.working_summary([])),
           token_count: message.token_count,

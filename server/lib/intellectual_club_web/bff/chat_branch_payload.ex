@@ -12,7 +12,15 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   require Ash.Query
 
-  @display_item_types [:input, :steering, :answer, :artifact]
+  @display_item_types [
+    :input,
+    :handoff_request,
+    :handoff_context,
+    :steering,
+    :answer,
+    :handoff_summary,
+    :artifact
+  ]
   @display_content_kinds [:text, :media]
   @chunk_size 500
 
@@ -266,15 +274,16 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   defp display_content_for_message(%ChatMessage{} = message, steps, display) do
     role = atom_to_string(message.role)
 
-    {parts, media} =
-      Enum.reduce(steps, {[], []}, fn step, {parts_acc, media_acc} ->
+    {items, parts, media} =
+      Enum.reduce(steps, {[], [], []}, fn step, {items_acc, parts_acc, media_acc} ->
         items =
           display
           |> Map.get(:items_by_step_id, %{})
           |> Map.get(step.id, [])
           |> sort_by_sequence()
 
-        Enum.reduce(items, {parts_acc, media_acc}, fn item, {parts_acc, media_acc} ->
+        Enum.reduce(items, {items_acc, parts_acc, media_acc}, fn item,
+                                                                 {items_acc, parts_acc, media_acc} ->
           contents =
             display
             |> Map.get(:contents_by_item_id, %{})
@@ -307,14 +316,21 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
               media_acc
             end
 
-          {parts_acc, media_acc}
+          items_acc =
+            if display_item_for_role?(item, role) do
+              items_acc ++ [Serializer.display_item_snapshot(item, step)]
+            else
+              items_acc
+            end
+
+          {items_acc, parts_acc, media_acc}
         end)
       end)
 
-    %{parts: parts, media: media}
+    %{items: items, parts: parts, media: media}
   end
 
-  defp runtime_content_for_message(_message, nil), do: %{parts: [], media: []}
+  defp runtime_content_for_message(_message, nil), do: %{items: [], parts: [], media: []}
 
   defp runtime_content_for_message(%ChatMessage{} = message, runtime_step)
        when is_map(runtime_step) do
@@ -329,8 +345,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       |> List.wrap()
       |> sort_by_sequence()
 
-    {parts, media} =
-      Enum.reduce(items, {[], []}, fn item, {parts_acc, media_acc} ->
+    {item_descriptors, parts, media} =
+      Enum.reduce(items, {[], [], []}, fn item, {items_acc, parts_acc, media_acc} ->
         contents =
           item
           |> map_get(:contents, "contents", [])
@@ -381,7 +397,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
                   step_id: step_id,
                   step_sequence: step_sequence,
                   item_id: item_id,
-                  item_sequence: item_sequence
+                  item_sequence: item_sequence,
+                  item_type: item_type
                 })
               end)
               |> Enum.filter(&(Map.get(&1, :media) != nil))
@@ -391,17 +408,34 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
             media_acc
           end
 
-        {parts_acc, media_acc}
+        items_acc =
+          if display_item_for_role?(item_type, role) do
+            items_acc ++
+              [
+                %{
+                  step_id: step_id,
+                  step_sequence: step_sequence,
+                  item_id: item_id,
+                  item_sequence: item_sequence,
+                  item_type: item_type
+                }
+              ]
+          else
+            items_acc
+          end
+
+        {items_acc, parts_acc, media_acc}
       end)
 
-    %{parts: parts, media: media}
+    %{items: item_descriptors, parts: parts, media: media}
   end
 
-  defp merge_runtime_content(persisted, %{parts: [], media: []}), do: persisted
+  defp merge_runtime_content(persisted, %{items: [], parts: [], media: []}), do: persisted
 
   defp merge_runtime_content(persisted, runtime) do
     runtime_step_sequences =
-      (Map.get(runtime, :parts, []) ++ Map.get(runtime, :media, []))
+      (Map.get(runtime, :items, []) ++
+         Map.get(runtime, :parts, []) ++ Map.get(runtime, :media, []))
       |> Enum.map(&Map.get(&1, :step_sequence))
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
@@ -410,6 +444,12 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       persisted
     else
       %{
+        items:
+          persisted
+          |> Map.get(:items, [])
+          |> Enum.reject(&MapSet.member?(runtime_step_sequences, Map.get(&1, :step_sequence)))
+          |> Kernel.++(Map.get(runtime, :items, []))
+          |> sort_by_part_sequence(),
         parts:
           persisted
           |> Map.get(:parts, [])
@@ -501,19 +541,28 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   defp text_item_for_role?(%ChatMessageItem{} = item, role),
     do: text_item_for_role?(item.type, role)
 
-  defp text_item_for_role?(item_type, "user"), do: atom_to_string(item_type) == "input"
+  defp text_item_for_role?(item_type, "user"),
+    do: atom_to_string(item_type) in ["input", "handoff_request", "handoff_context"]
 
   defp text_item_for_role?(item_type, "assistant"),
-    do: atom_to_string(item_type) in ["answer", "steering"]
+    do: atom_to_string(item_type) in ["answer", "handoff_summary", "steering"]
 
   defp text_item_for_role?(_item_type, _role), do: false
 
   defp media_item_for_role?(%ChatMessageItem{} = item, role),
     do: media_item_for_role?(item.type, role)
 
-  defp media_item_for_role?(item_type, "user"), do: atom_to_string(item_type) == "input"
-  defp media_item_for_role?(item_type, "assistant"), do: atom_to_string(item_type) == "artifact"
+  defp media_item_for_role?(item_type, "user"),
+    do: atom_to_string(item_type) in ["input", "handoff_request", "handoff_context"]
+
+  defp media_item_for_role?(item_type, "assistant"),
+    do: atom_to_string(item_type) in ["handoff_summary", "artifact"]
+
   defp media_item_for_role?(_item_type, _role), do: false
+
+  defp display_item_for_role?(item_type, role) do
+    text_item_for_role?(item_type, role) or media_item_for_role?(item_type, role)
+  end
 
   defp normalize_runtime_content_media(content) when is_map(content) do
     %{

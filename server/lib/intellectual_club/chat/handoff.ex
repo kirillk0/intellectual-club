@@ -58,6 +58,7 @@ defmodule IntellectualClub.Chat.Handoff do
            Threads.add_message(source, :user, handoff_prompt,
              actor: actor,
              parent_id: source.last_message_id,
+             item_type: :handoff_request,
              status: :done
            ) do
       {:ok, prompt_message}
@@ -147,6 +148,7 @@ defmodule IntellectualClub.Chat.Handoff do
           actor: actor,
           parent_id: nil,
           contents: contents,
+          item_type: :handoff_context,
           status: :done
         )
 
@@ -264,9 +266,15 @@ defmodule IntellectualClub.Chat.Handoff do
   defp normalize_source_message_id(_message_id, %Chat{last_message_id: id}), do: id
 
   defp summary_from_message(%ChatMessage{} = message) do
-    message
-    |> History.project_text_for_item_type(:answer)
-    |> normalize_summary()
+    summary =
+      message
+      |> History.project_text_for_item_type(:handoff_summary)
+      |> case do
+        value when is_binary(value) and value != "" -> value
+        _other -> History.project_text_for_item_type(message, :answer)
+      end
+
+    normalize_summary(summary)
   end
 
   defp unwrap_transaction({:ok, %{chat: %Chat{}} = result}), do: {:ok, result}

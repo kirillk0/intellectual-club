@@ -17,6 +17,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag}
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
@@ -25,6 +26,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClubWeb.Bff.ChatBranchPayload
 
   test "GET /api/bff/chat-state/:id returns lean content for markdown user message", %{
     conn: conn
@@ -148,6 +150,101 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       assert assistant["status"] == Atom.to_string(status)
       assert partial_text in all_text_contents(assistant)
     end
+  end
+
+  test "lean content describes mixed and empty persisted display items", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hi", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :add_message,
+        %{
+          chat_id: chat.id,
+          role: :assistant,
+          parent_id: user_message.id,
+          status: :done,
+          token_count: 3
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    step = create_chat_message_step!(assistant_message.id, 1, :done, actor)
+    answer = create_chat_message_item!(step.id, 1, :answer, actor)
+    _answer_content = create_chat_message_text_content!(answer.id, 1, "Ordinary answer", actor)
+    _empty_summary = create_chat_message_item!(step.id, 2, :handoff_summary, actor)
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-state/#{chat.id}")
+      |> json_response(200)
+
+    assistant = Enum.find(payload["branch"] || [], &(&1["id"] == assistant_message.id))
+
+    assert Enum.map(assistant["content"]["items"], & &1["item_type"]) == [
+             "answer",
+             "handoff_summary"
+           ]
+
+    assert Enum.all?(assistant["content"]["items"], fn item ->
+             Enum.all?(
+               ["step_id", "step_sequence", "item_id", "item_sequence", "item_type"],
+               &Map.has_key?(item, &1)
+             )
+           end)
+
+    assert Enum.map(assistant["content"]["parts"], & &1["text"]) == ["Ordinary answer"]
+  end
+
+  test "lean runtime content describes an empty handoff summary item" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hi", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    runtime_step =
+      RuntimeTrace.new_step(sequence: 1)
+      |> RuntimeTrace.apply_event({:ensure_item, "summary", :handoff_summary, 1})
+      |> RuntimeTrace.snapshot()
+
+    payload =
+      ChatBranchPayload.message(assistant_message, actor,
+        runtime_steps_by_message_id: %{assistant_message.id => runtime_step}
+      )
+
+    assert payload.content.parts == []
+
+    assert [
+             %{
+               step_id: -1,
+               step_sequence: 1,
+               item_id: -101,
+               item_sequence: 1,
+               item_type: "handoff_summary"
+             }
+           ] = payload.content.items
   end
 
   test "GET /api/bff/chat-state/:id includes retry error diagnostics in working summary", %{

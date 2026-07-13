@@ -147,6 +147,7 @@
                 :fork-relations="vm.positionedForkRelationsForMessage(msg.id)"
                 :can-delete="vm.canDeleteMessage(msg, idx)"
                 :delete-title="vm.deleteMessageTitle(msg, idx)"
+                :expected-handoff-event-kind="expectedHandoffEventKind(msg)"
                 :register-ref="(el) => vm.setMessageRef(msg.id, el)"
                 @toggle-working="vm.toggleWorking(msg.id)"
                 @working-step-select="(stepId) => vm.selectWorkingStep(msg.id, stepId)"
@@ -617,6 +618,11 @@ import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue'
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';
 import ChatLibrarySidebar from '@/features/chat/components/ChatLibrarySidebar.vue';
 import {
+  chatMessageDisplayItems,
+  chatMessageHandoffSystemEventKind,
+  type HandoffSystemEventKind,
+} from '@/features/chat/model/chatMessageContent';
+import {
   clipboardHasStringContent,
   describePendingFileUploadStatus,
   extractClipboardImageFiles,
@@ -626,13 +632,25 @@ import {
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import { translate } from '@/i18n';
-import type { ChatRelationSummary } from '@/types/api';
+import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 
 const vm = reactive(useChatViewModel());
 const route = useRoute();
 const router = useRouter();
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const messageTreeOpen = ref(false);
+
+const expectedHandoffEventKind = (
+  message: ChatBranchMessage
+): HandoffSystemEventKind | null => {
+  if (message.role !== 'assistant' || chatMessageDisplayItems(message).length > 0) return null;
+  if (!['generating', 'error', 'canceled'].includes(message.status)) return null;
+
+  const parent = vm.branch.find((candidate) => candidate.id === message.parent_id);
+  return parent && chatMessageHandoffSystemEventKind(parent) === 'handoff_request'
+    ? 'handoff_summary'
+    : null;
+};
 
 const FOCUS_COMPOSER_QUERY_PARAM = 'focusComposer';
 type TemplateRefValue = Element | ComponentPublicInstance | null;

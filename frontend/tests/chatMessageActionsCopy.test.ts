@@ -12,6 +12,7 @@ const message: ChatBranchMessage = {
   role: 'assistant',
   status: 'done',
   content: {
+    items: [],
     parts: [
       {
         content_id: 1,

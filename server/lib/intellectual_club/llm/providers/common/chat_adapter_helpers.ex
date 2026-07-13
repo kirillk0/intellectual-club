@@ -179,7 +179,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
           |> Enum.join("")
 
         _other ->
-          RuntimeTrace.text_for_item_type(runtime_step, :answer)
+          RuntimeTrace.text_for_item_types(runtime_step, [:answer, :handoff_summary])
       end
 
     message = %{

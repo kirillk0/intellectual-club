@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Previews
+  alias IntellectualClub.Chat.Search
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -95,6 +96,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     messages = messages_for_chat!(target.id, actor)
     assert Enum.map(messages, & &1.id) == [summary_message.id]
     assert hd(messages).role == :user
+    assert message_item_types(hd(messages)) == [:handoff_context]
 
     handoff_text = message_text(hd(messages))
     assert String.starts_with?(handoff_text, "Conversation continued")
@@ -122,6 +124,31 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
              chat_tool_bindings!(target.id, actor)
 
     assert tool_id == tool.id
+  end
+
+  test "manual handoff completion accepts a legacy answer item" do
+    %{user: actor} = user_fixture()
+    source = create_chat!(actor, "Source chat")
+
+    {:ok, source_message} =
+      Threads.add_message_to_end(source, :user, "Current work", actor: actor)
+
+    {:ok, legacy_summary} =
+      Threads.add_message(source, :assistant, "Legacy handoff summary",
+        actor: actor,
+        parent_id: source_message.id
+      )
+
+    assert message_item_types(
+             Ash.load!(legacy_summary, [steps: [items: [:contents]]], actor: actor)
+           ) == [:answer]
+
+    assert {:ok, %{chat: target}} =
+             Handoff.complete_manual_generation(legacy_summary.id, actor)
+
+    assert [context_message] = messages_for_chat!(target.id, actor)
+    assert message_item_types(context_message) == [:handoff_context]
+    assert String.contains?(message_text(context_message), "Legacy handoff summary")
   end
 
   test "POST /api/bff/chat-generation/:id/handoff persists summary as assistant message and creates child chat",
@@ -173,8 +200,16 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert List.last(payload["branch"])["role"] == "assistant"
     assert Enum.at(payload["branch"], -2)["role"] == "user"
 
+    assert [
+             %{"item_type" => "handoff_request"}
+           ] = Enum.at(payload["branch"], -2)["content"]["items"]
+
     generation_payload = wait_for_generation_to_finish(conn, generation_message_id)
     assert generation_payload["status"] == "done"
+
+    assert Enum.any?(generation_payload["content"]["items"], fn item ->
+             item["item_type"] == "handoff_summary"
+           end)
 
     [original_message, handoff_prompt_message, summary_message] =
       messages_for_chat!(source.id, actor)
@@ -183,6 +218,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert handoff_prompt_message.parent_id == source_message.id
     assert handoff_prompt_message.role == :user
     assert handoff_prompt_message.status == :done
+    assert message_item_types(handoff_prompt_message) == [:handoff_request]
 
     assert String.contains?(
              message_text(handoff_prompt_message),
@@ -193,7 +229,13 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert summary_message.role == :assistant
     assert summary_message.status == :done
     assert summary_message.id == generation_message_id
+    assert :handoff_summary in message_item_types(summary_message)
+    refute :answer in message_item_types(summary_message)
     assert message_text(summary_message) == "Manual handoff summary."
+    assert Previews.message_preview_text(summary_message) == "Manual handoff summary."
+
+    search_hits = Search.search_messages_in_chat(source.id, "Manual handoff summary", actor)
+    assert Enum.any?(search_hits.active, &(&1.id == summary_message.id))
 
     source_conn =
       get(
@@ -223,6 +265,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert length(target_messages) == 1
     assert hd(target_messages).role == :user
     assert hd(target_messages).status == :done
+    assert message_item_types(hd(target_messages)) == [:handoff_context]
 
     target_text = message_text(hd(target_messages))
     assert String.starts_with?(target_text, "Conversation continued")
@@ -1215,6 +1258,15 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
   defp message_text(%ChatMessage{} = message) do
     Previews.message_preview_text(message)
+  end
+
+  defp message_item_types(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.map(& &1.type)
   end
 
   defp tool_result_texts(%ChatMessage{} = message) do

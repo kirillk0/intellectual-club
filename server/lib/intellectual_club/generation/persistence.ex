@@ -21,6 +21,7 @@ defmodule IntellectualClub.Generation.Persistence do
   require Ash.Query
 
   @opaque_sequence 10_000
+  @assistant_answer_item_types [:answer, :handoff_summary]
   @tool_result_sequence_base 1_000_000
   @tool_result_sequence_stride 1_000
   @steering_sequence_base 2_000_000_000
@@ -107,7 +108,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :done, actor)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+      answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
       message_id
@@ -140,7 +141,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = load_step_with_items!(step_id, actor)
-      answer_text = text_for_item_type(step, :answer)
+      answer_text = text_for_item_types(step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
       message_id
@@ -167,7 +168,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :canceled, actor)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+      answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
       message_id
@@ -202,7 +203,7 @@ defmodule IntellectualClub.Generation.Persistence do
       ensure_step_belongs_to_message!(step, message_id)
 
       now = DateTime.utc_now()
-      answer_text = text_for_item_type(step, :answer)
+      answer_text = text_for_item_types(step, @assistant_answer_item_types)
 
       message_id
       |> load_message!(actor)
@@ -227,7 +228,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :error, actor)
-      answer_text = RuntimeTrace.text_for_item_type(runtime_step, :answer)
+      answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
       message_id
@@ -269,7 +270,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
       maybe_create_error_item!(step, error_text, actor)
       step = load_step_with_items!(step_id, actor)
-      answer_text = text_for_item_type(step, :answer)
+      answer_text = text_for_item_types(step, @assistant_answer_item_types)
 
       message_id
       |> load_message!(actor)
@@ -1803,10 +1804,10 @@ defmodule IntellectualClub.Generation.Persistence do
     end
   end
 
-  defp text_for_item_type(%ChatMessageStep{} = step, item_type) when is_atom(item_type) do
+  defp text_for_item_types(%ChatMessageStep{} = step, item_types) when is_list(item_types) do
     step
     |> ordered_items()
-    |> Enum.filter(&(&1.type == item_type))
+    |> Enum.filter(&(&1.type in item_types))
     |> Enum.map(&item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
@@ -1992,9 +1993,12 @@ defmodule IntellectualClub.Generation.Persistence do
   defp normalize_item_type(value)
        when value in [
               :input,
+              :handoff_request,
+              :handoff_context,
               :steering,
               :reasoning,
               :answer,
+              :handoff_summary,
               :tool_call,
               :tool_result,
               :artifact,
@@ -2006,9 +2010,12 @@ defmodule IntellectualClub.Generation.Persistence do
   defp normalize_item_type(value) when is_binary(value) do
     case value do
       "input" -> :input
+      "handoff_request" -> :handoff_request
+      "handoff_context" -> :handoff_context
       "steering" -> :steering
       "reasoning" -> :reasoning
       "answer" -> :answer
+      "handoff_summary" -> :handoff_summary
       "tool_call" -> :tool_call
       "tool_result" -> :tool_result
       "artifact" -> :artifact

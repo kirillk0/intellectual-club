@@ -22,7 +22,13 @@ defmodule IntellectualClub.Chat.Search do
   @snippet_radius 240
   @snippet_preview_limit @snippet_radius * 2
   @trace_read_chunk_size 200
-  @searchable_trace_item_types [:input, :answer]
+  @searchable_trace_item_types [
+    :input,
+    :handoff_request,
+    :handoff_context,
+    :answer,
+    :handoff_summary
+  ]
 
   @type bot_filter :: nil | :none | integer()
   @type content_search :: {:contains, String.t()}
@@ -283,7 +289,7 @@ defmodule IntellectualClub.Chat.Search do
         steps,
         exists(
           items,
-          (type == :input or type == :answer) and
+          type in [:input, :handoff_request, :handoff_context, :answer, :handoff_summary] and
             exists(contents, kind == :text and contains(content_text, ^term))
         )
       )
@@ -520,18 +526,18 @@ defmodule IntellectualClub.Chat.Search do
 
   defp wanted_trace_item_type(message) do
     case Map.get(message, :role) do
-      :user -> :input
-      "user" -> :input
-      :assistant -> :answer
-      "assistant" -> :answer
-      _ -> nil
+      :user -> [:input, :handoff_request, :handoff_context]
+      "user" -> [:input, :handoff_request, :handoff_context]
+      :assistant -> [:answer, :handoff_summary]
+      "assistant" -> [:answer, :handoff_summary]
+      _ -> []
     end
   end
 
-  defp trace_item_type_matches?(_item, nil), do: false
+  defp trace_item_type_matches?(_item, []), do: false
 
-  defp trace_item_type_matches?(item, wanted_type) do
-    Map.get(item, :type) == wanted_type
+  defp trace_item_type_matches?(item, wanted_types) when is_list(wanted_types) do
+    Map.get(item, :type) in wanted_types
   end
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
@@ -664,7 +670,7 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
-  defp preferred_message_candidate?(message), do: wanted_trace_item_type(message) == :input
+  defp preferred_message_candidate?(message), do: :input in wanted_trace_item_type(message)
 
   defp select_message_candidates(candidates_by_chat) when is_map(candidates_by_chat) do
     Map.new(candidates_by_chat, fn {chat_id, candidate} ->

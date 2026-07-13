@@ -258,6 +258,11 @@ export type ActiveToolBinding = {
 
 export type ChatMessageContent = {
   id: number;
+  step_id?: number | null;
+  step_sequence?: number | null;
+  item_id?: number | null;
+  item_sequence?: number | null;
+  item_type?: string | null;
   external_id?: string | null;
   sequence: number;
   kind: 'text' | 'opaque' | 'media' | string;
@@ -272,6 +277,14 @@ export type ChatMessageContent = {
     sha256: string;
     is_image: boolean;
   } | null;
+};
+
+export type ChatMessageDisplayItem = {
+  step_id?: number | null;
+  step_sequence?: number | null;
+  item_id?: number | null;
+  item_sequence?: number | null;
+  item_type: string;
 };
 
 export type ChatMessageItem = {
@@ -337,6 +350,7 @@ export type ChatMessageWorkingSummary = {
 };
 
 export type ChatMessageContentSnapshot = {
+  items: ChatMessageDisplayItem[];
   parts: ChatMessageContentPart[];
   media: ChatMessageContent[];
 };
