@@ -160,7 +160,10 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
         emit.({:trace, {:ensure_item, item_id, item_type, idx + 1}})
 
         emit_item_final_contents(item_id, item_type, item_map, emit)
-        emit.({:trace, {:set_opaque, item_id, item_type, @opaque_sequence, item_map}})
+
+        if item_type in [:tool_call, :tool_result, :reasoning] do
+          emit.({:trace, {:set_opaque, item_id, item_type, @opaque_sequence, item_map}})
+        end
 
         state
         |> put_output_item(idx, item_map)

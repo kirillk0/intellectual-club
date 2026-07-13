@@ -2450,7 +2450,7 @@ defmodule IntellectualClub.Generation.ContextTest do
            ]
   end
 
-  test "builds responses history from answer and tool items while excluding reasoning" do
+  test "builds responses history from canonical answer and tool items while excluding reasoning" do
     %{user: actor} = user_fixture()
 
     provider =
@@ -2561,7 +2561,27 @@ defmodule IntellectualClub.Generation.ContextTest do
         actor
       )
 
-    _ = create_item_with_text!(step.id, 4, :answer, "It is 18.5°C in Paris.", actor)
+    _ =
+      create_item_with_text_and_opaque!(
+        step.id,
+        4,
+        :answer,
+        "It is 18.5°C in Paris.",
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "completed",
+          "phase" => "commentary",
+          "content" => [
+            %{
+              "type" => "output_text",
+              "text" => "The stale answer before editing.",
+              "annotations" => []
+            }
+          ]
+        },
+        actor
+      )
 
     {:ok, _user_2} = Threads.add_message_to_end(chat, :user, "And tomorrow?", actor: actor)
 

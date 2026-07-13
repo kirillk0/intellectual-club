@@ -7,7 +7,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   alias IntellectualClub.Generation.History
 
   @responses_item_types MapSet.new([
-                          "message",
                           "reasoning",
                           "function_call",
                           "function_call_output"
@@ -53,7 +52,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
 
           valid_tool_call_refs = valid_tool_call_refs(items)
           indexed_items = Enum.with_index(items)
-          last_answer_index = last_answer_item_index(indexed_items)
+          last_answer_index = last_non_empty_answer_item_index(indexed_items)
 
           out =
             Enum.flat_map(indexed_items, fn {item, item_index} ->
@@ -62,23 +61,17 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
                   []
 
                 :answer ->
-                  case item_for_answer(item) do
-                    nil ->
-                      text = History.item_text(item)
+                  text = History.item_text(item)
 
-                      if String.trim(text) == "" do
-                        []
-                      else
-                        [
-                          synthesized_answer_item(
-                            text,
-                            fallback_answer_phase(item_index, last_answer_index)
-                          )
-                        ]
-                      end
-
-                    %{} = map ->
-                      [map]
+                  if String.trim(text) == "" do
+                    []
+                  else
+                    [
+                      synthesized_answer_item(
+                        text,
+                        answer_phase(item_index, last_answer_index)
+                      )
+                    ]
                   end
 
                 :tool_call ->
@@ -130,9 +123,11 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
           if out == [] do
             fallback_text = History.project_text_for_item_type(message, :answer)
 
-            [
-              synthesized_answer_item(fallback_text, "final_answer")
-            ]
+            if String.trim(fallback_text) == "" do
+              []
+            else
+              [synthesized_answer_item(fallback_text, "final_answer")]
+            end
           else
             out
           end
@@ -164,20 +159,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
             }
           ]
       end
-    end
-  end
-
-  defp item_for_answer(item) do
-    case extract_responses_item(item) do
-      %{} = responses_item ->
-        case get_any(responses_item, [{"type", :type}]) do
-          "message" -> sanitize_item(responses_item)
-          "reasoning" -> nil
-          _other -> nil
-        end
-
-      _other ->
-        nil
     end
   end
 
@@ -376,21 +357,24 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
     call_id != "" and not MapSet.member?(valid_tool_call_ids, call_id)
   end
 
-  defp last_answer_item_index(indexed_items) when is_list(indexed_items) do
+  defp last_non_empty_answer_item_index(indexed_items) when is_list(indexed_items) do
     Enum.reduce(indexed_items, nil, fn {item, index}, acc ->
       case History.item_type(item) do
-        :answer -> index
-        _other -> acc
+        :answer ->
+          if item |> History.item_text() |> String.trim() == "", do: acc, else: index
+
+        _other ->
+          acc
       end
     end)
   end
 
-  defp fallback_answer_phase(item_index, last_answer_index)
+  defp answer_phase(item_index, last_answer_index)
        when is_integer(item_index) and is_integer(last_answer_index) do
     if item_index == last_answer_index, do: "final_answer", else: "commentary"
   end
 
-  defp fallback_answer_phase(_item_index, _last_answer_index), do: "final_answer"
+  defp answer_phase(_item_index, _last_answer_index), do: "final_answer"
 
   defp synthesized_answer_item(text, phase) do
     %{

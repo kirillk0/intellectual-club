@@ -12,6 +12,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
+  alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
 
   test "PATCH /api/bff/chat-messages/:id updates single answer content via legacy content field",
@@ -37,11 +38,40 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
     before_update =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [:finished_at]]
+        load: [steps: [:finished_at, items: [:contents]]]
       )
 
     before_finished_at = before_update.finished_at
     [before_step] = Enum.sort_by(before_update.steps || [], & &1.sequence)
+
+    answer_item = Enum.find(before_step.items || [], &(&1.type == :answer))
+
+    _legacy_opaque =
+      ChatMessageContent
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_item_id: answer_item.id,
+          sequence: 10_000,
+          kind: :opaque,
+          content_json: %{
+            "id" => "msg_legacy",
+            "type" => "message",
+            "role" => "assistant",
+            "status" => "completed",
+            "phase" => "commentary",
+            "content" => [
+              %{
+                "type" => "output_text",
+                "text" => "Old answer",
+                "annotations" => []
+              }
+            ]
+          }
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
 
     conn =
       patch(conn, ~p"/api/bff/chat-messages/#{assistant_message.id}", %{
@@ -56,13 +86,24 @@ defmodule IntellectualClubWeb.Bff.ChatMessageUpdateTest do
     after_update =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [:finished_at]]
+        load: [steps: [:finished_at, items: [:contents]]]
       )
 
     [after_step] = Enum.sort_by(after_update.steps || [], & &1.sequence)
 
     assert after_update.finished_at == before_finished_at
     assert after_step.finished_at == before_step.finished_at
+
+    updated_answer_item = Enum.find(after_step.items || [], &(&1.type == :answer))
+    legacy_opaque = Enum.find(updated_answer_item.contents || [], &(&1.kind == :opaque))
+
+    assert get_in(legacy_opaque.content_json, ["content", Access.at(0), "text"]) == "Old answer"
+
+    assert [projected_answer] = HistoryInput.build_input_items([after_update])
+    assert projected_answer["phase"] == "final_answer"
+
+    assert get_in(projected_answer, ["content", Access.at(0), "text"]) == "New answer"
+    refute Map.has_key?(projected_answer, "id")
   end
 
   test "PATCH /api/bff/chat-messages/:id updates multiple answer contents via contents payload",

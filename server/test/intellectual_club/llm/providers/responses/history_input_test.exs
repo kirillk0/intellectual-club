@@ -3,7 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
 
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
 
-  test "synthesizes commentary and final_answer phases for fallback assistant answers" do
+  test "synthesizes commentary and final_answer phases for canonical assistant answers" do
     history = [
       %{
         role: :assistant,
@@ -114,7 +114,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
            ]
   end
 
-  test "preserves phase from stored responses assistant messages" do
+  test "ignores legacy response messages and derives answer text and phase from canonical history" do
     history = [
       %{
         role: :assistant,
@@ -126,7 +126,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                 sequence: 1,
                 type: :answer,
                 contents: [
-                  %{sequence: 1, kind: :text, content_text: "Checking."},
+                  %{sequence: 1, kind: :text, content_text: "Edited checking."},
                   %{
                     sequence: 2,
                     kind: :opaque,
@@ -135,7 +135,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                         "type" => "message",
                         "role" => "assistant",
                         "status" => "completed",
-                        "phase" => "commentary",
+                        "phase" => "final_answer",
                         "content" => [
                           %{
                             "type" => "output_text",
@@ -152,24 +152,22 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                 sequence: 2,
                 type: :answer,
                 contents: [
-                  %{sequence: 1, kind: :text, content_text: "Done."},
+                  %{sequence: 1, kind: :text, content_text: "Edited done."},
                   %{
                     sequence: 2,
                     kind: :opaque,
                     content_json: %{
-                      "responses_item" => %{
-                        "type" => "message",
-                        "role" => "assistant",
-                        "status" => "completed",
-                        "phase" => "final_answer",
-                        "content" => [
-                          %{
-                            "type" => "output_text",
-                            "text" => "Done.",
-                            "annotations" => []
-                          }
-                        ]
-                      }
+                      "type" => "message",
+                      "role" => "assistant",
+                      "status" => "completed",
+                      "phase" => "commentary",
+                      "content" => [
+                        %{
+                          "type" => "output_text",
+                          "text" => "Done.",
+                          "annotations" => []
+                        }
+                      ]
                     }
                   }
                 ]
@@ -189,7 +187,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                "content" => [
                  %{
                    "type" => "output_text",
-                   "text" => "Checking.",
+                   "text" => "Edited checking.",
                    "annotations" => []
                  }
                ]
@@ -202,12 +200,111 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                "content" => [
                  %{
                    "type" => "output_text",
-                   "text" => "Done.",
+                   "text" => "Edited done.",
                    "annotations" => []
                  }
                ]
              }
            ]
+  end
+
+  test "uses the last non-empty canonical answer as final_answer" do
+    history = [
+      %{
+        role: :assistant,
+        steps: [
+          %{
+            sequence: 1,
+            items: [
+              %{
+                sequence: 1,
+                type: :answer,
+                contents: [%{sequence: 1, kind: :text, content_text: "Visible answer."}]
+              },
+              %{
+                sequence: 2,
+                type: :answer,
+                contents: [
+                  %{sequence: 1, kind: :text, content_text: "  \n"},
+                  %{
+                    sequence: 2,
+                    kind: :opaque,
+                    content_json: %{
+                      "type" => "message",
+                      "role" => "assistant",
+                      "phase" => "final_answer",
+                      "content" => [
+                        %{
+                          "type" => "output_text",
+                          "text" => "Stale answer.",
+                          "annotations" => []
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+
+    assert HistoryInput.build_input_items(history) == [
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "phase" => "final_answer",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "Visible answer.",
+                   "annotations" => []
+                 }
+               ]
+             }
+           ]
+  end
+
+  test "drops assistant history when every canonical answer is empty" do
+    history = [
+      %{
+        role: :assistant,
+        steps: [
+          %{
+            sequence: 1,
+            items: [
+              %{
+                sequence: 1,
+                type: :answer,
+                contents: [
+                  %{sequence: 1, kind: :text, content_text: "  \n"},
+                  %{
+                    sequence: 2,
+                    kind: :opaque,
+                    content_json: %{
+                      "type" => "message",
+                      "role" => "assistant",
+                      "phase" => "final_answer",
+                      "content" => [
+                        %{
+                          "type" => "output_text",
+                          "text" => "Stale answer.",
+                          "annotations" => []
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+
+    assert HistoryInput.build_input_items(history) == []
   end
 
   test "drops orphaned responses tool calls without matching tool outputs" do
@@ -272,7 +369,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInputTest do
                "type" => "message",
                "role" => "assistant",
                "status" => "completed",
-               "phase" => "commentary",
+               "phase" => "final_answer",
                "content" => [
                  %{
                    "type" => "output_text",

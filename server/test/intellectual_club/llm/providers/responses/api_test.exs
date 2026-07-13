@@ -194,6 +194,10 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
                    "type" => "output_text",
                    "text" => "Full answer.",
                    "annotations" => []
+                 },
+                 %{
+                   "type" => "future_content",
+                   "metadata" => %{"value" => 1}
                  }
                ]
              }
@@ -258,6 +262,21 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       end)
 
     assert RuntimeTrace.text_for_item_type(runtime_step, :answer) == "Full answer."
+
+    answer_contents =
+      runtime_step
+      |> RuntimeTrace.persistable()
+      |> Map.fetch!(:items)
+      |> Enum.find(&(&1.type == "answer"))
+      |> Map.fetch!(:contents)
+
+    assert Enum.any?(answer_contents, fn content ->
+             content.kind == "opaque" and content.content_json["type"] == "future_content"
+           end)
+
+    refute Enum.any?(answer_contents, fn content ->
+             content.kind == "opaque" and content.content_json["type"] == "message"
+           end)
   end
 
   test "marks overloaded streamed provider errors as retryable" do
