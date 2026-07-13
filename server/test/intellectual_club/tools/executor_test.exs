@@ -21,8 +21,8 @@ defmodule IntellectualClub.Tools.ExecutorTest do
           {"tuple" <> <<0>>, "item" <> <<0>>}
         ]
       },
-      media: [%{"filename" => "image" <> <<0>> <> ".png"}],
-      artifacts: [%{"path" => "tmp" <> <<0>> <> "/file.bin"}]
+      media: [%{filename: "image" <> <<0>> <> ".png"}],
+      artifacts: [%{filename: "file" <> <<0>> <> ".bin"}]
     }
 
     sanitized = Executor.sanitize_execution_result(result)
@@ -30,8 +30,8 @@ defmodule IntellectualClub.Tools.ExecutorTest do
     assert sanitized.text == "abcd"
     assert sanitized.raw["stdout"] == "hello"
     assert sanitized.raw["nested"] == [%{"value" => "tail"}, {"tuple", "item"}]
-    assert sanitized.media == [%{"filename" => "image.png"}]
-    assert sanitized.artifacts == [%{"path" => "tmp/file.bin"}]
+    assert sanitized.media == [%{filename: "image.png"}]
+    assert sanitized.artifacts == [%{filename: "file.bin"}]
     refute contains_null_byte?(sanitized)
   end
 
@@ -45,8 +45,8 @@ defmodule IntellectualClub.Tools.ExecutorTest do
         invalid => %{"nested" => "value " <> invalid},
         "list" => [invalid, {"tuple", invalid}]
       },
-      media: [%{"filename" => "image-" <> invalid <> ".png"}],
-      artifacts: [%{"path" => "/tmp/" <> invalid <> ".bin"}]
+      media: [%{filename: "image-" <> invalid <> ".png"}],
+      artifacts: [%{filename: "file-" <> invalid <> ".bin"}]
     }
 
     sanitized = Executor.sanitize_execution_result(result)
@@ -55,9 +55,21 @@ defmodule IntellectualClub.Tools.ExecutorTest do
     assert sanitized.raw["stdout"] == "ÐÂ½"
     assert sanitized.raw["ÐÂ½"] == %{"nested" => "value ÐÂ½"}
     assert sanitized.raw["list"] == ["ÐÂ½", {"tuple", "ÐÂ½"}]
-    assert sanitized.media == [%{"filename" => "image-ÐÂ½.png"}]
-    assert sanitized.artifacts == [%{"path" => "/tmp/ÐÂ½.bin"}]
+    assert sanitized.media == [%{filename: "image-ÐÂ½.png"}]
+    assert sanitized.artifacts == [%{filename: "file-ÐÂ½.bin"}]
     assert utf8_valid?(sanitized)
+  end
+
+  test "tool arguments are converted to a recursive string-key wire map" do
+    tool = %ToolInstance{type: "native-game-tools", config: %{}, secrets: %{}}
+
+    result =
+      Executor.execute_llm_tool(%{"game" => tool}, "game__random_select", %{
+        options: [%{option: "selected", weight: 1}]
+      })
+
+    assert result.text == "Selected option: selected"
+    assert result.raw["selected_option"] == "selected"
   end
 
   test "limited tool calls pass through when a slot is available" do

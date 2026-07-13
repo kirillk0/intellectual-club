@@ -225,7 +225,7 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
   defp parse_legacy_uploads(params) do
     uploads =
       params
-      |> Map.get("files", Map.get(params, :files, []))
+      |> Map.get("files", [])
       |> List.wrap()
 
     if Enum.all?(uploads, &match?(%Plug.Upload{}, &1)) do

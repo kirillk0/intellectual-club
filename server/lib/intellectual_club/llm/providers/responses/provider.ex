@@ -278,7 +278,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp prompt_cache_key_from_source(%{} = source) do
     source
-    |> Map.get(:owner_id, Map.get(source, "owner_id"))
+    |> Map.get(:owner_id)
     |> user_prompt_cache_key()
   end
 
@@ -286,16 +286,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp user_prompt_cache_key(owner_id) when is_integer(owner_id) and owner_id > 0 do
     "intellectual-club:user:#{owner_id}"
-  end
-
-  defp user_prompt_cache_key(owner_id) when is_binary(owner_id) do
-    owner_id = String.trim(owner_id)
-
-    if owner_id == "" do
-      nil
-    else
-      "intellectual-club:user:#{owner_id}"
-    end
   end
 
   defp user_prompt_cache_key(_owner_id), do: nil
@@ -421,7 +411,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   defp result_value(%{} = result, key) when is_atom(key) do
-    Map.get(result, key, Map.get(result, Atom.to_string(key)))
+    Map.get(result, key)
   end
 
   defp result_value(_result, :media_contents), do: []

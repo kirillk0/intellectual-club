@@ -70,12 +70,12 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
   defp normalize_payload_message(%{} = message) do
     role =
       message
-      |> Map.get("role", Map.get(message, :role))
+      |> Map.get("role")
       |> normalize_chat_role()
 
     case role do
       "user" ->
-        content = Map.get(message, "content", Map.get(message, :content))
+        content = Map.get(message, "content")
 
         [
           Map.put(Map.new(message), "role", "user")
@@ -83,7 +83,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
         ]
 
       "assistant" ->
-        content = Map.get(message, "content", Map.get(message, :content))
+        content = Map.get(message, "content")
 
         [
           Map.put(Map.new(message), "role", "assistant")
@@ -91,7 +91,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
         ]
 
       "tool" ->
-        content = Map.get(message, "content", Map.get(message, :content))
+        content = Map.get(message, "content")
 
         [
           Map.put(Map.new(message), "role", "tool")
@@ -200,12 +200,12 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       |> Enum.flat_map(fn {result, idx} ->
         text =
           result
-          |> get_any([{"content", :content}, {"text", :text}])
+          |> get_any(["content", "text"])
           |> to_string()
 
         linked_call_id =
           result
-          |> get_any([{"tool_call_item_id", :tool_call_item_id}])
+          |> get_any(["tool_call_item_id"])
           |> case do
             item_id when is_integer(item_id) -> Map.get(tool_call_ids_by_item_id, item_id)
             _other -> nil
@@ -215,7 +215,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
           [
             linked_call_id,
             result
-            |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+            |> get_any(["tool_call_id", "call_id"])
             |> to_string()
             |> String.trim(),
             Enum.at(tool_call_ids, idx) |> to_string() |> String.trim()
@@ -251,7 +251,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
   defp tool_call_id(call) when is_map(call) do
     call
-    |> get_any([{"id", :id}])
+    |> get_any(["id"])
     |> to_string()
     |> String.trim()
   end
@@ -262,18 +262,18 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     responses_item = extract_responses_item(item)
 
     cond do
-      is_map(responses_item) and get_any(responses_item, [{"type", :type}]) == "function_call" ->
+      is_map(responses_item) and get_any(responses_item, ["type"]) == "function_call" ->
         call_id =
           responses_item
-          |> get_any([{"call_id", :call_id}, {"id", :id}])
+          |> get_any(["call_id", "id"])
           |> to_string()
           |> String.trim()
 
-        name = responses_item |> get_any([{"name", :name}]) |> to_string() |> String.trim()
+        name = responses_item |> get_any(["name"]) |> to_string() |> String.trim()
 
         arguments =
           responses_item
-          |> get_any([{"arguments", :arguments}])
+          |> get_any(["arguments"])
           |> normalize_arguments_json()
 
         if name == "" do
@@ -295,19 +295,19 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
       true ->
         tool_meta = extract_tool_meta(item)
-        raw = tool_meta |> get_any([{"raw", :raw}])
+        raw = tool_meta |> get_any(["raw"])
 
-        if is_map(raw) and is_map(get_any(raw, [{"function", :function}])) do
+        if is_map(raw) and is_map(get_any(raw, ["function"])) do
           call_id =
             raw
-            |> get_any([{"id", :id}])
+            |> get_any(["id"])
             |> to_string()
             |> String.trim()
 
           call_id =
             if call_id == "" do
               tool_meta
-              |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+              |> get_any(["tool_call_id", "call_id"])
               |> to_string()
               |> String.trim()
             else
@@ -322,14 +322,14 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
         else
           call_id =
             tool_meta
-            |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+            |> get_any(["tool_call_id", "call_id"])
             |> to_string()
             |> String.trim()
 
-          name = tool_meta |> get_any([{"name", :name}]) |> to_string() |> String.trim()
+          name = tool_meta |> get_any(["name"]) |> to_string() |> String.trim()
 
           arguments =
-            tool_meta |> get_any([{"arguments", :arguments}]) |> normalize_arguments_json()
+            tool_meta |> get_any(["arguments"]) |> normalize_arguments_json()
 
           if name == "" do
             nil
@@ -375,7 +375,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       case responses_item do
         %{} ->
           responses_item
-          |> get_any([{"call_id", :call_id}])
+          |> get_any(["call_id"])
           |> to_string()
           |> String.trim()
 
@@ -385,7 +385,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       |> case do
         "" ->
           tool_meta
-          |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+          |> get_any(["tool_call_id", "call_id"])
           |> to_string()
           |> String.trim()
 
@@ -405,7 +405,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     item
     |> History.opaque_payloads()
     |> Enum.find_value(fn payload ->
-      responses_item = get_any(payload, [{"responses_item", :responses_item}])
+      responses_item = get_any(payload, ["responses_item"])
 
       cond do
         is_map(responses_item) ->
@@ -414,7 +414,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
         is_map(payload) and
             MapSet.member?(
               @responses_item_types,
-              to_string(get_any(payload, [{"type", :type}]) || "")
+              to_string(get_any(payload, ["type"]) || "")
             ) ->
           Map.new(payload)
 
@@ -428,16 +428,14 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     item
     |> History.opaque_payloads()
     |> Enum.find(%{}, fn payload ->
-      not is_map(get_any(payload, [{"responses_item", :responses_item}])) and
-        (Map.has_key?(payload, "tool_call_id") or Map.has_key?(payload, :tool_call_id) or
-           Map.has_key?(payload, "call_id") or Map.has_key?(payload, :call_id) or
-           Map.has_key?(payload, "raw") or Map.has_key?(payload, :raw) or
-           Map.has_key?(payload, "name") or Map.has_key?(payload, :name))
+      not is_map(get_any(payload, ["responses_item"])) and
+        (Map.has_key?(payload, "tool_call_id") or Map.has_key?(payload, "call_id") or
+           Map.has_key?(payload, "raw") or Map.has_key?(payload, "name"))
     end)
   end
 
   defp responses_output_text(item_map) when is_map(item_map) do
-    output = get_any(item_map, [{"output", :output}])
+    output = get_any(item_map, ["output"])
 
     cond do
       is_binary(output) ->
@@ -458,14 +456,14 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
   end
 
   defp responses_content_part_text(part) when is_map(part) do
-    type = get_any(part, [{"type", :type}])
+    type = get_any(part, ["type"])
 
     cond do
       type in ["output_text", "input_text", "text", "summary_text", "reasoning_text"] ->
-        get_any(part, [{"text", :text}])
+        get_any(part, ["text"])
 
       type == "refusal" ->
-        get_any(part, [{"refusal", :refusal}])
+        get_any(part, ["refusal"])
 
       true ->
         nil
@@ -491,9 +489,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
   defp normalize_arguments_json(other), do: to_string(other)
 
-  defp normalize_chat_role(role) when is_atom(role),
-    do: role |> Atom.to_string() |> normalize_chat_role()
-
   defp normalize_chat_role("user"), do: "user"
   defp normalize_chat_role("assistant"), do: "assistant"
   defp normalize_chat_role("tool"), do: "tool"
@@ -506,9 +501,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)
 
   defp get_any(map, keys) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, fn {string_key, atom_key} ->
-      Map.get(map, string_key, Map.get(map, atom_key))
-    end)
+    Enum.find_value(keys, &Map.get(map, &1))
   end
 
   defp get_any(_map, _keys), do: nil

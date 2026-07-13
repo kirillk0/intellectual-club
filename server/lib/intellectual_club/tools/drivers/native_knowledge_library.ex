@@ -495,7 +495,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   defp configured_tag_id(%{} = cfg) do
-    case parse_optional_positive_integer(Map.get(cfg, "knowledge_tag_id")) do
+    case parse_optional_positive_integer(Map.get(cfg, :knowledge_tag_id)) do
       {:ok, nil} -> {:error, :missing_tag}
       {:ok, tag_id} -> {:ok, tag_id}
       {:error, reason} -> {:error, reason}
@@ -979,7 +979,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     doc_cfg = DocumentReader.config_from_map(cfg)
 
     Map.merge(doc_cfg, %{
-      "knowledge_tag_id" => Map.get(cfg, "knowledge_tag_id"),
       knowledge_tag_id: Map.get(cfg, "knowledge_tag_id"),
       max_context_blocks:
         max(0, read_integer(cfg, "max_context_blocks", @default_max_context_blocks))
@@ -988,7 +987,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
   defp config_raw(cfg) when is_map(cfg) do
     %{
-      "knowledge_tag_id" => Map.get(cfg, :knowledge_tag_id, Map.get(cfg, "knowledge_tag_id")),
+      "knowledge_tag_id" => Map.get(cfg, :knowledge_tag_id),
       "chunk_size_tokens" => cfg.chunk_size_tokens,
       "cache_ttl_seconds" => cfg.cache_ttl_seconds,
       "cache_max_bytes" => cfg.cache_max_bytes,
@@ -1078,16 +1077,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   defp map_get(map, key) when is_map(map) and is_binary(key) do
-    Map.get(map, key) ||
-      case key do
-        "block_id" -> Map.get(map, :block_id)
-        "block_name" -> Map.get(map, :block_name)
-        "knowledge_tag_id" -> Map.get(map, :knowledge_tag_id)
-        "max_context_blocks" -> Map.get(map, :max_context_blocks)
-        "max_results" -> Map.get(map, :max_results)
-        "q" -> Map.get(map, :q)
-        _other -> nil
-      end
+    Map.get(map, key)
   end
 
   defp map_get(_map, _key), do: nil

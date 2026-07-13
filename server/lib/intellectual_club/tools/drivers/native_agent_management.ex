@@ -370,7 +370,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   defp required_summary(args) when is_map(args) do
     args
-    |> Map.get("summary", Map.get(args, :summary, ""))
+    |> Map.get("summary", "")
     |> to_string()
     |> String.trim()
     |> case do
@@ -381,7 +381,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   defp required_task(args) when is_map(args) do
     args
-    |> Map.get("task", Map.get(args, :task, ""))
+    |> Map.get("task", "")
     |> to_string()
     |> String.trim()
     |> case do
@@ -392,7 +392,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   defp required_background_task_id(args) when is_map(args) do
     args
-    |> Map.get("background_task_id", Map.get(args, :background_task_id, ""))
+    |> Map.get("background_task_id", "")
     |> to_string()
     |> String.trim()
     |> case do
@@ -402,7 +402,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   end
 
   defp optional_background_cursor(args) when is_map(args) do
-    case Map.get(args, "cursor", Map.get(args, :cursor)) do
+    case Map.get(args, "cursor") do
       nil -> {:ok, nil}
       cursor when is_binary(cursor) -> {:ok, cursor}
       _other -> {:error, "cursor must be a string"}
@@ -414,7 +414,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   defp required_integer(_value, field), do: {:error, "#{field} is required"}
 
   defp read_sleep_seconds(args) when is_map(args) do
-    case Map.get(args, "seconds", Map.get(args, :seconds)) do
+    case Map.get(args, "seconds") do
       value when is_integer(value) and value >= 0 ->
         {:ok, value, value * 1000}
 
@@ -495,12 +495,12 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         "with the same cursor (or omit it again if it was omitted).\n\n" <>
         "Background task snapshot:\n" <> Jason.encode!(model_snapshot, pretty: true)
 
-    %ExecutionResult{
+    ExecutionResult.normalize(%ExecutionResult{
       text: text,
       raw: %{"background_task" => snapshot, "background_task_request" => request},
       media: List.wrap(media),
       artifacts: List.wrap(artifacts)
-    }
+    })
   end
 
   defp stringify_json(%{} = value) do

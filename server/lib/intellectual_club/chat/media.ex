@@ -20,19 +20,19 @@ defmodule IntellectualClub.Chat.Media do
   def media_descriptor(content) when is_map(content) do
     if media_content?(content) do
       file = file_for_content(content)
-      external_id = map_get(content, :external_id, "external_id")
-      file_external_id = map_get(file, :external_id, "external_id")
-      filename = map_get(file, :filename, "filename") || map_get(content, :filename, "filename")
+      external_id = Map.get(content, :external_id)
+      file_external_id = Map.get(file, :external_id)
+      filename = Map.get(file, :filename) || Map.get(content, :filename)
 
       mime_type =
-        map_get(file, :mime_type, "mime_type") || map_get(content, :mime_type, "mime_type")
+        Map.get(file, :mime_type) || Map.get(content, :mime_type)
 
-      sha256 = map_get(file, :sha256, "sha256") || map_get(content, :sha256, "sha256")
+      sha256 = Map.get(file, :sha256) || Map.get(content, :sha256)
 
       size_bytes =
-        map_get(file, :size_bytes, "size_bytes") || map_get(content, :size_bytes, "size_bytes")
+        Map.get(file, :size_bytes) || Map.get(content, :size_bytes)
 
-      file_id = map_get(content, :file_id, "file_id") || map_get(file, :id, "id")
+      file_id = Map.get(content, :file_id) || Map.get(file, :id)
 
       if blank?(external_id) or blank?(file_external_id) or blank?(filename) or
            blank?(mime_type) or blank?(sha256) do
@@ -87,9 +87,9 @@ defmodule IntellectualClub.Chat.Media do
       |> Enum.filter(&is_map/1)
       |> Enum.sort_by(&sort_seq/1)
       |> Enum.flat_map(fn content ->
-        case normalize_kind(map_get(content, :kind, "kind")) do
+        case Map.get(content, :kind) do
           :text ->
-            text = map_get(content, :content_text, "content_text", "") |> to_string()
+            text = Map.get(content, :content_text, "") |> to_string()
             if text == "", do: [], else: [%{"type" => "text", "text" => text}]
 
           :media ->
@@ -127,9 +127,9 @@ defmodule IntellectualClub.Chat.Media do
     |> Enum.filter(&is_map/1)
     |> Enum.sort_by(&sort_seq/1)
     |> Enum.flat_map(fn content ->
-      case normalize_kind(map_get(content, :kind, "kind")) do
+      case Map.get(content, :kind) do
         :text ->
-          text = map_get(content, :content_text, "content_text", "") |> to_string()
+          text = Map.get(content, :content_text, "") |> to_string()
           if text == "", do: [], else: [%{"type" => text_type, "text" => text}]
 
         :media ->
@@ -189,7 +189,7 @@ defmodule IntellectualClub.Chat.Media do
 
   @spec media_content?(map()) :: boolean()
   def media_content?(content) when is_map(content) do
-    normalize_kind(map_get(content, :kind, "kind")) == :media
+    Map.get(content, :kind) == :media
   end
 
   def media_content?(_other), do: false
@@ -248,44 +248,21 @@ defmodule IntellectualClub.Chat.Media do
     do: :skip
 
   defp file_for_content(content) do
-    case map_get(content, :file, "file") do
+    case Map.get(content, :file) do
       %Ash.NotLoaded{} -> %{}
       %{} = file -> file
       _other -> %{}
     end
   end
 
-  defp normalize_kind(value) when value in [:text, "text"], do: :text
-  defp normalize_kind(value) when value in [:media, "media"], do: :media
-  defp normalize_kind(value) when value in [:opaque, "opaque"], do: :opaque
-  defp normalize_kind(_other), do: nil
-
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
-
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
-    end
-  end
 
   defp blank?(value), do: to_string(value || "") |> String.trim() == ""
 
   defp normalize_integer(value) when is_integer(value), do: value
-
-  defp normalize_integer(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {parsed, ""} -> parsed
-      _ -> nil
-    end
-  end
-
   defp normalize_integer(_other), do: nil
 
   defp normalize_size_bytes(value) when is_integer(value) and value >= 0, do: value
-  defp normalize_size_bytes(value) when is_binary(value), do: normalize_integer(value) || 0
   defp normalize_size_bytes(_other), do: 0
 end

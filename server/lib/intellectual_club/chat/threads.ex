@@ -51,7 +51,7 @@ defmodule IntellectualClub.Chat.Threads do
       |> Ash.create!()
 
     _ =
-      persist_message_trace!(message, role, contents, actor,
+      persist_message_trace!(message, message.role, contents, actor,
         item_type: Keyword.get(opts, :item_type)
       )
 
@@ -467,17 +467,17 @@ defmodule IntellectualClub.Chat.Threads do
         is_integer(target_id) ->
           Enum.find(siblings, &(&1.id == target_id))
 
-        direction in [:prev, "prev", :next, "next"] ->
+        direction in [:prev, :next] ->
           current_index = Enum.find_index(siblings, &(&1.id == current.id))
 
           cond do
             is_nil(current_index) ->
               nil
 
-            direction in [:prev, "prev"] and current_index > 0 ->
+            direction == :prev and current_index > 0 ->
               Enum.at(siblings, current_index - 1)
 
-            direction in [:next, "next"] and current_index + 1 < length(siblings) ->
+            direction == :next and current_index + 1 < length(siblings) ->
               Enum.at(siblings, current_index + 1)
 
             true ->
@@ -700,9 +700,7 @@ defmodule IntellectualClub.Chat.Threads do
       Keyword.get(opts, :item_type) ||
         case role do
           :user -> :input
-          "user" -> :input
           :assistant -> :answer
-          "assistant" -> :answer
           _ -> :other
         end
 

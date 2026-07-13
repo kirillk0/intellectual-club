@@ -97,13 +97,10 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   end
 
   defp copy_message_status(:generating), do: :canceled
-  defp copy_message_status("generating"), do: :canceled
   defp copy_message_status(status) when status in [:done, :canceled, :error], do: status
-  defp copy_message_status(status) when status in ["done", "canceled", "error"], do: status
   defp copy_message_status(_status), do: :done
 
-  defp copy_error_detail(%ChatMessage{status: status})
-       when status in [:generating, "generating"] do
+  defp copy_error_detail(%ChatMessage{status: :generating}) do
     "Copied from an active generation."
   end
 
@@ -179,11 +176,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   defp copy_step_status(status) when status in [:waiting_provider, :waiting_tools],
     do: :canceled
 
-  defp copy_step_status(status) when status in ["waiting_provider", "waiting_tools"],
-    do: :canceled
-
   defp copy_step_status(status) when status in [:done, :canceled, :error], do: status
-  defp copy_step_status(status) when status in ["done", "canceled", "error"], do: status
   defp copy_step_status(_status), do: :done
 
   defp copy_item!(

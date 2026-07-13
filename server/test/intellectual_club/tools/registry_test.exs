@@ -57,7 +57,6 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
     assert Registry.supports_handoff?("native-agent-management")
     assert Registry.supports_handoff?(%{type: "native-agent-management"})
-    assert Registry.supports_handoff?(%{"type" => "native-agent-management"})
     refute Enum.any?(non_handoff_types, &Registry.supports_handoff?/1)
     refute Registry.supports_handoff?("unknown")
   end

@@ -382,7 +382,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
   defp secrets_schema_properties(%{} = schema) do
     schema
-    |> Map.get("properties", Map.get(schema, :properties))
+    |> Map.get("properties")
     |> case do
       %{} = props -> props
       _ -> %{}
@@ -391,7 +391,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
   defp secrets_schema_aliases(raw_spec) when is_map(raw_spec) do
     raw_spec
-    |> Map.get("x-aliases", Map.get(raw_spec, :"x-aliases", []))
+    |> Map.get("x-aliases", [])
     |> List.wrap()
     |> Enum.map(fn value -> value |> to_string() |> String.trim() end)
     |> Enum.filter(&(&1 != ""))
@@ -403,7 +403,6 @@ defmodule IntellectualClub.Tools.ToolInstance do
        when is_map(config) do
     config
     |> Map.delete("knowledge_tag_id")
-    |> Map.delete(:knowledge_tag_id)
   end
 
   defp duplicate_config(%{config: config}, _preserve_secrets?) when is_map(config), do: config

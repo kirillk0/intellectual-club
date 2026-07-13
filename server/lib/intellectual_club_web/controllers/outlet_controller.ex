@@ -110,7 +110,7 @@ defmodule IntellectualClubWeb.OutletController do
     else
       call_id =
         payload
-        |> Map.get("call_id", Map.get(payload, :call_id, ""))
+        |> Map.get("call_id", "")
         |> to_string()
         |> String.trim()
 
@@ -324,11 +324,11 @@ defmodule IntellectualClubWeb.OutletController do
 
     result_text_bytes =
       payload
-      |> Map.get("result_text", Map.get(payload, :result_text, ""))
+      |> Map.get("result_text", "")
       |> to_string()
       |> byte_size()
 
-    result_raw = Map.get(payload, "result_raw", Map.get(payload, :result_raw))
+    result_raw = Map.get(payload, "result_raw")
     result_raw = if is_map(result_raw), do: result_raw, else: %{}
 
     stdout_bytes =
@@ -354,10 +354,10 @@ defmodule IntellectualClubWeb.OutletController do
           _ -> nil
         end
 
-      runner_id = Map.get(payload, "runner_id", Map.get(payload, :runner_id))
+      runner_id = Map.get(payload, "runner_id")
 
       runner_session_id =
-        Map.get(payload, "runner_session_id", Map.get(payload, :runner_session_id))
+        Map.get(payload, "runner_session_id")
 
       Logger.warning(
         "Outlet complete payload large tool_instance_id=#{inspect(tool_instance_id)} " <>
@@ -389,7 +389,7 @@ defmodule IntellectualClubWeb.OutletController do
 
     device_code =
       payload
-      |> Map.get("device_code", Map.get(payload, :device_code, ""))
+      |> Map.get("device_code", "")
       |> to_string()
       |> String.trim()
 
@@ -416,16 +416,13 @@ defmodule IntellectualClubWeb.OutletController do
 
       user_code =
         payload
-        |> Map.get(
-          "user_code",
-          Map.get(payload, :user_code, Map.get(payload, "code", Map.get(payload, :code, "")))
-        )
+        |> Map.get("user_code", Map.get(payload, "code", ""))
         |> to_string()
         |> String.trim()
 
       tool_name =
         payload
-        |> Map.get("tool_name", Map.get(payload, :tool_name, ""))
+        |> Map.get("tool_name", "")
         |> to_string()
         |> String.trim()
 
@@ -475,12 +472,12 @@ defmodule IntellectualClubWeb.OutletController do
         _ -> nil
       end
 
-    runner_id = Map.get(payload, "runner_id", Map.get(payload, :runner_id))
+    runner_id = Map.get(payload, "runner_id")
 
     runner_session_id =
-      Map.get(payload, "runner_session_id", Map.get(payload, :runner_session_id))
+      Map.get(payload, "runner_session_id")
 
-    call_id = Map.get(payload, "call_id", Map.get(payload, :call_id))
+    call_id = Map.get(payload, "call_id")
 
     content_length =
       conn
@@ -522,7 +519,7 @@ defmodule IntellectualClubWeb.OutletController do
         _other ->
           error_text =
             payload
-            |> Map.get("error_text", Map.get(payload, :error_text, ""))
+            |> Map.get("error_text", "")
             |> to_string()
             |> blank_to_default("Outlet discovery failed.")
 
@@ -544,7 +541,7 @@ defmodule IntellectualClubWeb.OutletController do
 
   defp normalize_outlet_status(payload) when is_map(payload) do
     payload
-    |> Map.get("status", Map.get(payload, :status, "done"))
+    |> Map.get("status", "done")
     |> to_string()
     |> String.trim()
     |> case do
@@ -554,7 +551,7 @@ defmodule IntellectualClubWeb.OutletController do
   end
 
   defp normalize_result_raw(payload) when is_map(payload) do
-    case Map.get(payload, "result_raw", Map.get(payload, :result_raw)) do
+    case Map.get(payload, "result_raw") do
       %{} = raw -> raw
       nil -> %{}
       other -> %{"result" => other}
@@ -685,7 +682,7 @@ defmodule IntellectualClubWeb.OutletController do
 
   defp uploaded_filename(conn, payload) do
     value =
-      Map.get(payload, "filename", Map.get(payload, :filename)) ||
+      Map.get(payload, "filename") ||
         conn |> get_req_header("x-filename") |> List.first()
 
     case value |> to_string() |> String.trim() do
@@ -698,7 +695,7 @@ defmodule IntellectualClubWeb.OutletController do
     header_content_type = conn |> get_req_header("content-type") |> List.first()
 
     value =
-      Map.get(payload, "mime_type", Map.get(payload, :mime_type)) ||
+      Map.get(payload, "mime_type") ||
         header_content_type || "application/octet-stream"
 
     case value |> to_string() |> String.trim() do
@@ -742,7 +739,7 @@ defmodule IntellectualClubWeb.OutletController do
         token
       else
         payload
-        |> Map.get("token", Map.get(payload, :token, ""))
+        |> Map.get("token", "")
         |> to_string()
         |> String.trim()
       end

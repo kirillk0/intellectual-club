@@ -175,16 +175,16 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  defp waiting_tools_status?(status), do: status in [:waiting_tools, "waiting_tools"]
+  defp waiting_tools_status?(status), do: status == :waiting_tools
 
-  defp completed_step_status?(status), do: status in [:done, "done"]
+  defp completed_step_status?(status), do: status == :done
 
   defp orphaned_resume_strategy(context) when is_map(context) do
     cond do
       waiting_tools_status?(context.initial_step_status) and is_integer(context.step_id) ->
         :resume_waiting_tools
 
-      context.initial_step_status in [:waiting_provider, "waiting_provider"] and
+      context.initial_step_status == :waiting_provider and
         is_integer(context.step_id) and steered_waiting_provider_step?(context.step_id) ->
         :restart_steered_step
 
@@ -455,7 +455,6 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   defp registry_message_id(%{message_id: id}) when is_integer(id), do: id
-  defp registry_message_id(%{"message_id" => id}) when is_integer(id), do: id
   defp registry_message_id(_metadata), do: nil
 
   defp await_worker_stopped(pid) when is_pid(pid) do
@@ -532,10 +531,7 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     trailing =
       Enum.filter(steering_specs, fn spec ->
-        Map.get(spec, :placement, Map.get(spec, "placement")) in [
-          :after_response,
-          "after_response"
-        ]
+        Map.get(spec, :placement) == :after_response
       end)
 
     if trailing == [] do
@@ -552,8 +548,8 @@ defmodule IntellectualClub.Generation.Supervisor do
       with {:ok, raw_request} <- steering_raw_request(injected) do
         restored_specs =
           Enum.map(steering_specs, fn spec ->
-            case Map.get(spec, :placement, Map.get(spec, "placement")) do
-              value when value in [:after_response, "after_response"] ->
+            case Map.get(spec, :placement) do
+              :after_response ->
                 spec
                 |> Map.new()
                 |> Map.put(:placement, :before_response)
@@ -573,7 +569,6 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   defp steering_raw_request(%{raw_request: %{} = raw_request}), do: {:ok, raw_request}
-  defp steering_raw_request(%{"raw_request" => %{} = raw_request}), do: {:ok, raw_request}
   defp steering_raw_request({:ok, value}), do: steering_raw_request(value)
   defp steering_raw_request(other), do: {:error, {:invalid_steering_request, other}}
 end

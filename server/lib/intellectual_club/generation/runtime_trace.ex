@@ -176,21 +176,11 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   def apply_event(%Step{} = step, {:set_step_usage, usage}) when is_map(usage) do
     %{
       step
-      | input_tokens: Map.get(usage, :input_tokens) || Map.get(usage, "input_tokens"),
-        output_tokens: Map.get(usage, :output_tokens) || Map.get(usage, "output_tokens"),
-        cached_input_tokens:
-          Map.get(usage, :cached_input_tokens) || Map.get(usage, "cached_input_tokens") ||
-            get_nested_usage_value(usage, [:input_tokens_details, :cached_tokens]) ||
-            get_nested_usage_value(usage, ["input_tokens_details", "cached_tokens"]) ||
-            get_nested_usage_value(usage, [:prompt_tokens_details, :cached_tokens]) ||
-            get_nested_usage_value(usage, ["prompt_tokens_details", "cached_tokens"]),
-        reasoning_tokens:
-          Map.get(usage, :reasoning_tokens) || Map.get(usage, "reasoning_tokens") ||
-            get_nested_usage_value(usage, [:output_tokens_details, :reasoning_tokens]) ||
-            get_nested_usage_value(usage, ["output_tokens_details", "reasoning_tokens"]) ||
-            get_nested_usage_value(usage, [:completion_tokens_details, :reasoning_tokens]) ||
-            get_nested_usage_value(usage, ["completion_tokens_details", "reasoning_tokens"]),
-        cost: Map.get(usage, :cost) || Map.get(usage, "cost"),
+      | input_tokens: Map.get(usage, :input_tokens),
+        output_tokens: Map.get(usage, :output_tokens),
+        cached_input_tokens: Map.get(usage, :cached_input_tokens),
+        reasoning_tokens: Map.get(usage, :reasoning_tokens),
+        cost: Map.get(usage, :cost),
         usage: usage
     }
   end
@@ -283,8 +273,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
   defp status_string(nil), do: nil
   defp status_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp status_string(value) when is_binary(value), do: value
-  defp status_string(value), do: to_string(value)
 
   defp maybe_mark_first_token(%Step{first_token_at: %DateTime{}} = step, _item_type, _text),
     do: step
@@ -299,17 +287,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   end
 
   defp maybe_mark_first_token(%Step{} = step, _item_type, _text), do: step
-
-  defp get_nested_usage_value(usage, [outer_key, inner_key]) when is_map(usage) do
-    usage
-    |> Map.get(outer_key)
-    |> case do
-      nested when is_map(nested) -> Map.get(nested, inner_key)
-      _other -> nil
-    end
-  end
-
-  defp get_nested_usage_value(_usage, _path), do: nil
 
   defp ensure_item(%Step{} = step, item_key, item_type, item_sequence) do
     existing = Map.get(step.items_by_key, item_key)
@@ -429,7 +406,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   defp set_media(%Content{} = content, media) when is_map(media) do
     file =
       media
-      |> Map.get(:file, Map.get(media, "file", %{}))
+      |> Map.get(:file, %{})
       |> case do
         %{} = file -> Map.new(file)
         _other -> %{}
@@ -437,10 +414,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
     %{
       content
-      | external_id:
-          Map.get(media, :external_id, Map.get(media, "external_id")) ||
-            content.external_id || Ash.UUID.generate(),
-        file_id: Map.get(media, :file_id, Map.get(media, "file_id")) || content.file_id,
+      | external_id: Map.get(media, :external_id) || content.external_id || Ash.UUID.generate(),
+        file_id: Map.get(media, :file_id) || content.file_id,
         file: if(map_size(file) == 0, do: content.file, else: file),
         content_text: "",
         content_json: nil
@@ -480,7 +455,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
     %{
       sequence: item.sequence,
       created_at: item.created_at,
-      type: Atom.to_string(item.type || :other),
+      type: item.type || :other,
       contents:
         item.contents_by_sequence
         |> Map.values()
@@ -489,7 +464,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           %{
             external_id: content.external_id || Ash.UUID.generate(),
             sequence: content.sequence,
-            kind: Atom.to_string(content.kind || :text),
+            kind: content.kind || :text,
             file_id: content.file_id,
             file: content.file,
             content_text: to_string(content.content_text || ""),

@@ -45,8 +45,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
       Enum.reduce(messages, {[], []}, fn message, {system_acc, message_acc} ->
         case normalized_role(message) do
           "system" ->
-            {system_acc ++ content_blocks(Map.get(message, "content", Map.get(message, :content))),
-             message_acc}
+            {system_acc ++ content_blocks(Map.get(message, "content")), message_acc}
 
           _other ->
             {system_acc, message_acc ++ [message]}
@@ -335,14 +334,14 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
   defp normalized_role(%{} = message) do
     message
-    |> Map.get("role", Map.get(message, :role))
+    |> Map.get("role")
     |> to_string()
     |> String.trim()
   end
 
   defp normalized_role(_message), do: ""
 
-  defp message_content(%{} = message), do: Map.get(message, "content", Map.get(message, :content))
+  defp message_content(%{} = message), do: Map.get(message, "content")
   defp message_content(_message), do: nil
 
   defp system_from_blocks([]), do: nil
@@ -411,7 +410,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   end
 
   defp content_block(%{"content" => content}), do: content_blocks(content)
-  defp content_block(%{content: content}), do: content_blocks(content)
   defp content_block(_block), do: []
 
   defp text_only_blocks?(blocks) when is_list(blocks) do
@@ -419,7 +417,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   end
 
   defp maybe_copy_cache_control(target, source) when is_map(target) and is_map(source) do
-    case Map.get(source, "cache_control") || Map.get(source, :cache_control) do
+    case Map.get(source, "cache_control") do
       %{} = cache_control -> Map.put(target, "cache_control", cache_control)
       _other -> target
     end
@@ -603,7 +601,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
   defp tool_use_blocks(%{} = message) do
     message
-    |> Map.get("tool_calls", Map.get(message, :tool_calls, []))
+    |> Map.get("tool_calls", [])
     |> case do
       calls when is_list(calls) -> calls
       _other -> []

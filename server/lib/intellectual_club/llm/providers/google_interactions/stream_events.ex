@@ -358,7 +358,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
 
   defp normalize_response(response) when is_map(response) do
     response
-    |> stringify_keys()
     |> Map.update("steps", [], &Payload.response_steps(%{"steps" => &1}))
   end
 
@@ -399,7 +398,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   defp normalize_step(step) when is_map(step) do
     case Payload.response_steps(%{"steps" => [step]}) do
       [normalized] -> normalized
-      [] -> stringify_keys(step)
+      [] -> Map.new(step)
     end
   end
 
@@ -417,8 +416,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   end
 
   defp append_summary_content(step, content) when is_map(step) and is_map(content) do
-    content = stringify_keys(content)
-
     Map.update(step, "summary", [content], fn
       list when is_list(list) -> list ++ [content]
       _other -> [content]
@@ -440,7 +437,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
         _other -> []
       end
 
-    Map.put(step, "deltas", deltas ++ [stringify_keys(delta)])
+    Map.put(step, "deltas", deltas ++ [Map.new(delta)])
   end
 
   defp item_key(_index, %{"type" => "function_call", "id" => id})
@@ -477,7 +474,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   end
 
   defp normalize_usage(usage) when is_map(usage) do
-    usage = stringify_keys(usage)
     reasoning_tokens = coerce_int(Map.get(usage, "total_thought_tokens"))
 
     %{
@@ -510,7 +506,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   defp text_from_content_list(_contents), do: ""
 
   defp content_text(%{} = content) do
-    case stringify_keys(content) do
+    case content do
       %{"type" => "text", "text" => text} when is_binary(text) -> text
       %{"text" => text} when is_binary(text) -> text
       _other -> ""
@@ -522,7 +518,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   defp result_text(result) when is_binary(result), do: result
 
   defp result_text(result) when is_map(result) do
-    case stringify_keys(result) do
+    case result do
       %{"type" => "text", "text" => text} when is_binary(text) -> text
       map -> Jason.encode!(map)
     end
@@ -551,15 +547,11 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
     message
   end
 
-  defp provider_error_text(%{message: message}, fallback),
-    do: provider_error_text(%{"message" => message}, fallback)
-
   defp provider_error_text(error, _fallback) when is_binary(error) and error != "", do: error
   defp provider_error_text(_error, fallback), do: fallback
 
   defp provider_error_status_code(error) when is_map(error) do
     error
-    |> stringify_keys()
     |> Map.get("code")
     |> coerce_int()
   end
@@ -567,7 +559,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   defp provider_error_status_code(_error), do: nil
 
   defp retryable_provider_error_payload?(error) when is_map(error) do
-    error = stringify_keys(error)
     status_code = provider_error_status_code(error)
 
     code =
@@ -626,13 +617,4 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   end
 
   defp coerce_int(_value), do: nil
-
-  defp stringify_keys(%{} = value) do
-    Map.new(value, fn {key, nested_value} ->
-      {to_string(key), stringify_keys(nested_value)}
-    end)
-  end
-
-  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
-  defp stringify_keys(value), do: value
 end

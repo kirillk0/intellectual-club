@@ -19,6 +19,7 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
     %{user: other_owner} = user_fixture()
 
     legacy = create_outlet!(owner, "legacy-token")
+    assert legacy.secrets == %{"bearer_token" => "legacy-token"}
 
     write_legacy_token_secret!(legacy.id, "legacy-token")
 

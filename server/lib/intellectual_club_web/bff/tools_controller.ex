@@ -192,22 +192,20 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
   end
 
   defp normalize_fixed_function(%{} = raw) do
-    name = raw |> Map.get("name", Map.get(raw, :name, "")) |> to_string() |> String.trim()
+    name = raw |> Map.get("name", "") |> to_string() |> String.trim()
 
     if name == "" do
       nil
     else
       description =
         raw
-        |> Map.get("description", Map.get(raw, :description, ""))
+        |> Map.get("description", "")
         |> to_string()
 
       parameters_schema =
         cond do
           is_map(Map.get(raw, "schema")) -> Map.get(raw, "schema")
-          is_map(Map.get(raw, :schema)) -> Map.get(raw, :schema)
           is_map(Map.get(raw, "parameters_schema")) -> Map.get(raw, "parameters_schema")
-          is_map(Map.get(raw, :parameters_schema)) -> Map.get(raw, :parameters_schema)
           true -> %{"type" => "object", "properties" => %{}}
         end
 

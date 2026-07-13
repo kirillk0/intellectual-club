@@ -5,6 +5,8 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesConfigValidationTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Tools.ToolInstance
+
   defp json_api_post(conn, path, body) do
     conn
     |> put_req_header("accept", "application/vnd.api+json")
@@ -65,5 +67,35 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesConfigValidationTest do
     details = response |> Map.get("errors", []) |> Enum.map(&Map.get(&1, "detail", ""))
 
     assert Enum.any?(details, &String.contains?(&1, "Server URL is required."))
+  end
+
+  test "POST /api/ash/tool-instances persists MCP config and secrets with string keys", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+
+    response =
+      conn
+      |> recycle()
+      |> sign_in_conn(actor.username, password)
+      |> json_api_post("/api/ash/tool-instances", %{
+        "data" => %{
+          "type" => "tool-instances",
+          "attributes" => %{
+            "type" => "mcp-http",
+            "name" => "MCP",
+            "config" => %{"server_url" => "https://mcp.example.com"},
+            "secrets" => %{"token" => "mcp-token"},
+            "max_output_tokens" => 20_000
+          }
+        }
+      })
+      |> json_response(201)
+
+    tool_id = response |> get_in(["data", "id"]) |> String.to_integer()
+    tool_instance = Ash.get!(ToolInstance, tool_id, actor: actor)
+
+    assert tool_instance.config == %{"server_url" => "https://mcp.example.com"}
+    assert tool_instance.secrets == %{"bearer_token" => "mcp-token"}
   end
 end

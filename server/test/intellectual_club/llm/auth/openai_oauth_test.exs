@@ -17,7 +17,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
   end
 
   test "returns API key as bearer token" do
-    assert Auth.get_bearer_token(%{auth_method: :api_key, api_key: "  k  "}) == {:ok, "k"}
+    assert Auth.get_bearer_token(%{auth_method: "api_key", api_key: "  k  "}) == {:ok, "k"}
   end
 
   test "refreshes, caches access token, and rotates refresh token" do
@@ -192,7 +192,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     end)
 
     assert Auth.get_bearer_token(%{
-             auth_method: :openai_oauth_refresh_token,
+             auth_method: "openai_oauth_refresh_token",
              oauth_refresh_token: refresh_token
            }) == {:ok, "at_from_auth"}
   end
@@ -245,7 +245,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
                %{
                  context: %{
                    provider_type: "responses",
-                   provider_auth_method: :openai_oauth_refresh_token,
+                   provider_auth_method: "openai_oauth_refresh_token",
                    provider_oauth_refresh_token: refresh_token
                  },
                  request_payload: %{"model" => "gpt-4.1", "input" => []}

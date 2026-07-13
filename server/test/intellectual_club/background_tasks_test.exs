@@ -86,6 +86,57 @@ defmodule IntellectualClub.BackgroundTasksTest do
              |> Ash.read!(actor: actor)
   end
 
+  test "execution context is rebuilt from its persisted JSON shape" do
+    %{user: actor} = user_fixture()
+    created_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    task =
+      create_background_task!(actor, %{
+        execution_context: %{
+          "owner_id" => actor.id,
+          "chat_id" => 101,
+          "message_id" => 102,
+          "assistant_message_id" => 103,
+          "step_id" => 104,
+          "provider_type" => "responses",
+          "available_file_external_ids" => ["file-1"],
+          "tool_call_item_id" => 105,
+          "tool_call_created_at" => DateTime.to_iso8601(created_at)
+        }
+      })
+
+    assert %ExecutionContext{} = context = BackgroundTasks.execution_context(task)
+    assert context.owner_id == actor.id
+    assert context.chat_id == 101
+    assert context.message_id == 102
+    assert context.assistant_message_id == 103
+    assert context.step_id == 104
+    assert context.provider_type == "responses"
+    assert context.available_file_external_ids == ["file-1"]
+    assert context.tool_call_item_id == 105
+    assert context.tool_call_created_at == created_at
+  end
+
+  test "fork references use the internal atom-key contract before persistence" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    task = create_background_task!(actor, %{})
+
+    assert {:ok, updated} =
+             BackgroundTasks.set_fork_reference(task, %{
+               chat_id: source.chat.id,
+               message_id: source.message.id,
+               generation_message_id: source.message.id,
+               url: "/chats/#{source.chat.id}"
+             })
+
+    assert updated.target_chat_id == source.chat.id
+    assert updated.runner_ref["fork_chat_id"] == source.chat.id
+    assert updated.runner_ref["fork_message_id"] == source.message.id
+    assert updated.runner_ref["fork_generation_message_id"] == source.message.id
+    assert updated.runner_ref["fork_url"] == "/chats/#{source.chat.id}"
+  end
+
   test "snapshot returns stdout and stderr incrementally by cursor and enforces ownership" do
     %{user: actor} = user_fixture()
     %{user: other_actor} = user_fixture()

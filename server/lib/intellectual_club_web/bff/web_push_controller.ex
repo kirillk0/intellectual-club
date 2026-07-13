@@ -19,7 +19,11 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
   def upsert_subscription(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, subscription} <-
-           Notifications.upsert_subscription(actor, params, user_agent(conn)) do
+           Notifications.upsert_subscription(
+             actor,
+             subscription_params(params),
+             user_agent(conn)
+           ) do
       json(conn, %{
         status: "ok",
         subscription: %{
@@ -48,7 +52,7 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
 
   def client_state(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
-         :ok <- Notifications.record_client_state(actor, params) do
+         :ok <- Notifications.record_client_state(actor, client_state_params(params)) do
       json(conn, %{status: "ok"})
     else
       {:error, %Plug.Conn{} = conn} -> conn
@@ -58,7 +62,7 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
 
   def message_seen(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
-         :ok <- Notifications.record_generation_seen(actor, params) do
+         :ok <- Notifications.record_generation_seen(actor, generation_seen_params(params)) do
       json(conn, %{status: "ok"})
     else
       {:error, %Plug.Conn{} = conn} -> conn
@@ -71,6 +75,41 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
     |> get_req_header("user-agent")
     |> List.first()
   end
+
+  defp subscription_params(params) do
+    keys = Map.get(params, "keys", %{})
+
+    %{
+      endpoint: Map.get(params, "endpoint"),
+      keys: %{
+        p256dh: Map.get(keys, "p256dh"),
+        auth: Map.get(keys, "auth")
+      },
+      key_revision: Map.get(params, "key_revision"),
+      expiration_time: Map.get(params, "expirationTime")
+    }
+  end
+
+  defp client_state_params(params) do
+    %{
+      endpoint: Map.get(params, "endpoint"),
+      client_id: Map.get(params, "client_id"),
+      chat_id: Map.get(params, "chat_id"),
+      visible: Map.get(params, "visible")
+    }
+  end
+
+  defp generation_seen_params(params) do
+    %{
+      chat_id: Map.get(params, "chat_id"),
+      message_id: Map.get(params, "message_id"),
+      status: generation_status(Map.get(params, "status"))
+    }
+  end
+
+  defp generation_status("done"), do: :done
+  defp generation_status("error"), do: :error
+  defp generation_status(_status), do: nil
 
   defp render_error(conn, :web_push_disabled) do
     conn

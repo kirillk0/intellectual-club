@@ -175,8 +175,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   end
 
   defp block_present?(%{} = block) do
-    text = Map.get(block, "text", Map.get(block, :text))
-    content = Map.get(block, "content", Map.get(block, :content))
+    text = Map.get(block, "text")
+    content = Map.get(block, "content")
 
     cond do
       is_binary(text) -> text != ""
@@ -193,13 +193,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   defp text_content(content) when is_binary(content), do: content
   defp text_content(content), do: to_string(content)
 
-  defp put_merged_content(message, left, right, content) when is_map(message) do
-    key = content_key(left, right)
-
-    message
-    |> Map.delete("content")
-    |> Map.delete(:content)
-    |> Map.put(key, content)
+  defp put_merged_content(message, _left, _right, content) when is_map(message) do
+    Map.put(message, "content", content)
   end
 
   defp put_merged_content(message, _left, _right, _content), do: message
@@ -210,44 +205,13 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     if tool_calls == [] do
       message
     else
-      key = tool_calls_key(left, right)
-
-      message
-      |> Map.delete("tool_calls")
-      |> Map.delete(:tool_calls)
-      |> Map.put(key, tool_calls)
+      Map.put(message, "tool_calls", tool_calls)
     end
   end
 
   defp put_merged_tool_calls(message, _left, _right), do: message
 
-  defp content_key(left, right) do
-    cond do
-      is_map(left) and Map.has_key?(left, :content) and not Map.has_key?(left, "content") ->
-        :content
-
-      is_map(right) and Map.has_key?(right, :content) and not Map.has_key?(right, "content") ->
-        :content
-
-      true ->
-        "content"
-    end
-  end
-
-  defp tool_calls_key(left, right) do
-    cond do
-      is_map(left) and Map.has_key?(left, :tool_calls) and not Map.has_key?(left, "tool_calls") ->
-        :tool_calls
-
-      is_map(right) and Map.has_key?(right, :tool_calls) and not Map.has_key?(right, "tool_calls") ->
-        :tool_calls
-
-      true ->
-        "tool_calls"
-    end
-  end
-
-  defp content_of(%{} = message), do: Map.get(message, "content", Map.get(message, :content))
+  defp content_of(%{} = message), do: Map.get(message, "content")
   defp content_of(_message), do: nil
 
   defp user_content_empty?(nil), do: true
@@ -289,23 +253,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     content |> to_string() |> String.trim() == ""
   end
 
-  defp has_text_key?(%{} = block), do: Map.has_key?(block, "text") or Map.has_key?(block, :text)
+  defp has_text_key?(%{} = block), do: Map.has_key?(block, "text")
 
-  defp has_content_key?(%{} = block),
-    do: Map.has_key?(block, "content") or Map.has_key?(block, :content)
+  defp has_content_key?(%{} = block), do: Map.has_key?(block, "content")
 
-  defp text_value(%{} = block) do
-    if Map.has_key?(block, "text"), do: Map.get(block, "text"), else: Map.get(block, :text)
-  end
+  defp text_value(%{} = block), do: Map.get(block, "text")
 
-  defp nested_content_value(%{} = block) do
-    if Map.has_key?(block, "content"),
-      do: Map.get(block, "content"),
-      else: Map.get(block, :content)
-  end
+  defp nested_content_value(%{} = block), do: Map.get(block, "content")
 
   defp tool_calls_of(%{} = message) do
-    case Map.get(message, "tool_calls", Map.get(message, :tool_calls)) do
+    case Map.get(message, "tool_calls") do
       calls when is_list(calls) -> calls
       _other -> []
     end
@@ -316,7 +273,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   defp chat_role(message), do: message |> role_value() |> normalize_role()
 
   defp responses_message_role(%{} = item) do
-    type = item |> Map.get("type", Map.get(item, :type)) |> normalize_type()
+    type = item |> Map.get("type") |> normalize_type()
 
     if type in ["", "message"] do
       item |> role_value() |> normalize_role()
@@ -327,14 +284,12 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
   defp responses_message_role(_item), do: nil
 
-  defp role_value(%{} = message), do: Map.get(message, "role", Map.get(message, :role))
+  defp role_value(%{} = message), do: Map.get(message, "role")
   defp role_value(_message), do: nil
 
-  defp normalize_role(role) when is_atom(role), do: role |> Atom.to_string() |> normalize_role()
   defp normalize_role(role) when is_binary(role), do: role |> String.trim()
   defp normalize_role(_role), do: nil
 
-  defp normalize_type(type) when is_atom(type), do: type |> Atom.to_string() |> normalize_type()
   defp normalize_type(type) when is_binary(type), do: String.trim(type)
   defp normalize_type(_type), do: ""
 
@@ -349,12 +304,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     do: %{"role" => "user", "content" => @missing_user_message_placeholder}
 
   defp put_placeholder_chat_user_content(%{} = message) do
-    key = content_key(message, %{})
-
-    message
-    |> Map.delete("content")
-    |> Map.delete(:content)
-    |> Map.put(key, @missing_user_message_placeholder)
+    Map.put(message, "content", @missing_user_message_placeholder)
   end
 
   defp put_placeholder_chat_user_content(_message), do: placeholder_chat_user_message()
@@ -368,12 +318,9 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   end
 
   defp put_placeholder_responses_user_content(%{} = item) do
-    key = content_key(item, %{})
-
-    item
-    |> Map.delete("content")
-    |> Map.delete(:content)
-    |> Map.put(key, [%{"type" => "input_text", "text" => @missing_user_message_placeholder}])
+    Map.put(item, "content", [
+      %{"type" => "input_text", "text" => @missing_user_message_placeholder}
+    ])
   end
 
   defp put_placeholder_responses_user_content(_item), do: placeholder_responses_user_item()

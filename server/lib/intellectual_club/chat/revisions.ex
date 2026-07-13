@@ -45,7 +45,7 @@ defmodule IntellectualClub.Chat.Revisions do
   @spec active_generation_message_id(Chat.t()) :: integer() | nil
   def active_generation_message_id(%Chat{} = chat) do
     case loaded_last_message(chat) do
-      %ChatMessage{id: id, status: status} when status in [:generating, "generating"] -> id
+      %ChatMessage{id: id, status: :generating} -> id
       _other -> nil
     end
   end
@@ -108,9 +108,6 @@ defmodule IntellectualClub.Chat.Revisions do
 
   defp message_status_revision_value(%ChatMessage{status: status}) when is_atom(status),
     do: Atom.to_string(status)
-
-  defp message_status_revision_value(%ChatMessage{status: status}) when is_binary(status),
-    do: status
 
   defp message_status_revision_value(_message), do: nil
 

@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClubWeb.Bff.Serializer
 
   test "chat_relation_summary includes the loaded last message status" do
@@ -108,6 +109,44 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
 
     assert serialized.time_to_first_token_ms == 250
     assert_in_delta serialized.tokens_per_second, 10.0, 0.0001
+  end
+
+  test "runtime snapshot media is projected through the serializer boundary" do
+    snapshot =
+      RuntimeTrace.new_step()
+      |> RuntimeTrace.apply_event(
+        {:set_media, "attachment", :artifact, 1,
+         %{
+           external_id: "content-123",
+           file_id: 42,
+           file: %{
+             id: 42,
+             external_id: "file-123",
+             filename: "report.pdf",
+             mime_type: "application/pdf",
+             size_bytes: 128,
+             sha256: "sha256"
+           }
+         }}
+      )
+      |> RuntimeTrace.snapshot()
+
+    assert %{items: [%{type: "artifact", contents: [%{kind: "media"}]}]} = snapshot
+
+    normalized = Serializer.normalize_runtime_step_for_client(snapshot)
+
+    assert [%{contents: [%{kind: "media", media: media}]}] = normalized.items
+
+    assert media == %{
+             external_id: "content-123",
+             file_external_id: "file-123",
+             filename: "report.pdf",
+             mime_type: "application/pdf",
+             size_bytes: 128,
+             sha256: "sha256",
+             is_image: false,
+             file_id: 42
+           }
   end
 
   test "display item and media snapshots keep handoff item identity" do
@@ -265,7 +304,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
         %{
           id: 101,
           sequence: 1,
-          status: :done,
+          status: "done",
           input_tokens: 120,
           output_tokens: 20,
           cached_input_tokens: 12,
@@ -277,7 +316,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
         %{
           id: 102,
           sequence: 2,
-          status: :waiting_provider,
+          status: "waiting_provider",
           input_tokens: nil,
           output_tokens: nil,
           cost: nil
@@ -303,7 +342,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
         %{
           id: 101,
           sequence: 1,
-          status: :done,
+          status: "done",
           input_tokens: 120,
           output_tokens: 20,
           cached_input_tokens: 12,
@@ -315,7 +354,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
         %{
           id: 102,
           sequence: 2,
-          status: :done,
+          status: "done",
           input_tokens: 80,
           output_tokens: 10,
           cached_input_tokens: 8,
@@ -339,8 +378,8 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   test "usage summary falls back to latest step when no token usage exists" do
     usage =
       Serializer.usage_summary([
-        %{id: 101, sequence: 1, status: :done, input_tokens: nil, output_tokens: nil},
-        %{id: 102, sequence: 2, status: :done, input_tokens: nil, output_tokens: nil}
+        %{id: 101, sequence: 1, status: "done", input_tokens: nil, output_tokens: nil},
+        %{id: 102, sequence: 2, status: "done", input_tokens: nil, output_tokens: nil}
       ])
 
     assert usage.latest_step.id == 102

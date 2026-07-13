@@ -14,7 +14,7 @@ defmodule IntellectualClub.Chat.Relations do
 
   @type relation_entry :: %{
           chat: Chat.t(),
-          kind: atom() | String.t() | nil,
+          kind: atom() | nil,
           message_id: integer() | nil,
           parent_tool_call_item_id: integer() | nil,
           parent_step_id: integer() | nil,
@@ -30,7 +30,7 @@ defmodule IntellectualClub.Chat.Relations do
   @type continuation_nav_entry :: %{
           chat: Chat.t(),
           label: String.t(),
-          kind: atom() | String.t() | nil,
+          kind: atom() | nil,
           message_id: integer() | nil
         }
 
@@ -91,7 +91,7 @@ defmodule IntellectualClub.Chat.Relations do
         parent_anchor = relation_anchor(chat.parent_tool_call_item_id, actor)
 
         anchor =
-          if normalize_relation_kind(chat.parent_relation_kind) == Fork.relation_kind() do
+          if chat.parent_relation_kind == Fork.relation_kind() do
             local_fork_anchor(messages, actor)
           end
 
@@ -262,7 +262,8 @@ defmodule IntellectualClub.Chat.Relations do
     end
   end
 
-  defp handoff_child?(%Chat{parent_relation_kind: value}), do: value in [:handoff, "handoff"]
+  defp handoff_child?(%Chat{parent_relation_kind: :handoff}), do: true
+  defp handoff_child?(%Chat{}), do: false
 
   defp branch_suffix(index) when is_integer(index) and index >= 0 do
     alpha_suffix(index + 1, "")
@@ -372,12 +373,12 @@ defmodule IntellectualClub.Chat.Relations do
 
   defp fork_instruction_payload?(payload) when is_map(payload) do
     instruction =
-      case map_value(payload, "raw") do
-        raw when is_map(raw) -> map_value(raw, "fork_instruction")
+      case Map.get(payload, "raw") do
+        raw when is_map(raw) -> Map.get(raw, "fork_instruction")
         _other -> nil
-      end || map_value(payload, "fork_instruction")
+      end || Map.get(payload, "fork_instruction")
 
-    is_map(instruction) and map_value(instruction, "subagent") == true
+    is_map(instruction) and Map.get(instruction, "subagent") == true
   end
 
   defp fork_instruction_payload?(_payload), do: false
@@ -419,18 +420,6 @@ defmodule IntellectualClub.Chat.Relations do
 
   defp anchor_value(anchor, key) when is_map(anchor), do: Map.get(anchor, key)
   defp anchor_value(_anchor, _key), do: nil
-
-  defp map_value(map, "raw") when is_map(map), do: Map.get(map, "raw", Map.get(map, :raw))
-
-  defp map_value(map, "fork_instruction") when is_map(map),
-    do: Map.get(map, "fork_instruction", Map.get(map, :fork_instruction))
-
-  defp map_value(map, "subagent") when is_map(map),
-    do: Map.get(map, "subagent", Map.get(map, :subagent))
-
-  defp normalize_relation_kind("fork"), do: :fork
-  defp normalize_relation_kind("handoff"), do: :handoff
-  defp normalize_relation_kind(value), do: value
 
   defp loaded_relation(%Ash.NotLoaded{}), do: nil
   defp loaded_relation(value), do: value

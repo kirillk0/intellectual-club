@@ -44,6 +44,5 @@ defmodule IntellectualClub.Notifications.WebPushSender do
   end
 
   defp topic(%{chat_id: chat_id}) when is_integer(chat_id), do: "chat-#{chat_id}"
-  defp topic(%{"chat_id" => chat_id}) when is_integer(chat_id), do: "chat-#{chat_id}"
   defp topic(_payload), do: nil
 end

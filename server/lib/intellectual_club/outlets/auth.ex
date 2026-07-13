@@ -35,9 +35,7 @@ defmodule IntellectualClub.Outlets.Auth do
 
     value =
       Map.get(secrets, "token") ||
-        Map.get(secrets, :token) ||
         Map.get(secrets, "bearer_token") ||
-        Map.get(secrets, :bearer_token) ||
         ""
 
     is_binary(value) and String.trim(value) == token

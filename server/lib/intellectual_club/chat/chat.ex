@@ -251,10 +251,10 @@ defmodule IntellectualClub.Chat.Chat do
     end)
   end
 
-  defp maybe_put_switch_direction(opts, direction) when direction in [:prev, "prev"],
+  defp maybe_put_switch_direction(opts, :prev),
     do: Keyword.put(opts, :direction, :prev)
 
-  defp maybe_put_switch_direction(opts, direction) when direction in [:next, "next"],
+  defp maybe_put_switch_direction(opts, :next),
     do: Keyword.put(opts, :direction, :next)
 
   defp maybe_put_switch_direction(opts, _direction), do: opts

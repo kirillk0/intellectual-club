@@ -29,7 +29,7 @@ defmodule IntellectualClub.Llm.Providers.Demo.Trace do
     chunk_delay_ms = Map.get(opts, :chunk_delay_ms, 40)
 
     messages =
-      case Map.get(raw_request, "messages") || Map.get(raw_request, :messages) do
+      case Map.get(raw_request, "messages") do
         list when is_list(list) -> list
         _other -> Map.get(opts, :messages, [])
       end

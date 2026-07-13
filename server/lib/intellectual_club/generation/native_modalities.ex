@@ -136,15 +136,13 @@ defmodule IntellectualClub.Generation.NativeModalities do
   defp image_candidate(content) do
     file = file_for_content(content)
 
-    mime_type =
-      map_get(file, :mime_type, "mime_type") || map_get(content, :mime_type, "mime_type")
+    mime_type = Map.get(file, :mime_type) || Map.get(content, :mime_type)
 
     if image_mime_type?(mime_type) do
       %{
-        file_id:
-          normalize_integer(map_get(content, :file_id, "file_id") || map_get(file, :id, "id")),
-        filename: map_get(file, :filename, "filename") || map_get(content, :filename, "filename"),
-        sha256: map_get(file, :sha256, "sha256") || map_get(content, :sha256, "sha256"),
+        file_id: normalize_integer(Map.get(content, :file_id) || Map.get(file, :id)),
+        filename: Map.get(file, :filename) || Map.get(content, :filename),
+        sha256: Map.get(file, :sha256) || Map.get(content, :sha256),
         declared_mime_type: to_string(mime_type)
       }
     else
@@ -182,29 +180,13 @@ defmodule IntellectualClub.Generation.NativeModalities do
   defp image_mime_type?(_mime_type), do: false
 
   defp file_for_content(content) do
-    case map_get(content, :file, "file") do
+    case Map.get(content, :file) do
       %Ash.NotLoaded{} -> %{}
       %{} = file -> file
       _other -> %{}
     end
   end
 
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
-    end
-  end
-
   defp normalize_integer(value) when is_integer(value), do: value
-
-  defp normalize_integer(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {parsed, ""} -> parsed
-      _ -> nil
-    end
-  end
-
   defp normalize_integer(_other), do: nil
 end

@@ -323,7 +323,13 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     runtime_step =
       RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: %{"model" => "usage-model"})
       |> RuntimeTrace.apply_event(
-        {:set_step_usage, %{input_tokens: 11, output_tokens: 7, cost: 0.015}}
+        {:set_step_usage,
+         %{
+           input_tokens: 11,
+           output_tokens: 7,
+           cost: 0.015,
+           responses: %{"total_tokens" => 18}
+         }}
       )
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
       |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Final answer"})
@@ -343,6 +349,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert usage.input_tokens == 11
     assert usage.output_tokens == 7
     assert usage.cost == 0.015
+    assert usage.raw_usage["responses"] == %{"total_tokens" => 18}
   end
 
   test "persist_step_trace_only! does not create usage records for user messages" do
@@ -581,9 +588,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 2})
       |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Partial answer"})
       |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "partial"}})
-      |> RuntimeTrace.apply_event(
-        {:set_step_usage, %{"input_tokens" => 20, "output_tokens" => 5}}
-      )
+      |> RuntimeTrace.apply_event({:set_step_usage, %{input_tokens: 20, output_tokens: 5}})
 
     :ok = Persistence.persist_canceled!(assistant_message.id, runtime_step)
 
@@ -633,9 +638,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> RuntimeTrace.apply_event({:ensure_item, "error", :error, 3})
       |> RuntimeTrace.apply_event({:set_text, "error", :error, 1, "Stream failed"})
       |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "partial-error"}})
-      |> RuntimeTrace.apply_event(
-        {:set_step_usage, %{"input_tokens" => 30, "output_tokens" => 7}}
-      )
+      |> RuntimeTrace.apply_event({:set_step_usage, %{input_tokens: 30, output_tokens: 7}})
 
     :ok = Persistence.persist_error!(assistant_message.id, runtime_step, "Stream failed")
 

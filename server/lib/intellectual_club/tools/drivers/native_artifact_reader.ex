@@ -475,7 +475,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
   defp required_file_id(args) when is_map(args) do
     file_id =
       args
-      |> Map.get("file_id", Map.get(args, :file_id))
+      |> Map.get("file_id")
       |> to_string()
       |> String.trim()
 
@@ -501,7 +501,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
   defp read_filename(args) when is_map(args) do
     args
-    |> Map.get("filename", Map.get(args, :filename, "artifact.txt"))
+    |> Map.get("filename", "artifact.txt")
     |> to_string()
     |> String.trim()
     |> case do
@@ -553,12 +553,12 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
   defp file_result(file) do
     %{
-      "file_id" => file.id,
-      "file_external_id" => file.external_id,
-      "filename" => file.filename,
-      "mime_type" => file.mime_type,
-      "size_bytes" => file.size_bytes,
-      "sha256" => file.sha256
+      file_id: file.id,
+      file_external_id: file.external_id,
+      filename: file.filename,
+      mime_type: file.mime_type,
+      size_bytes: file.size_bytes,
+      sha256: file.sha256
     }
   end
 end

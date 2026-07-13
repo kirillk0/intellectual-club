@@ -62,9 +62,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateUniqueOutletToken do
 
   defp outlet_token(%{} = secrets) do
     (Map.get(secrets, "bearer_token") ||
-       Map.get(secrets, :bearer_token) ||
        Map.get(secrets, "token") ||
-       Map.get(secrets, :token) ||
        "")
     |> to_string()
     |> String.trim()

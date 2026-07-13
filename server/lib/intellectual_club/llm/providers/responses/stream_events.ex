@@ -94,7 +94,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
     _ = emit_step_snapshot_from_response(response, emit)
 
-    usage = Map.get(response, "usage")
+    usage = normalize_usage(Map.get(response, "usage"))
 
     emit.({:trace, {:set_step_raw_response, response}})
 
@@ -1066,8 +1066,33 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
   defp text_from_content_part(_other), do: nil
 
+  defp normalize_usage(usage) when is_map(usage) do
+    %{
+      input_tokens: Map.get(usage, "input_tokens"),
+      output_tokens: Map.get(usage, "output_tokens"),
+      cached_input_tokens:
+        nested_usage_value(usage, "input_tokens_details", "cached_tokens") ||
+          nested_usage_value(usage, "prompt_tokens_details", "cached_tokens"),
+      reasoning_tokens:
+        nested_usage_value(usage, "output_tokens_details", "reasoning_tokens") ||
+          nested_usage_value(usage, "completion_tokens_details", "reasoning_tokens"),
+      cost: Map.get(usage, "cost"),
+      responses: usage
+    }
+  end
+
+  defp normalize_usage(_usage), do: nil
+
+  defp nested_usage_value(usage, outer_key, inner_key)
+       when is_map(usage) and is_binary(outer_key) and is_binary(inner_key) do
+    case Map.get(usage, outer_key) do
+      nested when is_map(nested) -> Map.get(nested, inner_key)
+      _other -> nil
+    end
+  end
+
   defp provider_error_text(error, fallback) when is_map(error) and is_binary(fallback) do
-    case trimmed_string(Map.get(error, "message") || Map.get(error, :message)) do
+    case trimmed_string(Map.get(error, "message")) do
       "" -> fallback
       message -> message
     end
@@ -1077,7 +1102,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
   defp provider_error_status_code(error) when is_map(error) do
     error
-    |> Map.get("code", Map.get(error, :code))
+    |> Map.get("code")
     |> parse_int()
   end
 
@@ -1085,9 +1110,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
   defp retryable_provider_error_payload?(error) when is_map(error) do
     status_code = provider_error_status_code(error)
-    code = error_field(error, :code)
-    type = error_field(error, :type)
-    message = error_field(error, :message)
+    code = error_field(error, "code")
+    type = error_field(error, "type")
+    message = error_field(error, "message")
 
     (is_integer(status_code) and MapSet.member?(@retryable_http_status_codes, status_code)) or
       MapSet.member?(@retryable_provider_error_codes, code) or
@@ -1110,9 +1135,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
   defp retryable_provider_message?(_message), do: false
 
-  defp error_field(error, key) when is_map(error) and is_atom(key) do
+  defp error_field(error, key) when is_map(error) and is_binary(key) do
     error
-    |> Map.get(key, Map.get(error, Atom.to_string(key)))
+    |> Map.get(key)
     |> trimmed_string()
     |> String.downcase()
   end

@@ -22,7 +22,7 @@ defmodule IntellectualClub.Llm.Providers.Common.Registry do
     Enum.map(all(), & &1.metadata())
   end
 
-  @spec fetch(term()) :: {:ok, module()} | {:error, :unknown_provider_type}
+  @spec fetch(String.t() | nil) :: {:ok, module()} | {:error, :unknown_provider_type}
   def fetch(type) do
     normalized = normalize_type(type)
 
@@ -32,7 +32,7 @@ defmodule IntellectualClub.Llm.Providers.Common.Registry do
     end
   end
 
-  @spec fetch_or_missing(term()) :: module()
+  @spec fetch_or_missing(String.t() | nil) :: module()
   def fetch_or_missing(type) do
     case fetch(type) do
       {:ok, module} -> module
@@ -40,7 +40,8 @@ defmodule IntellectualClub.Llm.Providers.Common.Registry do
     end
   end
 
-  @spec metadata_for_type(term()) :: {:ok, map()} | {:error, :unknown_provider_type}
+  @spec metadata_for_type(String.t() | nil) ::
+          {:ok, map()} | {:error, :unknown_provider_type}
   def metadata_for_type(type) do
     with {:ok, module} <- fetch(type) do
       {:ok, module.metadata()}
@@ -97,8 +98,6 @@ defmodule IntellectualClub.Llm.Providers.Common.Registry do
   rescue
     _error -> []
   end
-
-  defp normalize_type(value) when is_atom(value), do: Atom.to_string(value)
 
   defp normalize_type(value) when is_binary(value) do
     value

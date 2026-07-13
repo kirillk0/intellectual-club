@@ -69,9 +69,11 @@ defmodule IntellectualClub.Tools.DriverMetadata do
   end
 
   defp normalize_fixed_function(%{} = raw) do
+    raw = normalize_map(raw)
+
     name =
       raw
-      |> Map.get("name", Map.get(raw, :name, ""))
+      |> Map.get("name", "")
       |> to_string()
       |> String.trim()
 
@@ -80,26 +82,24 @@ defmodule IntellectualClub.Tools.DriverMetadata do
     else
       description =
         raw
-        |> Map.get("description", Map.get(raw, :description, ""))
+        |> Map.get("description", "")
         |> to_string()
 
       parameters_schema =
         cond do
           is_map(Map.get(raw, "schema")) -> Map.get(raw, "schema")
-          is_map(Map.get(raw, :schema)) -> Map.get(raw, :schema)
           is_map(Map.get(raw, "parameters_schema")) -> Map.get(raw, "parameters_schema")
-          is_map(Map.get(raw, :parameters_schema)) -> Map.get(raw, :parameters_schema)
           true -> %{"type" => "object", "properties" => %{}}
         end
         |> normalize_map()
 
       enabled_by_default =
-        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+        case Map.get(raw, "enabled_by_default") do
           value when is_boolean(value) ->
             value
 
           _other ->
-            case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+            case Map.get(raw, "enabled") do
               false -> false
               _ -> true
             end

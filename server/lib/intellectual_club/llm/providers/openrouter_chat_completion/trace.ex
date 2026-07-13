@@ -33,9 +33,9 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace do
         :ok
 
       {:response_complete, meta} ->
-        raw_request = Map.get(meta, :raw_request) || Map.get(meta, "raw_request") || %{}
-        raw_response = Map.get(meta, :raw_response) || Map.get(meta, "raw_response")
-        usage = Map.get(meta, :usage) || Map.get(meta, "usage")
+        raw_request = Map.get(meta, :raw_request) || %{}
+        raw_response = Map.get(meta, :raw_response)
+        usage = Map.get(meta, :usage)
 
         emit.({:trace, {:set_step_raw_request, raw_request}})
         emit.({:trace, {:set_step_raw_response, raw_response}})
@@ -44,8 +44,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace do
         emit.({:response_complete, meta})
 
       {:response_error, meta} ->
-        raw_request = Map.get(meta, :raw_request) || Map.get(meta, "raw_request") || %{}
-        raw_response = Map.get(meta, :raw_response) || Map.get(meta, "raw_response")
+        raw_request = Map.get(meta, :raw_request) || %{}
+        raw_response = Map.get(meta, :raw_response)
 
         emit.({:trace, {:set_step_raw_request, raw_request}})
         emit.({:trace, {:set_step_raw_response, raw_response}})

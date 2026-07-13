@@ -34,4 +34,20 @@ defmodule IntellectualClub.Generation.RuntimeTraceTest do
 
     assert step.first_token_at == nil
   end
+
+  test "keeps domain atoms in persistable data and stringifies only the UI snapshot" do
+    step =
+      RuntimeTrace.new_step(status: :waiting_provider)
+      |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Hello"})
+
+    assert %{status: :waiting_provider, items: [%{type: :answer, contents: [content]}]} =
+             RuntimeTrace.persistable(step)
+
+    assert content.kind == :text
+
+    assert %{status: "waiting_provider", items: [%{type: "answer", contents: [snapshot_content]}]} =
+             RuntimeTrace.snapshot(step)
+
+    assert snapshot_content.kind == "text"
+  end
 end

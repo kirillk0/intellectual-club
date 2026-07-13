@@ -388,32 +388,30 @@ defmodule IntellectualClub.Tools.BindingResolver do
   defp list_model_functions(_tool_instance, _actor), do: []
 
   defp normalize_fixed_function(raw) when is_map(raw) do
-    name = raw |> Map.get("name", Map.get(raw, :name, "")) |> to_string() |> String.trim()
+    name = raw |> Map.get("name", "") |> to_string() |> String.trim()
 
     if name == "" do
       nil
     else
       description =
         raw
-        |> Map.get("description", Map.get(raw, :description, ""))
+        |> Map.get("description", "")
         |> to_string()
 
       parameters_schema =
         cond do
           is_map(Map.get(raw, "schema")) -> Map.get(raw, "schema")
-          is_map(Map.get(raw, :schema)) -> Map.get(raw, :schema)
           is_map(Map.get(raw, "parameters_schema")) -> Map.get(raw, "parameters_schema")
-          is_map(Map.get(raw, :parameters_schema)) -> Map.get(raw, :parameters_schema)
           true -> %{"type" => "object", "properties" => %{}}
         end
 
       enabled_by_default =
-        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+        case Map.get(raw, "enabled_by_default") do
           value when is_boolean(value) ->
             value
 
           _other ->
-            case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+            case Map.get(raw, "enabled") do
               false -> false
               _ -> true
             end

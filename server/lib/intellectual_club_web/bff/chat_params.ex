@@ -139,8 +139,6 @@ defmodule IntellectualClubWeb.Bff.ChatParams do
   def match_type(:meta), do: "meta"
   def match_type(:active_message), do: "active_message"
   def match_type(:inactive_message), do: "inactive_message"
-  def match_type(other) when is_binary(other), do: other
-  def match_type(other) when is_atom(other), do: Atom.to_string(other)
   def match_type(_other), do: nil
 
   def branch_user_replacement_contents(params, file_ids) do

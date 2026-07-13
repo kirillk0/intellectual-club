@@ -199,37 +199,37 @@ defmodule IntellectualClub.Tools.Discovery do
   defp maybe_reset_enabled(updates, _enabled_by_default, false), do: updates
 
   defp normalize_discovered_spec(%{} = raw) do
-    name = raw |> Map.get("name", Map.get(raw, :name, "")) |> to_string() |> String.trim()
+    name = raw |> Map.get("name", "") |> to_string() |> String.trim()
 
     if name == "" do
       nil
     else
       description =
         raw
-        |> Map.get("description", Map.get(raw, :description, ""))
+        |> Map.get("description", "")
         |> to_string()
 
       schema =
-        case Map.get(raw, "schema", Map.get(raw, :schema)) do
+        case Map.get(raw, "schema") do
           %{} = schema -> schema
           _ -> %{"type" => "object", "properties" => %{}}
         end
 
       enabled_by_default =
-        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+        case Map.get(raw, "enabled_by_default") do
           value when is_boolean(value) -> value
           _other -> true
         end
 
       execution_mode =
-        case Map.get(raw, "execution_mode", Map.get(raw, :execution_mode)) do
-          value when value in [:background, "background"] -> :background
+        case Map.get(raw, "execution_mode") do
+          "background" -> :background
           _other -> :direct
         end
 
       target_function_name =
         raw
-        |> Map.get("target_function_name", Map.get(raw, :target_function_name))
+        |> Map.get("target_function_name")
         |> case do
           value when is_binary(value) ->
             case String.trim(value) do

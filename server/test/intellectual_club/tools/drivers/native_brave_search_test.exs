@@ -38,6 +38,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
         secrets: %{"token" => "brave-token"}
       })
 
+    assert tool_instance.secrets == %{"bearer_token" => "brave-token"}
+
     assert {:error, message} = NativeBraveSearch.execute(tool_instance, "web_search", %{})
     assert String.contains?(message, "Argument `query` is required.")
   end

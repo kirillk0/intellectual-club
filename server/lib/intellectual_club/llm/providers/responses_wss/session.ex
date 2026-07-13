@@ -339,8 +339,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
       {:ok, connection, _state} ->
         case terminal do
           {:response_complete, meta} ->
-            {:ok, connection,
-             Map.get(meta, :raw_response) || Map.get(meta, "raw_response") || %{}}
+            {:ok, connection, Map.get(meta, :raw_response) || %{}}
 
           {:response_error, meta} ->
             meta =
@@ -709,7 +708,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   end
 
   defp retryable_terminal_error?(meta) when is_map(meta) do
-    Map.get(meta, :retryable) == true or Map.get(meta, "retryable") == true
+    Map.get(meta, :retryable) == true
   end
 
   defp retryable_transport_error?(%Mint.TransportError{}), do: true

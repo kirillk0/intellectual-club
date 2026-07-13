@@ -14,7 +14,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "openrouter provider builds initial request and snapshot from canonical chat history" do
     result =
       OpenRouterChatCompletion.build_initial_request(%{
-        history: [%{role: "user", content: "Hello"}],
+        history: [%{role: :user, content: "Hello"}],
         system_prompt: "Be careful.",
         model_name: "openai/gpt-5-mini",
         parameters: %{"temperature" => 0.1},
@@ -61,8 +61,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     result =
       OpenRouterChatCompletion.build_initial_request(%{
         history: [
-          %{role: "assistant", content: "First"},
-          %{role: "assistant", content: "Second"}
+          %{role: :assistant, content: "First"},
+          %{role: :assistant, content: "Second"}
         ],
         system_prompt: "System",
         model_name: "openai/gpt-5-mini",
@@ -83,7 +83,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "responses provider builds initial request and snapshot from canonical history" do
     result =
       Responses.build_initial_request(%{
-        history: [%{role: "user", content: "Hello"}],
+        history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "gpt-5",
         parameters: %{"max_tokens" => 200},
@@ -137,7 +137,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              responses_metadata.supports_model_discovery
 
     opts = %{
-      history: [%{role: "user", content: "Hello"}],
+      history: [%{role: :user, content: "Hello"}],
       system_prompt: "Use tools when needed.",
       model_name: "gpt-5",
       parameters: %{"max_tokens" => 200},
@@ -165,7 +165,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     result =
       Responses.build_initial_request(%{
-        history: [%{role: "user", content: "Search"}],
+        history: [%{role: :user, content: "Search"}],
         system_prompt: "Use tools when needed.",
         model_name: "gpt-5",
         parameters: %{
@@ -223,8 +223,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     result =
       Responses.build_initial_request(%{
         history: [
-          %{role: "assistant", content: "First"},
-          %{role: "assistant", content: "Second"}
+          %{role: :assistant, content: "First"},
+          %{role: :assistant, content: "Second"}
         ],
         system_prompt: "System",
         model_name: "gpt-5",
@@ -265,7 +265,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "google interactions provider builds stateless initial request from canonical history" do
     result =
       GoogleInteractions.build_initial_request(%{
-        history: [%{role: "user", content: "Hello"}],
+        history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "gemini-2.5-flash-lite",
         parameters: %{"temperature" => 0.1, "max_tokens" => 64},
@@ -321,7 +321,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "google interactions provider rebuilds stateless followup with function results" do
     initial =
       GoogleInteractions.build_initial_request(%{
-        history: [%{role: "user", content: "Weather in Paris?"}],
+        history: [%{role: :user, content: "Weather in Paris?"}],
         system_prompt: "System",
         model_name: "gemini-2.5-flash-lite",
         parameters: %{"temperature" => 0},
@@ -406,7 +406,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "anthropic provider builds initial messages request from canonical chat history" do
     result =
       AnthropicMessages.build_initial_request(%{
-        history: [%{role: "user", content: "Hello"}],
+        history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "claude-sonnet-4-20250514",
         parameters: %{"max_tokens" => 200, "temperature" => 0.1},
@@ -455,8 +455,8 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     result =
       AnthropicMessages.build_initial_request(%{
         history: [
-          %{role: "assistant", content: "First"},
-          %{role: "assistant", content: "Second"}
+          %{role: :assistant, content: "First"},
+          %{role: :assistant, content: "Second"}
         ],
         system_prompt: "System",
         model_name: "claude-sonnet-4-20250514",
@@ -485,7 +485,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "anthropic provider uses 32k max tokens by default" do
     result =
       AnthropicMessages.build_initial_request(%{
-        history: [%{role: "user", content: "Hello"}],
+        history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "claude-sonnet-4-20250514",
         parameters: %{},
@@ -498,7 +498,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
   test "anthropic provider adds cache control markers only when requested" do
     base_opts = %{
-      history: [%{role: "user", content: "Hello"}],
+      history: [%{role: :user, content: "Hello"}],
       system_prompt: "Use tools when needed.",
       model_name: "claude-sonnet-4-20250514",
       parameters: %{"max_tokens" => 200},
@@ -742,7 +742,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     initial =
       Responses.build_initial_request(%{
-        history: [%{role: "user", content: "Weather in Paris?"}],
+        history: [%{role: :user, content: "Weather in Paris?"}],
         system_prompt: "System",
         model_name: "gpt-5",
         parameters: %{
@@ -845,7 +845,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "anthropic provider rebuilds followup request with tool result blocks" do
     raw_request =
       AnthropicMessages.build_initial_request(%{
-        history: [%{role: "user", content: "Weather in Paris?"}],
+        history: [%{role: :user, content: "Weather in Paris?"}],
         system_prompt: "System",
         model_name: "claude-sonnet-4-20250514",
         parameters: %{"max_tokens" => 200},
@@ -1020,7 +1020,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   test "anthropic provider moves cache control marker to latest followup message" do
     initial =
       AnthropicMessages.build_initial_request(%{
-        history: [%{role: "user", content: "Weather in Paris?"}],
+        history: [%{role: :user, content: "Weather in Paris?"}],
         system_prompt: "System",
         model_name: "claude-sonnet-4-20250514",
         parameters: %{"max_tokens" => 200},

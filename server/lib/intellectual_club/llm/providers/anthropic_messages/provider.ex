@@ -320,10 +320,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
     %{"role" => "assistant", "content" => content}
   end
 
-  defp assistant_message(%{content: content}, _runtime_step) when is_list(content) do
-    %{"role" => "assistant", "content" => content}
-  end
-
   defp assistant_message(_raw_response, %RuntimeTrace.Step{} = runtime_step) do
     answer = RuntimeTrace.text_for_item_types(runtime_step, [:answer, :handoff_summary])
 

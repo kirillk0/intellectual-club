@@ -155,7 +155,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
              )
 
     assert result.text =~ "Image #{file.external_id}"
-    assert [%{"file_external_id" => file_external_id, "mime_type" => "image/png"}] = result.media
+    assert [%{file_external_id: file_external_id, mime_type: "image/png"}] = result.media
     assert file_external_id == file.external_id
     assert result.artifacts == []
   end
@@ -185,7 +185,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
              })
 
     assert result.text =~ "File "
-    assert [%{"file_id" => file_id, "file_external_id" => file_external_id}] = result.artifacts
+    assert [%{file_id: file_id, file_external_id: file_external_id}] = result.artifacts
     assert is_integer(file_id)
     assert is_binary(file_external_id)
 

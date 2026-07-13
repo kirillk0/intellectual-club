@@ -163,13 +163,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
          {:ok, query} <- required_query(args),
          {:ok, count} <- parse_count(args, cfg),
          {:ok, offset} <- parse_offset(args) do
-      country = normalize_optional_string(Map.get(args, "country", Map.get(args, :country)))
+      country = normalize_optional_string(Map.get(args, "country"))
 
       search_lang =
-        normalize_optional_string(Map.get(args, "search_lang", Map.get(args, :search_lang)))
+        normalize_optional_string(Map.get(args, "search_lang"))
 
       safesearch =
-        normalize_optional_string(Map.get(args, "safesearch", Map.get(args, :safesearch)))
+        normalize_optional_string(Map.get(args, "safesearch"))
 
       params =
         %{"q" => query, "count" => count, "offset" => offset}
@@ -230,11 +230,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
 
     token =
       (Map.get(secrets, "token") ||
-         Map.get(secrets, :token) ||
          Map.get(secrets, "api_token") ||
-         Map.get(secrets, :api_token) ||
          Map.get(secrets, "bearer_token") ||
-         Map.get(secrets, :bearer_token) ||
          "")
       |> to_string()
       |> String.trim()
@@ -249,7 +246,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
   defp required_query(args) when is_map(args) do
     query =
       args
-      |> Map.get("query", Map.get(args, :query))
+      |> Map.get("query")
       |> to_string()
       |> String.trim()
 
@@ -261,7 +258,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
   end
 
   defp parse_count(args, cfg) when is_map(args) and is_map(cfg) do
-    case coerce_optional_integer(Map.get(args, "count", Map.get(args, :count)), cfg.default_count) do
+    case coerce_optional_integer(Map.get(args, "count"), cfg.default_count) do
       {:ok, count} ->
         {:ok, count |> max(1) |> min(cfg.max_count)}
 
@@ -271,7 +268,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
   end
 
   defp parse_offset(args) when is_map(args) do
-    case coerce_optional_integer(Map.get(args, "offset", Map.get(args, :offset)), 0) do
+    case coerce_optional_integer(Map.get(args, "offset"), 0) do
       {:ok, offset} when offset < 0 ->
         {:error, "Argument `offset` must be a non-negative integer."}
 
@@ -352,13 +349,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
       Enum.flat_map(results, fn item ->
         if is_map(item) do
           title =
-            item |> Map.get("title", Map.get(item, :title, "")) |> to_string() |> String.trim()
+            item |> Map.get("title", "") |> to_string() |> String.trim()
 
-          url = item |> Map.get("url", Map.get(item, :url, "")) |> to_string() |> String.trim()
+          url = item |> Map.get("url", "") |> to_string() |> String.trim()
 
           description =
             item
-            |> Map.get("description", Map.get(item, :description, ""))
+            |> Map.get("description", "")
             |> to_string()
             |> String.trim()
 
@@ -402,13 +399,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
         Enum.with_index(results, 1)
         |> Enum.flat_map(fn {item, idx} ->
           title =
-            item |> Map.get("title", Map.get(item, :title, "")) |> to_string() |> String.trim()
+            item |> Map.get("title", "") |> to_string() |> String.trim()
 
-          url = item |> Map.get("url", Map.get(item, :url, "")) |> to_string() |> String.trim()
+          url = item |> Map.get("url", "") |> to_string() |> String.trim()
 
           snippet =
             item
-            |> Map.get("description", Map.get(item, :description, ""))
+            |> Map.get("description", "")
             |> to_string()
             |> String.trim()
 
@@ -445,7 +442,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
 
   defp read_string(cfg, key, default)
        when is_map(cfg) and is_binary(key) and is_binary(default) do
-    case get_config_value(cfg, key) do
+    case Map.get(cfg, key) do
       nil -> default
       value -> to_string(value)
     end
@@ -453,14 +450,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
 
   defp read_integer(cfg, key, default)
        when is_map(cfg) and is_binary(key) and is_integer(default) do
-    case coerce_optional_integer(get_config_value(cfg, key), default) do
+    case coerce_optional_integer(Map.get(cfg, key), default) do
       {:ok, value} -> value
       {:error, _reason} -> default
     end
   end
 
   defp read_float(cfg, key, default) when is_map(cfg) and is_binary(key) and is_number(default) do
-    raw = get_config_value(cfg, key)
+    raw = Map.get(cfg, key)
 
     cond do
       raw == nil ->
@@ -489,23 +486,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearch do
 
   defp coerce_optional_integer(value, _default) when is_float(value), do: {:ok, trunc(value)}
   defp coerce_optional_integer(_value, _default), do: {:error, :invalid_integer}
-
-  defp get_config_value(cfg, key) when is_map(cfg) and is_binary(key) do
-    case Map.get(cfg, key) do
-      nil ->
-        case key do
-          "api_base_url" -> Map.get(cfg, :api_base_url)
-          "timeout_seconds" -> Map.get(cfg, :timeout_seconds)
-          "user_agent" -> Map.get(cfg, :user_agent)
-          "default_count" -> Map.get(cfg, :default_count)
-          "max_count" -> Map.get(cfg, :max_count)
-          _ -> nil
-        end
-
-      value ->
-        value
-    end
-  end
 
   defp body_to_string(nil), do: ""
   defp body_to_string(body) when is_binary(body), do: body

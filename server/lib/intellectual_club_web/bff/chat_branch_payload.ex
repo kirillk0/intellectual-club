@@ -272,7 +272,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   defp retry_error_diagnostic_metadata?(_metadata), do: false
 
   defp display_content_for_message(%ChatMessage{} = message, steps, display) do
-    role = atom_to_string(message.role)
+    role = Atom.to_string(message.role)
 
     {items, parts, media} =
       Enum.reduce(steps, {[], [], []}, fn step, {items_acc, parts_acc, media_acc} ->
@@ -332,31 +332,23 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   defp runtime_content_for_message(_message, nil), do: %{items: [], parts: [], media: []}
 
-  defp runtime_content_for_message(%ChatMessage{} = message, runtime_step)
-       when is_map(runtime_step) do
-    role = atom_to_string(message.role)
-    step_id = map_get(runtime_step, :id, "id")
-    step_sequence = map_get(runtime_step, :sequence, "sequence")
-    step_created_at = map_get(runtime_step, :created_at, "created_at")
+  defp runtime_content_for_message(%ChatMessage{} = message, %{items: items} = runtime_step)
+       when is_list(items) do
+    role = Atom.to_string(message.role)
+    step_id = Map.get(runtime_step, :id)
+    step_sequence = Map.get(runtime_step, :sequence)
+    step_created_at = Map.get(runtime_step, :created_at)
 
-    items =
-      runtime_step
-      |> map_get(:items, "items", [])
-      |> List.wrap()
-      |> sort_by_sequence()
+    items = sort_by_sequence(items)
 
     {item_descriptors, parts, media} =
       Enum.reduce(items, {[], [], []}, fn item, {items_acc, parts_acc, media_acc} ->
-        contents =
-          item
-          |> map_get(:contents, "contents", [])
-          |> List.wrap()
-          |> sort_by_sequence()
+        contents = item |> Map.get(:contents, []) |> sort_by_sequence()
 
-        item_type = item |> map_get(:type, "type") |> atom_to_string()
-        item_id = map_get(item, :id, "id")
-        item_sequence = map_get(item, :sequence, "sequence")
-        item_created_at = map_get(item, :created_at, "created_at") || step_created_at
+        item_type = Map.get(item, :type)
+        item_id = Map.get(item, :id)
+        item_sequence = Map.get(item, :sequence)
+        item_created_at = Map.get(item, :created_at) || step_created_at
 
         parts_acc =
           if text_item_for_role?(item_type, role) do
@@ -370,11 +362,10 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
                   item_id: item_id,
                   item_sequence: item_sequence,
                   item_type: item_type,
-                  content_id: map_get(content, :id, "id"),
-                  sequence: map_get(content, :sequence, "sequence"),
-                  text: to_string(map_get(content, :content_text, "content_text", "")),
-                  content_text_truncated:
-                    map_get(content, :content_text_truncated, "content_text_truncated") == true,
+                  content_id: Map.get(content, :id),
+                  sequence: Map.get(content, :sequence),
+                  text: to_string(Map.get(content, :content_text, "")),
+                  content_text_truncated: Map.get(content, :content_text_truncated) == true,
                   created_at: item_created_at
                 }
               end)
@@ -539,24 +530,24 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   end
 
   defp text_item_for_role?(%ChatMessageItem{} = item, role),
-    do: text_item_for_role?(item.type, role)
+    do: text_item_for_role?(Atom.to_string(item.type), role)
 
-  defp text_item_for_role?(item_type, "user"),
-    do: atom_to_string(item_type) in ["input", "handoff_request", "handoff_context"]
+  defp text_item_for_role?(item_type, "user") when is_binary(item_type),
+    do: item_type in ["input", "handoff_request", "handoff_context"]
 
-  defp text_item_for_role?(item_type, "assistant"),
-    do: atom_to_string(item_type) in ["answer", "handoff_summary", "steering"]
+  defp text_item_for_role?(item_type, "assistant") when is_binary(item_type),
+    do: item_type in ["answer", "handoff_summary", "steering"]
 
   defp text_item_for_role?(_item_type, _role), do: false
 
   defp media_item_for_role?(%ChatMessageItem{} = item, role),
-    do: media_item_for_role?(item.type, role)
+    do: media_item_for_role?(Atom.to_string(item.type), role)
 
-  defp media_item_for_role?(item_type, "user"),
-    do: atom_to_string(item_type) in ["input", "handoff_request", "handoff_context"]
+  defp media_item_for_role?(item_type, "user") when is_binary(item_type),
+    do: item_type in ["input", "handoff_request", "handoff_context"]
 
-  defp media_item_for_role?(item_type, "assistant"),
-    do: atom_to_string(item_type) in ["handoff_summary", "artifact"]
+  defp media_item_for_role?(item_type, "assistant") when is_binary(item_type),
+    do: item_type in ["handoff_summary", "artifact"]
 
   defp media_item_for_role?(_item_type, _role), do: false
 
@@ -566,18 +557,19 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   defp normalize_runtime_content_media(content) when is_map(content) do
     %{
-      id: map_get(content, :id, "id"),
-      external_id: map_get(content, :external_id, "external_id"),
-      sequence: map_get(content, :sequence, "sequence"),
+      id: Map.get(content, :id),
+      external_id: Map.get(content, :external_id),
+      sequence: Map.get(content, :sequence),
       kind: kind_string(content),
-      content_text: map_get(content, :content_text, "content_text"),
-      content_text_truncated: map_get(content, :content_text_truncated, "content_text_truncated"),
-      content_json: map_get(content, :content_json, "content_json"),
-      media: map_get(content, :media, "media")
+      content_text: Map.get(content, :content_text),
+      content_text_truncated: Map.get(content, :content_text_truncated),
+      content_json: Map.get(content, :content_json),
+      media: Map.get(content, :media)
     }
   end
 
-  defp kind_string(value), do: value |> map_get(:kind, "kind") |> atom_to_string()
+  defp kind_string(%ChatMessageContent{kind: kind}), do: Atom.to_string(kind)
+  defp kind_string(%{kind: kind}) when is_binary(kind), do: kind
 
   defp sort_by_sequence(values) when is_list(values) do
     Enum.sort_by(values, &{sequence_value(&1), id_value(&1)})
@@ -595,11 +587,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   end
 
   defp sequence_value(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sequence_value(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sequence_value(_value), do: 0
 
   defp id_value(%{id: id}) when is_integer(id), do: id
-  defp id_value(%{"id" => id}) when is_integer(id), do: id
   defp id_value(_value), do: 0
 
   defp chunk_ids(ids) when is_list(ids) do
@@ -607,18 +597,5 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     |> Enum.filter(&is_integer/1)
     |> Enum.uniq()
     |> Enum.chunk_every(@chunk_size)
-  end
-
-  defp atom_to_string(nil), do: nil
-  defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_to_string(value) when is_binary(value), do: value
-  defp atom_to_string(value), do: to_string(value)
-
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
-    end
   end
 end

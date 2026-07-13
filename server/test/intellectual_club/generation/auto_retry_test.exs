@@ -60,7 +60,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
            %{
              raw_request: request_payload,
              raw_response: %{"id" => "resp_retry_success", "output" => []},
-             usage: %{"input_tokens" => 12, "output_tokens" => 3}
+             usage: %{input_tokens: 12, output_tokens: 3}
            }}
         )
       end

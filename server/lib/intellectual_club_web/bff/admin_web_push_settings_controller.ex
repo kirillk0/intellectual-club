@@ -18,7 +18,8 @@ defmodule IntellectualClubWeb.Bff.AdminWebPushSettingsController do
 
   def update(conn, params) do
     with {:ok, actor} <- Helpers.require_admin(conn),
-         {:ok, settings} <- Notifications.update_admin_settings(params, actor) do
+         {:ok, settings} <-
+           Notifications.update_admin_settings(admin_settings_params(params), actor) do
       json(conn, %{settings: settings})
     else
       {:error, %Plug.Conn{} = conn} -> conn
@@ -34,6 +35,14 @@ defmodule IntellectualClubWeb.Bff.AdminWebPushSettingsController do
       {:error, %Plug.Conn{} = conn} -> conn
       {:error, reason} -> render_error(conn, reason)
     end
+  end
+
+  defp admin_settings_params(params) do
+    %{
+      enabled: Map.get(params, "enabled"),
+      public_origin: Map.get(params, "public_origin"),
+      vapid_subject: Map.get(params, "vapid_subject")
+    }
   end
 
   defp render_error(conn, {:validation, message}) when is_binary(message) do

@@ -51,7 +51,6 @@ defmodule IntellectualClub.Tools.Registry do
 
   @spec supports_handoff?(String.t() | map() | nil) :: boolean()
   def supports_handoff?(%{type: type}), do: supports_handoff?(type)
-  def supports_handoff?(%{"type" => type}), do: supports_handoff?(type)
 
   def supports_handoff?(tool_type) when is_binary(tool_type) do
     driver = driver_for_type!(tool_type)

@@ -29,24 +29,21 @@ defmodule IntellectualClub.Outlets.Pairing do
   @spec start_pairing!(Plug.Conn.t(), map()) :: start_result()
   def start_pairing!(conn, payload) when is_map(payload) do
     metadata =
-      case Map.get(payload, "metadata", Map.get(payload, :metadata)) do
+      case Map.get(payload, "metadata") do
         %{} = m -> m
         _ -> %{}
       end
 
     runner_kind =
       payload
-      |> Map.get(
-        "runner_kind",
-        Map.get(payload, :runner_kind, Map.get(payload, "kind", Map.get(payload, :kind, "")))
-      )
+      |> Map.get("runner_kind", Map.get(payload, "kind", ""))
       |> to_string()
       |> String.trim()
       |> String.slice(0, 64)
 
     requested_name =
       payload
-      |> Map.get("requested_name", Map.get(payload, :requested_name, ""))
+      |> Map.get("requested_name", "")
       |> to_string()
       |> String.trim()
       |> String.slice(0, 255)
@@ -107,7 +104,7 @@ defmodule IntellectualClub.Outlets.Pairing do
         now = DateTime.utc_now()
         pairing = maybe_mark_expired!(pairing, now)
 
-        case to_string(pairing.status || "") do
+        case pairing.status do
           "pending" ->
             {:ok, %{status: "pending"}}
 
@@ -175,10 +172,10 @@ defmodule IntellectualClub.Outlets.Pairing do
         pairing = maybe_mark_expired!(pairing, now)
 
         cond do
-          to_string(pairing.status || "") == "expired" ->
+          pairing.status == "expired" ->
             {:error, "Pairing code expired."}
 
-          to_string(pairing.status || "") != "pending" ->
+          pairing.status != "pending" ->
             {:error, "Pairing code is not pending."}
 
           true ->
@@ -281,11 +278,10 @@ defmodule IntellectualClub.Outlets.Pairing do
 
   defp maybe_mark_expired!(%PairingRequest{} = pairing, now) do
     expires_at = pairing.expires_at
-    status = to_string(pairing.status || "")
 
     expired? =
       is_struct(expires_at, DateTime) and DateTime.compare(expires_at, now) != :gt and
-        status in ["pending", "approved"]
+        pairing.status in ["pending", "approved"]
 
     if expired? do
       pairing
@@ -358,11 +354,7 @@ defmodule IntellectualClub.Outlets.Pairing do
     secrets = Map.get(tool_instance, :secrets) || %{}
     secrets = if is_map(secrets), do: secrets, else: %{}
 
-    (Map.get(secrets, "token") ||
-       Map.get(secrets, :token) ||
-       Map.get(secrets, "bearer_token") ||
-       Map.get(secrets, :bearer_token) ||
-       "")
+    (Map.get(secrets, "token") || Map.get(secrets, "bearer_token") || "")
     |> to_string()
     |> String.trim()
   end
@@ -401,7 +393,7 @@ defmodule IntellectualClub.Outlets.Pairing do
 
     hostname =
       metadata
-      |> Map.get("hostname", Map.get(metadata, :hostname, ""))
+      |> Map.get("hostname", "")
       |> to_string()
       |> String.trim()
 

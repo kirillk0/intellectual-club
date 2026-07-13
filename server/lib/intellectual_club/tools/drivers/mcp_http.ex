@@ -100,7 +100,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
       tool_instance
       |> Map.get(:config)
       |> case do
-        %{} = cfg -> Map.get(cfg, "server_url") || Map.get(cfg, :server_url)
+        %{} = cfg -> Map.get(cfg, "server_url")
         _ -> nil
       end
       |> to_string()
@@ -118,9 +118,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     secrets = if is_map(secrets), do: secrets, else: %{}
 
     (Map.get(secrets, "bearer_token") ||
-       Map.get(secrets, :bearer_token) ||
        Map.get(secrets, "token") ||
-       Map.get(secrets, :token) ||
        "")
     |> to_string()
     |> String.trim()

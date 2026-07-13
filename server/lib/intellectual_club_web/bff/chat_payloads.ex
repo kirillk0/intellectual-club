@@ -141,7 +141,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
 
   def active_generation_message_id(messages) when is_list(messages) do
     Enum.find_value(messages, fn message ->
-      if message.status in [:generating, "generating"], do: message.id, else: nil
+      if message.status == :generating, do: message.id, else: nil
     end)
   end
 
@@ -248,18 +248,15 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   defp prompt_block_source(:chat), do: "chat"
   defp prompt_block_source(:config), do: "config"
   defp prompt_block_source(:user), do: "user"
-  defp prompt_block_source(source) when is_binary(source), do: source
   defp prompt_block_source(_source), do: nil
 
   defp prompt_block_selection(:top), do: "top"
   defp prompt_block_selection(:bottom), do: "bottom"
-  defp prompt_block_selection(value) when is_binary(value), do: value
   defp prompt_block_selection(_value), do: nil
 
   defp binding_selection(binding) when is_map(binding) do
     case Map.get(binding, :selection) do
       :top -> :top
-      "top" -> :top
       _ -> :bottom
     end
   end

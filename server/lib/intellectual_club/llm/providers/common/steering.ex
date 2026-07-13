@@ -12,9 +12,7 @@ defmodule IntellectualClub.Llm.Providers.Common.Steering do
   defp texts_from_item(text) when is_binary(text), do: [text]
 
   defp texts_from_item(%{} = item) do
-    direct_text =
-      Map.get(item, :text, Map.get(item, "text")) ||
-        Map.get(item, :content, Map.get(item, "content"))
+    direct_text = Map.get(item, :text) || Map.get(item, :content)
 
     cond do
       is_binary(direct_text) ->
@@ -37,18 +35,9 @@ defmodule IntellectualClub.Llm.Providers.Common.Steering do
       is_list(Map.get(item, :contents)) ->
         Map.get(item, :contents)
 
-      is_list(Map.get(item, "contents")) ->
-        Map.get(item, "contents")
-
       is_map(Map.get(item, :contents_by_sequence)) ->
         item
         |> Map.get(:contents_by_sequence)
-        |> Map.values()
-        |> Enum.sort_by(&content_sequence/1)
-
-      is_map(Map.get(item, "contents_by_sequence")) ->
-        item
-        |> Map.get("contents_by_sequence")
         |> Map.values()
         |> Enum.sort_by(&content_sequence/1)
 
@@ -60,16 +49,16 @@ defmodule IntellectualClub.Llm.Providers.Common.Steering do
   defp texts_from_content(text) when is_binary(text), do: [text]
 
   defp texts_from_content(%{} = content) do
-    kind = Map.get(content, :kind, Map.get(content, "kind"))
-    text = Map.get(content, :content_text, Map.get(content, "content_text"))
+    kind = Map.get(content, :kind)
+    text = Map.get(content, :content_text)
 
-    if kind in [:text, "text", nil] and is_binary(text), do: [text], else: []
+    if kind in [:text, nil] and is_binary(text), do: [text], else: []
   end
 
   defp texts_from_content(_content), do: []
 
   defp content_sequence(%{} = content) do
-    Map.get(content, :sequence, Map.get(content, "sequence", 0))
+    Map.get(content, :sequence, 0)
   end
 
   defp content_sequence(_content), do: 0

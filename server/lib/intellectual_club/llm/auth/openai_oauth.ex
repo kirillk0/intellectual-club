@@ -308,24 +308,17 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   end
 
   defp normalize_json(body) when is_map(body) do
-    {:ok, body |> stringify_keys()}
+    {:ok, body}
   end
 
   defp normalize_json(body) when is_binary(body) do
     case Jason.decode(body) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, stringify_keys(decoded)}
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
       _ -> :error
     end
   end
 
   defp normalize_json(_body), do: :error
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
-      {k, v} -> {to_string(k), v}
-    end)
-  end
 
   defp normalize_expires_in(value) when is_integer(value) and value > 0, do: value
 

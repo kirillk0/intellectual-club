@@ -306,9 +306,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
     items = RuntimeTrace.persistable(step).items
     sequences = Enum.map(items, & &1.sequence)
 
-    assert Enum.map(items, &{&1.sequence, &1.type}) == [{1, "reasoning"}, {2, "tool_call"}]
+    assert Enum.map(items, &{&1.sequence, &1.type}) == [{1, :reasoning}, {2, :tool_call}]
     assert sequences == Enum.uniq(sequences)
-    refute Enum.any?(items, &(&1.type == "answer"))
+    refute Enum.any?(items, &(&1.type == :answer))
   end
 
   test "marks overloaded streamed provider errors as retryable" do

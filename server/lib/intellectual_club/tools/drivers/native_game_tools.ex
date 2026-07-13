@@ -122,7 +122,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeGameTools do
   end
 
   defp parse_options(args) when is_map(args) do
-    raw_options = Map.get(args, "options", Map.get(args, :options))
+    raw_options = Map.get(args, "options")
 
     cond do
       not is_list(raw_options) ->
@@ -159,8 +159,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeGameTools do
   end
 
   defp normalize_option(%{} = raw, index) do
-    with {:ok, option} <- required_option(Map.get(raw, "option", Map.get(raw, :option)), index),
-         {:ok, weight} <- required_weight(Map.get(raw, "weight", Map.get(raw, :weight)), index) do
+    with {:ok, option} <- required_option(Map.get(raw, "option"), index),
+         {:ok, weight} <- required_weight(Map.get(raw, "weight"), index) do
       {:ok, %{index: index, option: option, weight: weight}}
     end
   end

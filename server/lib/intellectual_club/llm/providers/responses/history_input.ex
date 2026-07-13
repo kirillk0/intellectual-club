@@ -167,7 +167,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   defp item_for_tool_call(item) do
     case extract_responses_item(item) do
       %{} = responses_item ->
-        case get_any(responses_item, [{"type", :type}]) do
+        case get_any(responses_item, ["type"]) do
           "function_call" -> sanitize_item(responses_item)
           "reasoning" -> nil
           _other -> nil
@@ -175,14 +175,14 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
 
       _other ->
         tool_meta = extract_tool_meta(item)
-        raw = tool_meta |> get_any([{"raw", :raw}])
+        raw = tool_meta |> get_any(["raw"])
 
-        if is_map(raw) and is_map(get_any(raw, [{"function", :function}])) do
-          fn_spec = get_any(raw, [{"function", :function}]) || %{}
+        if is_map(raw) and is_map(get_any(raw, ["function"])) do
+          fn_spec = get_any(raw, ["function"]) || %{}
 
-          name = fn_spec |> get_any([{"name", :name}]) |> to_string() |> String.trim()
-          call_id = raw |> get_any([{"id", :id}]) |> to_string() |> String.trim()
-          args = fn_spec |> get_any([{"arguments", :arguments}]) |> normalize_arguments_json()
+          name = fn_spec |> get_any(["name"]) |> to_string() |> String.trim()
+          call_id = raw |> get_any(["id"]) |> to_string() |> String.trim()
+          args = fn_spec |> get_any(["arguments"]) |> normalize_arguments_json()
 
           if name == "" do
             nil
@@ -198,15 +198,15 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
             }
           end
         else
-          name = tool_meta |> get_any([{"name", :name}]) |> to_string() |> String.trim()
+          name = tool_meta |> get_any(["name"]) |> to_string() |> String.trim()
 
           call_id =
             tool_meta
-            |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+            |> get_any(["tool_call_id", "call_id"])
             |> to_string()
             |> String.trim()
 
-          args = tool_meta |> get_any([{"arguments", :arguments}]) |> normalize_arguments_json()
+          args = tool_meta |> get_any(["arguments"]) |> normalize_arguments_json()
 
           if name == "" do
             nil
@@ -228,7 +228,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   defp item_for_tool_result(item) do
     case extract_responses_item(item) do
       %{} = responses_item ->
-        case get_any(responses_item, [{"type", :type}]) do
+        case get_any(responses_item, ["type"]) do
           "function_call_output" ->
             sanitize_item(responses_item)
 
@@ -244,7 +244,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
 
         call_id =
           tool_meta
-          |> get_any([{"tool_call_id", :tool_call_id}, {"call_id", :call_id}])
+          |> get_any(["tool_call_id", "call_id"])
           |> to_string()
           |> String.trim()
 
@@ -265,7 +265,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
     item
     |> History.opaque_payloads()
     |> Enum.find_value(fn payload ->
-      responses_item = get_any(payload, [{"responses_item", :responses_item}])
+      responses_item = get_any(payload, ["responses_item"])
 
       cond do
         is_map(responses_item) ->
@@ -274,7 +274,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
         is_map(payload) and
             MapSet.member?(
               @responses_item_types,
-              to_string(get_any(payload, [{"type", :type}]) || "")
+              to_string(get_any(payload, ["type"]) || "")
             ) ->
           Map.new(payload)
 
@@ -288,11 +288,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
     item
     |> History.opaque_payloads()
     |> Enum.find(%{}, fn payload ->
-      not is_map(get_any(payload, [{"responses_item", :responses_item}])) and
-        (Map.has_key?(payload, "tool_call_id") or Map.has_key?(payload, :tool_call_id) or
-           Map.has_key?(payload, "call_id") or Map.has_key?(payload, :call_id) or
-           Map.has_key?(payload, "raw") or Map.has_key?(payload, :raw) or
-           Map.has_key?(payload, "name") or Map.has_key?(payload, :name))
+      not is_map(get_any(payload, ["responses_item"])) and
+        (Map.has_key?(payload, "tool_call_id") or Map.has_key?(payload, "call_id") or
+           Map.has_key?(payload, "raw") or Map.has_key?(payload, "name"))
     end)
   end
 
@@ -395,8 +393,8 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   end
 
   defp sanitize_item(item) when is_map(item) do
-    item_type = get_any(item, [{"type", :type}]) |> to_string()
-    id = get_any(item, [{"id", :id}])
+    item_type = get_any(item, ["type"]) |> to_string()
+    id = get_any(item, ["id"])
 
     if item_type == "reasoning" and is_binary(id) and String.starts_with?(id, "rs_") do
       Map.delete(Map.new(item), "id")
@@ -423,9 +421,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   defp normalize_arguments_json(other), do: to_string(other)
 
   defp get_any(map, keys) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, fn {string_key, atom_key} ->
-      Map.get(map, string_key, Map.get(map, atom_key))
-    end)
+    Enum.find_value(keys, &Map.get(map, &1))
   end
 
   defp get_any(_map, _keys), do: nil

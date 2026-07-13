@@ -248,7 +248,7 @@ defmodule IntellectualClub.Outlets.Runtime do
       normalize_string(payload, "runner_session_id", default: runner_id)
 
     metadata =
-      case Map.get(payload, "metadata", Map.get(payload, :metadata)) do
+      case Map.get(payload, "metadata") do
         %{} = m -> m
         _ -> %{}
       end
@@ -440,7 +440,7 @@ defmodule IntellectualClub.Outlets.Runtime do
     runner_session_id = normalize_string(payload, "runner_session_id", default: runner_id)
 
     metadata =
-      case Map.get(payload, "metadata", Map.get(payload, :metadata)) do
+      case Map.get(payload, "metadata") do
         %{} = m -> m
         _ -> %{}
       end
@@ -474,7 +474,7 @@ defmodule IntellectualClub.Outlets.Runtime do
             {:ok, instance, state} ->
               status =
                 payload
-                |> Map.get("status", Map.get(payload, :status, "done"))
+                |> Map.get("status", "done")
                 |> to_string()
                 |> String.trim()
                 |> case do
@@ -484,29 +484,29 @@ defmodule IntellectualClub.Outlets.Runtime do
 
               result_text =
                 payload
-                |> Map.get("result_text", Map.get(payload, :result_text, ""))
+                |> Map.get("result_text", "")
                 |> to_string()
 
               error_text =
                 payload
-                |> Map.get("error_text", Map.get(payload, :error_text, ""))
+                |> Map.get("error_text", "")
                 |> to_string()
 
               result_raw =
-                case Map.get(payload, "result_raw", Map.get(payload, :result_raw)) do
+                case Map.get(payload, "result_raw") do
                   %{} = m -> m
                   nil -> %{}
                   other -> %{"result" => other}
                 end
 
               result_media =
-                case Map.get(payload, "result_media", Map.get(payload, :result_media)) do
+                case Map.get(payload, "result_media") do
                   list when is_list(list) -> Enum.filter(list, &is_map/1)
                   _ -> []
                 end
 
               result_artifacts =
-                case Map.get(payload, "result_artifacts", Map.get(payload, :result_artifacts)) do
+                case Map.get(payload, "result_artifacts") do
                   list when is_list(list) -> Enum.filter(list, &is_map/1)
                   _ -> []
                 end
@@ -639,7 +639,7 @@ defmodule IntellectualClub.Outlets.Runtime do
   defp seconds_to_ms(seconds) when is_number(seconds), do: trunc(seconds * 1000)
 
   defp poll_call_timeout_ms(%Config{} = cfg, payload) do
-    raw = Map.get(payload, "max_wait_seconds", Map.get(payload, :max_wait_seconds))
+    raw = Map.get(payload, "max_wait_seconds")
 
     value =
       cond do
@@ -876,14 +876,13 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   defp expected_runner_values(expected_runner) when is_map(expected_runner) do
     runner_id =
-      Map.get(expected_runner, "runner_id", Map.get(expected_runner, :runner_id))
+      Map.get(expected_runner, "runner_id")
       |> normalize_optional_string()
 
     runner_session_id =
       Map.get(
         expected_runner,
-        "runner_session_id",
-        Map.get(expected_runner, :runner_session_id)
+        "runner_session_id"
       )
       |> normalize_optional_string()
 
@@ -902,7 +901,7 @@ defmodule IntellectualClub.Outlets.Runtime do
   end
 
   defp normalize_poll_params(instance, payload, %Config{} = cfg, runner_id, runner_session_id) do
-    capacity_raw = Map.get(payload, "capacity", Map.get(payload, :capacity, cfg.max_concurrency))
+    capacity_raw = Map.get(payload, "capacity", cfg.max_concurrency)
 
     capacity =
       cond do
@@ -933,8 +932,7 @@ defmodule IntellectualClub.Outlets.Runtime do
 
     capacity = max(0, min(capacity, cfg.max_concurrency - active_execute))
 
-    control_capacity_raw =
-      Map.get(payload, "control_capacity", Map.get(payload, :control_capacity, 0))
+    control_capacity_raw = Map.get(payload, "control_capacity", 0)
 
     control_capacity =
       cond do
@@ -970,7 +968,7 @@ defmodule IntellectualClub.Outlets.Runtime do
       Map.get(
         payload,
         "max_wait_seconds",
-        Map.get(payload, :max_wait_seconds, cfg.poll_max_wait_seconds)
+        cfg.poll_max_wait_seconds
       )
 
     max_wait_seconds =

@@ -129,7 +129,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
 
   @spec response_steps(term()) :: list(map())
   def response_steps(%{"steps" => steps}) when is_list(steps), do: normalize_steps(steps)
-  def response_steps(%{steps: steps}) when is_list(steps), do: normalize_steps(steps)
   def response_steps(_raw_response), do: []
 
   @spec function_result_step(map(), keyword()) :: map()
@@ -213,10 +212,10 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   defp legacy_steps_from_history_entry(message, opts) do
     case History.normalize_message(message) do
       %{"role" => "user", "content" => content} ->
-        [%{"type" => "user_input", "content" => content_blocks(content, opts)}]
+        [%{"type" => "user_input", "content" => payload_content_blocks(content, opts)}]
 
       %{"role" => "assistant", "content" => content} ->
-        [%{"type" => "model_output", "content" => content_blocks(content, opts)}]
+        [%{"type" => "model_output", "content" => payload_content_blocks(content, opts)}]
 
       _other ->
         []
@@ -229,7 +228,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         contents =
           History.project_contents_for_item_types(message, History.user_input_item_types())
 
-        [%{"type" => "user_input", "content" => content_blocks(contents, opts)}]
+        [%{"type" => "user_input", "content" => trace_content_blocks(contents, opts)}]
 
       "assistant" ->
         steps =
@@ -281,7 +280,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   defp step_from_generic_trace_item(item, opts) do
     case History.item_type(item) do
       :reasoning ->
-        summary = content_blocks(History.item_text(item), opts)
+        summary = text_blocks(History.item_text(item))
 
         if summary == [] do
           []
@@ -290,7 +289,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         end
 
       type when type in [:answer, :handoff_summary] ->
-        content = content_blocks(History.item_text(item), opts)
+        content = text_blocks(History.item_text(item))
 
         if content == [] do
           []
@@ -311,7 +310,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         end
 
       :steering ->
-        content = content_blocks(History.item_text(item), opts)
+        content = text_blocks(History.item_text(item))
 
         if content == [] do
           []
@@ -422,14 +421,16 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     end)
   end
 
-  defp content_blocks(contents, opts) when is_list(contents) and is_list(opts) do
+  defp trace_content_blocks(contents, opts) when is_list(contents) and is_list(opts) do
     contents
     |> Enum.flat_map(fn
       %{} = content ->
-        case content_kind(content) do
+        case Map.get(content, :kind) do
           :text ->
-            text = map_get(content, :content_text, "content_text", "") |> to_string()
-            if text == "", do: [], else: [%{"type" => "text", "text" => text}]
+            content
+            |> Map.get(:content_text, "")
+            |> to_string()
+            |> text_blocks()
 
           :media ->
             media_content_blocks(content, opts)
@@ -439,21 +440,22 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         end
 
       other ->
-        content_blocks(other, opts)
+        text_blocks(other)
     end)
   end
 
-  defp content_blocks(content, opts) when is_binary(content) and is_list(opts) do
-    if content == "", do: [], else: [%{"type" => "text", "text" => content}]
+  defp payload_content_blocks(content, _opts) when is_binary(content), do: text_blocks(content)
+
+  defp payload_content_blocks(contents, opts) when is_list(contents) and is_list(opts) do
+    Enum.flat_map(contents, &payload_content_blocks(&1, opts))
   end
 
-  defp content_blocks(%{} = content, opts) when is_list(opts) do
-    type = content |> map_get(:type, "type") |> to_string()
+  defp payload_content_blocks(%{} = content, opts) when is_list(opts) do
+    type = content |> Map.get("type") |> to_string()
 
     cond do
       type == "text" ->
-        text = content |> map_get(:text, "text", "") |> to_string()
-        if text == "", do: [], else: [%{"type" => "text", "text" => text}]
+        content |> Map.get("text", "") |> to_string() |> text_blocks()
 
       type == "image" ->
         [RequestPayload.stringify_keys(content)]
@@ -463,8 +465,15 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     end
   end
 
-  defp content_blocks(nil, _opts), do: []
-  defp content_blocks(content, opts), do: content |> to_string() |> content_blocks(opts)
+  defp payload_content_blocks(nil, _opts), do: []
+  defp payload_content_blocks(content, _opts), do: text_blocks(content)
+
+  defp text_blocks(text) do
+    case to_string(text || "") do
+      "" -> []
+      value -> [%{"type" => "text", "text" => value}]
+    end
+  end
 
   defp media_content_blocks(content, opts) when is_map(content) and is_list(opts) do
     supports_image_input = Keyword.get(opts, :supports_image_input, false)
@@ -751,7 +760,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     content
     |> Enum.filter(&is_map/1)
     |> Enum.flat_map(fn content ->
-      case content_blocks(content, []) do
+      case payload_content_blocks(content, []) do
         [] -> []
         blocks -> blocks
       end
@@ -759,7 +768,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   end
 
   defp normalize_content_list(content) when is_binary(content),
-    do: content_blocks(content, [])
+    do: payload_content_blocks(content, [])
 
   defp normalize_content_list(_content), do: []
 
@@ -770,24 +779,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
       Map.delete(step, key)
     else
       Map.put(step, key, content)
-    end
-  end
-
-  defp content_kind(content) when is_map(content) do
-    content
-    |> map_get(:kind, "kind")
-    |> case do
-      value when value in [:text, "text"] -> :text
-      value when value in [:media, "media"] -> :media
-      _other -> :other
-    end
-  end
-
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
     end
   end
 
@@ -826,7 +817,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   defp present?(_value), do: true
 
   defp result_value(%{} = result, key) when is_atom(key) do
-    Map.get(result, key, Map.get(result, Atom.to_string(key)))
+    Map.get(result, key)
   end
 
   defp result_value(_result, _key), do: nil

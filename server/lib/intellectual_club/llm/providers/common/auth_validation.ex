@@ -43,8 +43,6 @@ defmodule IntellectualClub.Llm.Providers.Common.AuthValidation do
     end
   end
 
-  defp normalize_id(value) when is_atom(value), do: Atom.to_string(value)
-
   defp normalize_id(value) when is_binary(value) do
     value
     |> String.trim()

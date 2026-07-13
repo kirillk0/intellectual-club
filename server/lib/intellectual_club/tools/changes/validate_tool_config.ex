@@ -138,7 +138,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
 
   defp required_fields(%{} = schema) do
     schema
-    |> Map.get("required", Map.get(schema, :required, []))
+    |> Map.get("required", [])
     |> List.wrap()
     |> Enum.map(fn value -> value |> to_string() |> String.trim() end)
     |> Enum.reject(&(&1 == ""))
@@ -168,7 +168,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
     |> case do
       %{} = field_schema ->
         field_schema
-        |> Map.get("title", Map.get(field_schema, :title, ""))
+        |> Map.get("title", "")
         |> to_string()
         |> String.trim()
 
@@ -183,7 +183,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
 
   defp schema_properties(%{} = schema) do
     schema
-    |> Map.get("properties", Map.get(schema, :properties, %{}))
+    |> Map.get("properties", %{})
     |> normalize_map()
   end
 

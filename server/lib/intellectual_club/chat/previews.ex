@@ -3,6 +3,11 @@ defmodule IntellectualClub.Chat.Previews do
   Helpers for compact chat and message previews.
   """
 
+  alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
+
   @spec format_preview(String.t() | nil, integer()) :: String.t() | nil
   def format_preview(content, limit) when is_integer(limit) do
     preview =
@@ -24,41 +29,33 @@ defmodule IntellectualClub.Chat.Previews do
     end
   end
 
-  @spec message_preview_text(map()) :: String.t()
-  def message_preview_text(message) when is_map(message) do
+  @spec message_preview_text(ChatMessage.t()) :: String.t()
+  def message_preview_text(%ChatMessage{} = message) do
     wanted_types =
-      case Map.get(message, :role) do
+      case message.role do
         :user -> [:input, :handoff_request, :handoff_context]
-        "user" -> [:input, :handoff_request, :handoff_context]
         :assistant -> [:answer, :handoff_summary]
-        "assistant" -> [:answer, :handoff_summary]
         _ -> []
       end
 
     {texts, media_count} =
-      message
-      |> Map.get(:steps, [])
-      |> Enum.sort_by(&sort_seq/1)
-      |> Enum.flat_map(fn step ->
-        step
-        |> Map.get(:items, [])
-        |> Enum.sort_by(&sort_seq/1)
+      message.steps
+      |> Enum.sort_by(& &1.sequence)
+      |> Enum.flat_map(fn %ChatMessageStep{} = step ->
+        Enum.sort_by(step.items, & &1.sequence)
       end)
-      |> Enum.filter(&(Map.get(&1, :type) in wanted_types))
-      |> Enum.reduce({[], 0}, fn item, {texts, media_count} ->
-        contents = Map.get(item, :contents) || []
+      |> Enum.filter(fn %ChatMessageItem{} = item -> item.type in wanted_types end)
+      |> Enum.reduce({[], 0}, fn %ChatMessageItem{} = item, {texts, media_count} ->
+        contents = item.contents
 
         item_text =
           contents
-          |> Enum.filter(fn content -> Map.get(content, :kind) in [:text, "text"] end)
-          |> Enum.sort_by(&sort_seq/1)
-          |> Enum.map(fn content -> to_string(Map.get(content, :content_text) || "") end)
-          |> Enum.join("")
+          |> Enum.filter(fn %ChatMessageContent{} = content -> content.kind == :text end)
+          |> Enum.sort_by(& &1.sequence)
+          |> Enum.map_join("", & &1.content_text)
 
         item_media_count =
-          Enum.count(contents, fn content ->
-            Map.get(content, :kind) in [:media, "media"]
-          end)
+          Enum.count(contents, fn %ChatMessageContent{} = content -> content.kind == :media end)
 
         next_texts =
           if String.trim(item_text) == "" do
@@ -78,21 +75,15 @@ defmodule IntellectualClub.Chat.Previews do
     end
   end
 
-  @spec message_preview(map(), integer()) :: {String.t() | nil, String.t() | nil}
-  def message_preview(message, limit) when is_map(message) and is_integer(limit) do
+  @spec message_preview(ChatMessage.t(), integer()) :: {String.t() | nil, String.t() | nil}
+  def message_preview(%ChatMessage{} = message, limit) when is_integer(limit) do
     role =
-      case Map.get(message, :role) do
+      case message.role do
         :user -> "user"
-        "user" -> "user"
         :assistant -> "assistant"
-        "assistant" -> "assistant"
         _ -> nil
       end
 
     {format_preview(message_preview_text(message), limit), role}
   end
-
-  defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(_other), do: 0
 end

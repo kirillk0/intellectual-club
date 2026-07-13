@@ -182,7 +182,6 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     title =
       case Keyword.get(opts, :handoff_mode, :manual) do
         :tool -> "Work continued"
-        "tool" -> "Work continued"
         _other -> "Conversation continued"
       end
 
@@ -399,7 +398,8 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     Ash.get!(Chat, chat_id, actor: actor, load: [:last_message])
   end
 
-  defp handoff_child?(%Chat{parent_relation_kind: value}), do: value in [:handoff, "handoff"]
+  defp handoff_child?(%Chat{parent_relation_kind: :handoff}), do: true
+  defp handoff_child?(%Chat{}), do: false
 
   defp conversation_entries(chain, actor, opts) when is_list(chain) do
     exclude_message_ids =
@@ -480,7 +480,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
 
   defp maybe_drop_handoff_child_root(branch, %Chat{} = chat, index) do
     case branch do
-      [%ChatMessage{role: role} | rest] when index > 0 and role in [:user, "user"] ->
+      [%ChatMessage{role: :user} | rest] when index > 0 ->
         if handoff_child?(chat), do: rest, else: branch
 
       _other ->
@@ -497,7 +497,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     }
   end
 
-  defp message_entries(%ChatMessage{role: role} = message) when role in [:user, "user"] do
+  defp message_entries(%ChatMessage{role: :user} = message) do
     text = message_text(message, [:input, :handoff_request, :handoff_context])
 
     if String.trim(text) == "" do
@@ -507,8 +507,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     end
   end
 
-  defp message_entries(%ChatMessage{role: role} = message)
-       when role in [:assistant, "assistant"] do
+  defp message_entries(%ChatMessage{role: :assistant} = message) do
     message_item_entries(message, [:answer, :handoff_summary, :artifact, :steering])
   end
 
@@ -527,7 +526,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     end)
     |> Enum.reject(fn {_type, text} -> String.trim(text) == "" end)
     |> Enum.map(fn {type, text} ->
-      role = if type in [:steering, "steering"], do: :user, else: :assistant
+      role = if type == :steering, do: :user, else: :assistant
       %{role: role, timestamp: message.created_at, text: text}
     end)
   end
@@ -553,10 +552,10 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     |> ordered()
     |> Enum.flat_map(fn content ->
       case Map.get(content, :kind) do
-        kind when kind in [:text, "text"] ->
+        :text ->
           [to_string(Map.get(content, :content_text) || "")]
 
-        kind when kind in [:media, "media"] ->
+        :media ->
           [media_reference(message, content)]
 
         _other ->

@@ -713,7 +713,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp read_command(args) when is_map(args) do
-    argv_raw = Map.get(args, "argv", Map.get(args, :argv))
+    argv_raw = Map.get(args, "argv")
 
     argv =
       cond do
@@ -745,7 +745,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp read_env(args) when is_map(args) do
-    env_raw = Map.get(args, "env", Map.get(args, :env))
+    env_raw = Map.get(args, "env")
 
     cond do
       is_nil(env_raw) ->
@@ -775,7 +775,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp read_timeout_seconds(args, default_timeout_seconds) when is_map(args) do
-    raw = Map.get(args, "timeout_seconds", Map.get(args, :timeout_seconds))
+    raw = Map.get(args, "timeout_seconds")
 
     value =
       cond do
@@ -1428,12 +1428,12 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp read_string(map, key, default) when is_map(map) do
-    value = Map.get(map, key, Map.get(map, String.to_atom(key), default))
+    value = Map.get(map, key, default)
     if is_nil(value), do: default, else: to_string(value)
   end
 
   defp read_integer(map, key, default) when is_map(map) do
-    value = Map.get(map, key, Map.get(map, String.to_atom(key), default))
+    value = Map.get(map, key, default)
 
     cond do
       is_integer(value) -> value
@@ -1450,12 +1450,12 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   end
 
   defp read_secret_string(secrets, key) when is_map(secrets) do
-    value = Map.get(secrets, key, Map.get(secrets, String.to_atom(key), ""))
+    value = Map.get(secrets, key, "")
     value |> to_string() |> String.trim()
   end
 
   defp read_optional_string(map, key) when is_map(map) do
-    value = Map.get(map, key, Map.get(map, String.to_atom(key), ""))
+    value = Map.get(map, key, "")
     value |> to_string() |> String.trim()
   end
 
@@ -1495,12 +1495,12 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
 
   defp file_result(file) do
     %{
-      "file_id" => file.id,
-      "file_external_id" => file.external_id,
-      "filename" => file.filename,
-      "mime_type" => file.mime_type,
-      "size_bytes" => file.size_bytes,
-      "sha256" => file.sha256
+      file_id: file.id,
+      file_external_id: file.external_id,
+      filename: file.filename,
+      mime_type: file.mime_type,
+      size_bytes: file.size_bytes,
+      sha256: file.sha256
     }
   end
 end

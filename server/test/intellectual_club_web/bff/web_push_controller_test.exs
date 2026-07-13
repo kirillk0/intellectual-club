@@ -101,7 +101,7 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
     endpoint = "https://push.example/current"
 
     {:ok, _subscription} =
-      Notifications.upsert_subscription(user, subscription_payload(endpoint))
+      Notifications.upsert_subscription(user, subscription_attributes(endpoint))
 
     response =
       conn
@@ -142,7 +142,7 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
     endpoint = "https://push.example/owned"
 
     {:ok, _subscription} =
-      Notifications.upsert_subscription(owner, subscription_payload(endpoint))
+      Notifications.upsert_subscription(owner, subscription_attributes(endpoint))
 
     response =
       conn
@@ -292,6 +292,17 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
         "auth" => "auth-key"
       },
       "key_revision" => 1
+    }
+  end
+
+  defp subscription_attributes(endpoint) do
+    %{
+      endpoint: endpoint,
+      keys: %{
+        p256dh: "p256dh-key",
+        auth: "auth-key"
+      },
+      key_revision: 1
     }
   end
 

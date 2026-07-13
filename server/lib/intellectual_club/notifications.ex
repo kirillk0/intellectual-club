@@ -403,18 +403,12 @@ defmodule IntellectualClub.Notifications do
   defp default_vapid_subject(_public_origin), do: @default_vapid_subject
 
   defp settings_payload(params) do
-    enabled = parse_boolean(Map.get(params, "enabled", Map.get(params, :enabled)), false)
+    enabled = parse_boolean(Map.get(params, :enabled), false)
 
     payload = %{
       enabled: enabled,
-      public_origin:
-        normalize_optional_string(
-          Map.get(params, "public_origin", Map.get(params, :public_origin))
-        ),
-      vapid_subject:
-        normalize_optional_string(
-          Map.get(params, "vapid_subject", Map.get(params, :vapid_subject))
-        )
+      public_origin: normalize_optional_string(Map.get(params, :public_origin)),
+      vapid_subject: normalize_optional_string(Map.get(params, :vapid_subject))
     }
 
     {:ok, payload}
@@ -480,23 +474,15 @@ defmodule IntellectualClub.Notifications do
   defp local_host?(host), do: host in ["localhost", "127.0.0.1", "::1"]
 
   defp subscription_payload(params, settings, user_agent) do
-    keys = Map.get(params, "keys", Map.get(params, :keys, %{}))
+    keys = Map.get(params, :keys, %{})
 
     payload = %{
-      endpoint:
-        normalize_required_string(Map.get(params, "endpoint", Map.get(params, :endpoint))),
-      p256dh: normalize_required_string(Map.get(keys, "p256dh", Map.get(keys, :p256dh))),
-      auth: normalize_required_string(Map.get(keys, "auth", Map.get(keys, :auth))),
+      endpoint: normalize_required_string(Map.get(params, :endpoint)),
+      p256dh: normalize_required_string(Map.get(keys, :p256dh)),
+      auth: normalize_required_string(Map.get(keys, :auth)),
       user_agent: normalize_optional_string(user_agent),
-      key_revision:
-        parse_positive_integer(
-          Map.get(params, "key_revision", Map.get(params, :key_revision)),
-          settings.key_revision
-        ),
-      expiration_time:
-        parse_optional_non_negative_integer(
-          Map.get(params, "expirationTime", Map.get(params, :expiration_time))
-        ),
+      key_revision: parse_positive_integer(Map.get(params, :key_revision), settings.key_revision),
+      expiration_time: parse_optional_non_negative_integer(Map.get(params, :expiration_time)),
       last_seen_at: DateTime.utc_now()
     }
 
@@ -524,13 +510,10 @@ defmodule IntellectualClub.Notifications do
 
   defp client_state_payload(params) do
     payload = %{
-      endpoint:
-        normalize_required_string(Map.get(params, "endpoint", Map.get(params, :endpoint))),
-      client_id:
-        normalize_required_string(Map.get(params, "client_id", Map.get(params, :client_id))),
-      chat_id:
-        parse_optional_positive_integer(Map.get(params, "chat_id", Map.get(params, :chat_id))),
-      visible: parse_boolean(Map.get(params, "visible", Map.get(params, :visible)), false)
+      endpoint: normalize_required_string(Map.get(params, :endpoint)),
+      client_id: normalize_required_string(Map.get(params, :client_id)),
+      chat_id: parse_optional_positive_integer(Map.get(params, :chat_id)),
+      visible: parse_boolean(Map.get(params, :visible), false)
     }
 
     {:ok, payload}
@@ -557,13 +540,9 @@ defmodule IntellectualClub.Notifications do
 
   defp generation_seen_payload(params) do
     payload = %{
-      chat_id:
-        parse_optional_positive_integer(Map.get(params, "chat_id", Map.get(params, :chat_id))),
-      message_id:
-        parse_optional_positive_integer(
-          Map.get(params, "message_id", Map.get(params, :message_id))
-        ),
-      status: normalize_generation_status(Map.get(params, "status", Map.get(params, :status)))
+      chat_id: parse_optional_positive_integer(Map.get(params, :chat_id)),
+      message_id: parse_optional_positive_integer(Map.get(params, :message_id)),
+      status: normalize_generation_status(Map.get(params, :status))
     }
 
     {:ok, payload}
@@ -821,9 +800,7 @@ defmodule IntellectualClub.Notifications do
   defp parse_boolean(_value, default), do: default
 
   defp normalize_generation_status(:done), do: :done
-  defp normalize_generation_status("done"), do: :done
   defp normalize_generation_status(:error), do: :error
-  defp normalize_generation_status("error"), do: :error
   defp normalize_generation_status(_status), do: nil
 
   defp parse_positive_integer(value, default) do

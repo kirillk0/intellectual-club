@@ -61,13 +61,15 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   end
 
   defp normalize_parameters(nil), do: %{}
-  defp normalize_parameters(parameters) when is_map(parameters), do: Map.new(parameters)
+  defp normalize_parameters(parameters) when is_map(parameters), do: stringify_keys(parameters)
   defp normalize_parameters(_other), do: %{}
 
-  defp normalize_messages(messages) when is_list(messages), do: messages
+  defp normalize_messages(messages) when is_list(messages), do: stringify_keys(messages)
   defp normalize_messages(_other), do: []
 
   defp normalize_responses_input(messages) when is_list(messages) do
+    messages = normalize_messages(messages)
+
     if responses_items?(messages) do
       normalize_responses_items(messages)
     else
@@ -75,13 +77,13 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
       |> Enum.flat_map(fn msg ->
         role =
           msg
-          |> Map.get("role", Map.get(msg, :role, ""))
+          |> Map.get("role", "")
           |> to_string()
           |> String.trim()
 
         content =
           msg
-          |> Map.get("content", Map.get(msg, :content, ""))
+          |> Map.get("content", "")
           |> to_string()
 
         case role do
@@ -116,7 +118,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   defp responses_items?(messages) when is_list(messages) do
     Enum.any?(messages, fn
       %{} = msg ->
-        type = Map.get(msg, "type", Map.get(msg, :type))
+        type = Map.get(msg, "type")
 
         is_binary(type) and
           type in ["message", "reasoning", "function_call", "function_call_output"]
@@ -129,7 +131,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   defp normalize_responses_items(items) when is_list(items) do
     items
     |> Enum.filter(&is_map/1)
-    |> Enum.map(&Map.new/1)
+    |> Enum.map(&stringify_keys/1)
   end
 
   defp normalize_responses_parameters(parameters) when is_map(parameters) do
@@ -139,13 +141,6 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
 
         parameters
         |> Map.delete("max_tokens")
-        |> Map.put("max_output_tokens", value)
-
-      Map.has_key?(parameters, :max_tokens) ->
-        value = Map.get(parameters, :max_tokens)
-
-        parameters
-        |> Map.delete(:max_tokens)
         |> Map.put("max_output_tokens", value)
 
       true ->
@@ -158,15 +153,12 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   defp maybe_put_include(payload, include) when is_map(payload) and is_list(include) do
     include =
       payload
-      |> Map.get("include", Map.get(payload, :include, []))
+      |> Map.get("include", [])
       |> normalize_include()
       |> Kernel.++(normalize_include(include))
       |> Enum.uniq()
 
-    payload =
-      payload
-      |> Map.delete("include")
-      |> Map.delete(:include)
+    payload = Map.delete(payload, "include")
 
     if include == [] do
       payload
@@ -190,7 +182,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
     tools =
       tools
       |> Enum.filter(&is_map/1)
-      |> Enum.map(&Map.new/1)
+      |> Enum.map(&stringify_keys/1)
 
     if tools == [] do
       payload
@@ -209,8 +201,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
       |> to_string()
       |> String.trim()
 
-    has_instructions? =
-      Map.has_key?(payload, "instructions") or Map.has_key?(payload, :instructions)
+    has_instructions? = Map.has_key?(payload, "instructions")
 
     if instructions != "" and not has_instructions? do
       Map.put(payload, "instructions", instructions)
@@ -234,13 +225,10 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   defp pop_responses_tools(payload) when is_map(payload) do
     tools =
       payload
-      |> Map.get("tools", Map.get(payload, :tools, []))
+      |> Map.get("tools", [])
       |> normalize_configured_responses_tools()
 
-    payload =
-      payload
-      |> Map.delete("tools")
-      |> Map.delete(:tools)
+    payload = Map.delete(payload, "tools")
 
     {payload, tools}
   end

@@ -13,7 +13,7 @@ defmodule IntellectualClub.Chat.MediaTest do
            ] =
              Media.chat_message_content([content],
                supports_image_input: true,
-               provider_type: :openrouter_chat_completion
+               provider_type: "openrouter_chat_completion"
              )
 
     assert String.contains?(placeholder, "file_id=")
@@ -30,7 +30,7 @@ defmodule IntellectualClub.Chat.MediaTest do
            ] =
              Media.chat_message_content([content],
                supports_image_input: true,
-               provider_type: :openrouter_chat_completion
+               provider_type: "openrouter_chat_completion"
              )
 
     assert String.contains?(placeholder, "file_id=")
@@ -44,7 +44,7 @@ defmodule IntellectualClub.Chat.MediaTest do
     assert content_text =
              Media.chat_message_content([content],
                supports_image_input: true,
-               provider_type: :openrouter_chat_completion
+               provider_type: "openrouter_chat_completion"
              )
 
     assert is_binary(content_text)
@@ -62,7 +62,7 @@ defmodule IntellectualClub.Chat.MediaTest do
     assert content_text =
              Media.chat_message_content([content],
                supports_image_input: true,
-               provider_type: :openrouter_chat_completion
+               provider_type: "openrouter_chat_completion"
              )
 
     assert is_binary(content_text)
@@ -83,7 +83,7 @@ defmodule IntellectualClub.Chat.MediaTest do
            ] =
              Media.responses_message_content([content],
                supports_image_input: true,
-               provider_type: :responses
+               provider_type: "responses"
              )
 
     assert String.contains?(placeholder, "file_id=")
@@ -100,7 +100,7 @@ defmodule IntellectualClub.Chat.MediaTest do
            ] =
              Media.responses_message_content([content],
                supports_image_input: true,
-               provider_type: :responses
+               provider_type: "responses"
              )
 
     assert String.contains?(placeholder, "file_id=")
@@ -116,11 +116,32 @@ defmodule IntellectualClub.Chat.MediaTest do
            ] =
              Media.responses_message_content([content],
                supports_image_input: true,
-               provider_type: :responses
+               provider_type: "responses"
              )
 
     assert String.contains?(placeholder, "[Attached file")
     assert fallback == "[Image omitted: attached file could not be validated as an image.]"
+  end
+
+  test "media helpers require canonical atom keys and integer metadata" do
+    refute Media.media_content?(%{"kind" => "media"})
+
+    descriptor =
+      Media.media_descriptor(%{
+        kind: :media,
+        external_id: "content-123",
+        file_id: "42",
+        file: %{
+          external_id: "file-123",
+          filename: "attachment.png",
+          mime_type: "image/png",
+          size_bytes: "128",
+          sha256: "sha256"
+        }
+      })
+
+    assert descriptor.file_id == nil
+    assert descriptor.size_bytes == 0
   end
 
   defp image_content!(payload, mime_type, filename \\ "attached.png") do

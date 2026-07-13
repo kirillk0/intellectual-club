@@ -161,7 +161,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
                error_text: "Stream failed",
                raw_request: request_payload,
                raw_response: %{"id" => "partial-error"},
-               usage: %{"input_tokens" => 30, "output_tokens" => 7}
+               usage: %{input_tokens: 30, output_tokens: 7}
              }}
           )
 

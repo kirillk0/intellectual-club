@@ -612,11 +612,11 @@ defmodule IntellectualClub.Generation.Persistence do
       step = load_step_with_items!(step_id, actor)
 
       Enum.each(specs, fn spec ->
-        text = to_string(Map.get(spec, :text, Map.get(spec, "text", "")))
+        text = to_string(Map.get(spec, :text, ""))
 
         placement =
-          case Map.get(spec, :placement, Map.get(spec, "placement")) do
-            value when value in [:before_response, "before_response"] -> :before_response
+          case Map.get(spec, :placement) do
+            :before_response -> :before_response
             _other -> :after_response
           end
 
@@ -834,7 +834,7 @@ defmodule IntellectualClub.Generation.Persistence do
     persistable = RuntimeTrace.persistable(runtime_step)
     sequence = positive_int(Map.get(persistable, :sequence), 1)
     now = DateTime.utc_now()
-    status = normalize_step_status(step_status)
+    status = step_status
     finished_at = if status in [:done, :canceled, :error], do: now, else: nil
 
     attrs = %{
@@ -893,15 +893,15 @@ defmodule IntellectualClub.Generation.Persistence do
     normalized_items =
       items
       |> Enum.filter(&is_map/1)
-      |> Enum.reject(&(normalize_item_type(Map.get(&1, :type)) == :steering))
+      |> Enum.reject(&(Map.get(&1, :type) == :steering))
       |> Enum.map(&offset_provider_item_sequence(&1, leading_steering_count))
       |> Enum.sort_by(&positive_int(Map.get(&1, :sequence), 0))
 
     {calls_by_call_id, calls_by_sequence} =
       normalized_items
-      |> Enum.reject(&(normalize_item_type(Map.get(&1, :type)) == :tool_result))
+      |> Enum.reject(&(Map.get(&1, :type) == :tool_result))
       |> Enum.reduce({%{}, %{}}, fn item, {by_call_id, by_sequence} ->
-        type = normalize_item_type(Map.get(item, :type))
+        type = Map.get(item, :type, :other)
 
         created =
           create_item!(
@@ -932,7 +932,7 @@ defmodule IntellectualClub.Generation.Persistence do
       end)
 
     normalized_items
-    |> Enum.filter(&(normalize_item_type(Map.get(&1, :type)) == :tool_result))
+    |> Enum.filter(&(Map.get(&1, :type) == :tool_result))
     |> Enum.each(fn item ->
       tool_call_item_id =
         item
@@ -1187,7 +1187,7 @@ defmodule IntellectualClub.Generation.Persistence do
         chat_message_item_id: item.id,
         external_id: Map.get(content, :external_id) || Ash.UUID.generate(),
         sequence: positive_int(Map.get(content, :sequence), 1),
-        kind: normalize_content_kind(Map.get(content, :kind)),
+        kind: Map.get(content, :kind, :text),
         content_text: to_string(Map.get(content, :content_text) || ""),
         content_json: normalize_optional_json(Map.get(content, :content_json)),
         file_id: Map.get(content, :file_id)
@@ -1280,11 +1280,9 @@ defmodule IntellectualClub.Generation.Persistence do
     |> ordered_contents()
     |> Enum.find_value(fn
       %{kind: :opaque, content_json: %{} = json} ->
-        case Map.get(json, "placement", Map.get(json, :placement)) do
+        case Map.get(json, "placement") do
           "before_response" -> :before_response
-          :before_response -> :before_response
           "after_response" -> :after_response
-          :after_response -> :after_response
           _other -> nil
         end
 
@@ -1375,7 +1373,7 @@ defmodule IntellectualClub.Generation.Persistence do
         chat_message_step_id: step.id,
         chat_message_step_id_snapshot: step.id,
         step_sequence: step.sequence,
-        status: normalize_step_status(step_status),
+        status: step_status,
         response_final: step.response_final == true,
         occurred_at: occurred_at || DateTime.utc_now(),
         input_tokens: step.input_tokens,
@@ -1618,15 +1616,10 @@ defmodule IntellectualClub.Generation.Persistence do
       name: call.name,
       args: call.args || %{},
       raw: call.raw || %{},
-      text: to_string(Map.get(result, :text, Map.get(result, "text", "")) || ""),
-      result_raw:
-        normalize_json_map(Map.get(result, :result_raw, Map.get(result, "result_raw", %{}))),
-      media_contents:
-        normalize_list(Map.get(result, :media_contents, Map.get(result, "media_contents", []))),
-      artifact_contents:
-        normalize_list(
-          Map.get(result, :artifact_contents, Map.get(result, "artifact_contents", []))
-        )
+      text: to_string(Map.get(result, :text, "") || ""),
+      result_raw: normalize_json_map(Map.get(result, :result_raw, %{})),
+      media_contents: normalize_list(Map.get(result, :media_contents, [])),
+      artifact_contents: normalize_list(Map.get(result, :artifact_contents, []))
     }
   end
 
@@ -1783,7 +1776,7 @@ defmodule IntellectualClub.Generation.Persistence do
     |> normalize_list()
     |> Enum.sort_by(&positive_int(Map.get(&1, :sequence), 0))
     |> Enum.flat_map(fn content ->
-      if normalize_content_kind(Map.get(content, :kind)) == :opaque and
+      if Map.get(content, :kind) == :opaque and
            is_map(Map.get(content, :content_json)) do
         [normalize_tool_call_map(Map.get(content, :content_json))]
       else
@@ -1840,13 +1833,12 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp normalize_media_persistable_content(content) when is_map(content) do
-    file_id = Map.get(content, :file_id, Map.get(content, "file_id"))
-    sequence = Map.get(content, :sequence, Map.get(content, "sequence", 1))
+    file_id = Map.get(content, :file_id)
+    sequence = Map.get(content, :sequence, 1)
 
     if is_integer(file_id) do
       %{
-        external_id:
-          Map.get(content, :external_id, Map.get(content, "external_id")) || Ash.UUID.generate(),
+        external_id: Map.get(content, :external_id) || Ash.UUID.generate(),
         sequence: positive_int(sequence, 1),
         kind: :media,
         content_text: "",
@@ -1862,12 +1854,12 @@ defmodule IntellectualClub.Generation.Persistence do
 
   defp file_payload(%{} = file) do
     %{
-      "id" => Map.get(file, :id),
-      "external_id" => Map.get(file, :external_id),
-      "filename" => Map.get(file, :filename),
-      "mime_type" => Map.get(file, :mime_type),
-      "size_bytes" => Map.get(file, :size_bytes),
-      "sha256" => Map.get(file, :sha256)
+      id: Map.get(file, :id),
+      external_id: Map.get(file, :external_id),
+      filename: Map.get(file, :filename),
+      mime_type: Map.get(file, :mime_type),
+      size_bytes: Map.get(file, :size_bytes),
+      sha256: Map.get(file, :sha256)
     }
   end
 
@@ -1983,53 +1975,6 @@ defmodule IntellectualClub.Generation.Persistence do
     do: Enum.map(list, &normalize_tool_call_value/1)
 
   defp normalize_tool_call_value(value), do: value
-
-  defp normalize_step_status(value)
-       when value in [:waiting_provider, :waiting_tools, :done, :canceled, :error],
-       do: value
-
-  defp normalize_step_status(value) when is_binary(value), do: value |> String.to_existing_atom()
-
-  defp normalize_item_type(value)
-       when value in [
-              :input,
-              :handoff_request,
-              :handoff_context,
-              :steering,
-              :reasoning,
-              :answer,
-              :handoff_summary,
-              :tool_call,
-              :tool_result,
-              :artifact,
-              :error,
-              :other
-            ],
-       do: value
-
-  defp normalize_item_type(value) when is_binary(value) do
-    case value do
-      "input" -> :input
-      "handoff_request" -> :handoff_request
-      "handoff_context" -> :handoff_context
-      "steering" -> :steering
-      "reasoning" -> :reasoning
-      "answer" -> :answer
-      "handoff_summary" -> :handoff_summary
-      "tool_call" -> :tool_call
-      "tool_result" -> :tool_result
-      "artifact" -> :artifact
-      "error" -> :error
-      _other -> :other
-    end
-  end
-
-  defp normalize_item_type(_other), do: :other
-
-  defp normalize_content_kind(value) when value in [:text, :opaque, :media], do: value
-  defp normalize_content_kind("opaque"), do: :opaque
-  defp normalize_content_kind("media"), do: :media
-  defp normalize_content_kind(_other), do: :text
 
   defp normalize_json_map(%{} = value), do: Map.new(value)
   defp normalize_json_map(nil), do: %{}

@@ -138,10 +138,6 @@ defmodule IntellectualClub.Generation.Worker do
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_waiting_tools}
 
-        {_mode, "waiting_tools", step_id} when is_integer(step_id) ->
-          followup = Persistence.load_step_for_followup!(step_id)
-          {followup.runtime_step, :resume_waiting_tools}
-
         _other ->
           {
             RuntimeTrace.new_step(
@@ -301,8 +297,7 @@ defmodule IntellectualClub.Generation.Worker do
         {:provider_event, stream_ref, {:response_error, meta}},
         %{stream_ref: stream_ref} = state
       ) do
-    error_text =
-      Map.get(meta, :error_text) || Map.get(meta, "error_text") || "Provider error"
+    error_text = Map.get(meta, :error_text) || "Provider error"
 
     case maybe_retry_current_step(state, meta) do
       {:retrying, state} ->
@@ -456,10 +451,10 @@ defmodule IntellectualClub.Generation.Worker do
       state.status != :generating ->
         {:reply, {:error, :generation_not_active}, state}
 
-      state.runtime_step.status in [:waiting_provider, "waiting_provider"] ->
+      state.runtime_step.status == :waiting_provider ->
         steer_waiting_provider(state, text)
 
-      state.runtime_step.status in [:waiting_tools, "waiting_tools"] ->
+      state.runtime_step.status == :waiting_tools ->
         steer_waiting_tools(state, text)
 
       true ->
@@ -568,9 +563,6 @@ defmodule IntellectualClub.Generation.Worker do
         %{raw_request: %{} = raw_request} = injected ->
           {:ok, %{injected | raw_request: raw_request}}
 
-        %{"raw_request" => %{} = raw_request} ->
-          {:ok, %{raw_request: raw_request}}
-
         {:ok, %{raw_request: %{} = raw_request} = injected} ->
           {:ok, %{injected | raw_request: raw_request}}
 
@@ -641,13 +633,6 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp run_completion_effect(%{context: %{completion_effect: "manual_handoff"}} = state) do
-    run_completion_effect(%{
-      state
-      | context: %{state.context | completion_effect: :manual_handoff}
-    })
-  end
-
   defp run_completion_effect(_state), do: :ok
 
   defp finalize_error(state, error_text) do
@@ -686,7 +671,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp durable_waiting_tools_step?(%RuntimeTrace.Step{id: step_id, status: status})
        when is_integer(step_id) do
-    status in [:waiting_tools, "waiting_tools"]
+    status == :waiting_tools
   end
 
   defp durable_waiting_tools_step?(_runtime_step), do: false
@@ -778,17 +763,16 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp error_text_from_meta(meta) when is_map(meta) do
-    [
-      Map.get(meta, :error_text),
-      Map.get(meta, "error_text"),
-      Map.get(meta, :message),
-      Map.get(meta, "message"),
-      "Provider error"
-    ]
-    |> Enum.find("Provider error", fn value ->
-      is_binary(value) and String.trim(value) != ""
-    end)
-    |> to_string()
+    case Map.get(meta, :error_text) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> "Provider error"
+          trimmed -> trimmed
+        end
+
+      _other ->
+        "Provider error"
+    end
   end
 
   defp retryable_provider_error?(meta) when is_map(meta) do
@@ -859,32 +843,31 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp status_code_from_meta(meta) when is_map(meta) do
-    value = Map.get(meta, :status_code) || Map.get(meta, "status_code")
-    parse_int(value)
+    case Map.get(meta, :status_code) do
+      value when is_integer(value) -> value
+      _other -> nil
+    end
   end
 
   defp status_code_from_meta(_meta), do: nil
 
   defp bool_value(meta, key) when is_map(meta) and is_atom(key) do
-    value = Map.get(meta, key) || Map.get(meta, Atom.to_string(key))
-    value in [true, "true", 1]
+    Map.get(meta, key) == true
   end
 
   defp bool_value(_meta, _key), do: false
 
   defp string_value(meta, key) when is_map(meta) and is_atom(key) do
-    value = Map.get(meta, key) || Map.get(meta, Atom.to_string(key))
-
-    case value do
-      nil -> ""
-      _ -> value |> to_string() |> String.trim() |> String.downcase()
+    case Map.get(meta, key) do
+      value when is_binary(value) -> value |> String.trim() |> String.downcase()
+      _other -> ""
     end
   end
 
   defp string_value(_meta, _key), do: ""
 
   defp provider_error_text(error) when is_map(error) do
-    message = trimmed_string(Map.get(error, "message") || Map.get(error, :message))
+    message = trimmed_string(Map.get(error, "message"))
     raw = provider_error_raw_message(error)
 
     cond do
@@ -905,11 +888,11 @@ defmodule IntellectualClub.Generation.Worker do
   defp provider_error_text(_error), do: "Provider returned error"
 
   defp provider_error_raw_message(error) when is_map(error) do
-    metadata = Map.get(error, "metadata") || Map.get(error, :metadata)
+    metadata = Map.get(error, "metadata")
 
     case metadata do
       %{} ->
-        trimmed_string(Map.get(metadata, "raw") || Map.get(metadata, :raw))
+        trimmed_string(Map.get(metadata, "raw"))
 
       _other ->
         ""
@@ -1172,9 +1155,7 @@ defmodule IntellectualClub.Generation.Worker do
     state.tool_round < max_tool_rounds and not context_limit_reached
   end
 
-  defp manual_handoff_generation?(%{context: %{completion_effect: effect}}) do
-    effect in [:manual_handoff, "manual_handoff"]
-  end
+  defp manual_handoff_generation?(%{context: %{completion_effect: :manual_handoff}}), do: true
 
   defp manual_handoff_generation?(_state), do: false
 
@@ -1244,8 +1225,8 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp build_refusal_results(tool_calls, refusal) when is_list(tool_calls) and is_map(refusal) do
-    refusal_text = Map.get(refusal, :text) || Map.get(refusal, "text") || ""
-    refusal_raw = Map.get(refusal, :raw) || Map.get(refusal, "raw") || %{}
+    refusal_text = Map.get(refusal, :text, "")
+    refusal_raw = Map.get(refusal, :raw, %{})
 
     Enum.map(tool_calls, fn call ->
       call
@@ -1261,9 +1242,9 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp handoff_tool_payload?(state, payload) when is_map(payload) do
     name =
-      case map_get(payload, "function") do
-        %{} = function -> map_get(function, "name")
-        _other -> map_get(payload, "name")
+      case Map.get(payload, "function") do
+        %{} = function -> Map.get(function, "name")
+        _other -> Map.get(payload, "name")
       end
 
     handoff_tool_name?(state, name)
@@ -1274,7 +1255,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp handoff_tool_call?(state, call) do
     call
     |> tool_call_to_map()
-    |> map_get("name")
+    |> Map.get(:name)
     |> then(&handoff_tool_name?(state, &1))
   end
 
@@ -1406,8 +1387,8 @@ defmodule IntellectualClub.Generation.Worker do
   defp order_tool_results(results) when is_list(results) do
     Enum.sort_by(results, fn result ->
       map = tool_call_to_map(result)
-      sequence = map_get(map, "sequence")
-      name = map_get(map, "name") || ""
+      sequence = Map.get(map, :sequence)
+      name = Map.get(map, :name, "")
       {if(is_integer(sequence), do: sequence, else: 0), to_string(name)}
     end)
   end
@@ -1479,7 +1460,7 @@ defmodule IntellectualClub.Generation.Worker do
       raw =
         result
         |> tool_call_to_map()
-        |> Map.get(:result_raw, Map.get(result, "result_raw", %{}))
+        |> Map.get(:result_raw, %{})
 
       handoff_payload_from_raw(raw)
     end)
@@ -1488,7 +1469,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp handoff_payload(_results), do: nil
 
   defp handoff_payload_from_raw(%{"handoff" => %{} = payload}), do: payload
-  defp handoff_payload_from_raw(%{handoff: %{} = payload}), do: payload
   defp handoff_payload_from_raw(_raw), do: nil
 
   defp build_followup_with_steering(state, persisted) do
@@ -1514,14 +1494,6 @@ defmodule IntellectualClub.Generation.Worker do
       kind, reason -> {:error, {kind, reason}}
     end
   end
-
-  defp map_get(map, key) when is_map(map) and is_binary(key) do
-    Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
-  rescue
-    ArgumentError -> Map.get(map, key)
-  end
-
-  defp map_get(_map, _key), do: nil
 
   defp continue_after_tool_step(next_state, followup, next_step, opts) do
     raw_request = followup.raw_request
@@ -1570,8 +1542,8 @@ defmodule IntellectualClub.Generation.Worker do
 
     %{
       context
-      | tool_call_item_id: Map.get(call, :item_id) || Map.get(call, "item_id"),
-        tool_call_created_at: Map.get(call, :created_at) || Map.get(call, "created_at")
+      | tool_call_item_id: Map.get(call, :item_id),
+        tool_call_created_at: Map.get(call, :created_at)
     }
   end
 
@@ -1617,7 +1589,7 @@ defmodule IntellectualClub.Generation.Worker do
         item_id: Map.get(call, :item_id),
         step_id: Map.get(call, :step_id),
         sequence: Map.get(call, :sequence),
-        created_at: Map.get(call, :created_at) || Map.get(call, "created_at"),
+        created_at: Map.get(call, :created_at),
         call_id: to_string(Map.get(call, :call_id) || ""),
         name: to_string(Map.get(call, :name) || ""),
         args: Map.get(call, :args) || %{},
@@ -1633,12 +1605,12 @@ defmodule IntellectualClub.Generation.Worker do
   defp tool_call_to_map(_call), do: %{}
 
   defp normalize_media_content(media, sequence) when is_map(media) and is_integer(sequence) do
-    file_id = Map.get(media, :file_id, Map.get(media, "file_id"))
-    filename = Map.get(media, :filename, Map.get(media, "filename"))
-    mime_type = Map.get(media, :mime_type, Map.get(media, "mime_type"))
-    size_bytes = Map.get(media, :size_bytes, Map.get(media, "size_bytes"))
-    sha256 = Map.get(media, :sha256, Map.get(media, "sha256"))
-    file_external_id = Map.get(media, :file_external_id, Map.get(media, "file_external_id"))
+    file_id = Map.get(media, :file_id)
+    filename = Map.get(media, :filename)
+    mime_type = Map.get(media, :mime_type)
+    size_bytes = Map.get(media, :size_bytes)
+    sha256 = Map.get(media, :sha256)
+    file_external_id = Map.get(media, :file_external_id)
 
     if is_integer(file_id) and is_binary(filename) and is_binary(mime_type) and is_binary(sha256) do
       %{
@@ -1647,12 +1619,12 @@ defmodule IntellectualClub.Generation.Worker do
         kind: :media,
         file_id: file_id,
         file: %{
-          "id" => file_id,
-          "external_id" => file_external_id,
-          "filename" => filename,
-          "mime_type" => mime_type,
-          "size_bytes" => size_bytes || 0,
-          "sha256" => sha256
+          id: file_id,
+          external_id: file_external_id,
+          filename: filename,
+          mime_type: mime_type,
+          size_bytes: size_bytes || 0,
+          sha256: sha256
         }
       }
     else
@@ -1679,7 +1651,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, _meta), do: runtime_step
 
   defp maybe_apply_raw_request(runtime_step, meta) do
-    raw_request = Map.get(meta, :raw_request) || Map.get(meta, "raw_request")
+    raw_request = Map.get(meta, :raw_request)
 
     if is_map(raw_request) do
       RuntimeTrace.apply_event(runtime_step, {:set_step_raw_request, raw_request})
@@ -1689,7 +1661,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp maybe_apply_raw_response(runtime_step, meta) do
-    raw_response = Map.get(meta, :raw_response) || Map.get(meta, "raw_response")
+    raw_response = Map.get(meta, :raw_response)
 
     if is_map(raw_response) do
       RuntimeTrace.apply_event(runtime_step, {:set_step_raw_response, raw_response})
@@ -1699,7 +1671,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp maybe_apply_usage(runtime_step, meta) do
-    usage = Map.get(meta, :usage) || Map.get(meta, "usage")
+    usage = Map.get(meta, :usage)
 
     if is_map(usage) do
       RuntimeTrace.apply_event(runtime_step, {:set_step_usage, usage})

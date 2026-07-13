@@ -2,6 +2,7 @@ defmodule IntellectualClub.Generation.CacheControl do
   @moduledoc """
   Helpers for OpenRouter/Anthropic prompt cache markers.
 
+  Messages use the provider wire format with string keys and string enum values.
   The marker is attached to the last text content block:
   `%{"type" => "text", "text" => "...", "cache_control" => %{"type" => "ephemeral"}}`.
   """
@@ -18,7 +19,6 @@ defmodule IntellectualClub.Generation.CacheControl do
               block
               |> Map.new()
               |> Map.delete("cache_control")
-              |> Map.delete(:cache_control)
 
             other ->
               other
@@ -154,37 +154,26 @@ defmodule IntellectualClub.Generation.CacheControl do
   defp normalize_content(other), do: [%{"type" => "text", "text" => to_string(other)}]
 
   defp text_block?(%{} = block) do
-    type = Map.get(block, "type") || Map.get(block, :type)
-    text = Map.get(block, "text") || Map.get(block, :text)
+    type = Map.get(block, "type")
+    text = Map.get(block, "text")
 
-    type_text =
-      cond do
-        is_binary(type) -> type
-        is_atom(type) -> Atom.to_string(type)
-        true -> nil
-      end
-
-    type_text == "text" or (is_binary(text) and (is_nil(type_text) or type_text == ""))
+    type == "text" or (is_binary(text) and (is_nil(type) or type == ""))
   end
 
   defp text_block?(_other), do: false
 
   defp role_of(message) when is_map(message) do
     message
-    |> Map.get("role", Map.get(message, :role))
+    |> Map.get("role")
     |> to_string()
     |> String.trim()
   end
 
   defp content_of(message) when is_map(message) do
-    Map.get(message, "content", Map.get(message, :content))
+    Map.get(message, "content")
   end
 
   defp put_content(message, content) when is_map(message) do
-    cond do
-      Map.has_key?(message, "content") -> Map.put(message, "content", content)
-      Map.has_key?(message, :content) -> Map.put(message, :content, content)
-      true -> Map.put(message, "content", content)
-    end
+    Map.put(message, "content", content)
   end
 end

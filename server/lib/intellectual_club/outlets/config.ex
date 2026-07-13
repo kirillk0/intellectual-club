@@ -60,7 +60,7 @@ defmodule IntellectualClub.Outlets.Config do
   end
 
   defp read_int(%{} = cfg, key, default) when is_binary(key) and is_integer(default) do
-    raw = Map.get(cfg, key) || Map.get(cfg, String.to_existing_atom(key), nil)
+    raw = Map.get(cfg, key)
 
     cond do
       is_integer(raw) -> raw
@@ -68,12 +68,10 @@ defmodule IntellectualClub.Outlets.Config do
       is_binary(raw) -> parse_int(raw, default)
       true -> default
     end
-  rescue
-    ArgumentError -> default
   end
 
   defp read_float(%{} = cfg, key, default) when is_binary(key) and is_number(default) do
-    raw = Map.get(cfg, key) || Map.get(cfg, String.to_existing_atom(key), nil)
+    raw = Map.get(cfg, key)
 
     cond do
       is_float(raw) -> raw
@@ -81,8 +79,6 @@ defmodule IntellectualClub.Outlets.Config do
       is_binary(raw) -> parse_float(raw, default)
       true -> default
     end
-  rescue
-    ArgumentError -> default
   end
 
   defp parse_int(value, default) when is_binary(value) and is_integer(default) do

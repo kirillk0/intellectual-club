@@ -139,8 +139,8 @@ defmodule IntellectualClub.Tools.RateLimiter do
   end
 
   defp limit_config(tool_instance) do
-    tool_instance_id = Map.get(tool_instance, :id) || Map.get(tool_instance, "id")
-    rps_limit = Map.get(tool_instance, :rps_limit) || Map.get(tool_instance, "rps_limit")
+    tool_instance_id = Map.get(tool_instance, :id)
+    rps_limit = Map.get(tool_instance, :rps_limit)
 
     cond do
       not (is_integer(tool_instance_id) and tool_instance_id > 0) ->

@@ -28,13 +28,13 @@ defmodule IntellectualClub.Chat.Uploads do
 
     filename =
       attrs
-      |> Map.get("filename", Map.get(attrs, :filename, ""))
+      |> Map.get("filename", "")
       |> to_string()
       |> String.trim()
 
     mime_type =
       attrs
-      |> Map.get("mime_type", Map.get(attrs, :mime_type, "application/octet-stream"))
+      |> Map.get("mime_type", "application/octet-stream")
       |> to_string()
       |> String.trim()
       |> case do
@@ -44,7 +44,7 @@ defmodule IntellectualClub.Chat.Uploads do
 
     size_bytes =
       attrs
-      |> Map.get("size_bytes", Map.get(attrs, :size_bytes))
+      |> Map.get("size_bytes")
       |> normalize_integer()
 
     policy = UploadPolicy.load_for_chat(chat_id, actor)

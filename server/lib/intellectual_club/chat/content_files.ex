@@ -177,7 +177,8 @@ defmodule IntellectualClub.Chat.ContentFiles do
     |> Ash.read_one(authorize?: false)
   end
 
-  defp handoff_child?(%Chat{parent_relation_kind: value}), do: value in [:handoff, "handoff"]
+  defp handoff_child?(%Chat{parent_relation_kind: :handoff}), do: true
+  defp handoff_child?(%Chat{}), do: false
 
   defp normalize_external_id(value) when is_binary(value) do
     value = String.trim(value)

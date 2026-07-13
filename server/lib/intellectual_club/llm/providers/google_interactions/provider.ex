@@ -293,7 +293,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   defp result_value(%{} = result, key) when is_atom(key) do
-    Map.get(result, key, Map.get(result, Atom.to_string(key)))
+    Map.get(result, key)
   end
 
   defp result_value(_result, :media_contents), do: []

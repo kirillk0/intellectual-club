@@ -103,7 +103,7 @@ defmodule IntellectualClub.Chat.BranchMove do
   end
 
   defp ensure_not_generating(messages) when is_list(messages) do
-    if Enum.any?(messages, &(Map.get(&1, :status) in [:generating, "generating"])) do
+    if Enum.any?(messages, &(&1.status == :generating)) do
       {:error, :branch_has_generating_message}
     else
       :ok

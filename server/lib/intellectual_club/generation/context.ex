@@ -197,7 +197,7 @@ defmodule IntellectualClub.Generation.Context do
 
       cache_control_enabled =
         adapter_module.supports_cache_control?() and
-          bool_true?(llm_configuration && llm_configuration.supports_cache_control) and
+          ash_boolean_true?(llm_configuration && llm_configuration.supports_cache_control) and
           is_integer(Map.get(request_snapshot, :history_length))
 
       context = %__MODULE__{
@@ -223,10 +223,10 @@ defmodule IntellectualClub.Generation.Context do
         timeout_ms: configuration_timeout_ms(llm_configuration),
         context_length: configuration_context_length(llm_configuration),
         supports_image_input:
-          bool_true?(llm_configuration && llm_configuration.supports_image_input),
+          ash_boolean_true?(llm_configuration && llm_configuration.supports_image_input),
         supports_steering: configuration_supports_steering?(llm_configuration),
         fix_role_alteration:
-          bool_true?(llm_configuration && llm_configuration.fix_role_alteration),
+          ash_boolean_true?(llm_configuration && llm_configuration.fix_role_alteration),
         messages: request_snapshot.model_input,
         request_payload: request_payload,
         tools_payload: tools_payload,
@@ -291,7 +291,7 @@ defmodule IntellectualClub.Generation.Context do
 
     cache_control_enabled =
       adapter_module.supports_cache_control?() and
-        bool_true?(llm_configuration && llm_configuration.supports_cache_control) and
+        ash_boolean_true?(llm_configuration && llm_configuration.supports_cache_control) and
         is_integer(Map.get(request_snapshot, :history_length))
 
     available_file_external_ids =
@@ -330,10 +330,10 @@ defmodule IntellectualClub.Generation.Context do
       timeout_ms: configuration_timeout_ms(llm_configuration),
       context_length: configuration_context_length(llm_configuration),
       supports_image_input:
-        bool_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
+        ash_boolean_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
       supports_steering: configuration_supports_steering?(llm_configuration),
       fix_role_alteration:
-        bool_true?(llm_configuration && Map.get(llm_configuration, :fix_role_alteration)),
+        ash_boolean_true?(llm_configuration && Map.get(llm_configuration, :fix_role_alteration)),
       messages: Map.get(request_snapshot, :model_input, []),
       request_payload: request_payload,
       tools_payload: RequestPayload.tools(request_payload),
@@ -402,7 +402,9 @@ defmodule IntellectualClub.Generation.Context do
     available_file_external_ids = prompt_snapshot.available_file_external_ids
 
     supports_image_input =
-      bool_true?(chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input))
+      ash_boolean_true?(
+        chat.llm_configuration && Map.get(chat.llm_configuration, :supports_image_input)
+      )
 
     {provider_id, provider_type, provider_base_url, provider_api_key, provider_auth_method,
      provider_oauth_refresh_token, model_name, parameters, timeout_ms, request_payload, messages,
@@ -454,7 +456,7 @@ defmodule IntellectualClub.Generation.Context do
 
           cache_control_enabled =
             adapter_module.supports_cache_control?() and
-              bool_true?(Map.get(configuration, :supports_cache_control))
+              ash_boolean_true?(Map.get(configuration, :supports_cache_control))
 
           initial_request =
             adapter_module.build_initial_request(%{
@@ -468,7 +470,8 @@ defmodule IntellectualClub.Generation.Context do
               chat_id: chat_id,
               owner_id: owner_id,
               conversation_affinity_id: conversation_affinity_id,
-              fix_role_alteration: bool_true?(Map.get(configuration, :fix_role_alteration)),
+              fix_role_alteration:
+                ash_boolean_true?(Map.get(configuration, :fix_role_alteration)),
               cache_control_enabled: cache_control_enabled
             })
 
@@ -522,7 +525,7 @@ defmodule IntellectualClub.Generation.Context do
       supports_image_input: supports_image_input,
       supports_steering: configuration_supports_steering?(chat.llm_configuration),
       fix_role_alteration:
-        bool_true?(
+        ash_boolean_true?(
           chat.llm_configuration && Map.get(chat.llm_configuration, :fix_role_alteration)
         ),
       messages: messages,
@@ -609,9 +612,7 @@ defmodule IntellectualClub.Generation.Context do
     wanted_types =
       case role do
         :user -> History.user_input_item_types()
-        "user" -> History.user_input_item_types()
         :assistant -> History.assistant_answer_item_types()
-        "assistant" -> History.assistant_answer_item_types()
         _ -> []
       end
 
@@ -632,7 +633,7 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp history_message_role(message) when is_map(message) do
-    Map.get(message, :role, Map.get(message, "role"))
+    Map.get(message, :role)
   end
 
   defp history_message_role(_other), do: nil
@@ -642,7 +643,7 @@ defmodule IntellectualClub.Generation.Context do
       project_message_text(message)
     else
       message
-      |> Map.get(:content, Map.get(message, "content", ""))
+      |> Map.get(:content, "")
       |> to_string()
     end
   end
@@ -654,8 +655,7 @@ defmodule IntellectualClub.Generation.Context do
 
     contents
     |> Enum.filter(fn content ->
-      kind = Map.get(content, :kind)
-      kind in [:text, "text"]
+      Map.get(content, :kind) == :text
     end)
     |> Enum.sort_by(&sort_seq/1)
     |> Enum.map(fn content -> to_string(Map.get(content, :content_text) || "") end)
@@ -663,10 +663,9 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
 
-  defp bool_true?(value), do: value in [true, "true", 1]
+  defp ash_boolean_true?(value), do: value == true
 
   defp configuration_supports_steering?(%{} = configuration) do
     Map.get(configuration, :supports_steering, true) != false
@@ -690,11 +689,10 @@ defmodule IntellectualClub.Generation.Context do
        when is_map(message) and is_list(allowed_statuses) do
     role = Map.get(message, :role)
 
-    if role in [:assistant, "assistant"] do
+    if role == :assistant do
       status = Map.get(message, :status)
-      normalized_status = normalize_status(status)
 
-      if normalized_status in allowed_statuses do
+      if status in allowed_statuses do
         :ok
       else
         {:error, :invalid_status}
@@ -706,19 +704,11 @@ defmodule IntellectualClub.Generation.Context do
 
   defp normalize_allowed_statuses(statuses) when is_list(statuses) do
     statuses
-    |> Enum.map(&normalize_status/1)
     |> Enum.filter(&(&1 in [:generating, :error, :canceled, :done]))
     |> Enum.uniq()
   end
 
   defp normalize_allowed_statuses(_other), do: [:error, :canceled]
-
-  defp normalize_status(value) when value in [:generating, :error, :canceled, :done], do: value
-  defp normalize_status("generating"), do: :generating
-  defp normalize_status("error"), do: :error
-  defp normalize_status("canceled"), do: :canceled
-  defp normalize_status("done"), do: :done
-  defp normalize_status(_other), do: nil
 
   defp load_retry_step(message, opts) when is_map(message) and is_list(opts) do
     actor = Keyword.get(opts, :actor)
@@ -1035,7 +1025,7 @@ defmodule IntellectualClub.Generation.Context do
       end
 
     step
-    |> Map.get(:items, Map.get(step, "items", []))
+    |> Map.get(:items, [])
     |> Enum.flat_map(fn item ->
       if History.item_type(item) in allowed_types and History.item_text(item) != "" do
         [sanitize_incomplete_history_item(item)]
@@ -1075,7 +1065,7 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp turn_aborted_marker_text(previous_message) when is_map(previous_message) do
-    case normalize_status(Map.get(previous_message, :status, Map.get(previous_message, "status"))) do
+    case Map.get(previous_message, :status) do
       :error ->
         previous_message
         |> turn_aborted_error_lines()
@@ -1089,7 +1079,7 @@ defmodule IntellectualClub.Generation.Context do
   defp turn_aborted_error_lines(previous_message) when is_map(previous_message) do
     error_detail =
       previous_message
-      |> Map.get(:error_detail, Map.get(previous_message, "error_detail"))
+      |> Map.get(:error_detail)
       |> case do
         value when is_binary(value) -> String.trim(value)
         _other -> ""
@@ -1104,33 +1094,25 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp done_status?(:done), do: true
-  defp done_status?("done"), do: true
   defp done_status?(_other), do: false
 
   defp aborted_status?(:canceled), do: true
-  defp aborted_status?("canceled"), do: true
   defp aborted_status?(:error), do: true
-  defp aborted_status?("error"), do: true
   defp aborted_status?(_other), do: false
 
   defp user_role?(:user), do: true
-  defp user_role?("user"), do: true
   defp user_role?(_other), do: false
 
   defp assistant_role?(:assistant), do: true
-  defp assistant_role?("assistant"), do: true
   defp assistant_role?(_other), do: false
 
-  defp trace_history_message?(message) when is_map(message) do
-    is_list(Map.get(message, :steps, Map.get(message, "steps")))
-  end
+  defp trace_history_message?(%{steps: steps}), do: is_list(steps)
+  defp trace_history_message?(_other), do: false
 
-  defp provider_type_for_configuration(%{provider: %{type: type}}),
+  defp provider_type_for_configuration(%{provider: %{type: type}}) when is_binary(type),
     do: normalize_provider_type(type)
 
   defp provider_type_for_configuration(_other), do: "demo"
-
-  defp normalize_provider_type(value) when is_atom(value), do: Atom.to_string(value)
 
   defp normalize_provider_type(value) when is_binary(value) do
     value
@@ -1396,13 +1378,6 @@ defmodule IntellectualClub.Generation.Context do
           []
         end
 
-      %{type: type} = tool_instance when is_atom(type) ->
-        if Atom.to_string(type) == NativeKnowledgeLibrary.type() do
-          NativeKnowledgeLibrary.available_file_external_ids(tool_instance)
-        else
-          []
-        end
-
       _other ->
         []
     end)
@@ -1416,7 +1391,6 @@ defmodule IntellectualClub.Generation.Context do
   defp binding_selection(binding) when is_map(binding) do
     case Map.get(binding, :selection) do
       :top -> :top
-      "top" -> :top
       _ -> :bottom
     end
   end

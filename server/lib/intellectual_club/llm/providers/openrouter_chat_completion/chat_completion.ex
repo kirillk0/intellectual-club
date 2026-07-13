@@ -520,7 +520,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
   end
 
   defp extract_error_message(error) when is_map(error) do
-    message = trimmed_string(Map.get(error, "message") || Map.get(error, :message))
+    message = trimmed_string(Map.get(error, "message"))
     raw = raw_error_message(error)
 
     cond do
@@ -539,11 +539,11 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
   end
 
   defp raw_error_message(error) when is_map(error) do
-    metadata = Map.get(error, "metadata") || Map.get(error, :metadata)
+    metadata = Map.get(error, "metadata")
 
     case metadata do
       %{} ->
-        trimmed_string(Map.get(metadata, "raw") || Map.get(metadata, :raw))
+        trimmed_string(Map.get(metadata, "raw"))
 
       _other ->
         ""

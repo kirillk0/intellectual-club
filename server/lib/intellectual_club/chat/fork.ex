@@ -6,6 +6,7 @@ defmodule IntellectualClub.Chat.Fork do
   @behaviour IntellectualClub.BackgroundTasks.Adapter
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
@@ -147,7 +148,7 @@ defmodule IntellectualClub.Chat.Fork do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    task = args |> Map.get("task", Map.get(args, :task, "")) |> to_string() |> String.trim()
+    task = args |> Map.get("task", "") |> to_string() |> String.trim()
 
     with true <- task != "",
          task_id when is_binary(task_id) <- task_record_value(task_record, :id),
@@ -680,7 +681,7 @@ defmodule IntellectualClub.Chat.Fork do
   defp resume_fork_generation_if_needed(message_id, actor) when is_integer(message_id) do
     message = Ash.get!(ChatMessage, message_id, actor: actor)
 
-    if normalize_status(message.status) == :generating and
+    if message.status == :generating and
          GenerationSupervisor.get_generation_state(message_id) == :not_found do
       case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
         {:ok, _context} ->
@@ -801,7 +802,7 @@ defmodule IntellectualClub.Chat.Fork do
       copied_step
       |> ordered_items()
       |> Enum.find(fn item ->
-        item.type in [:tool_call, "tool_call"] and item.sequence == source_call.sequence
+        item.type == :tool_call and item.sequence == source_call.sequence
       end)
 
     if is_nil(copied_item) do
@@ -822,10 +823,10 @@ defmodule IntellectualClub.Chat.Fork do
     |> Enum.each(fn item ->
       delete? =
         cond do
-          item.type in [:tool_result, "tool_result", :artifact, "artifact"] ->
+          item.type in [:tool_result, :artifact] ->
             true
 
-          item.type in [:tool_call, "tool_call"] ->
+          item.type == :tool_call ->
             item.sequence != source_call.sequence
 
           true ->
@@ -903,9 +904,9 @@ defmodule IntellectualClub.Chat.Fork do
   end
 
   defp normalize_reference(reference, actor) when is_map(reference) do
-    generation_message_id = reference_value(reference, :generation_message_id)
-    message_id = reference_value(reference, :message_id) || generation_message_id
-    requested_chat_id = reference_value(reference, :chat_id)
+    generation_message_id = Map.get(reference, :generation_message_id)
+    message_id = Map.get(reference, :message_id) || generation_message_id
+    requested_chat_id = Map.get(reference, :chat_id)
 
     with true <- is_integer(generation_message_id) and generation_message_id > 0,
          {:ok, %ChatMessage{} = message} <-
@@ -919,7 +920,7 @@ defmodule IntellectualClub.Chat.Fork do
          chat_id: chat.id,
          message_id: if(is_integer(message_id), do: message_id, else: generation_message_id),
          generation_message_id: generation_message_id,
-         url: reference_value(reference, :url) || "/chats/#{chat.id}"
+         url: Map.get(reference, :url) || "/chats/#{chat.id}"
        }}
     else
       false -> {:error, :invalid_fork_reference}
@@ -959,7 +960,7 @@ defmodule IntellectualClub.Chat.Fork do
         message_answer = message_answer_text(message)
         answers = append_answer(answers, message_answer)
 
-        case normalize_status(message.status) do
+        case message.status do
           :generating ->
             {:ok,
              %{
@@ -1192,8 +1193,8 @@ defmodule IntellectualClub.Chat.Fork do
   defp execution_result_from_snapshot(%{status: :completed, result: result})
        when is_map(result) do
     %ExecutionResult{
-      text: to_string(Map.get(result, :text, Map.get(result, "text", ""))),
-      raw: Map.get(result, :raw, Map.get(result, "raw", %{})),
+      text: to_string(Map.get(result, :text, "")),
+      raw: Map.get(result, :raw, %{}),
       media: [],
       artifacts: []
     }
@@ -1242,7 +1243,7 @@ defmodule IntellectualClub.Chat.Fork do
   defp handoff_generation_message_id(%ChatMessage{} = message) do
     message
     |> ordered_items()
-    |> Enum.filter(&(&1.type in [:tool_result, "tool_result"]))
+    |> Enum.filter(&(&1.type == :tool_result))
     |> Enum.find_value(fn item ->
       item
       |> History.opaque_payloads()
@@ -1289,13 +1290,13 @@ defmodule IntellectualClub.Chat.Fork do
     runner_ref = task_record_value(task_record, :runner_ref) || %{}
 
     stored_message_id =
-      reference_value(runner_ref, :fork_message_id) ||
-        reference_value(runner_ref, :fork_generation_message_id)
+      Map.get(runner_ref, "fork_message_id") ||
+        Map.get(runner_ref, "fork_generation_message_id")
 
     stored_generation_message_id =
-      reference_value(runner_ref, :fork_generation_message_id) || stored_message_id
+      Map.get(runner_ref, "fork_generation_message_id") || stored_message_id
 
-    stored_url = reference_value(runner_ref, :fork_url)
+    stored_url = Map.get(runner_ref, "fork_url")
 
     cond do
       not is_integer(owner_id) or owner_id <= 0 ->
@@ -1325,31 +1326,19 @@ defmodule IntellectualClub.Chat.Fork do
     end
   end
 
-  defp task_record_value(task_record, key) when is_map(task_record) and is_atom(key) do
-    direct = Map.get(task_record, key, Map.get(task_record, Atom.to_string(key)))
-
-    if match?(%Ash.NotLoaded{}, direct) or is_nil(direct) do
-      task_record
-      |> Map.get(:metadata, Map.get(task_record, "metadata", %{}))
-      |> case do
-        %{} = metadata -> Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
-        _other -> nil
-      end
-    else
-      direct
+  defp task_record_value(%BackgroundTask{} = task_record, key) when is_atom(key) do
+    case Map.get(task_record, key) do
+      %Ash.NotLoaded{} -> nil
+      value -> value
     end
   end
 
   defp task_record_value(_task_record, _key), do: nil
 
-  defp reference_value(reference, key) when is_map(reference) and is_atom(key) do
-    Map.get(reference, key, Map.get(reference, Atom.to_string(key)))
-  end
-
   defp trace_value(value, key, default \\ nil)
 
   defp trace_value(value, key, default) when is_map(value) and is_atom(key) do
-    Map.get(value, key, Map.get(value, Atom.to_string(key), default))
+    Map.get(value, key, default)
   end
 
   defp trace_value(_value, _key, default), do: default
@@ -1369,7 +1358,7 @@ defmodule IntellectualClub.Chat.Fork do
   defp fork_depth(%Chat{} = chat, actor) do
     chat
     |> ancestor_chain(actor, [])
-    |> Enum.count(&(normalize_relation_kind(&1.parent_relation_kind) == @relation_kind))
+    |> Enum.count(&(&1.parent_relation_kind == @relation_kind))
   end
 
   defp ancestor_chain(%Chat{} = chat, actor, acc) do
@@ -1404,7 +1393,7 @@ defmodule IntellectualClub.Chat.Fork do
   end
 
   defp config_get(config, key, default) when is_map(config) and is_binary(key) do
-    Map.get(config, key, Map.get(config, String.to_atom(key), default))
+    Map.get(config, key, default)
   end
 
   defp config_get(_config, _key, default), do: default
@@ -1552,18 +1541,6 @@ defmodule IntellectualClub.Chat.Fork do
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
-
-  defp normalize_status(value) when value in [:generating, :done, :error, :canceled], do: value
-  defp normalize_status("generating"), do: :generating
-  defp normalize_status("done"), do: :done
-  defp normalize_status("error"), do: :error
-  defp normalize_status("canceled"), do: :canceled
-  defp normalize_status(_other), do: nil
-
-  defp normalize_relation_kind(value) when is_atom(value), do: value
-  defp normalize_relation_kind("fork"), do: :fork
-  defp normalize_relation_kind("handoff"), do: :handoff
-  defp normalize_relation_kind(_value), do: nil
 
   defp unwrap_transaction({:ok, result}), do: {:ok, result}
   defp unwrap_transaction({:error, reason}), do: {:error, reason}

@@ -12,6 +12,21 @@ defmodule IntellectualClub.Generation.History do
   @allowed_roles ["user", "assistant"]
   @user_input_item_types [:input, :handoff_request, :handoff_context]
   @assistant_answer_item_types [:answer, :handoff_summary]
+  @item_types [
+    :input,
+    :handoff_request,
+    :handoff_context,
+    :steering,
+    :answer,
+    :handoff_summary,
+    :reasoning,
+    :tool_call,
+    :tool_result,
+    :artifact,
+    :error,
+    :other
+  ]
+  @content_kinds [:text, :opaque, :media]
 
   @doc """
   Returns item types that project as user input in provider histories.
@@ -38,128 +53,76 @@ defmodule IntellectualClub.Generation.History do
   Normalizes legacy `%{role, content}` history messages.
   """
   def normalize_message(%{role: role, content: content}) do
-    normalize_role_content(role, content)
+    normalize_role_content(role_to_wire(role), content)
   end
 
   def normalize_message(%{"role" => role, "content" => content}) do
-    normalize_role_content(role, content)
+    normalize_role_content(legacy_role(role), content)
   end
 
   def normalize_message(_other), do: nil
 
   @doc """
-  Returns the normalized role for a trace or legacy history message.
+  Returns the provider wire role for a canonical trace message.
   """
-  def message_role(message) when is_map(message) do
-    message
-    |> Map.get(:role, Map.get(message, "role"))
-    |> normalize_role()
-  end
+  def message_role(%{role: role}), do: role_to_wire(role)
 
   def message_role(_other), do: nil
 
   @doc """
   Returns true when a history entry is a persisted trace message.
   """
-  def trace_message?(message) when is_map(message) do
-    steps = Map.get(message, :steps, Map.get(message, "steps"))
-    is_list(steps)
-  end
+  def trace_message?(%{steps: steps}), do: is_list(steps)
 
   def trace_message?(_other), do: false
 
   @doc """
   Returns trace steps from a persisted history message.
   """
-  def steps(message) when is_map(message) do
-    Map.get(message, :steps, Map.get(message, "steps")) || []
-  end
+  def steps(%{steps: steps}) when is_list(steps), do: steps
 
   def steps(_other), do: []
 
   @doc """
   Returns trace items from a persisted step.
   """
-  def items(step) when is_map(step) do
-    Map.get(step, :items, Map.get(step, "items")) || []
-  end
+  def items(%{items: items}) when is_list(items), do: items
 
   def items(_other), do: []
 
   @doc """
   Returns a persisted trace item id.
   """
-  def item_id(item) when is_map(item) do
-    Map.get(item, :id, Map.get(item, "id"))
-  end
+  def item_id(%{id: id}), do: id
 
   def item_id(_other), do: nil
 
   @doc """
   Returns the canonical persisted tool result -> tool call link.
   """
-  def tool_call_item_id(item) when is_map(item) do
-    Map.get(item, :tool_call_item_id, Map.get(item, "tool_call_item_id"))
-  end
+  def tool_call_item_id(%{tool_call_item_id: tool_call_item_id}), do: tool_call_item_id
 
   def tool_call_item_id(_other), do: nil
 
   @doc """
   Returns trace contents from a persisted item.
   """
-  def contents(item) when is_map(item) do
-    Map.get(item, :contents, Map.get(item, "contents")) || []
-  end
+  def contents(%{contents: contents}) when is_list(contents), do: contents
 
   def contents(_other), do: []
 
   @doc """
-  Normalizes a trace item type.
+  Returns the canonical trace item type.
   """
-  def item_type(%{} = item) do
-    item
-    |> Map.get(:type, Map.get(item, "type"))
-    |> item_type()
-  end
-
-  def item_type(value) when is_binary(value) do
-    case value do
-      "input" -> :input
-      "handoff_request" -> :handoff_request
-      "handoff_context" -> :handoff_context
-      "steering" -> :steering
-      "answer" -> :answer
-      "handoff_summary" -> :handoff_summary
-      "reasoning" -> :reasoning
-      "tool_call" -> :tool_call
-      "tool_result" -> :tool_result
-      "artifact" -> :artifact
-      _other -> :other
-    end
-  end
-
-  def item_type(value) when is_atom(value), do: value |> Atom.to_string() |> item_type()
+  def item_type(%{type: type}), do: item_type(type)
+  def item_type(value) when value in @item_types, do: value
   def item_type(_other), do: :other
 
   @doc """
-  Normalizes a trace content kind.
+  Returns the canonical trace content kind.
   """
-  def content_kind(%{} = content) do
-    content
-    |> Map.get(:kind, Map.get(content, "kind"))
-    |> content_kind()
-  end
-
-  def content_kind(value) when is_binary(value) do
-    case value do
-      "text" -> :text
-      "opaque" -> :opaque
-      "media" -> :media
-      _other -> :other
-    end
-  end
-
-  def content_kind(value) when is_atom(value), do: value |> Atom.to_string() |> content_kind()
+  def content_kind(%{kind: kind}), do: content_kind(kind)
+  def content_kind(value) when value in @content_kinds, do: value
   def content_kind(_other), do: :other
 
   @doc """
@@ -170,7 +133,7 @@ defmodule IntellectualClub.Generation.History do
     |> contents()
     |> Enum.sort_by(&sort_seq/1)
     |> Enum.flat_map(fn content ->
-      text = Map.get(content, :content_text, Map.get(content, "content_text"))
+      text = Map.get(content, :content_text)
 
       if content_kind(content) == :text and is_binary(text) do
         [text]
@@ -226,7 +189,7 @@ defmodule IntellectualClub.Generation.History do
     |> contents()
     |> Enum.sort_by(&sort_seq/1)
     |> Enum.flat_map(fn content ->
-      content_json = Map.get(content, :content_json, Map.get(content, "content_json"))
+      content_json = Map.get(content, :content_json)
 
       if content_kind(content) == :opaque and is_map(content_json) do
         [Map.new(content_json)]
@@ -250,16 +213,7 @@ defmodule IntellectualClub.Generation.History do
   Returns a stable sequence value for persisted trace maps.
   """
   def sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  def sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   def sort_seq(_other), do: 0
-
-  @doc """
-  Normalizes user/assistant roles.
-  """
-  def normalize_role(role) when is_atom(role), do: role |> Atom.to_string() |> normalize_role()
-  def normalize_role("user"), do: "user"
-  def normalize_role("assistant"), do: "assistant"
-  def normalize_role(_other), do: nil
 
   @doc """
   Normalizes legacy history content without changing provider wire shapes.
@@ -271,14 +225,20 @@ defmodule IntellectualClub.Generation.History do
   def normalize_content(content), do: to_string(content)
 
   defp normalize_role_content(role, content) do
-    role = normalize_role(role)
-
     if role in @allowed_roles do
       %{"role" => role, "content" => normalize_content(content)}
     else
       nil
     end
   end
+
+  defp role_to_wire(:user), do: "user"
+  defp role_to_wire(:assistant), do: "assistant"
+  defp role_to_wire(_other), do: nil
+
+  defp legacy_role("user"), do: "user"
+  defp legacy_role("assistant"), do: "assistant"
+  defp legacy_role(_other), do: nil
 
   defp ordered_items(message) do
     message

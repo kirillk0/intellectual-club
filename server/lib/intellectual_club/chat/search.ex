@@ -270,8 +270,6 @@ defmodule IntellectualClub.Chat.Search do
 
   defp role_to_string(:user), do: "user"
   defp role_to_string(:assistant), do: "assistant"
-  defp role_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp role_to_string(value) when is_binary(value), do: value
   defp role_to_string(_other), do: nil
 
   defp message_content_search(""), do: :empty
@@ -527,9 +525,7 @@ defmodule IntellectualClub.Chat.Search do
   defp wanted_trace_item_type(message) do
     case Map.get(message, :role) do
       :user -> [:input, :handoff_request, :handoff_context]
-      "user" -> [:input, :handoff_request, :handoff_context]
       :assistant -> [:answer, :handoff_summary]
-      "assistant" -> [:answer, :handoff_summary]
       _ -> []
     end
   end
@@ -541,7 +537,6 @@ defmodule IntellectualClub.Chat.Search do
   end
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
 
   defp sort_key(record) do

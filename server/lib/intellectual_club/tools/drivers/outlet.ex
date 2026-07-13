@@ -117,13 +117,12 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
 
   @impl true
   def discover(%ToolInstance{} = tool_instance) do
-    with {:ok, {_text, %{} = raw}} <-
-           normalize_discovery_result(
-             Runtime.enqueue_and_wait(tool_instance, "outlet.list_tools", %{})
-           ) do
+    with {:ok, %{raw: %{} = raw}} <-
+           Runtime.enqueue_and_wait(tool_instance, "outlet.list_tools", %{}) do
       discovered_tools_from_raw(raw)
     else
       {:error, reason} -> {:error, reason}
+      other -> {:error, "Unexpected outlet response: #{inspect(other)}"}
     end
   end
 
@@ -131,11 +130,14 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case Runtime.enqueue_and_wait(tool_instance, function_name, args, execution_context) do
-      {:ok, result} ->
-        {:ok, ExecutionResult.normalize(result)}
+      {:ok, %{text: _text, raw: _raw, media: _media, artifacts: _artifacts} = result} ->
+        {:ok, runtime_execution_result(result)}
 
       {:error, reason} ->
         {:error, to_string(reason || "Outlet call failed.")}
+
+      other ->
+        {:error, "Unexpected outlet response: #{inspect(other)}"}
     end
   end
 
@@ -170,7 +172,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
          }}
 
       {:error, :outlet_unavailable, %{} = identity} ->
-        {:running, runner_ref(identity)}
+        {:running, persisted_runner_ref(identity)}
 
       {:error, :outlet_runner_restarted} ->
         {:failed, outlet_runner_restarted_error()}
@@ -306,7 +308,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
               execution_context = BackgroundTasks.execution_context(task)
 
               start_acknowledged? =
-                runner_ref_value(task.runner_ref, "start_acknowledged") == "true"
+                persisted_runner_ref_value(task.runner_ref, "start_acknowledged") == "true"
 
               dispatch_result =
                 if start_acknowledged? do
@@ -329,7 +331,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
                         task,
                         task.runner_ref
                         |> normalize_json_map()
-                        |> Map.merge(runner_ref(identity))
+                        |> Map.merge(runner_ref_from_identity(identity))
                         |> Map.put("start_acknowledged", true)
                       )
                   end
@@ -422,38 +424,6 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     end
   end
 
-  defp normalize_discovery_result({:ok, {text, %{} = raw}}) do
-    {:ok, {to_string(text || ""), raw}}
-  end
-
-  defp normalize_discovery_result({:ok, %ExecutionResult{} = result}) do
-    normalize_discovery_payload(%{text: result.text, raw: result.raw})
-  end
-
-  defp normalize_discovery_result({:ok, %{} = result}) do
-    normalize_discovery_payload(result)
-  end
-
-  defp normalize_discovery_result({:error, reason}), do: {:error, reason}
-
-  defp normalize_discovery_result(other),
-    do: {:error, "Unexpected outlet response: #{inspect(other)}"}
-
-  defp normalize_discovery_payload(%{} = result) do
-    text =
-      result
-      |> Map.get("text", Map.get(result, :text, ""))
-      |> to_string()
-
-    raw =
-      case Map.get(result, "raw", Map.get(result, :raw)) do
-        %{} = raw -> raw
-        _other -> result
-      end
-
-    {:ok, {text, raw}}
-  end
-
   defp dispatch_background_start(
          %BackgroundTask{} = task,
          %ToolInstance{} = tool_instance,
@@ -469,7 +439,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
            args,
            nil,
            execution_context,
-           runner_ref(task.runner_ref)
+           persisted_runner_ref(task.runner_ref)
          ) do
       {:ok, result} -> normalize_background_snapshot(result, task.id, nil)
       {:error, reason} -> background_dispatch_error(reason, task)
@@ -489,7 +459,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
            %{},
            cursor,
            nil,
-           runner_ref(task.runner_ref)
+           persisted_runner_ref(task.runner_ref)
          ) do
       {:ok, result} ->
         normalize_background_snapshot(result, task.id, cursor)
@@ -517,7 +487,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
         refs =
           task.runner_ref
           |> normalize_json_map()
-          |> Map.merge(runner_ref(identity))
+          |> Map.merge(runner_ref_from_identity(identity))
           |> Map.put("start_acknowledged", true)
 
         {:ok, Map.put(snapshot, "runner_ref", refs)}
@@ -549,7 +519,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
            %{},
            "0",
            nil,
-           runner_ref(task.runner_ref)
+           persisted_runner_ref(task.runner_ref)
          ) do
       {:ok, result} ->
         with {:ok, snapshot} <- normalize_background_snapshot(result, task.id, "0") do
@@ -602,10 +572,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     end
   end
 
-  defp normalize_background_snapshot(result, expected_task_id, cursor) do
-    normalized = ExecutionResult.normalize(result)
-    raw = normalize_json_map(normalized.raw)
-
+  defp normalize_background_snapshot(%{raw: %{} = raw}, expected_task_id, cursor) do
     with task_id when is_binary(task_id) <- snapshot_value(raw, "background_task_id"),
          true <- task_id == expected_task_id,
          status when status in ["queued", "running", "completed", "failed", "canceled"] <-
@@ -616,6 +583,9 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     end
   end
 
+  defp normalize_background_snapshot(_result, _expected_task_id, _cursor),
+    do: {:error, :invalid_background_snapshot}
+
   defp limit_background_progress_page(raw, cursor) do
     progress = snapshot_value(raw, "progress")
 
@@ -624,7 +594,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
         Enum.reduce_while(progress, {[], 0}, fn entry, {selected, bytes} ->
           text =
             if is_map(entry),
-              do: Map.get(entry, "text", Map.get(entry, :text, "")),
+              do: Map.get(entry, "text", ""),
               else: ""
 
           entry_bytes = if is_binary(text), do: byte_size(text), else: 0
@@ -677,7 +647,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   defp adapter_execution_result(snapshot, identity) do
     case snapshot_value(snapshot, "status") do
       status when status in ["queued", "running"] ->
-        {:running, Map.put(runner_ref(identity), "start_acknowledged", true)}
+        {:running, Map.put(runner_ref_from_identity(identity), "start_acknowledged", true)}
 
       "completed" ->
         {:completed, snapshot_result(snapshot)}
@@ -701,9 +671,32 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
 
   defp snapshot_result(snapshot) do
     case snapshot_value(snapshot, "result") do
-      %{} = result -> ExecutionResult.normalize(result)
+      %{} = result -> runner_execution_result(result)
       _other -> %ExecutionResult{}
     end
+  end
+
+  defp runtime_execution_result(%{
+         text: text,
+         raw: raw,
+         media: media,
+         artifacts: artifacts
+       }) do
+    ExecutionResult.normalize(%ExecutionResult{
+      text: text,
+      raw: raw,
+      media: media,
+      artifacts: artifacts
+    })
+  end
+
+  defp runner_execution_result(result) when is_map(result) do
+    ExecutionResult.normalize(%ExecutionResult{
+      text: Map.get(result, "text", ""),
+      raw: Map.get(result, "raw", %{}),
+      media: Map.get(result, "media", []),
+      artifacts: Map.get(result, "artifacts", [])
+    })
   end
 
   defp snapshot_error(snapshot) do
@@ -720,7 +713,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
         %{} = existing -> normalize_json_map(existing)
         _other -> %{}
       end
-      |> Map.merge(runner_ref(identity))
+      |> Map.merge(runner_ref_from_identity(identity))
 
     if task.runner_ref == refs do
       {:ok, task}
@@ -730,9 +723,9 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   end
 
   defp ensure_runner_session(%BackgroundTask{} = task, identity) do
-    bound_runner_id = runner_ref_value(task.runner_ref, "runner_id")
-    bound_session_id = runner_ref_value(task.runner_ref, "runner_session_id")
-    current = runner_ref(identity)
+    bound_runner_id = persisted_runner_ref_value(task.runner_ref, "runner_id")
+    bound_session_id = persisted_runner_ref_value(task.runner_ref, "runner_session_id")
+    current = runner_ref_from_identity(identity)
 
     if (bound_runner_id == "" and bound_session_id == "") or
          (bound_runner_id == current["runner_id"] and
@@ -743,38 +736,43 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     end
   end
 
-  defp runner_ref(identity) when is_map(identity) do
+  defp runner_ref_from_identity(%{
+         runner_id: runner_id,
+         runner_session_id: runner_session_id
+       }) do
     %{
-      "runner_id" => runner_ref_value(identity, "runner_id"),
-      "runner_session_id" => runner_ref_value(identity, "runner_session_id")
+      "runner_id" => to_string(runner_id),
+      "runner_session_id" => to_string(runner_session_id)
     }
   end
 
-  defp runner_ref_value(map, key) when is_map(map) do
-    value =
-      case Map.fetch(map, key) do
-        {:ok, value} -> value
-        :error -> Map.get(map, runner_ref_atom_key(key), "")
-      end
-
-    to_string(value)
+  defp persisted_runner_ref(map) when is_map(map) do
+    %{
+      "runner_id" => persisted_runner_ref_value(map, "runner_id"),
+      "runner_session_id" => persisted_runner_ref_value(map, "runner_session_id")
+    }
   end
 
-  defp runner_ref_value(_map, _key), do: ""
+  defp persisted_runner_ref(_map) do
+    %{"runner_id" => "", "runner_session_id" => ""}
+  end
+
+  defp persisted_runner_ref_value(map, key) when is_map(map) and is_binary(key) do
+    map
+    |> Map.get(key, "")
+    |> to_string()
+  end
+
+  defp persisted_runner_ref_value(_map, _key), do: ""
 
   defp runner_session_bound?(%BackgroundTask{} = task) do
-    runner_ref_value(task.runner_ref, "runner_id") != "" and
-      runner_ref_value(task.runner_ref, "runner_session_id") != ""
+    persisted_runner_ref_value(task.runner_ref, "runner_id") != "" and
+      persisted_runner_ref_value(task.runner_ref, "runner_session_id") != ""
   end
 
   defp start_acknowledged?(%BackgroundTask{} = task) do
-    runner_ref_value(task.runner_ref, "start_acknowledged") == "true"
+    persisted_runner_ref_value(task.runner_ref, "start_acknowledged") == "true"
   end
-
-  defp runner_ref_atom_key("runner_id"), do: :runner_id
-  defp runner_ref_atom_key("runner_session_id"), do: :runner_session_id
-  defp runner_ref_atom_key("start_acknowledged"), do: :start_acknowledged
-  defp runner_ref_atom_key(_key), do: :unknown_background_runner_ref
 
   defp background_dispatch_error(reason, task) do
     cond do
@@ -886,7 +884,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   defp outlet_task_not_found_error(reason) do
     message =
       case reason do
-        value when value in [:outlet_task_not_found, "outlet_task_not_found"] ->
+        :outlet_task_not_found ->
           "Outlet runner no longer has this acknowledged background task."
 
         value ->
@@ -943,7 +941,8 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   defp metadata_line(label, value), do: "#{label}: #{value}"
 
   defp metadata_value(metadata, key) when is_map(metadata) and is_binary(key) do
-    (Map.get(metadata, key) || Map.get(metadata, String.to_atom(key)) || "")
+    metadata
+    |> Map.get(key, "")
     |> to_string()
     |> String.trim()
     |> String.slice(0, 200)
@@ -991,7 +990,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
 
   @spec discovered_tools_from_raw(map()) :: {:ok, list(map())} | {:error, String.t()}
   def discovered_tools_from_raw(%{} = raw) do
-    case Map.get(raw, "tools", Map.get(raw, :tools)) do
+    case Map.get(raw, "tools") do
       tools when is_list(tools) ->
         discovered = Enum.flat_map(tools, &normalize_discovered_tool/1)
 
@@ -1007,22 +1006,20 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   end
 
   defp normalize_discovered_tool(item) when is_map(item) do
-    name = item |> Map.get("name", Map.get(item, :name, "")) |> to_string() |> String.trim()
+    name = item |> Map.get("name", "") |> to_string() |> String.trim()
 
     if name == "" do
       []
     else
       description =
         item
-        |> Map.get("description", Map.get(item, :description, ""))
+        |> Map.get("description", "")
         |> to_string()
 
       schema =
         cond do
           is_map(Map.get(item, "input_schema")) -> Map.get(item, "input_schema")
-          is_map(Map.get(item, :input_schema)) -> Map.get(item, :input_schema)
           is_map(Map.get(item, "schema")) -> Map.get(item, "schema")
-          is_map(Map.get(item, :schema)) -> Map.get(item, :schema)
           true -> %{"type" => "object", "properties" => %{}}
         end
 
@@ -1033,8 +1030,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
           schema
         end
 
-      supports_background =
-        Map.get(item, "supports_background", Map.get(item, :supports_background, false)) == true
+      supports_background = Map.get(item, "supports_background", false) == true
 
       [
         %{

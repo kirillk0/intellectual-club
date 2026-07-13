@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
   import Phoenix.Controller
 
   alias IntellectualClub.Files
+  alias IntellectualClub.Files.File, as: StoredFile
 
   @max_upload_bytes 15 * 1024 * 1024
 
@@ -78,10 +79,10 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
 
   def send_file_path(conn, file, path, opts \\ [])
 
-  def send_file_path(conn, file, path, opts)
-      when is_map(file) and is_binary(path) and is_list(opts) do
+  def send_file_path(conn, %StoredFile{} = file, path, opts)
+      when is_binary(path) and is_list(opts) do
     conn = prepare_file_response(conn, file, opts)
-    etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
+    etag = ~s("#{file.sha256}")
 
     if etag_matches?(conn, etag) do
       send_resp(conn, :not_modified, "")
@@ -92,9 +93,9 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
 
   def send_loaded_file(conn, file, payload, opts \\ [])
 
-  def send_loaded_file(conn, file, payload, opts) when is_map(file) and is_binary(payload) do
+  def send_loaded_file(conn, %StoredFile{} = file, payload, opts) when is_binary(payload) do
     conn = prepare_file_response(conn, file, opts)
-    etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
+    etag = ~s("#{file.sha256}")
 
     if etag_matches?(conn, etag) do
       send_resp(conn, :not_modified, "")
@@ -103,13 +104,11 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
     end
   end
 
-  defp prepare_file_response(conn, file, opts) do
-    mime_type =
-      Map.get(file, :mime_type) || Map.get(file, "mime_type") || "application/octet-stream"
-
-    filename = Map.get(file, :filename) || Map.get(file, "filename")
+  defp prepare_file_response(conn, %StoredFile{} = file, opts) do
+    mime_type = file.mime_type || "application/octet-stream"
+    filename = file.filename
     disposition = Keyword.get(opts, :disposition, :attachment)
-    etag = ~s("#{Map.get(file, :sha256) || Map.get(file, "sha256")}")
+    etag = ~s("#{file.sha256}")
 
     conn
     |> put_resp_content_type(mime_type)

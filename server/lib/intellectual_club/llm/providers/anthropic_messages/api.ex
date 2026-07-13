@@ -670,7 +670,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   defp error_message(error, fallback) when is_map(error) do
     message =
       error
-      |> Map.get("message", Map.get(error, :message))
+      |> Map.get("message")
       |> to_string()
       |> String.trim()
 
@@ -680,7 +680,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   defp retryable_error_payload?(error) when is_map(error) do
     error_type =
       error
-      |> Map.get("type", Map.get(error, :type))
+      |> Map.get("type")
       |> to_string()
       |> String.trim()
 

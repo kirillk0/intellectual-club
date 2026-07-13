@@ -8,11 +8,11 @@ defmodule IntellectualClub.Llm.Auth do
 
   alias IntellectualClub.Llm.Auth.OpenAIOAuth
 
-  @type auth_method :: :api_key | :openai_oauth_refresh_token
+  @type auth_method :: String.t()
 
   @spec get_bearer_token(%{
           optional(:provider_id) => integer() | nil,
-          optional(:auth_method) => auth_method() | String.t() | nil,
+          optional(:auth_method) => auth_method() | nil,
           optional(:api_key) => String.t() | nil,
           optional(:oauth_refresh_token) => String.t() | nil
         }) :: {:ok, String.t()} | {:error, String.t()}
@@ -25,7 +25,7 @@ defmodule IntellectualClub.Llm.Auth do
 
   @spec get_bearer_token_with_meta(%{
           optional(:provider_id) => integer() | nil,
-          optional(:auth_method) => auth_method() | String.t() | nil,
+          optional(:auth_method) => auth_method() | nil,
           optional(:api_key) => String.t() | nil,
           optional(:oauth_refresh_token) => String.t() | nil
         }) :: {:ok, String.t()} | {:error, String.t(), OpenAIOAuth.error_meta()}
@@ -34,7 +34,7 @@ defmodule IntellectualClub.Llm.Auth do
     auth_method = normalize_auth_method(Map.get(opts, :auth_method))
 
     case auth_method do
-      :api_key ->
+      "api_key" ->
         api_key = Map.get(opts, :api_key)
 
         if blank?(api_key) do
@@ -43,7 +43,7 @@ defmodule IntellectualClub.Llm.Auth do
           {:ok, String.trim(api_key)}
         end
 
-      :openai_oauth_refresh_token ->
+      "openai_oauth_refresh_token" ->
         refresh_token = Map.get(opts, :oauth_refresh_token)
 
         if blank?(refresh_token) do
@@ -57,19 +57,14 @@ defmodule IntellectualClub.Llm.Auth do
     end
   end
 
-  defp normalize_auth_method(value) when is_atom(value) do
-    if value in [:api_key, :openai_oauth_refresh_token], do: value, else: :api_key
-  end
-
   defp normalize_auth_method(value) when is_binary(value) do
     case String.trim(value) do
-      "api_key" -> :api_key
-      "openai_oauth_refresh_token" -> :openai_oauth_refresh_token
-      _ -> :api_key
+      "openai_oauth_refresh_token" -> "openai_oauth_refresh_token"
+      _other -> "api_key"
     end
   end
 
-  defp normalize_auth_method(_value), do: :api_key
+  defp normalize_auth_method(_value), do: "api_key"
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(_value), do: true

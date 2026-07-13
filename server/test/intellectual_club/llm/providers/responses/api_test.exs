@@ -89,7 +89,8 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
                "status" => "completed",
                "usage" => %{
                  "input_tokens" => 3,
-                 "output_tokens" => 2
+                 "output_tokens" => 2,
+                 "total_tokens" => 5
                }
              }
            }
@@ -120,6 +121,19 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       )
 
     assert_receive {:provider_event, {:response_complete, meta}}, 2_000
+
+    assert meta.usage == %{
+             input_tokens: 3,
+             output_tokens: 2,
+             cached_input_tokens: nil,
+             reasoning_tokens: nil,
+             cost: nil,
+             responses: %{
+               "input_tokens" => 3,
+               "output_tokens" => 2,
+               "total_tokens" => 5
+             }
+           }
 
     assert meta.raw_response["output"] == [
              %{
@@ -267,15 +281,15 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       runtime_step
       |> RuntimeTrace.persistable()
       |> Map.fetch!(:items)
-      |> Enum.find(&(&1.type == "answer"))
+      |> Enum.find(&(&1.type == :answer))
       |> Map.fetch!(:contents)
 
     assert Enum.any?(answer_contents, fn content ->
-             content.kind == "opaque" and content.content_json["type"] == "future_content"
+             content.kind == :opaque and content.content_json["type"] == "future_content"
            end)
 
     refute Enum.any?(answer_contents, fn content ->
-             content.kind == "opaque" and content.content_json["type"] == "message"
+             content.kind == :opaque and content.content_json["type"] == "message"
            end)
   end
 

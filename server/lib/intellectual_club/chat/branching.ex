@@ -51,7 +51,8 @@ defmodule IntellectualClub.Chat.Branching do
   end
 
   @spec user_message?(ChatMessage.t()) :: boolean()
-  def user_message?(%ChatMessage{role: role}), do: role in [:user, "user"]
+  def user_message?(%ChatMessage{role: :user}), do: true
+  def user_message?(%ChatMessage{}), do: false
 
   defp fetch_source_chat(%Chat{id: id}, actor) when is_integer(id) do
     Ash.get(Chat, id, actor: actor)

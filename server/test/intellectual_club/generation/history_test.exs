@@ -12,6 +12,7 @@ defmodule IntellectualClub.Generation.HistoryTest do
     assert History.normalize_message(%{"role" => "assistant", "content" => [%{"type" => "text"}]}) ==
              %{"role" => "assistant", "content" => [%{"type" => "text"}]}
 
+    assert History.normalize_message(%{role: "user", content: "Wrong boundary"}) == nil
     assert History.normalize_message(%{role: :system, content: "Ignored"}) == nil
   end
 
@@ -60,5 +61,17 @@ defmodule IntellectualClub.Generation.HistoryTest do
 
     assert History.item_type(tool_item) == :tool_call
     assert History.opaque_payloads(tool_item) == [%{"name" => "tool"}]
+  end
+
+  test "trace helpers consume canonical atom-valued domain maps" do
+    assert History.item_type(:error) == :error
+    assert History.item_type(:other) == :other
+    assert History.item_type(%{type: "answer"}) == :other
+
+    assert History.content_kind(:media) == :media
+    assert History.content_kind(%{kind: "text"}) == :other
+
+    refute History.trace_message?(%{"steps" => []})
+    assert History.message_role(%{"role" => "assistant"}) == nil
   end
 end

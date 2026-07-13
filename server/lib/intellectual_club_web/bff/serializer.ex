@@ -252,7 +252,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     %{
       id: Map.get(binding, :id),
-      source: binding |> Map.get(:source) |> atom_to_string(),
+      source: binding |> Map.get(:source) |> optional_atom_to_string(),
       alias: Map.get(binding, :alias) || "",
       sequence: Map.get(binding, :sequence) || 0,
       tool_instance_id: Map.get(binding, :tool_instance_id),
@@ -291,8 +291,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     %{
       id: message.id,
       parent_id: message.parent_id,
-      role: atom_to_string(message.role),
-      status: atom_to_string(message.status),
+      role: Atom.to_string(message.role),
+      status: Atom.to_string(message.status),
       error_detail: message.error_detail,
       token_count: message.token_count,
       created_at: datetime_iso(message.created_at),
@@ -324,8 +324,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     %{
       id: message.id,
       parent_id: message.parent_id,
-      role: atom_to_string(message.role),
-      status: atom_to_string(message.status),
+      role: Atom.to_string(message.role),
+      status: Atom.to_string(message.status),
       error_detail: message.error_detail,
       token_count: message.token_count,
       created_at: datetime_iso(message.created_at),
@@ -353,7 +353,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
         %ChatMessageItem{} = item,
         %ChatMessageStep{} = step
       ) do
-    item_type = atom_to_string(item.type)
+    item_type = Atom.to_string(item.type)
     serialized = content(content, item_type)
 
     %{
@@ -376,7 +376,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       step_sequence: step.sequence,
       item_id: item.id,
       item_sequence: item.sequence,
-      item_type: atom_to_string(item.type)
+      item_type: Atom.to_string(item.type)
     }
   end
 
@@ -385,7 +385,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
         %ChatMessageItem{} = item,
         %ChatMessageStep{} = step
       ) do
-    item_type = atom_to_string(item.type)
+    item_type = Atom.to_string(item.type)
 
     content(content, item_type)
     |> Map.merge(%{
@@ -435,7 +435,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
           Map.get(step, :finished_at)
         ),
       finished_at: datetime_iso(Map.get(step, :finished_at)),
-      status: atom_to_string(step.status),
+      status: Atom.to_string(step.status),
       response_final: step.response_final,
       input_tokens: step.input_tokens,
       output_tokens: step.output_tokens,
@@ -445,21 +445,21 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
-  def working_step_summary(step) when is_map(step) do
+  def working_step_summary(%{status: status} = step) when is_binary(status) do
     %{
-      id: map_get(step, :id, "id"),
-      sequence: map_get(step, :sequence, "sequence"),
-      created_at: normalize_datetime_value(map_get(step, :created_at, "created_at")),
-      time_to_first_token_ms: map_get(step, :time_to_first_token_ms, "time_to_first_token_ms"),
-      tokens_per_second: map_get(step, :tokens_per_second, "tokens_per_second"),
-      finished_at: normalize_datetime_value(map_get(step, :finished_at, "finished_at")),
-      status: map_get(step, :status, "status") |> atom_to_string(),
-      response_final: map_get(step, :response_final, "response_final"),
-      input_tokens: map_get(step, :input_tokens, "input_tokens"),
-      output_tokens: map_get(step, :output_tokens, "output_tokens"),
-      cached_input_tokens: map_get(step, :cached_input_tokens, "cached_input_tokens"),
-      reasoning_tokens: map_get(step, :reasoning_tokens, "reasoning_tokens"),
-      cost: map_get(step, :cost, "cost")
+      id: Map.get(step, :id),
+      sequence: Map.get(step, :sequence),
+      created_at: normalize_datetime_value(Map.get(step, :created_at)),
+      time_to_first_token_ms: Map.get(step, :time_to_first_token_ms),
+      tokens_per_second: Map.get(step, :tokens_per_second),
+      finished_at: normalize_datetime_value(Map.get(step, :finished_at)),
+      status: status,
+      response_final: Map.get(step, :response_final),
+      input_tokens: Map.get(step, :input_tokens),
+      output_tokens: Map.get(step, :output_tokens),
+      cached_input_tokens: Map.get(step, :cached_input_tokens),
+      reasoning_tokens: Map.get(step, :reasoning_tokens),
+      cost: Map.get(step, :cost)
     }
   end
 
@@ -489,7 +489,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
           Map.get(step, :finished_at)
         ),
       finished_at: datetime_iso(Map.get(step, :finished_at)),
-      status: atom_to_string(step.status),
+      status: Atom.to_string(step.status),
       response_final: step.response_final,
       input_tokens: step.input_tokens,
       output_tokens: step.output_tokens,
@@ -501,7 +501,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   def item(%ChatMessageItem{} = item) do
-    type = atom_to_string(item.type)
+    type = Atom.to_string(item.type)
     contents = ordered_by_sequence(item.contents)
 
     %{
@@ -518,7 +518,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   def content(%ChatMessageContent{} = content, item_type \\ nil) do
-    kind = atom_to_string(content.kind)
+    kind = Atom.to_string(content.kind)
     text = to_string(content.content_text || "")
     {preview_text, truncated?} = maybe_truncate_content_text(item_type, kind, text)
     content_json = sanitize_content_json(item_type, kind, content.content_json)
@@ -535,15 +535,13 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
-  def normalize_runtime_step_for_client(step) when is_map(step) do
+  def normalize_runtime_step_for_client(%{items: items} = step) when is_list(items) do
     items =
-      step
-      |> map_get(:items, "items", [])
-      |> List.wrap()
+      items
       |> ordered_by_sequence()
 
     normalized_items = Enum.map(items, &normalize_runtime_item/1)
-    put_key(step, :items, "items", normalized_items)
+    Map.put(step, :items, normalized_items)
   end
 
   def normalize_runtime_step_for_client(step), do: step
@@ -574,7 +572,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     values
     |> Enum.map(fn
       %{id: id} when is_integer(id) -> id
-      %{"id" => id} when is_integer(id) -> id
       id when is_integer(id) -> id
       _other -> nil
     end)
@@ -590,7 +587,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     values
     |> Enum.map(fn
       %{name: name} when is_binary(name) -> name
-      %{"name" => name} when is_binary(name) -> name
       name when is_binary(name) -> name
       _other -> nil
     end)
@@ -603,7 +599,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp active_generation_message_id(%Chat{} = chat) do
     case Map.get(chat, :last_message) do
       %ChatMessage{id: id, status: :generating} when is_integer(id) -> id
-      %ChatMessage{id: id, status: "generating"} when is_integer(id) -> id
       _ -> nil
     end
   end
@@ -611,7 +606,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp last_message_status(%Chat{} = chat) do
     case Map.get(chat, :last_message) do
       %ChatMessage{status: status} when is_atom(status) -> Atom.to_string(status)
-      %ChatMessage{status: status} when is_binary(status) -> status
       _ -> nil
     end
   end
@@ -631,7 +625,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp relation_kind_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp relation_kind_string(value) when is_binary(value), do: value
   defp relation_kind_string(_value), do: nil
 
   defp latest_step_summary([]), do: nil
@@ -653,7 +646,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp successful_step_summary?(summary) when is_map(summary) do
-    Map.get(summary, :status) in [:done, :waiting_tools, "done", "waiting_tools"]
+    Map.get(summary, :status) in ["done", "waiting_tools"]
   end
 
   defp successful_step_summary?(_summary), do: false
@@ -700,7 +693,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   defp active_step_summary?(_summary), do: false
 
-  defp active_step_status?(status) when status in [:waiting_provider, :waiting_tools], do: true
   defp active_step_status?(status) when status in ["waiting_provider", "waiting_tools"], do: true
   defp active_step_status?(_status), do: false
 
@@ -840,45 +832,68 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp normalize_datetime_value(value) when is_binary(value), do: value
   defp normalize_datetime_value(_value), do: nil
 
-  defp normalize_runtime_item(item) when is_map(item) do
-    type = map_get(item, :type, "type") |> atom_to_string()
-
-    created_at =
-      item
-      |> map_get(:created_at, "created_at")
-      |> datetime_iso()
-
+  defp normalize_runtime_item(%{type: type, contents: contents} = item)
+       when is_binary(type) and is_list(contents) do
     contents =
-      item
-      |> map_get(:contents, "contents", [])
-      |> List.wrap()
+      contents
       |> ordered_by_sequence()
       |> Enum.filter(&content_visible_in_bff?(&1, type))
       |> Enum.map(&normalize_runtime_content(&1, type))
 
     item
-    |> put_key(:created_at, "created_at", created_at)
-    |> put_key(:contents, "contents", contents)
+    |> Map.put(:created_at, normalize_datetime_value(Map.get(item, :created_at)))
+    |> Map.put(:contents, contents)
   end
 
   defp normalize_runtime_item(item), do: item
 
-  defp normalize_runtime_content(content, item_type) when is_map(content) do
-    kind = map_get(content, :kind, "kind") |> atom_to_string()
-    text = map_get(content, :content_text, "content_text", "") |> to_string()
+  defp normalize_runtime_content(%{kind: kind} = content, item_type) when is_binary(kind) do
+    text = Map.get(content, :content_text, "") |> to_string()
     {preview_text, truncated?} = maybe_truncate_content_text(item_type, kind, text)
-    content_json = map_get(content, :content_json, "content_json")
+    content_json = Map.get(content, :content_json)
     sanitized_content_json = sanitize_content_json(item_type, kind, content_json)
+    media = runtime_media_descriptor(content)
 
     content
-    |> put_key(:external_id, "external_id", map_get(content, :external_id, "external_id"))
-    |> put_key(:content_text, "content_text", preview_text)
-    |> put_key(:content_text_truncated, "content_text_truncated", truncated?)
-    |> put_key(:content_json, "content_json", sanitized_content_json)
-    |> put_key(:media, "media", Media.media_descriptor(content))
+    |> Map.put(:content_text, preview_text)
+    |> Map.put(:content_text_truncated, truncated?)
+    |> Map.put(:content_json, sanitized_content_json)
+    |> Map.put(:media, media)
   end
 
   defp normalize_runtime_content(content, _item_type), do: content
+
+  defp runtime_media_descriptor(%{kind: "media"} = content) do
+    file = runtime_media_file(Map.get(content, :file))
+
+    Media.media_descriptor(%{
+      kind: :media,
+      external_id: Map.get(content, :external_id),
+      file_id: Map.get(content, :file_id),
+      filename: Map.get(content, :filename),
+      mime_type: Map.get(content, :mime_type),
+      size_bytes: Map.get(content, :size_bytes),
+      sha256: Map.get(content, :sha256),
+      file: file
+    })
+  end
+
+  defp runtime_media_descriptor(_content), do: nil
+
+  defp runtime_media_file(%Ash.NotLoaded{}), do: %{}
+
+  defp runtime_media_file(file) when is_map(file) do
+    %{
+      id: Map.get(file, :id),
+      external_id: Map.get(file, :external_id),
+      filename: Map.get(file, :filename),
+      mime_type: Map.get(file, :mime_type),
+      size_bytes: Map.get(file, :size_bytes),
+      sha256: Map.get(file, :sha256)
+    }
+  end
+
+  defp runtime_media_file(_file), do: %{}
 
   defp maybe_truncate_content_text(item_type, kind, text) do
     if item_type == "tool_result" and kind == "text" do
@@ -928,11 +943,11 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     compact =
       %{}
-      |> maybe_put_compact("tool_call_id", map_get(content_json, :tool_call_id, "tool_call_id"))
-      |> maybe_put_compact("call_id", map_get(content_json, :call_id, "call_id"))
-      |> maybe_put_compact("name", map_get(content_json, :name, "name"))
+      |> maybe_put_compact("tool_call_id", Map.get(content_json, "tool_call_id"))
+      |> maybe_put_compact("call_id", Map.get(content_json, "call_id"))
+      |> maybe_put_compact("name", Map.get(content_json, "name"))
 
-    case sanitize_responses_item_preview(map_get(content_json, :responses_item, "responses_item")) do
+    case sanitize_responses_item_preview(Map.get(content_json, "responses_item")) do
       nil when map_size(compact) == 0 -> nil
       nil -> compact
       responses_item -> Map.put(compact, "responses_item", responses_item)
@@ -946,46 +961,33 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     compact =
       %{}
-      |> maybe_put_compact("type", map_get(responses_item, :type, "type"))
-      |> maybe_put_compact("id", map_get(responses_item, :id, "id"))
-      |> maybe_put_compact("call_id", map_get(responses_item, :call_id, "call_id"))
-      |> maybe_put_compact(
-        "tool_call_id",
-        map_get(responses_item, :tool_call_id, "tool_call_id")
-      )
-      |> maybe_put_compact("name", map_get(responses_item, :name, "name"))
+      |> maybe_put_compact("type", Map.get(responses_item, "type"))
+      |> maybe_put_compact("id", Map.get(responses_item, "id"))
+      |> maybe_put_compact("call_id", Map.get(responses_item, "call_id"))
+      |> maybe_put_compact("tool_call_id", Map.get(responses_item, "tool_call_id"))
+      |> maybe_put_compact("name", Map.get(responses_item, "name"))
 
     if map_size(compact) == 0, do: nil, else: compact
   end
 
   defp sanitize_responses_item_preview(_other), do: nil
 
-  defp content_visible_in_bff?(content, item_type) do
-    kind = map_get(content, :kind, "kind") |> atom_to_string()
+  defp content_visible_in_bff?(%ChatMessageContent{kind: kind}, item_type) do
+    kind = Atom.to_string(kind)
     not (kind == "opaque" and item_type in ["reasoning", "answer", "handoff_summary"])
   end
+
+  defp content_visible_in_bff?(%{kind: kind}, item_type) when is_binary(kind) do
+    not (kind == "opaque" and item_type in ["reasoning", "answer", "handoff_summary"])
+  end
+
+  defp content_visible_in_bff?(_content, _item_type), do: false
 
   defp maybe_put_compact(map, _key, nil) when is_map(map), do: map
   defp maybe_put_compact(map, _key, ""), do: map
 
   defp maybe_put_compact(map, key, value) when is_map(map) and is_binary(key) do
     Map.put(map, key, value)
-  end
-
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
-    end
-  end
-
-  defp put_key(map, atom_key, string_key, value) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.put(map, atom_key, value)
-      Map.has_key?(map, string_key) -> Map.put(map, string_key, value)
-      true -> Map.put(map, atom_key, value)
-    end
   end
 
   defp ordered_by_sequence(values) when is_list(values) do
@@ -995,11 +997,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   defp ordered_by_sequence(_other), do: []
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
 
-  defp atom_to_string(nil), do: nil
-  defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_to_string(value) when is_binary(value), do: value
-  defp atom_to_string(value), do: to_string(value)
+  defp optional_atom_to_string(nil), do: nil
+  defp optional_atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
 end

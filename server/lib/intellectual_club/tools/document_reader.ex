@@ -312,22 +312,7 @@ defmodule IntellectualClub.Tools.DocumentReader do
   end
 
   def map_get(map, key) when is_map(map) and is_binary(key) do
-    Map.get(map, key) ||
-      case key do
-        "url" -> Map.get(map, :url)
-        "page" -> Map.get(map, :page)
-        "regex" -> Map.get(map, :regex)
-        "regex_flags" -> Map.get(map, :regex_flags)
-        "snippet_len_chars" -> Map.get(map, :snippet_len_chars)
-        "max_snippets" -> Map.get(map, :max_snippets)
-        "chunk_size_tokens" -> Map.get(map, :chunk_size_tokens)
-        "cache_ttl_seconds" -> Map.get(map, :cache_ttl_seconds)
-        "cache_max_bytes" -> Map.get(map, :cache_max_bytes)
-        "extract_timeout_seconds" -> Map.get(map, :extract_timeout_seconds)
-        "max_extract_chars" -> Map.get(map, :max_extract_chars)
-        "pages_total" -> Map.get(map, :pages_total)
-        _ -> nil
-      end
+    Map.get(map, key)
   end
 
   def map_get(_map, _key), do: nil

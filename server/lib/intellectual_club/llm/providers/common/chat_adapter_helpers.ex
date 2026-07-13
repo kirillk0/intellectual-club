@@ -251,7 +251,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
   defp sanitize_reasoning_details(value) when is_list(value) do
     Enum.map(value, fn
       %{} = item ->
-        id = Map.get(item, "id") || Map.get(item, :id)
+        id = Map.get(item, "id")
 
         if is_binary(id) and String.starts_with?(id, "rs_") do
           Map.delete(RequestPayload.stringify_keys(item), "id")
@@ -335,7 +335,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     messages
     |> Enum.find_value("", fn
       %{"role" => "system", "content" => content} -> flatten_message_content(content)
-      %{role: "system", content: content} -> flatten_message_content(content)
       _other -> nil
     end)
     |> to_string()
@@ -365,7 +364,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
   defp drop_system_marker_index(messages, [0 | rest]) do
     case List.first(messages) do
       %{"role" => "system"} -> if(rest == [], do: [0], else: rest)
-      %{role: "system"} -> if(rest == [], do: [0], else: rest)
       _other -> [0 | rest]
     end
   end
@@ -374,11 +372,11 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
 
   defp message_has_cache_control?(%{} = message) do
     message
-    |> Map.get("content", Map.get(message, :content))
+    |> Map.get("content")
     |> case do
       content when is_list(content) ->
         Enum.any?(content, fn
-          %{} = part -> is_map(Map.get(part, "cache_control") || Map.get(part, :cache_control))
+          %{} = part -> is_map(Map.get(part, "cache_control"))
           _other -> false
         end)
 
@@ -395,7 +393,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     content
     |> Enum.map(fn
       %{} = part ->
-        part["text"] || part[:text] || part["content"] || part[:content] || ""
+        part["text"] || part["content"] || ""
 
       other ->
         to_string(other)
@@ -404,7 +402,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
   end
 
   defp flatten_message_content(%{} = content) do
-    content["text"] || content[:text] || content["content"] || content[:content] || ""
+    content["text"] || content["content"] || ""
   end
 
   defp flatten_message_content(other), do: to_string(other)

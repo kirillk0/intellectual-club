@@ -241,14 +241,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   defp session_id_from_source(%{} = source) do
     source
-    |> Map.get(
-      :conversation_affinity_id,
-      Map.get(
-        source,
-        "conversation_affinity_id",
-        Map.get(source, :chat_id, Map.get(source, "chat_id"))
-      )
-    )
+    |> Map.get(:conversation_affinity_id, Map.get(source, :chat_id))
     |> chat_session_id()
   end
 
@@ -256,16 +249,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   defp chat_session_id(chat_id) when is_integer(chat_id) and chat_id > 0 do
     "intellectual-club:chat:#{chat_id}"
-  end
-
-  defp chat_session_id(chat_id) when is_binary(chat_id) do
-    chat_id = String.trim(chat_id)
-
-    if chat_id == "" do
-      nil
-    else
-      "intellectual-club:chat:#{chat_id}"
-    end
   end
 
   defp chat_session_id(_chat_id), do: nil

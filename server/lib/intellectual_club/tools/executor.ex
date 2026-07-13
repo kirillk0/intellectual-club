@@ -30,6 +30,8 @@ defmodule IntellectualClub.Tools.Executor do
           ExecutionResult.t()
   def execute_llm_tool(tool_instances_by_alias, llm_tool_name, args, execution_context \\ nil)
       when is_map(tool_instances_by_alias) and is_binary(llm_tool_name) and is_map(args) do
+    args = stringify_argument_keys(args)
+
     with {:ok, {alias_value, function_name}} <- parse_llm_tool_name(llm_tool_name),
          {:ok, tool_instance} <- resolve_alias(tool_instances_by_alias, alias_value) do
       execute_tool_instance(tool_instance, function_name, args, execution_context)
@@ -64,6 +66,31 @@ defmodule IntellectualClub.Tools.Executor do
       tool_instance -> {:ok, tool_instance}
     end
   end
+
+  defp stringify_argument_keys(%{} = value) do
+    Enum.reduce(value, %{}, fn {key, nested}, normalized ->
+      string_key = argument_key_to_string(key)
+      nested = stringify_argument_value(nested)
+
+      if is_binary(key) or not Map.has_key?(normalized, string_key) do
+        Map.put(normalized, string_key, nested)
+      else
+        normalized
+      end
+    end)
+  end
+
+  defp stringify_argument_value(%{} = value), do: stringify_argument_keys(value)
+
+  defp stringify_argument_value(value) when is_list(value),
+    do: Enum.map(value, &stringify_argument_value/1)
+
+  defp stringify_argument_value(value), do: value
+
+  defp argument_key_to_string(key) when is_binary(key), do: key
+  defp argument_key_to_string(key) when is_atom(key), do: Atom.to_string(key)
+  defp argument_key_to_string(key) when is_integer(key), do: Integer.to_string(key)
+  defp argument_key_to_string(key), do: inspect(key)
 
   defp execute_tool_instance(tool_instance, function_name, args, execution_context) do
     result =
@@ -240,7 +267,7 @@ defmodule IntellectualClub.Tools.Executor do
           end
 
         if enabled do
-          {:ok, normalized_execution_spec(fixed)}
+          {:ok, fixed_execution_spec(fixed)}
         else
           {:error, "Tool function `#{function_name}` is disabled."}
         end
@@ -270,7 +297,11 @@ defmodule IntellectualClub.Tools.Executor do
       |> Ash.read_one(actor: actor)
       |> case do
         {:ok, %ToolFunction{enabled: true, discovery_available: true} = function} ->
-          {:ok, normalized_execution_spec(function)}
+          {:ok,
+           %{
+             execution_mode: function.execution_mode,
+             target_function_name: normalize_target_function_name(function.target_function_name)
+           }}
 
         _other ->
           {:error, "Tool function `#{function_name}` is disabled."}
@@ -282,23 +313,20 @@ defmodule IntellectualClub.Tools.Executor do
     {:error, "Tool function `#{function_name}` is disabled."}
   end
 
-  defp normalized_execution_spec(raw) when is_map(raw) do
+  defp fixed_execution_spec(raw) when is_map(raw) do
     execution_mode =
-      case Map.get(raw, "execution_mode", Map.get(raw, :execution_mode)) do
-        value when value in [:background, "background"] -> :background
+      case Map.get(raw, "execution_mode") do
+        "background" -> :background
         _other -> :direct
       end
 
-    target_function_name =
-      raw
-      |> Map.get("target_function_name", Map.get(raw, :target_function_name))
-      |> case do
-        value when is_binary(value) -> String.trim(value)
-        _other -> nil
-      end
+    target_function_name = normalize_target_function_name(Map.get(raw, "target_function_name"))
 
     %{execution_mode: execution_mode, target_function_name: target_function_name}
   end
+
+  defp normalize_target_function_name(value) when is_binary(value), do: String.trim(value)
+  defp normalize_target_function_name(_value), do: nil
 
   defp fixed_function_override(%{id: tool_instance_id}, function_name, execution_context)
        when is_integer(tool_instance_id) and is_binary(function_name) do
@@ -325,7 +353,7 @@ defmodule IntellectualClub.Tools.Executor do
 
   defp fixed_function_name(raw) when is_map(raw) do
     raw
-    |> Map.get("name", Map.get(raw, :name, ""))
+    |> Map.get("name", "")
     |> to_string()
     |> String.trim()
   end
@@ -333,12 +361,12 @@ defmodule IntellectualClub.Tools.Executor do
   defp fixed_function_name(_raw), do: ""
 
   defp fixed_function_default_enabled?(raw) when is_map(raw) do
-    case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+    case Map.get(raw, "enabled_by_default") do
       value when is_boolean(value) ->
         value
 
       _other ->
-        case Map.get(raw, "enabled", Map.get(raw, :enabled)) do
+        case Map.get(raw, "enabled") do
           false -> false
           _ -> true
         end

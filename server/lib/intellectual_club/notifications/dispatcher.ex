@@ -12,15 +12,16 @@ defmodule IntellectualClub.Notifications.Dispatcher do
   end
 
   def notify_generation_finished(message_id, status, opts \\ [])
-      when is_integer(message_id) and is_list(opts) do
+      when is_integer(message_id) and status in [:done, :error] and is_list(opts) do
     start_child(fn ->
-      Notifications.deliver_generation_finished(message_id, normalize_status(status), opts)
+      Notifications.deliver_generation_finished(message_id, status, opts)
     end)
   end
 
-  def suppress_generation_finished(message_id, status) when is_integer(message_id) do
+  def suppress_generation_finished(message_id, status)
+      when is_integer(message_id) and status in [:done, :error] do
     start_child(fn ->
-      Notifications.suppress_generation_finished(message_id, normalize_status(status))
+      Notifications.suppress_generation_finished(message_id, status)
     end)
   end
 
@@ -34,10 +35,4 @@ defmodule IntellectualClub.Notifications.Dispatcher do
         :ok
     end
   end
-
-  defp normalize_status(:done), do: :done
-  defp normalize_status("done"), do: :done
-  defp normalize_status(:error), do: :error
-  defp normalize_status("error"), do: :error
-  defp normalize_status(_status), do: nil
 end

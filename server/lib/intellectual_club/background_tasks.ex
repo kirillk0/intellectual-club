@@ -143,13 +143,13 @@ defmodule IntellectualClub.BackgroundTasks do
   def set_fork_reference(task_or_id, reference) when is_map(reference) do
     with {:ok, task} <- resolve_internal_task(task_or_id),
          chat_id when is_integer(chat_id) and chat_id > 0 <-
-           value_or(reference, :chat_id, "chat_id"),
+           Map.get(reference, :chat_id),
          message_id when is_integer(message_id) and message_id > 0 <-
-           value_or(reference, :message_id, "message_id"),
+           Map.get(reference, :message_id),
          generation_message_id
          when is_integer(generation_message_id) and
                 generation_message_id > 0 <-
-           value_or(reference, :generation_message_id, "generation_message_id") do
+           Map.get(reference, :generation_message_id) do
       runner_ref =
         task.runner_ref
         |> case do
@@ -160,7 +160,7 @@ defmodule IntellectualClub.BackgroundTasks do
           "fork_chat_id" => chat_id,
           "fork_message_id" => message_id,
           "fork_generation_message_id" => generation_message_id,
-          "fork_url" => to_string(value_or(reference, :url, "url") || "/chats/#{chat_id}")
+          "fork_url" => to_string(Map.get(reference, :url) || "/chats/#{chat_id}")
         })
 
       update_task(
@@ -300,7 +300,7 @@ defmodule IntellectualClub.BackgroundTasks do
   def mark_running_detached(%BackgroundTask{} = task, refs) when is_map(refs) do
     with {:ok, current} <- fetch_internal(task.id) do
       runner_ref =
-        value_or(refs, :runner_ref, "runner_ref")
+        Map.get(refs, "runner_ref")
         |> case do
           %{} = value -> value
           _other -> refs
@@ -309,7 +309,7 @@ defmodule IntellectualClub.BackgroundTasks do
       attrs = %{runner_ref: normalize_json(runner_ref)}
 
       attrs =
-        case value_or(refs, :target_chat_id, "target_chat_id") do
+        case Map.get(refs, "target_chat_id") do
           value when is_integer(value) and value > 0 -> Map.put(attrs, :target_chat_id, value)
           _other -> attrs
         end
@@ -459,9 +459,7 @@ defmodule IntellectualClub.BackgroundTasks do
   defp actor(owner_id), do: %User{id: owner_id}
 
   defp context_value(map, key, default \\ nil) do
-    Map.get(map, key, Map.get(map, String.to_existing_atom(key), default))
-  rescue
-    ArgumentError -> Map.get(map, key, default)
+    Map.get(map, key, default)
   end
 
   defp parse_datetime(%DateTime{} = value), do: value
@@ -511,14 +509,10 @@ defmodule IntellectualClub.BackgroundTasks do
   defp runner_value(task, key) do
     task.runner_ref
     |> case do
-      %{} = refs -> Map.get(refs, key, Map.get(refs, String.to_atom(key), ""))
+      %{} = refs -> Map.get(refs, key, "")
       _other -> ""
     end
     |> to_string()
-  end
-
-  defp value_or(map, atom_key, string_key) do
-    Map.get(map, atom_key, Map.get(map, string_key))
   end
 
   defp datetime_iso(%DateTime{} = value), do: DateTime.to_iso8601(value)

@@ -3,6 +3,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
 
   alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.Drivers.Outlet
+  alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
 
   setup do
@@ -140,6 +141,69 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     assert wrapper["execution_mode"] == "background"
     assert wrapper["target_function_name"] == "run_command"
     assert wrapper["schema"] == Enum.find(discovered, &(&1["name"] == "run_command"))["schema"]
+  end
+
+  test "execute canonicalizes known attachment fields from runner JSON" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        name: "Attachment outlet",
+        secrets: %{"token" => "attachment-token"}
+      })
+
+    runner_payload =
+      connect_runner!(tool_instance, "attachment-runner", "attachment-session")
+
+    execute = Task.async(fn -> Outlet.execute(tool_instance, "read_image", %{}) end)
+
+    task =
+      wait_for_task(tool_instance, runner_payload, fn task ->
+        task.operation == "execute" and task.function == "read_image"
+      end)
+
+    assert :ok =
+             Runtime.complete(tool_instance, %{
+               "call_id" => task.call_id,
+               "runner_id" => runner_payload["runner_id"],
+               "runner_session_id" => runner_payload["runner_session_id"],
+               "status" => "done",
+               "result_text" => "attached",
+               "result_raw" => %{"file_id" => "opaque-raw-value"},
+               "result_media" => [
+                 %{
+                   "file_id" => 41,
+                   "file_external_id" => "media-file",
+                   "filename" => "image.png",
+                   "mime_type" => "image/png",
+                   "size_bytes" => 128,
+                   "sha256" => "digest",
+                   "is_image" => true,
+                   "provider" => %{"file_id" => "nested-value"}
+                 }
+               ],
+               "result_artifacts" => [
+                 %{"file_id" => 42, "filename" => "result.txt"}
+               ]
+             })
+
+    assert {:ok, %ExecutionResult{} = result} = Task.await(execute, 5_000)
+    assert result.raw == %{"file_id" => "opaque-raw-value"}
+
+    assert result.media == [
+             %{
+               "provider" => %{"file_id" => "nested-value"},
+               file_id: 41,
+               file_external_id: "media-file",
+               filename: "image.png",
+               mime_type: "image/png",
+               size_bytes: 128,
+               sha256: "digest",
+               is_image: true
+             }
+           ]
+
+    assert result.artifacts == [%{file_id: 42, filename: "result.txt"}]
   end
 
   test "discovery rejects provider functions colliding with a background wrapper" do

@@ -47,7 +47,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
               %{
                 message_id: message_id,
                 runtime: true,
-                status: status_string(runtime.status),
+                status: Atom.to_string(runtime.status),
                 content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
                 usage: Map.get(payload, :usage, Serializer.usage_summary([])),
                 working: Map.get(payload, :working, Serializer.working_summary([])),
@@ -407,7 +407,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         json(conn, %{
           content: %{
             id: content.id,
-            kind: to_string(content.kind || ""),
+            kind: Atom.to_string(content.kind),
             content_text: to_string(content.content_text || "")
           }
         })
@@ -475,14 +475,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp wanted_item_types(:user), do: [:input, :handoff_request, :handoff_context]
   defp wanted_item_types(:assistant), do: [:answer, :handoff_summary]
-  defp wanted_item_types("user"), do: [:input, :handoff_request, :handoff_context]
-  defp wanted_item_types("assistant"), do: [:answer, :handoff_summary]
   defp wanted_item_types(_other), do: [:other]
 
   defp media_item_types(:user), do: [:input, :handoff_request, :handoff_context]
-  defp media_item_types("user"), do: [:input, :handoff_request, :handoff_context]
   defp media_item_types(:assistant), do: [:artifact, :handoff_summary]
-  defp media_item_types("assistant"), do: [:artifact, :handoff_summary]
   defp media_item_types(_other), do: [:other]
 
   defp editable_text_contents(message, wanted_types)
@@ -504,7 +500,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       contents = Map.get(item, :contents) || []
 
       contents
-      |> Enum.filter(fn content -> Map.get(content, :kind) in [:text, "text"] end)
+      |> Enum.filter(&(&1.kind == :text))
       |> Enum.sort_by(&sort_seq/1)
     end)
   end
@@ -528,13 +524,12 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       contents = Map.get(item, :contents) || []
 
       contents
-      |> Enum.filter(fn content -> Map.get(content, :kind) in [:media, "media"] end)
+      |> Enum.filter(&(&1.kind == :media))
       |> Enum.sort_by(&sort_seq/1)
     end)
   end
 
   defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(%{"sequence" => sequence}) when is_integer(sequence), do: sequence
   defp sort_seq(_other), do: 0
 
   defp parse_message_text_update(params, editable_contents, opts)
@@ -670,15 +665,12 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   defp normalize_content_update(%{} = raw) do
     id =
       raw
-      |> Map.get("id", Map.get(raw, :id))
+      |> Map.get("id")
       |> Helpers.parse_optional_integer()
 
     text =
       raw
-      |> Map.get(
-        "content_text",
-        Map.get(raw, :content_text, Map.get(raw, "text", Map.get(raw, :text, "")))
-      )
+      |> Map.get("content_text", Map.get(raw, "text", ""))
       |> to_string()
 
     if is_integer(id) and id > 0 do
@@ -849,7 +841,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     contents = Map.get(item, :contents) || []
 
     contents
-    |> Enum.filter(fn content -> Map.get(content, :kind) in [:text, "text"] end)
+    |> Enum.filter(&(&1.kind == :text))
     |> Enum.sort_by(&sort_seq/1)
     |> Enum.map(fn content -> to_string(Map.get(content, :content_text) || "") end)
     |> Enum.join("")
@@ -885,7 +877,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         %{
           message_id: message_id,
           runtime: false,
-          status: status_string(message.status),
+          status: Atom.to_string(message.status),
           content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
           usage: Map.get(payload, :usage, Serializer.usage_summary([])),
           working: Map.get(payload, :working, Serializer.working_summary([])),
@@ -933,7 +925,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp working_open_latest(message_id, actor, runtime_step) when is_map(runtime_step) do
     %{
-      selected_step_id: map_get(runtime_step, :id, "id"),
+      selected_step_id: Map.get(runtime_step, :id),
       step: runtime_step
     }
     |> maybe_put_step_index(message_id, actor, runtime_step)
@@ -1028,23 +1020,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   defp parse_working_step_id(_value), do: {:error, :invalid_step_id}
 
   defp runtime_step_matches?(runtime_step, step_id) when is_map(runtime_step) do
-    map_get(runtime_step, :id, "id") == step_id
+    Map.get(runtime_step, :id) == step_id
   end
 
   defp runtime_step_matches?(_runtime_step, _step_id), do: false
-
-  defp status_string(nil), do: nil
-  defp status_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp status_string(value) when is_binary(value), do: value
-  defp status_string(value), do: to_string(value)
-
-  defp map_get(map, atom_key, string_key, default \\ nil) when is_map(map) do
-    cond do
-      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
-      Map.has_key?(map, string_key) -> Map.get(map, string_key)
-      true -> default
-    end
-  end
 
   defp fetch_owned_message(message_id, actor) do
     case Ash.get(ChatMessage, message_id, actor: actor) do

@@ -139,8 +139,27 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       )
       |> Ash.create!(actor: actor)
 
-    media = [%{"url" => "https://example.test/image.png"}]
-    artifacts = [%{"name" => "result.txt", "content" => "done"}]
+    media = [
+      %{
+        file_id: 41,
+        file_external_id: "media-file",
+        filename: "image.png",
+        mime_type: "image/png",
+        size_bytes: 128,
+        sha256: "media-digest"
+      }
+    ]
+
+    artifacts = [
+      %{
+        file_id: 42,
+        file_external_id: "artifact-file",
+        filename: "result.txt",
+        mime_type: "text/plain",
+        size_bytes: 4,
+        sha256: "artifact-digest"
+      }
+    ]
 
     assert {:ok, event} = BackgroundTasks.append_event(task, :stdout, "partial output")
 
