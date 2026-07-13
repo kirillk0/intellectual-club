@@ -168,7 +168,12 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
       parent_tool_call_item_id: Map.get(entry, :parent_tool_call_item_id),
       parent_step_id: Map.get(entry, :parent_step_id),
       parent_step_sequence: Map.get(entry, :parent_step_sequence),
-      parent_item_sequence: Map.get(entry, :parent_item_sequence)
+      parent_item_sequence: Map.get(entry, :parent_item_sequence),
+      anchor_message_id: Map.get(entry, :anchor_message_id),
+      anchor_tool_call_item_id: Map.get(entry, :anchor_tool_call_item_id),
+      anchor_step_id: Map.get(entry, :anchor_step_id),
+      anchor_step_sequence: Map.get(entry, :anchor_step_sequence),
+      anchor_item_sequence: Map.get(entry, :anchor_item_sequence)
     )
   end
 

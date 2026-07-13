@@ -43,6 +43,11 @@ import type {
   LlmConfiguration,
   ToolInstanceOption,
 } from '@/types/api';
+import {
+  hasPositionedForkAnchor,
+  parentForkRelationForMessage,
+  parentRelationBannerForBranch,
+} from '@/features/chat/model/chatRelations';
 
 type ChatShareEligibility = {
   id: number;
@@ -172,11 +177,18 @@ export function useChatViewModel() {
   const positionedForkRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] =>
     childRelationsForMessage(messageId).filter(
       (relation) =>
-        relation.kind === 'fork' &&
-        Number.isInteger(relation.parent_tool_call_item_id) &&
-        Number.isInteger(relation.parent_step_sequence) &&
-        Number.isInteger(relation.parent_item_sequence)
+        hasPositionedForkAnchor(relation) && relation.anchor_message_id === messageId
     );
+  const positionedParentForkRelationForMessage = (
+    messageId?: number | null
+  ): ChatRelationSummary | null =>
+    parentForkRelationForMessage(parentRelation.value, messageId);
+  const parentRelationBanner = computed(() =>
+    parentRelationBannerForBranch(
+      parentRelation.value,
+      branch.value.map((message) => message.id)
+    )
+  );
   const trailingChildRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] => {
     const positionedChatIds = new Set(
       positionedForkRelationsForMessage(messageId).map((relation) => relation.chat_id)
@@ -864,9 +876,11 @@ export function useChatViewModel() {
     branch,
     continuationNav,
     parentRelation,
+    parentRelationBanner,
     fallbackChildRelations,
     childRelationsForMessage,
     positionedForkRelationsForMessage,
+    positionedParentForkRelationForMessage,
     trailingChildRelationsForMessage,
     counters,
     bots,

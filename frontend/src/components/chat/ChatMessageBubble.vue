@@ -36,12 +36,14 @@
           <RouterLink
             v-else
             class="message-fork-card"
+            :class="`message-fork-card--${entry.direction}`"
             :to="chatRoute(entry.relation.chat_id)"
-            @click.capture="emit('child-relation-navigate', $event, entry.relation.chat_id)"
+            @click.capture="emit('relation-navigate', $event, entry.relation.chat_id)"
           >
-            <span>{{ translate('Forked into') }}</span>
+            <span>{{ forkRelationLabel(entry) }}</span>
             <strong>{{ relationTitle(entry.relation) }}</strong>
             <ChatGenerationStateIndicator
+              v-if="entry.direction === 'child'"
               :state="childRelationGenerationState(entry.relation)"
               class="message-fork-card__generation-state"
             />
@@ -293,6 +295,7 @@ interface Props {
   pollReconnecting?: boolean;
   workingOpen?: boolean;
   workingState?: OpenWorkingState | null;
+  parentForkRelation?: ChatRelationSummary | null;
   forkRelations?: ChatRelationSummary[];
   canDelete?: boolean;
   deleteTitle?: string;
@@ -314,6 +317,7 @@ const props = withDefaults(defineProps<Props>(), {
   pollReconnecting: false,
   workingOpen: false,
   workingState: null,
+  parentForkRelation: null,
   forkRelations: () => [],
   canDelete: false,
   deleteTitle: 'Delete',
@@ -336,7 +340,7 @@ const emit = defineEmits<{
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
   (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent; contents?: ChatMessageContent[] }): void;
-  (e: 'child-relation-navigate', event: MouseEvent, chatId: number): void;
+  (e: 'relation-navigate', event: MouseEvent, chatId: number): void;
 }>();
 
 const msg = computed(() => props.message);
@@ -403,6 +407,7 @@ type ForkPart = {
   kind: 'fork';
   key: string;
   relation: ChatRelationSummary;
+  direction: 'parent' | 'child';
   stepSequence: number;
   itemSequence: number;
   sequence: number;
@@ -447,23 +452,44 @@ const messageParts = computed<MessagePart[]>(() => {
 });
 
 const messageTimeline = computed<MessageTimelineEntry[]>(() => {
-  const forks: ForkPart[] = props.forkRelations.map((relation) => ({
+  const childForks: ForkPart[] = props.forkRelations.map((relation) => ({
     kind: 'fork',
-    key: `fork-${relation.chat_id}`,
+    key: `fork-child-${relation.chat_id}`,
     relation,
-    stepSequence: relation.parent_step_sequence || 0,
-    itemSequence: relation.parent_item_sequence || 0,
+    direction: 'child',
+    stepSequence: relation.anchor_step_sequence || 0,
+    itemSequence: relation.anchor_item_sequence || 0,
     sequence: 0,
-    stableId: relation.parent_tool_call_item_id || relation.chat_id,
+    stableId: relation.anchor_tool_call_item_id || relation.chat_id,
   }));
 
-  return [...messageParts.value, ...forks].sort((left, right) =>
+  const parentFork: ForkPart[] = props.parentForkRelation
+    ? [
+        {
+          kind: 'fork',
+          key: `fork-parent-${props.parentForkRelation.chat_id}`,
+          relation: props.parentForkRelation,
+          direction: 'parent',
+          stepSequence: props.parentForkRelation.anchor_step_sequence || 0,
+          itemSequence: props.parentForkRelation.anchor_item_sequence || 0,
+          sequence: 0,
+          stableId:
+            props.parentForkRelation.anchor_tool_call_item_id ||
+            props.parentForkRelation.chat_id,
+        },
+      ]
+    : [];
+
+  return [...messageParts.value, ...parentFork, ...childForks].sort((left, right) =>
     left.stepSequence - right.stepSequence ||
     left.itemSequence - right.itemSequence ||
     left.sequence - right.sequence ||
     left.stableId - right.stableId
   );
 });
+
+const forkRelationLabel = (entry: ForkPart) =>
+  entry.direction === 'parent' ? translate('Fork of') : translate('Forked into');
 
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;

@@ -118,13 +118,13 @@
         <section class="card chat-window" :style="getChatWindowGridStyle()" :ref="chatWindowRefEl">
           <div class="message-list">
             <RouterLink
-              v-if="vm.parentRelation"
+              v-if="vm.parentRelationBanner"
               class="chat-relation-banner chat-relation-banner--parent"
-              :to="chatRoute(vm.parentRelation.chat_id)"
-              @click.capture="handleChatRouteClick($event, vm.parentRelation.chat_id)"
+              :to="chatRoute(vm.parentRelationBanner.chat_id)"
+              @click.capture="handleChatRouteClick($event, vm.parentRelationBanner.chat_id)"
             >
-              <span>{{ parentRelationLabel(vm.parentRelation) }}</span>
-              <strong>{{ relationTitle(vm.parentRelation) }}</strong>
+              <span>{{ parentRelationLabel(vm.parentRelationBanner) }}</span>
+              <strong>{{ relationTitle(vm.parentRelationBanner) }}</strong>
             </RouterLink>
 
             <template v-for="(msg, idx) in vm.branch" :key="msg.id ?? idx">
@@ -143,6 +143,7 @@
                 :moving-branch-to-new-chat-message-id="vm.movingBranchToNewChatMessageId"
                 :working-open="vm.isWorkingOpen(msg.id)"
                 :working-state="vm.workingStateFor(msg.id)"
+                :parent-fork-relation="vm.positionedParentForkRelationForMessage(msg.id)"
                 :fork-relations="vm.positionedForkRelationsForMessage(msg.id)"
                 :can-delete="vm.canDeleteMessage(msg, idx)"
                 :delete-title="vm.deleteMessageTitle(msg, idx)"
@@ -171,7 +172,7 @@
                 "
                 @content-open="vm.openContentFull"
                 @attachment-open="vm.openAttachmentPreview"
-                @child-relation-navigate="handleChatRouteClick"
+                @relation-navigate="handleChatRouteClick"
               />
               <RouterLink
                 v-for="relation in vm.trailingChildRelationsForMessage(msg.id)"

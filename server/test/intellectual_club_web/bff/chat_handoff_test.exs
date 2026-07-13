@@ -476,6 +476,36 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       )
       |> Ash.create!(actor: actor)
 
+    {:ok, ancestor_message} =
+      Threads.add_message_to_end(fork, :assistant, "Earlier copied fork", actor: actor)
+
+    ancestor_step = first_step!(ancestor_message.id, actor)
+    ancestor_call = create_tool_call_item!(ancestor_step.id, 2, actor)
+
+    _ancestor_result =
+      create_fork_instruction_result!(
+        ancestor_step.id,
+        ancestor_call.id,
+        3,
+        "Earlier task",
+        actor
+      )
+
+    {:ok, copied_message} =
+      Threads.add_message_to_end(fork, :assistant, "Before mirrored fork", actor: actor)
+
+    copied_step = first_step!(copied_message.id, actor)
+    copied_call = create_tool_call_item!(copied_step.id, 2, actor)
+
+    _copied_result =
+      create_fork_instruction_result!(
+        copied_step.id,
+        copied_call.id,
+        3,
+        "Investigate independently",
+        actor
+      )
+
     payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
 
     assert [relation] =
@@ -489,6 +519,77 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert relation["parent_step_id"] == step.id
     assert relation["parent_step_sequence"] == step.sequence
     assert relation["parent_item_sequence"] == tool_call_item.sequence
+    assert relation["anchor_message_id"] == assistant_message.id
+    assert relation["anchor_tool_call_item_id"] == tool_call_item.id
+    assert relation["anchor_step_id"] == step.id
+    assert relation["anchor_step_sequence"] == step.sequence
+    assert relation["anchor_item_sequence"] == tool_call_item.sequence
+
+    target_payload =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> get(~p"/api/bff/chat-state/#{fork.id}")
+      |> json_response(200)
+
+    parent_relation = target_payload["relations"]["parent"]
+
+    assert parent_relation["chat_id"] == source.id
+    assert parent_relation["message_id"] == assistant_message.id
+    assert parent_relation["kind"] == "fork"
+    assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert parent_relation["parent_step_id"] == step.id
+    assert parent_relation["parent_step_sequence"] == step.sequence
+    assert parent_relation["parent_item_sequence"] == tool_call_item.sequence
+    assert parent_relation["anchor_message_id"] == copied_message.id
+    assert parent_relation["anchor_tool_call_item_id"] == copied_call.id
+    assert parent_relation["anchor_step_id"] == copied_step.id
+    assert parent_relation["anchor_step_sequence"] == copied_step.sequence
+    assert parent_relation["anchor_item_sequence"] == copied_call.sequence
+    refute parent_relation["anchor_tool_call_item_id"] == tool_call_item.id
+    refute parent_relation["anchor_tool_call_item_id"] == ancestor_call.id
+  end
+
+  test "GET /api/bff/chat-state/:id keeps a fork parent relation without a local anchor", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    source = create_chat!(actor, "Fork source")
+
+    {:ok, assistant_message} =
+      Threads.add_message_to_end(source, :assistant, "Before fork", actor: actor)
+
+    step = first_step!(assistant_message.id, actor)
+    tool_call_item = create_tool_call_item!(step.id, 2, actor)
+
+    fork =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          note: "Missing copied instruction",
+          parent_chat_id: source.id,
+          parent_message_id: assistant_message.id,
+          parent_tool_call_item_id: tool_call_item.id,
+          parent_relation_kind: :fork,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    payload = conn |> get(~p"/api/bff/chat-state/#{fork.id}") |> json_response(200)
+    parent_relation = payload["relations"]["parent"]
+
+    assert parent_relation["chat_id"] == source.id
+    assert parent_relation["kind"] == "fork"
+    assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert parent_relation["anchor_message_id"] == nil
+    assert parent_relation["anchor_tool_call_item_id"] == nil
+    assert parent_relation["anchor_step_id"] == nil
+    assert parent_relation["anchor_step_sequence"] == nil
+    assert parent_relation["anchor_item_sequence"] == nil
   end
 
   test "GET /api/bff/chat-list includes relation hints", %{conn: conn} do
@@ -965,6 +1066,54 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
   defp create_steering_item!(step_id, sequence, text, actor) do
     create_text_item!(step_id, sequence, :steering, text, actor)
+  end
+
+  defp create_tool_call_item!(step_id, sequence, actor) do
+    ChatMessageItem
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_message_step_id: step_id, sequence: sequence, type: :tool_call},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_fork_instruction_result!(step_id, tool_call_item_id, sequence, task, actor) do
+    item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_step_id: step_id,
+          sequence: sequence,
+          type: :tool_result,
+          tool_call_item_id: tool_call_item_id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: item.id,
+        sequence: 1,
+        kind: :opaque,
+        content_json: %{
+          "raw" => %{
+            "fork_instruction" => %{
+              "subagent" => true,
+              "task" => task
+            }
+          }
+        }
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    item
   end
 
   defp create_text_item!(step_id, sequence, type, text, actor) do
