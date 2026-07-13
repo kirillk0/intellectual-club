@@ -46,6 +46,22 @@ defmodule IntellectualClub.Tools.ToolFunction do
       default(true)
     end
 
+    attribute :discovery_available, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(true)
+    end
+
+    attribute :execution_mode, :atom do
+      allow_nil?(false)
+      default(:direct)
+      constraints(one_of: [:direct, :background])
+    end
+
+    attribute :target_function_name, :string do
+      allow_nil?(true)
+    end
+
     attribute :discovered_at, :utc_datetime_usec do
       allow_nil?(false)
       public?(true)
@@ -84,16 +100,29 @@ defmodule IntellectualClub.Tools.ToolFunction do
         :description,
         :parameters_schema,
         :enabled,
+        :discovery_available,
+        :execution_mode,
+        :target_function_name,
         :discovered_at
       ])
 
       change(relate_actor(:owner))
       change({RequireRelatedAccessByActor, relationships: [:tool_instance], access: :writable})
+      change(&validate_background_metadata/2)
     end
 
     update :update do
-      accept([:description, :parameters_schema, :enabled])
+      accept([
+        :description,
+        :parameters_schema,
+        :enabled,
+        :discovery_available,
+        :execution_mode,
+        :target_function_name
+      ])
+
       require_atomic?(false)
+      change(&validate_background_metadata/2)
     end
   end
 
@@ -116,6 +145,21 @@ defmodule IntellectualClub.Tools.ToolFunction do
 
     policy action_type([:update, :destroy]) do
       authorize_if relates_to_actor_via(:owner)
+    end
+  end
+
+  defp validate_background_metadata(changeset, _context) do
+    execution_mode = Ash.Changeset.get_attribute(changeset, :execution_mode)
+    target_function_name = Ash.Changeset.get_attribute(changeset, :target_function_name)
+
+    if execution_mode == :background and
+         (not is_binary(target_function_name) or String.trim(target_function_name) == "") do
+      Ash.Changeset.add_error(changeset,
+        field: :target_function_name,
+        message: "is required for background execution"
+      )
+    else
+      changeset
     end
   end
 end

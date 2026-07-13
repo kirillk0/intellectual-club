@@ -100,7 +100,10 @@ defmodule IntellectualClub.Tools.Discovery do
                   name: spec.name,
                   description: spec.description,
                   parameters_schema: spec.schema,
-                  enabled: true,
+                  enabled: spec.enabled_by_default,
+                  discovery_available: true,
+                  execution_mode: spec.execution_mode,
+                  target_function_name: spec.target_function_name,
                   discovered_at: now
                 },
                 actor: actor
@@ -110,12 +113,25 @@ defmodule IntellectualClub.Tools.Discovery do
             {created + 1, updated}
 
           %ToolFunction{} = record ->
-            updates = %{
-              description: spec.description,
-              parameters_schema: spec.schema
-            }
+            semantics_changed? =
+              record.execution_mode != spec.execution_mode or
+                record.target_function_name != spec.target_function_name
 
-            if record.description != spec.description or record.parameters_schema != spec.schema do
+            updates =
+              %{
+                description: spec.description,
+                parameters_schema: spec.schema,
+                discovery_available: true,
+                execution_mode: spec.execution_mode,
+                target_function_name: spec.target_function_name
+              }
+              |> maybe_reset_enabled(spec.enabled_by_default, semantics_changed?)
+
+            if record.description != spec.description or record.parameters_schema != spec.schema or
+                 record.discovery_available != true or
+                 record.execution_mode != spec.execution_mode or
+                 record.target_function_name != spec.target_function_name or
+                 (semantics_changed? and record.enabled != spec.enabled_by_default) do
               _ =
                 record
                 |> Ash.Changeset.for_update(:update, updates, actor: actor)
@@ -138,8 +154,26 @@ defmodule IntellectualClub.Tools.Discovery do
       |> Enum.reject(fn {name, _record} -> MapSet.member?(desired_names, name) end)
       |> Enum.sort_by(fn {name, _record} -> name end)
       |> Enum.reduce(0, fn {_name, record}, deleted ->
-        _ = Ash.destroy!(record, actor: actor)
-        deleted + 1
+        cond do
+          record.execution_mode == :background and record.discovery_available == true ->
+            _ =
+              record
+              |> Ash.Changeset.for_update(
+                :update,
+                %{discovery_available: false},
+                actor: actor
+              )
+              |> Ash.update!()
+
+            deleted + 1
+
+          record.execution_mode == :background ->
+            deleted
+
+          true ->
+            _ = Ash.destroy!(record, actor: actor)
+            deleted + 1
+        end
       end)
 
     %{
@@ -152,10 +186,17 @@ defmodule IntellectualClub.Tools.Discovery do
 
   defp load_functions!(tool_instance_id, actor) when is_integer(tool_instance_id) do
     ToolFunction
-    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id)
+    |> Ash.Query.filter(tool_instance_id == ^tool_instance_id and discovery_available == true)
     |> Ash.Query.sort(name: :asc, id: :asc)
     |> Ash.read!(actor: actor)
   end
+
+  defp maybe_reset_enabled(updates, enabled_by_default, true)
+       when is_map(updates) and is_boolean(enabled_by_default) do
+    Map.put(updates, :enabled, enabled_by_default)
+  end
+
+  defp maybe_reset_enabled(updates, _enabled_by_default, false), do: updates
 
   defp normalize_discovered_spec(%{} = raw) do
     name = raw |> Map.get("name", Map.get(raw, :name, "")) |> to_string() |> String.trim()
@@ -174,7 +215,40 @@ defmodule IntellectualClub.Tools.Discovery do
           _ -> %{"type" => "object", "properties" => %{}}
         end
 
-      %{name: name, description: description, schema: schema}
+      enabled_by_default =
+        case Map.get(raw, "enabled_by_default", Map.get(raw, :enabled_by_default)) do
+          value when is_boolean(value) -> value
+          _other -> true
+        end
+
+      execution_mode =
+        case Map.get(raw, "execution_mode", Map.get(raw, :execution_mode)) do
+          value when value in [:background, "background"] -> :background
+          _other -> :direct
+        end
+
+      target_function_name =
+        raw
+        |> Map.get("target_function_name", Map.get(raw, :target_function_name))
+        |> case do
+          value when is_binary(value) ->
+            case String.trim(value) do
+              "" -> nil
+              target -> target
+            end
+
+          _other ->
+            nil
+        end
+
+      %{
+        name: name,
+        description: description,
+        schema: schema,
+        enabled_by_default: enabled_by_default,
+        execution_mode: execution_mode,
+        target_function_name: target_function_name
+      }
     end
   end
 

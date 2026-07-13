@@ -7,6 +7,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -371,6 +372,135 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert raw == result.raw
   end
 
+  test "fork start_or_resume is non-blocking and snapshot uses an opaque answer cursor" do
+    %{user: actor} = user_fixture()
+    task = "Inspect completed fork"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+
+    {:ok, child_message} =
+      Threads.add_message_to_end(child_chat, :assistant, "Completed child answer", actor: actor)
+
+    context = fork_execution_context(parent, actor)
+
+    assert {:ok, reference} =
+             Fork.start_or_resume(parent.tool_instance, task, context, actor)
+
+    assert reference.chat_id == child_chat.id
+    assert reference.generation_message_id == child_message.id
+
+    assert {:ok, first} = Fork.snapshot(reference, actor)
+    assert first.status == :completed
+    assert [%{type: "answer", text: "Completed child answer", mode: "replace"}] = first.progress
+    assert [%{cursor: progress_cursor}] = first.progress
+    assert first.url == "/chats/#{child_chat.id}"
+    refute Map.has_key?(first, :reasoning)
+    assert is_binary(first.next_cursor)
+    assert progress_cursor == first.next_cursor
+    assert first.result.raw["fork"]["final_message_id"] == child_message.id
+
+    assert {:ok, unchanged} = Fork.snapshot(reference, actor, first.next_cursor)
+    assert unchanged.status == :completed
+    assert unchanged.progress == []
+    assert unchanged.next_cursor == first.next_cursor
+
+    assert {:ok, reset} = Fork.snapshot(reference, actor, "invalid-cursor")
+    assert [%{type: "answer", text: "Completed child answer", mode: "replace"}] = reset.progress
+    assert [%{cursor: reset_cursor}] = reset.progress
+    assert reset_cursor == reset.next_cursor
+  end
+
+  test "fork cancels a prepared child when durable reference persistence fails" do
+    %{user: actor} = user_fixture()
+    task = "Fail reference persistence"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+
+    assert {:error, :reference_write_failed} =
+             Fork.start_or_resume(parent.tool_instance, task, context, actor,
+               on_reference: fn _reference -> {:error, :reference_write_failed} end
+             )
+
+    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    child_chat = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
+    child_message = Ash.get!(ChatMessage, child_chat.last_message_id, actor: actor)
+
+    assert child_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(child_message.id) == :not_found
+  end
+
+  test "background fork cancels its generation when the waiter cannot snapshot its reference" do
+    %{user: actor} = user_fixture()
+    task = "Lose the durable fork reference"
+    parent = create_parent_fork_call!(actor, task)
+    child_chat = create_fork_child_chat!(actor, parent.chat, parent.message, parent.call, task)
+    child = create_generating_child_message_state!(actor, child_chat, "Child work")
+
+    invalid_reference = %{
+      chat_id: parent.chat.id,
+      message_id: child.message.id,
+      generation_message_id: child.message.id,
+      url: "/chats/#{child_chat.id}"
+    }
+
+    assert {:error, :invalid_fork_reference} =
+             Fork.await_background_snapshot(invalid_reference, actor)
+
+    child_message = Ash.get!(ChatMessage, child.message.id, actor: actor)
+    assert child_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(child.message.id) == :not_found
+  end
+
+  test "background fork completes through the durable task adapter" do
+    %{user: actor} = user_fixture()
+    task = "Complete in the background"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+
+    assert {:ok, launch} = BackgroundTasks.start_fork(parent.tool_instance, task, context)
+    task_id = launch.raw["background_task_id"]
+    assert is_binary(task_id)
+
+    snapshot = wait_for_background_status!(task_id, actor.id, "completed", 6_000)
+
+    assert is_integer(snapshot["target_chat_id"])
+
+    assert get_in(snapshot, ["result", "raw", "fork", "chat_id"]) ==
+             snapshot["target_chat_id"]
+
+    generation_message_id = snapshot["runner_ref"]["fork_generation_message_id"]
+
+    assert generation_message_id ==
+             get_in(snapshot, ["result", "raw", "fork", "generation_message_id"])
+
+    assert snapshot["runner_ref"]["fork_message_id"] == generation_message_id
+
+    assert is_binary(snapshot["next_cursor"])
+    assert Enum.all?(snapshot["progress"], &(&1["type"] == "answer"))
+
+    {:ok, later_message} =
+      Threads.add_message_to_end(
+        Ash.get!(Chat, snapshot["target_chat_id"], actor: actor),
+        :assistant,
+        "Unrelated later answer",
+        actor: actor
+      )
+
+    refute later_message.id == generation_message_id
+
+    assert {:ok, stable_reference} = BackgroundTasks.snapshot(task_id, "invalid-cursor", actor.id)
+
+    refute Enum.any?(stable_reference["progress"], fn item ->
+             String.contains?(item["text"], "Unrelated later answer")
+           end)
+
+    assert {:ok, unchanged} =
+             BackgroundTasks.snapshot(task_id, snapshot["next_cursor"], actor.id)
+
+    assert unchanged["status"] == "completed"
+    assert unchanged["progress"] == []
+  end
+
   test "recover_orphaned_generations writes a missing parent result for completed fork subagent" do
     %{user: actor} = user_fixture()
     task = "Reuse completed fork"
@@ -589,6 +719,29 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     do_wait_for_status(message_id, actor, wanted, deadline)
   end
 
+  defp wait_for_background_status!(task_id, owner_id, wanted, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_background_status!(task_id, owner_id, wanted, deadline)
+  end
+
+  defp do_wait_for_background_status!(task_id, owner_id, wanted, deadline) do
+    case BackgroundTasks.snapshot(task_id, nil, owner_id) do
+      {:ok, %{"status" => ^wanted} = snapshot} ->
+        snapshot
+
+      {:ok, _snapshot} ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(20)
+          do_wait_for_background_status!(task_id, owner_id, wanted, deadline)
+        else
+          flunk("Background task did not reach expected status")
+        end
+
+      {:error, reason} ->
+        flunk("Background task snapshot failed: #{inspect(reason)}")
+    end
+  end
+
   defp do_wait_for_status(message_id, actor, wanted, deadline) do
     message =
       Ash.get!(ChatMessage, message_id,
@@ -764,6 +917,18 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime_step)
 
     %{chat: chat, message: message, step_id: step_id, call: call, tool_instance: tool_instance}
+  end
+
+  defp fork_execution_context(parent, actor) do
+    %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: parent.chat.id,
+      message_id: parent.message.id,
+      assistant_message_id: parent.message.id,
+      step_id: parent.step_id,
+      tool_call_item_id: parent.call.item_id,
+      available_file_external_ids: []
+    }
   end
 
   defp create_fork_child_chat!(actor, parent_chat, parent_message, call, task) do

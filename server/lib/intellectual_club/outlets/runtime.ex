@@ -17,16 +17,23 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   alias IntellectualClub.Outlets.Config
 
+  require Logger
+
   @sweep_interval_ms 1_000
 
   @runner_disconnected_error "Runner disconnected."
   @runner_session_replaced_error "Runner session replaced before completion."
   @auto_discovery_function "outlet.list_tools"
+  @max_background_control_capacity 32
+  @background_control_timeout_ms 10_000
 
   @type tool_instance :: %{id: integer(), config: map()} | map()
 
   @type poll_task :: %{
+          optional(:background_task_id) => String.t(),
+          optional(:cursor) => String.t(),
           call_id: String.t(),
+          operation: String.t(),
           function: String.t(),
           arguments: map()
         }
@@ -37,7 +44,9 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   @doc false
   def reset! do
-    GenServer.call(__MODULE__, :reset, 5_000)
+    reply = GenServer.call(__MODULE__, :reset, 5_000)
+    await_background_notification_tasks()
+    reply
   end
 
   @impl true
@@ -77,6 +86,45 @@ defmodule IntellectualClub.Outlets.Runtime do
     )
   end
 
+  @spec background_control_and_wait(
+          tool_instance(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          map(),
+          String.t() | nil,
+          any(),
+          map() | nil
+        ) :: {:ok, map()} | {:error, String.t() | :runtime_unavailable}
+  def background_control_and_wait(
+        tool_instance,
+        operation,
+        background_task_id,
+        function_name \\ nil,
+        args \\ %{},
+        cursor \\ nil,
+        execution_context \\ nil,
+        expected_runner \\ nil
+      )
+      when is_map(tool_instance) and
+             operation in ["background_start", "background_status", "background_cancel"] and
+             is_binary(background_task_id) and is_map(args) do
+    try do
+      GenServer.call(
+        __MODULE__,
+        {:background_control_and_wait, tool_instance, operation, background_task_id,
+         function_name, args, cursor, execution_context, expected_runner},
+        @background_control_timeout_ms
+      )
+    catch
+      :exit, {:timeout, _details} ->
+        {:error, "Outlet background control timed out."}
+
+      :exit, _reason ->
+        {:error, :runtime_unavailable}
+    end
+  end
+
   @spec enqueue_if_absent(tool_instance(), String.t(), map()) :: :ok | :already_present
   def enqueue_if_absent(tool_instance, function_name, args, execution_context \\ nil)
       when is_map(tool_instance) and is_binary(function_name) and is_map(args) do
@@ -108,6 +156,16 @@ defmodule IntellectualClub.Outlets.Runtime do
       GenServer.call(__MODULE__, {:runner_metadata, tool_instance}, 5_000)
     catch
       :exit, _reason -> %{}
+    end
+  end
+
+  @spec runner_identity(tool_instance()) ::
+          {:ok, %{runner_id: String.t(), runner_session_id: String.t()}} | {:error, :offline}
+  def runner_identity(tool_instance) when is_map(tool_instance) do
+    try do
+      GenServer.call(__MODULE__, {:runner_identity, tool_instance}, 5_000)
+    catch
+      :exit, _reason -> {:error, :offline}
     end
   end
 
@@ -149,7 +207,31 @@ defmodule IntellectualClub.Outlets.Runtime do
     {:reply, metadata, state}
   end
 
-  def handle_call(:reset, _from, _state) do
+  def handle_call({:runner_identity, tool_instance}, _from, state) do
+    tool_instance_id = tool_instance.id
+    cfg = Config.from_tool_instance(tool_instance)
+    now_ms = now_ms()
+    instance = get_instance(state, tool_instance_id, cfg)
+
+    reply =
+      case instance.runner do
+        %{runner_id: runner_id, runner_session_id: runner_session_id}
+        when is_binary(runner_id) and is_binary(runner_session_id) ->
+          if runner_online?(instance, now_ms) do
+            {:ok, %{runner_id: runner_id, runner_session_id: runner_session_id}}
+          else
+            {:error, :offline}
+          end
+
+        _other ->
+          {:error, :offline}
+      end
+
+    {:reply, reply, put_instance(state, tool_instance_id, instance)}
+  end
+
+  def handle_call(:reset, _from, state) do
+    drain_waiters(state, "Outlet runtime was reset.")
     {:reply, :ok, %{instances: %{}, waiter_index: %{}}}
   end
 
@@ -171,6 +253,8 @@ defmodule IntellectualClub.Outlets.Runtime do
         _ -> %{}
       end
 
+    runner_was_online? = runner_online?(instance, now_ms)
+
     case touch_runner(
            instance,
            state,
@@ -186,13 +270,28 @@ defmodule IntellectualClub.Outlets.Runtime do
         {:reply, {:error, :runner_already_active}, state}
 
       {:ok, instance, state} ->
-        {capacity, max_wait_ms} =
+        if not runner_was_online? do
+          notify_background_runner_connected(
+            tool_instance_id,
+            runner_id,
+            runner_session_id
+          )
+        end
+
+        {capacity, control_capacity, max_wait_ms} =
           normalize_poll_params(instance, payload, cfg, runner_id, runner_session_id)
 
         instance = maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
 
         {claimed, instance} =
-          claim_tasks(instance, capacity, runner_id, runner_session_id, now_ms)
+          claim_tasks(
+            instance,
+            capacity,
+            control_capacity,
+            runner_id,
+            runner_session_id,
+            now_ms
+          )
 
         tasks = Enum.map(claimed, &task_payload/1)
 
@@ -201,7 +300,7 @@ defmodule IntellectualClub.Outlets.Runtime do
             state = put_instance(state, tool_instance_id, instance)
             {:reply, {:ok, %{status: "ok", runner_id: runner_id, tasks: tasks}}, state}
 
-          capacity <= 0 or max_wait_ms <= 0 ->
+          (capacity <= 0 and control_capacity <= 0) or max_wait_ms <= 0 ->
             state = put_instance(state, tool_instance_id, instance)
             {:reply, {:ok, %{status: "idle", runner_id: runner_id, tasks: []}}, state}
 
@@ -218,6 +317,7 @@ defmodule IntellectualClub.Outlets.Runtime do
                 runner_id,
                 runner_session_id,
                 capacity,
+                control_capacity,
                 max_wait_ms
               )
 
@@ -251,6 +351,43 @@ defmodule IntellectualClub.Outlets.Runtime do
     else
       state = put_instance(state, tool_instance_id, instance)
       {:reply, {:error, "Runner is offline."}, state}
+    end
+  end
+
+  def handle_call(
+        {:background_control_and_wait, tool_instance, operation, background_task_id,
+         function_name, args, cursor, execution_context, expected_runner},
+        from,
+        state
+      ) do
+    tool_instance_id = tool_instance.id
+    cfg = Config.from_tool_instance(tool_instance)
+    now_ms = now_ms()
+    instance = get_instance(state, tool_instance_id, cfg)
+
+    cond do
+      not runner_online?(instance, now_ms) ->
+        {:reply, {:error, "Runner is offline."}, put_instance(state, tool_instance_id, instance)}
+
+      not expected_runner_session?(instance.runner, expected_runner) ->
+        {:reply, {:error, @runner_session_replaced_error},
+         put_instance(state, tool_instance_id, instance)}
+
+      true ->
+        call =
+          new_call(function_name || "", args, execution_context, now_ms,
+            operation: operation,
+            background_task_id: background_task_id,
+            cursor: cursor,
+            expected_runner: expected_runner
+          )
+
+        call_id = call.call_id
+        {instance, state} = register_call_waiter(instance, state, tool_instance_id, call_id, from)
+        instance = %{instance | pending: instance.pending ++ [call]}
+        {instance, state} = maybe_deliver_tasks(instance, state, tool_instance_id, now_ms)
+
+        {:noreply, put_instance(state, tool_instance_id, instance)}
     end
   end
 
@@ -561,11 +698,19 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   defp new_call(function_name, args, execution_context, now_ms, opts \\ [])
        when is_binary(function_name) and is_map(args) and is_list(opts) do
+    {expected_runner_id, expected_runner_session_id} =
+      expected_runner_values(Keyword.get(opts, :expected_runner))
+
     %{
       call_id: Ecto.UUID.generate(),
       function_name: function_name,
       arguments: args,
       execution_context: execution_context,
+      operation: Keyword.get(opts, :operation, "execute"),
+      background_task_id: Keyword.get(opts, :background_task_id),
+      cursor: Keyword.get(opts, :cursor),
+      expected_runner_id: expected_runner_id,
+      expected_runner_session_id: expected_runner_session_id,
       status: :queued,
       enqueued_at_ms: now_ms,
       auto_discovery: Keyword.get(opts, :auto_discovery, false)
@@ -667,8 +812,17 @@ defmodule IntellectualClub.Outlets.Runtime do
          now_ms,
          metadata
        ) do
+    previous_runner = instance.runner
     {instance, state, prev_waiter} = pop_poll_waiter(instance, state, tool_instance_id)
     maybe_reply_prev_poll(prev_waiter)
+
+    {instance, state} =
+      fail_pending_session_calls(
+        instance,
+        state,
+        previous_runner,
+        @runner_session_replaced_error
+      )
 
     {instance, state} =
       fail_running_calls(
@@ -686,12 +840,66 @@ defmodule IntellectualClub.Outlets.Runtime do
       metadata: runner_metadata(metadata, %{})
     }
 
+    case previous_runner do
+      %{runner_id: previous_runner_id, runner_session_id: previous_session_id} ->
+        notify_background_runner_replaced(
+          tool_instance_id,
+          to_string(previous_runner_id),
+          to_string(previous_session_id)
+        )
+
+      _other ->
+        :ok
+    end
+
+    notify_background_runner_connected(tool_instance_id, runner_id, runner_session_id)
+
     {:ok, %{instance | runner: runner}, state}
   end
 
   defp runner_metadata(%{} = metadata, _fallback) when map_size(metadata) > 0, do: metadata
   defp runner_metadata(_metadata, %{} = fallback), do: fallback
   defp runner_metadata(_metadata, _fallback), do: %{}
+
+  defp expected_runner_session?(_runner, nil), do: true
+
+  defp expected_runner_session?(runner, expected_runner)
+       when is_map(runner) and is_map(expected_runner) do
+    {expected_runner_id, expected_runner_session_id} = expected_runner_values(expected_runner)
+
+    expected_runner_id != nil and expected_runner_session_id != nil and
+      to_string(runner.runner_id) == expected_runner_id and
+      to_string(runner.runner_session_id) == expected_runner_session_id
+  end
+
+  defp expected_runner_session?(_runner, _expected_runner), do: false
+
+  defp expected_runner_values(expected_runner) when is_map(expected_runner) do
+    runner_id =
+      Map.get(expected_runner, "runner_id", Map.get(expected_runner, :runner_id))
+      |> normalize_optional_string()
+
+    runner_session_id =
+      Map.get(
+        expected_runner,
+        "runner_session_id",
+        Map.get(expected_runner, :runner_session_id)
+      )
+      |> normalize_optional_string()
+
+    {runner_id, runner_session_id}
+  end
+
+  defp expected_runner_values(_expected_runner), do: {nil, nil}
+
+  defp normalize_optional_string(nil), do: nil
+
+  defp normalize_optional_string(value) do
+    case value |> to_string() |> String.trim() do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
 
   defp normalize_poll_params(instance, payload, %Config{} = cfg, runner_id, runner_session_id) do
     capacity_raw = Map.get(payload, "capacity", Map.get(payload, :capacity, cfg.max_concurrency))
@@ -716,13 +924,47 @@ defmodule IntellectualClub.Outlets.Runtime do
 
     capacity = capacity |> max(0) |> min(cfg.max_concurrency)
 
-    active =
+    active_execute =
       instance.running
       |> Enum.count(fn {_id, call} ->
-        call.runner_id == runner_id and call.runner_session_id == runner_session_id
+        call.runner_id == runner_id and call.runner_session_id == runner_session_id and
+          not background_control_call?(call)
       end)
 
-    capacity = max(0, min(capacity, cfg.max_concurrency - active))
+    capacity = max(0, min(capacity, cfg.max_concurrency - active_execute))
+
+    control_capacity_raw =
+      Map.get(payload, "control_capacity", Map.get(payload, :control_capacity, 0))
+
+    control_capacity =
+      cond do
+        is_integer(control_capacity_raw) ->
+          control_capacity_raw
+
+        is_float(control_capacity_raw) ->
+          trunc(control_capacity_raw)
+
+        is_binary(control_capacity_raw) ->
+          case Integer.parse(String.trim(control_capacity_raw)) do
+            {parsed, ""} -> parsed
+            _other -> 0
+          end
+
+        true ->
+          0
+      end
+      |> max(0)
+      |> min(@max_background_control_capacity)
+
+    active_control =
+      instance.running
+      |> Enum.count(fn {_id, call} ->
+        call.runner_id == runner_id and call.runner_session_id == runner_session_id and
+          background_control_call?(call)
+      end)
+
+    control_capacity =
+      max(0, min(control_capacity, @max_background_control_capacity - active_control))
 
     max_wait_raw =
       Map.get(
@@ -740,7 +982,7 @@ defmodule IntellectualClub.Outlets.Runtime do
       |> clamp_float(0.0, cfg.poll_max_wait_seconds)
       |> min(cfg.runner_online_timeout_seconds)
 
-    {capacity, seconds_to_ms(max_wait_seconds)}
+    {capacity, control_capacity, seconds_to_ms(max_wait_seconds)}
   end
 
   defp maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
@@ -766,12 +1008,39 @@ defmodule IntellectualClub.Outlets.Runtime do
     end
   end
 
-  defp claim_tasks(instance, capacity, runner_id, runner_session_id, now_ms)
-       when is_integer(capacity) and capacity >= 0 do
-    if capacity <= 0 or instance.pending == [] do
+  defp claim_tasks(
+         instance,
+         capacity,
+         control_capacity,
+         runner_id,
+         runner_session_id,
+         now_ms
+       )
+       when is_integer(capacity) and capacity >= 0 and is_integer(control_capacity) and
+              control_capacity >= 0 do
+    if (capacity <= 0 and control_capacity <= 0) or instance.pending == [] do
       {[], instance}
     else
-      {claimed, rest} = Enum.split(instance.pending, capacity)
+      {claimed, rest, _execute_left, _control_left} =
+        Enum.reduce(
+          instance.pending,
+          {[], [], capacity, control_capacity},
+          fn call, {claimed, rest, execute_left, control_left} ->
+            cond do
+              background_control_call?(call) and control_left > 0 ->
+                {[call | claimed], rest, execute_left, control_left - 1}
+
+              not background_control_call?(call) and execute_left > 0 ->
+                {[call | claimed], rest, execute_left - 1, control_left}
+
+              true ->
+                {claimed, [call | rest], execute_left, control_left}
+            end
+          end
+        )
+
+      claimed = Enum.reverse(claimed)
+      rest = Enum.reverse(rest)
 
       claimed =
         Enum.map(claimed, fn call ->
@@ -793,12 +1062,31 @@ defmodule IntellectualClub.Outlets.Runtime do
   end
 
   defp task_payload(call) do
-    %{
+    payload = %{
       call_id: call.call_id,
+      operation: Map.get(call, :operation, "execute"),
       function: call.function_name,
       arguments: call.arguments || %{}
     }
+
+    payload
+    |> maybe_put_task_value(:background_task_id, Map.get(call, :background_task_id))
+    |> maybe_put_task_value(:cursor, Map.get(call, :cursor))
   end
+
+  defp maybe_put_task_value(payload, _key, nil), do: payload
+  defp maybe_put_task_value(payload, _key, ""), do: payload
+  defp maybe_put_task_value(payload, key, value), do: Map.put(payload, key, value)
+
+  defp background_control_call?(call) when is_map(call) do
+    Map.get(call, :operation, "execute") in [
+      "background_start",
+      "background_status",
+      "background_cancel"
+    ]
+  end
+
+  defp background_control_call?(_call), do: false
 
   defp call_present?(instance, function_name)
        when is_map(instance) and is_binary(function_name) do
@@ -823,6 +1111,7 @@ defmodule IntellectualClub.Outlets.Runtime do
          runner_id,
          runner_session_id,
          capacity,
+         control_capacity,
          max_wait_ms
        ) do
     pid = elem(from, 0)
@@ -837,6 +1126,7 @@ defmodule IntellectualClub.Outlets.Runtime do
       from: from,
       monitor_ref: monitor_ref,
       capacity: capacity,
+      control_capacity: control_capacity,
       runner_id: runner_id,
       runner_session_id: runner_session_id,
       timer_ref: timer_ref
@@ -909,6 +1199,7 @@ defmodule IntellectualClub.Outlets.Runtime do
           claim_tasks(
             instance,
             waiter.capacity,
+            waiter.control_capacity,
             waiter.runner_id,
             waiter.runner_session_id,
             now_ms
@@ -981,6 +1272,41 @@ defmodule IntellectualClub.Outlets.Runtime do
     end
   end
 
+  defp fail_pending_session_calls(instance, state, previous_runner, error_text) do
+    case previous_runner do
+      %{runner_id: runner_id, runner_session_id: runner_session_id} ->
+        runner_id = to_string(runner_id)
+        runner_session_id = to_string(runner_session_id)
+
+        {failed, pending} =
+          Enum.split_with(instance.pending, fn call ->
+            Map.get(call, :expected_runner_id) == runner_id and
+              Map.get(call, :expected_runner_session_id) == runner_session_id
+          end)
+
+        {call_waiters, state} =
+          Enum.reduce(failed, {instance.call_waiters, state}, fn call,
+                                                                 {call_waiters, state_acc} ->
+            case Map.pop(call_waiters, call.call_id) do
+              {nil, call_waiters} ->
+                {call_waiters, state_acc}
+
+              {waiter, call_waiters} ->
+                Process.demonitor(waiter.monitor_ref, [:flush])
+                GenServer.reply(waiter.from, {:error, error_text})
+
+                waiter_index = Map.delete(state_acc.waiter_index, waiter.monitor_ref)
+                {call_waiters, %{state_acc | waiter_index: waiter_index}}
+            end
+          end)
+
+        {%{instance | pending: pending, call_waiters: call_waiters}, state}
+
+      _other ->
+        {instance, state}
+    end
+  end
+
   defp fail_running_calls(instance, state, tool_instance_id, error_text) do
     running_ids = Map.keys(instance.running)
 
@@ -1023,5 +1349,94 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   defp blank_to_default(value, default) when is_binary(value) and is_binary(default) do
     if String.trim(value) == "", do: default, else: value
+  end
+
+  defp notify_background_runner_connected(tool_instance_id, runner_id, runner_session_id) do
+    notify_background_tasks(
+      :reconcile_outlet_session,
+      [tool_instance_id, runner_id, runner_session_id]
+    )
+  end
+
+  defp notify_background_runner_replaced(tool_instance_id, runner_id, runner_session_id) do
+    notify_background_tasks(
+      :fail_outlet_session,
+      [tool_instance_id, runner_id, runner_session_id]
+    )
+  end
+
+  defp notify_background_tasks(function_name, args)
+       when is_atom(function_name) and is_list(args) do
+    module = IntellectualClub.BackgroundTasks
+
+    if Code.ensure_loaded?(module) and function_exported?(module, function_name, length(args)) do
+      _ =
+        Task.Supervisor.start_child(
+          IntellectualClub.Outlets.BackgroundTaskSupervisor,
+          fn ->
+            try do
+              apply(module, function_name, args)
+            rescue
+              exception ->
+                Logger.warning(
+                  "Outlet background reconciliation failed: #{Exception.message(exception)}"
+                )
+            catch
+              kind, reason ->
+                Logger.warning(
+                  "Outlet background reconciliation stopped: #{inspect({kind, reason})}"
+                )
+            end
+          end
+        )
+    end
+
+    :ok
+  end
+
+  defp await_background_notification_tasks do
+    await_background_notification_tasks(System.monotonic_time(:millisecond) + 1_000)
+  end
+
+  defp await_background_notification_tasks(deadline_ms) do
+    supervisor = IntellectualClub.Outlets.BackgroundTaskSupervisor
+
+    if Process.whereis(supervisor) do
+      case Task.Supervisor.children(supervisor) do
+        [] ->
+          :ok
+
+        children ->
+          if System.monotonic_time(:millisecond) < deadline_ms do
+            Process.sleep(5)
+            await_background_notification_tasks(deadline_ms)
+          else
+            Enum.each(children, &Task.Supervisor.terminate_child(supervisor, &1))
+          end
+      end
+    end
+
+    :ok
+  end
+
+  defp drain_waiters(state, error_text) do
+    Enum.each(state.instances, fn {_tool_instance_id, instance} ->
+      case instance.poll_waiter do
+        nil ->
+          :ok
+
+        waiter ->
+          if waiter.timer_ref, do: Process.cancel_timer(waiter.timer_ref)
+          Process.demonitor(waiter.monitor_ref, [:flush])
+          maybe_reply_prev_poll(waiter)
+      end
+
+      Enum.each(instance.call_waiters, fn {_call_id, waiter} ->
+        Process.demonitor(waiter.monitor_ref, [:flush])
+        GenServer.reply(waiter.from, {:error, error_text})
+      end)
+    end)
+
+    :ok
   end
 end

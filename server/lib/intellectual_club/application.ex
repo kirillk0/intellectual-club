@@ -14,10 +14,15 @@ defmodule IntellectualClub.Application do
       {AshAuthentication.Supervisor, otp_app: :intellectual_club},
       {DNSCluster, query: Application.get_env(:intellectual_club, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: IntellectualClub.PubSub},
+      {Task.Supervisor, name: IntellectualClub.Outlets.BackgroundTaskSupervisor},
       {IntellectualClub.Outlets.Runtime, []},
       {IntellectualClub.Tools.RateLimiter, []},
       {IntellectualClub.Notifications.ActiveWebPushClients, []},
       {IntellectualClub.Notifications.Dispatcher, []},
+      {Registry, keys: :unique, name: IntellectualClub.BackgroundTasks.ProcessRegistry},
+      {Task.Supervisor, name: IntellectualClub.BackgroundTasks.ExecutionSupervisor},
+      {IntellectualClub.BackgroundTasks.Supervisor, []},
+      {IntellectualClub.BackgroundTasks.Reaper, []},
       {Registry, keys: :unique, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
       # Start a worker by calling: IntellectualClub.Worker.start_link(arg)
@@ -32,6 +37,10 @@ defmodule IntellectualClub.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
+        if Application.get_env(:intellectual_club, :recover_background_tasks_on_startup, true) do
+          _ = IntellectualClub.BackgroundTasks.recover_async()
+        end
+
         if Application.get_env(:intellectual_club, :recover_orphaned_generations_on_startup, true) do
           _ = IntellectualClub.Generation.Supervisor.recover_orphaned_generations_async()
         end

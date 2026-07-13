@@ -662,6 +662,7 @@ defmodule IntellectualClub.Generation.ContextTest do
 
   test "synthetic tool context includes outlet runner instance context when online" do
     Runtime.reset!()
+    on_exit(&Runtime.reset!/0)
 
     %{user: actor} = user_fixture()
     bot = create_tool_context_bot!(actor, "Outlet instance context bot")
@@ -980,6 +981,71 @@ defmodule IntellectualClub.Generation.ContextTest do
       |> tool_payload_names()
 
     assert "agent__fork" in names
+  end
+
+  test "unavailable discovered background wrappers are not model-visible" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    outlet =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "outlet",
+          name: "Capability downgrade outlet",
+          alias: "outlet",
+          config: %{},
+          secrets: %{"token" => "capability-downgrade-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ToolFunction
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        tool_instance_id: outlet.id,
+        name: "run_command",
+        description: "Run a command.",
+        parameters_schema: %{"type" => "object"},
+        enabled: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    ToolFunction
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        tool_instance_id: outlet.id,
+        name: "run_command_background",
+        description: "Run a command in the background.",
+        parameters_schema: %{"type" => "object"},
+        enabled: true,
+        discovery_available: false,
+        execution_mode: :background,
+        target_function_name: "run_command"
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    create_chat_tool_binding!(actor, chat, outlet, 0)
+
+    names =
+      chat
+      |> BindingResolver.resolve_for_chat(actor)
+      |> tool_payload_names()
+
+    assert "outlet__run_command" in names
+    refute "outlet__run_command_background" in names
   end
 
   test "user bot tool binding shadows creator binding with the same alias" do

@@ -82,6 +82,175 @@ defmodule IntellectualClub.Tools.ExecutorTest do
     assert result.raw["code"] == "tool_busy"
   end
 
+  test "truncated background status pages expose only the safe retry cursor" do
+    result = %ExecutionResult{
+      text: String.duplicate("large progress payload ", 500),
+      raw: %{
+        "background_task" => %{
+          "background_task_id" => "5f402355-0c1c-4ef2-a0d0-cf0bc066c513",
+          "kind" => "ssh_command",
+          "status" => "running",
+          "progress" => [
+            %{
+              "cursor" => "page-end",
+              "type" => "stdout",
+              "mode" => "append",
+              "text" => String.duplicate("x", 2_000)
+            }
+          ],
+          "next_cursor" => "page-end",
+          "result" => nil,
+          "error" => nil,
+          "status_detail" => "still_running",
+          "created_at" => "2026-07-12T10:00:00Z",
+          "updated_at" => "2026-07-12T10:01:00Z"
+        },
+        "background_task_request" => %{"operation" => "check", "cursor" => "page-start"}
+      },
+      media: [],
+      artifacts: []
+    }
+
+    limited = Executor.limit_execution_result(result, 100)
+    snapshot = limited.raw["background_task"]
+
+    assert String.starts_with?(limited.text, "RETRY THE STATUS CHECK WITH THE SAME CURSOR")
+    refute limited.text =~ "page-end"
+    assert limited.raw["truncated"] == true
+    assert snapshot["response_truncated"] == true
+    assert snapshot["page_consumed"] == false
+    assert snapshot["progress"] == []
+    refute Map.has_key?(snapshot, "next_cursor")
+
+    assert snapshot["retry"] == %{
+             "operation" => "check_background_task_status",
+             "cursor" => "page-start",
+             "omit_cursor" => false
+           }
+
+    zero_limit = Executor.limit_execution_result(result, 0)
+    assert zero_limit.text == "PAGE_NOT_CONSUMED; RETRY_SAME_CURSOR; DO_NOT_ADVANCE."
+    refute Map.has_key?(zero_limit.raw["background_task"], "next_cursor")
+  end
+
+  test "truncated cancellation response confirms cancellation and retries status without cursor" do
+    result = %ExecutionResult{
+      text: String.duplicate("large cancellation snapshot ", 500),
+      raw: %{
+        "background_task" => %{
+          "background_task_id" => "bd6a75ee-384c-4526-8bdd-6e81c04349c0",
+          "kind" => "fork",
+          "status" => "running",
+          "progress" => [%{"cursor" => "page-end", "type" => "answer", "mode" => "replace"}],
+          "next_cursor" => "page-end"
+        },
+        "background_task_request" => %{"operation" => "cancel", "cursor" => nil}
+      },
+      media: [],
+      artifacts: []
+    }
+
+    limited = Executor.limit_execution_result(result, 100)
+    snapshot = limited.raw["background_task"]
+
+    assert String.starts_with?(limited.text, "CANCELLATION WAS REQUESTED")
+    refute limited.text =~ "page-end"
+    assert snapshot["page_consumed"] == false
+    refute Map.has_key?(snapshot, "next_cursor")
+
+    assert snapshot["retry"] == %{
+             "operation" => "check_background_task_status",
+             "cursor" => nil,
+             "omit_cursor" => true
+           }
+  end
+
+  test "oversized terminal background results are bounded without a retry cursor loop" do
+    for kind <- ["fork", "ssh_command", "outlet_function"] do
+      result = %ExecutionResult{
+        text: String.duplicate("terminal answer ", 2_000),
+        raw: %{
+          "background_task" => %{
+            "background_task_id" => "2a0e122f-e092-4d3b-9581-aa2ce769d7e1",
+            "kind" => kind,
+            "status" => "completed",
+            "progress" => [
+              %{
+                "cursor" => "page-end",
+                "type" => "stdout",
+                "text" => "last progress"
+              }
+            ],
+            "next_cursor" => "page-end",
+            "result" => %{
+              "text" => String.duplicate("terminal answer ", 2_000),
+              "raw" => %{
+                "exit_code" => 0,
+                "stdout" => String.duplicate("command output ", 2_000)
+              },
+              "media" => [],
+              "artifacts" => []
+            },
+            "error" => nil,
+            "created_at" => "2026-07-12T10:00:00Z",
+            "finished_at" => "2026-07-12T10:01:00Z",
+            "updated_at" => "2026-07-12T10:01:00Z"
+          },
+          "background_task_request" => %{"operation" => "check", "cursor" => "page-start"}
+        },
+        media: [],
+        artifacts: []
+      }
+
+      limited = Executor.limit_execution_result(result, 600)
+      snapshot = limited.raw["background_task"]
+
+      assert String.starts_with?(limited.text, "BACKGROUND TASK IS TERMINAL")
+      refute limited.text =~ "RETRY THE STATUS CHECK"
+      assert limited.raw["terminal_result_truncated"] == true
+      assert snapshot["status"] == "completed"
+      assert snapshot["response_truncated"] == true
+      assert snapshot["page_consumed"] == true
+      assert snapshot["terminal_result_truncated"] == true
+      assert snapshot["next_cursor"] == "page-end"
+
+      assert snapshot["progress"] == [
+               %{"cursor" => "page-end", "type" => "stdout", "text" => "last progress"}
+             ]
+
+      assert snapshot["result"]["truncated"] == true
+      assert snapshot["result"]["raw"]["exit_code"] == 0
+      assert snapshot["result"]["raw"]["stdout"]["truncated"] == true
+      refute Map.has_key?(snapshot, "retry")
+      assert IntellectualClub.TokenCounter.estimate(limited.text) <= 600
+    end
+  end
+
+  test "an empty terminal progress page is consumed even with a tiny output limit" do
+    result = %ExecutionResult{
+      text: String.duplicate("terminal answer ", 100),
+      raw: %{
+        "background_task" => %{
+          "background_task_id" => "94716147-37c4-4e47-9059-002789a265b1",
+          "kind" => "fork",
+          "status" => "completed",
+          "progress" => [],
+          "next_cursor" => "0",
+          "result" => %{"text" => String.duplicate("terminal answer ", 100)}
+        },
+        "background_task_request" => %{"operation" => "check", "cursor" => nil}
+      },
+      media: [],
+      artifacts: []
+    }
+
+    limited = Executor.limit_execution_result(result, 0)
+
+    assert limited.text =~ "BACKGROUND_TASK_TERMINAL"
+    assert limited.raw["background_task"]["page_consumed"] == true
+    refute Map.has_key?(limited.raw["background_task"], "retry")
+  end
+
   defp limited_tool_instance do
     %ToolInstance{
       id: System.unique_integer([:positive, :monotonic]),

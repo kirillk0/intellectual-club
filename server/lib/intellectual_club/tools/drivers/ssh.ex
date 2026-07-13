@@ -2,7 +2,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   @moduledoc """
   Native SSH driver.
 
-  Exposes a fixed `run_command` function that executes commands on a remote host.
+  Exposes fixed functions that execute commands directly or as durable background tasks.
   """
 
   @behaviour IntellectualClub.Tools.Driver
@@ -21,8 +21,10 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
               {:ssh_connection, :close, 2}
             ]}
 
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Files
+  alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.Drivers.SshKeyCb
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -31,6 +33,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   @default_port 22
   @default_connect_timeout_seconds 10
   @default_timeout_seconds 60
+  @background_event_chunk_bytes 8 * 1024
   @env_key_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
 
   @impl true
@@ -131,47 +134,57 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
 
   @impl true
   def fixed_functions(%ToolInstance{} = _tool_instance) do
+    command_schema = %{
+      "type" => "object",
+      "description" =>
+        "Provide either `command` (shell string) or `argv` (array of strings). If both are set, `argv` takes precedence.",
+      "properties" => %{
+        "command" => %{
+          "type" => "string",
+          "description" => "Shell command to execute."
+        },
+        "argv" => %{
+          "type" => "array",
+          "items" => %{"type" => "string"},
+          "description" => "Command argv to execute via shell escaping (argv[0] is program)."
+        },
+        "cwd" => %{
+          "type" => "string",
+          "description" => "Working directory (optional)."
+        },
+        "env" => %{
+          "type" => "object",
+          "description" => "Environment variables (optional).",
+          "additionalProperties" => %{"type" => "string"}
+        },
+        "stdin" => %{
+          "type" => "string",
+          "description" => "Standard input (optional)."
+        },
+        "timeout_seconds" => %{
+          "type" => "integer",
+          "description" => "Command timeout in seconds (optional). 0 means no timeout.",
+          "minimum" => 0
+        }
+      },
+      "additionalProperties" => false
+    }
+
     [
       %{
         "name" => "run_command",
         "description" =>
           "Run a shell command on the SSH host and return stdout/stderr. If `argv` is provided, it takes precedence.",
-        "schema" => %{
-          "type" => "object",
-          "description" =>
-            "Provide either `command` (shell string) or `argv` (array of strings). If both are set, `argv` takes precedence.",
-          "properties" => %{
-            "command" => %{
-              "type" => "string",
-              "description" => "Shell command to execute."
-            },
-            "argv" => %{
-              "type" => "array",
-              "items" => %{"type" => "string"},
-              "description" => "Command argv to execute via shell escaping (argv[0] is program)."
-            },
-            "cwd" => %{
-              "type" => "string",
-              "description" => "Working directory (optional)."
-            },
-            "env" => %{
-              "type" => "object",
-              "description" => "Environment variables (optional).",
-              "additionalProperties" => %{"type" => "string"}
-            },
-            "stdin" => %{
-              "type" => "string",
-              "description" => "Standard input (optional)."
-            },
-            "timeout_seconds" => %{
-              "type" => "integer",
-              "description" => "Command timeout in seconds (optional). 0 means no timeout.",
-              "minimum" => 0
-            }
-          },
-          "additionalProperties" => false
-        },
+        "schema" => command_schema,
         "enabled" => true
+      },
+      %{
+        "name" => "run_command_background",
+        "description" =>
+          "Start a shell command on the SSH host in the background and return a background task ID immediately.",
+        "schema" => command_schema,
+        "enabled" => false,
+        "enabled_by_default" => false
       },
       %{
         "name" => "read_image",
@@ -233,6 +246,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
       when is_binary(function_name) and is_map(args) do
     case function_name do
       "run_command" -> run_command(tool_instance, args)
+      "run_command_background" -> start_background_command(tool_instance, args, execution_context)
       "read_image" -> read_image(tool_instance, args)
       "download_file" -> download_file(tool_instance, args, execution_context)
       "upload_file" -> upload_file(tool_instance, args)
@@ -240,15 +254,296 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
     end
   end
 
-  defp run_command(%ToolInstance{} = tool_instance, args) when is_map(args) do
+  defp run_command(
+         %ToolInstance{} = tool_instance,
+         args,
+         progress_callback \\ nil,
+         collector_options \\ []
+       )
+       when is_map(args) do
     with {:ok, cfg} <- read_config(tool_instance),
          {:ok, auth} <- read_auth(tool_instance),
          {:ok, request} <- read_request(args, cfg.default_timeout_seconds),
          :ok <- ensure_ssh_started(),
-         {:ok, result} <- execute_request(cfg, auth, request) do
+         {:ok, result} <-
+           execute_request(cfg, auth, request, progress_callback, collector_options) do
       {:ok, result}
     end
   end
+
+  defp start_background_command(
+         %ToolInstance{} = tool_instance,
+         args,
+         %ExecutionContext{} = execution_context
+       ) do
+    BackgroundTasks.start_tool(tool_instance, "run_command", args, execution_context)
+  end
+
+  defp start_background_command(_tool_instance, _args, _execution_context) do
+    {:error, "Background SSH command requires generation execution context."}
+  end
+
+  @doc false
+  def execute_background_command(
+        task,
+        %ToolInstance{} = tool_instance,
+        "run_command",
+        args,
+        %ExecutionContext{}
+      )
+      when is_map(args) do
+    max_output_tokens = background_max_output_tokens(tool_instance)
+    progress_key = {__MODULE__, :background_progress_bytes, task.id}
+    truncated_key = {__MODULE__, :background_progress_truncated, task.id}
+    Process.put(progress_key, 0)
+    Process.put(truncated_key, false)
+
+    progress_callback = fn stream, data ->
+      used_bytes = Process.get(progress_key, 0)
+      byte_limit = token_byte_limit(max_output_tokens)
+      remaining_bytes = max(byte_limit - used_bytes, 0)
+      stored = valid_utf8_prefix(data, remaining_bytes)
+
+      if byte_size(stored) > 0 do
+        Process.put(progress_key, used_bytes + byte_size(stored))
+        append_background_event_chunks(task, stream, stored)
+      end
+
+      if byte_size(stored) < byte_size(data) do
+        Process.put(truncated_key, true)
+      end
+
+      :ok
+    end
+
+    result =
+      case run_command(tool_instance, args, progress_callback,
+             capture_byte_limit: token_byte_limit(max_output_tokens),
+             stream_utf8: true,
+             background_task_id: task.id
+           ) do
+        {:ok, value} ->
+          {:ok,
+           limit_background_command_result(
+             value,
+             max_output_tokens,
+             Process.get(truncated_key, false)
+           )}
+
+        {:error, reason} ->
+          {:failed, background_ssh_error(reason)}
+      end
+
+    Process.delete(progress_key)
+    Process.delete(truncated_key)
+    result
+  end
+
+  def execute_background_command(_task, _tool_instance, function_name, _args, _context) do
+    {:error, "Unsupported SSH background function: #{function_name}"}
+  end
+
+  @doc false
+  def cancel_background_command(task_id) when is_binary(task_id) do
+    cancel_key = background_cancel_key(task_id)
+
+    IntellectualClub.BackgroundTasks.ProcessRegistry
+    |> Registry.lookup(cancel_key)
+    |> Enum.each(fn {_pid, cancel_ref} -> close_background_cancel_ref(cancel_ref) end)
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  @doc false
+  def register_background_cancel_ref(task_id, connection, channel, closer)
+      when is_binary(task_id) and is_function(closer, 1) do
+    Registry.register(
+      IntellectualClub.BackgroundTasks.ProcessRegistry,
+      background_cancel_key(task_id),
+      %{connection: connection, channel: channel, closer: closer}
+    )
+
+    :ok
+  end
+
+  @doc false
+  def collect_background_output_for_test(messages, byte_limit, progress_callback \\ nil)
+      when is_list(messages) and is_integer(byte_limit) and byte_limit >= 0 do
+    connection = make_ref()
+    channel = 1
+
+    Enum.each(messages, fn
+      {:stdout, data} ->
+        send(self(), {:ssh_cm, connection, {:data, channel, 0, data}})
+
+      {:stderr, data} ->
+        send(self(), {:ssh_cm, connection, {:data, channel, 1, data}})
+
+      {:exit_status, status} ->
+        send(self(), {:ssh_cm, connection, {:exit_status, channel, status}})
+    end)
+
+    send(self(), {:ssh_cm, connection, {:closed, channel}})
+
+    with {:ok, state} <-
+           receive_result(connection, channel, 1_000, progress_callback,
+             capture_byte_limit: byte_limit,
+             stream_utf8: true
+           ) do
+      {:ok,
+       %{
+         stdout: decode_chunks(state.stdout_chunks),
+         stderr: decode_chunks(state.stderr_chunks),
+         stdout_bytes: state.stdout_bytes,
+         stderr_bytes: state.stderr_bytes,
+         captured_bytes: state.captured_bytes,
+         capture_truncated: state.capture_truncated
+       }}
+    end
+  end
+
+  defp background_max_output_tokens(%ToolInstance{max_output_tokens: value})
+       when is_integer(value) and value >= 0,
+       do: value
+
+  defp background_max_output_tokens(_tool_instance), do: 20_000
+
+  defp token_byte_limit(max_output_tokens)
+       when is_integer(max_output_tokens) and max_output_tokens >= 0 do
+    trunc(max_output_tokens * 3.5)
+  end
+
+  defp valid_utf8_prefix(data, max_bytes) when is_binary(data) and is_integer(max_bytes) do
+    data =
+      if String.valid?(data), do: data, else: :unicode.characters_to_binary(data, :latin1, :utf8)
+
+    max_bytes = max(max_bytes, 0)
+
+    cond do
+      max_bytes == 0 ->
+        ""
+
+      byte_size(data) <= max_bytes ->
+        data
+
+      true ->
+        do_valid_utf8_prefix(data, max_bytes)
+    end
+  end
+
+  defp append_background_event_chunks(_task, _stream, ""), do: :ok
+
+  defp append_background_event_chunks(task, stream, data) when is_binary(data) do
+    chunk = valid_utf8_prefix(data, @background_event_chunk_bytes)
+
+    if chunk == "" do
+      :ok
+    else
+      _ = BackgroundTasks.append_event(task, stream, chunk)
+      rest_size = byte_size(data) - byte_size(chunk)
+
+      if rest_size > 0 do
+        rest = binary_part(data, byte_size(chunk), rest_size)
+        append_background_event_chunks(task, stream, rest)
+      else
+        :ok
+      end
+    end
+  end
+
+  defp do_valid_utf8_prefix(data, max_bytes) do
+    prefix = binary_part(data, 0, max_bytes)
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      1..4
+      |> Enum.reduce_while("", fn trim, _fallback ->
+        size = max(max_bytes - trim, 0)
+        candidate = binary_part(data, 0, size)
+
+        if String.valid?(candidate), do: {:halt, candidate}, else: {:cont, ""}
+      end)
+    end
+  end
+
+  defp limit_background_command_result({text, %{} = raw}, max_output_tokens, progress_truncated?) do
+    byte_limit = token_byte_limit(max_output_tokens)
+    stdout = to_string(Map.get(raw, "stdout", ""))
+    stderr = to_string(Map.get(raw, "stderr", ""))
+    limited_stdout = valid_utf8_prefix(stdout, byte_limit)
+    remaining = max(byte_limit - byte_size(limited_stdout), 0)
+    limited_stderr = valid_utf8_prefix(stderr, remaining)
+    text = to_string(text || "")
+    limited_text = valid_utf8_prefix(text, byte_limit)
+
+    truncated? =
+      progress_truncated? or TokenCounter.estimate(text) > max_output_tokens or
+        byte_size(limited_stdout) < byte_size(stdout) or
+        byte_size(limited_stderr) < byte_size(stderr)
+
+    raw =
+      raw
+      |> Map.put("stdout", limited_stdout)
+      |> Map.put("stderr", limited_stderr)
+      |> Map.put("output_truncated", truncated?)
+
+    %ExecutionResult{text: limited_text, raw: raw, media: [], artifacts: []}
+  end
+
+  defp validate_background_completion(command_result, progress_callback)
+       when is_function(progress_callback, 2) do
+    if command_result.timed_out or not is_nil(command_result.exit_status) or
+         not is_nil(command_result.exit_signal) do
+      :ok
+    else
+      {:error, "SSH channel closed before command termination could be confirmed."}
+    end
+  end
+
+  defp validate_background_completion(_command_result, _progress_callback), do: :ok
+
+  defp background_ssh_error(reason) do
+    message = safe_error_message(reason)
+
+    if ssh_not_started_error?(message) do
+      %{
+        "code" => "ssh_execution_failed",
+        "message" => message,
+        "outcome" => "not_started"
+      }
+    else
+      %{
+        "code" => "execution_lost",
+        "message" => message,
+        "outcome" => "unknown"
+      }
+    end
+  end
+
+  defp ssh_not_started_error?(message) when is_binary(message) do
+    Enum.any?(
+      [
+        "Tool instance ",
+        "SSH credentials ",
+        "Argument `",
+        "Invalid environment variable name",
+        "Failed to start SSH",
+        "SSH connect failed",
+        "SSH session channel failed",
+        "SSH server rejected exec request"
+      ],
+      &String.starts_with?(message, &1)
+    )
+  end
+
+  defp safe_error_message(reason) when is_binary(reason), do: reason
+  defp safe_error_message(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp safe_error_message(reason), do: inspect(reason)
 
   defp read_image(%ToolInstance{} = tool_instance, args) when is_map(args) do
     with {:ok, cfg} <- read_config(tool_instance),
@@ -511,15 +806,26 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
     end
   end
 
-  defp execute_request(cfg, auth, request) do
+  defp execute_request(cfg, auth, request, progress_callback, collector_options) do
     with {:ok, auth_opts, key_cb_private} <- build_auth_options(auth),
          {:ok, connection} <- connect(cfg, auth_opts, key_cb_private) do
+      register_background_connection(collector_options, connection)
+
       try do
         with {:ok, channel} <- open_channel(connection, cfg.connect_timeout_ms),
+             :ok <- update_background_channel(collector_options, channel),
              :ok <-
                exec_remote(connection, channel, request.remote_command, cfg.connect_timeout_ms),
              :ok <- send_stdin_and_eof(connection, channel, request.stdin),
-             {:ok, command_result} <- receive_result(connection, channel, request.timeout_ms) do
+             {:ok, command_result} <-
+               receive_result(
+                 connection,
+                 channel,
+                 request.timeout_ms,
+                 progress_callback,
+                 collector_options
+               ),
+             :ok <- validate_background_completion(command_result, progress_callback) do
           stdout = decode_chunks(command_result.stdout_chunks)
           stderr = decode_chunks(command_result.stderr_chunks)
 
@@ -561,6 +867,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
           {:ok, {summary, raw}}
         end
       after
+        unregister_background_connection(collector_options)
         _ = :ssh.close(connection)
       end
     end
@@ -747,23 +1054,36 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
     end
   end
 
-  defp receive_result(connection, channel, timeout_ms) do
+  defp receive_result(
+         connection,
+         channel,
+         timeout_ms,
+         progress_callback,
+         collector_options
+       ) do
     initial = %{
       stdout_chunks: [],
       stderr_chunks: [],
       stdout_bytes: 0,
       stderr_bytes: 0,
+      stdout_carry: "",
+      stderr_carry: "",
+      captured_bytes: 0,
+      capture_byte_limit: Keyword.get(collector_options, :capture_byte_limit, :infinity),
+      capture_truncated: false,
+      stream_utf8: Keyword.get(collector_options, :stream_utf8, false),
       exit_status: nil,
       exit_signal: nil,
       timed_out: false
     }
 
-    case collect_messages(connection, channel, timeout_ms, initial) do
+    case collect_messages(connection, channel, timeout_ms, initial, progress_callback) do
       {:ok, state} ->
-        {:ok, state}
+        {:ok, flush_stream_carries(state, progress_callback)}
 
       {:timeout, state} ->
         _ = :ssh_connection.close(connection, channel)
+        state = flush_stream_carries(state, progress_callback)
         {:ok, %{state | timed_out: true}}
 
       {:error, reason} ->
@@ -771,100 +1091,327 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
     end
   end
 
-  defp collect_messages(connection, channel, :infinity, state) do
+  defp collect_messages(connection, channel, :infinity, state, progress_callback) do
     receive do
       {:ssh_cm, ^connection, {:data, ^channel, 0, data}} ->
         bin = IO.iodata_to_binary(data)
+        state = collect_stream_chunk(state, :stdout, bin, progress_callback)
 
-        collect_messages(connection, channel, :infinity, %{
-          state
-          | stdout_chunks: [bin | state.stdout_chunks],
-            stdout_bytes: state.stdout_bytes + byte_size(bin)
-        })
+        collect_messages(
+          connection,
+          channel,
+          :infinity,
+          state,
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:data, ^channel, 1, data}} ->
         bin = IO.iodata_to_binary(data)
+        state = collect_stream_chunk(state, :stderr, bin, progress_callback)
 
-        collect_messages(connection, channel, :infinity, %{
-          state
-          | stderr_chunks: [bin | state.stderr_chunks],
-            stderr_bytes: state.stderr_bytes + byte_size(bin)
-        })
+        collect_messages(
+          connection,
+          channel,
+          :infinity,
+          state,
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:exit_status, ^channel, exit_status}} ->
-        collect_messages(connection, channel, :infinity, %{state | exit_status: exit_status})
+        collect_messages(
+          connection,
+          channel,
+          :infinity,
+          %{state | exit_status: exit_status},
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:exit_signal, ^channel, signal, error, language}} ->
-        collect_messages(connection, channel, :infinity, %{
-          state
-          | exit_signal: %{
-              "signal" => to_string(signal || ""),
-              "error" => to_string(error || ""),
-              "language" => to_string(language || "")
-            }
-        })
+        collect_messages(
+          connection,
+          channel,
+          :infinity,
+          %{
+            state
+            | exit_signal: %{
+                "signal" => to_string(signal || ""),
+                "error" => to_string(error || ""),
+                "language" => to_string(language || "")
+              }
+          },
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:closed, ^channel}} ->
         {:ok, state}
 
       _other ->
-        collect_messages(connection, channel, :infinity, state)
+        collect_messages(connection, channel, :infinity, state, progress_callback)
     end
   end
 
-  defp collect_messages(connection, channel, timeout_ms, state) when is_integer(timeout_ms) do
+  defp collect_messages(connection, channel, timeout_ms, state, progress_callback)
+       when is_integer(timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    collect_messages_until(connection, channel, deadline, state)
+    collect_messages_until(connection, channel, deadline, state, progress_callback)
   end
 
-  defp collect_messages_until(connection, channel, deadline_ms, state) do
+  defp collect_messages_until(connection, channel, deadline_ms, state, progress_callback) do
     now = System.monotonic_time(:millisecond)
     remaining = max(deadline_ms - now, 0)
 
     receive do
       {:ssh_cm, ^connection, {:data, ^channel, 0, data}} ->
         bin = IO.iodata_to_binary(data)
+        state = collect_stream_chunk(state, :stdout, bin, progress_callback)
 
-        collect_messages_until(connection, channel, deadline_ms, %{
-          state
-          | stdout_chunks: [bin | state.stdout_chunks],
-            stdout_bytes: state.stdout_bytes + byte_size(bin)
-        })
+        collect_messages_until(
+          connection,
+          channel,
+          deadline_ms,
+          state,
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:data, ^channel, 1, data}} ->
         bin = IO.iodata_to_binary(data)
+        state = collect_stream_chunk(state, :stderr, bin, progress_callback)
 
-        collect_messages_until(connection, channel, deadline_ms, %{
-          state
-          | stderr_chunks: [bin | state.stderr_chunks],
-            stderr_bytes: state.stderr_bytes + byte_size(bin)
-        })
+        collect_messages_until(
+          connection,
+          channel,
+          deadline_ms,
+          state,
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:exit_status, ^channel, exit_status}} ->
-        collect_messages_until(connection, channel, deadline_ms, %{
-          state
-          | exit_status: exit_status
-        })
+        collect_messages_until(
+          connection,
+          channel,
+          deadline_ms,
+          %{
+            state
+            | exit_status: exit_status
+          },
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:exit_signal, ^channel, signal, error, language}} ->
-        collect_messages_until(connection, channel, deadline_ms, %{
-          state
-          | exit_signal: %{
-              "signal" => to_string(signal || ""),
-              "error" => to_string(error || ""),
-              "language" => to_string(language || "")
-            }
-        })
+        collect_messages_until(
+          connection,
+          channel,
+          deadline_ms,
+          %{
+            state
+            | exit_signal: %{
+                "signal" => to_string(signal || ""),
+                "error" => to_string(error || ""),
+                "language" => to_string(language || "")
+              }
+          },
+          progress_callback
+        )
 
       {:ssh_cm, ^connection, {:closed, ^channel}} ->
         {:ok, state}
 
       _other ->
-        collect_messages_until(connection, channel, deadline_ms, state)
+        collect_messages_until(connection, channel, deadline_ms, state, progress_callback)
     after
       remaining ->
         {:timeout, state}
     end
+  end
+
+  defp emit_progress(callback, stream, data)
+       when is_function(callback, 2) and stream in [:stdout, :stderr] and is_binary(data) do
+    callback.(stream, data)
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp emit_progress(_callback, _stream, _data), do: :ok
+
+  defp collect_stream_chunk(%{stream_utf8: true} = state, stream, data, progress_callback) do
+    carry_key = stream_carry_key(stream)
+    carry = Map.fetch!(state, carry_key)
+    {text, carry} = decode_stream_chunk(carry, data)
+
+    state
+    |> Map.put(carry_key, carry)
+    |> increment_stream_bytes(stream, byte_size(data))
+    |> capture_stream_chunk(stream, text)
+    |> tap(fn _state -> emit_progress(progress_callback, stream, text) end)
+  end
+
+  defp collect_stream_chunk(state, stream, data, progress_callback) do
+    emit_progress(progress_callback, stream, data)
+
+    state
+    |> increment_stream_bytes(stream, byte_size(data))
+    |> capture_stream_chunk(stream, data)
+  end
+
+  defp increment_stream_bytes(state, :stdout, count) do
+    %{state | stdout_bytes: state.stdout_bytes + count}
+  end
+
+  defp increment_stream_bytes(state, :stderr, count) do
+    %{state | stderr_bytes: state.stderr_bytes + count}
+  end
+
+  defp capture_stream_chunk(state, _stream, ""), do: state
+
+  defp capture_stream_chunk(%{capture_byte_limit: :infinity} = state, stream, data) do
+    put_stream_chunk(state, stream, data)
+  end
+
+  defp capture_stream_chunk(state, stream, data) do
+    remaining = max(state.capture_byte_limit - state.captured_bytes, 0)
+    captured = valid_utf8_prefix(data, remaining)
+
+    state =
+      state
+      |> put_stream_chunk(stream, captured)
+      |> Map.put(:captured_bytes, state.captured_bytes + byte_size(captured))
+
+    if byte_size(captured) < byte_size(data) do
+      %{state | capture_truncated: true}
+    else
+      state
+    end
+  end
+
+  defp put_stream_chunk(state, _stream, ""), do: state
+
+  defp put_stream_chunk(state, :stdout, data) do
+    %{state | stdout_chunks: [data | state.stdout_chunks]}
+  end
+
+  defp put_stream_chunk(state, :stderr, data) do
+    %{state | stderr_chunks: [data | state.stderr_chunks]}
+  end
+
+  defp flush_stream_carries(%{stream_utf8: false} = state, _progress_callback), do: state
+
+  defp flush_stream_carries(state, progress_callback) do
+    Enum.reduce([:stdout, :stderr], state, fn stream, acc ->
+      carry_key = stream_carry_key(stream)
+
+      case Map.fetch!(acc, carry_key) do
+        "" ->
+          acc
+
+        carry ->
+          text = :unicode.characters_to_binary(carry, :latin1, :utf8)
+          emit_progress(progress_callback, stream, text)
+
+          acc
+          |> Map.put(carry_key, "")
+          |> capture_stream_chunk(stream, text)
+      end
+    end)
+  end
+
+  defp stream_carry_key(:stdout), do: :stdout_carry
+  defp stream_carry_key(:stderr), do: :stderr_carry
+
+  defp decode_stream_chunk(carry, data) when is_binary(carry) and is_binary(data) do
+    combined = carry <> data
+
+    case :unicode.characters_to_binary(combined, :utf8, :utf8) do
+      text when is_binary(text) ->
+        {text, ""}
+
+      {:incomplete, text, rest} ->
+        {IO.iodata_to_binary(text), IO.iodata_to_binary(rest)}
+
+      {:error, text, rest} ->
+        prefix = IO.iodata_to_binary(text)
+        fallback = rest |> IO.iodata_to_binary() |> :unicode.characters_to_binary(:latin1, :utf8)
+        {prefix <> fallback, ""}
+    end
+  end
+
+  defp background_cancel_key(task_id), do: {:ssh_background_command, task_id}
+
+  defp register_background_connection(collector_options, connection) do
+    case Keyword.get(collector_options, :background_task_id) do
+      task_id when is_binary(task_id) ->
+        Registry.register(
+          IntellectualClub.BackgroundTasks.ProcessRegistry,
+          background_cancel_key(task_id),
+          %{connection: connection, channel: nil}
+        )
+
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp update_background_channel(collector_options, channel) do
+    case Keyword.get(collector_options, :background_task_id) do
+      task_id when is_binary(task_id) ->
+        _ =
+          Registry.update_value(
+            IntellectualClub.BackgroundTasks.ProcessRegistry,
+            background_cancel_key(task_id),
+            &Map.put(&1, :channel, channel)
+          )
+
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp unregister_background_connection(collector_options) do
+    case Keyword.get(collector_options, :background_task_id) do
+      task_id when is_binary(task_id) ->
+        Registry.unregister(
+          IntellectualClub.BackgroundTasks.ProcessRegistry,
+          background_cancel_key(task_id)
+        )
+
+      _other ->
+        :ok
+    end
+  rescue
+    _exception -> :ok
+  end
+
+  defp close_background_cancel_ref(%{closer: closer} = cancel_ref)
+       when is_function(closer, 1) do
+    closer.(Map.drop(cancel_ref, [:closer]))
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp close_background_cancel_ref(%{connection: connection, channel: channel}) do
+    if not is_nil(channel) do
+      safe_ssh_close(fn -> :ssh_connection.close(connection, channel) end)
+    end
+
+    safe_ssh_close(fn -> :ssh.close(connection) end)
+  end
+
+  defp close_background_cancel_ref(_cancel_ref), do: :ok
+
+  defp safe_ssh_close(close_fun) when is_function(close_fun, 0) do
+    _ = close_fun.()
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   defp decode_chunks(chunks) when is_list(chunks) do

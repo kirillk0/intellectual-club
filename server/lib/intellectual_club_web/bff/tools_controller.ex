@@ -115,6 +115,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       description: fn_record.description,
       parameters_schema: fn_record.parameters_schema,
       enabled: fn_record.enabled,
+      discovery_available: fn_record.discovery_available,
       discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
     }
   end
@@ -126,6 +127,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       description: fixed_function.description,
       parameters_schema: fixed_function.parameters_schema,
       enabled: fn_record.enabled,
+      discovery_available: fn_record.discovery_available,
       discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
     }
   end

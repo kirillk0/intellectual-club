@@ -29,6 +29,8 @@ config :phoenix,
 
 config :intellectual_club,
   demo_chunk_delay_ms: 0,
+  background_task_reaper_enabled: false,
+  recover_background_tasks_on_startup: false,
   recover_orphaned_generations_on_startup: false,
   token_signing_secret: "test-token-signing-secret",
   openai_oauth_req_options: [

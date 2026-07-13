@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   @behaviour IntellectualClub.Tools.Driver
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.Fork, as: AgentFork
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Tools.ExecutionContext
@@ -117,6 +118,67 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         "enabled_by_default" => false
       },
       %{
+        "name" => "fork_background",
+        "description" =>
+          "Start a linked subagent chat without waiting for it to finish. " <>
+            "Save the returned background task id and check it explicitly.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "task" => %{
+              "type" => "string",
+              "description" =>
+                "Brief task for this specific subagent. Do not repeat the full context."
+            }
+          },
+          "required" => ["task"],
+          "additionalProperties" => false
+        },
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
+        "name" => "check_background_task_status",
+        "description" =>
+          "Check a background task and return only new progress since the optional cursor.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "background_task_id" => %{
+              "type" => "string",
+              "format" => "uuid",
+              "description" => "Background task id returned by a background tool."
+            },
+            "cursor" => %{
+              "type" => "string",
+              "description" => "Opaque cursor returned by the previous status check."
+            }
+          },
+          "required" => ["background_task_id"],
+          "additionalProperties" => false
+        },
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
+        "name" => "cancel_background_task",
+        "description" => "Cancel a background task owned by the current user.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "background_task_id" => %{
+              "type" => "string",
+              "format" => "uuid",
+              "description" => "Background task id returned by a background tool."
+            }
+          },
+          "required" => ["background_task_id"],
+          "additionalProperties" => false
+        },
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
         "name" => "sleep",
         "description" =>
           "Pause agent execution for the requested number of seconds before continuing. " <>
@@ -207,6 +269,71 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     {:error, "Fork requires generation execution context."}
   end
 
+  def execute(
+        %ToolInstance{} = tool_instance,
+        "fork_background",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    with {:ok, task} <- required_task(args),
+         {:ok, result} <- BackgroundTasks.start_fork(tool_instance, task, context) do
+      {:ok, result}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "fork_background", _args, _context) do
+    {:error, "Background fork requires generation execution context."}
+  end
+
+  def execute(
+        %ToolInstance{} = _tool_instance,
+        "check_background_task_status",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    with {:ok, task_id} <- required_background_task_id(args),
+         {:ok, cursor} <- optional_background_cursor(args),
+         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
+         {:ok, snapshot} <- BackgroundTasks.snapshot(task_id, cursor, owner_id) do
+      {:ok, background_snapshot_result(snapshot, "check", cursor)}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(
+        %ToolInstance{} = _tool_instance,
+        "check_background_task_status",
+        _args,
+        _context
+      ) do
+    {:error, "Background task status requires generation execution context."}
+  end
+
+  def execute(
+        %ToolInstance{} = _tool_instance,
+        "cancel_background_task",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    with {:ok, task_id} <- required_background_task_id(args),
+         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
+         {:ok, snapshot} <- BackgroundTasks.cancel(task_id, owner_id) do
+      {:ok, background_snapshot_result(snapshot, "cancel", nil)}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "cancel_background_task", _args, _context) do
+    {:error, "Background task cancellation requires generation execution context."}
+  end
+
   def execute(%ToolInstance{} = _tool_instance, "sleep", args, context) when is_map(args) do
     with {:ok, seconds, timeout_ms} <- read_sleep_seconds(args) do
       {elapsed_ms, remaining_ms} = sleep_timing(timeout_ms, context)
@@ -263,6 +390,25 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     end
   end
 
+  defp required_background_task_id(args) when is_map(args) do
+    args
+    |> Map.get("background_task_id", Map.get(args, :background_task_id, ""))
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> {:error, "background_task_id is required"}
+      task_id -> {:ok, task_id}
+    end
+  end
+
+  defp optional_background_cursor(args) when is_map(args) do
+    case Map.get(args, "cursor", Map.get(args, :cursor)) do
+      nil -> {:ok, nil}
+      cursor when is_binary(cursor) -> {:ok, cursor}
+      _other -> {:error, "cursor must be a string"}
+    end
+  end
+
   defp required_integer(value, _field) when is_integer(value) and value > 0, do: {:ok, value}
 
   defp required_integer(_value, field), do: {:error, "#{field} is required"}
@@ -306,6 +452,65 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   defp format_seconds(seconds) when is_float(seconds) do
     "#{:erlang.float_to_binary(seconds, [:compact, decimals: 6])} seconds"
   end
+
+  defp background_snapshot_result(snapshot, operation, requested_cursor)
+       when is_map(snapshot) and operation in ["check", "cancel"] do
+    snapshot =
+      snapshot
+      |> stringify_json()
+      |> Map.put_new("status_detail", nil)
+      |> Map.put_new("progress", [])
+      |> Map.put_new("result", nil)
+      |> Map.put_new("error", nil)
+
+    media = get_in(snapshot, ["result", "media"]) || []
+    artifacts = get_in(snapshot, ["result", "artifacts"]) || []
+
+    request = %{
+      "operation" => operation,
+      "cursor" => requested_cursor
+    }
+
+    model_snapshot =
+      Map.take(snapshot, [
+        "background_task_id",
+        "kind",
+        "status",
+        "cancel_requested",
+        "target_chat_id",
+        "status_detail",
+        "url",
+        "progress",
+        "next_cursor",
+        "result",
+        "error",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "updated_at"
+      ])
+
+    text =
+      "If this response is truncated, do not advance `next_cursor`; repeat the status check " <>
+        "with the same cursor (or omit it again if it was omitted).\n\n" <>
+        "Background task snapshot:\n" <> Jason.encode!(model_snapshot, pretty: true)
+
+    %ExecutionResult{
+      text: text,
+      raw: %{"background_task" => snapshot, "background_task_request" => request},
+      media: List.wrap(media),
+      artifacts: List.wrap(artifacts)
+    }
+  end
+
+  defp stringify_json(%{} = value) do
+    Map.new(value, fn {key, nested} -> {to_string(key), stringify_json(nested)} end)
+  end
+
+  defp stringify_json(value) when is_list(value), do: Enum.map(value, &stringify_json/1)
+  defp stringify_json(value) when is_boolean(value) or is_nil(value), do: value
+  defp stringify_json(value) when is_atom(value), do: Atom.to_string(value)
+  defp stringify_json(value), do: value
 
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(reason) when is_atom(reason), do: Atom.to_string(reason)

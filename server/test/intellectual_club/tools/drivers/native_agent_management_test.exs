@@ -5,6 +5,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -19,7 +21,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     functions = NativeAgentManagement.fixed_functions(tool_instance)
 
-    assert Enum.map(functions, & &1["name"]) == ["handoff", "fork", "sleep"]
+    assert Enum.map(functions, & &1["name"]) == [
+             "handoff",
+             "fork",
+             "fork_background",
+             "check_background_task_status",
+             "cancel_background_task",
+             "sleep"
+           ]
 
     assert %{"schema" => handoff_schema} =
              Enum.find(functions, &(&1["name"] == "handoff"))
@@ -35,6 +44,31 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert fork_schema["required"] == ["task"]
     assert fork_schema["properties"]["task"]["type"] == "string"
     assert String.contains?(fork_schema["properties"]["task"]["description"], "Brief task")
+
+    background_functions =
+      Enum.filter(functions, fn function ->
+        function["name"] in [
+          "fork_background",
+          "check_background_task_status",
+          "cancel_background_task"
+        ]
+      end)
+
+    assert Enum.all?(background_functions, &(&1["enabled"] == false))
+    assert Enum.all?(background_functions, &(&1["enabled_by_default"] == false))
+
+    fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
+    assert fork_background["schema"]["required"] == ["task"]
+
+    check_background =
+      Enum.find(functions, &(&1["name"] == "check_background_task_status"))
+
+    assert check_background["schema"]["required"] == ["background_task_id"]
+    assert check_background["schema"]["properties"]["background_task_id"]["format"] == "uuid"
+    assert check_background["schema"]["properties"]["cursor"]["type"] == "string"
+
+    cancel_background = Enum.find(functions, &(&1["name"] == "cancel_background_task"))
+    assert cancel_background["schema"]["required"] == ["background_task_id"]
 
     assert %{"schema" => sleep_schema} =
              Enum.find(functions, &(&1["name"] == "sleep"))
@@ -59,6 +93,261 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert result.text == "Tool function `fork` is disabled."
     assert result.raw["isError"] == true
     assert result.raw["code"] == "tool_function_disabled"
+  end
+
+  test "background management functions are rejected by executor while disabled by default" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    calls = [
+      {"agent_management__fork_background", %{"task" => "Check one thing."}},
+      {"agent_management__check_background_task_status",
+       %{"background_task_id" => Ash.UUID.generate()}},
+      {"agent_management__cancel_background_task", %{"background_task_id" => Ash.UUID.generate()}}
+    ]
+
+    Enum.each(calls, fn {name, args} ->
+      result =
+        Executor.execute_llm_tool(
+          %{"agent_management" => tool_instance},
+          name,
+          args,
+          %ExecutionContext{owner_id: actor.id}
+        )
+
+      assert result.raw["isError"] == true
+      assert result.raw["code"] == "tool_function_disabled"
+    end)
+  end
+
+  test "background status check preserves terminal media and artifacts" do
+    %{user: actor} = user_fixture()
+
+    task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "test",
+          adapter: "test",
+          status: :running,
+          function_name: "test",
+          arguments: %{},
+          execution_context: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    media = [%{"url" => "https://example.test/image.png"}]
+    artifacts = [%{"name" => "result.txt", "content" => "done"}]
+
+    assert {:ok, event} = BackgroundTasks.append_event(task, :stdout, "partial output")
+
+    assert {:ok, _task} =
+             BackgroundTasks.mark_completed(task, %ExecutionResult{
+               text: "Finished",
+               raw: %{"ok" => true},
+               media: media,
+               artifacts: artifacts
+             })
+
+    assert {:ok, %ExecutionResult{} = result} =
+             NativeAgentManagement.execute(
+               create_tool_instance!(actor),
+               "check_background_task_status",
+               %{"background_task_id" => task.id},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    assert result.media == media
+    assert result.artifacts == artifacts
+    assert result.text =~ "completed"
+    assert get_in(result.raw, ["background_task", "result", "text"]) == "Finished"
+
+    snapshot = decode_background_snapshot!(result.text)
+
+    assert snapshot["background_task_id"] == task.id
+    assert snapshot["kind"] == "test"
+    assert snapshot["status"] == "completed"
+    assert snapshot["status_detail"] == nil
+    assert is_binary(snapshot["created_at"])
+    assert Map.has_key?(snapshot, "started_at")
+    assert is_binary(snapshot["finished_at"])
+    assert is_binary(snapshot["updated_at"])
+
+    assert snapshot["progress"] == [
+             %{
+               "cursor" => Integer.to_string(event.id),
+               "type" => "stdout",
+               "text" => "partial output"
+             }
+           ]
+
+    assert snapshot["result"]["text"] == "Finished"
+    assert snapshot["error"] == nil
+    assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => nil}
+  end
+
+  test "background cancellation exposes a complete structured snapshot in text" do
+    %{user: actor} = user_fixture()
+
+    task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "test",
+          adapter: "test",
+          status: :queued,
+          function_name: "test",
+          arguments: %{},
+          execution_context: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert {:ok, %ExecutionResult{} = result} =
+             NativeAgentManagement.execute(
+               create_tool_instance!(actor),
+               "cancel_background_task",
+               %{"background_task_id" => task.id},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    snapshot = decode_background_snapshot!(result.text)
+
+    assert snapshot["background_task_id"] == task.id
+    assert snapshot["status"] == "canceled"
+    assert snapshot["cancel_requested"] == true
+    assert snapshot["progress"] == []
+    assert snapshot["result"] == nil
+    assert snapshot["error"] == nil
+    assert Map.has_key?(snapshot, "status_detail")
+    assert Map.has_key?(snapshot, "created_at")
+    assert Map.has_key?(snapshot, "finished_at")
+    assert result.raw["background_task_request"] == %{"operation" => "cancel", "cursor" => nil}
+  end
+
+  test "background status text preserves a structured terminal error" do
+    %{user: actor} = user_fixture()
+
+    task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "ssh_command",
+          adapter: "test",
+          status: :running,
+          function_name: "run_command",
+          arguments: %{},
+          execution_context: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert {:ok, _task} =
+             BackgroundTasks.mark_failed(
+               task,
+               "execution_lost",
+               %{"message" => "SSH channel disconnected", "transport" => "ssh"},
+               "unknown"
+             )
+
+    assert {:ok, %ExecutionResult{} = result} =
+             NativeAgentManagement.execute(
+               create_tool_instance!(actor),
+               "check_background_task_status",
+               %{"background_task_id" => task.id, "cursor" => "17"},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    snapshot = decode_background_snapshot!(result.text)
+
+    assert snapshot["status"] == "failed"
+    assert snapshot["result"] == nil
+    assert snapshot["error"]["code"] == "execution_lost"
+    assert snapshot["error"]["outcome"] == "unknown"
+    assert snapshot["error"]["message"] == "SSH channel disconnected"
+
+    assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => "17"}
+  end
+
+  test "repeated checks of oversized terminal results do not request the same cursor forever" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    for kind <- ["fork", "ssh_command", "outlet_function"] do
+      task =
+        BackgroundTask
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            kind: kind,
+            adapter: "test",
+            status: :running,
+            function_name: "test",
+            arguments: %{},
+            execution_context: %{}
+          },
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
+
+      assert {:ok, _task} =
+               BackgroundTasks.mark_completed(task, %ExecutionResult{
+                 text: String.duplicate("terminal answer ", 2_000),
+                 raw: %{
+                   "exit_code" => 0,
+                   "stdout" => String.duplicate("command output ", 2_000)
+                 }
+               })
+
+      assert {:ok, %ExecutionResult{} = first_check} =
+               NativeAgentManagement.execute(
+                 tool_instance,
+                 "check_background_task_status",
+                 %{"background_task_id" => task.id},
+                 %ExecutionContext{owner_id: actor.id}
+               )
+
+      first_limited = Executor.limit_execution_result(first_check, 600)
+      first_snapshot = first_limited.raw["background_task"]
+
+      assert first_snapshot["status"] == "completed"
+      assert first_snapshot["page_consumed"] == true
+      assert first_snapshot["result"]["truncated"] == true
+      refute Map.has_key?(first_snapshot, "retry")
+      refute first_limited.text =~ "RETRY THE STATUS CHECK"
+
+      assert {:ok, %ExecutionResult{} = repeated_check} =
+               NativeAgentManagement.execute(
+                 tool_instance,
+                 "check_background_task_status",
+                 %{
+                   "background_task_id" => task.id,
+                   "cursor" => first_snapshot["next_cursor"]
+                 },
+                 %ExecutionContext{owner_id: actor.id}
+               )
+
+      repeated_limited = Executor.limit_execution_result(repeated_check, 600)
+      repeated_snapshot = repeated_limited.raw["background_task"]
+
+      assert repeated_snapshot["status"] == "completed"
+      assert repeated_snapshot["page_consumed"] == true
+      assert repeated_snapshot["next_cursor"] == first_snapshot["next_cursor"]
+      refute Map.has_key?(repeated_snapshot, "retry")
+      refute repeated_limited.text =~ "RETRY THE STATUS CHECK"
+
+      assert repeated_limited.raw["background_task_request"] == %{
+               "operation" => "check",
+               "cursor" => first_snapshot["next_cursor"]
+             }
+    end
   end
 
   test "handoff creates child chat and starts generation" do
@@ -202,6 +491,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp decode_background_snapshot!(text) do
+    [json] = String.split(text, "Background task snapshot:\n", parts: 2, trim: true) |> tl()
+    Jason.decode!(json)
   end
 
   defp messages_for_chat!(chat_id, actor) do

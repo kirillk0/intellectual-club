@@ -3,6 +3,8 @@ defmodule IntellectualClub.Chat.Fork do
   Creates forked subagent chats from a persisted tool-call step.
   """
 
+  @behaviour IntellectualClub.BackgroundTasks.Adapter
+
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
@@ -25,6 +27,7 @@ defmodule IntellectualClub.Chat.Fork do
   @relation_kind :fork
   @poll_interval_ms 100
   @max_parent_hops 64
+  @progress_page_max_bytes 48_000
   @parent_tool_call_unique_constraint "chats_unique_parent_tool_call_item_id_index"
 
   def relation_kind, do: @relation_kind
@@ -38,17 +41,180 @@ defmodule IntellectualClub.Chat.Fork do
         %User{} = actor
       )
       when is_binary(task) do
-    with :ok <- validate_context(context),
-         {:ok, source} <- fetch_owned_chat(context.chat_id, actor),
-         {:ok, source_context} <- build_source_context(source, task, context, actor),
-         {:ok, fork_ref} <-
-           find_or_create_subagent(tool_instance, source_context, context, actor) do
-      run_subagent_reference(fork_ref, source_context, context, actor)
+    with {:ok, reference} <- start_or_resume(tool_instance, task, context, actor),
+         {:ok, snapshot} <- await_snapshot(reference, actor),
+         result = sync_execution_result_from_snapshot(snapshot, actor),
+         :ok <- persist_parent_tool_result(context, result) do
+      {:ok, result}
+    else
+      {:error, {:fork_result, message}} ->
+        result = error_result(message)
+
+        with :ok <- persist_parent_tool_result(context, result) do
+          {:ok, result}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   def create_and_run(_tool_instance, _task, _context, _actor),
     do: {:error, :invalid_fork_context}
+
+  @doc """
+  Starts a forked subagent or resumes the subagent already linked to this tool call.
+
+  Unlike `create_and_run/4`, this function never waits for the subagent to finish.
+  The returned reference is durable: the generation message and its steps remain the
+  source of truth across application restarts.
+  """
+  @spec start_or_resume(ToolInstance.t(), String.t(), ExecutionContext.t(), User.t()) ::
+          {:ok, map()} | {:error, term()}
+  def start_or_resume(
+        %ToolInstance{} = tool_instance,
+        task,
+        %ExecutionContext{} = context,
+        %User{} = actor
+      )
+      when is_binary(task) do
+    start_or_resume(tool_instance, task, context, actor, [])
+  end
+
+  def start_or_resume(_tool_instance, _task, _context, _actor),
+    do: {:error, :invalid_fork_context}
+
+  @doc false
+  @spec start_or_resume(ToolInstance.t(), String.t(), ExecutionContext.t(), User.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def start_or_resume(
+        %ToolInstance{} = tool_instance,
+        task,
+        %ExecutionContext{} = context,
+        %User{} = actor,
+        opts
+      )
+      when is_binary(task) and is_list(opts) do
+    with :ok <- validate_context(context),
+         {:ok, source} <- fetch_owned_chat(context.chat_id, actor),
+         {:ok, source_context} <- build_source_context(source, task, context, actor),
+         {:ok, fork_ref} <-
+           find_or_create_subagent(tool_instance, source_context, context, actor),
+         {:ok, reference} <- start_subagent_reference(fork_ref, context, actor, opts) do
+      {:ok, reference}
+    end
+  end
+
+  def start_or_resume(_tool_instance, _task, _context, _actor, _opts),
+    do: {:error, :invalid_fork_context}
+
+  @doc """
+  Returns a non-blocking, answer-only snapshot for a fork reference.
+
+  The cursor is opaque to callers. A valid cursor returns only answer text appended
+  since the previous snapshot. If a provider retry rewrites already observed text,
+  the snapshot returns the full answer with `mode: "replace"`.
+  """
+  @spec snapshot(map(), User.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def snapshot(reference, actor, cursor \\ nil)
+
+  def snapshot(reference, %User{} = actor, cursor) when is_map(reference) do
+    with {:ok, reference} <- normalize_reference(reference, actor),
+         {:ok, state} <- resolve_snapshot_chain(reference.generation_message_id, actor) do
+      {progress, next_cursor} = answer_progress(state.answer, cursor, reference)
+
+      {:ok,
+       %{
+         status: state.status,
+         progress: progress,
+         next_cursor: next_cursor,
+         result: snapshot_result(reference, state),
+         error: Map.get(state, :error),
+         url: reference.url
+       }}
+    end
+  end
+
+  def snapshot(_reference, _actor, _cursor), do: {:error, :invalid_fork_reference}
+
+  @doc false
+  @impl true
+  def execute_background(
+        task_record,
+        %ToolInstance{} = tool_instance,
+        "fork",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    task = args |> Map.get("task", Map.get(args, :task, "")) |> to_string() |> String.trim()
+
+    with true <- task != "",
+         task_id when is_binary(task_id) <- task_record_value(task_record, :id),
+         %User{} = actor <- actor_from_context(context),
+         {:ok, reference} <-
+           start_or_resume(tool_instance, task, context, actor,
+             on_reference: &set_background_reference(task_record, &1)
+           ) do
+      await_background_snapshot(reference, actor)
+    else
+      false -> {:error, "task is required"}
+      nil -> {:error, "Background task context is invalid."}
+      {:error, _reason} = error -> error
+      _other -> {:error, "Background task context is invalid."}
+    end
+  end
+
+  def execute_background(_task_record, _tool_instance, _function_name, _args, _context) do
+    {:error, "Invalid background fork execution context."}
+  end
+
+  @doc false
+  def await_background_snapshot(reference, actor) do
+    case await_snapshot(reference, actor) do
+      {:ok, terminal} ->
+        background_execution_result(terminal)
+
+      {:error, _reason} = error ->
+        cancel_reference_generation(reference, actor)
+        error
+    end
+  rescue
+    exception ->
+      cancel_reference_generation(reference, actor)
+      {:error, Exception.message(exception)}
+  catch
+    kind, reason ->
+      cancel_reference_generation(reference, actor)
+      {:error, {kind, reason}}
+  end
+
+  @doc false
+  @impl true
+  def snapshot_background(task_record, cursor) do
+    case background_reference(task_record) do
+      {:ok, reference, actor} -> snapshot(reference, actor, cursor)
+      {:error, :target_not_ready} -> :default
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @impl true
+  def recover_background(_task_record), do: :restart
+
+  @doc false
+  @impl true
+  def cancel_background(task_record) do
+    case background_reference(task_record) do
+      {:ok, reference, actor} ->
+        cancel_reference_generation(reference, actor)
+        :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
 
   @spec ensure_handoff_allowed(ToolInstance.t(), ExecutionContext.t()) ::
           :ok | {:error, String.t()}
@@ -138,7 +304,7 @@ defmodule IntellectualClub.Chat.Fork do
         {:ok, {:existing, chat}}
 
       {:legacy, {:ambiguous, message}} ->
-        {:ok, {:error_result, message}}
+        {:error, {:fork_result, message}}
 
       {:error, _reason} = error ->
         error
@@ -354,72 +520,99 @@ defmodule IntellectualClub.Chat.Fork do
     |> unwrap_transaction()
   end
 
-  defp run_subagent_reference(
+  defp start_subagent_reference(
          {:new, fork_state},
-         source_context,
          %ExecutionContext{} = parent_context,
-         actor
+         actor,
+         opts
        ) do
-    with {:ok, generation} <- start_subagent_generation(fork_state, parent_context, actor) do
-      finish_subagent(
-        fork_state.chat,
-        fork_state.message_id,
-        generation.message_id,
-        source_context,
-        parent_context,
-        actor
-      )
+    reference = fork_reference(fork_state.chat, fork_state.message_id, fork_state.message_id)
+
+    with :ok <- notify_reference_or_cancel(reference, actor, opts) do
+      case start_subagent_generation(fork_state, parent_context, actor) do
+        {:ok, generation} ->
+          {:ok, %{reference | generation_message_id: generation.message_id}}
+
+        {:error, _reason} = error ->
+          cancel_reference_generation(reference, actor)
+          error
+      end
     end
   end
 
-  defp run_subagent_reference(
+  defp start_subagent_reference(
          {:existing, %Chat{} = chat},
-         source_context,
-         %ExecutionContext{} = parent_context,
-         actor
+         %ExecutionContext{},
+         actor,
+         opts
        ) do
     with {:ok, message_id} <- fork_generation_message_id(chat, actor),
-         :ok <- resume_fork_generation_if_needed(message_id, actor) do
-      finish_subagent(chat, message_id, message_id, source_context, parent_context, actor)
+         reference = fork_reference(chat, message_id, message_id),
+         :ok <- notify_reference_or_cancel(reference, actor, opts) do
+      case resume_fork_generation_if_needed(message_id, actor) do
+        :ok ->
+          {:ok, reference}
+
+        {:error, _reason} = error ->
+          cancel_reference_generation(reference, actor)
+          error
+      end
     end
   end
 
-  defp run_subagent_reference(
-         {:error_result, message},
-         source_context,
-         %ExecutionContext{} = parent_context,
-         _actor
-       ) do
-    result = error_result(message)
+  defp notify_reference_or_cancel(reference, actor, opts)
+       when is_map(reference) and is_list(opts) do
+    result =
+      case Keyword.get(opts, :on_reference) do
+        callback when is_function(callback, 1) -> callback.(reference)
+        _other -> :ok
+      end
 
-    with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
-      {:ok, result}
+    case result do
+      :ok ->
+        :ok
+
+      {:error, _reason} = error ->
+        cancel_reference_generation(reference, actor)
+        error
+
+      other ->
+        cancel_reference_generation(reference, actor)
+        {:error, {:invalid_reference_callback_result, other}}
     end
   end
 
-  defp finish_subagent(
-         %Chat{} = chat,
-         message_id,
-         generation_message_id,
-         source_context,
-         %ExecutionContext{} = parent_context,
-         actor
-       ) do
-    case await_final_answer(generation_message_id, actor) do
-      {:ok, final} ->
-        result = fork_result(chat, message_id, generation_message_id, final)
+  defp cancel_reference_generation(reference, actor) when is_map(reference) do
+    message_id = reference.generation_message_id
 
-        with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
-          {:ok, result}
+    case GenerationSupervisor.cancel_generation(message_id,
+           include_background_tasks?: true
+         ) do
+      :not_found ->
+        case Ash.get(ChatMessage, message_id, actor: actor) do
+          {:ok, %ChatMessage{status: :generating}} ->
+            Persistence.cancel_orphaned_generating_message!(message_id)
+
+          _other ->
+            :ok
         end
 
-      {:error, reason} ->
-        result = error_result(reason)
-
-        with :ok <- persist_parent_tool_result(parent_context, source_context.source_call, result) do
-          {:ok, result}
-        end
+      _other ->
+        :ok
     end
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp fork_reference(%Chat{} = chat, message_id, generation_message_id) do
+    %{
+      chat_id: chat.id,
+      message_id: message_id,
+      generation_message_id: generation_message_id,
+      url: "/chats/#{chat.id}"
+    }
   end
 
   defp start_subagent_generation(fork_state, %ExecutionContext{} = parent_context, actor) do
@@ -496,6 +689,9 @@ defmodule IntellectualClub.Chat.Fork do
         {:error, :already_running} ->
           :ok
 
+        {:error, :invalid_status} ->
+          :ok
+
         {:error, :no_steps_to_retry} ->
           :ok = Persistence.cancel_orphaned_generating_message!(message_id)
           :ok
@@ -506,27 +702,6 @@ defmodule IntellectualClub.Chat.Fork do
     else
       :ok
     end
-  end
-
-  defp fork_result(%Chat{} = chat, message_id, generation_message_id, final) do
-    text = final_text(final)
-
-    payload = %{
-      "chat_id" => chat.id,
-      "message_id" => message_id,
-      "generation_message_id" => generation_message_id,
-      "final_chat_id" => final.chat_id,
-      "final_message_id" => final.message_id,
-      "chain" => final.chain,
-      "url" => "/chats/#{chat.id}"
-    }
-
-    %ExecutionResult{
-      text: text,
-      raw: %{"fork" => payload},
-      media: [],
-      artifacts: []
-    }
   end
 
   defp error_result(reason) do
@@ -542,7 +717,6 @@ defmodule IntellectualClub.Chat.Fork do
 
   defp persist_parent_tool_result(
          %ExecutionContext{} = parent_context,
-         %ToolCall{} = source_call,
          %ExecutionResult{} = result
        ) do
     payload = %{
@@ -554,6 +728,10 @@ defmodule IntellectualClub.Chat.Fork do
 
     try do
       parent_message_id = parent_context.message_id || parent_context.assistant_message_id
+      followup_state = Persistence.load_step_for_followup!(parent_context.step_id)
+
+      {:ok, source_call} =
+        find_tool_call(followup_state.tool_calls, parent_context.tool_call_item_id)
 
       _ =
         Persistence.persist_tool_result!(
@@ -709,47 +887,357 @@ defmodule IntellectualClub.Chat.Fork do
     }
   end
 
-  defp await_final_answer(message_id, actor) when is_integer(message_id) do
-    await_final_answer(message_id, actor, [])
+  defp await_snapshot(reference, actor) do
+    case snapshot(reference, actor) do
+      {:ok, %{status: :running}} ->
+        Process.sleep(@poll_interval_ms)
+        await_snapshot(reference, actor)
+
+      {:ok, %{status: status} = snapshot}
+      when status in [:completed, :failed, :canceled] ->
+        {:ok, snapshot}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
-  defp await_final_answer(message_id, actor, chain) when is_integer(message_id) do
-    message = load_final_message!(message_id, actor)
-    status = normalize_status(message.status)
+  defp normalize_reference(reference, actor) when is_map(reference) do
+    generation_message_id = reference_value(reference, :generation_message_id)
+    message_id = reference_value(reference, :message_id) || generation_message_id
+    requested_chat_id = reference_value(reference, :chat_id)
 
-    case status do
-      :generating ->
-        Process.sleep(@poll_interval_ms)
-        await_final_answer(message_id, actor, chain)
+    with true <- is_integer(generation_message_id) and generation_message_id > 0,
+         {:ok, %ChatMessage{} = message} <-
+           Ash.get(ChatMessage, generation_message_id, actor: actor),
+         chat_id = requested_chat_id || message.chat_id,
+         true <- is_integer(chat_id) and chat_id > 0,
+         {:ok, %Chat{} = chat} <- fetch_owned_chat(chat_id, actor),
+         true <- message.chat_id == chat.id do
+      {:ok,
+       %{
+         chat_id: chat.id,
+         message_id: if(is_integer(message_id), do: message_id, else: generation_message_id),
+         generation_message_id: generation_message_id,
+         url: reference_value(reference, :url) || "/chats/#{chat.id}"
+       }}
+    else
+      false -> {:error, :invalid_fork_reference}
+      {:error, _reason} = error -> error
+      _other -> {:error, :invalid_fork_reference}
+    end
+  end
 
-      :done ->
-        chain = chain ++ [chain_entry(message)]
+  defp resolve_snapshot_chain(message_id, actor) when is_integer(message_id) do
+    do_resolve_snapshot_chain(message_id, actor, MapSet.new(), [], [])
+  end
 
-        case handoff_generation_message_id(message) do
-          id when is_integer(id) and id > 0 ->
-            await_final_answer(id, actor, chain)
+  defp do_resolve_snapshot_chain(_message_id, _actor, _visited, chain, answers)
+       when length(chain) >= @max_parent_hops do
+    {:ok,
+     %{
+       status: :failed,
+       answer: join_answers(answers),
+       final: nil,
+       error: "Subagent handoff chain exceeded the supported depth."
+     }}
+  end
+
+  defp do_resolve_snapshot_chain(message_id, actor, visited, chain, answers)
+       when is_integer(message_id) do
+    if MapSet.member?(visited, message_id) do
+      {:ok,
+       %{
+         status: :failed,
+         answer: join_answers(answers),
+         final: nil,
+         error: "Subagent handoff chain contains a cycle."
+       }}
+    else
+      with :ok <- resume_fork_generation_if_needed(message_id, actor) do
+        message = load_final_message!(message_id, actor)
+        message_answer = message_answer_text(message)
+        answers = append_answer(answers, message_answer)
+
+        case normalize_status(message.status) do
+          :generating ->
+            {:ok,
+             %{
+               status: :running,
+               answer: join_answers(answers),
+               final: nil,
+               error: nil
+             }}
+
+          :done ->
+            chain = chain ++ [chain_entry(message)]
+
+            case handoff_generation_message_id(message) do
+              id when is_integer(id) and id > 0 ->
+                do_resolve_snapshot_chain(
+                  id,
+                  actor,
+                  MapSet.put(visited, message_id),
+                  chain,
+                  answers
+                )
+
+              _other ->
+                {:ok,
+                 %{
+                   status: :completed,
+                   answer: join_answers(answers),
+                   final: %{
+                     chat_id: message.chat_id,
+                     message_id: message.id,
+                     text: message_answer,
+                     chain: chain
+                   },
+                   error: nil
+                 }}
+            end
+
+          :error ->
+            {:ok,
+             %{
+               status: :failed,
+               answer: join_answers(answers),
+               final: nil,
+               error: message.error_detail || "Subagent generation failed."
+             }}
+
+          :canceled ->
+            {:ok,
+             %{
+               status: :canceled,
+               answer: join_answers(answers),
+               final: nil,
+               error: "Subagent generation was canceled."
+             }}
 
           _other ->
             {:ok,
              %{
-               chat_id: message.chat_id,
-               message_id: message.id,
-               text: History.project_text_for_item_type(message, :answer),
-               chain: chain
+               status: :failed,
+               answer: join_answers(answers),
+               final: nil,
+               error: "Subagent generation has an invalid status."
              }}
         end
-
-      :error ->
-        {:error, message.error_detail || "Subagent generation failed."}
-
-      :canceled ->
-        {:error, "Subagent generation was canceled."}
-
-      _other ->
-        Process.sleep(@poll_interval_ms)
-        await_final_answer(message_id, actor, chain)
+      end
     end
   end
+
+  defp message_answer_text(%ChatMessage{} = message) do
+    runtime_step =
+      case GenerationSupervisor.get_generation_state(message.id) do
+        {:ok, %{step: %{} = step}} -> step
+        _other -> nil
+      end
+
+    runtime_step_id = trace_value(runtime_step, :id)
+    fork_step_sequence = fork_instruction_step_sequence(message)
+
+    persisted_steps =
+      message.steps
+      |> List.wrap()
+      |> Enum.reject(&(is_integer(runtime_step_id) and &1.id == runtime_step_id))
+
+    (persisted_steps ++ List.wrap(runtime_step))
+    |> Enum.filter(fn step ->
+      sequence = trace_value(step, :sequence)
+
+      not is_integer(fork_step_sequence) or
+        (is_integer(sequence) and sequence > fork_step_sequence)
+    end)
+    |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
+    |> Enum.map(&answer_text_from_trace/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp fork_instruction_step_sequence(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.find_value(fn step ->
+      if Enum.any?(List.wrap(Map.get(step, :items)), &fork_instruction_result?/1) do
+        step.sequence
+      end
+    end)
+  end
+
+  defp fork_instruction_result?(item) do
+    History.item_type(item) == :tool_result and
+      Enum.any?(History.opaque_payloads(item), fn opaque ->
+        case Map.get(opaque, "raw") do
+          %{"fork_instruction" => %{"subagent" => true}} -> true
+          _other -> match?(%{"subagent" => true}, Map.get(opaque, "fork_instruction"))
+        end
+      end)
+  end
+
+  defp answer_text_from_trace(step) when is_map(step) do
+    step
+    |> trace_value(:items, [])
+    |> List.wrap()
+    |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
+    |> Enum.filter(&(History.item_type(&1) == :answer))
+    |> Enum.map(&History.item_text/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp answer_text_from_trace(_step), do: ""
+
+  defp append_answer(answers, answer) when is_binary(answer) do
+    if String.trim(answer) == "", do: answers, else: answers ++ [answer]
+  end
+
+  defp join_answers(answers) when is_list(answers), do: Enum.join(answers, "\n\n")
+
+  defp answer_progress(answer, cursor, reference) when is_binary(answer) do
+    {offset, mode} = cursor_offset(cursor, answer, reference)
+    remaining = binary_part(answer, offset, byte_size(answer) - offset)
+    delta = valid_answer_prefix(remaining, @progress_page_max_bytes)
+    next_offset = offset + byte_size(delta)
+    next_cursor = encode_cursor(answer, next_offset, reference)
+
+    progress =
+      if delta == "" do
+        []
+      else
+        [%{type: "answer", text: delta, mode: mode, cursor: next_cursor}]
+      end
+
+    {progress, next_cursor}
+  end
+
+  defp cursor_offset(nil, _answer, _reference), do: {0, "replace"}
+  defp cursor_offset("", _answer, _reference), do: {0, "replace"}
+
+  defp cursor_offset(cursor, answer, reference) when is_binary(cursor) do
+    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
+         {:ok, %{} = payload} <- Jason.decode(decoded),
+         true <- payload["message_id"] == reference.generation_message_id,
+         offset when is_integer(offset) and offset >= 0 <- payload["offset"],
+         true <- offset <= byte_size(answer),
+         prefix = binary_part(answer, 0, offset),
+         true <- payload["digest"] == answer_digest(prefix) do
+      {offset, "append"}
+    else
+      _other -> {0, "replace"}
+    end
+  end
+
+  defp cursor_offset(_cursor, _answer, _reference), do: {0, "replace"}
+
+  defp encode_cursor(answer, offset, reference)
+       when is_binary(answer) and is_integer(offset) and offset >= 0 do
+    offset = min(offset, byte_size(answer))
+    prefix = binary_part(answer, 0, offset)
+
+    %{
+      "message_id" => reference.generation_message_id,
+      "offset" => offset,
+      "digest" => answer_digest(prefix)
+    }
+    |> Jason.encode!()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp answer_digest(text) when is_binary(text) do
+    :crypto.hash(:sha256, text)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp valid_answer_prefix(text, max_bytes) when byte_size(text) <= max_bytes, do: text
+
+  defp valid_answer_prefix(text, max_bytes) when is_binary(text) and is_integer(max_bytes) do
+    prefix = binary_part(text, 0, max(max_bytes, 0))
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      1..4
+      |> Enum.reduce_while("", fn trim, _fallback ->
+        size = max(max_bytes - trim, 0)
+        candidate = binary_part(text, 0, size)
+
+        if String.valid?(candidate), do: {:halt, candidate}, else: {:cont, ""}
+      end)
+    end
+  end
+
+  defp snapshot_result(reference, %{status: :completed, final: final}) when is_map(final) do
+    text = final_text(final)
+
+    %{
+      text: text,
+      raw: %{
+        "fork" => %{
+          "chat_id" => reference.chat_id,
+          "message_id" => reference.message_id,
+          "generation_message_id" => reference.generation_message_id,
+          "final_chat_id" => final.chat_id,
+          "final_message_id" => final.message_id,
+          "chain" => final.chain,
+          "url" => reference.url
+        }
+      }
+    }
+  end
+
+  defp snapshot_result(_reference, _state), do: nil
+
+  defp execution_result_from_snapshot(%{status: :completed, result: result})
+       when is_map(result) do
+    %ExecutionResult{
+      text: to_string(Map.get(result, :text, Map.get(result, "text", ""))),
+      raw: Map.get(result, :raw, Map.get(result, "raw", %{})),
+      media: [],
+      artifacts: []
+    }
+  end
+
+  defp execution_result_from_snapshot(%{status: status, error: error})
+       when status in [:failed, :canceled] do
+    error_result(error)
+  end
+
+  defp sync_execution_result_from_snapshot(%{status: :completed} = snapshot, actor) do
+    result = execution_result_from_snapshot(snapshot)
+    final_message_id = get_in(result.raw, ["fork", "final_message_id"])
+
+    case final_message_id do
+      message_id when is_integer(message_id) and message_id > 0 ->
+        message = load_final_message!(message_id, actor)
+
+        text =
+          message
+          |> History.project_text_for_item_type(:answer)
+          |> case do
+            value when is_binary(value) and value != "" -> final_text(%{text: value})
+            _other -> result.text
+          end
+
+        %{result | text: text}
+
+      _other ->
+        result
+    end
+  end
+
+  defp sync_execution_result_from_snapshot(snapshot, _actor) do
+    execution_result_from_snapshot(snapshot)
+  end
+
+  defp background_execution_result(%{status: :completed} = snapshot) do
+    {:completed, execution_result_from_snapshot(snapshot)}
+  end
+
+  defp background_execution_result(%{status: :failed, error: error}), do: {:failed, error}
+
+  defp background_execution_result(%{status: :canceled}), do: :canceled
 
   defp handoff_generation_message_id(%ChatMessage{} = message) do
     message
@@ -784,6 +1272,87 @@ defmodule IntellectualClub.Chat.Fork do
 
   defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_string?(_value), do: false
+
+  defp set_background_reference(task_record, reference) when is_map(reference) do
+    case apply(IntellectualClub.BackgroundTasks, :set_fork_reference, [task_record, reference]) do
+      :ok -> :ok
+      {:ok, _task} -> :ok
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_background_reference_result, other}}
+    end
+  end
+
+  defp background_reference(task_record) do
+    owner_id = task_record_value(task_record, :owner_id)
+    chat_id = task_record_value(task_record, :target_chat_id)
+
+    runner_ref = task_record_value(task_record, :runner_ref) || %{}
+
+    stored_message_id =
+      reference_value(runner_ref, :fork_message_id) ||
+        reference_value(runner_ref, :fork_generation_message_id)
+
+    stored_generation_message_id =
+      reference_value(runner_ref, :fork_generation_message_id) || stored_message_id
+
+    stored_url = reference_value(runner_ref, :fork_url)
+
+    cond do
+      not is_integer(owner_id) or owner_id <= 0 ->
+        {:error, :invalid_owner}
+
+      not is_integer(chat_id) or chat_id <= 0 ->
+        {:error, :target_not_ready}
+
+      true ->
+        actor = %User{id: owner_id}
+
+        with {:ok, %Chat{} = chat} <- fetch_owned_chat(chat_id, actor),
+             message_id = stored_message_id || chat.last_message_id,
+             generation_message_id = stored_generation_message_id || message_id,
+             true <- is_integer(message_id) and message_id > 0,
+             true <- is_integer(generation_message_id) and generation_message_id > 0 do
+          reference =
+            chat
+            |> fork_reference(message_id, generation_message_id)
+            |> Map.put(:url, stored_url || "/chats/#{chat.id}")
+
+          {:ok, reference, actor}
+        else
+          false -> {:error, :target_not_ready}
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  defp task_record_value(task_record, key) when is_map(task_record) and is_atom(key) do
+    direct = Map.get(task_record, key, Map.get(task_record, Atom.to_string(key)))
+
+    if match?(%Ash.NotLoaded{}, direct) or is_nil(direct) do
+      task_record
+      |> Map.get(:metadata, Map.get(task_record, "metadata", %{}))
+      |> case do
+        %{} = metadata -> Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
+        _other -> nil
+      end
+    else
+      direct
+    end
+  end
+
+  defp task_record_value(_task_record, _key), do: nil
+
+  defp reference_value(reference, key) when is_map(reference) and is_atom(key) do
+    Map.get(reference, key, Map.get(reference, Atom.to_string(key)))
+  end
+
+  defp trace_value(value, key, default \\ nil)
+
+  defp trace_value(value, key, default) when is_map(value) and is_atom(key) do
+    Map.get(value, key, Map.get(value, Atom.to_string(key), default))
+  end
+
+  defp trace_value(_value, _key, default), do: default
 
   defp ensure_fork_allowed(%ToolInstance{} = tool_instance, %Chat{} = chat, actor) do
     depth = fork_depth(chat, actor)

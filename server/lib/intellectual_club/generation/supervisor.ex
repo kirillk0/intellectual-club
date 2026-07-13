@@ -271,7 +271,7 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok
   end
 
-  def cancel_generation(message_id) do
+  def cancel_generation(message_id, opts \\ []) when is_list(opts) do
     result =
       case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
         [{pid, _}] ->
@@ -283,7 +283,7 @@ defmodule IntellectualClub.Generation.Supervisor do
           :not_found
       end
 
-    :ok = cancel_descendant_generations_for_message(message_id)
+    :ok = cancel_descendant_generations_for_message(message_id, opts)
     result
   end
 
@@ -330,18 +330,22 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   defp cancel_active_workers_for_chat(_chat_id), do: []
 
-  defp cancel_descendant_generations_for_message(message_id) when is_integer(message_id) do
+  defp cancel_descendant_generations_for_message(message_id, opts)
+       when is_integer(message_id) and is_list(opts) do
     case message_chat_id(message_id) do
-      id when is_integer(id) -> cancel_descendant_generations_for_chat(id)
+      id when is_integer(id) -> cancel_descendant_generations_for_chat(id, opts)
       _other -> :ok
     end
   end
 
-  defp cancel_descendant_generations_for_message(_message_id), do: :ok
+  defp cancel_descendant_generations_for_message(_message_id, _opts), do: :ok
 
-  defp cancel_descendant_generations_for_chat(chat_id) when is_integer(chat_id) do
+  defp cancel_descendant_generations_for_chat(chat_id, opts \\ [])
+
+  defp cancel_descendant_generations_for_chat(chat_id, opts)
+       when is_integer(chat_id) and is_list(opts) do
     chat_id
-    |> subagent_descendant_chat_ids()
+    |> subagent_descendant_chat_ids(opts)
     |> Enum.each(fn descendant_chat_id ->
       active_message_ids = cancel_active_workers_for_chat(descendant_chat_id)
 
@@ -354,7 +358,7 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok
   end
 
-  defp cancel_descendant_generations_for_chat(_chat_id), do: :ok
+  defp cancel_descendant_generations_for_chat(_chat_id, _opts), do: :ok
 
   defp message_chat_id(message_id) when is_integer(message_id) do
     ChatMessage
@@ -368,13 +372,26 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  defp subagent_descendant_chat_ids(chat_id) when is_integer(chat_id) do
-    do_subagent_descendant_chat_ids([chat_id], MapSet.new(), [])
+  defp subagent_descendant_chat_ids(chat_id, opts) when is_integer(chat_id) and is_list(opts) do
+    include_background_tasks? = Keyword.get(opts, :include_background_tasks?, false)
+
+    do_subagent_descendant_chat_ids(
+      [chat_id],
+      MapSet.new(),
+      [],
+      include_background_tasks?
+    )
   end
 
-  defp do_subagent_descendant_chat_ids([], _visited, acc), do: Enum.reverse(acc)
+  defp do_subagent_descendant_chat_ids([], _visited, acc, _include_background_tasks?),
+    do: Enum.reverse(acc)
 
-  defp do_subagent_descendant_chat_ids(parent_ids, visited, acc) do
+  defp do_subagent_descendant_chat_ids(
+         parent_ids,
+         visited,
+         acc,
+         include_background_tasks?
+       ) do
     parent_ids =
       parent_ids
       |> Enum.filter(&is_integer/1)
@@ -394,9 +411,47 @@ defmodule IntellectualClub.Generation.Supervisor do
         |> Enum.reject(&MapSet.member?(visited, &1))
         |> Enum.uniq()
 
+      child_ids =
+        if include_background_tasks? do
+          child_ids
+        else
+          background_roots = active_background_fork_root_chat_ids(parent_ids)
+          Enum.reject(child_ids, &MapSet.member?(background_roots, &1))
+        end
+
       visited = Enum.reduce(parent_ids, visited, &MapSet.put(&2, &1))
-      do_subagent_descendant_chat_ids(child_ids, visited, child_ids ++ acc)
+
+      do_subagent_descendant_chat_ids(
+        child_ids,
+        visited,
+        child_ids ++ acc,
+        include_background_tasks?
+      )
     end
+  end
+
+  defp active_background_fork_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
+    if Code.ensure_loaded?(IntellectualClub.BackgroundTasks) and
+         function_exported?(
+           IntellectualClub.BackgroundTasks,
+           :active_fork_root_chat_ids,
+           1
+         ) do
+      case apply(IntellectualClub.BackgroundTasks, :active_fork_root_chat_ids, [parent_chat_ids]) do
+        %MapSet{} = ids -> ids
+        ids when is_list(ids) -> MapSet.new(ids)
+        _other -> MapSet.new()
+      end
+    else
+      MapSet.new()
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to load active background fork roots: #{Exception.message(exception)}"
+      )
+
+      MapSet.new()
   end
 
   defp registry_message_id(%{message_id: id}) when is_integer(id), do: id

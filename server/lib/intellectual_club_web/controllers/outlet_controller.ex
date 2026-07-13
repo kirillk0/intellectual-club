@@ -13,6 +13,7 @@ defmodule IntellectualClubWeb.OutletController do
   require Logger
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Files
@@ -183,8 +184,7 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
-      with {:ok, {:ok, _call}} <-
-             with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end),
+      with {:ok, _execution_context} <- outlet_call_context(tool_instance, call_id),
            {:ok, conn, file} <- persist_outlet_upload(conn, payload) do
         json(conn, %{
           file: %{
@@ -198,7 +198,7 @@ defmodule IntellectualClubWeb.OutletController do
           }
         })
       else
-        {:ok, {:error, :not_found}} ->
+        {:error, :not_found} ->
           conn
           |> put_status(:not_found)
           |> json(%{error: "Call not found."})
@@ -246,8 +246,8 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
-      case with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end) do
-        {:ok, {:ok, %{execution_context: execution_context}}} ->
+      case outlet_call_context(tool_instance, call_id) do
+        {:ok, execution_context} ->
           case ContentFiles.load_path_for_execution(file_external_id, execution_context) do
             {:ok, {_content, file, path}} ->
               disposition =
@@ -261,7 +261,7 @@ defmodule IntellectualClubWeb.OutletController do
               |> json(%{error: "File not found."})
           end
 
-        {:ok, {:error, :not_found}} ->
+        {:error, :not_found} ->
           conn
           |> put_status(:not_found)
           |> json(%{error: "Call not found."})
@@ -286,6 +286,28 @@ defmodule IntellectualClubWeb.OutletController do
           |> put_status(:service_unavailable)
           |> json(%{error: "Outlet runtime failed."})
       end
+    end
+  end
+
+  defp outlet_call_context(tool_instance, call_id) do
+    runtime_result =
+      with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end)
+
+    case runtime_result do
+      {:ok, {:ok, %{execution_context: execution_context}}} ->
+        {:ok, execution_context}
+
+      {:ok, {:ok, _call}} ->
+        {:ok, nil}
+
+      {:ok, {:error, :not_found}} ->
+        BackgroundTasks.fetch_outlet_execution_context(tool_instance, call_id)
+
+      {:error, _reason} = runtime_error ->
+        case BackgroundTasks.fetch_outlet_execution_context(tool_instance, call_id) do
+          {:ok, execution_context} -> {:ok, execution_context}
+          {:error, :not_found} -> runtime_error
+        end
     end
   end
 

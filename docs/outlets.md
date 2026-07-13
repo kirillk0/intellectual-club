@@ -129,6 +129,7 @@ On each successful poll, the server updates runner presence for the outlet tool
 instance and may return tasks. Each returned task contains:
 
 - `call_id`;
+- `operation` (`execute` by default);
 - function name;
 - arguments.
 
@@ -273,3 +274,36 @@ the runner process using that token.
   be rejected.
 - Long polling is an optimization for delivery latency; correctness must not depend on
   a poll request staying open.
+
+## Background Task Protocol
+
+An outlet tool may opt a function into the runner-owned background pool by returning
+`supports_background: true` in its discovery `ToolSpec`. The server exposes a separate
+`<function>_background` model tool for that capability; ordinary discovered functions
+and MCP tools are not inferred to support background execution from their names. New
+background wrappers are disabled by default, and rediscovery preserves an explicit
+user enablement override.
+
+Background control requests use the normal poll/complete transport with one of these
+operations:
+
+- `background_start` includes a server-issued `background_task_id`, function, and arguments;
+- `background_status` includes the task id and an optional opaque cursor;
+- `background_cancel` includes the task id.
+
+The runner core owns execution state, progress, cancellation, and the terminal result.
+Starting the same task id with the same function and arguments is idempotent. Reusing
+the id with a different payload is an error. Status responses use the common states
+`queued`, `running`, `completed`, `failed`, and `canceled`, and return only progress
+after the supplied cursor plus a `next_cursor`.
+
+The server persists a minimal coordination envelope before dispatch. It remains the
+source of truth for ownership, routing, and launch idempotency, while the live runner
+is the source of truth for outlet progress and results. If the backend restarts, a
+runner process with the same `runner_session_id` keeps its in-memory jobs and accepts
+idempotent control calls after reconnecting. A new runner session does not inherit
+jobs from the old process; unfinished envelopes fail with an unknown execution outcome.
+
+Terminal runner results expire after a configurable retention period (24 hours by
+default). Runner-process recovery and an on-disk task spool are outside this protocol
+version.

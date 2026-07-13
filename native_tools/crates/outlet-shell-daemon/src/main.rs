@@ -27,6 +27,9 @@ struct Args {
     #[arg(long, env = "OUTLET_MAX_CONCURRENCY", default_value_t = 20)]
     max_concurrency: usize,
 
+    #[arg(long, env = "OUTLET_BACKGROUND_CONTROL_CAPACITY", default_value_t = 4)]
+    background_control_capacity: usize,
+
     #[arg(long, env = "OUTLET_POLL_MAX_WAIT_SECONDS", default_value_t = 25.0)]
     poll_max_wait: f64,
 
@@ -35,6 +38,13 @@ struct Args {
 
     #[arg(long, env = "OUTLET_COMPLETE_MAX_SECONDS", default_value_t = 300.0)]
     complete_max_seconds: f64,
+
+    #[arg(
+        long,
+        env = "OUTLET_BACKGROUND_TERMINAL_TTL_SECONDS",
+        default_value_t = 86_400.0
+    )]
+    background_terminal_ttl_seconds: f64,
 }
 
 #[tokio::main]
@@ -58,9 +68,11 @@ async fn main() -> Result<()> {
         config.runner_id = runner_id;
     }
     config.max_concurrency = args.max_concurrency.max(1);
+    config.background_control_capacity = args.background_control_capacity.max(1);
     config.poll_max_wait_seconds = args.poll_max_wait.max(0.0);
     config.complete_max_retries = args.complete_max_retries.max(1);
     config.complete_max_seconds = args.complete_max_seconds.max(1.0);
+    config.background_terminal_ttl_seconds = args.background_terminal_ttl_seconds;
 
     let runner = OutletRunner::new(ShellOutlet::new(), config)?;
     let cancel = CancellationToken::new();

@@ -37,7 +37,35 @@ defmodule IntellectualClub.DataCase do
     pid =
       Ecto.Adapters.SQL.Sandbox.start_owner!(IntellectualClub.Repo, shared: not tags[:async])
 
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    on_exit(fn ->
+      IntellectualClub.DataCase.stop_background_test_tasks()
+      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+    end)
+  end
+
+  @doc false
+  def stop_background_test_tasks do
+    terminate_dynamic_children(IntellectualClub.BackgroundTasks.Supervisor)
+    terminate_dynamic_children(IntellectualClub.BackgroundTasks.ExecutionSupervisor)
+    :ok
+  end
+
+  defp terminate_dynamic_children(supervisor) do
+    if Process.whereis(supervisor) do
+      supervisor
+      |> DynamicSupervisor.which_children()
+      |> Enum.each(fn
+        {_id, pid, _type, _modules} when is_pid(pid) ->
+          _ = DynamicSupervisor.terminate_child(supervisor, pid)
+
+        _other ->
+          :ok
+      end)
+    end
+  rescue
+    _exception -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """

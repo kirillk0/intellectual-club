@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.OutletControllerTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Files
   alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.{ExecutionContext, ToolFunction, ToolInstance}
@@ -13,6 +14,7 @@ defmodule IntellectualClubWeb.OutletControllerTest do
 
   setup do
     Runtime.reset!()
+    on_exit(&Runtime.reset!/0)
     :ok
   end
 
@@ -486,6 +488,130 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert List.first(get_resp_header(conn, "content-disposition")) =~ "download.txt"
   end
 
+  test "POST /api/outlet/calls/:call_id/files accepts a durable background task id after its control call completes" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Durable upload outlet",
+        secrets: %{"token" => "runner-durable-upload"}
+      })
+
+    runner_payload = %{
+      "runner_id" => "runner-durable-upload",
+      "runner_session_id" => "runner-durable-upload-session",
+      "capacity" => 1,
+      "control_capacity" => 1,
+      "max_wait_seconds" => 0
+    }
+
+    discovery_response = poll_outlet("runner-durable-upload", runner_payload)
+    [discovery_task] = discovery_response["tasks"]
+
+    assert %{"status" => "ok"} =
+             complete_outlet("runner-durable-upload", %{
+               "call_id" => discovery_task["call_id"],
+               "runner_id" => runner_payload["runner_id"],
+               "runner_session_id" => runner_payload["runner_session_id"],
+               "status" => "done",
+               "result_raw" => %{"tools" => []}
+             })
+
+    background_task = create_outlet_background_task!(actor, tool_instance)
+
+    control_waiter =
+      Task.async(fn ->
+        Runtime.background_control_and_wait(
+          tool_instance,
+          "background_start",
+          background_task.id,
+          "run_command",
+          %{"command" => "echo durable"},
+          nil,
+          nil
+        )
+      end)
+
+    control_response =
+      poll_outlet(
+        "runner-durable-upload",
+        Map.merge(runner_payload, %{
+          "capacity" => 0,
+          "control_capacity" => 1,
+          "max_wait_seconds" => 1
+        })
+      )
+
+    [control_task] = control_response["tasks"]
+    assert control_task["operation"] == "background_start"
+    assert control_task["background_task_id"] == background_task.id
+    assert control_task["call_id"] != background_task.id
+
+    assert %{"status" => "ok"} =
+             complete_outlet("runner-durable-upload", %{
+               "call_id" => control_task["call_id"],
+               "runner_id" => runner_payload["runner_id"],
+               "runner_session_id" => runner_payload["runner_session_id"],
+               "status" => "done",
+               "result_raw" => %{
+                 "background_task_id" => background_task.id,
+                 "status" => "running",
+                 "progress" => [],
+                 "next_cursor" => "0"
+               }
+             })
+
+    assert {:ok, _result} = Task.await(control_waiter, 5_000)
+
+    assert {:error, :not_found} =
+             Runtime.fetch_running_call(tool_instance, control_task["call_id"])
+
+    response =
+      build_conn()
+      |> put_req_header("authorization", "Bearer runner-durable-upload")
+      |> put_req_header("content-type", "text/plain")
+      |> post(
+        "/api/outlet/calls/#{background_task.id}/files?filename=durable.txt",
+        "durable payload"
+      )
+      |> json_response(200)
+
+    assert response["file"]["filename"] == "durable.txt"
+    assert response["file"]["size_bytes"] == 15
+  end
+
+  test "GET /api/outlet/calls/:call_id/files/:file_id uses persisted background execution context" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Durable download outlet",
+        secrets: %{"token" => "runner-durable-download"}
+      })
+
+    {:ok, file} =
+      Files.create_from_binary("durable-download.txt", "text/plain", "durable download payload")
+
+    background_task =
+      create_outlet_background_task!(actor, tool_instance, %{
+        execution_context: %{
+          "owner_id" => actor.id,
+          "available_file_external_ids" => [file.external_id]
+        }
+      })
+
+    assert {:error, :not_found} = Runtime.fetch_running_call(tool_instance, background_task.id)
+
+    conn =
+      build_conn()
+      |> put_req_header("authorization", "Bearer runner-durable-download")
+      |> get("/api/outlet/calls/#{background_task.id}/files/#{file.external_id}")
+
+    assert response(conn, 200) == "durable download payload"
+    assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
+    assert List.first(get_resp_header(conn, "content-disposition")) =~ "durable-download.txt"
+  end
+
   defp reset_runtime! do
     :sys.replace_state(Runtime, fn _state -> %{instances: %{}, waiter_index: %{}} end)
   end
@@ -571,5 +697,28 @@ defmodule IntellectualClubWeb.OutletControllerTest do
       actor: actor
     )
     |> Ash.create!()
+  end
+
+  defp create_outlet_background_task!(actor, tool_instance, attrs \\ %{}) do
+    BackgroundTask
+    |> Ash.Changeset.for_create(
+      :create,
+      Map.merge(
+        %{
+          kind: "outlet_function",
+          adapter: "outlet",
+          status: :running,
+          function_name: "run_command",
+          arguments: %{"command" => "echo durable"},
+          execution_context: %{"owner_id" => actor.id},
+          runner_ref: %{},
+          tool_instance_id: tool_instance.id,
+          started_at: DateTime.utc_now()
+        },
+        attrs
+      ),
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 end

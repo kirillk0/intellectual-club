@@ -599,8 +599,11 @@ impl OutletDesktopApp {
     fn stop_profile(&mut self, profile_id: &str) {
         if let Some(handle) = self.runners.remove(profile_id) {
             handle.cancel.cancel();
-            handle.runner_join.abort();
-            handle.event_join.abort();
+            self.runtime.spawn(async move {
+                let _ = handle.runner_join.await;
+                handle.event_join.abort();
+                let _ = handle.event_join.await;
+            });
         }
         let status = self.statuses.entry(profile_id.to_string()).or_default();
         status.running = false;
@@ -774,11 +777,21 @@ impl eframe::App for OutletDesktopApp {
 
 impl Drop for OutletDesktopApp {
     fn drop(&mut self) {
-        for (_id, handle) in self.runners.drain() {
+        let handles = self
+            .runners
+            .drain()
+            .map(|(_id, handle)| handle)
+            .collect::<Vec<_>>();
+        for handle in &handles {
             handle.cancel.cancel();
-            handle.runner_join.abort();
-            handle.event_join.abort();
         }
+        self.runtime.block_on(async move {
+            for handle in handles {
+                let _ = handle.runner_join.await;
+                handle.event_join.abort();
+                let _ = handle.event_join.await;
+            }
+        });
     }
 }
 

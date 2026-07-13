@@ -4,6 +4,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
@@ -63,6 +64,64 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert GenerationSupervisor.get_generation_state(parent_message.id) == :not_found
     assert GenerationSupervisor.get_generation_state(fork_message.id) == :not_found
     assert GenerationSupervisor.get_generation_state(handoff_message.id) == :not_found
+  end
+
+  test "canceling a parent skips an active background fork root" do
+    %{user: actor} = user_fixture()
+    test_pid = self()
+
+    parent_chat = create_chat!(actor)
+    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
+
+    fork_chat =
+      create_chat!(actor, %{
+        note: "Background fork child",
+        parent_chat_id: parent_chat.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    fork_message = start_blocking_generation!(fork_chat, actor, test_pid, "Background fork")
+
+    _task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "fork",
+          adapter: "fork",
+          status: :running,
+          function_name: "fork",
+          arguments: %{"task" => "Background fork"},
+          execution_context: %{},
+          source_chat_id: parent_chat.id,
+          source_message_id: parent_message.id,
+          target_chat_id: fork_chat.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    parent_message_id = parent_message.id
+    fork_message_id = fork_message.id
+
+    assert_receive {:adapter_started, ^parent_message_id}, 1_000
+    assert_receive {:adapter_started, ^fork_message_id}, 1_000
+
+    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
+    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
+    assert Ash.get!(ChatMessage, fork_message.id, actor: actor).status == :generating
+
+    assert {:ok, %{status: :generating}} =
+             GenerationSupervisor.get_generation_state(fork_message.id)
+
+    assert :ok =
+             GenerationSupervisor.cancel_generation(fork_message.id,
+               include_background_tasks?: true
+             )
+
+    assert wait_for_status!(fork_message.id, actor, :canceled).status == :canceled
   end
 
   test "prepared generation preserves its message while canceling other orphans" do

@@ -114,6 +114,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
     has_many :functions, IntellectualClub.Tools.ToolFunction do
       destination_attribute(:tool_instance_id)
+      filter(expr(discovery_available == true))
       public?(true)
     end
   end
@@ -286,6 +287,9 @@ defmodule IntellectualClub.Tools.ToolInstance do
               description: function.description,
               parameters_schema: function.parameters_schema,
               enabled: function.enabled,
+              discovery_available: function.discovery_available,
+              execution_mode: function.execution_mode,
+              target_function_name: function.target_function_name,
               discovered_at: function.discovered_at
             }
           end)

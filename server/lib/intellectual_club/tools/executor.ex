@@ -7,6 +7,7 @@ defmodule IntellectualClub.Tools.Executor do
   """
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.RateLimiter
@@ -15,6 +16,8 @@ defmodule IntellectualClub.Tools.Executor do
 
   @null_byte <<0>>
   @truncation_notice "Truncated because length limit"
+  @terminal_result_notice "BACKGROUND TASK IS TERMINAL. THE TERMINAL RESULT WAS BOUNDED " <>
+                            "TO THE OUTPUT LIMIT; DO NOT POLL AGAIN TO RETRIEVE THE OMITTED PART."
 
   require Ash.Query
 
@@ -64,11 +67,20 @@ defmodule IntellectualClub.Tools.Executor do
 
   defp execute_tool_instance(tool_instance, function_name, args, execution_context) do
     result =
-      case function_enabled_for_execution(tool_instance, function_name, execution_context) do
-        :ok ->
+      case function_execution_spec(tool_instance, function_name, execution_context) do
+        {:ok, execution_spec} ->
           case RateLimiter.await_slot(tool_instance) do
-            :ok -> execute_driver(tool_instance, function_name, args, execution_context)
-            {:error, :busy} -> busy_result()
+            :ok ->
+              execute_by_mode(
+                execution_spec,
+                tool_instance,
+                function_name,
+                args,
+                execution_context
+              )
+
+            {:error, :busy} ->
+              busy_result()
           end
 
         {:error, message} ->
@@ -87,21 +99,58 @@ defmodule IntellectualClub.Tools.Executor do
         _ -> 20_000
       end
 
-    {truncated_text, truncated?} = truncate_text(result.text, max_output_tokens)
+    limit_execution_result(result, max_output_tokens)
+  end
 
-    raw =
-      if truncated? do
-        truncate_raw(result.raw, truncated_text)
-      else
-        result.raw
-      end
+  defp execute_by_mode(
+         %{execution_mode: :background, target_function_name: target_function_name},
+         tool_instance,
+         _function_name,
+         args,
+         execution_context
+       )
+       when is_binary(target_function_name) and target_function_name != "" do
+    case BackgroundTasks.start_tool(
+           tool_instance,
+           target_function_name,
+           args || %{},
+           execution_context
+         ) do
+      {:ok, value} -> ExecutionResult.normalize(value)
+      {:error, reason} -> execution_error(reason)
+    end
+  end
+
+  defp execute_by_mode(
+         %{execution_mode: :background},
+         _tool_instance,
+         function_name,
+         _args,
+         _execution_context
+       ) do
+    message =
+      "Background tool function `#{function_name}` has no valid target function metadata."
 
     %ExecutionResult{
-      text: truncated_text,
-      raw: raw,
-      media: result.media,
-      artifacts: result.artifacts
+      text: message,
+      raw: %{
+        "isError" => true,
+        "error" => message,
+        "code" => "invalid_background_function_metadata"
+      },
+      media: [],
+      artifacts: []
     }
+  end
+
+  defp execute_by_mode(
+         _execution_spec,
+         tool_instance,
+         function_name,
+         args,
+         execution_context
+       ) do
+    execute_driver(tool_instance, function_name, args, execution_context)
   end
 
   defp execute_driver(tool_instance, function_name, args, execution_context) do
@@ -139,30 +188,37 @@ defmodule IntellectualClub.Tools.Executor do
     end
   end
 
-  defp function_enabled_for_execution(tool_instance, function_name, execution_context) do
+  defp function_execution_spec(tool_instance, function_name, execution_context) do
     tool_type = tool_instance.type |> to_string() |> String.trim()
     driver = Registry.driver_for_type!(tool_type)
 
     case driver.functions_mode() do
       :fixed ->
-        if fixed_function_enabled?(driver, tool_instance, function_name, execution_context) do
-          :ok
-        else
-          {:error, "Tool function `#{function_name}` is disabled."}
-        end
+        fixed_function_execution_spec(
+          driver,
+          tool_instance,
+          function_name,
+          execution_context
+        )
 
       :stored ->
-        if stored_function_enabled?(tool_instance, function_name, execution_context) do
-          :ok
-        else
-          {:error, "Tool function `#{function_name}` is disabled."}
-        end
+        stored_function_execution_spec(tool_instance, function_name, execution_context)
     end
   rescue
-    _exception -> :ok
+    _exception ->
+      if is_nil(execution_actor(execution_context)) do
+        {:ok, %{execution_mode: :direct, target_function_name: nil}}
+      else
+        {:error, "Tool function `#{function_name}` is unavailable."}
+      end
   end
 
-  defp fixed_function_enabled?(driver, tool_instance, function_name, execution_context) do
+  defp fixed_function_execution_spec(
+         driver,
+         tool_instance,
+         function_name,
+         execution_context
+       ) do
     fixed =
       if function_exported?(driver, :fixed_functions, 1) do
         driver.fixed_functions(tool_instance)
@@ -172,23 +228,76 @@ defmodule IntellectualClub.Tools.Executor do
 
     case fixed do
       nil ->
-        true
+        {:ok, %{execution_mode: :direct, target_function_name: nil}}
 
       fixed ->
         default_enabled = fixed_function_default_enabled?(fixed)
 
-        case fixed_function_override(tool_instance, function_name, execution_context) do
-          enabled when is_boolean(enabled) -> enabled
-          _other -> default_enabled
+        enabled =
+          case fixed_function_override(tool_instance, function_name, execution_context) do
+            value when is_boolean(value) -> value
+            _other -> default_enabled
+          end
+
+        if enabled do
+          {:ok, normalized_execution_spec(fixed)}
+        else
+          {:error, "Tool function `#{function_name}` is disabled."}
         end
     end
   end
 
-  defp stored_function_enabled?(tool_instance, function_name, execution_context) do
-    case fixed_function_override(tool_instance, function_name, execution_context) do
-      false -> false
-      _other -> true
+  defp stored_function_execution_spec(
+         %{id: tool_instance_id},
+         function_name,
+         execution_context
+       )
+       when is_integer(tool_instance_id) and is_binary(function_name) do
+    actor = execution_actor(execution_context)
+
+    if is_nil(actor) do
+      {:ok, %{execution_mode: :direct, target_function_name: nil}}
+    else
+      ToolFunction
+      |> Ash.Query.filter(tool_instance_id == ^tool_instance_id and name == ^function_name)
+      |> Ash.Query.select([
+        :enabled,
+        :discovery_available,
+        :execution_mode,
+        :target_function_name
+      ])
+      |> Ash.Query.limit(1)
+      |> Ash.read_one(actor: actor)
+      |> case do
+        {:ok, %ToolFunction{enabled: true, discovery_available: true} = function} ->
+          {:ok, normalized_execution_spec(function)}
+
+        _other ->
+          {:error, "Tool function `#{function_name}` is disabled."}
+      end
     end
+  end
+
+  defp stored_function_execution_spec(_tool_instance, function_name, _execution_context) do
+    {:error, "Tool function `#{function_name}` is disabled."}
+  end
+
+  defp normalized_execution_spec(raw) when is_map(raw) do
+    execution_mode =
+      case Map.get(raw, "execution_mode", Map.get(raw, :execution_mode)) do
+        value when value in [:background, "background"] -> :background
+        _other -> :direct
+      end
+
+    target_function_name =
+      raw
+      |> Map.get("target_function_name", Map.get(raw, :target_function_name))
+      |> case do
+        value when is_binary(value) -> String.trim(value)
+        _other -> nil
+      end
+
+    %{execution_mode: execution_mode, target_function_name: target_function_name}
   end
 
   defp fixed_function_override(%{id: tool_instance_id}, function_name, execution_context)
@@ -247,6 +356,17 @@ defmodule IntellectualClub.Tools.Executor do
     }
   end
 
+  defp execution_error(reason) do
+    error_text = to_string(reason || "Tool execution failed")
+
+    %ExecutionResult{
+      text: error_text,
+      raw: %{"isError" => true, "error" => error_text},
+      media: [],
+      artifacts: []
+    }
+  end
+
   @doc false
   @spec sanitize_execution_result(ExecutionResult.t()) :: ExecutionResult.t()
   def sanitize_execution_result(%ExecutionResult{} = result) do
@@ -255,6 +375,34 @@ defmodule IntellectualClub.Tools.Executor do
       raw: sanitize_term(result.raw),
       media: sanitize_term(result.media),
       artifacts: sanitize_term(result.artifacts)
+    }
+  end
+
+  @doc false
+  @spec limit_execution_result(ExecutionResult.t(), non_neg_integer()) :: ExecutionResult.t()
+  def limit_execution_result(%ExecutionResult{} = result, max_output_tokens)
+      when is_integer(max_output_tokens) and max_output_tokens >= 0 do
+    {truncated_text, truncated?} = truncate_text(result.text, max_output_tokens)
+
+    {text, raw} =
+      if truncated? do
+        case bounded_terminal_background_result(result.raw, max_output_tokens) do
+          {:ok, text, raw} ->
+            {text, raw}
+
+          :not_terminal_result ->
+            text = background_truncation_text(result.raw, max_output_tokens) || truncated_text
+            {text, truncate_raw(result.raw, text)}
+        end
+      else
+        {result.text, result.raw}
+      end
+
+    %ExecutionResult{
+      text: text,
+      raw: raw,
+      media: result.media,
+      artifacts: result.artifacts
     }
   end
 
@@ -321,12 +469,344 @@ defmodule IntellectualClub.Tools.Executor do
     end
   end
 
+  defp bounded_terminal_background_result(raw, max_output_tokens) when is_map(raw) do
+    with %{} = snapshot <- Map.get(raw, "background_task"),
+         "completed" <- Map.get(snapshot, "status"),
+         %{} = result <- Map.get(snapshot, "result"),
+         true <- terminal_progress_page_consumable?(snapshot, result, max_output_tokens) do
+      {bounded_snapshot, text} =
+        fit_bounded_terminal_snapshot(snapshot, result, max_output_tokens)
+
+      {:ok, text, bounded_terminal_raw(raw, bounded_snapshot, text)}
+    else
+      _other -> :not_terminal_result
+    end
+  end
+
+  defp bounded_terminal_background_result(_raw, _max_output_tokens),
+    do: :not_terminal_result
+
+  defp terminal_progress_page_consumable?(snapshot, result, max_output_tokens) do
+    progress = Map.get(snapshot, "progress", [])
+
+    progress == [] or
+      snapshot
+      |> terminal_snapshot(terminal_result_summary(result, ""))
+      |> terminal_snapshot_text()
+      |> TokenCounter.estimate()
+      |> Kernel.<=(max_output_tokens)
+  end
+
+  defp fit_bounded_terminal_snapshot(snapshot, result, max_output_tokens) do
+    result_text = result |> Map.get("text", "") |> to_string()
+    max_preview_tokens = min(TokenCounter.estimate(result_text), max_output_tokens)
+
+    best =
+      fit_terminal_preview(
+        snapshot,
+        result,
+        result_text,
+        max_output_tokens,
+        0,
+        max_preview_tokens,
+        nil
+      )
+
+    case best do
+      {bounded_snapshot, text} ->
+        {bounded_snapshot, text}
+
+      nil ->
+        bounded_snapshot = terminal_snapshot(snapshot, terminal_result_summary(result, ""))
+        {bounded_snapshot, minimum_terminal_result_notice(snapshot)}
+    end
+  end
+
+  defp fit_terminal_preview(
+         _snapshot,
+         _result,
+         _result_text,
+         _max_output_tokens,
+         low,
+         high,
+         best
+       )
+       when low > high,
+       do: best
+
+  defp fit_terminal_preview(
+         snapshot,
+         result,
+         result_text,
+         max_output_tokens,
+         low,
+         high,
+         best
+       ) do
+    preview_tokens = div(low + high, 2)
+    preview = take_tokens(result_text, preview_tokens)
+    bounded_snapshot = terminal_snapshot(snapshot, terminal_result_summary(result, preview))
+    text = terminal_snapshot_text(bounded_snapshot)
+
+    if TokenCounter.estimate(text) <= max_output_tokens do
+      fit_terminal_preview(
+        snapshot,
+        result,
+        result_text,
+        max_output_tokens,
+        preview_tokens + 1,
+        high,
+        {bounded_snapshot, text}
+      )
+    else
+      fit_terminal_preview(
+        snapshot,
+        result,
+        result_text,
+        max_output_tokens,
+        low,
+        preview_tokens - 1,
+        best
+      )
+    end
+  end
+
+  defp terminal_snapshot(snapshot, bounded_result) do
+    snapshot
+    |> Map.take([
+      "background_task_id",
+      "kind",
+      "status",
+      "cancel_requested",
+      "target_chat_id",
+      "status_detail",
+      "url",
+      "progress",
+      "next_cursor",
+      "error",
+      "created_at",
+      "started_at",
+      "finished_at",
+      "updated_at"
+    ])
+    |> Map.put("result", bounded_result)
+    |> Map.put("response_truncated", true)
+    |> Map.put("page_consumed", true)
+    |> Map.put("terminal_result_truncated", true)
+  end
+
+  defp terminal_result_summary(result, preview) do
+    original_text = result |> Map.get("text", "") |> to_string()
+    media = result |> Map.get("media", []) |> List.wrap()
+    artifacts = result |> Map.get("artifacts", []) |> List.wrap()
+
+    %{
+      "text" => preview,
+      "raw" => compact_terminal_raw(Map.get(result, "raw")),
+      "media" => [],
+      "artifacts" => [],
+      "truncated" => true,
+      "text_truncated" => preview != original_text,
+      "original_text_estimated_tokens" => TokenCounter.estimate(original_text),
+      "media_count" => length(media),
+      "artifacts_count" => length(artifacts)
+    }
+  end
+
+  defp compact_terminal_raw(%{} = raw) do
+    entries =
+      raw
+      |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+      |> Enum.take(24)
+
+    compact =
+      Map.new(entries, fn {key, value} ->
+        {to_string(key), compact_terminal_raw_value(value)}
+      end)
+
+    compact
+    |> Map.put("background_result_truncated", true)
+    |> maybe_put_omitted_key_count(map_size(raw) - length(entries))
+  end
+
+  defp compact_terminal_raw(_raw), do: %{"background_result_truncated" => true}
+
+  defp compact_terminal_raw_value(value)
+       when is_boolean(value) or is_number(value) or is_nil(value),
+       do: value
+
+  defp compact_terminal_raw_value(value) when is_binary(value) do
+    if byte_size(value) <= 256 do
+      value
+    else
+      %{
+        "truncated" => true,
+        "preview" => take_valid_prefix(value, 256),
+        "original_bytes" => byte_size(value)
+      }
+    end
+  end
+
+  defp compact_terminal_raw_value(value) when is_map(value) do
+    %{"omitted" => true, "type" => "object", "key_count" => map_size(value)}
+  end
+
+  defp compact_terminal_raw_value(value) when is_list(value) do
+    %{"omitted" => true, "type" => "array", "item_count" => length(value)}
+  end
+
+  defp compact_terminal_raw_value(value) do
+    %{"omitted" => true, "type" => value |> inspect(limit: 1) |> take_valid_prefix(64)}
+  end
+
+  defp maybe_put_omitted_key_count(map, count) when count > 0,
+    do: Map.put(map, "omitted_key_count", count)
+
+  defp maybe_put_omitted_key_count(map, _count), do: map
+
+  defp terminal_snapshot_text(snapshot) do
+    @terminal_result_notice <>
+      "\n\nBackground task snapshot:\n" <> Jason.encode!(snapshot, pretty: true)
+  end
+
+  defp minimum_terminal_result_notice(snapshot) do
+    task_id = Map.get(snapshot, "background_task_id", "unknown")
+
+    "BACKGROUND_TASK_TERMINAL; RESULT_BOUNDED; PAGE_CONSUMED; DO_NOT_POLL_FOR_OMITTED_RESULT; " <>
+      "ID=#{task_id}."
+  end
+
+  defp bounded_terminal_raw(raw, bounded_snapshot, text) do
+    out = %{
+      "content" => [%{"type" => "text", "text" => text}],
+      "truncated" => true,
+      "truncation_notice" => @truncation_notice,
+      "terminal_result_truncated" => true,
+      "background_task" => bounded_snapshot,
+      "background_task_request" => Map.get(raw, "background_task_request", %{})
+    }
+
+    case Map.get(raw, "isError") do
+      value when is_boolean(value) -> Map.put(out, "isError", value)
+      _other -> out
+    end
+  end
+
+  defp background_truncation_text(raw, max_output_tokens) when is_map(raw) do
+    with %{} = snapshot <- Map.get(raw, "background_task"),
+         %{} = request <- Map.get(raw, "background_task_request") do
+      retry = background_retry(request)
+      minimum_notice = minimum_retry_notice(request)
+
+      text =
+        retry_notice(request) <>
+          "\n\n" <>
+          Jason.encode!(compact_background_snapshot(snapshot, retry), pretty: true)
+
+      if TokenCounter.estimate(minimum_notice) > max_output_tokens do
+        minimum_notice
+      else
+        text
+        |> truncate_text(max_output_tokens)
+        |> elem(0)
+      end
+    else
+      _other -> nil
+    end
+  end
+
+  defp background_truncation_text(_raw, _max_output_tokens), do: nil
+
+  defp minimum_retry_notice(%{"operation" => "cancel"}) do
+    "CANCEL_REQUESTED; CHECK_STATUS_WITHOUT_CURSOR; DO_NOT_ADVANCE."
+  end
+
+  defp minimum_retry_notice(%{"cursor" => nil}) do
+    "PAGE_NOT_CONSUMED; RETRY_WITHOUT_CURSOR; DO_NOT_ADVANCE."
+  end
+
+  defp minimum_retry_notice(_request) do
+    "PAGE_NOT_CONSUMED; RETRY_SAME_CURSOR; DO_NOT_ADVANCE."
+  end
+
+  defp retry_notice(%{"operation" => "cancel"}) do
+    "CANCELLATION WAS REQUESTED. CHECK STATUS WITHOUT A CURSOR; DO NOT ADVANCE. " <>
+      "The response page was not consumed because it exceeded the output limit."
+  end
+
+  defp retry_notice(%{"cursor" => nil}) do
+    "RETRY THE STATUS CHECK WITHOUT A CURSOR; DO NOT ADVANCE. " <>
+      "The response page was not consumed because it exceeded the output limit."
+  end
+
+  defp retry_notice(_request) do
+    "RETRY THE STATUS CHECK WITH THE SAME CURSOR; DO NOT ADVANCE. " <>
+      "The response page was not consumed because it exceeded the output limit."
+  end
+
+  defp background_retry(%{"operation" => "cancel"}) do
+    %{
+      "operation" => "check_background_task_status",
+      "cursor" => nil,
+      "omit_cursor" => true
+    }
+  end
+
+  defp background_retry(request) do
+    cursor = Map.get(request, "cursor")
+
+    %{
+      "operation" => "check_background_task_status",
+      "cursor" => cursor,
+      "omit_cursor" => is_nil(cursor)
+    }
+  end
+
+  defp compact_background_snapshot(snapshot, retry) do
+    snapshot
+    |> Map.take([
+      "background_task_id",
+      "kind",
+      "status",
+      "cancel_requested",
+      "target_chat_id",
+      "error",
+      "status_detail",
+      "url",
+      "created_at",
+      "started_at",
+      "finished_at",
+      "updated_at"
+    ])
+    |> Map.put("progress", [])
+    |> Map.put("response_truncated", true)
+    |> Map.put("page_consumed", false)
+    |> Map.put("retry", retry)
+  end
+
   defp truncate_raw(raw, truncated_text) when is_map(raw) do
     out = %{
       "content" => [%{"type" => "text", "text" => truncated_text}],
       "truncated" => true,
       "truncation_notice" => @truncation_notice
     }
+
+    out =
+      case Map.get(raw, "background_task") do
+        %{} = snapshot ->
+          request = Map.get(raw, "background_task_request", %{})
+          retry = background_retry(request)
+
+          compact =
+            compact_background_snapshot(snapshot, retry)
+
+          out
+          |> Map.put("background_task", compact)
+          |> Map.put("background_task_request", request)
+
+        _other ->
+          out
+      end
 
     case Map.get(raw, "isError") do
       value when is_boolean(value) -> Map.put(out, "isError", value)

@@ -12,6 +12,7 @@ config :intellectual_club,
   generators: [timestamp_type: :utc_datetime],
   ash_domains: [
     IntellectualClub.Accounts,
+    IntellectualClub.BackgroundTasks,
     IntellectualClub.Bots,
     IntellectualClub.Chat,
     IntellectualClub.Files,

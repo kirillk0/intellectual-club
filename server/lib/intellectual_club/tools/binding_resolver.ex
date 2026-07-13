@@ -366,7 +366,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
             name: fn_record.name,
             description: fn_record.description || "",
             parameters_schema: fn_record.parameters_schema || %{},
-            enabled: fn_record.enabled
+            enabled: fn_record.enabled and fn_record.discovery_available
           }
         end)
 

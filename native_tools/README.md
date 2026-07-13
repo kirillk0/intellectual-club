@@ -105,9 +105,35 @@ Optional settings:
 - `OUTLET_RUNNER_ID` or `--runner-id`
 - `OUTLET_LOG_LEVEL` or `--log-level`
 - `OUTLET_MAX_CONCURRENCY` or `--max-concurrency`
+- `OUTLET_BACKGROUND_CONTROL_CAPACITY` or `--background-control-capacity`
 - `OUTLET_POLL_MAX_WAIT_SECONDS` or `--poll-max-wait`
 - `OUTLET_COMPLETE_MAX_RETRIES` or `--complete-max-retries`
 - `OUTLET_COMPLETE_MAX_SECONDS` or `--complete-max-seconds`
+- `OUTLET_BACKGROUND_TERMINAL_TTL_SECONDS` or `--background-terminal-ttl-seconds` (must be greater than zero)
 - `SHELL_OUTLET_MAX_STREAM_CHARS`
 - `SHELL_OUTLET_MAX_SUMMARY_CHARS`
 - `SHELL_OUTLET_WINDOWS_FORCE_UTF8`
+
+## Background Tool Calls
+
+The outlet protocol accepts `background_start`, `background_status`, and
+`background_cancel` poll operations in addition to the default `execute` operation.
+The server supplies a stable `background_task_id`; starting the same id again is
+idempotent only when the function and arguments are unchanged.
+
+Background execution is kept in memory by `outlet-core`. Foreground calls and running
+background jobs share the configured provider concurrency limit, while status and
+cancel control calls do not consume a provider slot. The runner reports a separate
+`control_capacity` poll lane so those operations remain deliverable while provider
+execution is saturated. Completed, failed, and canceled entries remain queryable for
+24 hours by default. The TTL is configurable with
+`OUTLET_BACKGROUND_TERMINAL_TTL_SECONDS` or
+`--background-terminal-ttl-seconds`. Runner process restarts intentionally do not
+recover in-memory background jobs. After a terminal result expires, the runner keeps
+the request digest for the rest of the runner session: replaying that UUID cannot run
+the side effect again and returns the stable `outlet_task_expired` error.
+
+`outlet-shell` advertises background support for `run_command`. Its stdout and stderr
+are exposed as cursor-based progress entries, and cancellation terminates the command
+process tree. The in-memory progress log is capped at 400,000 characters and reports a
+truncation marker and total observed character count when the cap is reached.

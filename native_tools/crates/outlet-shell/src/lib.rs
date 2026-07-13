@@ -3,6 +3,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -13,7 +14,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tracing::info;
 
 const POSIX_SHELL_BASENAMES: &[&str] = &["bash", "zsh", "sh", "dash", "ksh"];
@@ -57,11 +58,26 @@ impl ShellOutlet {
     pub async fn run_command_from_value(&self, args: Value) -> Result<ToolResult> {
         let args: RunCommandArgs =
             serde_json::from_value(args).context("invalid run_command arguments")?;
-        let (text, raw) = self.run_command(args).await?;
+        let (text, raw) = self.run_command(args, None).await?;
         Ok(ToolResult::new(text, raw))
     }
 
-    async fn run_command(&self, args: RunCommandArgs) -> Result<(String, Value)> {
+    async fn run_command_from_value_with_context(
+        &self,
+        args: Value,
+        context: &CallContext,
+    ) -> Result<ToolResult> {
+        let args: RunCommandArgs =
+            serde_json::from_value(args).context("invalid run_command arguments")?;
+        let (text, raw) = self.run_command(args, Some(context)).await?;
+        Ok(ToolResult::new(text, raw))
+    }
+
+    async fn run_command(
+        &self,
+        args: RunCommandArgs,
+        context: Option<&CallContext>,
+    ) -> Result<(String, Value)> {
         let argv = args
             .argv
             .unwrap_or_default()
@@ -80,6 +96,12 @@ impl ShellOutlet {
             shlex_join(&argv)
         };
         info!(command = %command_display, "shell command");
+
+        let max_stream_chars =
+            load_env_usize("SHELL_OUTLET_MAX_STREAM_CHARS", MAX_STREAM_CHARS_DEFAULT);
+        let max_summary_chars =
+            load_env_usize("SHELL_OUTLET_MAX_SUMMARY_CHARS", MAX_SUMMARY_CHARS_DEFAULT);
+        let max_capture_bytes = max_stream_chars.saturating_mul(4);
 
         let mut merged_env = env::vars().collect::<HashMap<String, String>>();
         if let Some(env_map) = args.env {
@@ -121,6 +143,7 @@ impl ShellOutlet {
         }
 
         let mut command = Command::new(&command_to_spawn);
+        command.kill_on_drop(true);
         command
             .args(&spawn_args)
             .stdin(Stdio::piped())
@@ -142,58 +165,65 @@ impl ShellOutlet {
         let mut child = command
             .spawn()
             .with_context(|| format!("failed to spawn command: {command_display}"))?;
+        let mut process_group = ProcessGroupGuard::new(child.id());
 
-        let stdin_task = write_stdin(child.stdin.take(), args.stdin.unwrap_or_default());
-        let stdout_task = read_pipe(child.stdout.take());
-        let stderr_task = read_pipe(child.stderr.take());
+        let mut stdin_task = write_stdin(child.stdin.take(), args.stdin.unwrap_or_default());
+        let stdout_capture = PipeCapture::new(max_capture_bytes);
+        let stderr_capture = PipeCapture::new(max_capture_bytes);
+        let mut stdout_task = read_pipe(
+            child.stdout.take(),
+            context.cloned(),
+            "stdout",
+            stdout_capture.clone(),
+        );
+        let mut stderr_task = read_pipe(
+            child.stderr.take(),
+            context.cloned(),
+            "stderr",
+            stderr_capture.clone(),
+        );
+        let mut task_guard = AbortTasksGuard::new([
+            stdin_task.abort_handle(),
+            stdout_task.abort_handle(),
+            stderr_task.abort_handle(),
+        ]);
 
         let timeout = args
             .timeout_seconds
             .and_then(|seconds| (seconds > 0).then_some(Duration::from_secs(seconds)));
-        let mut timed_out = false;
+        let (status, timed_out, wait_canceled) =
+            wait_for_command(&mut child, process_group.id(), timeout, context).await?;
 
-        let status = if let Some(timeout) = timeout {
-            match tokio::time::timeout(timeout, child.wait()).await {
-                Ok(status) => status.context("failed waiting for command")?,
-                Err(_) => {
-                    timed_out = true;
-                    terminate_process_tree(&mut child, TIMEOUT_TERMINATE_GRACE_SECONDS).await;
-                    match tokio::time::timeout(
-                        Duration::from_secs_f64(TIMEOUT_DRAIN_SECONDS),
-                        child.wait(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(status)) => status,
-                        _ => {
-                            force_kill_process_tree(&mut child).await;
-                            child
-                                .wait()
-                                .await
-                                .context("failed waiting for killed command")?
-                        }
-                    }
-                }
-            }
-        } else {
-            child.wait().await.context("failed waiting for command")?
-        };
-
-        let _ = stdin_task.await;
-        let stdout = drain_output(stdout_task).await;
-        let stderr = drain_output(stderr_task).await;
+        finish_stdin(&mut stdin_task).await;
+        let drain = drain_output_tasks(
+            &mut stdout_task,
+            &mut stderr_task,
+            context,
+            Duration::from_secs_f64(TIMEOUT_DRAIN_SECONDS),
+        )
+        .await;
+        let canceled = wait_canceled || drain.canceled;
+        if drain.timed_out || drain.canceled {
+            force_kill_process_tree(&mut child, process_group.id()).await;
+        }
+        if drain.timed_out {
+            stderr_capture.append_notice(
+                b"[timeout] command output pipes did not close within the drain window.\n",
+            );
+        }
+        let stdout = stdout_capture.snapshot();
+        let stderr = stderr_capture.snapshot();
+        task_guard.disarm();
+        process_group.disarm();
 
         let exit_code = status.code().unwrap_or(if timed_out { -9 } else { -1 });
-        let (stdout_text, stdout_decode_error) = decode_utf8_output(&stdout);
-        let (stderr_text, stderr_decode_error) = decode_utf8_output(&stderr);
+        let (stdout_text, stdout_decode_error) = decode_utf8_output(&stdout.bytes);
+        let (stderr_text, stderr_decode_error) = decode_utf8_output(&stderr.bytes);
 
-        let max_stream_chars =
-            load_env_usize("SHELL_OUTLET_MAX_STREAM_CHARS", MAX_STREAM_CHARS_DEFAULT);
-        let max_summary_chars =
-            load_env_usize("SHELL_OUTLET_MAX_SUMMARY_CHARS", MAX_SUMMARY_CHARS_DEFAULT);
-
-        let (stdout_text, stdout_truncated) = truncate_text(&stdout_text, max_stream_chars);
-        let (stderr_text, stderr_truncated) = truncate_text(&stderr_text, max_stream_chars);
+        let (stdout_text, stdout_chars_truncated) = truncate_text(&stdout_text, max_stream_chars);
+        let (stderr_text, stderr_chars_truncated) = truncate_text(&stderr_text, max_stream_chars);
+        let stdout_truncated = stdout.truncated || stdout_chars_truncated;
+        let stderr_truncated = stderr.truncated || stderr_chars_truncated;
 
         let mut summary = stdout_text.clone();
         if !stderr_text.is_empty() {
@@ -221,11 +251,13 @@ impl ShellOutlet {
             "stdout_decode_error": stdout_decode_error,
             "stderr_decode_error": stderr_decode_error,
             "timed_out": timed_out,
+            "canceled": canceled,
+            "output_drain_timed_out": drain.timed_out,
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "summary_truncated": summary_truncated,
-            "stdout_bytes_total": stdout.len(),
-            "stderr_bytes_total": stderr.len(),
+            "stdout_bytes_total": stdout.bytes_total,
+            "stderr_bytes_total": stderr.bytes_total,
         });
 
         Ok((summary, raw))
@@ -338,7 +370,8 @@ impl ShellOutlet {
 impl ToolProvider for ShellOutlet {
     fn tools(&self) -> Vec<ToolSpec> {
         vec![
-            ToolSpec::new("run_command", SHELL_TOOL_DESCRIPTION, run_command_schema()),
+            ToolSpec::new("run_command", SHELL_TOOL_DESCRIPTION, run_command_schema())
+                .with_background_support(),
             ToolSpec::new(
                 "read_image",
                 "Read an image file from the runner filesystem and attach it as media input.",
@@ -374,7 +407,10 @@ impl ToolProvider for ShellOutlet {
         context: CallContext,
     ) -> Result<ToolResult> {
         match function_name {
-            "run_command" => self.run_command_from_value(arguments).await,
+            "run_command" => {
+                self.run_command_from_value_with_context(arguments, &context)
+                    .await
+            }
             "read_image" => self.read_image(context, arguments).await,
             "download_file" => self.download_file(context, arguments).await,
             "upload_file" => self.upload_file(context, arguments).await,
@@ -656,6 +692,112 @@ fn json_value_to_env_string(value: Value) -> String {
     }
 }
 
+struct AbortTasksGuard {
+    handles: Vec<AbortHandle>,
+    armed: bool,
+}
+
+impl AbortTasksGuard {
+    fn new(handles: impl IntoIterator<Item = AbortHandle>) -> Self {
+        Self {
+            handles: handles.into_iter().collect(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbortTasksGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            for handle in &self.handles {
+                handle.abort();
+            }
+        }
+    }
+}
+
+struct ProcessGroupGuard {
+    process_group_id: Option<u32>,
+    armed: bool,
+}
+
+impl ProcessGroupGuard {
+    fn new(process_group_id: Option<u32>) -> Self {
+        Self {
+            process_group_id,
+            armed: true,
+        }
+    }
+
+    fn id(&self) -> Option<u32> {
+        self.process_group_id
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            force_kill_process_tree_sync(self.process_group_id);
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    bytes_total: u64,
+    truncated: bool,
+}
+
+#[derive(Clone)]
+struct PipeCapture {
+    state: Arc<StdMutex<CapturedOutput>>,
+    max_bytes: usize,
+}
+
+impl PipeCapture {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            state: Arc::new(StdMutex::new(CapturedOutput::default())),
+            max_bytes,
+        }
+    }
+
+    fn push(&self, bytes: &[u8]) {
+        if let Ok(mut state) = self.state.lock() {
+            state.bytes_total = state.bytes_total.saturating_add(bytes.len() as u64);
+            let available = self.max_bytes.saturating_sub(state.bytes.len());
+            let retained = bytes.len().min(available);
+            state.bytes.extend_from_slice(&bytes[..retained]);
+            state.truncated |= retained < bytes.len();
+        }
+    }
+
+    fn append_notice(&self, notice: &[u8]) {
+        if let Ok(mut state) = self.state.lock() {
+            let available = self.max_bytes.saturating_sub(state.bytes.len());
+            let retained = notice.len().min(available);
+            state.bytes.extend_from_slice(&notice[..retained]);
+            state.truncated |= retained < notice.len();
+        }
+    }
+
+    fn snapshot(&self) -> CapturedOutput {
+        self.state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+}
+
 fn write_stdin(stdin: Option<tokio::process::ChildStdin>, input: String) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Some(mut stdin) = stdin {
@@ -666,24 +808,212 @@ fn write_stdin(stdin: Option<tokio::process::ChildStdin>, input: String) -> Join
     })
 }
 
-fn read_pipe<R>(reader: Option<R>) -> JoinHandle<Result<Vec<u8>, std::io::Error>>
+async fn wait_for_command(
+    child: &mut Child,
+    process_group_id: Option<u32>,
+    timeout: Option<Duration>,
+    context: Option<&CallContext>,
+) -> Result<(std::process::ExitStatus, bool, bool)> {
+    enum WaitTrigger {
+        Exited(std::io::Result<std::process::ExitStatus>),
+        TimedOut,
+        Canceled,
+    }
+
+    let trigger = if let Some(timeout) = timeout {
+        tokio::select! {
+            status = child.wait() => WaitTrigger::Exited(status),
+            _ = tokio::time::sleep(timeout) => WaitTrigger::TimedOut,
+            _ = wait_for_cancellation(context) => WaitTrigger::Canceled,
+        }
+    } else {
+        tokio::select! {
+            status = child.wait() => WaitTrigger::Exited(status),
+            _ = wait_for_cancellation(context) => WaitTrigger::Canceled,
+        }
+    };
+
+    match trigger {
+        WaitTrigger::Exited(status) => {
+            Ok((status.context("failed waiting for command")?, false, false))
+        }
+        WaitTrigger::TimedOut => {
+            let status = terminate_and_wait(child, process_group_id).await?;
+            Ok((status, true, false))
+        }
+        WaitTrigger::Canceled => {
+            let status = terminate_and_wait(child, process_group_id).await?;
+            Ok((status, false, true))
+        }
+    }
+}
+
+async fn wait_for_cancellation(context: Option<&CallContext>) {
+    match context {
+        Some(context) => context.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+async fn terminate_and_wait(
+    child: &mut Child,
+    process_group_id: Option<u32>,
+) -> Result<std::process::ExitStatus> {
+    terminate_process_tree(child, process_group_id, TIMEOUT_TERMINATE_GRACE_SECONDS).await;
+    match tokio::time::timeout(Duration::from_secs_f64(TIMEOUT_DRAIN_SECONDS), child.wait()).await {
+        Ok(Ok(status)) => Ok(status),
+        _ => {
+            force_kill_process_tree(child, process_group_id).await;
+            child
+                .wait()
+                .await
+                .context("failed waiting for killed command")
+        }
+    }
+}
+
+#[derive(Default)]
+struct Utf8ProgressDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8ProgressDecoder {
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut decoded = String::new();
+
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.pending.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    if valid > 0 {
+                        decoded.push_str(
+                            std::str::from_utf8(&self.pending[..valid])
+                                .expect("validated UTF-8 prefix"),
+                        );
+                        self.pending.drain(..valid);
+                    }
+
+                    match error.error_len() {
+                        Some(invalid_len) => {
+                            decoded.push('\u{fffd}');
+                            self.pending.drain(..invalid_len.min(self.pending.len()));
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        decoded
+    }
+
+    fn finish(&mut self) -> String {
+        let decoded = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        decoded
+    }
+}
+
+fn read_pipe<R>(
+    reader: Option<R>,
+    context: Option<CallContext>,
+    progress_type: &'static str,
+    capture: PipeCapture,
+) -> JoinHandle<Result<(), std::io::Error>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut payload = Vec::new();
+        let mut progress_decoder = Utf8ProgressDecoder::default();
         if let Some(mut reader) = reader {
-            reader.read_to_end(&mut payload).await?;
+            let mut chunk = vec![0_u8; 8 * 1024];
+            loop {
+                let read = match reader.read(&mut chunk).await {
+                    Ok(read) => read,
+                    Err(error) => {
+                        capture.append_notice(
+                            format!("[error] failed reading {progress_type}: {error}\n").as_bytes(),
+                        );
+                        return Err(error);
+                    }
+                };
+                if read == 0 {
+                    break;
+                }
+                let bytes = &chunk[..read];
+                capture.push(bytes);
+                if let Some(context) = &context {
+                    context.report_progress(progress_type, progress_decoder.push(bytes));
+                }
+            }
         }
-        Ok(payload)
+        if let Some(context) = &context {
+            context.report_progress(progress_type, progress_decoder.finish());
+        }
+        Ok(())
     })
 }
 
-async fn drain_output(task: JoinHandle<Result<Vec<u8>, std::io::Error>>) -> Vec<u8> {
-    match tokio::time::timeout(Duration::from_secs_f64(TIMEOUT_DRAIN_SECONDS), task).await {
-        Ok(Ok(Ok(payload))) => payload,
-        _ => b"[timeout] command exceeded timeout and output drain window.\n".to_vec(),
+#[derive(Default)]
+struct DrainOutcome {
+    timed_out: bool,
+    canceled: bool,
+}
+
+async fn finish_stdin(task: &mut JoinHandle<()>) {
+    if !task.is_finished() {
+        task.abort();
     }
+    let _ = task.await;
+}
+
+async fn drain_output_tasks(
+    stdout_task: &mut JoinHandle<Result<(), std::io::Error>>,
+    stderr_task: &mut JoinHandle<Result<(), std::io::Error>>,
+    context: Option<&CallContext>,
+    drain_timeout: Duration,
+) -> DrainOutcome {
+    let deadline = tokio::time::sleep(drain_timeout);
+    tokio::pin!(deadline);
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut outcome = DrainOutcome::default();
+
+    while !stdout_done || !stderr_done {
+        tokio::select! {
+            _ = &mut deadline => {
+                outcome.timed_out = true;
+                break;
+            }
+            _ = wait_for_cancellation(context) => {
+                outcome.canceled = true;
+                break;
+            }
+            _ = &mut *stdout_task, if !stdout_done => {
+                stdout_done = true;
+            }
+            _ = &mut *stderr_task, if !stderr_done => {
+                stderr_done = true;
+            }
+        }
+    }
+
+    if !stdout_done {
+        stdout_task.abort();
+        let _ = stdout_task.await;
+    }
+    if !stderr_done {
+        stderr_task.abort();
+        let _ = stderr_task.await;
+    }
+
+    outcome
 }
 
 fn configure_process_isolation(command: &mut Command) {
@@ -707,41 +1037,81 @@ fn configure_process_isolation(command: &mut Command) {
     }
 }
 
-async fn terminate_process_tree(child: &mut Child, grace_seconds: f64) {
-    if child.try_wait().ok().flatten().is_some() {
-        return;
-    }
-
+async fn terminate_process_tree(
+    child: &mut Child,
+    process_group_id: Option<u32>,
+    grace_seconds: f64,
+) {
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
+        if let Some(pid) = process_group_id {
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGTERM);
             }
             tokio::time::sleep(Duration::from_secs_f64(grace_seconds.max(0.1))).await;
-            if child.try_wait().ok().flatten().is_none() {
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
-            }
-            return;
-        }
-    }
-
-    let _ = child.start_kill();
-}
-
-async fn force_kill_process_tree(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
-            return;
         }
     }
-    let _ = child.start_kill();
+
+    #[cfg(windows)]
+    {
+        if let Some(pid) = process_group_id {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T"])
+                .status()
+                .await;
+            tokio::time::sleep(Duration::from_secs_f64(grace_seconds.max(0.1))).await;
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status()
+                .await;
+        }
+    }
+
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+    }
+}
+
+async fn force_kill_process_tree(child: &mut Child, process_group_id: Option<u32>) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = process_group_id {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(pid) = process_group_id {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status()
+                .await;
+        }
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+    }
+}
+
+fn force_kill_process_tree_sync(process_group_id: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = process_group_id {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(pid) = process_group_id {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
 }
 
 fn decode_utf8_output(payload: &[u8]) -> (String, bool) {
@@ -893,6 +1263,7 @@ fn shell_quote(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use outlet_core::{BackgroundPool, BackgroundStatus};
 
     #[tokio::test]
     async fn run_command_executes_argv_without_shell_metadata() {
@@ -941,6 +1312,246 @@ mod tests {
         assert!(result.text.contains("[timeout]"));
     }
 
+    #[tokio::test]
+    async fn background_run_command_streams_stdout_and_completes() {
+        let provider = std::sync::Arc::new(ShellOutlet::new());
+        let pool = BackgroundPool::with_default_client(
+            provider,
+            "http://server",
+            "token",
+            1,
+            Duration::from_secs(60),
+        );
+        pool.start_background(
+            "shell-progress",
+            "run_command",
+            json!({"argv": ["sh", "-c", "printf first; sleep 0.1; printf second"]}),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let completed =
+            wait_for_shell_background_status(&pool, "shell-progress", BackgroundStatus::Completed)
+                .await;
+        let stdout = completed.raw["progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["type"] == "stdout")
+            .filter_map(|entry| entry["text"].as_str())
+            .collect::<String>();
+        assert_eq!(stdout, "firstsecond");
+        assert_eq!(completed.raw["result"]["raw"]["exit_code"], 0);
+        assert_eq!(completed.raw["result"]["text"], "firstsecond");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_cancel_terminates_shell_process_tree() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid_path = env::temp_dir().join(format!(
+            "outlet-shell-background-pid-{}-{suffix}",
+            std::process::id()
+        ));
+        let command = format!(
+            "echo $$ > {}; sleep 30",
+            shell_quote(&pid_path.to_string_lossy())
+        );
+        let provider = std::sync::Arc::new(ShellOutlet::new());
+        let pool = BackgroundPool::with_default_client(
+            provider,
+            "http://server",
+            "token",
+            1,
+            Duration::from_secs(60),
+        );
+        pool.start_background(
+            "shell-cancel",
+            "run_command",
+            json!({"argv": ["sh", "-c", command]}),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let pid = wait_for_pid_file(&pid_path).await;
+        let canceled = pool.cancel_background("shell-cancel", "0").await.unwrap();
+        assert_eq!(canceled.raw["status"], "running");
+        wait_for_shell_background_status(&pool, "shell-cancel", BackgroundStatus::Canceled).await;
+
+        let mut gone = false;
+        for _ in 0..100 {
+            let result = unsafe { libc::kill(pid, 0) };
+            if result == -1 {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = tokio::fs::remove_file(&pid_path).await;
+        assert!(gone, "canceled shell process {pid} is still running");
+    }
+
+    #[test]
+    fn pipe_capture_retains_a_bounded_prefix_and_counts_all_bytes() {
+        let capture = PipeCapture::new(4);
+        capture.push(b"abcdefghij");
+        let snapshot = capture.snapshot();
+        assert_eq!(snapshot.bytes, b"abcd");
+        assert_eq!(snapshot.bytes_total, 10);
+        assert!(snapshot.truncated);
+    }
+
+    #[tokio::test]
+    async fn drain_timeout_aborts_and_awaits_pipe_readers() {
+        let (mut stdout_writer, stdout_reader) = tokio::io::duplex(64);
+        let (mut stderr_writer, stderr_reader) = tokio::io::duplex(64);
+        let stdout_capture = PipeCapture::new(64);
+        let stderr_capture = PipeCapture::new(64);
+        let mut stdout_task =
+            read_pipe(Some(stdout_reader), None, "stdout", stdout_capture.clone());
+        let mut stderr_task =
+            read_pipe(Some(stderr_reader), None, "stderr", stderr_capture.clone());
+        stdout_writer.write_all(b"partial stdout").await.unwrap();
+        stderr_writer.write_all(b"partial stderr").await.unwrap();
+
+        let outcome = drain_output_tasks(
+            &mut stdout_task,
+            &mut stderr_task,
+            None,
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(outcome.timed_out);
+        assert!(stdout_task.is_finished());
+        assert!(stderr_task.is_finished());
+        assert_eq!(stdout_capture.snapshot().bytes, b"partial stdout");
+        assert_eq!(stderr_capture.snapshot().bytes, b"partial stderr");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancel_kills_descendant_after_shell_leader_exits() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid_path = env::temp_dir().join(format!(
+            "outlet-shell-descendant-pid-{}-{suffix}",
+            std::process::id()
+        ));
+        let command = format!(
+            "sleep 30 & echo $! > {}; exit 0",
+            shell_quote(&pid_path.to_string_lossy())
+        );
+        let provider = Arc::new(ShellOutlet::new());
+        let pool = BackgroundPool::with_default_client(
+            provider,
+            "http://server",
+            "token",
+            1,
+            Duration::from_secs(60),
+        );
+        pool.start_background(
+            "shell-descendant-cancel",
+            "run_command",
+            json!({"argv": ["sh", "-c", command]}),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let pid = wait_for_pid_file(&pid_path).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let cancel = pool
+            .cancel_background("shell-descendant-cancel", "0")
+            .await
+            .unwrap();
+        assert_eq!(cancel.raw["status"], "running");
+        wait_for_shell_background_status(
+            &pool,
+            "shell-descendant-cancel",
+            BackgroundStatus::Canceled,
+        )
+        .await;
+        assert_process_gone(pid).await;
+        let _ = tokio::fs::remove_file(&pid_path).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_command_future_kills_the_process_group() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid_path = env::temp_dir().join(format!(
+            "outlet-shell-abort-pid-{}-{suffix}",
+            std::process::id()
+        ));
+        let command = format!(
+            "echo $$ > {}; sleep 30",
+            shell_quote(&pid_path.to_string_lossy())
+        );
+        let outlet = ShellOutlet::new();
+        let execution = tokio::spawn(async move {
+            outlet
+                .run_command_from_value(json!({"argv": ["sh", "-c", command]}))
+                .await
+        });
+
+        let pid = wait_for_pid_file(&pid_path).await;
+        execution.abort();
+        let _ = execution.await;
+        assert_process_gone(pid).await;
+        let _ = tokio::fs::remove_file(&pid_path).await;
+    }
+
+    async fn wait_for_shell_background_status(
+        pool: &BackgroundPool<ShellOutlet>,
+        task_id: &str,
+        expected: BackgroundStatus,
+    ) -> ToolResult {
+        for _ in 0..200 {
+            let result = pool.background_status(task_id, "0").await.unwrap();
+            let status: BackgroundStatus =
+                serde_json::from_value(result.raw["status"].clone()).unwrap();
+            if status == expected {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("shell background task did not reach {expected:?}");
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Ok(value) = tokio::fs::read_to_string(path).await {
+                if let Ok(pid) = value.trim().parse::<i32>() {
+                    return pid;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("background command did not write its pid file");
+    }
+
+    #[cfg(unix)]
+    async fn assert_process_gone(pid: i32) {
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("shell process {pid} is still running");
+    }
+
     #[test]
     fn schemas_keep_expected_required_fields() {
         assert_eq!(read_image_schema()["required"][0], "local_path");
@@ -975,6 +1586,17 @@ mod tests {
     fn truncation_appends_ellipsis() {
         assert_eq!(truncate_text("abcdef", 5), ("ab...".to_string(), true));
         assert_eq!(truncate_text("abc", 5), ("abc".to_string(), false));
+    }
+
+    #[test]
+    fn progress_decoder_preserves_utf8_split_across_chunks() {
+        let mut decoder = Utf8ProgressDecoder::default();
+        let bytes = "before-🙂-after".as_bytes();
+        let split = "before-".len() + 2;
+        let first = decoder.push(&bytes[..split]);
+        let second = decoder.push(&bytes[split..]);
+        let finished = decoder.finish();
+        assert_eq!(first + &second + &finished, "before-🙂-after");
     }
 
     #[test]
@@ -1013,14 +1635,25 @@ mod tests {
 
     #[test]
     fn provider_lists_current_tools() {
-        let names = ShellOutlet::new()
-            .tools()
-            .into_iter()
-            .map(|tool| tool.name)
+        let tools = ShellOutlet::new().tools();
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
         assert_eq!(
             names,
             ["run_command", "read_image", "download_file", "upload_file"]
         );
+        assert!(
+            tools
+                .iter()
+                .find(|tool| tool.name == "run_command")
+                .unwrap()
+                .supports_background
+        );
+        assert!(tools
+            .iter()
+            .filter(|tool| tool.name != "run_command")
+            .all(|tool| !tool.supports_background));
     }
 }
