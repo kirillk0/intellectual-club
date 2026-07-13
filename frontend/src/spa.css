@@ -1733,10 +1733,27 @@ select.full {
   margin-bottom: 0;
 }
 
-.message .bubble ul,
-.message .bubble ol {
-  margin: 0 0 8px 18px;
-  padding: 0;
+.message .bubble .message-content ul,
+.message .bubble .message-content ol {
+  margin: 0 0 8px;
+  padding-inline-start: 1.5rem;
+  list-style-position: outside;
+}
+
+.message .bubble .message-content ul {
+  list-style-type: disc;
+}
+
+.message .bubble .message-content ol {
+  list-style-type: decimal;
+}
+
+.message .bubble .message-content li {
+  display: list-item;
+}
+
+.message .bubble .message-content li::marker {
+  color: currentColor;
 }
 
 .message .bubble code {
