@@ -111,7 +111,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
           "type" => "integer",
           "title" => "Max download bytes",
           "description" => "Maximum allowed HTTP response body size in bytes.",
-          "minimum" => 0
+          "minimum" => 1
         },
         "http_timeout_seconds" => %{
           "type" => "number",
@@ -406,7 +406,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
     headers = [
       {"user-agent", cfg.user_agent},
-      {"accept", "*/*"}
+      {"accept", "*/*"},
+      {"accept-encoding", "gzip"}
     ]
 
     resp =
@@ -416,22 +417,21 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
         headers: headers,
         redirect: true,
         decode_body: false,
+        into: limited_body_stream(cfg.max_download_bytes),
         receive_timeout: timeout_ms
       )
 
-    if resp.status >= 400 do
-      body_text = body_to_string(resp.body)
+    with {:ok, resp} <- finalize_streamed_body(resp),
+         {:ok, body} <- decode_http_body(resp, cfg.max_download_bytes) do
+      if resp.status >= 400 do
+        body_text = body_to_string(body)
 
-      {:error,
-       "HTTP error while fetching URL: #{resp.status}. #{String.slice(body_text, 0, 500)}"}
-    else
-      content_type = first_header_value(resp.headers, "content-type")
+        {:error,
+         "HTTP error while fetching URL: #{resp.status}. #{String.slice(body_text, 0, 500)}"}
+      else
+        content_type = first_header_value(resp.headers, "content-type")
 
-      with :ok <- reject_unsupported_content_type(content_type, url),
-           body <- body_to_binary(resp.body) do
-        if cfg.max_download_bytes > 0 and byte_size(body) > cfg.max_download_bytes do
-          {:error, "Download exceeds max_download_bytes limit."}
-        else
+        with :ok <- reject_unsupported_content_type(content_type, url) do
           meta = %{
             "tool_type" => type(),
             "url" => url,
@@ -452,6 +452,104 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
   catch
     :exit, reason ->
       {:error, Exception.format_exit(reason)}
+  end
+
+  defp limited_body_stream(max_bytes) when is_integer(max_bytes) and max_bytes > 0 do
+    fn {:data, data}, {request, response} ->
+      bytes = Map.get(response.private, :web_reader_download_bytes, 0) + byte_size(data)
+
+      if bytes > max_bytes do
+        response = put_in(response.private[:web_reader_download_limit_exceeded], true)
+        {:halt, {request, response}}
+      else
+        chunks = Map.get(response.private, :web_reader_download_chunks, [])
+
+        response =
+          response
+          |> put_in([Access.key(:private), :web_reader_download_bytes], bytes)
+          |> put_in([Access.key(:private), :web_reader_download_chunks], [data | chunks])
+
+        {:cont, {request, response}}
+      end
+    end
+  end
+
+  defp finalize_streamed_body(%Req.Response{} = response) do
+    if Map.get(response.private, :web_reader_download_limit_exceeded, false) do
+      {:error, "Download exceeds max_download_bytes limit."}
+    else
+      body =
+        response.private
+        |> Map.get(:web_reader_download_chunks, [])
+        |> Enum.reverse()
+        |> IO.iodata_to_binary()
+
+      {:ok, %{response | body: body}}
+    end
+  end
+
+  defp decode_http_body(%Req.Response{} = response, max_bytes) do
+    encodings =
+      response
+      |> Req.Response.get_header("content-encoding")
+      |> Enum.flat_map(&String.split(&1, ",", trim: true))
+      |> Enum.map(&(&1 |> String.trim() |> String.downcase()))
+      |> Enum.reject(&(&1 in ["", "identity"]))
+
+    case encodings do
+      [] ->
+        {:ok, response.body}
+
+      [encoding] when encoding in ["gzip", "x-gzip"] ->
+        gunzip_with_limit(response.body, max_bytes)
+
+      _other ->
+        {:error, "Unsupported HTTP Content-Encoding: #{Enum.join(encodings, ", ")}."}
+    end
+  end
+
+  defp gunzip_with_limit(compressed, max_bytes)
+       when is_binary(compressed) and is_integer(max_bytes) and max_bytes > 0 do
+    zstream = :zlib.open()
+
+    try do
+      :ok = :zlib.inflateInit(zstream, 31)
+
+      with {:ok, chunks, _bytes} <- inflate_with_limit(zstream, compressed, max_bytes, 0, []),
+           :ok <- :zlib.inflateEnd(zstream) do
+        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+      else
+        {:error, :limit_exceeded} ->
+          {:error, "Decompressed body exceeds max_download_bytes limit."}
+      end
+    rescue
+      ErlangError ->
+        {:error, "Invalid gzip response body."}
+    after
+      :zlib.close(zstream)
+    end
+  end
+
+  defp inflate_with_limit(zstream, input, max_bytes, bytes, chunks) do
+    case :zlib.safeInflate(zstream, input) do
+      {status, output} when status in [:continue, :finished] ->
+        output_bytes = IO.iodata_length(output)
+        total_bytes = bytes + output_bytes
+
+        cond do
+          total_bytes > max_bytes ->
+            {:error, :limit_exceeded}
+
+          status == :continue ->
+            inflate_with_limit(zstream, <<>>, max_bytes, total_bytes, [output | chunks])
+
+          true ->
+            {:ok, [output | chunks], total_bytes}
+        end
+
+      {:need_dictionary, _adler, _output} ->
+        :erlang.error(:data_error)
+    end
   end
 
   defp required_url(args) when is_map(args) do
@@ -562,11 +660,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
     doc_cfg = DocumentReader.config_from_map(cfg)
 
     Map.merge(doc_cfg, %{
-      max_download_bytes:
-        max(
-          0,
-          DocumentReader.read_integer(cfg, "max_download_bytes", @default_max_download_bytes)
-        ),
+      max_download_bytes: max_download_bytes(cfg),
       http_timeout_seconds:
         max(
           0.1,
@@ -574,6 +668,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
         ),
       user_agent: DocumentReader.read_string(cfg, "user_agent", @default_user_agent)
     })
+  end
+
+  defp max_download_bytes(cfg) when is_map(cfg) do
+    case DocumentReader.read_integer(cfg, "max_download_bytes", @default_max_download_bytes) do
+      value when value > 0 -> value
+      _other -> @default_max_download_bytes
+    end
   end
 
   defp config_raw(cfg) when is_map(cfg) do

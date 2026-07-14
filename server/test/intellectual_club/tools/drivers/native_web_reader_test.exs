@@ -72,6 +72,77 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     assert message =~ "compressed archives"
   end
 
+  test "read_url safely decompresses gzip content encoding" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        type: "native-web-reader",
+        config: %{"chunk_size_tokens" => 100},
+        secrets: %{}
+      })
+
+    body = "A gzip-compressed page with a readable needle."
+
+    {:ok, server} =
+      start_raw_http_server(200, "text/plain", :zlib.gzip(body), [
+        {"Content-Encoding", "gzip"}
+      ])
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:ok, {text, raw}} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/gzip-page"
+             })
+
+    assert text =~ body
+    assert raw["content_type"] == "text/plain"
+  end
+
+  test "read_url stops gzip decompression when expanded body exceeds the limit" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        type: "native-web-reader",
+        config: %{"max_download_bytes" => 1_024},
+        secrets: %{}
+      })
+
+    compressed = :zlib.gzip(:binary.copy("a", 1_000_000))
+    assert byte_size(compressed) < 1_024
+
+    {:ok, server} =
+      start_raw_http_server(200, "text/plain", compressed, [{"Content-Encoding", "gzip"}])
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:error, "Decompressed body exceeds max_download_bytes limit."} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/gzip-bomb"
+             })
+  end
+
+  test "read_url rejects invalid gzip content" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+
+    {:ok, server} =
+      start_raw_http_server(200, "text/plain", "not really gzip", [
+        {"Content-Encoding", "gzip"}
+      ])
+
+    on_exit(fn -> stop_raw_http_server(server) end)
+
+    assert {:error, "Invalid gzip response body."} =
+             NativeWebReader.execute(tool_instance, "read_url", %{
+               "url" => "http://127.0.0.1:#{server.port}/invalid-gzip"
+             })
+  end
+
   test "execute requires regex for search_url" do
     %{user: actor} = user_fixture()
 
@@ -196,8 +267,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     |> Ash.create!()
   end
 
-  defp start_raw_http_server(status, content_type, body)
-       when is_integer(status) and is_binary(content_type) and is_binary(body) do
+  defp start_raw_http_server(status, content_type, body, extra_headers \\ [])
+       when is_integer(status) and is_binary(content_type) and is_binary(body) and
+              is_list(extra_headers) do
     {:ok, listen_socket} =
       :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}, {:ip, {127, 0, 0, 1}}])
 
@@ -211,6 +283,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
       "Content-Type: ",
       content_type,
       "\r\n",
+      Enum.map(extra_headers, fn {name, value} -> [name, ": ", value, "\r\n"] end),
       "Content-Length: ",
       Integer.to_string(byte_size(body)),
       "\r\n",
