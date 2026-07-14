@@ -274,6 +274,7 @@ export const ruMessages: Record<string, string> = {
   'Functions': 'Функции',
   'Generate and copy': 'Сгенерировать и скопировать',
   'Generating': 'Генерация',
+  'Generation canceled': 'Генерация отменена',
   'Generation complete': 'Генерация завершена',
   'Generation failed': 'Ошибка генерации',
   'Generated token copied. Save to activate it.': 'Токен сгенерирован и скопирован. Сохраните, чтобы активировать его.',

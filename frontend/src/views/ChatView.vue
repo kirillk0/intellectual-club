@@ -622,6 +622,7 @@ import {
   chatMessageHandoffSystemEventKind,
   type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
+import { childRelationGenerationState } from '@/features/chat/model/chatRelations';
 import {
   clipboardHasStringContent,
   describePendingFileUploadStatus,
@@ -769,11 +770,6 @@ const parentRelationLabel = (relation: ChatRelationSummary) =>
 
 const childRelationLabel = (relation: ChatRelationSummary) =>
   relation.kind === 'fork' ? translate('Forked into') : translate('Continued in');
-
-const childRelationGenerationState = (relation: ChatRelationSummary): 'generating' | 'error' | null => {
-  if (typeof relation.active_generation_message_id === 'number') return 'generating';
-  return relation.last_message_status === 'error' ? 'error' : null;
-};
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,

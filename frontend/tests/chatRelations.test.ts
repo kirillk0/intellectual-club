@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  childRelationGenerationState,
+  fallbackChildRelationsForBranch,
   parentForkRelationForMessage,
   parentRelationBannerForBranch,
 } from '@/features/chat/model/chatRelations';
@@ -32,5 +34,24 @@ describe('chat relation positioning', () => {
 
     expect(parentRelationBannerForBranch(incomplete, [10])).toBe(incomplete);
     expect(parentRelationBannerForBranch(handoff, [10])).toBe(handoff);
+  });
+
+  it('hides fallback child relations attached to inactive branch messages', () => {
+    const activeRelation: ChatRelationSummary = { chat_id: 20, message_id: 10 };
+    const inactiveRelation: ChatRelationSummary = { chat_id: 21, message_id: 11 };
+    const unpositionedRelation: ChatRelationSummary = { chat_id: 22, message_id: null };
+
+    expect(
+      fallbackChildRelationsForBranch(
+        [activeRelation, inactiveRelation, unpositionedRelation],
+        [9, 10]
+      )
+    ).toEqual([activeRelation, unpositionedRelation]);
+  });
+
+  it('maps canceled child generation to a distinct canceled state', () => {
+    expect(
+      childRelationGenerationState({ chat_id: 20, last_message_status: 'canceled' })
+    ).toBe('canceled');
   });
 });

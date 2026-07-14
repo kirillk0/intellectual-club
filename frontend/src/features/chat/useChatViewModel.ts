@@ -44,6 +44,7 @@ import type {
   ToolInstanceOption,
 } from '@/types/api';
 import {
+  fallbackChildRelationsForBranch,
   hasPositionedForkAnchor,
   parentForkRelationForMessage,
   parentRelationBannerForBranch,
@@ -169,7 +170,12 @@ export function useChatViewModel() {
   const continuingConversation = ref(false);
   const handoffPending = ref(false);
   const parentRelation = computed(() => relations.value.parent || null);
-  const fallbackChildRelations = computed(() => relations.value.children_without_message || []);
+  const fallbackChildRelations = computed(() =>
+    fallbackChildRelationsForBranch(
+      relations.value.children_without_message || [],
+      branch.value.map((message) => message.id)
+    )
+  );
   const childRelationsForMessage = (messageId?: number | null): ChatRelationSummary[] => {
     if (!messageId) return [];
     return relations.value.children_by_message_id?.[String(messageId)] || [];

@@ -33,6 +33,17 @@ describe('ChatGenerationStateIndicator', () => {
     expect(wrapper.find('.chat-generation-state__error-icon .svg-icon').exists()).toBe(true);
   });
 
+  it('renders a red cross with a canceled label when generation is canceled', () => {
+    const wrapper = mount(ChatGenerationStateIndicator, {
+      props: { state: 'canceled' },
+    });
+
+    const indicator = wrapper.get('.chat-generation-state');
+    expect(indicator.attributes('aria-label')).toBe('Generation canceled');
+    expect(indicator.classes()).toContain('chat-generation-state--canceled');
+    expect(wrapper.find('.chat-generation-state__error-icon .svg-icon').exists()).toBe(true);
+  });
+
   it('renders nothing without a state', () => {
     const wrapper = mount(ChatGenerationStateIndicator, {
       props: { state: null },

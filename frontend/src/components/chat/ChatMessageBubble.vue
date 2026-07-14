@@ -325,6 +325,7 @@ import {
   sortedChatMessageContentParts,
   type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
+import { childRelationGenerationState } from '@/features/chat/model/chatRelations';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
 import type {
   ChatBranchMessage,
@@ -649,13 +650,6 @@ const forkRelationLabel = (entry: ForkPart) =>
 
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
-
-const childRelationGenerationState = (
-  relation: ChatRelationSummary
-): 'generating' | 'error' | null => {
-  if (typeof relation.active_generation_message_id === 'number') return 'generating';
-  return relation.last_message_status === 'error' ? 'error' : null;
-};
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,

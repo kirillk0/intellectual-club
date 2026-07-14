@@ -25,7 +25,7 @@ import { computed } from 'vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { translate } from '@/i18n';
 
-type ChatGenerationState = 'generating' | 'reconnecting' | 'done' | 'error';
+type ChatGenerationState = 'generating' | 'reconnecting' | 'done' | 'canceled' | 'error';
 
 const props = defineProps<{
   state?: ChatGenerationState | null;
@@ -33,6 +33,7 @@ const props = defineProps<{
 
 const stateLabel = computed(() => {
   if (props.state === 'done') return translate('Generation complete');
+  if (props.state === 'canceled') return translate('Generation canceled');
   if (props.state === 'error') return translate('Generation failed');
   if (props.state === 'reconnecting') return translate('Reconnecting');
   return translate('Generating');
@@ -54,6 +55,10 @@ const stateLabel = computed(() => {
 }
 
 .chat-generation-state--error {
+  color: var(--color-danger);
+}
+
+.chat-generation-state--canceled {
   color: var(--color-danger);
 }
 
