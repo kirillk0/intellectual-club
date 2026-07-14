@@ -480,9 +480,25 @@ export function useChatViewModel() {
     markWebPushGenerationSeen(chatId.value, latest.id, latest.status);
   };
 
+  let chatLoadSeq = 0;
+  let chatVisibleLoadSeq = 0;
+  let disposed = false;
+
+  const isAbortError = (error: unknown) =>
+    error != null &&
+    typeof error === 'object' &&
+    'name' in error &&
+    (error as { name?: unknown }).name === 'AbortError';
+
   const loadChat = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
     const mode = opts.mode || 'initial';
     const includeSettings = opts.includeSettings !== false;
+    const requestedChatId = chatId.value;
+    const seq = mode === 'initial' ? ++chatLoadSeq : chatLoadSeq;
+    const visibleSeq = mode === 'initial' ? ++chatVisibleLoadSeq : chatVisibleLoadSeq;
+    const isCurrentLoad = () =>
+      !disposed && seq === chatLoadSeq && requestedChatId === chatId.value;
+
     if (mode === 'initial') {
       loaded.value = false;
       composerRuntime.stopPolling();
@@ -496,40 +512,78 @@ export function useChatViewModel() {
     loadError.value = '';
     chatUnavailable.value = false;
 
-    const [payload, settingsPayload] = await Promise.all([
-      api.get<ChatStatePayload>(`/api/bff/chat-state/${chatId.value}`, {
+    const settingsRequest = includeSettings
+      ? api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${requestedChatId}/settings`, {
+          showErrorBanner: false,
+        })
+      : null;
+
+    // The settings request starts in parallel but is intentionally not part of the
+    // initial rendering barrier. Attach a handler immediately in case it rejects
+    // before the core chat request settles.
+    void settingsRequest?.catch(() => undefined);
+
+    try {
+      const payload = await api.get<ChatStatePayload>(`/api/bff/chat-state/${requestedChatId}`, {
         showErrorBanner: false,
-      }),
-      includeSettings
-        ? api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${chatId.value}/settings`, {
-            showErrorBanner: false,
-          })
-        : Promise.resolve(null),
-    ]);
+      });
 
-    chat.value = payload.chat;
-    chatNote.value = payload.chat?.note || '';
-    branch.value = payload.branch || [];
-    relations.value = payload.relations || emptyChatRelations();
-    continuationNav.value = payload.continuation_nav || [];
-    if (settingsPayload) applySettingsState(settingsPayload);
-    chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
-    composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
+      if (!isCurrentLoad()) return;
 
-    loaded.value = true;
-    setActiveWebPushChat(chatId.value);
-    markLatestVisibleGenerationSeen();
-    closeWebPushNotificationsForChat(chatId.value);
-    startChatIdlePolling();
-    if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
-      void scrollToLastMessageIfLayerActive();
+      chat.value = payload.chat;
+      chatNote.value = payload.chat?.note || '';
+      branch.value = payload.branch || [];
+      relations.value = payload.relations || emptyChatRelations();
+      continuationNav.value = payload.continuation_nav || [];
+      chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
+      composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
+
+      loaded.value = true;
+      setActiveWebPushChat(requestedChatId);
+      markLatestVisibleGenerationSeen();
+      closeWebPushNotificationsForChat(requestedChatId);
+      startChatIdlePolling();
+      if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
+        void scrollToLastMessageIfLayerActive();
+      }
+
+      if (!settingsRequest) return;
+
+      try {
+        const settingsPayload = await settingsRequest;
+        if (!isCurrentLoad()) return;
+        applySettingsState(settingsPayload);
+      } catch (error) {
+        if (!isCurrentLoad() || isAbortError(error)) return;
+        if (mode !== 'initial') throw error;
+        console.error(error);
+        loadError.value = getApiErrorMessage(error, 'Failed to load chat.');
+      }
+    } catch (error) {
+      if (!isCurrentLoad() || isAbortError(error)) return;
+      throw error;
+    } finally {
+      if (
+        mode === 'initial' &&
+        visibleSeq === chatVisibleLoadSeq &&
+        requestedChatId === chatId.value &&
+        !disposed
+      ) {
+        loaded.value = true;
+      }
     }
   };
 
   const loadChatSafe = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
+    const mode = opts.mode || 'initial';
     try {
       await loadChat(opts);
     } catch (error) {
+      if (mode === 'soft' && chat.value) {
+        console.error(error);
+        loadError.value = getApiErrorMessage(error, 'Failed to load chat.');
+        return;
+      }
       chat.value = null;
       branch.value = [];
       relations.value = emptyChatRelations();
@@ -545,8 +599,6 @@ export function useChatViewModel() {
         chatUnavailable.value = false;
         loadError.value = getApiErrorMessage(error, 'Failed to load chat.');
       }
-    } finally {
-      loaded.value = true;
     }
   };
 
@@ -855,6 +907,9 @@ export function useChatViewModel() {
   });
 
   onBeforeUnmount(() => {
+    disposed = true;
+    chatLoadSeq += 1;
+    chatVisibleLoadSeq += 1;
     clearActiveWebPushChat();
     stopChatIdlePolling();
     void composerRuntime.dispose();
