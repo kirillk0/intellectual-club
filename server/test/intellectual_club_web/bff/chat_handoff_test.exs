@@ -686,7 +686,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert parent_relation["anchor_item_sequence"] == nil
   end
 
-  test "GET /api/bff/chat-list includes relation hints", %{conn: conn} do
+  test "GET /api/bff/chat-list includes relation hints for terminal continuations", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -704,9 +704,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     source_summary = Enum.find(payload["chats"], &(&1["id"] == source.id))
     target_summary = Enum.find(payload["chats"], &(&1["id"] == target.id))
 
-    assert source_summary["child_handoff_count"] == 1
-    assert nav_labels(source_summary) == ["1", "2"]
-    assert nav_chat_ids(source_summary) == [source.id, target.id]
+    assert is_nil(source_summary)
     assert target_summary["parent_chat_id"] == source.id
     assert target_summary["parent_message_id"] == source_message.id
     assert target_summary["parent_relation_kind"] == "handoff"
@@ -724,12 +722,12 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
     search_payload =
       conn
-      |> get(~p"/api/bff/chat-list/search", %{"q" => "Root"})
+      |> get(~p"/api/bff/chat-list/search", %{"q" => "List summary"})
       |> json_response(200)
 
-    search_source_summary = Enum.find(search_payload["chats"], &(&1["id"] == source.id))
-    assert nav_labels(search_source_summary) == ["1", "2"]
-    assert nav_chat_ids(search_source_summary) == [source.id, target.id]
+    search_target_summary = Enum.find(search_payload["chats"], &(&1["id"] == target.id))
+    assert nav_labels(search_target_summary) == ["1", "2"]
+    assert nav_chat_ids(search_target_summary) == [source.id, target.id]
   end
 
   test "continuation nav labels branched handoff families in preorder", %{conn: conn} do

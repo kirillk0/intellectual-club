@@ -6,6 +6,8 @@ defmodule IntellectualClub.Chat.ListingStats do
   import Ecto.Query, only: [from: 2]
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.Handoff
+  alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Repo
 
   require Ash.Query
@@ -25,12 +27,19 @@ defmodule IntellectualClub.Chat.ListingStats do
 
   @spec sidebar(any()) :: sidebar_stats()
   def sidebar(%{id: owner_id} = actor) when is_integer(owner_id) do
+    handoff_relation_kind = Handoff.relation_kind() |> Atom.to_string()
+
     rows =
       Repo.all(
         from(c in "chats",
           left_join: b in "bots",
           on: b.id == c.bot_id and b.owner_id == c.owner_id,
-          where: c.owner_id == ^owner_id and c.subagent == false,
+          left_join: continuation in "chats",
+          on:
+            continuation.parent_chat_id == c.id and
+              continuation.owner_id == c.owner_id and
+              continuation.parent_relation_kind == ^handoff_relation_kind,
+          where: c.owner_id == ^owner_id and c.subagent == false and is_nil(continuation.id),
           group_by: [c.bot_id, b.name],
           select: %{
             bot_id: c.bot_id,
@@ -75,6 +84,7 @@ defmodule IntellectualClub.Chat.ListingStats do
   def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id) and subagent == false)
+    |> Listing.without_handoff_children(actor)
     |> Ash.Query.sort(last_activity_at: :desc, id: :desc)
     |> Ash.Query.load(:last_activity_at)
     |> Ash.Query.limit(1)

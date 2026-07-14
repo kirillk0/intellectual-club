@@ -525,6 +525,36 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
     refute Enum.any?(results, &(&1["id"] == subchat.id))
   end
 
+  test "GET /api/bff/chat-list/search excludes chats superseded by continuations", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    first =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: "needle first"}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    terminal =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          note: "needle terminal",
+          parent_chat_id: first.id,
+          parent_relation_kind: :handoff
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    conn = get(conn, ~p"/api/bff/chat-list/search", %{"q" => "needle"})
+    payload = json_response(conn, 200)
+
+    assert Enum.map(payload["chats"] || [], & &1["id"]) == [terminal.id]
+  end
+
   test "GET /api/bff/chat-list/search respects per_page as total result limit", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

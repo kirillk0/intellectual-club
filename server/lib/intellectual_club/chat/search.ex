@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat.Search do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.Threads
 
@@ -604,6 +605,7 @@ defmodule IntellectualClub.Chat.Search do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(subagent == false)
+    |> Listing.without_handoff_children(actor)
     |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
@@ -634,10 +636,20 @@ defmodule IntellectualClub.Chat.Search do
   defp read_message_candidates(search, bot_filter, meta_ids, limit, actor, role)
        when is_tuple(search) and is_atom(role) do
     meta_list = MapSet.to_list(meta_ids)
+    handoff_relation_kind = Handoff.relation_kind()
 
     ChatMessage
     |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(exists(chat, subagent == false))
+    |> Ash.Query.filter(
+      exists(
+        chat,
+        subagent == false and
+          not exists(
+            child_chats,
+            owner_id == ^actor.id and parent_relation_kind == ^handoff_relation_kind
+          )
+      )
+    )
     |> Ash.Query.filter(role == ^role)
     |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
@@ -707,6 +719,7 @@ defmodule IntellectualClub.Chat.Search do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(subagent == false)
+    |> Listing.without_handoff_children(actor)
     |> Ash.Query.filter(id in ^chat_ids)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)

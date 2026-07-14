@@ -17,6 +17,7 @@ defmodule IntellectualClub.Chat.Listing do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(subagent == false)
+    |> without_handoff_children(actor)
     |> apply_bot_filter(bot_filter)
     |> apply_sort()
     |> Ash.Query.load(loads, strict?: true)
@@ -26,6 +27,19 @@ defmodule IntellectualClub.Chat.Listing do
       count: true
     )
     |> Ash.read!(actor: actor)
+  end
+
+  @spec without_handoff_children(Ash.Query.t(), map()) :: Ash.Query.t()
+  def without_handoff_children(query, actor) do
+    relation_kind = Handoff.relation_kind()
+
+    Ash.Query.filter(
+      query,
+      not exists(
+        child_chats,
+        owner_id == ^actor.id and parent_relation_kind == ^relation_kind
+      )
+    )
   end
 
   @spec apply_bot_filter(Ash.Query.t(), term()) :: Ash.Query.t()

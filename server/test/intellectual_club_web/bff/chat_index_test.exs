@@ -481,6 +481,57 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert subchat_payload["first_message_preview"] == "Subagent answer"
   end
 
+  test "GET /api/bff/chat-list returns only terminal chats from continuation chains", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    first = create_chat!(actor, "First")
+
+    middle =
+      create_chat!(actor, "Middle", %{
+        parent_chat_id: first.id,
+        parent_relation_kind: :handoff
+      })
+
+    terminal =
+      create_chat!(actor, "Terminal", %{
+        parent_chat_id: middle.id,
+        parent_relation_kind: :handoff
+      })
+
+    _old_subchat =
+      create_chat!(actor, "Old subchat", %{
+        parent_chat_id: first.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    terminal_subchat =
+      create_chat!(actor, "Terminal subchat", %{
+        parent_chat_id: terminal.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    standalone = create_chat!(actor, "Standalone")
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list")
+      |> json_response(200)
+
+    assert Enum.sort(chat_ids(payload)) == Enum.sort([terminal.id, standalone.id])
+    assert payload["page"]["total"] == 2
+    assert payload["stats"]["total_chats"] == 2
+
+    terminal_payload = chat_payload(payload, terminal.id)
+
+    assert terminal_payload["child_subchat_count"] == 1
+    assert Enum.map(terminal_payload["subchats"], & &1["id"]) == [terminal_subchat.id]
+  end
+
   defp chat_ids(payload) do
     payload
     |> Map.get("chats", [])

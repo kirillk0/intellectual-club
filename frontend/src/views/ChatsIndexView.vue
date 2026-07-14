@@ -701,11 +701,42 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
     return;
   }
 
+  if (Number(summary.child_handoff_count || 0) > 0) {
+    const existedInPage = chats.value.some((chat) => chat.id === summary.id);
+    chats.value = chats.value.filter((chat) => chat.id !== summary.id);
+    chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== summary.id);
+    if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
+    chatListIdleRevision.value = null;
+    syncVisibleGenerationState(visibleGenerationChats.value);
+    return;
+  }
+
+  const continuationParentId =
+    summary.parent_relation_kind === 'handoff' && Number.isInteger(summary.parent_chat_id)
+      ? Number(summary.parent_chat_id)
+      : null;
+  const continuationParentWasVisible =
+    continuationParentId != null && chats.value.some((chat) => chat.id === continuationParentId);
+
+  if (continuationParentWasVisible) {
+    chats.value = chats.value.filter((chat) => chat.id !== continuationParentId);
+    chatSearchResults.value = chatSearchResults.value.filter(
+      (chat) => chat.id !== continuationParentId
+    );
+    totalChats.value = Math.max(0, totalChats.value - 1);
+  }
+
   const existedInPage = chats.value.some((chat) => chat.id === summary.id);
 
   if (matchesBotFilter(summary)) {
     chats.value = mergeChatRows(chats.value, summary);
-    if (!existedInPage && isNewChatChangeReason(changeReason)) totalChats.value += 1;
+    if (
+      !existedInPage &&
+      isNewChatChangeReason(changeReason) &&
+      (continuationParentId == null || continuationParentWasVisible)
+    ) {
+      totalChats.value += 1;
+    }
   } else if (existedInPage) {
     chats.value = chats.value.filter((chat) => chat.id !== summary.id);
     totalChats.value = Math.max(0, totalChats.value - 1);
