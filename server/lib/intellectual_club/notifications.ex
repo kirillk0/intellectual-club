@@ -183,8 +183,9 @@ defmodule IntellectualClub.Notifications do
       when is_integer(message_id) and status in [:done, :error] and is_list(opts) do
     message = load_message_for_notification(message_id)
     actor = %User{id: message.owner_id}
+    suppressed? = Keyword.get(opts, :suppressed?, false) == true or message.chat.subagent == true
 
-    case create_generation_event(message, status, actor, Keyword.get(opts, :suppressed?, false)) do
+    case create_generation_event(message, status, actor, suppressed?) do
       {:ok, %WebPushGenerationEvent{suppressed: true}} ->
         :ok
 

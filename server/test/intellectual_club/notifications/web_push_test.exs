@@ -196,6 +196,40 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert payload.message_id == child.id
   end
 
+  test "fork subagent generations do not send notifications" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+    parent_message = assistant_message!(actor, "Parent answer")
+
+    subchat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          note: "Fork subagent",
+          parent_chat_id: parent_message.chat_id,
+          parent_relation_kind: :fork,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    message = assistant_message_for_chat!(actor, subchat.id, "Subagent answer")
+
+    assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{suppressed: true, delivered_count: 0}] =
+             events_for(message.id, :done, actor)
+  end
+
   test "active visible client suppresses only matching chat subscriptions" do
     %{user: admin} = user_fixture(%{is_admin: true})
     %{user: actor} = user_fixture()
