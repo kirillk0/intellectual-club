@@ -52,6 +52,13 @@ defmodule IntellectualClub.Files.File do
     create_timestamp(:created_at)
   end
 
+  relationships do
+    has_one :chat_message_step_request_file,
+            IntellectualClub.Chat.ChatMessageStepRequestFile do
+      destination_attribute(:file_id)
+    end
+  end
+
   identities do
     identity(:unique_external_id, [:external_id])
   end

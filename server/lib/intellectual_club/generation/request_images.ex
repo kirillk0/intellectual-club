@@ -21,6 +21,16 @@ defmodule IntellectualClub.Generation.RequestImages do
   @max_edge_px 2_000
   @identity_variant "identity:v1"
   @thumbnail_variant "thumbnail:max-edge=2000:preserve-format:v1"
+  @legacy_exact_variant "legacy_exact:v1"
+  @fit_rendition %{
+    "kind" => "fit",
+    "max_edge_px" => @max_edge_px,
+    "format" => "preserve"
+  }
+  @legacy_exact_rendition %{
+    "kind" => "legacy_exact",
+    "format" => "preserve"
+  }
   @invalid_image_fallback "[Image omitted: attached file could not be validated as an image.]"
   @resize_fallback "[Image omitted: attached image exceeded the native image size limit and could not be resized.]"
 
@@ -33,16 +43,39 @@ defmodule IntellectualClub.Generation.RequestImages do
   @spec marker(String.t(), String.t(), encoding()) :: map()
   def marker(source_file_external_id, mime_type, encoding \\ :data_url)
       when is_binary(source_file_external_id) and is_binary(mime_type) do
+    marker_with_rendition(
+      source_file_external_id,
+      mime_type,
+      encoding,
+      @fit_rendition
+    )
+  end
+
+  @doc """
+  Builds a v1 marker for replaying the exact image bytes captured in a legacy raw request.
+
+  Unlike the normal fit rendition, this marker may reference an image larger than the current
+  native image limit. It must resolve to a step-local `legacy_exact:v1` binding and is never
+  reconstructed from the canonical source file.
+  """
+  @spec legacy_exact_marker(String.t(), String.t(), encoding()) :: map()
+  def legacy_exact_marker(source_file_external_id, mime_type, encoding \\ :data_url)
+      when is_binary(source_file_external_id) and is_binary(mime_type) do
+    marker_with_rendition(
+      source_file_external_id,
+      mime_type,
+      encoding,
+      @legacy_exact_rendition
+    )
+  end
+
+  defp marker_with_rendition(source_file_external_id, mime_type, encoding, rendition) do
     %{
       @marker_key => %{
         "version" => @version,
         "reference_key" => source_file_external_id,
         "source_file_external_id" => source_file_external_id,
-        "rendition" => %{
-          "kind" => "fit",
-          "max_edge_px" => @max_edge_px,
-          "format" => "preserve"
-        },
+        "rendition" => rendition,
         "encoding" => normalize_encoding(encoding),
         "mime_type" => normalize_mime_type(mime_type)
       }
@@ -271,11 +304,12 @@ defmodule IntellectualClub.Generation.RequestImages do
     case validate_binding_descriptor(binding, descriptor) do
       :ok ->
         case load_valid_image(binding.file_id) do
-          {:ok, image} when max(image.width, image.height) <= @max_edge_px ->
-            {:ok, %{status: :ok, mime_type: image.mime_type}, state}
-
-          {:ok, _oversized_image} ->
-            {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
+          {:ok, image} ->
+            if rendition_accepts_image?(descriptor, image) do
+              {:ok, %{status: :ok, mime_type: image.mime_type}, state}
+            else
+              {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
+            end
 
           {:error, reason} ->
             if fallback_image_error?(reason) do
@@ -294,6 +328,9 @@ defmodule IntellectualClub.Generation.RequestImages do
     case reusable_binding(descriptor, state) do
       {:ok, binding} ->
         duplicate_and_bind(binding.file_id, binding.variant_key, descriptor, state)
+
+      :not_found when descriptor.rendition_kind == :legacy_exact ->
+        {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
 
       :not_found ->
         materialize_canonical(descriptor, state)
@@ -478,7 +515,7 @@ defmodule IntellectualClub.Generation.RequestImages do
                Map.get(state.bindings, descriptor.reference_key),
              :ok <- validate_binding_descriptor(binding, descriptor),
              {:ok, image} <- load_valid_image(binding.file_id),
-             true <- max(image.width, image.height) <= @max_edge_px do
+             true <- rendition_accepts_image?(descriptor, image) do
           {:ok, image,
            %{state | hydrated: Map.put(state.hydrated, descriptor.reference_key, image)}}
         else
@@ -493,6 +530,7 @@ defmodule IntellectualClub.Generation.RequestImages do
     reference_key = Map.get(marker, "reference_key")
     source_file_external_id = Map.get(marker, "source_file_external_id")
     rendition = Map.get(marker, "rendition")
+    rendition_kind = rendition_kind(rendition)
     encoding = Map.get(marker, "encoding")
     mime_type = normalize_mime_type(Map.get(marker, "mime_type"))
 
@@ -508,11 +546,7 @@ defmodule IntellectualClub.Generation.RequestImages do
       not uuid?(source_file_external_id) ->
         {:error, :invalid_request_image_source_file_external_id}
 
-      rendition != %{
-        "kind" => "fit",
-        "max_edge_px" => @max_edge_px,
-        "format" => "preserve"
-      } ->
+      is_nil(rendition_kind) ->
         {:error, :unsupported_request_image_rendition}
 
       encoding != expected_encoding ->
@@ -526,7 +560,8 @@ defmodule IntellectualClub.Generation.RequestImages do
          %{
            reference_key: reference_key,
            source_file_external_id: source_file_external_id,
-           mime_type: mime_type
+           mime_type: mime_type,
+           rendition_kind: rendition_kind
          }}
     end
   end
@@ -550,7 +585,7 @@ defmodule IntellectualClub.Generation.RequestImages do
       to_string(binding.source_file_external_id) != descriptor.source_file_external_id ->
         {:error, {:request_image_binding_source_mismatch, descriptor.reference_key}}
 
-      binding.variant_key not in [@identity_variant, @thumbnail_variant] ->
+      binding.variant_key not in allowed_binding_variants(descriptor) ->
         {:error, {:unsupported_request_image_binding_variant, binding.variant_key}}
 
       true ->
@@ -646,10 +681,13 @@ defmodule IntellectualClub.Generation.RequestImages do
   end
 
   defp reusable_binding(descriptor, state) do
+    allowed_variants = allowed_binding_variants(descriptor)
+
     ChatMessageStepRequestFile
     |> Ash.Query.filter(
       reference_key == ^descriptor.reference_key and
         source_file_external_id == ^descriptor.source_file_external_id and
+        variant_key in ^allowed_variants and
         chat_message_step_id != ^state.step.id and
         chat_message_step.owner_id == ^state.owner_id and
         chat_message_step.chat_message.chat_id in ^state.chat_scope_ids
@@ -662,7 +700,7 @@ defmodule IntellectualClub.Generation.RequestImages do
       {:ok, %ChatMessageStepRequestFile{} = binding} ->
         with :ok <- validate_binding_descriptor(binding, descriptor),
              {:ok, image} <- load_valid_image(binding.file_id),
-             true <- max(image.width, image.height) <= @max_edge_px do
+             true <- rendition_accepts_image?(descriptor, image) do
           {:ok, binding}
         else
           false ->
@@ -950,6 +988,21 @@ defmodule IntellectualClub.Generation.RequestImages do
   end
 
   defp put_marker_mime(marker, mime_type), do: Map.put(marker, "mime_type", mime_type)
+
+  defp rendition_kind(@fit_rendition), do: :fit
+  defp rendition_kind(@legacy_exact_rendition), do: :legacy_exact
+  defp rendition_kind(_rendition), do: nil
+
+  defp allowed_binding_variants(%{rendition_kind: :fit}),
+    do: [@identity_variant, @thumbnail_variant]
+
+  defp allowed_binding_variants(%{rendition_kind: :legacy_exact}),
+    do: [@legacy_exact_variant]
+
+  defp rendition_accepts_image?(%{rendition_kind: :legacy_exact}, _image), do: true
+
+  defp rendition_accepts_image?(%{rendition_kind: :fit}, image),
+    do: max(image.width, image.height) <= @max_edge_px
 
   defp data_url(image) do
     "data:#{image.mime_type};base64," <> Base.encode64(image.payload)
