@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Files.FilesystemStorage do
   @moduledoc false
 
+  require Logger
+
   @sha256_pattern ~r/\A[0-9a-f]{64}\z/
 
   @spec root_path() :: String.t()
@@ -25,25 +27,20 @@ defmodule IntellectualClub.Files.FilesystemStorage do
 
   def path_for(_sha256), do: {:error, :invalid_sha256}
 
-  @spec store(String.t(), binary()) :: :ok | {:error, term()}
+  @type store_status :: :created | :existing
+
+  @spec store(String.t(), binary()) :: {:ok, store_status()} | {:error, term()}
   def store(sha256, payload) when is_binary(payload) do
     with {:ok, path} <- path_for(sha256),
          :ok <- File.mkdir_p(Path.dirname(path)) do
       if File.exists?(path) do
-        :ok
+        {:ok, :existing}
       else
         tmp_path = temporary_path(path)
 
         case File.write(tmp_path, payload, [:binary]) do
           :ok ->
-            case File.rename(tmp_path, path) do
-              :ok ->
-                :ok
-
-              {:error, reason} ->
-                _ = File.rm(tmp_path)
-                if File.exists?(path), do: :ok, else: {:error, reason}
-            end
+            finalize_tmp_path(tmp_path, path)
 
           {:error, _reason} = error ->
             error
@@ -54,12 +51,13 @@ defmodule IntellectualClub.Files.FilesystemStorage do
 
   def store(_sha256, _payload), do: {:error, :invalid_payload}
 
-  @spec store_path(String.t(), String.t()) :: :ok | {:error, term()}
+  @spec store_path(String.t(), String.t()) ::
+          {:ok, store_status()} | {:error, term()}
   def store_path(sha256, source_path) when is_binary(source_path) do
     with {:ok, path} <- path_for(sha256),
          :ok <- File.mkdir_p(Path.dirname(path)) do
       if File.exists?(path) do
-        :ok
+        {:ok, :existing}
       else
         tmp_path = temporary_path(path)
 
@@ -93,7 +91,18 @@ defmodule IntellectualClub.Files.FilesystemStorage do
     with {:ok, path} <- path_for(sha256) do
       case File.rm(path) do
         :ok ->
-          prune_empty_dirs(path)
+          case prune_empty_dirs(path) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "File payload was deleted but empty storage directories could not be pruned " <>
+                  "sha256=#{sha256} reason=#{inspect(reason)}"
+              )
+
+              :ok
+          end
 
         {:error, :enoent} ->
           :ok
@@ -123,13 +132,18 @@ defmodule IntellectualClub.Files.FilesystemStorage do
   defp normalize_copy_result({:error, _reason} = error), do: error
 
   defp finalize_tmp_path(tmp_path, path) do
-    case File.rename(tmp_path, path) do
+    case File.ln(tmp_path, path) do
       :ok ->
-        :ok
+        _ = File.rm(tmp_path)
+        {:ok, :created}
+
+      {:error, :eexist} ->
+        _ = File.rm(tmp_path)
+        {:ok, :existing}
 
       {:error, reason} ->
         _ = File.rm(tmp_path)
-        if File.exists?(path), do: :ok, else: {:error, reason}
+        if File.exists?(path), do: {:ok, :existing}, else: {:error, reason}
     end
   end
 

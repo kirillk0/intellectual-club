@@ -14,6 +14,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
@@ -201,6 +202,37 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp start_stream_task(state) do
+    step_id = state.runtime_step.id
+    raw_request = state.runtime_step.raw_request || %{}
+
+    case materialize_request_images(raw_request, step_id) do
+      {:ok, compact_request} ->
+        state
+        |> apply_materialized_request(compact_request)
+        |> start_provider_stream_task(compact_request, step_id)
+
+      {:error, reason} ->
+        stream_ref = make_ref()
+
+        send(
+          self(),
+          {:provider_event, stream_ref,
+           {:response_error,
+            %{
+              provider: state.context.provider_type,
+              retryable: false,
+              error_kind: "request_media",
+              error_text: "Failed to prepare request images: #{inspect(reason)}",
+              raw_request: raw_request,
+              raw_response: nil
+            }}}
+        )
+
+        %{state | stream_task: nil, stream_ref: stream_ref, retry_timer_ref: nil}
+    end
+  end
+
+  defp start_provider_stream_task(state, compact_request, step_id) do
     me = self()
     stream_ref = make_ref()
 
@@ -211,7 +243,8 @@ defmodule IntellectualClub.Generation.Worker do
         state.adapter.stream_generate(
           %{
             context: state.context,
-            request_payload: state.runtime_step.raw_request,
+            request_payload: compact_request,
+            request_step_id: step_id,
             timeout_ms: state.context.timeout_ms || 300_000,
             chunk_delay_ms: state.context.chunk_delay_ms,
             provider_session: state.provider_session
@@ -221,6 +254,29 @@ defmodule IntellectualClub.Generation.Worker do
       end)
 
     %{state | stream_task: task, stream_ref: stream_ref, retry_timer_ref: nil}
+  end
+
+  defp materialize_request_images(raw_request, step_id) do
+    RequestImages.materialize_and_persist(raw_request, step_id)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp apply_materialized_request(state, compact_request) when is_map(compact_request) do
+    runtime_step =
+      RuntimeTrace.apply_event(
+        state.runtime_step,
+        {:set_step_raw_request, compact_request}
+      )
+
+    context =
+      state.context
+      |> Map.put(:request_payload, compact_request)
+      |> Map.put(:step_id, runtime_step.id)
+
+    %{state | runtime_step: runtime_step, context: context}
   end
 
   @impl true

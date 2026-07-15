@@ -1300,9 +1300,13 @@ defmodule IntellectualClub.BackgroundTasks do
     end
   end
 
-  defp worker_active?(task_id) do
+  @doc false
+  @spec worker_active?(Ecto.UUID.t()) :: boolean()
+  def worker_active?(task_id) when is_binary(task_id) do
     Registry.lookup(IntellectualClub.BackgroundTasks.ProcessRegistry, task_id) != []
   end
+
+  def worker_active?(_task_id), do: false
 
   defp cancel_adapter(task) do
     with {:ok, module} <- AdapterRegistry.fetch(task.adapter),

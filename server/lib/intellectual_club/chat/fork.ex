@@ -194,9 +194,18 @@ defmodule IntellectualClub.Chat.Fork do
   @impl true
   def snapshot_background(task_record, cursor) do
     case background_reference(task_record) do
-      {:ok, reference, actor} -> snapshot(reference, actor, cursor)
-      {:error, :target_not_ready} -> :default
-      {:error, _reason} = error -> error
+      {:ok, reference, actor} ->
+        if background_execution_owns_recovery?(task_record, reference) do
+          :default
+        else
+          snapshot(reference, actor, cursor)
+        end
+
+      {:error, :target_not_ready} ->
+        :default
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -269,6 +278,7 @@ defmodule IntellectualClub.Chat.Fork do
              load: MessageTreeCopy.load_spec(),
              strict?: true
            ),
+         {:ok, branch} <- MessageTreeCopy.materialize_loaded_messages(branch, actor),
          {:ok, source_message} <- find_message(branch, assistant_message_id),
          followup_state = Persistence.load_step_for_followup!(context.step_id),
          {:ok, source_call} <-
@@ -1324,6 +1334,17 @@ defmodule IntellectualClub.Chat.Fork do
           {:error, _reason} = error -> error
         end
     end
+  end
+
+  defp background_execution_owns_recovery?(task_record, reference)
+       when is_map(reference) do
+    task_id = task_record_value(task_record, :id)
+    generation_message_id = Map.get(reference, :generation_message_id)
+
+    is_binary(task_id) and
+      IntellectualClub.BackgroundTasks.worker_active?(task_id) and
+      is_integer(generation_message_id) and
+      GenerationSupervisor.get_generation_state(generation_message_id) == :not_found
   end
 
   defp task_record_value(%BackgroundTask{} = task_record, key) when is_atom(key) do

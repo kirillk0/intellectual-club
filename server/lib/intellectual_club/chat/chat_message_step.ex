@@ -105,6 +105,10 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     has_many :items, IntellectualClub.Chat.ChatMessageItem do
       destination_attribute(:chat_message_step_id)
     end
+
+    has_many :request_files, IntellectualClub.Chat.ChatMessageStepRequestFile do
+      destination_attribute(:chat_message_step_id)
+    end
   end
 
   identities do
@@ -121,6 +125,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     destroy :destroy do
       primary?(true)
       change(cascade_destroy(:items, after_action?: false))
+      change(cascade_destroy(:request_files, after_action?: false))
     end
 
     create :create do

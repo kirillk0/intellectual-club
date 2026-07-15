@@ -6,9 +6,14 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.ChatMessageStepRequestFile
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.Files
+  alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
@@ -92,6 +97,93 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     assert final_step.sequence == 1
     assert final_step.id != old_step.id
+  end
+
+  test "orphan restart preserves an oversized request image rendition" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, canonical_file} =
+      Files.create_from_binary("orphan-source.png", "image/png", oversized_png_payload())
+
+    {:ok, user_message} =
+      Threads.add_message_to_end(chat, :user, "",
+        actor: actor,
+        contents: [%{kind: :media, file_id: canonical_file.id}]
+      )
+
+    generating_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    marker = RequestImages.marker(to_string(canonical_file.external_id), "image/png")
+
+    raw_request = %{
+      "model" => "demo-model",
+      "input" => [
+        %{
+          "type" => "message",
+          "role" => "user",
+          "content" => [%{"type" => "input_image", "image_url" => marker}]
+        }
+      ],
+      "stream" => true
+    }
+
+    old_step =
+      ChatMessageStep
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_id: generating_message.id,
+          sequence: 1,
+          status: :waiting_provider,
+          raw_request: raw_request,
+          raw_response: nil,
+          response_final: false
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert {:ok, compact_request} =
+             RequestImages.materialize_and_persist(raw_request, old_step.id)
+
+    [old_binding] = request_file_bindings(old_step.id)
+    old_rendition_file = Ash.get!(StoredFile, old_binding.file_id, authorize?: false)
+
+    assert old_binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
+    assert FilesystemStorage.exists?(old_rendition_file.sha256)
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+
+    message = wait_for_status!(generating_message.id, actor, [:done], 4_000)
+    final_step = Enum.max_by(message.steps, & &1.sequence)
+    [replacement_binding] = request_file_bindings(final_step.id)
+
+    assert final_step.id != old_step.id
+    assert {:error, _error} = Ash.get(ChatMessageStep, old_step.id, actor: actor)
+    assert {:error, _error} = Ash.get(StoredFile, old_binding.file_id, authorize?: false)
+    assert replacement_binding.file_id != old_binding.file_id
+    assert replacement_binding.reference_key == old_binding.reference_key
+    assert replacement_binding.source_file_external_id == old_binding.source_file_external_id
+    assert replacement_binding.variant_key == old_binding.variant_key
+    assert replacement_binding.file.sha256 == old_rendition_file.sha256
+    assert FilesystemStorage.exists?(old_rendition_file.sha256)
+
+    assert {:ok, hydrated_request} =
+             RequestImages.hydrate(compact_request, final_step.id)
+
+    assert inspect(hydrated_request) =~ "data:image/png;base64,"
   end
 
   test "recover_orphaned_generations cancels generating message without steps" do
@@ -698,7 +790,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     :ok = GenerationSupervisor.recover_orphaned_generations()
 
-    message = wait_for_retry_attempt!(generating_message.id, actor, 6, 4_000)
+    message = wait_for_retry_attempt!(generating_message.id, actor, 6, 15_000)
     steps = Enum.sort_by(message.steps, & &1.sequence)
 
     assert Enum.map(steps, & &1.sequence) == [1, 2, 3]
@@ -729,16 +821,42 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       {:ok, %{"status" => ^wanted} = snapshot} ->
         snapshot
 
-      {:ok, _snapshot} ->
-        if System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(20)
-          do_wait_for_background_status!(task_id, owner_id, wanted, deadline)
-        else
-          flunk("Background task did not reach expected status")
+      {:ok, snapshot} ->
+        cond do
+          snapshot["status"] in ["failed", "canceled"] ->
+            flunk(
+              "Background task reached terminal status before #{inspect(wanted)}: " <>
+                "#{inspect(snapshot)}; generation steps: " <>
+                "#{inspect(background_generation_steps(snapshot))}"
+            )
+
+          System.monotonic_time(:millisecond) >= deadline ->
+            flunk(
+              "Background task did not reach expected status #{inspect(wanted)}: #{inspect(snapshot)}"
+            )
+
+          true ->
+            Process.sleep(20)
+            do_wait_for_background_status!(task_id, owner_id, wanted, deadline)
         end
 
       {:error, reason} ->
         flunk("Background task snapshot failed: #{inspect(reason)}")
+    end
+  end
+
+  defp background_generation_steps(snapshot) do
+    case get_in(snapshot, ["runner_ref", "fork_generation_message_id"]) do
+      message_id when is_integer(message_id) ->
+        ChatMessageStep
+        |> Ash.Query.filter(chat_message_id == ^message_id)
+        |> Ash.Query.sort(sequence: :asc)
+        |> Ash.Query.select([:id, :sequence, :status, :raw_request])
+        |> Ash.read!(authorize?: false)
+        |> Enum.map(&Map.take(&1, [:id, :sequence, :status, :raw_request]))
+
+      _other ->
+        []
     end
   end
 
@@ -775,19 +893,33 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         load: [steps: [items: [:contents]]]
       )
 
-    attempts =
-      message.steps
-      |> List.wrap()
-      |> Enum.flat_map(&retry_error_attempts/1)
+    steps = List.wrap(message.steps)
 
-    if message.status == :generating and expected_attempt in attempts do
+    attempts = Enum.flat_map(steps, &retry_error_attempts/1)
+
+    retry_step_sequences =
+      steps
+      |> Enum.filter(&(expected_attempt in retry_error_attempts(&1)))
+      |> Enum.map(& &1.sequence)
+
+    next_waiting_provider_step? =
+      Enum.any?(steps, fn step ->
+        step.status == :waiting_provider and
+          Enum.any?(retry_step_sequences, &(&1 < step.sequence))
+      end)
+
+    if message.status == :generating and expected_attempt in attempts and
+         next_waiting_provider_step? do
       message
     else
       if System.monotonic_time(:millisecond) < deadline do
         Process.sleep(50)
         do_wait_for_retry_attempt(message_id, actor, expected_attempt, deadline)
       else
-        flunk("Message did not persist expected retry attempt")
+        flunk(
+          "Message did not persist retry attempt #{expected_attempt}: " <>
+            "status=#{inspect(message.status)} attempts=#{inspect(attempts)}"
+        )
       end
     end
   end
@@ -1138,6 +1270,20 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   defp retry_error_metadata?(_metadata), do: false
+
+  defp request_file_bindings(step_id) do
+    ChatMessageStepRequestFile
+    |> Ash.Query.filter(chat_message_step_id == ^step_id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.load(:file)
+    |> Ash.read!(authorize?: false)
+  end
+
+  defp oversized_png_payload do
+    assert {:ok, image} = Image.new(3_000, 1_500)
+    assert {:ok, payload} = Image.write(image, :memory, suffix: ".png")
+    payload
+  end
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
   defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)

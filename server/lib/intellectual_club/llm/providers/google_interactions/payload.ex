@@ -480,7 +480,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     placeholder = [%{"type" => "text", "text" => Media.placeholder_text(content)}]
 
     if supports_image_input do
-      case NativeModalities.project_media_content(content, opts) do
+      case NativeModalities.project_media_content(content, Keyword.put(opts, :encoding, :base64)) do
         {:ok, %{modality: :image, mime_type: mime_type, data_url: data_url}} ->
           case split_data_url(data_url) do
             {:ok, data} ->
@@ -505,6 +505,18 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     case String.split(rest, ",", parts: 2) do
       [_meta, data] when data != "" -> {:ok, data}
       _other -> :error
+    end
+  end
+
+  defp split_data_url(%{} = reference) do
+    reference = RequestPayload.stringify_keys(reference)
+
+    case Map.get(reference, "$intellectual_club_file") do
+      %{"version" => 1} ->
+        {:ok, put_in(reference, ["$intellectual_club_file", "encoding"], "base64")}
+
+      _other ->
+        :error
     end
   end
 

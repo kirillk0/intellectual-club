@@ -12,6 +12,9 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.ChatMessageStepRequestFile
+  alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Generation.ToolResult
@@ -28,8 +31,10 @@ defmodule IntellectualClub.Generation.Persistence do
   @transaction_resources [
     ChatMessage,
     ChatMessageStep,
+    ChatMessageStepRequestFile,
     ChatMessageItem,
     ChatMessageContent,
+    StoredFile,
     LlmUsageRecord
   ]
 
@@ -610,20 +615,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = load_step_with_items!(step_id, actor)
-
-      Enum.each(specs, fn spec ->
-        text = to_string(Map.get(spec, :text, ""))
-
-        placement =
-          case Map.get(spec, :placement) do
-            :before_response -> :before_response
-            _other -> :after_response
-          end
-
-        if text != "" do
-          create_steering_item!(step, text, placement, actor)
-        end
-      end)
+      restore_steering_specs_in_transaction!(step, specs, actor)
     end)
 
     :ok
@@ -819,6 +811,77 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
 
     :ok
+  end
+
+  @doc """
+  Replaces a retry step range while preserving step-owned request files.
+  """
+  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs \\ [])
+      when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 and
+             is_map(raw_request) and is_list(steering_specs) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      steps =
+        message_id
+        |> steps_for_message(actor)
+        |> Enum.filter(&(&1.sequence >= from_sequence))
+        |> Enum.sort_by(& &1.sequence, :desc)
+
+      source_step = Enum.find(steps, &(&1.sequence == from_sequence))
+
+      if is_nil(source_step) do
+        raise ArgumentError, "Retry step not found"
+      end
+
+      staged =
+        source_step.id
+        |> RequestImages.stage_bindings()
+        |> request_images_value!()
+
+      Enum.each(steps, &Ash.destroy!(&1, actor: actor))
+
+      message_id
+      |> load_message!(actor)
+      |> update_message!(
+        %{
+          status: :generating,
+          error_detail: nil,
+          token_count: 0,
+          finished_at: nil
+        },
+        actor
+      )
+
+      step =
+        create_step!(
+          %{
+            chat_message_id: message_id,
+            sequence: from_sequence,
+            status: :waiting_provider,
+            raw_request: normalize_json_map(raw_request),
+            raw_response: nil,
+            response_final: false,
+            input_tokens: nil,
+            output_tokens: nil,
+            cached_input_tokens: nil,
+            reasoning_tokens: nil,
+            cost: nil,
+            first_token_at: nil,
+            finished_at: nil
+          },
+          actor
+        )
+
+      :ok =
+        staged
+        |> RequestImages.attach_staged_bindings_transactional(step.id)
+        |> request_images_ok!()
+
+      restore_steering_specs_in_transaction!(step, steering_specs, actor)
+
+      step.id
+    end)
   end
 
   defp persist_step_snapshot!(message_id, %RuntimeTrace.Step{} = runtime_step, step_status, opts)
@@ -1988,6 +2051,35 @@ defmodule IntellectualClub.Generation.Persistence do
 
   defp normalize_list(value) when is_list(value), do: value
   defp normalize_list(_value), do: []
+
+  defp request_images_value!({:ok, value}), do: value
+
+  defp request_images_value!({:error, reason}) do
+    raise "Failed to stage request files: #{inspect(reason)}"
+  end
+
+  defp request_images_ok!(:ok), do: :ok
+
+  defp request_images_ok!({:error, reason}) do
+    raise "Failed to attach request files: #{inspect(reason)}"
+  end
+
+  defp restore_steering_specs_in_transaction!(%ChatMessageStep{} = step, specs, actor)
+       when is_list(specs) do
+    Enum.each(specs, fn spec ->
+      text = to_string(Map.get(spec, :text, ""))
+
+      placement =
+        case Map.get(spec, :placement) do
+          :before_response -> :before_response
+          _other -> :after_response
+        end
+
+      if text != "" do
+        create_steering_item!(step, text, placement, actor)
+      end
+    end)
+  end
 
   defp positive_int(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_int(_value, default), do: default

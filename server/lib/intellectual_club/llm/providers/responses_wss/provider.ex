@@ -89,6 +89,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
                   base_url: Map.get(context, :provider_base_url),
                   api_key: token,
                   request_payload: request_payload,
+                  request_step_id: Map.get(opts, :request_step_id),
                   timeout_ms: Map.get(opts, :timeout_ms, 300_000),
                   connect_timeout_ms: Map.get(opts, :connect_timeout_ms, 10_000),
                   provider: Map.get(context, :provider_type, type())

@@ -209,6 +209,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
             base_url: base_url,
             api_key: api_key,
             request_payload: request_payload,
+            request_step_id: Map.get(opts, :request_step_id),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

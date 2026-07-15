@@ -65,6 +65,24 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   def load_path_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
 
+  @doc """
+  Returns the current chat and owned ancestor handoff chats whose canonical files
+  are visible from that chat.
+  """
+  @spec handoff_chat_scope_ids(integer(), integer()) :: [integer()]
+  def handoff_chat_scope_ids(chat_id, owner_id)
+      when is_integer(chat_id) and is_integer(owner_id) do
+    chat_id
+    |> collect_handoff_chat_scope_ids(owner_id, MapSet.new(), [])
+    |> case do
+      [] -> [chat_id]
+      ids -> ids
+    end
+  end
+
+  def handoff_chat_scope_ids(chat_id, _owner_id) when is_integer(chat_id), do: [chat_id]
+  def handoff_chat_scope_ids(_chat_id, _owner_id), do: []
+
   defp load_chat_content_payload(normalized_external_id, %ExecutionContext{} = context) do
     with {:ok, %ChatMessageContent{} = content} <-
            find_content_for_file(normalized_external_id, context),
@@ -134,12 +152,7 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id, owner_id: owner_id})
        when is_integer(chat_id) and is_integer(owner_id) do
-    chat_id
-    |> collect_handoff_chat_scope_ids(owner_id, MapSet.new(), [])
-    |> case do
-      [] -> [chat_id]
-      ids -> ids
-    end
+    handoff_chat_scope_ids(chat_id, owner_id)
   end
 
   defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id}) when is_integer(chat_id),

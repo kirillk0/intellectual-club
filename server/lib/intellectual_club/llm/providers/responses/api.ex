@@ -6,6 +6,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   https://www.openresponses.org
   """
 
+  alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
   alias Req.Response
 
@@ -23,6 +24,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             optional(:base_url) => String.t() | nil,
             required(:api_key) => String.t(),
             required(:request_payload) => map(),
+            optional(:request_step_id) => integer() | nil,
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -40,88 +42,99 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
 
     url = String.trim_trailing(base_url, "/") <> "/responses"
 
-    payload = Map.get(opts, :request_payload, %{}) || %{}
+    logical_request = Map.get(opts, :request_payload, %{}) || %{}
 
-    headers = [
-      {"authorization", "Bearer " <> api_key},
-      {"content-type", "application/json"},
-      {"accept", "text/event-stream"}
-    ]
+    case RequestHydration.hydrate(
+           logical_request,
+           Map.get(opts, :request_step_id),
+           :responses
+         ) do
+      {:ok, wire_request} ->
+        headers = [
+          {"authorization", "Bearer " <> api_key},
+          {"content-type", "application/json"},
+          {"accept", "text/event-stream"}
+        ]
 
-    request_opts = [
-      url: url,
-      method: :post,
-      headers: headers,
-      json: payload,
-      connect_options: [timeout: connect_timeout_ms],
-      receive_timeout: timeout_ms,
-      into: :self,
-      retry: false
-    ]
+        request_opts = [
+          url: url,
+          method: :post,
+          headers: headers,
+          json: wire_request,
+          connect_options: [timeout: connect_timeout_ms],
+          receive_timeout: timeout_ms,
+          into: :self,
+          retry: false
+        ]
 
-    try do
-      response = Req.request!(request_opts)
+        try do
+          response = Req.request!(request_opts)
 
-      if response.status >= 400 do
-        body_text = read_full_text(response)
-        response_json = safe_json_decode(body_text)
-        raw_response = normalize_raw_response(response_json, body_text, response.status)
+          if response.status >= 400 do
+            body_text = read_full_text(response)
+            response_json = safe_json_decode(body_text)
+            raw_response = normalize_raw_response(response_json, body_text, response.status)
 
-        emit.(
-          {:response_error,
-           %{
-             provider: :responses,
-             status_code: response.status,
-             url: url,
-             retryable: MapSet.member?(@retryable_http_status_codes, response.status),
-             error_kind: "http",
-             error_text: extract_error_summary(response_json, body_text),
-             raw_request: payload,
-             raw_response: raw_response
-           }}
-        )
+            emit.(
+              {:response_error,
+               %{
+                 provider: :responses,
+                 status_code: response.status,
+                 url: url,
+                 retryable: MapSet.member?(@retryable_http_status_codes, response.status),
+                 error_kind: "http",
+                 error_text: extract_error_summary(response_json, body_text),
+                 raw_request: logical_request,
+                 raw_response: raw_response
+               }}
+            )
 
-        :ok
-      else
-        stream_responses(response, payload, emit)
-      end
-    rescue
-      exception ->
-        retryable = retryable_exception?(exception)
+            :ok
+          else
+            stream_responses(response, logical_request, emit)
+          end
+        rescue
+          exception ->
+            retryable = retryable_exception?(exception)
 
-        emit.(
-          {:response_error,
-           %{
-             provider: :responses,
-             status_code: nil,
-             url: url,
-             retryable: retryable,
-             error_kind: exception_error_kind(exception),
-             error_text: Exception.message(exception),
-             raw_request: payload,
-             raw_response: nil
-           }}
-        )
+            emit.(
+              {:response_error,
+               %{
+                 provider: :responses,
+                 status_code: nil,
+                 url: url,
+                 retryable: retryable,
+                 error_kind: exception_error_kind(exception),
+                 error_text: Exception.message(exception),
+                 raw_request: logical_request,
+                 raw_response: nil
+               }}
+            )
 
-        :ok
-    catch
-      :exit, reason ->
-        retryable = retryable_exit_reason?(reason)
+            :ok
+        catch
+          :exit, reason ->
+            retryable = retryable_exit_reason?(reason)
 
-        emit.(
-          {:response_error,
-           %{
-             provider: :responses,
-             status_code: nil,
-             url: url,
-             retryable: retryable,
-             error_kind: exit_error_kind(reason),
-             error_text: Exception.format_exit(reason),
-             raw_request: payload,
-             raw_response: nil
-           }}
-        )
+            emit.(
+              {:response_error,
+               %{
+                 provider: :responses,
+                 status_code: nil,
+                 url: url,
+                 retryable: retryable,
+                 error_kind: exit_error_kind(reason),
+                 error_text: Exception.format_exit(reason),
+                 raw_request: logical_request,
+                 raw_response: nil
+               }}
+            )
 
+            :ok
+        end
+
+      {:error, error_meta} ->
+        emit.({:response_error, Map.put(error_meta, :url, url)})
         :ok
     end
   end

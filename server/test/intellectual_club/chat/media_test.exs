@@ -4,12 +4,12 @@ defmodule IntellectualClub.Chat.MediaTest do
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Files
 
-  test "chat_message_content emits placeholder and native image block for valid images" do
+  test "chat message projection emits a placeholder and compact image marker" do
     content = image_content!(image_payload(), "image/png")
 
     assert [
              %{"type" => "text", "text" => placeholder},
-             %{"type" => "image_url", "image_url" => %{"url" => data_url}}
+             %{"type" => "image_url", "image_url" => %{"url" => marker}}
            ] =
              Media.chat_message_content([content],
                supports_image_input: true,
@@ -17,69 +17,16 @@ defmodule IntellectualClub.Chat.MediaTest do
              )
 
     assert String.contains?(placeholder, "file_id=")
-    assert String.starts_with?(data_url, "data:image/png;base64,")
-    assert_data_url_image(data_url, "image/png", 1, 1)
+    assert_image_marker(marker, content.file, "data_url")
+    refute inspect(marker) =~ ";base64,"
   end
 
-  test "chat_message_content downsizes oversized native image blocks" do
-    content = image_content!(oversized_png_payload(), "image/png")
-
-    assert [
-             %{"type" => "text", "text" => placeholder},
-             %{"type" => "image_url", "image_url" => %{"url" => data_url}}
-           ] =
-             Media.chat_message_content([content],
-               supports_image_input: true,
-               provider_type: "openrouter_chat_completion"
-             )
-
-    assert String.contains?(placeholder, "file_id=")
-    assert_data_url_image(data_url, "image/png", 2_000, 1_000)
-    assert_original_image(content, "image/png", 3_000, 1_500)
-  end
-
-  test "chat_message_content falls back to explicit text for invalid stored images" do
-    content = image_content!("<html><body>404 Not Found</body></html>", "image/png")
-
-    assert content_text =
-             Media.chat_message_content([content],
-               supports_image_input: true,
-               provider_type: "openrouter_chat_completion"
-             )
-
-    assert is_binary(content_text)
-    assert String.contains?(content_text, "[Attached file")
-
-    assert String.contains?(
-             content_text,
-             "[Image omitted: attached file could not be validated as an image.]"
-           )
-  end
-
-  test "chat_message_content omits oversized image blocks when resizing fails" do
-    content = image_content!(oversized_bmp_header_payload(), "image/bmp", "attached.bmp")
-
-    assert content_text =
-             Media.chat_message_content([content],
-               supports_image_input: true,
-               provider_type: "openrouter_chat_completion"
-             )
-
-    assert is_binary(content_text)
-    assert String.contains?(content_text, "[Attached file")
-
-    assert String.contains?(
-             content_text,
-             "[Image omitted: attached image exceeded the native image size limit and could not be resized.]"
-           )
-  end
-
-  test "responses_message_content emits placeholder and native image block for valid images" do
+  test "responses projection emits a placeholder and compact image marker" do
     content = image_content!(image_payload(), "image/png")
 
     assert [
              %{"type" => "input_text", "text" => placeholder},
-             %{"type" => "input_image", "image_url" => data_url}
+             %{"type" => "input_image", "image_url" => marker}
            ] =
              Media.responses_message_content([content],
                supports_image_input: true,
@@ -87,40 +34,41 @@ defmodule IntellectualClub.Chat.MediaTest do
              )
 
     assert String.contains?(placeholder, "file_id=")
-    assert String.starts_with?(data_url, "data:image/png;base64,")
-    assert_data_url_image(data_url, "image/png", 1, 1)
+    assert_image_marker(marker, content.file, "data_url")
+    refute inspect(marker) =~ ";base64,"
   end
 
-  test "responses_message_content downsizes oversized native image blocks" do
-    content = image_content!(oversized_png_payload(), "image/png")
+  test "projection defers image validation and resizing until a request step exists" do
+    invalid = image_content!("<html><body>404 Not Found</body></html>", "image/png")
+    oversized = image_content!(oversized_png_payload(), "image/png")
 
-    assert [
-             %{"type" => "input_text", "text" => placeholder},
-             %{"type" => "input_image", "image_url" => data_url}
-           ] =
-             Media.responses_message_content([content],
-               supports_image_input: true,
-               provider_type: "responses"
-             )
+    for content <- [invalid, oversized] do
+      assert [
+               %{"type" => "text"},
+               %{"type" => "image_url", "image_url" => %{"url" => marker}}
+             ] =
+               Media.chat_message_content([content],
+                 supports_image_input: true,
+                 provider_type: "openrouter_chat_completion"
+               )
 
-    assert String.contains?(placeholder, "file_id=")
-    assert_data_url_image(data_url, "image/png", 2_000, 1_000)
+      assert_image_marker(marker, content.file, "data_url")
+    end
+
+    assert_original_image(oversized, "image/png", 3_000, 1_500)
   end
 
-  test "responses_message_content omits native image block and adds explicit fallback text for invalid images" do
-    content = image_content!("<html><body>404 Not Found</body></html>", "image/png")
+  test "non-image media remains a text placeholder" do
+    content = image_content!("plain text", "text/plain", "attached.txt")
 
-    assert [
-             %{"type" => "input_text", "text" => placeholder},
-             %{"type" => "input_text", "text" => fallback}
-           ] =
-             Media.responses_message_content([content],
+    assert text =
+             Media.chat_message_content([content],
                supports_image_input: true,
-               provider_type: "responses"
+               provider_type: "openrouter_chat_completion"
              )
 
-    assert String.contains?(placeholder, "[Attached file")
-    assert fallback == "[Image omitted: attached file could not be validated as an image.]"
+    assert is_binary(text)
+    assert String.contains?(text, "[Attached file")
   end
 
   test "media helpers require canonical atom keys and integer metadata" do
@@ -161,11 +109,25 @@ defmodule IntellectualClub.Chat.MediaTest do
     }
   end
 
-  defp assert_data_url_image(data_url, expected_mime_type, expected_width, expected_height) do
-    assert {^expected_mime_type, payload} = decode_data_url(data_url)
+  defp assert_image_marker(marker, file, encoding) do
+    assert %{
+             "$intellectual_club_file" => %{
+               "version" => 1,
+               "reference_key" => reference_key,
+               "source_file_external_id" => source_file_external_id,
+               "rendition" => %{
+                 "kind" => "fit",
+                 "max_edge_px" => 2_000,
+                 "format" => "preserve"
+               },
+               "encoding" => ^encoding,
+               "mime_type" => mime_type
+             }
+           } = marker
 
-    assert {^expected_mime_type, ^expected_width, ^expected_height, _variant} =
-             ExImageInfo.info(payload)
+    assert reference_key == to_string(file.external_id)
+    assert source_file_external_id == to_string(file.external_id)
+    assert mime_type == file.mime_type
   end
 
   defp assert_original_image(content, expected_mime_type, expected_width, expected_height) do
@@ -173,11 +135,6 @@ defmodule IntellectualClub.Chat.MediaTest do
 
     assert {^expected_mime_type, ^expected_width, ^expected_height, _variant} =
              ExImageInfo.info(payload)
-  end
-
-  defp decode_data_url("data:" <> rest) do
-    assert [mime_type, data] = String.split(rest, ";base64,", parts: 2)
-    {mime_type, Base.decode64!(data)}
   end
 
   defp image_payload do
@@ -190,18 +147,5 @@ defmodule IntellectualClub.Chat.MediaTest do
     assert {:ok, image} = Image.new(3_000, 1_500)
     assert {:ok, payload} = Image.write(image, :memory, suffix: ".png")
     payload
-  end
-
-  defp oversized_bmp_header_payload do
-    width = 3_000
-    height = 1_500
-    row_size = div(width * 3 + 3, 4) * 4
-    image_size = row_size * height
-    file_size = 54 + image_size
-
-    <<"BM", file_size::little-32, 0::little-16, 0::little-16, 54::little-32, 40::little-32,
-      width::little-signed-32, height::little-signed-32, 1::little-16, 24::little-16,
-      0::little-32, image_size::little-32, 2_835::little-signed-32, 2_835::little-signed-32,
-      0::little-32, 0::little-32>>
   end
 end

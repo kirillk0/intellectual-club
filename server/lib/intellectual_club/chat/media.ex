@@ -217,9 +217,9 @@ defmodule IntellectualClub.Chat.Media do
   end
 
   defp maybe_native_image_block(content, true, opts) when is_list(opts) do
-    case NativeModalities.project_media_content(content, opts) do
-      {:ok, %{modality: :image, data_url: data_url}} ->
-        {:ok, %{"type" => "image_url", "image_url" => %{"url" => data_url}}}
+    case NativeModalities.project_media_content(content, Keyword.put(opts, :encoding, :data_url)) do
+      {:ok, %{modality: :image, data_url: marker}} ->
+        {:ok, %{"type" => "image_url", "image_url" => %{"url" => marker}}}
 
       {:error, text} when is_binary(text) ->
         {:fallback, text}
@@ -232,9 +232,9 @@ defmodule IntellectualClub.Chat.Media do
   defp maybe_native_image_block(_content, _supports_image_input, _opts), do: :skip
 
   defp maybe_native_responses_image_block(content, true, "input_text", opts) when is_list(opts) do
-    case NativeModalities.project_media_content(content, opts) do
-      {:ok, %{modality: :image, data_url: data_url}} ->
-        {:ok, %{"type" => "input_image", "image_url" => data_url}}
+    case NativeModalities.project_media_content(content, Keyword.put(opts, :encoding, :data_url)) do
+      {:ok, %{modality: :image, data_url: marker}} ->
+        {:ok, %{"type" => "input_image", "image_url" => marker}}
 
       {:error, text} when is_binary(text) ->
         {:fallback, text}

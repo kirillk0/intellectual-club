@@ -13,7 +13,14 @@ defmodule IntellectualClub.Chat.Continuation do
 
   @spec continue_chat(integer(), map()) :: {:ok, Chat.t()} | {:error, term()}
   def continue_chat(source_chat_id, actor) when is_integer(source_chat_id) do
-    with {:ok, %Chat{} = source} <- Ash.get(Chat, source_chat_id, actor: actor) do
+    with {:ok, %Chat{} = source} <- Ash.get(Chat, source_chat_id, actor: actor),
+         source_branch =
+           Threads.active_branch(source, actor,
+             load: MessageTreeCopy.load_spec(),
+             strict?: true
+           ),
+         {:ok, _source_branch} <-
+           MessageTreeCopy.materialize_loaded_messages(source_branch, actor) do
       Repo.transaction(fn ->
         target = create_target_chat!(source, actor)
         copy_active_branch_to_target!(source, target, actor)
@@ -60,6 +67,10 @@ defmodule IntellectualClub.Chat.Continuation do
   defp branch_note(""), do: ""
   defp branch_note(note), do: to_string(note) <> " (branch)"
 
+  @doc """
+  Copies a branch whose request-image markers were materialized before the
+  caller's transaction started.
+  """
   @spec copy_active_branch_to_target!(Chat.t(), Chat.t(), map()) :: Chat.t()
   def copy_active_branch_to_target!(%Chat{} = source, %Chat{} = target, actor) do
     source
@@ -69,6 +80,10 @@ defmodule IntellectualClub.Chat.Continuation do
     Ash.get!(Chat, target.id, actor: actor)
   end
 
+  @doc """
+  Copies a selected branch whose prefix request-image markers were materialized
+  before the caller's transaction started.
+  """
   @spec copy_branch_to_target!(Chat.t(), Chat.t(), integer(), map(), keyword()) :: Chat.t()
   def copy_branch_to_target!(%Chat{} = source, %Chat{} = target, message_id, actor, opts \\ [])
       when is_integer(message_id) and is_list(opts) do

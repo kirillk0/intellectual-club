@@ -63,17 +63,13 @@ defmodule IntellectualClub.Generation.Supervisor do
            Persistence.steering_specs_for_step!(context.step_id),
          {:ok, request_payload, steering_specs} <-
            prepare_retry_steering(context, steering_specs),
-         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
-      step_id =
-        Persistence.ensure_step_started!(
-          context.message_id,
-          step_sequence,
-          request_payload,
-          []
-        )
-
-      :ok = Persistence.restore_steering_specs!(step_id, steering_specs)
-
+         step_id when is_integer(step_id) <-
+           Persistence.replace_steps_for_retry!(
+             context.message_id,
+             step_sequence,
+             request_payload,
+             steering_specs
+           ) do
       context = %{context | step_id: step_id, request_payload: request_payload}
       start_worker(context)
     else
@@ -103,17 +99,13 @@ defmodule IntellectualClub.Generation.Supervisor do
            Persistence.steering_specs_for_step!(context.step_id),
          {:ok, request_payload, steering_specs} <-
            prepare_retry_steering(context, steering_specs),
-         :ok <- Persistence.rollback_steps_for_retry!(context.message_id, step_sequence) do
-      step_id =
-        Persistence.ensure_step_started!(
-          context.message_id,
-          step_sequence,
-          request_payload,
-          []
-        )
-
-      :ok = Persistence.restore_steering_specs!(step_id, steering_specs)
-
+         step_id when is_integer(step_id) <-
+           Persistence.replace_steps_for_retry!(
+             context.message_id,
+             step_sequence,
+             request_payload,
+             steering_specs
+           ) do
       context = %{context | step_id: step_id, request_payload: request_payload}
       start_worker(context)
     else
@@ -150,14 +142,11 @@ defmodule IntellectualClub.Generation.Supervisor do
           {:ok, context}
 
         :restart_step ->
-          :ok = Persistence.rollback_steps_for_retry!(context.message_id, step_sequence)
-
           step_id =
-            Persistence.ensure_step_started!(
+            Persistence.replace_steps_for_retry!(
               context.message_id,
               step_sequence,
-              context.request_payload || %{},
-              []
+              context.request_payload || %{}
             )
 
           context = %{context | step_id: step_id}

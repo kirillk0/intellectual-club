@@ -24,7 +24,8 @@ defmodule IntellectualClub.Chat.BranchMove do
       when is_integer(message_id) do
     with {:ok, %Chat{} = source} <- fetch_source_chat(source_chat_or_id, actor),
          messages <- load_messages(source.id, actor),
-         {:ok, context} <- build_move_context(source, messages, message_id) do
+         {:ok, context} <- build_move_context(source, messages, message_id),
+         {:ok, context} <- materialize_move_context(context, actor) do
       Repo.transaction(fn -> perform_move!(context, actor) end)
       |> unwrap_transaction()
     end
@@ -110,6 +111,20 @@ defmodule IntellectualClub.Chat.BranchMove do
     end
   end
 
+  defp materialize_move_context(context, actor) do
+    prefix_count = length(context.prefix_messages)
+    source_messages = context.prefix_messages ++ context.moved_messages
+
+    with {:ok, loaded_messages} <-
+           Ash.load(source_messages, MessageTreeCopy.load_spec(), actor: actor, strict?: true),
+         {:ok, _loaded_messages} <-
+           MessageTreeCopy.materialize_loaded_messages(loaded_messages, actor) do
+      {prefix_messages, moved_messages} = Enum.split(loaded_messages, prefix_count)
+
+      {:ok, %{context | prefix_messages: prefix_messages, moved_messages: moved_messages}}
+    end
+  end
+
   defp perform_move!(context, actor) do
     target = create_target_chat!(context.source, actor)
     ChatSettingsCopy.copy_bindings!(context.source.id, target.id, actor)
@@ -118,10 +133,7 @@ defmodule IntellectualClub.Chat.BranchMove do
       set_chat_last_message!(context.source, context.source_replacement_last_id, actor)
     end
 
-    copied_prefix_ids =
-      context.prefix_messages
-      |> Ash.load!(MessageTreeCopy.load_spec(), actor: actor, strict?: true)
-      |> MessageTreeCopy.copy_messages!(target, actor)
+    copied_prefix_ids = MessageTreeCopy.copy_messages!(context.prefix_messages, target, actor)
 
     moved_root_parent_id = mapped_prefix_parent_id(context.selected.parent_id, copied_prefix_ids)
 

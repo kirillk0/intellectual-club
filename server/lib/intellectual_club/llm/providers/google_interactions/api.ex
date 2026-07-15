@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
   Google Interactions API streaming client.
   """
 
+  alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents
   alias Req.Response
 
@@ -21,6 +22,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
             optional(:base_url) => String.t() | nil,
             required(:api_key) => String.t(),
             required(:request_payload) => map(),
+            optional(:request_step_id) => integer() | nil,
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -37,95 +39,106 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
     connect_timeout_ms = Map.get(opts, :connect_timeout_ms, 10_000)
 
     url = String.trim_trailing(base_url, "/") <> "/interactions"
-    payload = Map.get(opts, :request_payload, %{}) || %{}
+    logical_request = Map.get(opts, :request_payload, %{}) || %{}
 
-    headers = [
-      {"x-goog-api-key", api_key},
-      {"content-type", "application/json"},
-      {"accept", "text/event-stream"}
-    ]
+    case RequestHydration.hydrate(
+           logical_request,
+           Map.get(opts, :request_step_id),
+           :google_interactions
+         ) do
+      {:ok, wire_request} ->
+        headers = [
+          {"x-goog-api-key", api_key},
+          {"content-type", "application/json"},
+          {"accept", "text/event-stream"}
+        ]
 
-    request_opts = [
-      url: url,
-      method: :post,
-      headers: headers,
-      json: payload,
-      connect_options: [timeout: connect_timeout_ms],
-      receive_timeout: timeout_ms,
-      into: :self,
-      retry: false
-    ]
+        request_opts = [
+          url: url,
+          method: :post,
+          headers: headers,
+          json: wire_request,
+          connect_options: [timeout: connect_timeout_ms],
+          receive_timeout: timeout_ms,
+          into: :self,
+          retry: false
+        ]
 
-    try do
-      response = Req.request!(request_opts)
+        try do
+          response = Req.request!(request_opts)
 
-      cond do
-        response.status >= 400 ->
-          body_text = read_full_text(response)
-          response_json = safe_json_decode(body_text)
-          raw_response = normalize_raw_response(response_json, body_text, response.status)
+          cond do
+            response.status >= 400 ->
+              body_text = read_full_text(response)
+              response_json = safe_json_decode(body_text)
+              raw_response = normalize_raw_response(response_json, body_text, response.status)
 
-          emit.(
-            {:response_error,
-             %{
-               provider: :google_interactions,
-               status_code: response.status,
-               url: url,
-               retryable: retryable_http_error?(response.status, response_json, body_text),
-               error_kind: "http",
-               error_text: extract_error_summary(response_json, body_text),
-               raw_request: payload,
-               raw_response: raw_response
-             }}
-          )
+              emit.(
+                {:response_error,
+                 %{
+                   provider: :google_interactions,
+                   status_code: response.status,
+                   url: url,
+                   retryable: retryable_http_error?(response.status, response_json, body_text),
+                   error_kind: "http",
+                   error_text: extract_error_summary(response_json, body_text),
+                   raw_request: logical_request,
+                   raw_response: raw_response
+                 }}
+              )
 
-        stream_response?(response) ->
-          stream_interactions(response, payload, url, emit)
+            stream_response?(response) ->
+              stream_interactions(response, logical_request, url, emit)
 
-        true ->
-          response
-          |> read_full_text()
-          |> handle_full_response(payload, emit)
-      end
+            true ->
+              response
+              |> read_full_text()
+              |> handle_full_response(logical_request, emit)
+          end
 
-      :ok
-    rescue
-      exception ->
-        retryable = retryable_exception?(exception)
+          :ok
+        rescue
+          exception ->
+            retryable = retryable_exception?(exception)
 
-        emit.(
-          {:response_error,
-           %{
-             provider: :google_interactions,
-             status_code: nil,
-             url: url,
-             retryable: retryable,
-             error_kind: exception_error_kind(exception),
-             error_text: Exception.message(exception),
-             raw_request: payload,
-             raw_response: nil
-           }}
-        )
+            emit.(
+              {:response_error,
+               %{
+                 provider: :google_interactions,
+                 status_code: nil,
+                 url: url,
+                 retryable: retryable,
+                 error_kind: exception_error_kind(exception),
+                 error_text: Exception.message(exception),
+                 raw_request: logical_request,
+                 raw_response: nil
+               }}
+            )
 
-        :ok
-    catch
-      :exit, reason ->
-        retryable = retryable_exit_reason?(reason)
+            :ok
+        catch
+          :exit, reason ->
+            retryable = retryable_exit_reason?(reason)
 
-        emit.(
-          {:response_error,
-           %{
-             provider: :google_interactions,
-             status_code: nil,
-             url: url,
-             retryable: retryable,
-             error_kind: exit_error_kind(reason),
-             error_text: Exception.format_exit(reason),
-             raw_request: payload,
-             raw_response: nil
-           }}
-        )
+            emit.(
+              {:response_error,
+               %{
+                 provider: :google_interactions,
+                 status_code: nil,
+                 url: url,
+                 retryable: retryable,
+                 error_kind: exit_error_kind(reason),
+                 error_text: Exception.format_exit(reason),
+                 raw_request: logical_request,
+                 raw_response: nil
+               }}
+            )
 
+            :ok
+        end
+
+      {:error, error_meta} ->
+        emit.({:response_error, Map.put(error_meta, :url, url)})
         :ok
     end
   end

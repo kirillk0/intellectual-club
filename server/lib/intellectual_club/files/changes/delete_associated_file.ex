@@ -1,6 +1,9 @@
 defmodule IntellectualClub.Files.Changes.DeleteAssociatedFile do
   @moduledoc """
   Deletes a logical file referenced by a resource after the owner row is destroyed.
+
+  The optional `strict?` flag propagates cleanup failures so the owner destroy can
+  roll back. Existing callers keep best-effort cleanup by default.
   """
 
   use Ash.Resource.Change
@@ -11,6 +14,7 @@ defmodule IntellectualClub.Files.Changes.DeleteAssociatedFile do
   @impl true
   def change(changeset, opts, _context) do
     field = Keyword.get(opts, :field, :image_file_id)
+    strict? = Keyword.get(opts, :strict?, false)
     context_key = {__MODULE__, field, :file_id}
 
     changeset
@@ -24,18 +28,23 @@ defmodule IntellectualClub.Files.Changes.DeleteAssociatedFile do
       Changeset.put_context(changeset, context_key, file_id)
     end)
     |> Changeset.after_action(fn changeset, record ->
-      if is_integer(Map.get(changeset.context, context_key)) do
-        :ok =
-          changeset.context
-          |> Map.fetch!(context_key)
-          |> Files.delete_file_and_maybe_payload()
-          |> normalize_delete_result()
-      end
+      file_id = Map.get(changeset.context, context_key)
 
-      {:ok, record}
+      case delete_associated_file(file_id) do
+        :ok ->
+          {:ok, record}
+
+        {:error, reason} when strict? ->
+          {:error, {:delete_associated_file_failed, field, file_id, reason}}
+
+        {:error, _reason} ->
+          {:ok, record}
+      end
     end)
   end
 
-  defp normalize_delete_result(:ok), do: :ok
-  defp normalize_delete_result({:error, _reason}), do: :ok
+  defp delete_associated_file(file_id) when is_integer(file_id),
+    do: Files.delete_file_and_maybe_payload(file_id)
+
+  defp delete_associated_file(_file_id), do: :ok
 end

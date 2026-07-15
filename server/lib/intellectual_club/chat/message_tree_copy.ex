@@ -9,7 +9,43 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.RequestImages
+  alias IntellectualClub.Generation.RequestImages.Walker
   alias IntellectualClub.Llm.LlmConfiguration
+
+  require Ash.Query
+
+  @doc """
+  Materializes request-image markers for already loaded source messages.
+
+  Callers must run this before opening any transaction that copies or moves the
+  messages. The source message and every source step are re-authorized for the
+  supplied actor before the internal materializer is invoked.
+  """
+  @spec materialize_loaded_messages([ChatMessage.t()], map()) ::
+          {:ok, [ChatMessage.t()]} | {:error, term()}
+  def materialize_loaded_messages(messages, actor) when is_list(messages) and is_map(actor) do
+    Enum.reduce_while(messages, {:ok, messages}, fn message, {:ok, messages} ->
+      case materialize_loaded_message(message, actor) do
+        :ok -> {:cont, {:ok, messages}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  def materialize_loaded_messages(_messages, _actor),
+    do: {:error, :invalid_loaded_messages}
+
+  @spec materialize_loaded_messages!([ChatMessage.t()], map()) :: [ChatMessage.t()]
+  def materialize_loaded_messages!(messages, actor) do
+    case materialize_loaded_messages(messages, actor) do
+      {:ok, messages} ->
+        messages
+
+      {:error, reason} ->
+        raise "Failed to materialize copied request files: #{inspect(reason)}"
+    end
+  end
 
   @spec copy_messages!([ChatMessage.t()], Chat.t(), map()) :: %{integer() => integer()}
   def copy_messages!(messages, %Chat{} = target, actor) when is_list(messages) do
@@ -49,6 +85,12 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
         :reasoning_tokens,
         :cost,
         :first_token_at,
+        request_files: [
+          :reference_key,
+          :source_file_external_id,
+          :variant_key,
+          file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
+        ],
         items: [
           :id,
           :sequence,
@@ -107,27 +149,37 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   defp copy_error_detail(%ChatMessage{error_detail: error_detail}), do: error_detail
 
   defp copy_step!(%ChatMessageStep{} = step, %ChatMessage{} = copied_message, actor) do
+    source_step =
+      Ash.get!(ChatMessageStep, step.id,
+        actor: actor,
+        load: [request_files: [:reference_key, :source_file_external_id]]
+      )
+
+    ensure_request_markers_bound!(source_step)
+
     copied =
       ChatMessageStep
       |> Ash.Changeset.for_create(
         :create,
         %{
           chat_message_id: copied_message.id,
-          sequence: step.sequence,
-          status: copy_step_status(step.status),
-          raw_request: step.raw_request || %{},
-          raw_response: step.raw_response,
-          response_final: step.response_final || false,
-          input_tokens: step.input_tokens,
-          output_tokens: step.output_tokens,
-          cached_input_tokens: step.cached_input_tokens,
-          reasoning_tokens: step.reasoning_tokens,
-          cost: step.cost,
-          first_token_at: step.first_token_at
+          sequence: source_step.sequence,
+          status: copy_step_status(source_step.status),
+          raw_request: source_step.raw_request || %{},
+          raw_response: source_step.raw_response,
+          response_final: source_step.response_final || false,
+          input_tokens: source_step.input_tokens,
+          output_tokens: source_step.output_tokens,
+          cached_input_tokens: source_step.cached_input_tokens,
+          reasoning_tokens: source_step.reasoning_tokens,
+          cost: source_step.cost,
+          first_token_at: source_step.first_token_at
         },
         actor: actor
       )
       |> Ash.create!()
+
+    :ok = clone_request_files!(source_step.id, copied.id)
 
     items = ordered(step.items)
 
@@ -178,6 +230,98 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
 
   defp copy_step_status(status) when status in [:done, :canceled, :error], do: status
   defp copy_step_status(_status), do: :done
+
+  defp materialize_loaded_message(%ChatMessage{id: message_id}, actor)
+       when is_integer(message_id) do
+    with {:ok, %ChatMessage{}} <- Ash.get(ChatMessage, message_id, actor: actor),
+         {:ok, steps} <- authorized_steps_for_message(message_id, actor) do
+      Enum.reduce_while(ordered(steps), :ok, fn step, :ok ->
+        case materialize_authorized_step(step, message_id, actor) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp materialize_loaded_message(_message, _actor),
+    do: {:error, :invalid_loaded_message}
+
+  defp authorized_steps_for_message(message_id, actor) do
+    ChatMessageStep
+    |> Ash.Query.filter(chat_message_id == ^message_id)
+    |> Ash.Query.sort(sequence: :asc, id: :asc)
+    |> Ash.read(actor: actor)
+  end
+
+  defp materialize_authorized_step(%ChatMessageStep{id: step_id}, message_id, actor)
+       when is_integer(step_id) do
+    with {:ok, %ChatMessageStep{} = step} <- Ash.get(ChatMessageStep, step_id, actor: actor),
+         true <- step.chat_message_id == message_id,
+         {:ok, _compact_request} <-
+           RequestImages.materialize_and_persist(step.raw_request || %{}, step.id) do
+      :ok
+    else
+      false -> {:error, {:request_step_message_mismatch, step_id, message_id}}
+      {:error, reason} -> {:error, {:request_file_materialization_failed, step_id, reason}}
+    end
+  end
+
+  defp materialize_authorized_step(_step, message_id, _actor),
+    do: {:error, {:invalid_request_step, message_id}}
+
+  defp ensure_request_markers_bound!(%ChatMessageStep{} = step) do
+    {_request, descriptors} =
+      Walker.map_images(step.raw_request || %{}, %{}, fn _shape, block, marker, descriptors ->
+        reference_key = Map.get(marker, "reference_key")
+        source_file_external_id = Map.get(marker, "source_file_external_id")
+
+        if is_binary(reference_key) and is_binary(source_file_external_id) do
+          case Map.get(descriptors, reference_key) do
+            nil ->
+              {block, Map.put(descriptors, reference_key, source_file_external_id)}
+
+            ^source_file_external_id ->
+              {block, descriptors}
+
+            other_source_file_external_id ->
+              raise "Conflicting source files for copied request reference #{reference_key}: #{other_source_file_external_id} and #{source_file_external_id}"
+          end
+        else
+          raise "Invalid request file marker on copied step #{step.id}"
+        end
+      end)
+
+    bound_descriptors =
+      step.request_files
+      |> Map.new(fn binding ->
+        {to_string(binding.reference_key), to_string(binding.source_file_external_id)}
+      end)
+
+    missing = Map.keys(descriptors) -- Map.keys(bound_descriptors)
+
+    if missing != [] do
+      raise "Copied step #{step.id} has unresolved request file references: #{inspect(missing)}"
+    end
+
+    mismatched =
+      Enum.filter(descriptors, fn {reference_key, source_file_external_id} ->
+        Map.get(bound_descriptors, reference_key) != source_file_external_id
+      end)
+
+    if mismatched != [] do
+      raise "Copied step #{step.id} has mismatched request file sources: #{inspect(mismatched)}"
+    end
+
+    :ok
+  end
+
+  defp clone_request_files!(source_step_id, target_step_id) do
+    case RequestImages.clone_bindings(source_step_id, target_step_id) do
+      :ok -> :ok
+      {:error, reason} -> raise "Failed to copy request files: #{inspect(reason)}"
+    end
+  end
 
   defp copy_item!(
          %ChatMessageItem{} = item,

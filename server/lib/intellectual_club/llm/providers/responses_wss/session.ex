@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
   use GenServer
 
+  alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
 
   @default_base_url "https://api.openai.com/v1"
@@ -78,8 +79,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
     with {:ok, url} <-
            websocket_url(Map.get(opts, :base_url) || Map.get(state.context, :provider_base_url)),
+         {:ok, logical_transport_request} <- wire_payload(logical_request, state),
+         {:ok, wire_payload} <-
+           RequestHydration.hydrate(
+             logical_transport_request,
+             Map.get(opts, :request_step_id),
+             provider
+           ),
          {:ok, connection, state} <- ensure_connection(state, opts, url),
-         {:ok, wire_payload} <- wire_payload(logical_request, state),
          {:ok, connection} <- send_payload(connection, wire_payload) do
       state = %{state | connection: connection}
 
@@ -93,6 +100,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
           {:reply, :ok, state}
       end
     else
+      {:error, %{error_kind: "request_hydration"} = error_meta} ->
+        maybe_emit_response_error(emit, provider, logical_request, error_meta)
+        {:reply, :ok, state}
+
       {:error, error_meta} when is_map(error_meta) ->
         state = reset_transport_state(state)
         maybe_emit_response_error(emit, provider, logical_request, error_meta)

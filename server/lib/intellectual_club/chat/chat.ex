@@ -16,6 +16,7 @@ defmodule IntellectualClub.Chat.Chat do
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.DefaultLlmConfiguration
+  alias IntellectualClub.Chat.MessageTreeCopy
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
@@ -102,12 +103,18 @@ defmodule IntellectualClub.Chat.Chat do
     actor = changeset.context[:private][:actor]
     source_id = Ash.Changeset.get_argument(changeset, :id)
 
-    case Ash.get(__MODULE__, source_id, actor: actor) do
-      {:ok, source} ->
-        changeset
-        |> Ash.Changeset.change_attributes(Continuation.target_attrs(source))
-        |> Ash.Changeset.put_context(:source_chat_id, source.id)
-
+    with {:ok, source} <- Ash.get(__MODULE__, source_id, actor: actor),
+         source_branch =
+           Threads.active_branch(source, actor,
+             load: MessageTreeCopy.load_spec(),
+             strict?: true
+           ),
+         {:ok, _source_branch} <-
+           MessageTreeCopy.materialize_loaded_messages(source_branch, actor) do
+      changeset
+      |> Ash.Changeset.change_attributes(Continuation.target_attrs(source))
+      |> Ash.Changeset.put_context(:source_chat_id, source.id)
+    else
       {:error, error} ->
         add_action_error(changeset, :id, error)
     end
@@ -132,8 +139,13 @@ defmodule IntellectualClub.Chat.Chat do
       |> List.wrap()
       |> Threads.normalize_content_specs()
 
-    with {:ok, selection} <- Branching.active_branch_selection(source_id, message_id, actor),
-         :ok <- Branching.validate_replacement_contents(selection, replacement_contents) do
+    branch_opts = [load: MessageTreeCopy.load_spec(), strict?: true]
+
+    with {:ok, selection} <-
+           Branching.active_branch_selection(source_id, message_id, actor, branch_opts),
+         :ok <- Branching.validate_replacement_contents(selection, replacement_contents),
+         {:ok, _prefix} <-
+           MessageTreeCopy.materialize_loaded_messages(selection.prefix, actor) do
       changeset
       |> Ash.Changeset.change_attributes(Continuation.branch_target_attrs(selection.source))
       |> Ash.Changeset.put_context(:source_chat_id, selection.source.id)
@@ -172,7 +184,8 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   defp add_action_error(changeset, field, error) do
-    Ash.Changeset.add_error(changeset, field: field, message: Exception.message(error))
+    message = if is_exception(error), do: Exception.message(error), else: inspect(error)
+    Ash.Changeset.add_error(changeset, field: field, message: message)
   end
 
   defp copy_branch_after_create(changeset, _context) do

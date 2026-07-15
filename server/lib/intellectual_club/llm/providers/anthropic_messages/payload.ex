@@ -398,14 +398,14 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
     case image_source_from_url(url) do
       nil -> []
-      source -> [%{"type" => "image", "source" => source}]
+      source -> [maybe_copy_cache_control(%{"type" => "image", "source" => source}, block)]
     end
   end
 
   defp content_block(%{"type" => "input_image"} = block) do
     case image_source_from_url(Map.get(block, "image_url") || Map.get(block, "url")) do
       nil -> []
-      source -> [%{"type" => "image", "source" => source}]
+      source -> [maybe_copy_cache_control(%{"type" => "image", "source" => source}, block)]
     end
   end
 
@@ -584,6 +584,20 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
       true ->
         nil
+    end
+  end
+
+  defp image_source_from_url(%{} = reference) do
+    reference = stringify_keys(reference)
+
+    with %{} = marker <- Map.get(reference, "$intellectual_club_file"),
+         1 <- Map.get(marker, "version"),
+         mime_type when is_binary(mime_type) and mime_type != "" <-
+           Map.get(marker, "mime_type") do
+      reference = put_in(reference, ["$intellectual_club_file", "encoding"], "base64")
+      %{"type" => "base64", "media_type" => mime_type, "data" => reference}
+    else
+      _other -> nil
     end
   end
 

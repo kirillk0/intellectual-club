@@ -73,6 +73,52 @@ defmodule IntellectualClub.FilesTest do
     assert {:error, :enoent} = Files.create_from_path("missing.txt", "text/plain", missing_path)
   end
 
+  test "logical file creation failure removes a newly stored payload" do
+    payload = unique_payload("new-payload-create-error")
+    sha256 = sha256_hex(payload)
+
+    assert {:error, _error} =
+             Files.create_from_binary("invalid\0filename.txt", "text/plain", payload)
+
+    assert file_count(sha256) == 0
+    refute FilesystemStorage.exists?(sha256)
+  end
+
+  test "path-based logical file creation failure removes a newly stored payload" do
+    payload = unique_payload("new-path-payload-create-error")
+    sha256 = sha256_hex(payload)
+    source_path = temp_file_path("create-error.txt")
+    File.write!(source_path, payload)
+    on_exit(fn -> File.rm(source_path) end)
+
+    assert {:error, _error} =
+             Files.create_from_path(
+               "invalid\0filename.txt",
+               "text/plain",
+               source_path
+             )
+
+    assert File.read!(source_path) == payload
+    assert file_count(sha256) == 0
+    refute FilesystemStorage.exists?(sha256)
+  end
+
+  test "logical file creation failure preserves a preexisting payload" do
+    payload = unique_payload("existing-payload-create-error")
+
+    assert {:ok, existing_file} =
+             Files.create_from_binary("existing.txt", "text/plain", payload)
+
+    assert {:error, _error} =
+             Files.create_from_binary("invalid\0filename.txt", "text/plain", payload)
+
+    assert file_count(existing_file.sha256) == 1
+    assert FilesystemStorage.exists?(existing_file.sha256)
+    assert {:ok, {_file, ^payload}} = Files.load_payload(existing_file.id)
+
+    assert :ok = Files.delete_file_and_maybe_payload(existing_file.id)
+  end
+
   test "duplicate_file reuses filesystem payload and payload is deleted only after the last file row" do
     assert {:ok, file} = Files.create_from_upload(image_upload("source.png"))
     assert {:ok, duplicate} = Files.duplicate_file(file.id)
@@ -148,6 +194,10 @@ defmodule IntellectualClub.FilesTest do
       System.tmp_dir!(),
       "ic-files-test-#{System.unique_integer([:positive])}-#{safe_filename}"
     )
+  end
+
+  defp unique_payload(prefix) do
+    "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
   end
 
   defp sha256_hex(payload) do
