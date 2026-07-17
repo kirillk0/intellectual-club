@@ -599,12 +599,16 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
 
     cached_input_tokens = coerce_int(Map.get(usage, "cache_read_input_tokens"))
 
+    reasoning_tokens =
+      nested_int(usage, "output_tokens_details", "thinking_tokens") ||
+        coerce_int(Map.get(usage, "thinking_tokens"))
+
     %{
       input_tokens: input_tokens,
       output_tokens: output_tokens,
       cached_input_tokens: cached_input_tokens,
-      reasoning_tokens: nil,
-      cost: nil
+      reasoning_tokens: reasoning_tokens,
+      cost: coerce_float(Map.get(usage, "cost"))
     }
   end
 
@@ -627,6 +631,27 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   end
 
   defp coerce_int(_value), do: nil
+
+  defp coerce_float(nil), do: nil
+  defp coerce_float(value) when is_boolean(value), do: nil
+  defp coerce_float(value) when is_integer(value), do: value / 1
+  defp coerce_float(value) when is_float(value), do: value
+
+  defp coerce_float(value) when is_binary(value) do
+    case Float.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp coerce_float(_value), do: nil
+
+  defp nested_int(value, outer_key, inner_key) when is_map(value) do
+    case Map.get(value, outer_key) do
+      nested when is_map(nested) -> coerce_int(Map.get(nested, inner_key))
+      _other -> nil
+    end
+  end
 
   defp read_full_text(%Response{} = response) do
     response.body

@@ -121,6 +121,14 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
     assert meta.raw_response["stop_reason"] == "tool_use"
     assert meta.raw_response["usage"] == %{"input_tokens" => 10, "output_tokens" => 20}
 
+    assert meta.usage == %{
+             input_tokens: 10,
+             output_tokens: 20,
+             cached_input_tokens: nil,
+             reasoning_tokens: nil,
+             cost: nil
+           }
+
     assert meta.raw_response["content"] == [
              %{"type" => "text", "text" => "Checking."},
              %{
@@ -132,61 +140,16 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
            ]
   end
 
-  test "normalizes cache usage as total input tokens and cache reads" do
-    scripts = %{
-      "/messages" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "message_start",
-             "message" => %{
-               "id" => "msg_1",
-               "type" => "message",
-               "role" => "assistant",
-               "model" => "claude-sonnet-4-20250514",
-               "content" => [],
-               "stop_reason" => nil,
-               "usage" => %{
-                 "input_tokens" => 10,
-                 "cache_read_input_tokens" => 20,
-                 "cache_creation_input_tokens" => 30,
-                 "output_tokens" => 1
-               }
-             }
-           },
-           %{
-             "type" => "message_delta",
-             "delta" => %{"stop_reason" => "end_turn", "stop_sequence" => nil},
-             "usage" => %{"output_tokens" => 7}
-           },
-           %{"type" => "message_stop"}
-         ])}
-      ]
-    }
-
-    {base_url, _agent} = start_scripted_server!(scripts)
-    parent = self()
-
-    :ok =
-      Api.stream_generate(
-        %{
-          base_url: base_url,
-          api_key: "test-key",
-          request_payload: %{
-            "model" => "claude-sonnet-4-20250514",
-            "max_tokens" => 128,
-            "messages" => [],
-            "stream" => true
-          },
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000
-        },
-        fn event ->
-          send(parent, {:provider_event, event})
-        end
-      )
-
-    events = collect_provider_events([])
+  test "normalizes cache, nested thinking tokens, and cost from usage" do
+    events =
+      run_usage_stream!(%{
+        "input_tokens" => 10,
+        "cache_read_input_tokens" => 20,
+        "cache_creation_input_tokens" => 30,
+        "output_tokens" => 1,
+        "output_tokens_details" => %{"thinking_tokens" => 937},
+        "cost" => 0.012036
+      })
 
     step =
       Enum.reduce(events, RuntimeTrace.new_step(), fn
@@ -197,6 +160,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
     assert step.input_tokens == 60
     assert step.cached_input_tokens == 20
     assert step.output_tokens == 7
+    assert step.reasoning_tokens == 937
+    assert_in_delta step.cost, 0.012036, 1.0e-9
 
     {:response_complete, meta} =
       Enum.find(events, fn
@@ -208,16 +173,37 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
              input_tokens: 60,
              output_tokens: 7,
              cached_input_tokens: 20,
-             reasoning_tokens: nil,
-             cost: nil
+             reasoning_tokens: 937,
+             cost: 0.012036
            }
 
     assert meta.raw_response["usage"] == %{
              "input_tokens" => 10,
              "cache_read_input_tokens" => 20,
              "cache_creation_input_tokens" => 30,
-             "output_tokens" => 7
+             "output_tokens" => 7,
+             "output_tokens_details" => %{"thinking_tokens" => 937},
+             "cost" => 0.012036
            }
+  end
+
+  test "normalizes direct thinking tokens and numeric string cost from usage" do
+    events =
+      run_usage_stream!(%{
+        "input_tokens" => 10,
+        "output_tokens" => 1,
+        "thinking_tokens" => "294",
+        "cost" => "0.0195436"
+      })
+
+    step =
+      Enum.reduce(events, RuntimeTrace.new_step(), fn
+        {:trace, trace_event}, acc -> RuntimeTrace.apply_event(acc, trace_event)
+        _event, acc -> acc
+      end)
+
+    assert step.reasoning_tokens == 294
+    assert_in_delta step.cost, 0.0195436, 1.0e-9
   end
 
   test "does not classify first tool call after thinking as answer" do
@@ -380,6 +366,58 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
              "raw_text" => body,
              "status_code" => 503
            }
+  end
+
+  defp run_usage_stream!(initial_usage) when is_map(initial_usage) do
+    scripts = %{
+      "/messages" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "message_start",
+             "message" => %{
+               "id" => "msg_usage",
+               "type" => "message",
+               "role" => "assistant",
+               "model" => "claude-sonnet-4-20250514",
+               "content" => [],
+               "stop_reason" => nil,
+               "usage" => initial_usage
+             }
+           },
+           %{
+             "type" => "message_delta",
+             "delta" => %{"stop_reason" => "end_turn", "stop_sequence" => nil},
+             "usage" => %{"output_tokens" => 7}
+           },
+           %{"type" => "message_stop"}
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    parent = self()
+
+    :ok =
+      Api.stream_generate(
+        %{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "claude-sonnet-4-20250514",
+            "max_tokens" => 128,
+            "messages" => [],
+            "stream" => true
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        },
+        fn event ->
+          send(parent, {:provider_event, event})
+        end
+      )
+
+    collect_provider_events([])
   end
 
   defp run_and_capture_error!(opts) when is_map(opts) do
