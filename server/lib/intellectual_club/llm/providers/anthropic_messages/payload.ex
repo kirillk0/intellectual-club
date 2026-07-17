@@ -672,7 +672,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   defp media_result_blocks(media_contents) when is_list(media_contents) do
     media_contents
     |> Enum.flat_map(fn content ->
-      content
+      [content]
       |> IntellectualClub.Chat.Media.chat_message_content(
         supports_image_input: true,
         provider_type: "anthropic_messages"

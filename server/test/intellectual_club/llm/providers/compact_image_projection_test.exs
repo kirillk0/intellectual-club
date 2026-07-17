@@ -58,6 +58,46 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
            ]
   end
 
+  test "Anthropic tool result projection includes compact image media" do
+    source_file_external_id =
+      get_in(@marker, ["$intellectual_club_file", "source_file_external_id"])
+
+    content = %{
+      kind: :media,
+      sequence: 2,
+      external_id: "33333333-3333-4333-8333-333333333333",
+      file_id: 42,
+      file: %StoredFile{
+        id: 42,
+        external_id: source_file_external_id,
+        filename: "image.png",
+        mime_type: "image/png",
+        size_bytes: 3,
+        sha256: String.duplicate("a", 64)
+      }
+    }
+
+    blocks = AnthropicPayload.tool_result_content("Image attached", [content])
+
+    assert [
+             %{"type" => "text", "text" => "Image attached"},
+             %{"type" => "text"},
+             %{
+               "type" => "image",
+               "source" => %{
+                 "type" => "base64",
+                 "media_type" => "image/png",
+                 "data" => marker
+               }
+             }
+           ] = blocks
+
+    assert get_in(marker, ["$intellectual_club_file", "encoding"]) == "base64"
+
+    assert get_in(marker, ["$intellectual_club_file", "source_file_external_id"]) ==
+             source_file_external_id
+  end
+
   test "Google projection keeps compact image markers in image.data" do
     source_file_external_id =
       get_in(@marker, ["$intellectual_club_file", "source_file_external_id"])
