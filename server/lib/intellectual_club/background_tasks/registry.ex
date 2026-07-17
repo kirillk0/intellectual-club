@@ -5,6 +5,7 @@ defmodule IntellectualClub.BackgroundTasks.Registry do
 
   alias IntellectualClub.BackgroundTasks.Adapters.Ssh
   alias IntellectualClub.Chat.Fork
+  alias IntellectualClub.Chat.Spawn
   alias IntellectualClub.Tools.Drivers.Outlet
 
   @spec fetch(String.t() | atom()) :: {:ok, module()} | {:error, :unknown_adapter}
@@ -12,6 +13,7 @@ defmodule IntellectualClub.BackgroundTasks.Registry do
     case adapter |> to_string() |> String.trim() do
       "ssh" -> {:ok, Ssh}
       "fork" -> {:ok, Fork}
+      "spawn" -> {:ok, Spawn}
       "outlet" -> {:ok, Outlet}
       _other -> {:error, :unknown_adapter}
     end

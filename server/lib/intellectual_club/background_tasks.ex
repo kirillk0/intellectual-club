@@ -16,7 +16,9 @@ defmodule IntellectualClub.BackgroundTasks do
   alias IntellectualClub.BackgroundTasks.Registry, as: AdapterRegistry
   alias IntellectualClub.BackgroundTasks.Supervisor, as: TaskSupervisor
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Outlets.Runtime, as: OutletRuntime
+  alias IntellectualClub.Repo
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -60,6 +62,25 @@ defmodule IntellectualClub.BackgroundTasks do
     start_envelope(tool_instance, "fork", %{"task" => task}, context,
       adapter: "fork",
       kind: "fork"
+    )
+  end
+
+  @spec start_spawn(ToolInstance.t(), String.t(), String.t(), ExecutionContext.t()) ::
+          {:ok, ExecutionResult.t()} | {:error, term()}
+  def start_spawn(
+        %ToolInstance{} = tool_instance,
+        brief,
+        prompt,
+        %ExecutionContext{} = context
+      )
+      when is_binary(brief) and is_binary(prompt) do
+    start_envelope(
+      tool_instance,
+      "spawn",
+      %{"brief" => brief, "prompt" => prompt},
+      context,
+      adapter: "spawn",
+      kind: "spawn"
     )
   end
 
@@ -128,6 +149,65 @@ defmodule IntellectualClub.BackgroundTasks do
     end
   end
 
+  @doc false
+  @spec with_active_task_authority(BackgroundTask.t(), ExecutionContext.t(), (-> result)) ::
+          result | {:error, term()}
+        when result: term()
+  def with_active_task_authority(
+        %BackgroundTask{id: task_id},
+        %ExecutionContext{} = context,
+        fun
+      )
+      when is_binary(task_id) and is_function(fun, 0) do
+    case Repo.transaction(fn ->
+           current =
+             BackgroundTask
+             |> Ash.Query.filter(id == ^task_id)
+             |> Ash.Query.select([
+               :id,
+               :status,
+               :cancel_requested,
+               :owner_id,
+               :source_chat_id,
+               :source_message_id,
+               :source_step_id,
+               :source_tool_call_item_id
+             ])
+             |> Ash.Query.lock(:for_update)
+             |> Ash.read_one!(authorize?: false)
+
+           case current do
+             %BackgroundTask{status: status, cancel_requested: cancel_requested}
+             when status in @active_statuses and cancel_requested != true ->
+               if task_authorizes_context?(current, context) do
+                 fun.()
+               else
+                 Repo.rollback(:background_task_context_mismatch)
+               end
+
+             %BackgroundTask{} ->
+               Repo.rollback(:background_task_inactive)
+
+             nil ->
+               Repo.rollback(:background_task_not_found)
+           end
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def with_active_task_authority(_task, _context, _fun),
+    do: {:error, :invalid_background_task}
+
+  defp task_authorizes_context?(%BackgroundTask{} = task, %ExecutionContext{} = context) do
+    task.owner_id == context.owner_id and
+      task.source_chat_id == context.chat_id and
+      task.source_message_id == (context.assistant_message_id || context.message_id) and
+      task.source_step_id == context.step_id and
+      task.source_tool_call_item_id == context.tool_call_item_id
+  end
+
   @doc "Associates a detached fork envelope with its root child chat."
   @spec set_target_chat(BackgroundTask.t() | Ecto.UUID.t(), pos_integer()) ::
           {:ok, BackgroundTask.t()} | {:error, term()}
@@ -141,40 +221,89 @@ defmodule IntellectualClub.BackgroundTasks do
   @spec set_fork_reference(BackgroundTask.t() | Ecto.UUID.t(), map()) ::
           {:ok, BackgroundTask.t()} | {:error, term()}
   def set_fork_reference(task_or_id, reference) when is_map(reference) do
+    case set_subagent_reference(task_or_id, Map.put(reference, :primitive, :fork)) do
+      {:error, :invalid_subagent_reference} -> {:error, :invalid_fork_reference}
+      result -> result
+    end
+  end
+
+  @doc "Associates a detached subagent envelope with its prepared child generation."
+  @spec set_subagent_reference(BackgroundTask.t() | Ecto.UUID.t(), map()) ::
+          {:ok, BackgroundTask.t()} | {:error, term()}
+  def set_subagent_reference(task_or_id, reference) when is_map(reference) do
     with {:ok, task} <- resolve_internal_task(task_or_id),
          chat_id when is_integer(chat_id) and chat_id > 0 <-
-           Map.get(reference, :chat_id),
+           reference_value(reference, :chat_id),
          message_id when is_integer(message_id) and message_id > 0 <-
-           Map.get(reference, :message_id),
+           reference_value(reference, :message_id),
          generation_message_id
          when is_integer(generation_message_id) and
                 generation_message_id > 0 <-
-           Map.get(reference, :generation_message_id) do
+           reference_value(reference, :generation_message_id),
+         {:ok, reference_attrs} <-
+           subagent_reference_attrs(task, reference, chat_id, message_id, generation_message_id) do
       runner_ref =
         task.runner_ref
         |> case do
           %{} = refs -> normalize_json(refs)
           _other -> %{}
         end
-        |> Map.merge(%{
-          "fork_chat_id" => chat_id,
-          "fork_message_id" => message_id,
-          "fork_generation_message_id" => generation_message_id,
-          "fork_url" => to_string(Map.get(reference, :url) || "/chats/#{chat_id}")
-        })
+        |> Map.merge(reference_attrs)
 
-      update_task(
-        task,
-        %{target_chat_id: chat_id, runner_ref: runner_ref},
-        actor(task.owner_id)
-      )
+      update_task(task, %{target_chat_id: chat_id, runner_ref: runner_ref}, actor(task.owner_id))
     else
-      _other -> {:error, :invalid_fork_reference}
+      _other -> {:error, :invalid_subagent_reference}
     end
+  end
+
+  defp subagent_reference_attrs(task, reference, chat_id, message_id, generation_message_id) do
+    primitive =
+      reference_value(reference, :primitive) || Map.get(task, :kind) || Map.get(task, :adapter)
+
+    case to_string(primitive) do
+      "fork" ->
+        {:ok,
+         %{
+           "fork_chat_id" => chat_id,
+           "fork_message_id" => message_id,
+           "fork_generation_message_id" => generation_message_id,
+           "fork_url" => to_string(reference_value(reference, :url) || "/chats/#{chat_id}")
+         }}
+
+      "spawn" ->
+        case reference_value(reference, :prompt_message_id) do
+          prompt_message_id when is_integer(prompt_message_id) and prompt_message_id > 0 ->
+            {:ok,
+             %{
+               "spawn_chat_id" => chat_id,
+               "spawn_prompt_message_id" => prompt_message_id,
+               "spawn_message_id" => message_id,
+               "spawn_generation_message_id" => generation_message_id,
+               "spawn_url" => to_string(reference_value(reference, :url) || "/chats/#{chat_id}")
+             }}
+
+          _other ->
+            {:error, :invalid_subagent_reference}
+        end
+
+      _other ->
+        {:error, :invalid_subagent_reference}
+    end
+  end
+
+  defp reference_value(reference, key) when is_map(reference) and is_atom(key) do
+    Map.get(reference, key) || Map.get(reference, Atom.to_string(key))
   end
 
   @spec active_fork_root_chat_ids(list(integer())) :: MapSet.t(integer())
   def active_fork_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
+    active_subagent_root_chat_ids(parent_chat_ids)
+  end
+
+  def active_fork_root_chat_ids(_other), do: MapSet.new()
+
+  @spec active_subagent_root_chat_ids(list(integer())) :: MapSet.t(integer())
+  def active_subagent_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
     parent_chat_ids = parent_chat_ids |> Enum.filter(&is_integer/1) |> Enum.uniq()
 
     if parent_chat_ids == [] do
@@ -183,7 +312,8 @@ defmodule IntellectualClub.BackgroundTasks do
       tasks =
         BackgroundTask
         |> Ash.Query.filter(
-          kind == "fork" and status in ^@active_statuses and source_chat_id in ^parent_chat_ids and
+          kind in ["fork", "spawn"] and status in ^@active_statuses and
+            source_chat_id in ^parent_chat_ids and
             (not is_nil(target_chat_id) or not is_nil(source_tool_call_item_id))
         )
         |> Ash.Query.select([:target_chat_id, :source_tool_call_item_id])
@@ -206,7 +336,8 @@ defmodule IntellectualClub.BackgroundTasks do
         else
           Chat
           |> Ash.Query.filter(
-            parent_tool_call_item_id in ^missing_source_ids and parent_relation_kind == :fork
+            parent_tool_call_item_id in ^missing_source_ids and
+              parent_relation_kind in [:fork, :spawn]
           )
           |> Ash.Query.select([:id])
           |> Ash.read!(authorize?: false)
@@ -217,7 +348,7 @@ defmodule IntellectualClub.BackgroundTasks do
     end
   end
 
-  def active_fork_root_chat_ids(_other), do: MapSet.new()
+  def active_subagent_root_chat_ids(_other), do: MapSet.new()
 
   @doc "Appends a cursor-addressable stdout or stderr chunk."
   @spec append_event(BackgroundTask.t() | Ecto.UUID.t(), :stdout | :stderr, binary()) ::
@@ -274,6 +405,7 @@ defmodule IntellectualClub.BackgroundTasks do
       message_id: context_value(map, "message_id"),
       assistant_message_id: context_value(map, "assistant_message_id"),
       step_id: context_value(map, "step_id"),
+      generation_fence_token: context_value(map, "generation_fence_token"),
       provider_type: context_value(map, "provider_type"),
       available_file_external_ids: context_value(map, "available_file_external_ids", []),
       tool_call_item_id: context_value(map, "tool_call_item_id"),
@@ -652,6 +784,12 @@ defmodule IntellectualClub.BackgroundTasks do
   end
 
   defp find_or_create_task(tool_instance, function_name, args, context, opts) do
+    with_parent_generation_fence(context, fn ->
+      do_find_or_create_task(tool_instance, function_name, args, context, opts)
+    end)
+  end
+
+  defp do_find_or_create_task(tool_instance, function_name, args, context, opts) do
     actor = actor(context.owner_id)
     source_tool_call_item_id = context.tool_call_item_id
 
@@ -689,6 +827,31 @@ defmodule IntellectualClub.BackgroundTasks do
         end
     end
   end
+
+  defp with_parent_generation_fence(
+         %ExecutionContext{generation_fence_token: fence_token} = context,
+         fun
+       )
+       when is_binary(fence_token) and is_function(fun, 0) do
+    message_id = context.message_id || context.assistant_message_id
+
+    case Lease.with_token_fence(message_id, fence_token, fun,
+           allowed_statuses: [:generating],
+           required_role: :assistant
+         ) do
+      {:ok, result} ->
+        result
+
+      {:error, reason} when reason in [:lease_lost, :invalid_status, :invalid_role, :not_found] ->
+        {:error, :parent_generation_stale}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp with_parent_generation_fence(%ExecutionContext{}, fun) when is_function(fun, 0),
+    do: fun.()
 
   defp find_by_source_tool_call(source_tool_call_item_id, actor)
        when is_integer(source_tool_call_item_id) do

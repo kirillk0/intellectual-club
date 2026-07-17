@@ -185,6 +185,44 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(entries[2]?.text()).toContain('Child answer');
   });
 
+  it('uses spawn labels for positioned spawn relations', () => {
+    const message: ChatBranchMessage = {
+      id: 10,
+      role: 'assistant',
+      status: 'done',
+      content: { items: [], parts: [], media: [] },
+    };
+
+    const spawn: ChatRelationSummary = {
+      chat_id: 6,
+      kind: 'spawn',
+      note: 'Fresh subchat',
+      anchor_message_id: 10,
+      anchor_tool_call_item_id: 41,
+      anchor_step_sequence: 1,
+      anchor_item_sequence: 2,
+    };
+
+    const wrapper = mount(ChatMessageBubble, {
+      props: {
+        message,
+        index: 0,
+        forkRelations: [spawn],
+      },
+      global: {
+        stubs: {
+          RouterLink: {
+            template: '<a><slot /></a>',
+          },
+        },
+      },
+    });
+
+    const relation = wrapper.get('.message-fork-card');
+    expect(relation.text()).toContain('Spawned into');
+    expect(relation.text()).toContain('Fresh subchat');
+  });
+
   it('distinguishes copying the final answer from copying all answer items', async () => {
     setPreferredLocale('ru');
     const message: ChatBranchMessage = {

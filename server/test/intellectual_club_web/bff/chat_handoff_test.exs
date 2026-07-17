@@ -228,6 +228,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert summary_message.parent_id == handoff_prompt_message.id
     assert summary_message.role == :assistant
     assert summary_message.status == :done
+    assert summary_message.generation_fence_token == nil
     assert summary_message.id == generation_message_id
     assert :handoff_summary in message_item_types(summary_message)
     refute :answer in message_item_types(summary_message)
@@ -679,6 +680,78 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert parent_relation["chat_id"] == source.id
     assert parent_relation["kind"] == "fork"
     assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert parent_relation["anchor_message_id"] == nil
+    assert parent_relation["anchor_tool_call_item_id"] == nil
+    assert parent_relation["anchor_step_id"] == nil
+    assert parent_relation["anchor_step_sequence"] == nil
+    assert parent_relation["anchor_item_sequence"] == nil
+  end
+
+  test "GET /api/bff/chat-state/:id anchors spawn at the source tool call and not in the child",
+       %{
+         conn: conn
+       } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    source = create_chat!(actor, "Spawn source")
+
+    {:ok, assistant_message} =
+      Threads.add_message_to_end(source, :assistant, "Before spawn", actor: actor)
+
+    step = first_step!(assistant_message.id, actor)
+    tool_call_item = create_tool_call_item!(step.id, 2, actor)
+
+    spawn =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          note: "Investigate without copied history",
+          parent_chat_id: source.id,
+          parent_message_id: assistant_message.id,
+          parent_tool_call_item_id: tool_call_item.id,
+          parent_relation_kind: :spawn,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    source_payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
+
+    assert [relation] =
+             source_payload["relations"]["children_by_message_id"][
+               Integer.to_string(assistant_message.id)
+             ]
+
+    assert relation["chat_id"] == spawn.id
+    assert relation["kind"] == "spawn"
+    assert relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert relation["parent_step_id"] == step.id
+    assert relation["parent_step_sequence"] == step.sequence
+    assert relation["parent_item_sequence"] == tool_call_item.sequence
+    assert relation["anchor_message_id"] == assistant_message.id
+    assert relation["anchor_tool_call_item_id"] == tool_call_item.id
+    assert relation["anchor_step_id"] == step.id
+    assert relation["anchor_step_sequence"] == step.sequence
+    assert relation["anchor_item_sequence"] == tool_call_item.sequence
+
+    child_payload =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> get(~p"/api/bff/chat-state/#{spawn.id}")
+      |> json_response(200)
+
+    parent_relation = child_payload["relations"]["parent"]
+
+    assert parent_relation["chat_id"] == source.id
+    assert parent_relation["message_id"] == assistant_message.id
+    assert parent_relation["kind"] == "spawn"
+    assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
+    assert parent_relation["parent_step_id"] == step.id
+    assert parent_relation["parent_step_sequence"] == step.sequence
+    assert parent_relation["parent_item_sequence"] == tool_call_item.sequence
     assert parent_relation["anchor_message_id"] == nil
     assert parent_relation["anchor_tool_call_item_id"] == nil
     assert parent_relation["anchor_step_id"] == nil

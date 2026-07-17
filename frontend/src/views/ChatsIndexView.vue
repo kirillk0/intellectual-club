@@ -102,7 +102,7 @@
                       <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
                         {{ matchBadgeLabel(c.match_type) }}
                       </span>
-                      <span v-if="!hasContinuationNav(c) && c.parent_relation_kind === 'handoff'" class="badge">{{ translate('Continuation') }}</span>
+                      <span v-if="relationBadgeLabel(c)" class="badge">{{ relationBadgeLabel(c) }}</span>
                       <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
                         {{ continuationCountLabel(c.child_handoff_count || 0) }}
                       </span>
@@ -136,9 +136,7 @@
                     >
                       <template #badges>
                         <span class="badge">{{ translate('Subchat') }}</span>
-                        <span v-if="!hasContinuationNav(subchat) && subchat.parent_relation_kind === 'fork'" class="badge">
-                          {{ translate('Fork') }}
-                        </span>
+                        <span v-if="relationBadgeLabel(subchat)" class="badge">{{ relationBadgeLabel(subchat) }}</span>
                       </template>
                     </ChatListRow>
                   </div>
@@ -231,6 +229,10 @@ import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/mode
 import { createChatRecord } from '@/features/chat/chatAshApi';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
 import { useChatChanges } from '@/features/chat/chatEvents';
+import {
+  chatListRelationLabelKey,
+  chatListRelationMeta,
+} from '@/features/chat/model/chatListRelations';
 import { parseImageAsset } from '@/features/media/image';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { serverStateKeys } from '@/features/serverState/queryClient';
@@ -882,13 +884,12 @@ function hasContinuationNav(chat: ChatSummary) {
 }
 
 function relationMeta(chat: ChatSummary) {
-  if (hasContinuationNav(chat)) return null;
-  const count = Number(chat.child_handoff_count || 0);
-  const parts: string[] = [];
-  if (chat.parent_relation_kind === 'handoff') parts.push(translate('Continuation'));
-  if (chat.parent_relation_kind === 'fork') parts.push(translate('Fork'));
-  if (count > 0) parts.push(continuationCountLabel(count));
-  return parts.length ? parts.join(' · ') : null;
+  return chatListRelationMeta(chat, translate, continuationCountLabel);
+}
+
+function relationBadgeLabel(chat: ChatSummary) {
+  const labelKey = chatListRelationLabelKey(chat);
+  return labelKey ? translate(labelKey) : null;
 }
 
 function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {

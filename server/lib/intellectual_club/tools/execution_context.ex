@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.ExecutionContext do
     :message_id,
     :assistant_message_id,
     :step_id,
+    :generation_fence_token,
     :provider_type,
     :available_file_external_ids,
     :tool_call_item_id,

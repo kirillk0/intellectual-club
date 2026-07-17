@@ -11,6 +11,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Tools.Drivers.Ssh
   alias IntellectualClub.Tools.ExecutionContext
@@ -86,9 +87,92 @@ defmodule IntellectualClub.BackgroundTasksTest do
              |> Ash.read!(actor: actor)
   end
 
+  test "background launch rejects a stale parent generation epoch without creating a task" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    tool_instance = create_ssh_tool_instance!(actor)
+
+    assert {:ok, lease} = Lease.acquire(source.message.id)
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: source.chat.id,
+      message_id: source.message.id,
+      assistant_message_id: source.message.id,
+      step_id: source.step.id,
+      generation_fence_token: lease.fence_token,
+      tool_call_item_id: source.item.id,
+      available_file_external_ids: []
+    }
+
+    assert :canceled =
+             Persistence.cancel_generating_message!(source.message.id,
+               error_detail: nil
+             )
+
+    assert :ok = Lease.release(lease)
+
+    assert {:error, :parent_generation_stale} =
+             BackgroundTasks.start_tool(
+               tool_instance,
+               "run_command",
+               %{"command" => "echo must-not-run"},
+               context
+             )
+
+    assert [] ==
+             BackgroundTask
+             |> Ash.Query.filter(source_tool_call_item_id == ^source.item.id)
+             |> Ash.read!(actor: actor)
+  end
+
+  test "background launch rejects a completed parent even while its old epoch is retained" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    tool_instance = create_ssh_tool_instance!(actor)
+
+    assert {:ok, lease} = Lease.acquire(source.message.id)
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: source.chat.id,
+      message_id: source.message.id,
+      assistant_message_id: source.message.id,
+      step_id: source.step.id,
+      generation_fence_token: lease.fence_token,
+      tool_call_item_id: source.item.id,
+      available_file_external_ids: []
+    }
+
+    _completed =
+      source.message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :done, finished_at: DateTime.utc_now()},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert :ok = Lease.release(lease)
+
+    assert {:error, :parent_generation_stale} =
+             BackgroundTasks.start_tool(
+               tool_instance,
+               "run_command",
+               %{"command" => "echo must-not-run"},
+               context
+             )
+
+    assert [] ==
+             BackgroundTask
+             |> Ash.Query.filter(source_tool_call_item_id == ^source.item.id)
+             |> Ash.read!(actor: actor)
+  end
+
   test "execution context is rebuilt from its persisted JSON shape" do
     %{user: actor} = user_fixture()
     created_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    generation_fence_token = Ecto.UUID.generate()
 
     task =
       create_background_task!(actor, %{
@@ -98,6 +182,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
           "message_id" => 102,
           "assistant_message_id" => 103,
           "step_id" => 104,
+          "generation_fence_token" => generation_fence_token,
           "provider_type" => "responses",
           "available_file_external_ids" => ["file-1"],
           "tool_call_item_id" => 105,
@@ -111,6 +196,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
     assert context.message_id == 102
     assert context.assistant_message_id == 103
     assert context.step_id == 104
+    assert context.generation_fence_token == generation_fence_token
     assert context.provider_type == "responses"
     assert context.available_file_external_ids == ["file-1"]
     assert context.tool_call_item_id == 105

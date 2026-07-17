@@ -2,8 +2,10 @@ import type { ChatRelationSummary } from '@/types/api';
 
 export type ChatRelationGenerationState = 'generating' | 'canceled' | 'error' | null;
 
+const isPositionedSubchatKind = (kind?: string | null) => kind === 'fork' || kind === 'spawn';
+
 export const hasPositionedForkAnchor = (relation?: ChatRelationSummary | null) =>
-  relation?.kind === 'fork' &&
+  isPositionedSubchatKind(relation?.kind) &&
   Number.isInteger(relation.anchor_message_id) &&
   Number.isInteger(relation.anchor_tool_call_item_id) &&
   Number.isInteger(relation.anchor_step_sequence) &&

@@ -324,7 +324,7 @@ defmodule IntellectualClub.Chat.Chat do
     attribute :parent_relation_kind, :atom do
       allow_nil?(true)
       public?(true)
-      constraints(one_of: [:handoff, :fork])
+      constraints(one_of: [:handoff, :fork, :spawn])
     end
 
     attribute :subagent, :boolean do

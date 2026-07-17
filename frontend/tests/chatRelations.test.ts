@@ -23,6 +23,26 @@ describe('chat relation positioning', () => {
     expect(parentForkRelationForMessage(positionedParent, 11)).toBeNull();
   });
 
+  it('positions a spawn child at its source tool call anchor', () => {
+    const spawn = { ...positionedParent, chat_id: 6, kind: 'spawn' };
+
+    expect(parentForkRelationForMessage(spawn, 10)).toBe(spawn);
+    expect(parentRelationBannerForBranch(spawn, [9, 10, 11])).toBeNull();
+  });
+
+  it('keeps an unanchored spawn parent as a top banner', () => {
+    const spawnParent: ChatRelationSummary = {
+      chat_id: 6,
+      kind: 'spawn',
+      anchor_message_id: null,
+      anchor_tool_call_item_id: null,
+      anchor_step_sequence: null,
+      anchor_item_sequence: null,
+    };
+
+    expect(parentRelationBannerForBranch(spawnParent, [9, 10, 11])).toBe(spawnParent);
+  });
+
   it('hides the parent banner only when the inline anchor is on the active branch', () => {
     expect(parentRelationBannerForBranch(positionedParent, [9, 10, 11])).toBeNull();
     expect(parentRelationBannerForBranch(positionedParent, [9, 11])).toBe(positionedParent);

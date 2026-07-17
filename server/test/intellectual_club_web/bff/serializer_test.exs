@@ -13,18 +13,19 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClubWeb.Bff.Serializer
 
-  test "chat_relation_summary includes the loaded last message status" do
+  test "chat_relation_summary serializes spawn kind and the loaded last message status" do
     serialized =
       Serializer.chat_relation_summary(%Chat{
         id: 10,
         note: "Child",
         subagent: true,
-        parent_relation_kind: :handoff,
+        parent_relation_kind: :spawn,
         last_message: %ChatMessage{id: 20, status: :error}
       })
 
     assert serialized.active_generation_message_id == nil
     assert serialized.last_message_status == "error"
+    assert serialized.kind == "spawn"
   end
 
   test "branch_message sorts nested steps, items, and contents by sequence" do

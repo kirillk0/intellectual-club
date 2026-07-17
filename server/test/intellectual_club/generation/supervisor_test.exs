@@ -18,6 +18,37 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     end
   end
 
+  defmodule GlobalWorkerStub do
+    @moduledoc false
+
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+
+    @impl true
+    def init(test_pid), do: {:ok, test_pid}
+
+    @impl true
+    def handle_call(:get_current_state, _from, test_pid) do
+      {:reply, %{status: :generating, source: :global}, test_pid}
+    end
+
+    def handle_call({:poll, cursor, opts}, _from, test_pid) do
+      {:reply, %{status: :generating, cursor: cursor, opts: opts, source: :global}, test_pid}
+    end
+
+    def handle_call({:steer, text}, _from, test_pid) do
+      send(test_pid, {:global_worker_steered, text})
+      {:reply, {:ok, %{text: text}}, test_pid}
+    end
+
+    @impl true
+    def handle_cast(:cancel, test_pid) do
+      send(test_pid, :global_worker_canceled)
+      {:stop, :normal, test_pid}
+    end
+  end
+
   test "canceling a parent generation cancels active subagent descendant generations" do
     %{user: actor} = user_fixture()
     test_pid = self()
@@ -64,6 +95,35 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert GenerationSupervisor.get_generation_state(parent_message.id) == :not_found
     assert GenerationSupervisor.get_generation_state(fork_message.id) == :not_found
     assert GenerationSupervisor.get_generation_state(handoff_message.id) == :not_found
+  end
+
+  test "canceling a parent generation cancels an active spawn descendant" do
+    %{user: actor} = user_fixture()
+    test_pid = self()
+
+    parent_chat = create_chat!(actor)
+    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
+
+    spawn_chat =
+      create_chat!(actor, %{
+        note: "Spawn child",
+        parent_chat_id: parent_chat.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :spawn,
+        subagent: true
+      })
+
+    spawn_message = start_blocking_generation!(spawn_chat, actor, test_pid, "Spawn")
+    parent_message_id = parent_message.id
+    spawn_message_id = spawn_message.id
+
+    assert_receive {:adapter_started, ^parent_message_id}, 1_000
+    assert_receive {:adapter_started, ^spawn_message_id}, 1_000
+
+    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
+    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
+    assert wait_for_status!(spawn_message.id, actor, :canceled).status == :canceled
+    assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
   end
 
   test "canceling a parent skips an active background fork root" do
@@ -124,6 +184,64 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert wait_for_status!(fork_message.id, actor, :canceled).status == :canceled
   end
 
+  test "canceling a parent skips an active background spawn root" do
+    %{user: actor} = user_fixture()
+    test_pid = self()
+
+    parent_chat = create_chat!(actor)
+    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
+
+    spawn_chat =
+      create_chat!(actor, %{
+        note: "Background spawn child",
+        parent_chat_id: parent_chat.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :spawn,
+        subagent: true
+      })
+
+    spawn_message = start_blocking_generation!(spawn_chat, actor, test_pid, "Background spawn")
+
+    _task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "spawn",
+          adapter: "spawn",
+          status: :running,
+          function_name: "spawn",
+          arguments: %{"brief" => "Background spawn", "prompt" => "Continue"},
+          execution_context: %{},
+          source_chat_id: parent_chat.id,
+          source_message_id: parent_message.id,
+          target_chat_id: spawn_chat.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    parent_message_id = parent_message.id
+    spawn_message_id = spawn_message.id
+
+    assert_receive {:adapter_started, ^parent_message_id}, 1_000
+    assert_receive {:adapter_started, ^spawn_message_id}, 1_000
+
+    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
+    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
+    assert Ash.get!(ChatMessage, spawn_message.id, actor: actor).status == :generating
+
+    assert {:ok, %{status: :generating}} =
+             GenerationSupervisor.get_generation_state(spawn_message.id)
+
+    assert :ok =
+             GenerationSupervisor.cancel_generation(spawn_message.id,
+               include_background_tasks?: true
+             )
+
+    assert wait_for_status!(spawn_message.id, actor, :canceled).status == :canceled
+  end
+
   test "prepared generation preserves its message while canceling other orphans" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor)
@@ -182,6 +300,61 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     after
       _ = GenerationSupervisor.cancel_generation(target_message.id)
     end
+  end
+
+  test "generation start lock is released when its holder exits" do
+    message_id = System.unique_integer([:positive])
+
+    assert catch_throw(
+             GenerationSupervisor.with_generation_start_lock(message_id, fn ->
+               throw(:simulated_lock_holder_exit)
+             end)
+           ) == :simulated_lock_holder_exit
+
+    assert :ok =
+             GenerationSupervisor.with_generation_start_lock(message_id, fn -> :ok end)
+  end
+
+  test "generation controls find a worker registered only under its global name" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Global", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _step_id =
+      Persistence.ensure_step_started!(message.id, %{
+        "model" => "demo-model",
+        "messages" => [%{"role" => "user", "content" => "Global"}],
+        "stream" => true
+      })
+
+    stub = start_supervised!({GlobalWorkerStub, self()})
+    assert :yes = :global.register_name(Worker.global_name(message.id), stub)
+
+    assert {:ok, %{status: :generating, source: :global}} =
+             GenerationSupervisor.get_generation_state(message.id)
+
+    assert {:ok, %{status: :generating, source: :global, cursor: %{step: 1}}} =
+             GenerationSupervisor.poll_generation(message.id, %{step: 1})
+
+    assert {:ok, %{text: "Continue"}} =
+             GenerationSupervisor.steer_generation(message.id, "Continue")
+
+    assert_receive {:global_worker_steered, "Continue"}
+
+    assert :ok = GenerationSupervisor.cancel_generation(message.id)
+    assert_receive :global_worker_canceled
+    assert wait_for_status!(message.id, actor, :canceled).status == :canceled
+    assert GenerationSupervisor.get_generation_state(message.id) == :not_found
   end
 
   defp create_chat!(actor, attrs \\ %{}) do

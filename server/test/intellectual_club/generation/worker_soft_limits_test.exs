@@ -190,6 +190,95 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
            end)
   end
 
+  test "worker continues generation after a linked tool task exits normally" do
+    tool_call = %{
+      "id" => "call_random_1",
+      "type" => "function",
+      "function" => %{
+        "name" => "game__random_select",
+        "arguments" =>
+          Jason.encode!(%{
+            "options" => [%{"option" => "Continue", "weight" => 1}]
+          })
+      }
+    }
+
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-tool",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "",
+                   "tool_calls" => [tool_call]
+                 },
+                 "finish_reason" => "tool_calls"
+               }
+             ]
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-final",
+             "object" => "chat.completion",
+             "created" => 2,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "Final answer after tool execution."
+                 },
+                 "finish_reason" => "stop"
+               }
+             ]
+           }
+         ])}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, agent} = start_scripted_server!(scripts)
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :openrouter_chat_completion,
+        tool_type: "native-game-tools",
+        tool_alias: "game"
+      )
+
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Use the game tool", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    message_id = context.message_id
+    assert_receive {:done, ^message_id}, 2_000
+
+    message =
+      wait_for_message!(message_id, actor, fn msg ->
+        msg.status == :done and length(msg.steps) == 2
+      end)
+
+    assert message_answer_text(message) == "Final answer after tool execution."
+    assert "Selected option: Continue" in tool_result_texts(message)
+
+    requests = Agent.get(agent, & &1.requests)
+    assert length(Map.get(requests, "/chat/completions", [])) == 2
+  end
+
   test "responses api keeps tools and repeats soft refusal after context soft limit" do
     first_tool_call = %{
       "id" => "fc_1",
@@ -674,14 +763,16 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
       )
       |> Ash.create!()
 
+    tool_alias = Keyword.get(opts, :tool_alias, "web")
+
     tool_instance =
       ToolInstance
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-web-reader",
-          name: "Web reader",
-          alias: "web",
+          type: Keyword.get(opts, :tool_type, "native-web-reader"),
+          name: "Test tool",
+          alias: tool_alias,
           description: "",
           config: %{},
           secrets: %{},
@@ -698,7 +789,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         %{
           bot_id: bot.id,
           tool_instance_id: tool_instance.id,
-          alias: "web",
+          alias: tool_alias,
           sharing_mode: :shared,
           enabled: true,
           sequence: 0

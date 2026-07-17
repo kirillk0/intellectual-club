@@ -117,6 +117,11 @@ defmodule IntellectualClub.Chat.ChatMessage do
       public?(true)
     end
 
+    attribute :generation_fence_token, :uuid do
+      allow_nil?(true)
+      public?(false)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -290,7 +295,19 @@ defmodule IntellectualClub.Chat.ChatMessage do
     end
 
     update :set_generation_state do
-      accept([:status, :error_detail, :token_count, :finished_at])
+      accept([
+        :status,
+        :error_detail,
+        :token_count,
+        :finished_at,
+        :generation_fence_token
+      ])
+
+      require_atomic?(false)
+    end
+
+    update :set_generation_fence do
+      accept([:generation_fence_token])
       require_atomic?(false)
     end
   end

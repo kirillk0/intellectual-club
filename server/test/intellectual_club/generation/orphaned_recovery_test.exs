@@ -2,25 +2,34 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   use IntellectualClub.DataCase, async: false
 
   alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.Fork
+  alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.ChatMessageStepRequestFile
+  alias IntellectualClub.Chat.ChatShare
+  alias IntellectualClub.Chat.Fork
+  alias IntellectualClub.Chat.Spawn
+  alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
+  alias IntellectualClub.Bots.Bot
+  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ExecutionContext
+  alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
 
@@ -464,6 +473,551 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert raw == result.raw
   end
 
+  test "stale parent epoch cannot prepare a fork child" do
+    %{user: actor} = user_fixture()
+    task = "Do not fork after cancellation"
+    parent = create_parent_fork_call!(actor, task)
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    context = %{
+      fork_execution_context(parent, actor)
+      | generation_fence_token: lease.fence_token
+    }
+
+    assert :canceled =
+             Persistence.cancel_generating_message!(parent.message.id,
+               error_detail: nil
+             )
+
+    assert :ok = Lease.release(lease)
+
+    assert {:error, :parent_generation_stale} =
+             Fork.start_or_resume(parent.tool_instance, task, context, actor)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
+  end
+
+  test "spawn creates one empty-context subagent and returns spawn metadata" do
+    %{user: actor} = user_fixture()
+    brief = "  Research a focused question  "
+    trimmed_brief = String.trim(brief)
+    prompt = "Return a concise independent answer."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Spawn demo", type: :demo, base_url: nil, api_key: nil},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{provider_id: provider.id, model_name: "demo", parameters: %{}},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    bot =
+      Bot
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Spawn bot", first_messages: ["Fresh bot greeting"]},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    source_chat =
+      parent.chat
+      |> Ash.Changeset.for_update(
+        :update,
+        %{bot_id: bot.id, llm_configuration_id: configuration.id},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    knowledge_block =
+      KnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Spawn chat context", content: "Copied chat binding"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    _knowledge_binding =
+      ChatKnowledgeBlock
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_id: source_chat.id,
+          knowledge_block_id: knowledge_block.id,
+          enabled: false,
+          sequence: 17
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    [source_tool_binding] =
+      ChatToolBinding
+      |> Ash.Query.filter(chat_id == ^source_chat.id)
+      |> Ash.read!(actor: actor)
+
+    source_tool_binding =
+      source_tool_binding
+      |> Ash.Changeset.for_update(:update, %{enabled: true, sequence: 9}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+    parent = %{parent | chat: source_chat}
+    context = fork_execution_context(parent, actor)
+
+    assert {:ok, result} =
+             Spawn.create_and_run(parent.tool_instance, brief, prompt, context, actor)
+
+    assert %{
+             "chat_id" => child_chat_id,
+             "prompt_message_id" => prompt_message_id,
+             "message_id" => generation_message_id,
+             "generation_message_id" => generation_message_id,
+             "final_chat_id" => child_chat_id,
+             "final_message_id" => generation_message_id
+           } = result.raw["spawn"]
+
+    refute Map.has_key?(result.raw, "fork")
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+
+    child = Ash.get!(Chat, child_chat_id, actor: actor)
+    assert child.note == trimmed_brief
+    assert child.parent_chat_id == parent.chat.id
+    assert child.parent_message_id == parent.message.id
+    assert child.parent_relation_kind == :spawn
+    assert child.subagent == true
+    assert child.bot_id == bot.id
+    assert child.llm_configuration_id == configuration.id
+
+    assert [] =
+             ChatShare
+             |> Ash.Query.filter(chat_id == ^child_chat_id)
+             |> Ash.read!(actor: actor)
+
+    [child_knowledge_binding] =
+      ChatKnowledgeBlock
+      |> Ash.Query.filter(chat_id == ^child_chat_id)
+      |> Ash.read!(actor: actor)
+
+    assert child_knowledge_binding.knowledge_block_id == knowledge_block.id
+    assert child_knowledge_binding.enabled == false
+    assert child_knowledge_binding.sequence == 17
+
+    [child_tool_binding] =
+      ChatToolBinding
+      |> Ash.Query.filter(chat_id == ^child_chat_id)
+      |> Ash.read!(actor: actor)
+
+    assert child_tool_binding.tool_instance_id == source_tool_binding.tool_instance_id
+    assert child_tool_binding.enabled == true
+    assert child_tool_binding.sequence == 9
+
+    child_messages =
+      ChatMessage
+      |> Ash.Query.filter(chat_id == ^child_chat_id)
+      |> Ash.Query.sort(id: :asc)
+      |> Ash.Query.load(steps: [items: [:contents]])
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(child_messages, & &1.role) == [:assistant, :user, :assistant]
+    assert Enum.at(child_messages, 1).id == prompt_message_id
+    assert Enum.at(child_messages, 2).id == generation_message_id
+
+    assert child_messages
+           |> Enum.at(0)
+           |> IntellectualClub.Chat.Previews.message_preview_text() == "Fresh bot greeting"
+
+    assert child_messages
+           |> Enum.at(1)
+           |> IntellectualClub.Chat.Previews.message_preview_text() == prompt
+
+    refute Enum.any?(child_messages, fn message ->
+             IntellectualClub.Chat.Previews.message_preview_text(message) == "Spawn now"
+           end)
+
+    assert {:ok, same_reference} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
+
+    assert same_reference.chat_id == child_chat_id
+    assert same_reference.prompt_message_id == prompt_message_id
+    assert same_reference.generation_message_id == generation_message_id
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+  end
+
+  test "spawn cancels a prepared generation when durable reference persistence fails" do
+    %{user: actor} = user_fixture()
+    brief = "Prepare but do not start"
+    prompt = "Do not duplicate this generation."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+
+    assert {:error, :reference_write_failed} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+               on_reference: fn _reference -> {:error, :reference_write_failed} end
+             )
+
+    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    child = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
+    assert child.last_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(child.last_message.id) == :not_found
+  end
+
+  test "stale parent epoch cannot prepare a spawn child" do
+    %{user: actor} = user_fixture()
+    brief = "Do not spawn"
+    prompt = "The parent was canceled."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    context = %{
+      fork_execution_context(parent, actor)
+      | generation_fence_token: lease.fence_token
+    }
+
+    assert :canceled =
+             Persistence.cancel_generating_message!(parent.message.id,
+               error_detail: nil
+             )
+
+    assert :ok = Lease.release(lease)
+
+    assert {:error, :parent_generation_stale} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
+  end
+
+  test "stale parent epoch cannot persist an early subagent tool result" do
+    %{user: actor} = user_fixture()
+    parent = create_parent_spawn_call!(actor, "Stale result", "Do not write a result.")
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    context = %{
+      fork_execution_context(parent, actor)
+      | generation_fence_token: lease.fence_token
+    }
+
+    assert :canceled =
+             Persistence.cancel_generating_message!(parent.message.id, error_detail: nil)
+
+    assert :ok = Lease.release(lease)
+
+    assert {:error, :parent_generation_stale} =
+             Subagent.persist_parent_tool_result(
+               context,
+               %ExecutionResult{text: "stale", raw: %{}, media: [], artifacts: []}
+             )
+
+    assert [] =
+             ChatMessageItem
+             |> Ash.Query.filter(chat_message_step_id == ^parent.step_id and type == :tool_result)
+             |> Ash.read!(actor: actor)
+  end
+
+  test "completed parent rejects subagent prepare and early result with the same live epoch" do
+    %{user: actor} = user_fixture()
+    brief = "Completed parent"
+    prompt = "Do not create a child."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    context = %{
+      fork_execution_context(parent, actor)
+      | generation_fence_token: lease.fence_token
+    }
+
+    _completed =
+      parent.message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :done, finished_at: DateTime.utc_now()},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert {:error, :parent_generation_stale} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
+
+    assert {:error, :parent_generation_stale} =
+             Subagent.persist_parent_tool_result(
+               context,
+               %ExecutionResult{text: "stale", raw: %{}, media: [], artifacts: []}
+             )
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
+
+    assert [] =
+             ChatMessageItem
+             |> Ash.Query.filter(chat_message_step_id == ^parent.step_id and type == :tool_result)
+             |> Ash.read!(actor: actor)
+
+    assert :ok = Lease.release(lease)
+    assert Ash.get!(ChatMessage, parent.message.id, actor: actor).generation_fence_token == nil
+  end
+
+  test "spawn resumes the same prepared generation after a crash before reference persistence" do
+    %{user: actor} = user_fixture()
+    brief = "Recover prepared spawn"
+    prompt = "Resume this exact generation."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+
+    assert {:error, {:throw, :simulated_crash}} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+               on_reference: fn _reference -> throw(:simulated_crash) end
+             )
+
+    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    child = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
+    generation_message_id = child.last_message.id
+
+    assert child.last_message.status == :generating
+    assert GenerationSupervisor.get_generation_state(generation_message_id) == :not_found
+
+    assert {:ok, reference} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
+
+    assert reference.chat_id == child_chat_id
+    assert reference.generation_message_id == generation_message_id
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+
+    completed = wait_for_status!(generation_message_id, actor, [:done], 6_000)
+    assert completed.error_detail == nil
+  end
+
+  test "background spawn cancel resolves a prepared generation before its reference is stored" do
+    %{user: actor} = user_fixture()
+    brief = "Cancel before reference"
+    prompt = "This generation must never start."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+    background_task = create_spawn_background_task!(actor, parent, brief, prompt, :running)
+    test_process = self()
+
+    starter =
+      Task.async(fn ->
+        Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+          on_reference: fn reference ->
+            send(test_process, {:spawn_prepared, self(), reference})
+
+            receive do
+              :continue_spawn_start -> :ok
+            after
+              5_000 -> {:error, :reference_barrier_timeout}
+            end
+          end
+        )
+      end)
+
+    assert_receive {:spawn_prepared, starter_pid, reference}, 5_000
+    assert reference.chat_id in fork_child_ids_for_call(actor, parent.call.item_id)
+
+    assert {:ok, %{"status" => "canceled"}} =
+             BackgroundTasks.cancel(background_task.id, actor.id)
+
+    send(starter_pid, :continue_spawn_start)
+    assert {:error, :invalid_status} = Task.await(starter, 5_000)
+
+    generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
+    assert generation_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+    Process.sleep(100)
+
+    generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
+    assert generation_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
+  end
+
+  test "concurrent spawn starts reuse one canonical generation and step" do
+    %{user: actor} = user_fixture()
+    brief = "Concurrent spawn"
+    prompt = "Run exactly once."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+    test_process = self()
+
+    starters =
+      for label <- [:first, :second] do
+        Task.async(fn ->
+          Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+            on_reference: fn reference ->
+              send(test_process, {:spawn_start_ready, label, self(), reference})
+
+              receive do
+                {:continue_spawn_start, ^label} -> :ok
+              after
+                5_000 -> {:error, :start_barrier_timeout}
+              end
+            end
+          )
+        end)
+      end
+
+    ready =
+      for _index <- 1..2 do
+        assert_receive {:spawn_start_ready, label, pid, reference}, 5_000
+        {label, pid, reference}
+      end
+
+    Enum.each(ready, fn {label, pid, _reference} ->
+      send(pid, {:continue_spawn_start, label})
+    end)
+
+    results = Enum.map(starters, &Task.await(&1, 5_000))
+    assert Enum.all?(results, &match?({:ok, _reference}, &1))
+
+    references = Enum.map(results, fn {:ok, reference} -> reference end)
+    assert references |> Enum.map(& &1.chat_id) |> Enum.uniq() |> length() == 1
+    assert references |> Enum.map(& &1.generation_message_id) |> Enum.uniq() |> length() == 1
+
+    [reference | _rest] = references
+    completed = wait_for_status!(reference.generation_message_id, actor, [:done], 6_000)
+    assert completed.error_detail == nil
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [reference.chat_id]
+
+    steps =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^reference.generation_message_id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert length(steps) == 1
+    assert hd(steps).status == :done
+  end
+
+  test "background and global spawn recovery serialize on the canonical generation" do
+    %{user: actor} = user_fixture()
+    brief = "Double recovery"
+    prompt = "Recover this generation once."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+
+    assert {:error, {:throw, :stop_before_reference}} =
+             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+               on_reference: fn _reference -> throw(:stop_before_reference) end
+             )
+
+    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    child = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
+    generation_message_id = child.last_message.id
+
+    background_task =
+      create_spawn_background_task!(actor, parent, brief, prompt, :running)
+
+    test_process = self()
+
+    recoveries = [
+      Task.async(fn ->
+        send(test_process, {:recovery_ready, self()})
+        receive do: (:run_recovery -> BackgroundTasks.recover())
+      end),
+      Task.async(fn ->
+        send(test_process, {:recovery_ready, self()})
+        receive do: (:run_recovery -> GenerationSupervisor.recover_orphaned_generations())
+      end)
+    ]
+
+    recovery_pids =
+      for _index <- 1..2 do
+        assert_receive {:recovery_ready, pid}, 5_000
+        pid
+      end
+
+    Enum.each(recovery_pids, &send(&1, :run_recovery))
+    Enum.each(recoveries, &Task.await(&1, 5_000))
+
+    snapshot =
+      wait_for_background_status!(background_task.id, actor.id, "completed", 6_000)
+
+    assert snapshot["runner_ref"]["spawn_generation_message_id"] == generation_message_id
+    completed = wait_for_status!(generation_message_id, actor, [:done], 6_000)
+    assert completed.error_detail == nil
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+
+    steps =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^generation_message_id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.read!(actor: actor)
+
+    assert length(steps) == 1
+    assert hd(steps).status == :done
+  end
+
+  test "durable background spawn remains authorized after its parent generation is canceled" do
+    %{user: actor} = user_fixture()
+    brief = "Detached spawn"
+    prompt = "Finish after the parent is canceled."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    background_task =
+      create_spawn_background_task!(actor, parent, brief, prompt, :running,
+        generation_fence_token: lease.fence_token
+      )
+
+    assert :canceled =
+             Persistence.cancel_generating_message!(parent.message.id,
+               error_detail: nil
+             )
+
+    assert :ok = Lease.release(lease)
+    context = BackgroundTasks.execution_context(background_task)
+    assert context.generation_fence_token != nil
+
+    assert {:completed, %ExecutionResult{}} =
+             Spawn.execute_background(
+               background_task,
+               parent.tool_instance,
+               "spawn",
+               %{"brief" => brief, "prompt" => prompt},
+               context
+             )
+
+    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
+    child = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
+    assert child.last_message.status == :done
+  end
+
+  test "background spawn persists spawn refs and completes through its adapter" do
+    %{user: actor} = user_fixture()
+    brief = "Background spawn"
+    prompt = "Complete independently."
+    parent = create_parent_spawn_call!(actor, brief, prompt)
+    context = fork_execution_context(parent, actor)
+
+    assert {:ok, launch} =
+             BackgroundTasks.start_spawn(parent.tool_instance, brief, prompt, context)
+
+    snapshot =
+      wait_for_background_status!(launch.raw["background_task_id"], actor.id, "completed", 6_000)
+
+    assert snapshot["kind"] == "spawn"
+    assert is_integer(snapshot["target_chat_id"])
+    assert snapshot["runner_ref"]["spawn_chat_id"] == snapshot["target_chat_id"]
+    assert is_integer(snapshot["runner_ref"]["spawn_prompt_message_id"])
+
+    assert snapshot["runner_ref"]["spawn_generation_message_id"] ==
+             get_in(snapshot, ["result", "raw", "spawn", "generation_message_id"])
+
+    assert get_in(snapshot, ["result", "raw", "spawn", "chat_id"]) ==
+             snapshot["target_chat_id"]
+  end
+
   test "fork start_or_resume is non-blocking and snapshot uses an opaque answer cursor" do
     %{user: actor} = user_fixture()
     task = "Inspect completed fork"
@@ -502,6 +1056,132 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert reset_cursor == reset.next_cursor
   end
 
+  test "concurrent fork starts reuse one canonical prepared step and generation" do
+    %{user: actor} = user_fixture()
+    task = "Run one concurrent fork"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+    test_process = self()
+
+    starters =
+      for label <- [:first, :second] do
+        Task.async(fn ->
+          Fork.start_or_resume(parent.tool_instance, task, context, actor,
+            on_reference: fn reference ->
+              send(test_process, {:fork_start_ready, label, self(), reference})
+
+              receive do
+                {:continue_fork_start, ^label} -> :ok
+              after
+                5_000 -> {:error, :start_barrier_timeout}
+              end
+            end
+          )
+        end)
+      end
+
+    ready =
+      for _index <- 1..2 do
+        assert_receive {:fork_start_ready, label, pid, reference}, 5_000
+        {label, pid, reference}
+      end
+
+    assert ready
+           |> Enum.map(fn {_label, _pid, reference} -> reference.chat_id end)
+           |> Enum.uniq()
+           |> length() ==
+             1
+
+    assert ready
+           |> Enum.map(fn {_label, _pid, reference} -> reference.generation_message_id end)
+           |> Enum.uniq()
+           |> length() == 1
+
+    Enum.each(ready, fn {label, pid, _reference} ->
+      send(pid, {:continue_fork_start, label})
+    end)
+
+    results = Enum.map(starters, &Task.await(&1, 5_000))
+    assert Enum.all?(results, &match?({:ok, _reference}, &1))
+
+    references = Enum.map(results, fn {:ok, reference} -> reference end)
+    assert references |> Enum.map(& &1.chat_id) |> Enum.uniq() |> length() == 1
+    assert references |> Enum.map(& &1.generation_message_id) |> Enum.uniq() |> length() == 1
+
+    [reference | _rest] = references
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == [reference.chat_id]
+
+    completed = wait_for_status!(reference.generation_message_id, actor, [:done], 6_000)
+    assert completed.error_detail == nil
+    wait_for_generation_worker_to_stop!(reference.generation_message_id)
+
+    steps =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^reference.generation_message_id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.Query.load([:items])
+      |> Ash.read!(actor: actor)
+
+    assert Enum.map(steps, &{&1.sequence, &1.status}) == [{1, :done}, {2, :done}]
+    refute Enum.any?(steps, &(&1.status == :canceled))
+    assert Enum.count(List.last(steps).items, &(&1.type == :answer)) == 1
+  end
+
+  test "concurrent subagent parent-result persistence creates one tool result" do
+    %{user: actor} = user_fixture()
+    task = "Persist one parent result"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+    test_process = self()
+
+    result = %ExecutionResult{
+      text: "Canonical result",
+      raw: %{"fork" => %{"chat_id" => 123, "generation_message_id" => 456}},
+      media: [],
+      artifacts: []
+    }
+
+    writers =
+      for index <- 1..8 do
+        Task.async(fn ->
+          send(test_process, {:parent_result_writer_ready, index, self()})
+
+          receive do
+            {:persist_parent_result, ^index} ->
+              Subagent.persist_parent_tool_result(context, result)
+          after
+            5_000 -> {:error, :write_barrier_timeout}
+          end
+        end)
+      end
+
+    ready =
+      for _index <- 1..8 do
+        assert_receive {:parent_result_writer_ready, index, pid}, 5_000
+        {index, pid}
+      end
+
+    Enum.each(ready, fn {index, pid} -> send(pid, {:persist_parent_result, index}) end)
+    assert Enum.all?(writers, &(Task.await(&1, 5_000) == :ok))
+
+    parent_message =
+      Ash.get!(ChatMessage, parent.message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    tool_results =
+      parent_message.steps
+      |> List.wrap()
+      |> Enum.flat_map(&List.wrap(&1.items))
+      |> Enum.filter(fn item ->
+        item.type == :tool_result and item.tool_call_item_id == parent.call.item_id
+      end)
+
+    assert length(tool_results) == 1
+    assert fork_tool_result_raw!(parent_message, parent.call.item_id) == result.raw
+  end
+
   test "fork cancels a prepared child when durable reference persistence fails" do
     %{user: actor} = user_fixture()
     task = "Fail reference persistence"
@@ -519,6 +1199,50 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     assert child_message.status == :canceled
     assert GenerationSupervisor.get_generation_state(child_message.id) == :not_found
+  end
+
+  test "background fork cancel resolves a prepared generation before its reference is stored" do
+    %{user: actor} = user_fixture()
+    task = "Cancel fork before reference"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+    background_task = create_fork_background_task!(actor, parent, task, :running)
+    test_process = self()
+
+    starter =
+      Task.async(fn ->
+        Fork.start_or_resume(parent.tool_instance, task, context, actor,
+          on_reference: fn reference ->
+            send(test_process, {:fork_prepared, self(), reference})
+
+            receive do
+              :continue_fork_start -> :ok
+            after
+              5_000 -> {:error, :reference_barrier_timeout}
+            end
+          end
+        )
+      end)
+
+    assert_receive {:fork_prepared, starter_pid, reference}, 5_000
+    assert reference.chat_id in fork_child_ids_for_call(actor, parent.call.item_id)
+
+    assert {:ok, %{"status" => "canceled"}} =
+             BackgroundTasks.cancel(background_task.id, actor.id)
+
+    send(starter_pid, :continue_fork_start)
+    assert {:error, :invalid_status} = Task.await(starter, 5_000)
+
+    generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
+    assert generation_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
+
+    :ok = GenerationSupervisor.recover_orphaned_generations()
+    Process.sleep(100)
+
+    generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
+    assert generation_message.status == :canceled
+    assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
   end
 
   test "background fork cancels its generation when the waiter cannot snapshot its reference" do
@@ -1007,16 +1731,29 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   defp create_parent_fork_call!(actor, task) do
+    create_parent_subagent_call!(actor, "fork", %{"task" => task}, "Fork now")
+  end
+
+  defp create_parent_spawn_call!(actor, brief, prompt) do
+    create_parent_subagent_call!(
+      actor,
+      "spawn",
+      %{"brief" => brief, "prompt" => prompt},
+      "Spawn now"
+    )
+  end
+
+  defp create_parent_subagent_call!(actor, primitive, args, user_prompt) do
     chat =
       Chat
       |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
       |> Ash.create!(actor: actor)
 
     tool_instance = create_agent_management_tool_instance!(actor)
-    _function = create_tool_function!(actor, tool_instance, "fork")
+    _function = create_tool_function!(actor, tool_instance, primitive)
     _binding = create_chat_tool_binding!(actor, chat, tool_instance)
 
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Fork now", actor: actor)
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, user_prompt, actor: actor)
 
     message =
       ChatMessage
@@ -1029,7 +1766,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     raw_request = %{
       "model" => "demo-model",
-      "messages" => [%{"role" => "user", "content" => "Fork now"}],
+      "messages" => [%{"role" => "user", "content" => user_prompt}],
       "stream" => true
     }
 
@@ -1038,12 +1775,12 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     runtime_step =
       RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: raw_request)
       |> add_tool_call_to_runtime_step(
-        "fork_#{System.unique_integer([:positive])}",
-        "agent_management__fork",
-        %{"task" => task},
+        "#{primitive}_#{System.unique_integer([:positive])}",
+        "agent_management__#{primitive}",
+        args,
         1
       )
-      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "fork-step-response"}})
+      |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "subagent-step-response"}})
       |> RuntimeTrace.apply_event({:set_step_response_final, true})
 
     %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime_step)
@@ -1061,6 +1798,82 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       tool_call_item_id: parent.call.item_id,
       available_file_external_ids: []
     }
+  end
+
+  defp create_spawn_background_task!(actor, parent, brief, prompt, status, opts \\ []) do
+    context = fork_execution_context(parent, actor)
+
+    execution_context = %{
+      "owner_id" => context.owner_id,
+      "chat_id" => context.chat_id,
+      "message_id" => context.message_id,
+      "assistant_message_id" => context.assistant_message_id,
+      "step_id" => context.step_id,
+      "available_file_external_ids" => context.available_file_external_ids,
+      "tool_call_item_id" => context.tool_call_item_id
+    }
+
+    execution_context =
+      case Keyword.get(opts, :generation_fence_token) do
+        token when is_binary(token) -> Map.put(execution_context, "generation_fence_token", token)
+        _other -> execution_context
+      end
+
+    BackgroundTask
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        kind: "spawn",
+        adapter: "spawn",
+        status: status,
+        function_name: "spawn",
+        arguments: %{"brief" => brief, "prompt" => prompt},
+        execution_context: execution_context,
+        runner_ref: %{},
+        tool_instance_id: parent.tool_instance.id,
+        source_chat_id: parent.chat.id,
+        source_message_id: parent.message.id,
+        source_step_id: parent.step_id,
+        source_tool_call_item_id: parent.call.item_id,
+        started_at: if(status == :running, do: DateTime.utc_now(), else: nil)
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_fork_background_task!(actor, parent, task, status) do
+    context = fork_execution_context(parent, actor)
+
+    BackgroundTask
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        kind: "fork",
+        adapter: "fork",
+        status: status,
+        function_name: "fork",
+        arguments: %{"task" => task},
+        execution_context: %{
+          "owner_id" => context.owner_id,
+          "chat_id" => context.chat_id,
+          "message_id" => context.message_id,
+          "assistant_message_id" => context.assistant_message_id,
+          "step_id" => context.step_id,
+          "available_file_external_ids" => context.available_file_external_ids,
+          "tool_call_item_id" => context.tool_call_item_id
+        },
+        runner_ref: %{},
+        tool_instance_id: parent.tool_instance.id,
+        source_chat_id: parent.chat.id,
+        source_message_id: parent.message.id,
+        source_step_id: parent.step_id,
+        source_tool_call_item_id: parent.call.item_id,
+        started_at: if(status == :running, do: DateTime.utc_now(), else: nil)
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 
   defp create_fork_child_chat!(actor, parent_chat, parent_message, call, task) do

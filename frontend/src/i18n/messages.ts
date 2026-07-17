@@ -118,6 +118,19 @@ export const ruMessages: Record<string, string> = {
   'Fork': 'Форк',
   'Fork of': 'Форк от',
   'Forked into': 'Форк в',
+  'Spawn': 'Спавн',
+  'Spawned from': 'Спавн из',
+  'Spawned into': 'Спавн в',
+  'Nested subchats limit': 'Лимит вложенных сабчатов',
+  'How many additional subchats a subagent may create. 0 disables fork and spawn inside subchats.':
+    'Сколько дополнительных сабчатов может создать сабагент. 0 запрещает fork и spawn внутри сабчатов.',
+  'Allow handoff in subchats': 'Разрешить handoff в сабчатах',
+  'Allow subagents to continue work through handoff chats.':
+    'Разрешить сабагентам продолжать работу через handoff-чаты.',
+  'Start a linked subagent chat with the same bot and chat settings but no copied conversation history, and wait for it to finish.':
+    'Запустить связанный сабчат того же бота с теми же настройками, но без копирования истории, и дождаться завершения.',
+  'Start a linked subagent chat with an empty conversation without waiting for it to finish. Save the returned background task id and check it explicitly.':
+    'Запустить связанный сабчат с пустой историей, не дожидаясь завершения. Сохраните идентификатор фоновой задачи и проверяйте её явно.',
   'Subchat': 'Сабчат',
   'Confirm new password': 'Подтвердите новый пароль',
   'Confirm password': 'Подтвердите пароль',

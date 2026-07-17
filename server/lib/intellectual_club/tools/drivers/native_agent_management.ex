@@ -12,6 +12,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.Fork, as: AgentFork
   alias IntellectualClub.Chat.Handoff
+  alias IntellectualClub.Chat.Spawn, as: AgentSpawn
+  alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Generation.Context, as: GenerationContext
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -40,8 +44,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   @impl true
   def default_config do
     %{
-      "nested_forks_limit" => 0,
-      "allow_handoff_in_forks" => false
+      "nested_subchats_limit" => 0,
+      "allow_handoff_in_subchats" => false
     }
   end
 
@@ -50,20 +54,20 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     %{
       "type" => "object",
       "properties" => %{
-        "nested_forks_limit" => %{
+        "nested_subchats_limit" => %{
           "type" => "integer",
           "minimum" => 0,
           "default" => 0,
-          "title" => "Nested forks limit",
+          "title" => "Nested subchats limit",
           "description" =>
-            "How many additional fork generations a forked subagent may create. " <>
-              "0 disables fork inside subagents."
+            "How many additional subchats a subagent may create. " <>
+              "0 disables fork and spawn inside subchats."
         },
-        "allow_handoff_in_forks" => %{
+        "allow_handoff_in_subchats" => %{
           "type" => "boolean",
           "default" => false,
-          "title" => "Allow handoff in forks",
-          "description" => "Allow forked subagents to continue work through handoff chats."
+          "title" => "Allow handoff in subchats",
+          "description" => "Allow subagents to continue work through handoff chats."
         }
       },
       "additionalProperties" => false
@@ -134,6 +138,24 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "required" => ["task"],
           "additionalProperties" => false
         },
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
+        "name" => "spawn",
+        "description" =>
+          "Start a linked subagent chat with the same bot and chat settings but no copied " <>
+            "conversation history, and wait for it to finish.",
+        "schema" => spawn_schema(),
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
+        "name" => "spawn_background",
+        "description" =>
+          "Start a linked subagent chat with an empty conversation without waiting for it to " <>
+            "finish. Save the returned background task id and check it explicitly.",
+        "schema" => spawn_schema(),
         "enabled" => false,
         "enabled_by_default" => false
       },
@@ -211,27 +233,32 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   def execute(%ToolInstance{} = tool_instance, "handoff", args, %ExecutionContext{} = context)
       when is_map(args) do
     with {:ok, summary} <- required_summary(args),
-         :ok <- AgentFork.ensure_handoff_allowed(tool_instance, context),
+         :ok <- Subagent.ensure_handoff_allowed(tool_instance, context),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          {:ok, chat_id} <- required_integer(context.chat_id, "chat_id"),
          {:ok, assistant_message_id} <-
            required_integer(context.assistant_message_id || context.message_id, "message_id"),
          actor = %User{id: owner_id},
-         {:ok, result} <-
-           Handoff.create_handoff_chat(chat_id, actor, summary,
-             source_message_id: assistant_message_id,
-             handoff_mode: :tool,
-             start_generation?: true
-           ) do
+         {:ok, {result, generation_context}} <-
+           Subagent.with_parent_generation_fence(context, fn ->
+             with {:ok, result} <-
+                    Handoff.create_handoff_chat(chat_id, actor, summary,
+                      source_message_id: assistant_message_id,
+                      handoff_mode: :tool,
+                      start_generation?: false
+                    ) do
+               generation_context = GenerationContext.build!(result.chat.id, actor: actor)
+               {:ok, {result, generation_context}}
+             end
+           end),
+         :ok <- start_prepared_handoff_generation(generation_context, actor) do
       chat = result.chat
       message = result.message
-      generation = result.generation
-      generation_message_id = if is_map(generation), do: Map.get(generation, :message_id)
 
       payload = %{
         "chat_id" => chat.id,
         "message_id" => message.id,
-        "generation_message_id" => generation_message_id,
+        "generation_message_id" => generation_context.message_id,
         "url" => "/chats/#{chat.id}"
       }
 
@@ -286,6 +313,41 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = _tool_instance, "fork_background", _args, _context) do
     {:error, "Background fork requires generation execution context."}
+  end
+
+  def execute(%ToolInstance{} = tool_instance, "spawn", args, %ExecutionContext{} = context)
+      when is_map(args) do
+    with {:ok, brief, prompt} <- required_spawn_args(args),
+         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
+         actor = %User{id: owner_id},
+         {:ok, result} <- AgentSpawn.create_and_run(tool_instance, brief, prompt, context, actor) do
+      {:ok, result}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "spawn", _args, _context) do
+    {:error, "Spawn requires generation execution context."}
+  end
+
+  def execute(
+        %ToolInstance{} = tool_instance,
+        "spawn_background",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    with {:ok, brief, prompt} <- required_spawn_args(args),
+         {:ok, result} <- BackgroundTasks.start_spawn(tool_instance, brief, prompt, context) do
+      {:ok, result}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "spawn_background", _args, _context) do
+    {:error, "Background spawn requires generation execution context."}
   end
 
   def execute(
@@ -368,6 +430,21 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     {:error, "Unknown function: #{function_name}"}
   end
 
+  defp start_prepared_handoff_generation(generation_context, actor) do
+    case GenerationSupervisor.start_prepared_generation(
+           generation_context.chat_id,
+           generation_context.message_id,
+           generation_context.step_id,
+           generation_context.request_payload || %{},
+           actor: actor,
+           available_file_external_ids: generation_context.available_file_external_ids || []
+         ) do
+      {:ok, _context} -> :ok
+      {:error, :already_running} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp required_summary(args) when is_map(args) do
     args
     |> Map.get("summary", "")
@@ -388,6 +465,57 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       "" -> {:error, "task is required"}
       task -> {:ok, task}
     end
+  end
+
+  defp required_spawn_args(args) when is_map(args) do
+    with :ok <- reject_extra_spawn_args(args),
+         {:ok, brief} <- required_trimmed_string(args, "brief"),
+         {:ok, prompt} <- required_trimmed_string(args, "prompt") do
+      {:ok, brief, prompt}
+    end
+  end
+
+  defp required_trimmed_string(args, key) when is_map(args) and is_binary(key) do
+    case Map.get(args, key) do
+      nil ->
+        {:error, "#{key} is required"}
+
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, "#{key} is required"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _other ->
+        {:error, "#{key} must be a string"}
+    end
+  end
+
+  defp reject_extra_spawn_args(args) when is_map(args) do
+    extras = Map.keys(args) -- ["brief", "prompt"]
+
+    case extras do
+      [] -> :ok
+      _other -> {:error, "spawn arguments contain unsupported fields"}
+    end
+  end
+
+  defp spawn_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "brief" => %{
+          "type" => "string",
+          "description" => "Short task description stored as the new chat note."
+        },
+        "prompt" => %{
+          "type" => "string",
+          "description" => "First user message sent to the spawned subagent."
+        }
+      },
+      "required" => ["brief", "prompt"],
+      "additionalProperties" => false
+    }
   end
 
   defp required_background_task_id(args) when is_map(args) do

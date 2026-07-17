@@ -13,6 +13,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.Handoff
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
@@ -32,6 +33,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   defstruct [
     :context,
+    :lease,
     :adapter,
     :status,
     :runtime_step,
@@ -60,6 +62,11 @@ defmodule IntellectualClub.Generation.Worker do
 
   def cancel(pid) do
     GenServer.cast(pid, :cancel)
+  end
+
+  @doc false
+  def global_name(message_id) when is_integer(message_id) do
+    {__MODULE__, :message, message_id}
   end
 
   def steer(pid, text) when is_binary(text) do
@@ -102,10 +109,30 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
-  def init(%{context: context}) do
-    register_generation_key!({:message, context.message_id}, %{chat_id: context.chat_id})
-    register_generation_key!({:chat, context.chat_id}, %{message_id: context.message_id})
+  def init(%{context: context} = opts) do
+    Process.flag(:trap_exit, true)
 
+    lease = Map.get(opts, :lease)
+    lease_owner = Map.get(opts, :lease_owner)
+
+    with :ok <- adopt_generation_lease(lease, lease_owner) do
+      register_generation_key!({:message, context.message_id}, %{chat_id: context.chat_id})
+      register_generation_key!({:chat, context.chat_id}, %{message_id: context.message_id})
+      register_global_generation_key!(context.message_id)
+
+      state = %__MODULE__{
+        context: context,
+        lease: lease,
+        status: :initializing
+      }
+
+      {:ok, state, {:continue, :initialize}}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp initialize_state(context, lease) do
     started_at = DateTime.utc_now()
 
     adapter =
@@ -154,6 +181,7 @@ defmodule IntellectualClub.Generation.Worker do
 
     state = %__MODULE__{
       context: context,
+      lease: lease,
       adapter: adapter,
       status: :generating,
       step_attempt: initial_step_attempt(context, initial_step_sequence),
@@ -167,23 +195,26 @@ defmodule IntellectualClub.Generation.Worker do
       provider_session: provider_session
     }
 
-    {:ok, state, {:continue, continue}}
+    {state, continue}
   end
 
   @impl true
-  def terminate(_reason, state) do
-    _ = stop_provider_session(state)
-    :ok
+  def handle_continue(:initialize, %{context: context, lease: lease} = state) do
+    if is_nil(lease) or Lease.valid?(lease) do
+      {state, continue} = initialize_state(context, lease)
+      {:noreply, state, {:continue, continue}}
+    else
+      {:stop, :normal, state}
+    end
   end
 
-  @impl true
   def handle_continue(:start_stream, state) do
     state = start_stream_task(state)
     {:noreply, state}
   end
 
   def handle_continue(:resume_waiting_tools, state) do
-    case safe_persist_value(state.context.message_id, :resume_waiting_tools, fn ->
+    case safe_persist_value(state, :resume_waiting_tools, fn ->
            Persistence.list_missing_tool_calls!(state.runtime_step.id)
          end) do
       {:ok, []} ->
@@ -201,35 +232,51 @@ defmodule IntellectualClub.Generation.Worker do
     handle_tool_results(state, [], persist_results?: false)
   end
 
+  @impl true
+  def terminate(_reason, state) do
+    _ = stop_provider_session(state)
+    if state.lease, do: Lease.release(state.lease)
+    :ok
+  end
+
   defp start_stream_task(state) do
     step_id = state.runtime_step.id
     raw_request = state.runtime_step.raw_request || %{}
 
-    case materialize_request_images(raw_request, step_id) do
-      {:ok, compact_request} ->
+    case safe_persist_value(state, :request_images, fn ->
+           materialize_request_images(raw_request, step_id)
+         end) do
+      {:ok, {:ok, compact_request}} ->
         state
         |> apply_materialized_request(compact_request)
         |> start_provider_stream_task(compact_request, step_id)
 
+      {:ok, {:error, reason}} ->
+        request_image_error_state(state, raw_request, reason)
+
       {:error, reason} ->
-        stream_ref = make_ref()
-
-        send(
-          self(),
-          {:provider_event, stream_ref,
-           {:response_error,
-            %{
-              provider: state.context.provider_type,
-              retryable: false,
-              error_kind: "request_media",
-              error_text: "Failed to prepare request images: #{inspect(reason)}",
-              raw_request: raw_request,
-              raw_response: nil
-            }}}
-        )
-
-        %{state | stream_task: nil, stream_ref: stream_ref, retry_timer_ref: nil}
+        request_image_error_state(state, raw_request, reason)
     end
+  end
+
+  defp request_image_error_state(state, raw_request, reason) do
+    stream_ref = make_ref()
+
+    send(
+      self(),
+      {:provider_event, stream_ref,
+       {:response_error,
+        %{
+          provider: state.context.provider_type,
+          retryable: false,
+          error_kind: "request_media",
+          error_text: "Failed to prepare request images: #{inspect(reason)}",
+          raw_request: raw_request,
+          raw_response: nil
+        }}}
+    )
+
+    %{state | stream_task: nil, stream_ref: stream_ref, retry_timer_ref: nil}
   end
 
   defp start_provider_stream_task(state, compact_request, step_id) do
@@ -329,7 +376,7 @@ defmodule IntellectualClub.Generation.Worker do
           finalize_error(state, error_text, error_meta)
       end
     else
-      case safe_persist_value(state.context.message_id, :provider_completed, fn ->
+      case safe_persist_value(state, :provider_completed, fn ->
              Persistence.persist_provider_completed!(state.context.message_id, runtime_step)
            end) do
         {:error, reason} ->
@@ -382,6 +429,38 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def handle_info({:provider_event, _stale_stream_ref, _event}, state) do
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(
+        {:EXIT, manager, _reason},
+        %{lease: %Lease{manager: manager}} = state
+      ) do
+    state = cancel_tasks(state)
+    state = stop_provider_session(state)
+    {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _pid, :normal}, state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, pid, _reason}, %{stream_task: %Task{pid: pid}} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, pid, _reason}, %{tool_task: %Task{pid: pid}} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    state = cancel_tasks(state)
+    state = stop_provider_session(state)
+    {:stop, :normal, state}
   end
 
   @impl true
@@ -480,7 +559,7 @@ defmodule IntellectualClub.Generation.Worker do
     state = stop_provider_session(state)
 
     _ =
-      safe_persist(state.context.message_id, :canceled, fn ->
+      safe_cancel_persist(state, fn ->
         if durable_waiting_tools_step?(state.runtime_step) do
           Persistence.persist_canceled_from_step!(
             state.context.message_id,
@@ -493,6 +572,12 @@ defmodule IntellectualClub.Generation.Worker do
 
     broadcast(state, {:canceled, state.context.message_id})
     {:stop, :normal, %{state | status: :canceled}}
+  end
+
+  def handle_cast(:generation_fence_lost, state) do
+    state = cancel_tasks(state)
+    state = stop_provider_session(state)
+    {:stop, :normal, state}
   end
 
   @impl true
@@ -543,7 +628,7 @@ defmodule IntellectualClub.Generation.Worker do
     with {:ok, injected} <-
            inject_steering_request(state, state.runtime_step.raw_request, steering_items),
          {:ok, persisted} <-
-           safe_persist_value(state.context.message_id, :steering_before_response, fn ->
+           safe_persist_value(state, :steering_before_response, fn ->
              Persistence.persist_steering_before_provider!(
                state.context.message_id,
                state.runtime_step.id,
@@ -584,12 +669,12 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp steer_waiting_tools(state, text) do
     with {:ok, persisted} <-
-           safe_persist_value(state.context.message_id, :steering_handoff_check, fn ->
+           safe_persist_value(state, :steering_handoff_check, fn ->
              Persistence.load_step_for_followup!(state.runtime_step.id)
            end),
          false <- Enum.any?(persisted.tool_calls, &handoff_tool_call?(state, &1)),
          {:ok, steering} <-
-           safe_persist_value(state.context.message_id, :steering_after_response, fn ->
+           safe_persist_value(state, :steering_after_response, fn ->
              Persistence.persist_steering_after_provider!(
                state.context.message_id,
                state.runtime_step.id,
@@ -644,7 +729,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp normalize_steering_error(reason), do: {:steering_failed, reason}
 
   defp finalize_done_from_step(state, step_id) when is_integer(step_id) do
-    case safe_persist(state.context.message_id, :done, fn ->
+    case safe_persist(state, :done, fn ->
            Persistence.persist_completed_from_step!(state.context.message_id, step_id)
          end) do
       :ok ->
@@ -659,21 +744,29 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp finalize_completion_effect(state, step_id) when is_integer(step_id) do
-    case run_completion_effect(state) do
-      :ok ->
+    case safe_persist_value(state, :completion_effect, fn -> run_completion_effect(state) end) do
+      {:ok, :ok} ->
         NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
         broadcast(state, {:done, state.context.message_id})
         {:stop, :normal, %{state | status: :done}}
 
-      {:error, error_text} ->
+      {:ok, {:error, error_text}} ->
         _ =
-          safe_persist(state.context.message_id, :completion_effect_error, fn ->
+          safe_persist(state, :completion_effect_error, fn ->
             Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
           end)
 
         NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
         broadcast(state, {:error, state.context.message_id, error_text})
         {:stop, :normal, %{state | status: :error}}
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipped generation completion effect after losing its fence " <>
+            "message_id=#{state.context.message_id} reason=#{inspect(reason)}"
+        )
+
+        {:stop, :normal, state}
     end
   end
 
@@ -704,7 +797,7 @@ defmodule IntellectualClub.Generation.Worker do
       |> RuntimeTrace.apply_event({:set_text, "error", :error, 1, to_string(error_text || "")})
 
     _ =
-      safe_persist(state.context.message_id, :error, fn ->
+      safe_persist(state, :error, fn ->
         if durable_waiting_tools_step?(runtime_step) do
           Persistence.persist_error_from_step!(
             state.context.message_id,
@@ -775,46 +868,43 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
-    try do
-      raw_request = state.runtime_step.raw_request || %{}
+    raw_request = state.runtime_step.raw_request || %{}
 
-      retry_step =
-        Persistence.persist_retry_error_and_start_next_step!(
-          state.context.message_id,
-          state.runtime_step.id,
-          raw_request,
-          error_text,
-          attempt: attempt,
-          retry_delay_ms: delay_ms,
-          status_code: status_code_from_meta(meta),
-          error_kind: string_value(meta, :error_kind),
-          retryable: true
-        )
+    case safe_persist_value(state, :auto_retry, fn ->
+           Persistence.persist_retry_error_and_start_next_step!(
+             state.context.message_id,
+             state.runtime_step.id,
+             raw_request,
+             error_text,
+             attempt: attempt,
+             retry_delay_ms: delay_ms,
+             status_code: status_code_from_meta(meta),
+             error_kind: string_value(meta, :error_kind),
+             retryable: true
+           )
+         end) do
+      {:ok, retry_step} ->
+        runtime_step =
+          RuntimeTrace.new_step(
+            id: retry_step.step_id,
+            sequence: retry_step.step_sequence,
+            started_at: retry_step.started_at,
+            status: :waiting_provider,
+            raw_request: retry_step.raw_request || raw_request
+          )
 
-      runtime_step =
-        RuntimeTrace.new_step(
-          id: retry_step.step_id,
-          sequence: retry_step.step_sequence,
-          started_at: retry_step.started_at,
-          status: :waiting_provider,
-          raw_request: retry_step.raw_request || raw_request
-        )
+        context = %{state.context | step_id: retry_step.step_id}
 
-      context = %{state.context | step_id: retry_step.step_id}
+        {:ok,
+         %{
+           state
+           | context: context,
+             runtime_step: runtime_step,
+             step_sequence: retry_step.step_sequence
+         }}
 
-      {:ok,
-       %{
-         state
-         | context: context,
-           runtime_step: runtime_step,
-           step_sequence: retry_step.step_sequence
-       }}
-    rescue
-      exception ->
-        {:error, exception}
-    catch
-      :exit, reason ->
-        {:error, reason}
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -1023,7 +1113,7 @@ defmodule IntellectualClub.Generation.Worker do
     if function_exported?(adapter, :start_session, 1) do
       case adapter.start_session(context) do
         {:ok, session} ->
-          session
+          own_provider_session(session)
 
         :ignore ->
           nil
@@ -1064,12 +1154,24 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
+  defp register_global_generation_key!(message_id) do
+    case :global.register_name(global_name(message_id), self()) do
+      :yes -> :ok
+      :no -> exit(:already_running)
+    end
+  end
+
+  defp adopt_generation_lease(%Lease{} = lease, owner) when is_pid(owner) do
+    Lease.adopt(lease, owner)
+  end
+
+  defp adopt_generation_lease(nil, _owner), do: :ok
+  defp adopt_generation_lease(_lease, _owner), do: {:error, :invalid_generation_lease_owner}
+
   defp stop_provider_session(%{provider_session: nil} = state), do: state
 
   defp stop_provider_session(%{adapter: adapter, provider_session: session} = state) do
-    if function_exported?(adapter, :stop_session, 1) do
-      adapter.stop_session(session)
-    end
+    stop_owned_provider_session(adapter, session)
 
     %{state | provider_session: nil}
   rescue
@@ -1082,11 +1184,36 @@ defmodule IntellectualClub.Generation.Worker do
       %{state | provider_session: nil}
   end
 
-  defp safe_persist(message_id, status, fun)
-       when is_integer(message_id) and is_function(fun, 0) do
+  defp own_provider_session(session) when is_pid(session) do
+    Process.link(session)
+    session
+  end
+
+  defp own_provider_session(session), do: session
+
+  defp stop_owned_provider_session(adapter, session) do
     try do
-      fun.()
-      :ok
+      if function_exported?(adapter, :stop_session, 1) do
+        adapter.stop_session(session)
+      end
+    after
+      if is_pid(session), do: Process.unlink(session)
+    end
+  end
+
+  defp safe_persist(%__MODULE__{} = state, status, fun) when is_function(fun, 0) do
+    message_id = state.context.message_id
+
+    try do
+      case fenced_call(state, fun) do
+        {:ok, _result} ->
+          :ok
+
+        {:error, reason} = error ->
+          if generation_fence_lost?(reason),
+            do: exit({:generation_lease_lost, reason}),
+            else: error
+      end
     rescue
       exception ->
         Logger.warning(
@@ -1095,6 +1222,9 @@ defmodule IntellectualClub.Generation.Worker do
 
         {:error, exception}
     catch
+      :exit, {:generation_lease_lost, _reason} = reason ->
+        exit(reason)
+
       :exit, reason ->
         Logger.warning(
           "Generation persistence exited (message_id=#{message_id}, status=#{status}): #{inspect(reason)}"
@@ -1104,10 +1234,45 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp safe_persist_value(message_id, status, fun)
-       when is_integer(message_id) and is_function(fun, 0) do
+  defp safe_cancel_persist(%__MODULE__{} = state, fun) when is_function(fun, 0) do
+    message_id = state.context.message_id
+
     try do
-      {:ok, fun.()}
+      case fenced_call(state, fun) do
+        {:ok, _result} -> :ok
+        {:error, reason} when reason in [:lease_lost, :lease_not_fenced] -> :ok
+        {:error, _reason} = error -> error
+      end
+    rescue
+      exception ->
+        Logger.warning(
+          "Generation cancellation persistence failed (message_id=#{message_id}): #{Exception.message(exception)}"
+        )
+
+        {:error, exception}
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "Generation cancellation persistence exited (message_id=#{message_id}): #{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp safe_persist_value(%__MODULE__{} = state, status, fun) when is_function(fun, 0) do
+    message_id = state.context.message_id
+
+    try do
+      case fenced_call(state, fun) do
+        {:error, reason} = error ->
+          if generation_fence_lost?(reason),
+            do: exit({:generation_lease_lost, reason}),
+            else: error
+
+        result ->
+          result
+      end
     rescue
       exception ->
         Logger.warning(
@@ -1116,6 +1281,9 @@ defmodule IntellectualClub.Generation.Worker do
 
         {:error, exception}
     catch
+      :exit, {:generation_lease_lost, _reason} = reason ->
+        exit(reason)
+
       :exit, reason ->
         Logger.warning(
           "Generation persistence exited (message_id=#{message_id}, status=#{status}): #{inspect(reason)}"
@@ -1124,6 +1292,16 @@ defmodule IntellectualClub.Generation.Worker do
         {:error, reason}
     end
   end
+
+  defp fenced_call(%__MODULE__{lease: %Lease{} = lease}, fun) when is_function(fun, 0) do
+    Lease.with_fence(lease, fun)
+  end
+
+  defp fenced_call(%__MODULE__{lease: nil}, fun) when is_function(fun, 0) do
+    {:ok, fun.()}
+  end
+
+  defp generation_fence_lost?(reason), do: reason in [:lease_lost, :lease_not_fenced]
 
   defp broadcast(state, message) do
     Phoenix.PubSub.broadcast(IntellectualClub.PubSub, "chat:#{state.context.chat_id}", message)
@@ -1381,6 +1559,7 @@ defmodule IntellectualClub.Generation.Worker do
     execution_context = tool_execution_context(state)
     message_id = state.context.message_id
     step_id = state.runtime_step.id
+    lease = state.lease
 
     task =
       Task.async(fn ->
@@ -1390,7 +1569,8 @@ defmodule IntellectualClub.Generation.Worker do
            step_id,
            tool_calls,
            tool_instances_by_alias,
-           execution_context
+           execution_context,
+           lease
          )
          |> Kernel.++(prebuilt_results)
          |> order_tool_results()}
@@ -1404,7 +1584,8 @@ defmodule IntellectualClub.Generation.Worker do
          step_id,
          tool_calls,
          tool_instances_by_alias,
-         execution_context
+         execution_context,
+         lease
        )
        when is_integer(message_id) and is_integer(step_id) and is_list(tool_calls) do
     max_concurrency =
@@ -1427,7 +1608,7 @@ defmodule IntellectualClub.Generation.Worker do
           )
 
         result = decorate_tool_result(call, result)
-        Persistence.persist_tool_result!(message_id, step_id, call, result)
+        persist_tool_result!(lease, message_id, step_id, call, result)
         result
       end,
       max_concurrency: max_concurrency,
@@ -1438,6 +1619,19 @@ defmodule IntellectualClub.Generation.Worker do
       {:ok, result} -> result
       {:exit, reason} -> exit(reason)
     end)
+  end
+
+  defp persist_tool_result!(%Lease{} = lease, message_id, step_id, call, result) do
+    case Lease.with_fence(lease, fn ->
+           Persistence.persist_tool_result!(message_id, step_id, call, result)
+         end) do
+      {:ok, persisted} -> persisted
+      {:error, reason} -> exit({:generation_lease_lost, reason})
+    end
+  end
+
+  defp persist_tool_result!(nil, message_id, step_id, call, result) do
+    Persistence.persist_tool_result!(message_id, step_id, call, result)
   end
 
   defp order_tool_results(results) when is_list(results) do
@@ -1454,7 +1648,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
-    case safe_persist_value(state.context.message_id, :tool_results, fn ->
+    case safe_persist_value(state, :tool_results, fn ->
            maybe_persist_tool_results(state, results, opts)
            Persistence.load_step_for_followup!(state.runtime_step.id)
          end) do
@@ -1466,7 +1660,7 @@ defmodule IntellectualClub.Generation.Worker do
           nil ->
             with {:ok, followup} <- build_followup_with_steering(state, persisted),
                  {:ok, next_step} <-
-                   safe_persist_value(state.context.message_id, :step_done, fn ->
+                   safe_persist_value(state, :step_done, fn ->
                      Persistence.complete_step_and_start_next!(
                        state.context.message_id,
                        state.runtime_step.id,
@@ -1589,7 +1783,12 @@ defmodule IntellectualClub.Generation.Worker do
       assistant_message_id: Map.get(state.context, :message_id),
       step_id: Map.get(state.runtime_step, :id) || Map.get(state.context, :step_id),
       provider_type: Map.get(state.context, :provider_type),
-      available_file_external_ids: Map.get(state.context, :available_file_external_ids, [])
+      available_file_external_ids: Map.get(state.context, :available_file_external_ids, []),
+      generation_fence_token:
+        case state.lease do
+          %Lease{fence_token: fence_token} -> fence_token
+          _other -> nil
+        end
     }
   end
 

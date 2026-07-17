@@ -123,7 +123,7 @@ defmodule IntellectualClub.Chat.Relations do
 
   @spec child_relation_chats(integer(), map()) :: [Chat.t()]
   def child_relation_chats(chat_id, actor) when is_integer(chat_id) do
-    relation_kinds = [Handoff.relation_kind(), Fork.relation_kind()]
+    relation_kinds = [Handoff.relation_kind(), Fork.relation_kind(), :spawn]
 
     Chat
     |> Ash.Query.filter(parent_chat_id == ^chat_id and parent_relation_kind in ^relation_kinds)

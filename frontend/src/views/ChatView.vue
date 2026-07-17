@@ -765,11 +765,17 @@ const pendingFileProgress = pendingFileProgressPercent;
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;
 
-const parentRelationLabel = (relation: ChatRelationSummary) =>
-  relation.kind === 'fork' ? translate('Fork of') : translate('Continuation of');
+const parentRelationLabel = (relation: ChatRelationSummary) => {
+  if (relation.kind === 'fork') return translate('Fork of');
+  if (relation.kind === 'spawn') return translate('Spawned from');
+  return translate('Continuation of');
+};
 
-const childRelationLabel = (relation: ChatRelationSummary) =>
-  relation.kind === 'fork' ? translate('Forked into') : translate('Continued in');
+const childRelationLabel = (relation: ChatRelationSummary) => {
+  if (relation.kind === 'fork') return translate('Forked into');
+  if (relation.kind === 'spawn') return translate('Spawned into');
+  return translate('Continued in');
+};
 
 const chatRoute = (chatId: number) => ({
   path: `/chats/${chatId}`,

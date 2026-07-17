@@ -645,8 +645,13 @@ const messageTimeline = computed<MessageTimelineEntry[]>(() => {
   );
 });
 
-const forkRelationLabel = (entry: ForkPart) =>
-  entry.direction === 'parent' ? translate('Fork of') : translate('Forked into');
+const forkRelationLabel = (entry: ForkPart) => {
+  if (entry.relation.kind === 'spawn') {
+    return entry.direction === 'parent' ? translate('Spawned from') : translate('Spawned into');
+  }
+
+  return entry.direction === 'parent' ? translate('Fork of') : translate('Forked into');
+};
 
 const relationTitle = (relation: ChatRelationSummary) =>
   String(relation.note || `Chat #${relation.chat_id}`).trim() || `Chat #${relation.chat_id}`;

@@ -5,7 +5,6 @@ defmodule IntellectualClub.Chat.Listing do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
@@ -107,8 +106,10 @@ defmodule IntellectualClub.Chat.Listing do
 
   def child_handoff_counts(_chat_ids, _actor), do: %{}
 
-  @spec child_fork_subchat_counts([integer()], map()) :: map()
-  def child_fork_subchat_counts(chat_ids, actor) when is_list(chat_ids) do
+  @subchat_relation_kinds [:fork, :spawn]
+
+  @spec child_subchat_counts([integer()], map()) :: map()
+  def child_subchat_counts(chat_ids, actor) when is_list(chat_ids) do
     ids =
       chat_ids
       |> Enum.filter(&is_integer/1)
@@ -117,11 +118,10 @@ defmodule IntellectualClub.Chat.Listing do
     if ids == [] do
       %{}
     else
-      relation_kind = Fork.relation_kind()
-
       Chat
       |> Ash.Query.filter(
-        parent_chat_id in ^ids and parent_relation_kind == ^relation_kind and subagent == true
+        parent_chat_id in ^ids and parent_relation_kind in ^@subchat_relation_kinds and
+          subagent == true
       )
       |> Ash.Query.select([:id, :parent_chat_id])
       |> Ash.read(actor: actor)
@@ -137,12 +137,12 @@ defmodule IntellectualClub.Chat.Listing do
     end
   end
 
-  def child_fork_subchat_counts(_chat_ids, _actor), do: %{}
+  def child_subchat_counts(_chat_ids, _actor), do: %{}
 
-  @spec direct_fork_subchats([integer()], map(), list()) :: map()
-  def direct_fork_subchats(chat_ids, actor, loads \\ [])
+  @spec direct_subchats([integer()], map(), list()) :: map()
+  def direct_subchats(chat_ids, actor, loads \\ [])
 
-  def direct_fork_subchats(chat_ids, actor, loads) when is_list(chat_ids) do
+  def direct_subchats(chat_ids, actor, loads) when is_list(chat_ids) do
     ids =
       chat_ids
       |> Enum.filter(&is_integer/1)
@@ -151,11 +151,10 @@ defmodule IntellectualClub.Chat.Listing do
     if ids == [] do
       %{}
     else
-      relation_kind = Fork.relation_kind()
-
       Chat
       |> Ash.Query.filter(
-        parent_chat_id in ^ids and parent_relation_kind == ^relation_kind and subagent == true
+        parent_chat_id in ^ids and parent_relation_kind in ^@subchat_relation_kinds and
+          subagent == true
       )
       |> Ash.Query.sort(created_at: :asc, id: :asc)
       |> Ash.Query.load(loads, strict?: true)
@@ -170,7 +169,7 @@ defmodule IntellectualClub.Chat.Listing do
     end
   end
 
-  def direct_fork_subchats(_chat_ids, _actor, _loads), do: %{}
+  def direct_subchats(_chat_ids, _actor, _loads), do: %{}
 
   @spec active_root_message_previews([Chat.t()], map(), integer(), map()) :: map()
   def active_root_message_previews(chats, active_branch_summaries, preview_len, actor)

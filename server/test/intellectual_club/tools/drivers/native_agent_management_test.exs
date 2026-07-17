@@ -7,6 +7,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
+  alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -25,6 +27,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
              "handoff",
              "fork",
              "fork_background",
+             "spawn",
+             "spawn_background",
              "check_background_task_status",
              "cancel_background_task",
              "sleep"
@@ -60,6 +64,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
     assert fork_background["schema"]["required"] == ["task"]
 
+    for name <- ["spawn", "spawn_background"] do
+      function = Enum.find(functions, &(&1["name"] == name))
+      assert function["enabled"] == false
+      assert function["enabled_by_default"] == false
+      assert function["schema"]["required"] == ["brief", "prompt"]
+      assert function["schema"]["additionalProperties"] == false
+    end
+
     check_background =
       Enum.find(functions, &(&1["name"] == "check_background_task_status"))
 
@@ -78,6 +90,22 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert Enum.find(functions, &(&1["name"] == "sleep"))["enabled_by_default"] == true
   end
 
+  test "uses generic subchat configuration keys" do
+    assert NativeAgentManagement.default_config() == %{
+             "nested_subchats_limit" => 0,
+             "allow_handoff_in_subchats" => false
+           }
+
+    schema = NativeAgentManagement.config_schema()
+    properties = schema["properties"]
+
+    assert Map.keys(properties) |> Enum.sort() ==
+             ["allow_handoff_in_subchats", "nested_subchats_limit"]
+
+    assert properties["nested_subchats_limit"]["title"] == "Nested subchats limit"
+    assert properties["allow_handoff_in_subchats"]["title"] == "Allow handoff in subchats"
+  end
+
   test "fork is rejected by executor while disabled by default" do
     %{user: actor} = user_fixture()
     tool_instance = create_tool_instance!(actor)
@@ -93,6 +121,62 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert result.text == "Tool function `fork` is disabled."
     assert result.raw["isError"] == true
     assert result.raw["code"] == "tool_function_disabled"
+  end
+
+  test "spawn functions are rejected by executor while disabled by default" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    for name <- ["spawn", "spawn_background"] do
+      result =
+        Executor.execute_llm_tool(
+          %{"agent_management" => tool_instance},
+          "agent_management__#{name}",
+          %{"brief" => "Research", "prompt" => "Check one thing."},
+          %ExecutionContext{owner_id: actor.id}
+        )
+
+      assert result.text == "Tool function `#{name}` is disabled."
+      assert result.raw["isError"] == true
+      assert result.raw["code"] == "tool_function_disabled"
+    end
+  end
+
+  test "spawn validates brief and prompt before generation context" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+
+    assert {:error, "brief is required"} =
+             NativeAgentManagement.execute(
+               tool_instance,
+               "spawn",
+               %{"brief" => "  ", "prompt" => "Do work"},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    assert {:error, "prompt is required"} =
+             NativeAgentManagement.execute(
+               tool_instance,
+               "spawn_background",
+               %{"brief" => "Work", "prompt" => "  "},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    assert {:error, "brief must be a string"} =
+             NativeAgentManagement.execute(
+               tool_instance,
+               "spawn",
+               %{"brief" => 42, "prompt" => "Do work"},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    assert {:error, "spawn arguments contain unsupported fields"} =
+             NativeAgentManagement.execute(
+               tool_instance,
+               "spawn",
+               %{"brief" => "Work", "prompt" => "Do work", "extra" => true},
+               %ExecutionContext{owner_id: actor.id}
+             )
   end
 
   test "background management functions are rejected by executor while disabled by default" do
@@ -431,6 +515,49 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     assert {:error, "Handoff requires generation execution context."} =
              NativeAgentManagement.execute(tool_instance, "handoff", %{"summary" => "ok"}, nil)
+  end
+
+  test "handoff cannot create a child from a stale parent generation epoch" do
+    %{user: actor} = user_fixture()
+    source = create_chat!(actor, "Stale handoff source")
+    {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+
+    assistant =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: source.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert {:ok, lease} = Lease.acquire(assistant.id)
+
+    context = %ExecutionContext{
+      owner_id: actor.id,
+      chat_id: source.id,
+      message_id: assistant.id,
+      assistant_message_id: assistant.id,
+      generation_fence_token: lease.fence_token
+    }
+
+    assert :canceled = Persistence.cancel_generating_message!(assistant.id, error_detail: nil)
+    assert :ok = Lease.release(lease)
+
+    assert {:error, "parent_generation_stale"} =
+             NativeAgentManagement.execute(
+               create_tool_instance!(actor),
+               "handoff",
+               %{"summary" => "Must not continue."},
+               context
+             )
+
+    assert [] =
+             Chat
+             |> Ash.Query.filter(
+               parent_chat_id == ^source.id and parent_relation_kind == :handoff
+             )
+             |> Ash.read!(actor: actor)
   end
 
   test "sleep pauses without execution context" do

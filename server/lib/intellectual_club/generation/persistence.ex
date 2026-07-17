@@ -748,32 +748,62 @@ defmodule IntellectualClub.Generation.Persistence do
     :ok
   end
 
-  def cancel_orphaned_generating_message!(message_id) when is_integer(message_id) do
-    actor = actor_for_message!(message_id)
-    now = DateTime.utc_now()
+  def cancel_generating_message!(message_id, opts \\ [])
 
-    transaction!(fn ->
-      message_id
-      |> steps_for_message(actor)
-      |> Enum.filter(&(&1.status in [:waiting_provider, :waiting_tools]))
-      |> Enum.each(fn step ->
-        update_step!(step, %{status: :canceled, finished_at: now}, actor)
-      end)
+  def cancel_generating_message!(message_id, opts)
+      when is_integer(message_id) and is_list(opts) do
+    case Ash.get(ChatMessage, message_id, authorize?: false) do
+      {:ok, %ChatMessage{owner_id: owner_id}} when is_integer(owner_id) ->
+        actor = %User{id: owner_id}
+        now = DateTime.utc_now()
+        expected_fence_token = Keyword.get(opts, :expected_fence_token, :any)
+        error_detail = Keyword.get(opts, :error_detail)
 
-      message_id
-      |> load_message!(actor)
-      |> update_message!(
-        %{
-          status: :canceled,
-          error_detail: "Orphaned generation (worker not found)",
-          finished_at: now
-        },
-        actor
-      )
-    end)
+        transaction!(fn ->
+          message = lock_message!(message_id, actor)
 
+          if message.status == :generating and
+               fence_token_matches?(message.generation_fence_token, expected_fence_token) do
+            message_id
+            |> steps_for_message(actor)
+            |> Enum.filter(&(&1.status in [:waiting_provider, :waiting_tools]))
+            |> Enum.each(fn step ->
+              update_step!(step, %{status: :canceled, finished_at: now}, actor)
+            end)
+
+            update_message!(
+              message,
+              %{
+                status: :canceled,
+                error_detail: error_detail,
+                generation_fence_token: nil,
+                finished_at: now
+              },
+              actor
+            )
+
+            :canceled
+          else
+            :not_generating
+          end
+        end)
+
+      _other ->
+        :not_found
+    end
+  end
+
+  def cancel_orphaned_generating_message!(message_id, opts \\ [])
+
+  def cancel_orphaned_generating_message!(message_id, opts)
+      when is_integer(message_id) and is_list(opts) do
+    opts = Keyword.put_new(opts, :error_detail, "Orphaned generation (worker not found)")
+    _result = cancel_generating_message!(message_id, opts)
     :ok
   end
+
+  defp fence_token_matches?(_actual, :any), do: true
+  defp fence_token_matches?(actual, {:expected, expected}), do: actual == expected
 
   def rollback_last_step_for_retry!(message_id, step_sequence)
       when is_integer(message_id) and is_integer(step_sequence) and step_sequence > 0 do
@@ -1484,6 +1514,17 @@ defmodule IntellectualClub.Generation.Persistence do
 
   defp load_message!(message_id, actor) when is_integer(message_id) do
     Ash.get!(ChatMessage, message_id, actor: actor)
+  end
+
+  defp lock_message!(message_id, actor) when is_integer(message_id) do
+    ChatMessage
+    |> Ash.Query.filter(id == ^message_id)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.read_one!(actor: actor)
+    |> case do
+      %ChatMessage{} = message -> message
+      nil -> raise ArgumentError, "Chat message not found"
+    end
   end
 
   defp load_step!(step_id, actor) when is_integer(step_id) do

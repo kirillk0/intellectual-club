@@ -189,8 +189,8 @@
               <div v-if="configFieldHasError(field.key)" class="error-text">
                 {{ configFieldErrorMessage(field.key) }}
               </div>
-              <div v-if="field.schema.description" class="muted" style="margin-top: 4px">
-                {{ field.schema.description }}
+              <div v-if="fieldDescription(field.schema)" class="muted" style="margin-top: 4px">
+                {{ fieldDescription(field.schema) }}
               </div>
             </label>
           </template>
@@ -376,8 +376,8 @@
                 Credential will be removed on save.
               </div>
 
-              <div v-if="field.schema.description" class="muted" style="margin-top: 4px">
-                {{ field.schema.description }}
+              <div v-if="fieldDescription(field.schema)" class="muted" style="margin-top: 4px">
+                {{ fieldDescription(field.schema) }}
               </div>
             </label>
           </template>
@@ -435,7 +435,7 @@
                       {{ fn.name }}
                     </div>
                     <div v-if="fn.description" class="muted" style="font-size: 0.85rem">
-                      {{ fn.description }}
+                      {{ fn.fixed ? translate(fn.description) : fn.description }}
                     </div>
                     <div v-if="fn.discovered_at" class="muted" style="font-size: 0.85rem; margin-top: 4px">
                       Discovered: {{ formatRelativeDateTime(fn.discovered_at) }}
@@ -645,7 +645,12 @@ function humanizeKey(key: string): string {
 
 function fieldLabel(key: string, schema: JsonSchema): string {
   const title = typeof schema.title === 'string' ? schema.title.trim() : '';
-  return title || humanizeKey(key);
+  return translate(title || humanizeKey(key));
+}
+
+function fieldDescription(schema: JsonSchema): string {
+  const description = typeof schema.description === 'string' ? schema.description.trim() : '';
+  return description ? translate(description) : '';
 }
 
 function fieldInputType(key: string, schema: JsonSchema): string {

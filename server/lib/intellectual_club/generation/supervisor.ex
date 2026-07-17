@@ -10,7 +10,9 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Worker
 
@@ -37,51 +39,40 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok = cancel_for_chat(chat_id)
 
     context = Context.build!(chat_id, opts)
-    start_worker(context)
+    with_generation_lease(context.message_id, &start_worker(context, &1))
   end
 
-  def start_prepared_generation(chat_id, message_id, step_id, raw_request, opts \\ [])
+  def start_prepared_generation(chat_id, message_id, step_id, _raw_request, opts \\ [])
       when is_integer(chat_id) and is_integer(message_id) and is_integer(step_id) and
              is_list(opts) do
     actor = Keyword.get(opts, :actor)
 
     :ok = Context.authorize_chat!(chat_id, actor)
-    :ok = cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id])
 
-    context = Context.build_prepared!(chat_id, message_id, step_id, raw_request, opts)
-    start_worker(context)
+    with_generation_lease(message_id, fn lease ->
+      with :ok <- cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id]),
+           {:ok, canonical_step} <- canonical_prepared_step(chat_id, message_id, actor) do
+        context =
+          Context.build_prepared!(
+            chat_id,
+            message_id,
+            canonical_step.id,
+            canonical_step.raw_request || %{},
+            opts
+          )
+
+        start_worker(context, lease)
+      end
+    end)
   end
 
   def retry_last_step(message_id, opts \\ []) when is_integer(message_id) and is_list(opts) do
     retry_opts = Keyword.put_new(opts, :allowed_statuses, @manual_retry_statuses)
 
-    with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
-         :ok <- cancel_for_chat(context.chat_id),
-         step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
-           Map.get(context, :initial_step_sequence),
-         steering_specs when is_list(steering_specs) <-
-           Persistence.steering_specs_for_step!(context.step_id),
-         {:ok, request_payload, steering_specs} <-
-           prepare_retry_steering(context, steering_specs),
-         step_id when is_integer(step_id) <-
-           Persistence.replace_steps_for_retry!(
-             context.message_id,
-             step_sequence,
-             request_payload,
-             steering_specs
-           ) do
-      context = %{context | step_id: step_id, request_payload: request_payload}
-      start_worker(context)
-    else
-      nil ->
-        {:error, :no_steps_to_retry}
-
-      {:error, _reason} = error ->
-        error
-
-      _other ->
-        {:error, :retry_failed}
-    end
+    with_generation_reservation(
+      message_id,
+      &retry_with_reservation(message_id, retry_opts, &1)
+    )
   end
 
   def retry_from_step(message_id, step_id, opts \\ [])
@@ -91,23 +82,34 @@ defmodule IntellectualClub.Generation.Supervisor do
       |> Keyword.put(:step_id, step_id)
       |> Keyword.put_new(:allowed_statuses, @retry_from_step_statuses)
 
+    with_generation_reservation(
+      message_id,
+      &retry_with_reservation(message_id, retry_opts, &1)
+    )
+  end
+
+  defp retry_with_reservation(message_id, retry_opts, lease) do
+    allowed_statuses = Keyword.fetch!(retry_opts, :allowed_statuses)
+
     with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
-         :ok <- cancel_for_chat(context.chat_id),
+         :ok <- cancel_for_chat(context.chat_id, orphan_exception_message_ids: [message_id]),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
          steering_specs when is_list(steering_specs) <-
            Persistence.steering_specs_for_step!(context.step_id),
          {:ok, request_payload, steering_specs} <-
            prepare_retry_steering(context, steering_specs),
-         step_id when is_integer(step_id) <-
-           Persistence.replace_steps_for_retry!(
+         {:ok, {lease, step_id}} <-
+           claim_retry_and_replace_steps(
+             lease,
+             allowed_statuses,
              context.message_id,
              step_sequence,
              request_payload,
              steering_specs
            ) do
       context = %{context | step_id: step_id, request_payload: request_payload}
-      start_worker(context)
+      start_worker(context, lease)
     else
       nil ->
         {:error, :no_steps_to_retry}
@@ -122,6 +124,10 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   def resume_orphaned_message(message_id, opts \\ [])
       when is_integer(message_id) and is_list(opts) do
+    with_generation_lease(message_id, &do_resume_orphaned_message(message_id, opts, &1))
+  end
+
+  defp do_resume_orphaned_message(message_id, opts, lease) do
     resume_opts = Keyword.put_new(opts, :allowed_statuses, @resume_retry_statuses)
 
     with {:ok, context} <- Context.prepare_retry(message_id, resume_opts),
@@ -129,28 +135,34 @@ defmodule IntellectualClub.Generation.Supervisor do
            Map.get(context, :initial_step_sequence) do
       case orphaned_resume_strategy(context) do
         :restart_steered_step ->
-          start_worker(%{context | initial_resume_mode: :steered_waiting_provider})
+          start_worker(%{context | initial_resume_mode: :steered_waiting_provider}, lease)
 
         :resume_waiting_tools ->
-          start_worker(%{context | initial_resume_mode: :waiting_tools})
+          start_worker(%{context | initial_resume_mode: :waiting_tools}, lease)
 
         :resume_completed_tool_step ->
-          start_worker(%{context | initial_resume_mode: :completed_tool_step})
+          start_worker(%{context | initial_resume_mode: :completed_tool_step}, lease)
 
         :finalize_completed_step ->
-          :ok = Persistence.persist_completed_from_step!(context.message_id, context.step_id)
-          {:ok, context}
+          case Lease.with_fence(lease, fn ->
+                 Persistence.persist_completed_from_step!(context.message_id, context.step_id)
+               end) do
+            {:ok, :ok} -> {:ok, context}
+            {:error, _reason} = error -> error
+          end
 
         :restart_step ->
-          step_id =
-            Persistence.replace_steps_for_retry!(
-              context.message_id,
-              step_sequence,
-              context.request_payload || %{}
-            )
-
-          context = %{context | step_id: step_id}
-          start_worker(context)
+          with {:ok, step_id} <-
+                 replace_steps_for_retry_with_fence(
+                   lease,
+                   context.message_id,
+                   step_sequence,
+                   context.request_payload || %{},
+                   []
+                 ) do
+            context = %{context | step_id: step_id}
+            start_worker(context, lease)
+          end
       end
     else
       nil ->
@@ -260,32 +272,161 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok
   end
 
-  def cancel_generation(message_id, opts \\ []) when is_list(opts) do
-    result =
-      case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
-        [{pid, _}] ->
-          Worker.cancel(pid)
-          _ = await_worker_stopped(pid)
-          :ok
+  def cancel_generation(message_id, opts \\ [])
 
-        [] ->
-          :not_found
+  def cancel_generation(message_id, opts)
+      when is_integer(message_id) and is_list(opts) do
+    case durable_cancel_and_signal(message_id) do
+      {result, worker_pid}
+      when result in [:ok, :not_found] and (is_nil(worker_pid) or is_pid(worker_pid)) ->
+        if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
+        :ok = cancel_descendant_generations_for_message(message_id, opts)
+        result
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  def cancel_generation(_message_id, _opts), do: :not_found
+
+  @doc false
+  def with_generation_start_lock(message_id, fun)
+      when is_integer(message_id) and message_id > 0 and is_function(fun, 0) do
+    lock_id = {{__MODULE__, :generation_start, message_id}, self()}
+    nodes = Enum.uniq([node() | Node.list()])
+
+    :global.trans(lock_id, fun, nodes)
+  end
+
+  defp with_generation_lease(message_id, fun)
+       when is_integer(message_id) and message_id > 0 and is_function(fun, 1) do
+    with_generation_start_lock(message_id, fn ->
+      if generation_worker_active?(message_id) do
+        {:error, :already_running}
+      else
+        case Lease.acquire(message_id) do
+          {:ok, lease} ->
+            try do
+              fun.(lease)
+            after
+              Lease.release(lease)
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+      end
+    end)
+  end
+
+  defp with_generation_reservation(message_id, fun)
+       when is_integer(message_id) and message_id > 0 and is_function(fun, 1) do
+    with_generation_start_lock(message_id, fn ->
+      if generation_worker_active?(message_id) do
+        {:error, :already_running}
+      else
+        case Lease.reserve(message_id) do
+          {:ok, lease} ->
+            try do
+              fun.(lease)
+            after
+              Lease.release(lease)
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+      end
+    end)
+  end
+
+  defp generation_worker_pid(message_id) when is_integer(message_id) do
+    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
+      [{pid, _metadata}] when is_pid(pid) ->
+        pid
+
+      [] ->
+        case :global.whereis_name(Worker.global_name(message_id)) do
+          pid when is_pid(pid) -> pid
+          :undefined -> nil
+        end
+    end
+  end
+
+  defp canonical_prepared_step(chat_id, message_id, actor) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
+      {:ok,
+       %ChatMessage{
+         chat_id: ^chat_id,
+         role: :assistant,
+         status: :generating
+       }} ->
+        ChatMessageStep
+        |> Ash.Query.filter(chat_message_id == ^message_id)
+        |> Ash.Query.sort(sequence: :desc, id: :desc)
+        |> Ash.Query.limit(1)
+        |> Ash.read_one(actor: actor)
+        |> case do
+          {:ok, %ChatMessageStep{} = step} -> {:ok, step}
+          {:ok, nil} -> {:error, :no_steps_to_retry}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %ChatMessage{chat_id: ^chat_id, role: :assistant}} ->
+        {:error, :invalid_status}
+
+      {:ok, _message} ->
+        {:error, :not_found}
+
+      {:error, _reason} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp generation_worker_active?(message_id) when is_integer(message_id) do
+    is_pid(generation_worker_pid(message_id))
+  end
+
+  defp generating_message?(message_id) when is_integer(message_id) do
+    generation_message_status(message_id) == :generating
+  end
+
+  defp generation_message_status(message_id) when is_integer(message_id) do
+    case Ash.get(ChatMessage, message_id, authorize?: false) do
+      {:ok, %ChatMessage{status: status}} -> status
+      _other -> nil
+    end
+  end
+
+  defp durable_cancel_and_signal(message_id) when is_integer(message_id) do
+    with_generation_start_lock(message_id, fn ->
+      cancel_result =
+        Persistence.cancel_generating_message!(message_id,
+          error_detail: nil
+        )
+
+      worker_pid = generation_worker_pid(message_id)
+
+      if is_pid(worker_pid) do
+        Worker.cancel(worker_pid)
       end
 
-    :ok = cancel_descendant_generations_for_message(message_id, opts)
-    result
+      result = if cancel_result == :canceled or is_pid(worker_pid), do: :ok, else: :not_found
+      {result, worker_pid}
+    end)
   end
 
   def steer_generation(message_id, text) when is_integer(message_id) and is_binary(text) do
-    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
-      [{pid, _}] ->
+    case generation_worker_pid(message_id) do
+      pid when is_pid(pid) ->
         try do
           Worker.steer(pid, text)
         catch
           :exit, _reason -> {:error, :generation_not_active}
         end
 
-      [] ->
+      nil ->
         {:error, :generation_not_active}
     end
   end
@@ -293,8 +434,13 @@ defmodule IntellectualClub.Generation.Supervisor do
   def cancel_for_chat(chat_id), do: cancel_for_chat(chat_id, [])
 
   defp cancel_for_chat(chat_id, opts) do
-    active_message_ids = cancel_active_workers_for_chat(chat_id)
     orphan_exception_message_ids = Keyword.get(opts, :orphan_exception_message_ids, [])
+
+    active_message_ids =
+      cancel_active_workers_for_chat(chat_id,
+        except_message_ids: orphan_exception_message_ids
+      )
+
     :ok = cancel_descendant_generations_for_chat(chat_id)
 
     :ok =
@@ -305,19 +451,31 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok
   end
 
-  defp cancel_active_workers_for_chat(chat_id) when is_integer(chat_id) do
-    entries = Registry.lookup(IntellectualClub.Generation.Registry, {:chat, chat_id})
+  defp cancel_active_workers_for_chat(chat_id, opts \\ [])
 
-    Enum.each(entries, fn {pid, _metadata} -> Worker.cancel(pid) end)
-    Enum.each(entries, fn {pid, _metadata} -> await_worker_stopped(pid) end)
+  defp cancel_active_workers_for_chat(chat_id, opts)
+       when is_integer(chat_id) and is_list(opts) do
+    message_ids = active_generation_message_ids_for_chat(chat_id)
 
-    entries
-    |> Enum.map(fn {_pid, metadata} -> registry_message_id(metadata) end)
-    |> Enum.filter(&is_integer/1)
-    |> Enum.uniq()
+    except_message_ids =
+      opts
+      |> Keyword.get(:except_message_ids, [])
+      |> MapSet.new()
+
+    results =
+      message_ids
+      |> Enum.reject(&MapSet.member?(except_message_ids, &1))
+      |> Enum.map(&durable_cancel_and_signal/1)
+
+    Enum.each(results, fn {_result, worker_pid} ->
+      if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
+    end)
+
+    message_ids
+    |> Enum.filter(&generating_message?/1)
   end
 
-  defp cancel_active_workers_for_chat(_chat_id), do: []
+  defp cancel_active_workers_for_chat(_chat_id, _opts), do: []
 
   defp cancel_descendant_generations_for_message(message_id, opts)
        when is_integer(message_id) and is_list(opts) do
@@ -404,7 +562,7 @@ defmodule IntellectualClub.Generation.Supervisor do
         if include_background_tasks? do
           child_ids
         else
-          background_roots = active_background_fork_root_chat_ids(parent_ids)
+          background_roots = active_background_subagent_root_chat_ids(parent_ids)
           Enum.reject(child_ids, &MapSet.member?(background_roots, &1))
         end
 
@@ -419,14 +577,16 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  defp active_background_fork_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
+  defp active_background_subagent_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
     if Code.ensure_loaded?(IntellectualClub.BackgroundTasks) and
          function_exported?(
            IntellectualClub.BackgroundTasks,
-           :active_fork_root_chat_ids,
+           :active_subagent_root_chat_ids,
            1
          ) do
-      case apply(IntellectualClub.BackgroundTasks, :active_fork_root_chat_ids, [parent_chat_ids]) do
+      case apply(IntellectualClub.BackgroundTasks, :active_subagent_root_chat_ids, [
+             parent_chat_ids
+           ]) do
         %MapSet{} = ids -> ids
         ids when is_list(ids) -> MapSet.new(ids)
         _other -> MapSet.new()
@@ -437,7 +597,7 @@ defmodule IntellectualClub.Generation.Supervisor do
   rescue
     exception ->
       Logger.warning(
-        "Failed to load active background fork roots: #{Exception.message(exception)}"
+        "Failed to load active background subagent roots: #{Exception.message(exception)}"
       )
 
       MapSet.new()
@@ -446,56 +606,72 @@ defmodule IntellectualClub.Generation.Supervisor do
   defp registry_message_id(%{message_id: id}) when is_integer(id), do: id
   defp registry_message_id(_metadata), do: nil
 
-  defp await_worker_stopped(pid) when is_pid(pid) do
-    if Process.alive?(pid) do
-      ref = Process.monitor(pid)
+  defp active_generation_message_ids_for_chat(chat_id) when is_integer(chat_id) do
+    local_message_ids =
+      IntellectualClub.Generation.Registry
+      |> Registry.lookup({:chat, chat_id})
+      |> Enum.map(fn {_pid, metadata} -> registry_message_id(metadata) end)
+      |> Enum.filter(&is_integer/1)
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-      after
-        @cancel_wait_timeout_ms ->
-          Process.demonitor(ref, [:flush])
-          :timeout
-      end
-    else
-      :ok
+    global_message_ids =
+      ChatMessage
+      |> Ash.Query.filter(
+        chat_id == ^chat_id and
+          (status == :generating or not is_nil(generation_fence_token))
+      )
+      |> Ash.Query.select([:id])
+      |> Ash.read!(authorize?: false)
+      |> Enum.flat_map(fn message ->
+        if is_pid(generation_worker_pid(message.id)), do: [message.id], else: []
+      end)
+
+    Enum.uniq(local_message_ids ++ global_message_ids)
+  end
+
+  defp await_worker_stopped(pid) when is_pid(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      @cancel_wait_timeout_ms ->
+        Process.demonitor(ref, [:flush])
+        :timeout
     end
   end
 
-  defp await_worker_stopped(_pid), do: :ok
-
   def get_generation_state(message_id) do
-    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
-      [{pid, _}] ->
+    case generation_worker_pid(message_id) do
+      pid when is_pid(pid) ->
         try do
           {:ok, Worker.get_current_state(pid)}
         catch
           :exit, _reason -> :not_found
         end
 
-      [] ->
+      nil ->
         :not_found
     end
   end
 
   def poll_generation(message_id, cursor \\ %{}, opts \\ []) when is_integer(message_id) do
-    case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
-      [{pid, _}] ->
+    case generation_worker_pid(message_id) do
+      pid when is_pid(pid) ->
         try do
           {:ok, Worker.poll(pid, cursor, opts)}
         catch
           :exit, _reason -> :not_found
         end
 
-      [] ->
+      nil ->
         :not_found
     end
   end
 
-  defp start_worker(context) when is_map(context) do
+  defp start_worker(context, %Lease{} = lease) when is_map(context) do
     spec = %{
       id: {Worker, context.message_id},
-      start: {Worker, :start_link, [%{context: context}]},
+      start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
       restart: :temporary
     }
 
@@ -511,6 +687,59 @@ defmodule IntellectualClub.Generation.Supervisor do
 
       other ->
         other
+    end
+  end
+
+  defp replace_steps_for_retry_with_fence(
+         %Lease{} = lease,
+         message_id,
+         step_sequence,
+         request_payload,
+         steering_specs
+       )
+       when is_integer(message_id) and is_integer(step_sequence) and is_map(request_payload) and
+              is_list(steering_specs) do
+    case Lease.with_fence(lease, fn ->
+           Persistence.replace_steps_for_retry!(
+             message_id,
+             step_sequence,
+             request_payload,
+             steering_specs
+           )
+         end) do
+      {:ok, step_id} when is_integer(step_id) -> {:ok, step_id}
+      {:error, _reason} = error -> error
+      _other -> {:error, :retry_failed}
+    end
+  end
+
+  defp claim_retry_and_replace_steps(
+         %Lease{} = lease,
+         allowed_statuses,
+         message_id,
+         step_sequence,
+         request_payload,
+         steering_specs
+       )
+       when is_list(allowed_statuses) and is_integer(message_id) and
+              is_integer(step_sequence) and is_map(request_payload) and
+              is_list(steering_specs) do
+    case Lease.claim_and_run(lease, allowed_statuses, fn ->
+           Persistence.replace_steps_for_retry!(
+             message_id,
+             step_sequence,
+             request_payload,
+             steering_specs
+           )
+         end) do
+      {:ok, {%Lease{} = fenced, step_id}} when is_integer(step_id) ->
+        {:ok, {fenced, step_id}}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, :retry_failed}
     end
   end
 

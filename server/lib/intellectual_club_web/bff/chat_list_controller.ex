@@ -43,7 +43,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
       sidebar_stats = ListingStats.sidebar(actor)
       child_handoff_counts = Listing.child_handoff_counts(Enum.map(chats, & &1.id), actor)
-      child_subchat_counts = Listing.child_fork_subchat_counts(Enum.map(chats, & &1.id), actor)
+      child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
       subchats_by_parent = direct_subchat_summaries(chats, actor, preview_len)
 
       payload =
@@ -102,7 +102,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         subchats_by_parent =
           direct_subchat_summaries(chats, actor, ChatParams.preview_len(params))
 
-        child_subchat_counts = Listing.child_fork_subchat_counts(Enum.map(chats, & &1.id), actor)
+        child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
 
         payload =
           Enum.map(entries, fn entry ->
@@ -161,7 +161,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         Listing.active_root_message_previews([chat], active_branch_summaries, preview_len, actor)
 
       child_handoff_counts = Listing.child_handoff_counts([chat.id], actor)
-      child_subchat_counts = Listing.child_fork_subchat_counts([chat.id], actor)
+      child_subchat_counts = Listing.child_subchat_counts([chat.id], actor)
       subchats_by_parent = direct_subchat_summaries([chat], actor, preview_len)
 
       activity_at = Listing.activity_at(chat)
@@ -227,7 +227,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     parent_ids = Enum.map(chats, & &1.id)
 
     subchats_by_parent =
-      Listing.direct_fork_subchats(parent_ids, actor, [
+      Listing.direct_subchats(parent_ids, actor, [
         :bot,
         :last_message,
         :last_activity_at,
@@ -250,7 +250,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       Listing.active_root_message_previews(subchats, active_branch_summaries, preview_len, actor)
 
     child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
-    child_subchat_counts = Listing.child_fork_subchat_counts(Enum.map(subchats, & &1.id), actor)
+    child_subchat_counts = Listing.child_subchat_counts(Enum.map(subchats, & &1.id), actor)
 
     Map.new(subchats_by_parent, fn {parent_id, children} ->
       payloads =

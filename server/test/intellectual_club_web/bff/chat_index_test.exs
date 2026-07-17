@@ -433,7 +433,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
            ]
   end
 
-  test "GET /api/bff/chat-list hides fork subagents and returns them under parent", %{
+  test "GET /api/bff/chat-list hides fork and spawn subagents and returns them under parent", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -444,15 +444,25 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     {:ok, _parent_message} =
       Threads.add_message_to_end(parent, :user, "Parent prompt", actor: actor)
 
-    subchat =
+    fork_subchat =
       create_chat!(actor, "Subagent task", %{
         parent_chat_id: parent.id,
         parent_relation_kind: :fork,
         subagent: true
       })
 
-    {:ok, _subchat_message} =
-      Threads.add_message_to_end(subchat, :assistant, "Subagent answer", actor: actor)
+    {:ok, _fork_message} =
+      Threads.add_message_to_end(fork_subchat, :assistant, "Fork answer", actor: actor)
+
+    spawn_subchat =
+      create_chat!(actor, "Spawn task", %{
+        parent_chat_id: parent.id,
+        parent_relation_kind: :spawn,
+        subagent: true
+      })
+
+    {:ok, _spawn_message} =
+      Threads.add_message_to_end(spawn_subchat, :assistant, "Spawn answer", actor: actor)
 
     normal = create_chat!(actor, "Normal chat")
 
@@ -462,23 +472,30 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
       |> json_response(200)
 
     parent_payload = chat_payload(payload, parent.id)
-    subchat_payload = List.first(parent_payload["subchats"])
+    fork_payload = Enum.find(parent_payload["subchats"], &(&1["id"] == fork_subchat.id))
+    spawn_payload = Enum.find(parent_payload["subchats"], &(&1["id"] == spawn_subchat.id))
 
     assert Enum.sort(chat_ids(payload)) == Enum.sort([parent.id, normal.id])
-    refute subchat.id in chat_ids(payload)
+    refute fork_subchat.id in chat_ids(payload)
+    refute spawn_subchat.id in chat_ids(payload)
     assert payload["page"]["total"] == 2
     assert payload["stats"]["total_chats"] == 2
 
     assert parent_payload["subagent"] == false
-    assert parent_payload["child_subchat_count"] == 1
-    assert length(parent_payload["subchats"]) == 1
+    assert parent_payload["child_subchat_count"] == 2
+    assert length(parent_payload["subchats"]) == 2
 
-    assert subchat_payload["id"] == subchat.id
-    assert subchat_payload["subagent"] == true
-    assert subchat_payload["parent_chat_id"] == parent.id
-    assert subchat_payload["parent_relation_kind"] == "fork"
-    assert subchat_payload["message_count"] == 1
-    assert subchat_payload["first_message_preview"] == "Subagent answer"
+    assert fork_payload["subagent"] == true
+    assert fork_payload["parent_chat_id"] == parent.id
+    assert fork_payload["parent_relation_kind"] == "fork"
+    assert fork_payload["message_count"] == 1
+    assert fork_payload["first_message_preview"] == "Fork answer"
+
+    assert spawn_payload["subagent"] == true
+    assert spawn_payload["parent_chat_id"] == parent.id
+    assert spawn_payload["parent_relation_kind"] == "spawn"
+    assert spawn_payload["message_count"] == 1
+    assert spawn_payload["first_message_preview"] == "Spawn answer"
   end
 
   test "GET /api/bff/chat-list returns only terminal chats from continuation chains", %{
@@ -515,6 +532,13 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
         subagent: true
       })
 
+    terminal_spawn =
+      create_chat!(actor, "Terminal spawn", %{
+        parent_chat_id: terminal.id,
+        parent_relation_kind: :spawn,
+        subagent: true
+      })
+
     standalone = create_chat!(actor, "Standalone")
 
     payload =
@@ -528,8 +552,12 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
     terminal_payload = chat_payload(payload, terminal.id)
 
-    assert terminal_payload["child_subchat_count"] == 1
-    assert Enum.map(terminal_payload["subchats"], & &1["id"]) == [terminal_subchat.id]
+    assert terminal_payload["child_subchat_count"] == 2
+
+    assert Enum.map(terminal_payload["subchats"], & &1["id"]) == [
+             terminal_subchat.id,
+             terminal_spawn.id
+           ]
   end
 
   defp chat_ids(payload) do
