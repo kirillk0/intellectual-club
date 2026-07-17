@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Generation.ContextTest do
   use IntellectualClub.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias IntellectualClub.Accounts.UserKnowledgeBlock
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Bots.BotKnowledgeBlock
@@ -141,7 +143,12 @@ defmodule IntellectualClub.Generation.ContextTest do
     {:ok, _} = Threads.add_message_to_end(chat, :user, "First question", actor: actor)
     {:ok, _} = Threads.add_message_to_end(chat, :user, "Second question", actor: actor)
 
-    context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+    {context, log} =
+      with_log(fn ->
+        Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
+      end)
+
+    refute log =~ "notifications in action IntellectualClub.Chat.ChatMessage"
 
     assert context.bot_id == bot.id
     assert context.history_mode == :agent

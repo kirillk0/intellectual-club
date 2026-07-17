@@ -17,7 +17,6 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
-  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
@@ -556,7 +555,7 @@ defmodule IntellectualClub.Generation.Context do
          request_payload,
          actor
        ) do
-    case Repo.transaction(fn ->
+    case Ash.transaction([ChatMessage, ChatMessageStep], fn ->
            generating_message_params = %{
              chat_id: chat_id,
              parent_id: target_parent_id,

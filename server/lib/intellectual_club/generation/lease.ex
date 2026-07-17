@@ -94,21 +94,21 @@ defmodule IntellectualClub.Generation.Lease do
     if active?(lease) do
       token = Ecto.UUID.generate()
 
-      case Repo.transaction(fn ->
-             current = lock_message!(lease.message_id)
+      case lease_transaction(fn ->
+             with {:ok, current} <- lock_message(lease.message_id) do
+               if current.role == :assistant and current.status in allowed_statuses do
+                 current
+                 |> Ash.Changeset.for_update(
+                   :set_generation_fence,
+                   %{generation_fence_token: token},
+                   authorize?: false
+                 )
+                 |> Ash.update!(authorize?: false)
 
-             if current.role == :assistant and current.status in allowed_statuses do
-               current
-               |> Ash.Changeset.for_update(
-                 :set_generation_fence,
-                 %{generation_fence_token: token},
-                 authorize?: false
-               )
-               |> Ash.update!(authorize?: false)
-
-               {%{lease | fence_token: token}, fun.()}
-             else
-               Repo.rollback(:invalid_status)
+                 {:ok, {%{lease | fence_token: token}, fun.()}}
+               else
+                 {:error, :invalid_status}
+               end
              end
            end) do
         {:ok, {%__MODULE__{} = fenced, result}} ->
@@ -158,19 +158,19 @@ defmodule IntellectualClub.Generation.Lease do
   def with_fence(%__MODULE__{} = lease, fun, opts)
       when is_function(fun, 0) and is_list(opts) do
     if active?(lease) do
-      case Repo.transaction(fn ->
-             current = lock_message!(lease.message_id)
+      case lease_transaction(fn ->
+             with {:ok, current} <- lock_message(lease.message_id) do
+               cond do
+                 current.generation_fence_token != lease.fence_token ->
+                   {:error, :lease_lost}
 
-             cond do
-               current.generation_fence_token != lease.fence_token ->
-                 Repo.rollback(:lease_lost)
+                 Keyword.get(opts, :require_generating?, false) and
+                     current.status != :generating ->
+                   {:error, :invalid_status}
 
-               Keyword.get(opts, :require_generating?, false) and
-                   current.status != :generating ->
-                 Repo.rollback(:invalid_status)
-
-               true ->
-                 fun.()
+                 true ->
+                   {:ok, fun.()}
+               end
              end
            end) do
         {:ok, result} -> {:ok, result}
@@ -193,21 +193,21 @@ defmodule IntellectualClub.Generation.Lease do
     allowed_statuses = Keyword.get(opts, :allowed_statuses)
     required_role = Keyword.get(opts, :required_role)
 
-    case Repo.transaction(fn ->
-           current = lock_message!(message_id)
+    case lease_transaction(fn ->
+           with {:ok, current} <- lock_message(message_id) do
+             cond do
+               current.generation_fence_token != fence_token ->
+                 {:error, :lease_lost}
 
-           cond do
-             current.generation_fence_token != fence_token ->
-               Repo.rollback(:lease_lost)
+               is_list(allowed_statuses) and current.status not in allowed_statuses ->
+                 {:error, :invalid_status}
 
-             is_list(allowed_statuses) and current.status not in allowed_statuses ->
-               Repo.rollback(:invalid_status)
+               not is_nil(required_role) and current.role != required_role ->
+                 {:error, :invalid_role}
 
-             not is_nil(required_role) and current.role != required_role ->
-               Repo.rollback(:invalid_role)
-
-             true ->
-               fun.()
+               true ->
+                 {:ok, fun.()}
+             end
            end
          end) do
       {:ok, result} -> {:ok, result}
@@ -469,21 +469,21 @@ defmodule IntellectualClub.Generation.Lease do
   defp clear_generation_fence(_message_id, nil), do: :ok
 
   defp clear_generation_fence(message_id, fence_token) when is_binary(fence_token) do
-    case Repo.transaction(
+    case lease_transaction(
            fn ->
-             current = lock_message!(message_id)
+             with {:ok, current} <- lock_message(message_id) do
+               if current.generation_fence_token == fence_token do
+                 current
+                 |> Ash.Changeset.for_update(
+                   :set_generation_fence,
+                   %{generation_fence_token: nil},
+                   authorize?: false
+                 )
+                 |> Ash.update!(authorize?: false)
+               end
 
-             if current.generation_fence_token == fence_token do
-               current
-               |> Ash.Changeset.for_update(
-                 :set_generation_fence,
-                 %{generation_fence_token: nil},
-                 authorize?: false
-               )
-               |> Ash.update!(authorize?: false)
+               {:ok, :ok}
              end
-
-             :ok
            end,
            timeout: query_timeout_ms()
          ) do
@@ -501,15 +501,25 @@ defmodule IntellectualClub.Generation.Lease do
     |> Keyword.put(:max_restarts, 0)
   end
 
-  defp lock_message!(message_id) do
-    ChatMessage
-    |> Ash.Query.filter(id == ^message_id)
-    |> Ash.Query.select([:id, :role, :status, :generation_fence_token])
-    |> Ash.Query.lock(:for_update)
-    |> Ash.read_one!(authorize?: false)
-    |> case do
-      %ChatMessage{} = message -> message
-      nil -> Repo.rollback(:not_found)
+  defp lock_message(message_id) do
+    message =
+      ChatMessage
+      |> Ash.Query.filter(id == ^message_id)
+      |> Ash.Query.select([:id, :role, :status, :generation_fence_token])
+      |> Ash.Query.lock(:for_update)
+      |> Ash.read_one!(authorize?: false)
+
+    case message do
+      %ChatMessage{} = message -> {:ok, message}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp lease_transaction(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
+    case Ash.transaction(ChatMessage, fun, opts) do
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
     end
   end
 

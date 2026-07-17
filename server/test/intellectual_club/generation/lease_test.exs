@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Generation.LeaseTest do
   use IntellectualClub.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
@@ -107,6 +109,33 @@ defmodule IntellectualClub.Generation.LeaseTest do
 
     assert {:ok, reservation} = Lease.reserve(message.id)
     assert :ok = Lease.release(reservation)
+  end
+
+  test "fenced persistence dispatches Ash notifications after the transaction commits" do
+    %{message: message, step_id: step_id, raw_request: raw_request} =
+      generating_message_fixture!()
+
+    log =
+      capture_log(fn ->
+        assert {:ok, lease} = Lease.acquire(message.id)
+
+        assert {:ok, %{step_sequence: 2}} =
+                 Lease.with_fence(lease, fn ->
+                   Persistence.persist_retry_error_and_start_next_step!(
+                     message.id,
+                     step_id,
+                     raw_request,
+                     "Temporary provider error",
+                     attempt: 1,
+                     retry_delay_ms: 1_000,
+                     retryable: true
+                   )
+                 end)
+
+        assert :ok = Lease.release(lease)
+      end)
+
+    refute log =~ "notifications in action IntellectualClub.Chat.ChatMessage"
   end
 
   test "retry claim rolls back its fence token when the mutation raises" do
