@@ -184,19 +184,24 @@ export function useChatInspectors(params: Params) {
     messageId: number;
     messageStatus: ChatBranchMessage['status'];
     step: ChatMessageStep;
-    closed: boolean;
   }) => {
+    const stepClosed =
+      payload.messageStatus !== 'generating' ||
+      Boolean(payload.step.response_final) ||
+      Boolean(payload.step.finished_at) ||
+      ['done', 'error', 'canceled'].includes(payload.step.status || '');
+
     stepDetailsOpen.value = true;
     stepDetailsStep.value = payload.step;
     stepDetailsMessageId.value = payload.messageId;
     stepDetailsMessageStatus.value = payload.messageStatus;
-    stepDetailsShowBilling.value = Boolean(payload.closed);
-    stepDetailsShowResponse.value = Boolean(payload.closed);
+    stepDetailsShowBilling.value = stepClosed;
+    stepDetailsShowResponse.value = stepClosed;
     stepDetailsRetryFromStepPending.value = false;
 
     const stepId = Number(payload.step.id || 0);
     void loadStepDetailsRaw('request', { messageId: payload.messageId, stepId });
-    if (payload.closed) {
+    if (stepClosed) {
       void loadStepDetailsRaw('response', { messageId: payload.messageId, stepId });
     } else {
       stepDetailsResponseLoading.value = false;

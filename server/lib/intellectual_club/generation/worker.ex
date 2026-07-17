@@ -880,6 +880,7 @@ defmodule IntellectualClub.Generation.Worker do
              retry_delay_ms: delay_ms,
              status_code: status_code_from_meta(meta),
              error_kind: string_value(meta, :error_kind),
+             raw_response: Map.get(meta, :raw_response),
              retryable: true
            )
          end) do

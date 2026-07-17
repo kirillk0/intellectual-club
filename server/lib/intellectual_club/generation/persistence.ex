@@ -329,7 +329,7 @@ defmodule IntellectualClub.Generation.Persistence do
         |> update_step!(
           %{
             status: :error,
-            raw_response: nil,
+            raw_response: normalize_optional_json(Keyword.get(opts, :raw_response)),
             response_final: false,
             input_tokens: nil,
             output_tokens: nil,

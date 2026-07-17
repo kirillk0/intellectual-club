@@ -46,10 +46,21 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
           {:response_error,
            %{
              retryable: true,
-             error_kind: "network",
-             status_code: 503,
-             error_text: "Temporary network outage",
-             raw_request: request_payload
+             error_kind: "http",
+             status_code: 429,
+             error_text: "Upstream provider is temporarily rate-limited",
+             raw_request: request_payload,
+             raw_response: %{
+               "error" => %{
+                 "code" => 429,
+                 "message" => "Provider returned error",
+                 "metadata" => %{
+                   "raw" => "Upstream provider is temporarily rate-limited",
+                   "provider_name" => "Test Provider"
+                 }
+               },
+               "status_code" => 429
+             }
            }}
         )
       else
@@ -150,6 +161,8 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
     assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
     assert Enum.map(steps, & &1.raw_request) == List.duplicate(context.request_payload, 4)
+    assert Enum.all?(retry_steps, &is_nil(&1.raw_response))
+    assert is_nil(latest_step.raw_response)
 
     assert Enum.at(retry_error_texts, 0) =~ "Transient provider error on attempt 1."
     assert Enum.at(retry_error_texts, 0) =~ "Retrying."
@@ -322,11 +335,23 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     assert Enum.map(steps, & &1.sequence) == [1, 2]
     assert Enum.map(steps, & &1.status) == [:error, :done]
 
+    assert Enum.at(steps, 0).raw_response == %{
+             "error" => %{
+               "code" => 429,
+               "message" => "Provider returned error",
+               "metadata" => %{
+                 "raw" => "Upstream provider is temporarily rate-limited",
+                 "provider_name" => "Test Provider"
+               }
+             },
+             "status_code" => 429
+           }
+
     retry_text = single_error_item_text!(Enum.at(steps, 0))
     final_answer_text = answer_item_text(Enum.at(steps, 1))
 
     assert retry_text =~ "Transient provider error on attempt 1."
-    assert retry_text =~ "Temporary network outage"
+    assert retry_text =~ "Upstream provider is temporarily rate-limited"
     refute retry_text =~ "Partial text that must not be persisted."
     assert final_answer_text == "Recovered answer."
   end

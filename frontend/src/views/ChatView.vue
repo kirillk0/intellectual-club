@@ -168,7 +168,6 @@
                       messageId: msg.id,
                       messageStatus: msg.status,
                       step,
-                      closed: msg.status !== 'generating' || Boolean(step.response_final),
                     })
                 "
                 @content-open="vm.openContentFull"
