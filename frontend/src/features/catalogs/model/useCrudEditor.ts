@@ -10,6 +10,7 @@ import {
   toIntId,
 } from '@/api/jsonApi';
 import { useNavigationStack } from '@/features/stack/navigationStack';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { appendRecordsetId, removeRecordsetId } from './recordsets';
 import { useCrudRecordsetNavigation } from './useCrudRecordsetNavigation';
@@ -73,6 +74,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
 }) {
   const route = useRoute();
   const stack = useNavigationStack();
+  const layer = useStackLayer();
   const stackNav = useStackNavigation();
 
   const idKey = options.idParam ?? 'id';
@@ -109,6 +111,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   let sessionVersion = 0;
 
   const errors = useFormErrors();
+
+  watch(loaded, (ready) => layer.setReady(ready), { immediate: true });
 
   const dirty = useJsonDirtyCompare(
     () => (options.normalizeForDirty ? options.normalizeForDirty(form) : form),

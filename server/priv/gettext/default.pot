@@ -28,3 +28,9 @@ msgstr ""
 
 msgid "Current password is incorrect."
 msgstr ""
+
+msgid "Loading…"
+msgstr ""
+
+msgid "Reload"
+msgstr ""

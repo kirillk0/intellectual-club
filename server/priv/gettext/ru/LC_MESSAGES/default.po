@@ -28,3 +28,9 @@ msgstr "Не удалось изменить пароль."
 
 msgid "Current password is incorrect."
 msgstr "Текущий пароль указан неверно."
+
+msgid "Loading…"
+msgstr "Загрузка…"
+
+msgid "Reload"
+msgstr "Перезагрузить"

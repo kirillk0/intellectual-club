@@ -765,6 +765,11 @@ fieldset {
   background: var(--color-bg);
 }
 
+.stack-nav--pending .stack-layer--active {
+  pointer-events: none;
+  user-select: none;
+}
+
 .stack-layer {
   flex: 1;
   min-height: 0;

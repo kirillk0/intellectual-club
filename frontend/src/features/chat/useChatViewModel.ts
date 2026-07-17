@@ -133,6 +133,8 @@ export function useChatViewModel() {
   const loadError = ref('');
   const chatUnavailable = ref(false);
 
+  watch(loaded, (ready) => layer.setReady(ready), { immediate: true });
+
   const chat = ref<Chat | null>(null);
   const chatNote = ref('');
   const canEdit = computed(() => chat.value?.can_edit !== false);

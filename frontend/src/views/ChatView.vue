@@ -591,9 +591,20 @@
       </div>
     </section>
   </div>
-  <div v-else class="chat-loading">
-    <p class="muted" role="status" aria-live="polite">{{ translate('Loading…') }}</p>
-    <button class="primary" type="button" @click="reloadPage">{{ translate('Reload') }}</button>
+  <div v-else class="spa-boot">
+    <div class="spa-boot__content">
+      <p class="spa-boot__status" role="status" aria-live="polite">{{ translate('Loading…') }}</p>
+      <button
+        class="spa-boot__reload"
+        :class="{ 'spa-boot__reload--pending': reloadingPage }"
+        type="button"
+        :disabled="reloadingPage"
+        :aria-busy="reloadingPage"
+        @click="handleReloadPage"
+      >
+        {{ translate('Reload') }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -641,6 +652,17 @@ import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 const vm = reactive(useChatViewModel());
 const route = useRoute();
 const router = useRouter();
+const reloadingPage = ref(false);
+
+const handleReloadPage = () => {
+  if (reloadingPage.value) return;
+  reloadingPage.value = true;
+  void nextTick(() => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(reloadPage);
+    });
+  });
+};
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const messageTreeOpen = ref(false);
 
@@ -1026,19 +1048,6 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   place-items: center;
   padding: 24px;
   background: var(--color-bg);
-}
-
-.chat-loading {
-  min-height: calc(100vh - var(--app-header-height, 56px));
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 12px;
-  padding: 24px;
-}
-
-.chat-loading p {
-  margin: 0;
 }
 
 .chat-unavailable__panel {

@@ -1,14 +1,27 @@
 <template>
-  <div class="stack-nav" :class="{ 'stack-nav--active': stackOverlayActive }">
+  <div
+    class="stack-nav"
+    :class="{
+      'stack-nav--active': stackOverlayActive,
+      'stack-nav--pending': presentedIndex !== lastIndex,
+    }"
+    :aria-busy="presentedIndex !== lastIndex"
+  >
     <div
       v-for="(layer, index) in layers"
       :key="layerKey(layer.route, index)"
-      :class="['stack-layer', index === lastIndex ? 'stack-layer--active' : 'stack-layer--inactive']"
-      :aria-hidden="index !== lastIndex"
-      :inert="index !== lastIndex"
+      :class="['stack-layer', index === presentedIndex ? 'stack-layer--active' : 'stack-layer--inactive']"
+      :aria-hidden="index !== presentedIndex"
+      :inert="index !== lastIndex || index !== presentedIndex"
     >
       <RouterView :route="layer.route" v-slot="{ Component }">
-        <StackLayerProvider :active="index === lastIndex" :depth="index" :route="layer.route">
+        <StackLayerProvider
+          :active="index === lastIndex"
+          :presented="index === presentedIndex"
+          :depth="index"
+          :route="layer.route"
+          @ready-change="setLayerReady(layer.route, index, $event)"
+        >
           <component :is="Component" />
         </StackLayerProvider>
       </RouterView>
@@ -17,7 +30,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { RouterView, useRoute, type RouteLocationNormalizedLoaded } from 'vue-router';
 import StackLayerProvider from '@/components/StackLayerProvider.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
@@ -58,6 +71,16 @@ const routeViewIdentity = (candidate: RouteLocationNormalizedLoaded) => {
 
 const layerKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) =>
   `${depth}:${routeViewIdentity(layerRoute)}:${depth === lastIndex.value ? props.reopenKey ?? 0 : 0}`;
+
+const layerReadinessKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) => {
+  const name = layerRoute.name == null ? '' : String(layerRoute.name);
+  const matched = layerRoute.matched
+    .map((record) => `${String(record.name ?? '')}:${record.path}`)
+    .join('|');
+  return `${depth}:${name}:${layerRoute.path}:${matched}:${
+    depth === lastIndex.value ? props.reopenKey ?? 0 : 0
+  }`;
+};
 
 const baseLayer = ref<RouteLocationNormalizedLoaded>(cloneRoute(route));
 const needsBaseLayerSync = (candidate: RouteLocationNormalizedLoaded) =>
@@ -101,4 +124,35 @@ const layers = computed(() => {
 
 const lastIndex = computed(() => layers.value.length - 1);
 const stackOverlayActive = computed(() => layers.value.length > 1);
+const layerReadiness = reactive(new Map<string, boolean>());
+const destinationLayerKey = computed(() => {
+  const destination = layers.value[lastIndex.value];
+  return destination ? layerReadinessKey(destination.route, lastIndex.value) : '';
+});
+const destinationReady = computed(
+  () => !stackOverlayActive.value || layerReadiness.get(destinationLayerKey.value) === true
+);
+const presentedIndex = computed(() =>
+  destinationReady.value ? lastIndex.value : Math.max(0, lastIndex.value - 1)
+);
+
+const setLayerReady = (
+  layerRoute: RouteLocationNormalizedLoaded,
+  depth: number,
+  ready: boolean
+) => {
+  const key = layerReadinessKey(layerRoute, depth);
+  if (ready || layerReadiness.get(key) !== true) layerReadiness.set(key, ready);
+};
+
+watch(
+  () => layers.value.map((layer, index) => layerReadinessKey(layer.route, index)),
+  (currentKeys) => {
+    const activeKeys = new Set(currentKeys);
+    for (const key of layerReadiness.keys()) {
+      if (!activeKeys.has(key)) layerReadiness.delete(key);
+    }
+  },
+  { immediate: true }
+);
 </script>

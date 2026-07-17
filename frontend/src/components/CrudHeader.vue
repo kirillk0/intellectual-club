@@ -144,7 +144,14 @@ const isEscapeFromNativeSelect = (event: KeyboardEvent) =>
   event.key === 'Escape' && event.target instanceof Element && Boolean(event.target.closest('select'));
 
 const handleGlobalKeydown = (event: KeyboardEvent) => {
-  if (!layer.active.value || event.defaultPrevented || event.isComposing) return;
+  if (
+    !layer.active.value ||
+    !layer.presented.value ||
+    event.defaultPrevented ||
+    event.isComposing
+  ) {
+    return;
+  }
 
   const modalOpen = hasOpenModal();
 

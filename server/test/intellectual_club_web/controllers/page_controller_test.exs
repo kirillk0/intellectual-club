@@ -22,6 +22,9 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert html =~ ~s(name="apple-mobile-web-app-status-bar-style" content="default")
     assert html =~ ~s(rel="manifest" href="/manifest.webmanifest")
     assert html =~ ~s(rel="apple-touch-icon" href="/apple-touch-icon.png")
+    assert html =~ ~s(class="spa-boot")
+    assert html =~ ~s(class="spa-boot__status")
+    assert html =~ ~s|background: var(--spa-boot-bg)|
   end
 
   test "GET /", %{conn: conn} do
@@ -32,8 +35,25 @@ defmodule IntellectualClubWeb.PageControllerTest do
     html = html_response(conn, 200)
     assert html =~ ~s(id="spa-root")
     assert html =~ "Loading…"
-    assert html =~ ">Reload<"
-    assert html =~ ~s|onclick="window.location.reload()"|
+    assert html =~ "Reload"
+    assert html =~ "spa-boot__reload--pending"
+    assert html =~ "requestAnimationFrame"
+    assert html =~ "window.location.reload()"
+  end
+
+  test "GET / localizes the boot screen before JavaScript starts", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+
+    conn =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> put_req_header("accept-language", "ru")
+      |> get(~p"/")
+
+    html = html_response(conn, 200)
+    assert html =~ ~s(<html lang="ru")
+    assert html =~ "Загрузка…"
+    assert html =~ "Перезагрузить"
   end
 
   test "GET /manifest.webmanifest serves PWA manifest", %{conn: conn} do

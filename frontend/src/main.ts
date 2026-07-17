@@ -13,12 +13,18 @@ import './spa.css';
 const root = document.getElementById('spa-root');
 
 if (root) {
-  createApp(App)
+  const app = createApp(App)
     .use(i18n)
     .use(router)
-    .use(VueQueryPlugin, { queryClient: serverStateQueryClient })
-    .mount(root);
-  installDomTranslations(document.body);
-  setupScrollableTabs(root);
-  setupPwa();
+    .use(VueQueryPlugin, { queryClient: serverStateQueryClient });
+
+  // Keep the server-rendered boot screen visible while the initial async route is loading.
+  void router.isReady().then(() => {
+    app.mount(root);
+    installDomTranslations(document.body);
+    setupScrollableTabs(root);
+    setupPwa();
+  }).catch((error) => {
+    console.error('Failed to initialize SPA route', error);
+  });
 }

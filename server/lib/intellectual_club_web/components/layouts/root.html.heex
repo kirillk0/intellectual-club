@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html
-  lang="en"
+  lang={assigns[:ui_locale] || "en"}
   data-theme={if assigns[:spa], do: spa_effective_theme(assigns[:current_user]), else: nil}
   data-preferred-theme={
     if assigns[:spa], do: spa_preferred_theme(assigns[:current_user]), else: nil
@@ -10,13 +10,140 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <meta name="theme-color" content="#ffffff" />
     <%= if assigns[:spa] do %>
+      <%= if spa_preferred_theme(assigns[:current_user]) == "system" do %>
+        <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#0c0f14" media="(prefers-color-scheme: dark)" />
+      <% else %>
+        <meta
+          name="theme-color"
+          content={
+            if spa_effective_theme(assigns[:current_user]) == "dark",
+              do: "#0c0f14",
+              else: "#ffffff"
+          }
+        />
+      <% end %>
       <meta name="apple-mobile-web-app-capable" content="yes" />
       <meta name="apple-mobile-web-app-title" content="Intellectual Club" />
       <meta name="apple-mobile-web-app-status-bar-style" content="default" />
       <link rel="manifest" href={~p"/manifest.webmanifest"} />
       <link rel="apple-touch-icon" href={~p"/apple-touch-icon.png"} />
+      <style phx-no-curly-interpolation>
+        :root {
+          --spa-boot-bg: #ffffff;
+          --spa-boot-text: #666666;
+          --spa-boot-primary: #111111;
+          --spa-boot-primary-hover: #1f2937;
+          --spa-boot-primary-contrast: #ffffff;
+          color-scheme: light;
+          background: var(--spa-boot-bg);
+        }
+
+        @media (prefers-color-scheme: dark) {
+          :root:not([data-theme='light']) {
+            --spa-boot-bg: #0c0f14;
+            --spa-boot-text: #aab3c2;
+            --spa-boot-primary: #f8fafc;
+            --spa-boot-primary-hover: #dbe3ef;
+            --spa-boot-primary-contrast: #0c0f14;
+            color-scheme: dark;
+          }
+        }
+
+        :root[data-theme='dark'] {
+          --spa-boot-bg: #0c0f14;
+          --spa-boot-text: #aab3c2;
+          --spa-boot-primary: #f8fafc;
+          --spa-boot-primary-hover: #dbe3ef;
+          --spa-boot-primary-contrast: #0c0f14;
+          color-scheme: dark;
+        }
+
+        html,
+        body,
+        #spa-root {
+          min-height: 100%;
+        }
+
+        body {
+          margin: 0;
+          background: var(--spa-boot-bg);
+          color: var(--spa-boot-text);
+          font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        .spa-boot {
+          position: fixed;
+          inset: 0;
+          z-index: 1000;
+          display: grid;
+          place-items: center;
+          box-sizing: border-box;
+          padding: 24px;
+          background: var(--spa-boot-bg);
+          color: var(--spa-boot-text);
+        }
+
+        .spa-boot__content {
+          display: grid;
+          justify-items: center;
+          gap: 12px;
+        }
+
+        .spa-boot__status {
+          margin: 0;
+        }
+
+        .spa-boot .spa-boot__reload {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 6px 10px;
+          border: 1px solid var(--spa-boot-primary);
+          border-radius: 6px;
+          background: var(--spa-boot-primary);
+          color: var(--spa-boot-primary-contrast);
+          font: inherit;
+          cursor: pointer;
+        }
+
+        .spa-boot .spa-boot__reload:hover {
+          border-color: var(--spa-boot-primary-hover);
+          background: var(--spa-boot-primary-hover);
+        }
+
+        .spa-boot .spa-boot__reload--pending {
+          opacity: 0.78;
+          cursor: wait;
+        }
+
+        .spa-boot .spa-boot__reload--pending::before {
+          width: 0.85em;
+          height: 0.85em;
+          box-sizing: border-box;
+          border: 2px solid currentColor;
+          border-right-color: transparent;
+          border-radius: 50%;
+          content: '';
+          animation: spa-boot-spin 0.7s linear infinite;
+        }
+
+        @keyframes spa-boot-spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .spa-boot .spa-boot__reload--pending::before {
+            animation: none;
+          }
+        }
+      </style>
+    <% else %>
+      <meta name="theme-color" content="#ffffff" />
     <% end %>
     <.live_title default="Intellectual Club">
       {assigns[:page_title]}

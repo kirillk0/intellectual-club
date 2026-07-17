@@ -10,8 +10,23 @@
     if @current_user, do: @current_user.preferred_theme || "system", else: "system"
   }
 >
-  <div style="display: flex; align-items: center; gap: 12px; padding: 16px">
-    <p class="muted" style="margin: 0">Loading…</p>
-    <button class="primary" type="button" onclick="window.location.reload()">Reload</button>
+  <div class="spa-boot">
+    <div class="spa-boot__content">
+      <p class="spa-boot__status" role="status" aria-live="polite">{gettext("Loading…")}</p>
+      <button
+        class="spa-boot__reload"
+        type="button"
+        onclick="
+          this.disabled = true;
+          this.setAttribute('aria-busy', 'true');
+          this.classList.add('spa-boot__reload--pending');
+          window.requestAnimationFrame(function () {
+            window.requestAnimationFrame(function () { window.location.reload(); });
+          });
+        "
+      >
+        {gettext("Reload")}
+      </button>
+    </div>
   </div>
 </div>

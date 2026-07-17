@@ -141,7 +141,14 @@ function updatePullDistance(distance: number) {
 
 function canStart(event: TouchEvent) {
   if (props.disabled || state.value === 'refreshing') return false;
-  if (!isStandalonePwa() || !layer.active.value || !hasCoarsePointer()) return false;
+  if (
+    !isStandalonePwa() ||
+    !layer.active.value ||
+    !layer.presented.value ||
+    !hasCoarsePointer()
+  ) {
+    return false;
+  }
   if (event.touches.length !== 1 || pageScrollTop() > 1) return false;
   if (isInteractiveTarget(event.target)) return false;
   return true;
@@ -162,7 +169,7 @@ function handleTouchStart(event: TouchEvent) {
 
 function handleTouchMove(event: TouchEvent) {
   if (!tracking || event.touches.length !== 1) return;
-  if (props.disabled || !layer.active.value) {
+  if (props.disabled || !layer.active.value || !layer.presented.value) {
     cancelTracking();
     return;
   }

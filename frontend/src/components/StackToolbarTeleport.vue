@@ -1,6 +1,8 @@
 <template>
-  <Teleport v-if="isActive" to="#toolbar-host">
-    <slot />
+  <Teleport v-if="isPresented" to="#toolbar-host">
+    <div class="stack-toolbar-content" :inert="!isInteractive">
+      <slot />
+    </div>
   </Teleport>
 </template>
 
@@ -10,5 +12,16 @@ import { Teleport } from 'vue';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 
 const layer = useStackLayer();
-const isActive = computed(() => layer.active.value);
+const isPresented = computed(() => layer.presented.value);
+const isInteractive = computed(() => layer.active.value && layer.presented.value);
 </script>
+
+<style>
+.stack-toolbar-content {
+  display: contents;
+}
+
+.stack-toolbar-content > * {
+  min-width: 0;
+}
+</style>
