@@ -58,6 +58,7 @@ defmodule IntellectualClubWeb.Endpoint do
     cookie_key: "request_logger"
 
   plug Plug.RequestId
+  plug :remember_request_method
 
   plug Plug.Telemetry,
     event_prefix: [:phoenix, :endpoint],
@@ -77,15 +78,25 @@ defmodule IntellectualClubWeb.Endpoint do
   plug IntellectualClubWeb.Router
 
   @doc false
-  def request_log_level(%Plug.Conn{path_info: path_info, status: status}) do
-    if debug_request?(path_info, status), do: :debug, else: :info
+  def request_log_level(%Plug.Conn{path_info: path_info, status: status} = conn) do
+    if successful_get?(conn, status) or poll_request?(path_info, status),
+      do: :debug,
+      else: :info
   end
 
-  defp debug_request?(path_info, status) do
-    case List.last(path_info) do
-      "poll" -> status in [nil, 200]
-      "idle-state" -> status in [nil, 204]
-      _other -> false
-    end
-  end
+  defp remember_request_method(conn, _opts),
+    do: Plug.Conn.put_private(conn, :intellectual_club_request_method, conn.method)
+
+  defp successful_get?(conn, status),
+    do: original_request_method(conn) == "GET" and status in [nil, 200, 204]
+
+  defp original_request_method(%Plug.Conn{
+         private: %{intellectual_club_request_method: method}
+       }),
+       do: method
+
+  defp original_request_method(%Plug.Conn{method: method}), do: method
+
+  defp poll_request?(path_info, status),
+    do: List.last(path_info) == "poll" and status in [nil, 200]
 end
