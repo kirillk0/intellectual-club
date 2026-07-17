@@ -58,7 +58,10 @@ defmodule IntellectualClubWeb.Endpoint do
     cookie_key: "request_logger"
 
   plug Plug.RequestId
-  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+
+  plug Plug.Telemetry,
+    event_prefix: [:phoenix, :endpoint],
+    log: {__MODULE__, :request_log_level, []}
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json, AshJsonApi.Plug.Parser],
@@ -72,4 +75,17 @@ defmodule IntellectualClubWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
   plug IntellectualClubWeb.Router
+
+  @doc false
+  def request_log_level(%Plug.Conn{path_info: path_info, status: status}) do
+    if debug_request?(path_info, status), do: :debug, else: :info
+  end
+
+  defp debug_request?(path_info, status) do
+    case List.last(path_info) do
+      "poll" -> status in [nil, 200]
+      "idle-state" -> status in [nil, 204]
+      _other -> false
+    end
+  end
 end
