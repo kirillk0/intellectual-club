@@ -551,6 +551,7 @@ export const ruMessages: Record<string, string> = {
   'Request error': 'Ошибка запроса',
   'Request failed with status {status}.': 'Запрос завершился с кодом {status}.',
   'Required by the bot when enabled.': 'Требуется боту, когда включено.',
+  'Reload': 'Перезагрузить',
   'Reset JSON': 'Сбросить JSON',
   'Reset zoom': 'Сбросить масштаб',
   'Reset password': 'Сбросить пароль',

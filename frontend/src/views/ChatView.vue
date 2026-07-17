@@ -592,7 +592,10 @@
       </div>
     </section>
   </div>
-  <p v-else class="muted">Loading…</p>
+  <div v-else class="chat-loading">
+    <p class="muted" role="status" aria-live="polite">{{ translate('Loading…') }}</p>
+    <button class="primary" type="button" @click="reloadPage">{{ translate('Reload') }}</button>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -632,6 +635,7 @@ import {
   pendingFileProgressPercent,
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
+import { reload as reloadPage } from '@/features/pwa/appUpdate';
 import { translate } from '@/i18n';
 import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 
@@ -1023,6 +1027,19 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   place-items: center;
   padding: 24px;
   background: var(--color-bg);
+}
+
+.chat-loading {
+  min-height: calc(100vh - var(--app-header-height, 56px));
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+}
+
+.chat-loading p {
+  margin: 0;
 }
 
 .chat-unavailable__panel {

@@ -482,6 +482,7 @@ export function useChatViewModel() {
 
   let chatLoadSeq = 0;
   let chatVisibleLoadSeq = 0;
+  let initialChatLoadAbortController: AbortController | null = null;
   let disposed = false;
 
   const isAbortError = (error: unknown) =>
@@ -496,10 +497,13 @@ export function useChatViewModel() {
     const requestedChatId = chatId.value;
     const seq = mode === 'initial' ? ++chatLoadSeq : chatLoadSeq;
     const visibleSeq = mode === 'initial' ? ++chatVisibleLoadSeq : chatVisibleLoadSeq;
+    const abortController = mode === 'initial' ? new AbortController() : null;
     const isCurrentLoad = () =>
       !disposed && seq === chatLoadSeq && requestedChatId === chatId.value;
 
     if (mode === 'initial') {
+      initialChatLoadAbortController?.abort();
+      initialChatLoadAbortController = abortController;
       loaded.value = false;
       composerRuntime.stopPolling();
       activeGenerationId.value = null;
@@ -515,6 +519,7 @@ export function useChatViewModel() {
     const settingsRequest = includeSettings
       ? api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${requestedChatId}/settings`, {
           showErrorBanner: false,
+          signal: abortController?.signal,
         })
       : null;
 
@@ -526,6 +531,7 @@ export function useChatViewModel() {
     try {
       const payload = await api.get<ChatStatePayload>(`/api/bff/chat-state/${requestedChatId}`, {
         showErrorBanner: false,
+        signal: abortController?.signal,
       });
 
       if (!isCurrentLoad()) return;
@@ -570,6 +576,12 @@ export function useChatViewModel() {
         !disposed
       ) {
         loaded.value = true;
+      }
+      if (abortController) {
+        abortController.abort();
+        if (initialChatLoadAbortController === abortController) {
+          initialChatLoadAbortController = null;
+        }
       }
     }
   };
@@ -910,6 +922,8 @@ export function useChatViewModel() {
     disposed = true;
     chatLoadSeq += 1;
     chatVisibleLoadSeq += 1;
+    initialChatLoadAbortController?.abort();
+    initialChatLoadAbortController = null;
     clearActiveWebPushChat();
     stopChatIdlePolling();
     void composerRuntime.dispose();

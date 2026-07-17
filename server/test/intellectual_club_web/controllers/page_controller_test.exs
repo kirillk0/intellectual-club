@@ -31,6 +31,9 @@ defmodule IntellectualClubWeb.PageControllerTest do
     conn = get(conn, ~p"/")
     html = html_response(conn, 200)
     assert html =~ ~s(id="spa-root")
+    assert html =~ "Loading…"
+    assert html =~ ">Reload<"
+    assert html =~ ~s|onclick="window.location.reload()"|
   end
 
   test "GET /manifest.webmanifest serves PWA manifest", %{conn: conn} do

@@ -136,6 +136,60 @@ describe('useChatViewModel loading', () => {
     await flushPromises();
   });
 
+  it('aborts the previous initial request when the chat route changes', async () => {
+    let firstCoreSignal: AbortSignal | undefined;
+
+    apiMocks.get.mockImplementation(
+      (path: string, options?: { signal?: AbortSignal }) => {
+        if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+        if (path === '/api/bff/chat-state/2') return Promise.resolve(chatState(2));
+        if (path === '/api/bff/chat-state/1') {
+          firstCoreSignal = options?.signal;
+          return new Promise<ChatStatePayload>((_resolve, reject) => {
+            firstCoreSignal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+              { once: true }
+            );
+          });
+        }
+        return Promise.resolve(undefined);
+      }
+    );
+
+    const { viewModel, router } = await mountViewModel();
+    await vi.waitFor(() => expect(firstCoreSignal).toBeDefined());
+
+    await router.replace('/chats/2');
+    await vi.waitFor(() => expect(viewModel.chat.value?.id).toBe(2));
+
+    expect(firstCoreSignal?.aborted).toBe(true);
+    expect(viewModel.loaded.value).toBe(true);
+  });
+
+  it('aborts the pending settings request when the core request fails', async () => {
+    let settingsSignal: AbortSignal | undefined;
+
+    apiMocks.get.mockImplementation(
+      (path: string, options?: { signal?: AbortSignal }) => {
+        if (path === '/api/bff/chat-state/1/settings') {
+          settingsSignal = options?.signal;
+          return new Promise<ChatSettingsStatePayload>(() => undefined);
+        }
+        if (path === '/api/bff/chat-state/1') {
+          return Promise.reject(new Error('Core request failed.'));
+        }
+        return Promise.resolve(undefined);
+      }
+    );
+
+    const { viewModel } = await mountViewModel();
+
+    await vi.waitFor(() => expect(settingsSignal?.aborted).toBe(true));
+    expect(viewModel.loaded.value).toBe(true);
+    expect(viewModel.loadError.value).toBe('Core request failed.');
+  });
+
   it('ignores a late initial response for the previous chat', async () => {
     const coreResolvers = new Map<number, (payload: ChatStatePayload) => void>();
 

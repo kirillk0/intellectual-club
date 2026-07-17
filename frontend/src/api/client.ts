@@ -143,7 +143,12 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
+  return (
+    error != null &&
+    typeof error === 'object' &&
+    'name' in error &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
 }
 
 function createAbortError(): DOMException {
@@ -383,19 +388,32 @@ function waitForRetry(delayMs: number, signal: AbortSignal | null | undefined): 
   });
 }
 
-async function fetchWithTimeout(
+async function fetchResponseWithTimeout(
   path: string,
   requestOptions: RequestInit,
   externalSignal: AbortSignal | null | undefined,
   timeoutMs: number | null
-): Promise<Response> {
+): Promise<{ response: Response; bodyText: string }> {
   const attemptSignal = createAttemptSignal(externalSignal, timeoutMs);
 
   try {
-    return await fetch(path, {
+    const response = await fetch(path, {
       ...requestOptions,
       signal: attemptSignal.signal,
     });
+    let bodyText = '';
+
+    if (response.status !== 204) {
+      try {
+        bodyText = await response.text();
+      } catch (error) {
+        // Once an HTTP error status is available, preserve it even if its
+        // optional response body stalls or is interrupted.
+        if (response.ok) throw error;
+      }
+    }
+
+    return { response, bodyText };
   } catch (error) {
     if (attemptSignal.didTimeout() && isAbortError(error) && !externalSignal?.aborted) {
       throw new RequestTimeoutError();
@@ -407,8 +425,7 @@ async function fetchWithTimeout(
   }
 }
 
-async function buildHttpError(response: Response): Promise<HttpError> {
-  const bodyText = await response.text().catch(() => '');
+function buildHttpError(response: Response, bodyText: string): HttpError {
   let bodyJson: unknown | null = null;
   if (bodyText) {
     try {
@@ -457,9 +474,10 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
 
   for (let attemptIndex = 0; ; attemptIndex += 1) {
     let response: Response;
+    let bodyText: string;
 
     try {
-      response = await fetchWithTimeout(
+      ({ response, bodyText } = await fetchResponseWithTimeout(
         path,
         {
           ...requestOptions,
@@ -469,7 +487,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
         },
         signal,
         resolvedTimeoutMs
-      );
+      ));
     } catch (error) {
       if (isAbortError(error)) throw error;
 
@@ -489,7 +507,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
 
     if (!response.ok) {
-      const error = await buildHttpError(response);
+      const error = buildHttpError(response, bodyText);
 
       if (shouldRetryError(error) && attemptIndex < resolvedRetry.attempts) {
         await waitForRetry(retryDelayMs(resolvedRetry, attemptIndex), signal);
@@ -518,14 +536,11 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
 
     let result: T | undefined;
 
-    if (response.status !== 204) {
-      const bodyText = await response.text().catch(() => '');
-      if (bodyText) {
-        try {
-          result = JSON.parse(bodyText) as T;
-        } catch {
-          result = undefined;
-        }
+    if (bodyText) {
+      try {
+        result = JSON.parse(bodyText) as T;
+      } catch {
+        result = undefined;
       }
     }
 
