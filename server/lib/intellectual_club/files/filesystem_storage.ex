@@ -121,6 +121,19 @@ defmodule IntellectualClub.Files.FilesystemStorage do
     end
   end
 
+  @spec list_payload_sha256s() :: {:ok, [String.t()]} | {:error, term()}
+  def list_payload_sha256s do
+    root_path()
+    |> list_directory()
+    |> case do
+      {:ok, first_level_names} ->
+        list_payload_sha256s(root_path(), first_level_names)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp link_or_copy(source_path, tmp_path) do
     case File.ln(source_path, tmp_path) do
       :ok -> :ok
@@ -150,6 +163,73 @@ defmodule IntellectualClub.Files.FilesystemStorage do
   defp temporary_path(path) do
     suffix = System.unique_integer([:positive, :monotonic])
     "#{path}.#{suffix}.tmp"
+  end
+
+  defp list_payload_sha256s(root, first_level_names) do
+    first_level_names
+    |> Enum.filter(&hex_directory_name?/1)
+    |> Enum.reduce_while({:ok, []}, fn first_level, {:ok, acc} ->
+      first_level_path = Path.join(root, first_level)
+
+      case list_directory(first_level_path) do
+        {:ok, second_level_names} ->
+          case payload_sha256s_in_second_level(
+                 first_level_path,
+                 first_level,
+                 second_level_names
+               ) do
+            {:ok, sha256s} -> {:cont, {:ok, sha256s ++ acc}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, sha256s} -> {:ok, Enum.sort(sha256s)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp payload_sha256s_in_second_level(first_level_path, first_level, second_level_names) do
+    second_level_names
+    |> Enum.filter(&hex_directory_name?/1)
+    |> Enum.reduce_while({:ok, []}, fn second_level, {:ok, acc} ->
+      case list_directory(Path.join(first_level_path, second_level)) do
+        {:ok, filenames} ->
+          sha256s =
+            filenames
+            |> Enum.flat_map(&payload_sha256(&1, first_level, second_level))
+
+          {:cont, {:ok, sha256s ++ acc}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp payload_sha256(filename, first_level, second_level) do
+    with <<sha256::binary-size(64), ".blob">> <- filename,
+         true <- Regex.match?(@sha256_pattern, sha256),
+         true <- String.starts_with?(sha256, first_level <> second_level) do
+      [sha256]
+    else
+      _other -> []
+    end
+  end
+
+  defp list_directory(path) do
+    case File.ls(path) do
+      {:ok, names} -> {:ok, names}
+      {:error, :enoent} -> {:ok, []}
+      {:error, reason} -> {:error, {:list_directory_failed, path, reason}}
+    end
+  end
+
+  defp hex_directory_name?(name) do
+    byte_size(name) == 2 and Regex.match?(~r/\A[0-9a-f]{2}\z/, name)
   end
 
   defp prune_empty_dirs(path) do

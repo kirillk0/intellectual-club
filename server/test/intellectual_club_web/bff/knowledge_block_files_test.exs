@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockFile
 
@@ -123,6 +124,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
     assert %{"attachments" => [^second]} = json_response(delete_conn, 200)
     assert {:error, :not_found} = Files.get_by_external_id(first["file_id"])
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(first_file.sha256)
     refute FilesystemStorage.exists?(first_file.sha256)
 
     {:ok, second_file} = Files.get_by_external_id(second["file_id"])
@@ -137,6 +139,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
              |> Ash.read!(authorize?: false)
 
     assert {:error, :not_found} = Files.get_by_external_id(second["file_id"])
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(second_file.sha256)
     refute FilesystemStorage.exists?(second_file.sha256)
   end
 

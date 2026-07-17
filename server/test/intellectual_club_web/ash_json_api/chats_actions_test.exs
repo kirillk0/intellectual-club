@@ -21,6 +21,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationTag, LlmProvider}
   alias IntellectualClub.Tools.{ChatToolBinding, ToolInstance}
@@ -759,6 +760,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
     refute FilesystemStorage.exists?(file.sha256)
   end
 

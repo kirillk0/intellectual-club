@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Knowledge.KnowledgeBlock
 
   test "bot image endpoints upload, stream, delete, and expose image metadata in JSON:API", %{
@@ -105,6 +106,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(StoredFile, file_id, authorize?: false)
 
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(image["sha256"])
     refute FilesystemStorage.exists?(image["sha256"])
   end
 

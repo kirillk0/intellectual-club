@@ -8,6 +8,7 @@ defmodule IntellectualClub.FilesTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
 
   require Ash.Query
 
@@ -81,6 +82,7 @@ defmodule IntellectualClub.FilesTest do
              Files.create_from_binary("invalid\0filename.txt", "text/plain", payload)
 
     assert file_count(sha256) == 0
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(sha256)
     refute FilesystemStorage.exists?(sha256)
   end
 
@@ -100,6 +102,7 @@ defmodule IntellectualClub.FilesTest do
 
     assert File.read!(source_path) == payload
     assert file_count(sha256) == 0
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(sha256)
     refute FilesystemStorage.exists?(sha256)
   end
 
@@ -135,9 +138,38 @@ defmodule IntellectualClub.FilesTest do
     assert file_count(duplicate.sha256) == 1
 
     assert :ok = Files.delete_file_and_maybe_payload(duplicate.id)
-    refute FilesystemStorage.exists?(duplicate.sha256)
     assert file_count(duplicate.sha256) == 0
+    assert FilesystemStorage.exists?(duplicate.sha256)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(duplicate.sha256)
+    refute FilesystemStorage.exists?(duplicate.sha256)
     assert {:error, _error} = Files.load_payload(duplicate.id)
+  end
+
+  test "garbage collector retains referenced payloads and removes orphaned payloads" do
+    payload = unique_payload("garbage-collector")
+    assert {:ok, file} = Files.create_from_binary("gc.txt", "text/plain", payload)
+
+    assert {:ok, :retained} = GarbageCollector.collect_sha256(file.sha256)
+    assert FilesystemStorage.exists?(file.sha256)
+
+    assert :ok = Files.delete_file_and_maybe_payload(file.id)
+    assert FilesystemStorage.exists?(file.sha256)
+
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
+    refute FilesystemStorage.exists?(file.sha256)
+  end
+
+  test "garbage collector sweep discovers orphaned filesystem payloads" do
+    payload = unique_payload("garbage-collector-sweep")
+    sha256 = sha256_hex(payload)
+
+    assert {:ok, :created} = FilesystemStorage.store(sha256, payload)
+    assert sha256 in elem(FilesystemStorage.list_payload_sha256s(), 1)
+
+    assert {:ok, stats} = GarbageCollector.collect()
+    assert stats.scanned >= 1
+    assert stats.deleted >= 1
+    refute FilesystemStorage.exists?(sha256)
   end
 
   test "db storage backend is rejected" do

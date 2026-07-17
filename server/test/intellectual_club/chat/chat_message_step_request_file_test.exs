@@ -16,6 +16,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
 
   test "step destroy cascades request bindings and deletes only their logical files" do
     %{user: actor} = user_fixture()
@@ -42,6 +43,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
     assert FilesystemStorage.exists?(source_file.sha256)
 
     assert :ok = Files.delete_file_and_maybe_payload(source_file.id)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(source_file.sha256)
     refute FilesystemStorage.exists?(source_file.sha256)
   end
 
@@ -75,7 +77,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
     assert :ok = Files.delete_file_and_maybe_payload(second_file.id)
   end
 
-  test "binding destroy rolls back when its owned payload cannot be deleted" do
+  test "binding destroy commits logical cleanup when payload GC must retry" do
     %{user: actor} = user_fixture()
     step = create_step!(actor)
     payload = "strict cleanup payload"
@@ -94,19 +96,16 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
     File.mkdir!(payload_path)
     File.write!(Path.join(payload_path, "sentinel"), "not removable as a blob")
 
-    assert {:error, _error} = Ash.destroy(binding, authorize?: false)
-    assert Ash.get!(ChatMessageStepRequestFile, binding.id, authorize?: false).id == binding.id
-    assert Ash.get!(StoredFile, request_file.id, authorize?: false).id == request_file.id
-
-    assert {:error, _error} = Ash.destroy(step, actor: actor)
-    assert Ash.get!(ChatMessageStep, step.id, actor: actor).id == step.id
-
-    File.rm_rf!(payload_path)
-    assert {:ok, :created} = FilesystemStorage.store(request_file.sha256, payload)
-
-    Ash.destroy!(step, actor: actor)
+    assert :ok = Ash.destroy(binding, authorize?: false)
     assert {:error, _error} = Ash.get(ChatMessageStepRequestFile, binding.id, authorize?: false)
     assert {:error, _error} = Ash.get(StoredFile, request_file.id, authorize?: false)
+    assert {:error, _reason} = GarbageCollector.collect_sha256(request_file.sha256)
+
+    assert :ok = Ash.destroy(step, actor: actor)
+    assert {:error, _error} = Ash.get(ChatMessageStep, step.id, actor: actor)
+
+    File.rm_rf!(payload_path)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(request_file.sha256)
     refute FilesystemStorage.exists?(request_file.sha256)
   end
 

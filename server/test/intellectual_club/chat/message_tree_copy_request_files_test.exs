@@ -15,6 +15,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Generation.RequestImages
 
   require Ash.Query
@@ -67,6 +68,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     Ash.destroy!(target, actor: actor)
     Ash.destroy!(source, actor: actor)
 
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(canonical_file.sha256)
     refute FilesystemStorage.exists?(canonical_file.sha256)
   end
 
@@ -125,6 +127,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     Ash.destroy!(target, actor: actor)
     Ash.destroy!(source, actor: actor)
 
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(rendition_file.sha256)
     refute FilesystemStorage.exists?(rendition_file.sha256)
   end
 
@@ -166,6 +169,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     assert FilesystemStorage.exists?(moved_binding.file.sha256)
 
     Ash.destroy!(target, actor: actor)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(moved_binding.file.sha256)
     refute FilesystemStorage.exists?(moved_binding.file.sha256)
   end
 

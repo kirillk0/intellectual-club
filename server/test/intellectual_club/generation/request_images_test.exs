@@ -13,6 +13,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RequestImages.StagedBindings
 
@@ -200,7 +201,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert Ash.get!(StoredFile, fixture.file.id, authorize?: false).id == fixture.file.id
   end
 
-  test "stale cleanup failure preserves the compact request and binding ownership" do
+  test "stale payload cleanup commits logical deletion and remains retryable by GC" do
     fixture = request_fixture!(oversized_png_payload())
 
     assert {:ok, _compact_request} =
@@ -221,15 +222,12 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false).raw_request ==
              empty_request
 
-    assert Ash.get!(ChatMessageStepRequestFile, binding.id, authorize?: false).id == binding.id
-    assert Ash.get!(StoredFile, binding.file_id, authorize?: false).id == binding.file_id
+    assert [] == bindings_for_step(fixture.target_step.id)
+    assert {:error, _error} = Ash.get(StoredFile, binding.file_id, authorize?: false)
+    assert {:error, _reason} = GarbageCollector.collect_sha256(binding.file.sha256)
 
     restore_payload!(binding.file.sha256, rendition_payload)
-
-    assert {:ok, %{"input" => []}} =
-             RequestImages.materialize_and_persist(%{"input" => []}, fixture.target_step.id)
-
-    assert [] == bindings_for_step(fixture.target_step.id)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(binding.file.sha256)
   end
 
   test "replaces invalid image blocks with provider-native fallback text" do
@@ -364,6 +362,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert FilesystemStorage.exists?(source_binding.file.sha256)
 
     Ash.destroy!(reused_step, actor: fixture.actor)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(source_binding.file.sha256)
     refute FilesystemStorage.exists?(source_binding.file.sha256)
   end
 
@@ -403,7 +402,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert payload == fixture.payload
   end
 
-  test "discarding staged files reports payload cleanup failures" do
+  test "discarding staged files commits logical cleanup and leaves payload retryable by GC" do
     payload = "staged cleanup payload"
 
     assert {:ok, file} =
@@ -412,15 +411,12 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     staged = %StagedBindings{items: [%{file_id: file.id}]}
     replace_payload_with_directory!(file.sha256)
 
-    assert {:error, {:staged_file_cleanup_failed, [{file_id, _reason}]}} =
-             RequestImages.discard_staged_bindings(staged)
-
-    assert file_id == file.id
-    assert Ash.get!(StoredFile, file.id, authorize?: false).id == file.id
-
-    restore_payload!(file.sha256, payload)
     assert :ok = RequestImages.discard_staged_bindings(staged)
     assert {:error, _error} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert {:error, _reason} = GarbageCollector.collect_sha256(file.sha256)
+
+    restore_payload!(file.sha256, payload)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
   end
 
   defp request_fixture!(payload, opts \\ []) do

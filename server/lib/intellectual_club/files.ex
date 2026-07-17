@@ -5,11 +5,10 @@ defmodule IntellectualClub.Files do
 
   use Ash.Domain
 
-  import Ecto.Query, only: [from: 2]
-
-  alias IntellectualClub.Repo
   alias IntellectualClub.Files.File
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
+  alias IntellectualClub.Files.PayloadLock
 
   require Ash.Query
 
@@ -38,9 +37,14 @@ defmodule IntellectualClub.Files do
       storage_backend: :fs
     }
 
-    with {:ok, store_status} <- FilesystemStorage.store(sha256, payload) do
-      create_logical_file(attrs, store_status)
-    end
+    sha256
+    |> transact_with_payload_lock(fn ->
+      with {:ok, referenced_before_store?} <- payload_referenced?(sha256),
+           {:ok, store_status} <- FilesystemStorage.store(sha256, payload) do
+        create_logical_file(attrs, store_status, referenced_before_store?)
+      end
+    end)
+    |> request_collection_after_error(sha256)
   end
 
   @spec create_from_binary(String.t(), String.t(), binary()) :: {:ok, File.t()} | {:error, term()}
@@ -55,8 +59,7 @@ defmodule IntellectualClub.Files do
   def create_from_path(filename, mime_type, source_path, _opts) when is_binary(source_path) do
     with {:ok, stat} <- Elixir.File.stat(source_path),
          :ok <- ensure_regular_file(stat),
-         {:ok, sha256} <- sha256_file_hex(source_path),
-         {:ok, store_status} <- FilesystemStorage.store_path(sha256, source_path) do
+         {:ok, sha256} <- sha256_file_hex(source_path) do
       attrs = %{
         sha256: sha256,
         filename: normalize_filename(filename),
@@ -65,7 +68,14 @@ defmodule IntellectualClub.Files do
         storage_backend: :fs
       }
 
-      create_logical_file(attrs, store_status)
+      sha256
+      |> transact_with_payload_lock(fn ->
+        with {:ok, referenced_before_store?} <- payload_referenced?(sha256),
+             {:ok, store_status} <- FilesystemStorage.store_path(sha256, source_path) do
+          create_logical_file(attrs, store_status, referenced_before_store?)
+        end
+      end)
+      |> request_collection_after_error(sha256)
     end
   end
 
@@ -89,19 +99,24 @@ defmodule IntellectualClub.Files do
   @spec duplicate_file(integer()) :: {:ok, File.t()} | {:error, term()}
   def duplicate_file(file_id) when is_integer(file_id) do
     with {:ok, %File{} = file} <- Ash.get(File, file_id, authorize?: false) do
-      File
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          sha256: file.sha256,
-          filename: file.filename,
-          size_bytes: file.size_bytes,
-          mime_type: file.mime_type,
-          storage_backend: file.storage_backend
-        },
-        authorize?: false
-      )
-      |> Ash.create(authorize?: false)
+      transact_with_payload_lock(file.sha256, fn ->
+        with {:ok, %File{} = current_file} <-
+               Ash.get(File, file_id, authorize?: false) do
+          File
+          |> Ash.Changeset.for_create(
+            :create,
+            %{
+              sha256: current_file.sha256,
+              filename: current_file.filename,
+              size_bytes: current_file.size_bytes,
+              mime_type: current_file.mime_type,
+              storage_backend: current_file.storage_backend
+            },
+            authorize?: false
+          )
+          |> Ash.create(authorize?: false)
+        end
+      end)
     end
   end
 
@@ -147,24 +162,24 @@ defmodule IntellectualClub.Files do
   def delete_file_and_maybe_payload(file_id) when is_integer(file_id) do
     case Ash.get(File, file_id, authorize?: false) do
       {:ok, %File{} = file} ->
-        repo = Repo
+        case transact_with_payload_lock(file.sha256, fn ->
+               case Ash.get(File, file_id, authorize?: false) do
+                 {:ok, %File{} = current_file} ->
+                   normalize_file_destroy_result(Ash.destroy(current_file, authorize?: false))
 
-        Ash.transact(
-          File,
-          fn ->
-            with :ok <- normalize_file_destroy_result(Ash.destroy(file, authorize?: false)) do
-              if remaining_files_for_sha256(repo, file.sha256) == 0 do
-                delete_payload_for_sha256(repo, file.sha256)
-              else
-                :ok
-              end
-            end
-          end,
-          return_notifications?: true
-        )
-        |> case do
-          {:ok, :ok, _notifications} -> :ok
-          {:error, error} -> {:error, error}
+                 {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
+                   :ok
+
+                 {:error, error} ->
+                   {:error, error}
+               end
+             end) do
+          :ok ->
+            GarbageCollector.request_collection(file.sha256)
+            :ok
+
+          {:error, error} ->
+            {:error, error}
         end
 
       {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} ->
@@ -214,7 +229,7 @@ defmodule IntellectualClub.Files do
     {:error, {:unsupported_storage_backend, backend}}
   end
 
-  defp create_logical_file(attrs, store_status) do
+  defp create_logical_file(attrs, store_status, referenced_before_store?) do
     result =
       File
       |> Ash.Changeset.for_create(:create, attrs, authorize?: false)
@@ -225,7 +240,11 @@ defmodule IntellectualClub.Files do
         success
 
       {:error, create_error} = error ->
-        case compensate_new_payload(attrs.sha256, store_status) do
+        case compensate_new_payload(
+               attrs.sha256,
+               store_status,
+               referenced_before_store?
+             ) do
           :ok ->
             error
 
@@ -237,30 +256,41 @@ defmodule IntellectualClub.Files do
     end
   end
 
-  defp compensate_new_payload(_sha256, :existing), do: :ok
-
-  defp compensate_new_payload(sha256, :created) do
-    File
-    |> Ash.Query.filter(sha256 == ^sha256)
-    |> Ash.exists(authorize?: false)
-    |> case do
-      {:ok, true} -> :ok
-      {:ok, false} -> FilesystemStorage.delete(sha256)
-      {:error, reason} -> {:error, {:payload_reference_check_failed, reason}}
-    end
-  end
+  defp compensate_new_payload(_sha256, :existing, _referenced_before_store?), do: :ok
+  defp compensate_new_payload(_sha256, :created, true), do: :ok
+  defp compensate_new_payload(sha256, :created, false), do: FilesystemStorage.delete(sha256)
 
   defp normalize_file_destroy_result(:ok), do: :ok
   defp normalize_file_destroy_result({:ok, %File{}}), do: :ok
   defp normalize_file_destroy_result({:error, reason}), do: {:error, reason}
 
-  defp remaining_files_for_sha256(repo, sha256) do
-    repo.one(from(file in "files", where: field(file, :sha256) == ^sha256, select: count("*"))) ||
-      0
+  defp request_collection_after_error({:error, _reason} = error, sha256) do
+    GarbageCollector.request_collection(sha256)
+    error
   end
 
-  defp delete_payload_for_sha256(_repo, sha256) do
-    FilesystemStorage.delete(sha256)
+  defp request_collection_after_error(result, _sha256), do: result
+
+  defp payload_referenced?(sha256) do
+    File
+    |> Ash.Query.filter(sha256 == ^sha256)
+    |> Ash.exists(authorize?: false)
+  end
+
+  defp transact_with_payload_lock(sha256, fun) when is_function(fun, 0) do
+    File
+    |> Ash.transact(
+      fn ->
+        with :ok <- PayloadLock.acquire(sha256) do
+          fun.()
+        end
+      end,
+      return_notifications?: true
+    )
+    |> case do
+      {:ok, result, _notifications} -> result
+      {:error, error} -> {:error, error}
+    end
   end
 
   defp normalize_filename(filename) when is_binary(filename) do

@@ -10,6 +10,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
 
   test "branch metadata and switching to rightmost leaf" do
     %{user: actor} = user_fixture()
@@ -186,6 +187,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
     refute FilesystemStorage.exists?(file.sha256)
 
     kept_child = Ash.get!(ChatMessage, kept_child.id, actor: actor)
@@ -262,6 +264,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
     assert {:error, _} = Ash.get(ChatMessageItem, item.id, actor: actor)
     assert {:error, _} = Ash.get(ChatMessageContent, media_content.id, actor: actor)
     assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
     refute FilesystemStorage.exists?(file.sha256)
   end
 

@@ -11,6 +11,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, ToolInstance}
 
@@ -209,6 +210,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDeleteTest do
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(StoredFile, stored_file.id, authorize?: false)
 
+    assert {:ok, :deleted} = GarbageCollector.collect_sha256(stored_file.sha256)
     refute FilesystemStorage.exists?(stored_file.sha256)
   end
 
