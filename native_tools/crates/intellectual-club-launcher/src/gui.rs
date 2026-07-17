@@ -17,6 +17,7 @@ use crate::operations::{
 use crate::status::{ServiceState, ServiceStatus, StatusPayload};
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(900);
+const LOG_BOTTOM_TOLERANCE: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum View {
@@ -38,6 +39,7 @@ pub struct LauncherGui {
     view: View,
     active_log: LogSource,
     log_text: String,
+    log_follow_tail: bool,
     log_scroll_to_bottom: bool,
     last_error: String,
     last_message: String,
@@ -70,6 +72,7 @@ impl LauncherGui {
             view: View::Overview,
             active_log: LogSource::App,
             log_text: String::new(),
+            log_follow_tail: true,
             log_scroll_to_bottom: true,
             last_error: String::new(),
             last_message: String::new(),
@@ -121,7 +124,12 @@ impl LauncherGui {
 
     fn refresh_log(&mut self) {
         match read_log(&self.paths, &self.config, self.active_log) {
-            Ok(text) => self.log_text = text,
+            Ok(text) => {
+                if self.log_follow_tail && text != self.log_text {
+                    self.log_scroll_to_bottom = true;
+                }
+                self.log_text = text;
+            }
             Err(error) => self.last_error = error.to_string(),
         }
     }
@@ -243,6 +251,7 @@ impl LauncherGui {
                 nav_button(ui, &mut self.view, View::Logs, locale.text(TextKey::Logs));
                 nav_button(ui, &mut self.view, View::Paths, locale.text(TextKey::Paths));
                 if previous_view != self.view && matches!(self.view, View::Logs) {
+                    self.log_follow_tail = true;
                     self.log_scroll_to_bottom = true;
                     self.refresh_log();
                 }
@@ -591,6 +600,7 @@ impl LauncherGui {
                     .clicked()
                 {
                     self.active_log = source;
+                    self.log_follow_tail = true;
                     self.log_scroll_to_bottom = true;
                     self.refresh_log();
                 }
@@ -634,10 +644,10 @@ impl LauncherGui {
         };
         let log_height = (ui.available_height() - 40.0).max(220.0);
         let scroll_to_bottom = self.log_scroll_to_bottom;
-        egui::ScrollArea::both()
+        let output = egui::ScrollArea::both()
             .id_salt(format!("log_text_scroll_{}", self.active_log))
             .auto_shrink([false, false])
-            .stick_to_bottom(true)
+            .animated(false)
             .max_height(log_height)
             .show(ui, |ui| {
                 egui::Frame::group(ui.style())
@@ -649,12 +659,22 @@ impl LauncherGui {
                                 .selectable(true)
                                 .extend(),
                         );
-                        if scroll_to_bottom {
+                        let selecting_text =
+                            response.is_pointer_button_down_on() || response.dragged();
+                        if scroll_to_bottom && !selecting_text {
                             ui.scroll_to_rect(response.rect, Some(egui::Align::BOTTOM));
                         }
-                    });
+                        selecting_text
+                    })
             });
         self.log_scroll_to_bottom = false;
+        let selecting_text = output.inner.inner;
+        self.log_follow_tail = !selecting_text
+            && log_viewport_is_at_bottom(
+                output.state.offset.y,
+                output.content_size.y,
+                output.inner_rect.height(),
+            );
 
         self.render_messages(ui);
     }
@@ -978,6 +998,32 @@ fn log_source_label(locale: Locale, source: LogSource) -> &'static str {
 
 fn compact_path(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn log_viewport_is_at_bottom(
+    scroll_offset: f32,
+    content_height: f32,
+    viewport_height: f32,
+) -> bool {
+    let max_offset = (content_height - viewport_height).max(0.0);
+    max_offset - scroll_offset <= LOG_BOTTOM_TOLERANCE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_viewport_is_at_bottom;
+
+    #[test]
+    fn log_viewport_only_follows_tail_at_the_bottom() {
+        assert!(log_viewport_is_at_bottom(800.0, 1000.0, 200.0));
+        assert!(log_viewport_is_at_bottom(798.5, 1000.0, 200.0));
+        assert!(!log_viewport_is_at_bottom(797.0, 1000.0, 200.0));
+    }
+
+    #[test]
+    fn log_viewport_without_overflow_is_at_the_bottom() {
+        assert!(log_viewport_is_at_bottom(0.0, 150.0, 200.0));
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
