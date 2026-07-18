@@ -66,6 +66,21 @@ defmodule IntellectualClubWeb.PageControllerTest do
 
   test "GET /pwa/app-shell serves a neutral revision-matched SPA shell", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
+    code_version_label = "page-controller-test"
+
+    code_version_path =
+      Application.app_dir(:intellectual_club, "priv/static/assets/code-version.json")
+
+    previous_code_version = File.read(code_version_path)
+    File.mkdir_p!(Path.dirname(code_version_path))
+    File.write!(code_version_path, Jason.encode!(%{"label" => code_version_label}))
+
+    on_exit(fn ->
+      case previous_code_version do
+        {:ok, contents} -> File.write!(code_version_path, contents)
+        {:error, :enoent} -> File.rm(code_version_path)
+      end
+    end)
 
     conn =
       conn
@@ -79,14 +94,6 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert html =~ ~s(name="ic-build-id")
     assert html =~ ~s(data-current-user-id="")
     assert html =~ ~s(data-current-user-username="")
-
-    code_version_label =
-      :intellectual_club
-      |> Application.app_dir("priv/static/assets/code-version.json")
-      |> File.read!()
-      |> Jason.decode!()
-      |> Map.fetch!("label")
-      |> String.trim()
 
     asset_version =
       :sha256
