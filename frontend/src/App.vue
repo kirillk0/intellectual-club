@@ -143,18 +143,11 @@
         <button type="button" @click="dismissBackendStatusBanner">{{ translate('Dismiss') }}</button>
       </section>
 
-      <section
+      <AppUpdateBanner
         v-if="appUpdateAvailable"
-        class="app-banner app-update-banner"
-        role="status"
-        aria-live="polite"
-      >
-        <div class="app-status-copy">
-          <strong>{{ translate('A new version is available') }}</strong>
-          <span>{{ translate('Reload when you are ready. Unsaved changes may need to be saved first.') }}</span>
-        </div>
-        <button type="button" class="primary" @click="reloadApp">{{ translate('Update') }}</button>
-      </section>
+        :updating="appUpdateReloading"
+        @update="reloadApp"
+      />
     </div>
 
     <main class="app-main" :class="{ 'app-main--chat': isChatRoute, 'app-main--login': isLoginRoute }">
@@ -184,6 +177,7 @@ import { useAppUpdateMonitor } from '@/features/pwa/appUpdate';
 import { syncExistingWebPushSubscription } from '@/features/push/webPush';
 import { clearServerStateQueries } from '@/features/serverState/queryClient';
 import { effectiveLocale, translate } from '@/i18n';
+import AppUpdateBanner from '@/components/AppUpdateBanner.vue';
 import LoadingStatusBanner from '@/components/LoadingStatusBanner.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
@@ -199,6 +193,7 @@ const { banner: backendStatusBanner, dismissBackendStatusBanner } = useBackendSt
 const { visible: loadingVisible } = useLoadCoordinator();
 const {
   available: appUpdateAvailable,
+  reloading: appUpdateReloading,
   reload: reloadApp,
   start: startAppUpdateMonitor,
   stop: stopAppUpdateMonitor,

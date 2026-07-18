@@ -1,16 +1,6 @@
 const SERVICE_WORKER_PATH = '/service-worker.js';
 export const SERVICE_WORKER_SCOPE = '/';
 
-const currentBuildId = () => {
-  const version = __CODE_VERSION__;
-  return [
-    version.commit_timestamp,
-    version.commit_sha,
-    version.dirty ? 'dirty' : 'clean',
-    version.label,
-  ].join(':');
-};
-
 export type PwaServiceWorkerMessage =
   | { type: 'CACHE_PROGRESS'; context: 'precache'; completed: number; total: number }
   | {
@@ -28,15 +18,7 @@ let registrationPromise: Promise<ServiceWorkerRegistration> | null = null;
 
 const inlineRegistration = () => window.__IC_SERVICE_WORKER_REGISTRATION__;
 
-const trackedBuildId = () =>
-  document.querySelector<HTMLMetaElement>('meta[name="ic-build-id"]')?.content ||
-  currentBuildId();
-
-export const serviceWorkerScriptUrl = () => {
-  const url = new URL(SERVICE_WORKER_PATH, window.location.origin);
-  url.searchParams.set('build', trackedBuildId());
-  return `${url.pathname}${url.search}`;
-};
+export const serviceWorkerScriptUrl = () => SERVICE_WORKER_PATH;
 
 export const registerServiceWorker = () => {
   if (!('serviceWorker' in navigator)) {

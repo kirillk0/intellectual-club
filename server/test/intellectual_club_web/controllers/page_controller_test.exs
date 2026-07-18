@@ -28,6 +28,8 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert html =~ ~s(name="ic-build-id")
     assert html =~ "window.__IC_BOOTSTRAP__"
     assert html =~ "window.__IC_SERVICE_WORKER_REGISTRATION__"
+    assert html =~ "'/service-worker.js'"
+    refute html =~ "/service-worker.js?build="
     assert html =~ "ic:bootstrap-state"
     assert html =~ "updateViaCache: 'none'"
     assert html =~ "data-bootstrap-step=\"runtime\""

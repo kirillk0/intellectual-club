@@ -25,7 +25,7 @@ describe('service worker registration', () => {
     expect(register).not.toHaveBeenCalled();
   });
 
-  it('uses the tracked entry URL and bypasses HTTP cache when registering directly', async () => {
+  it('uses a stable script URL and bypasses HTTP cache when registering directly', async () => {
     const meta = document.createElement('meta');
     meta.name = 'ic-build-id';
     meta.content = '/assets/js/spa-digest.js?vsn=d';
@@ -45,7 +45,7 @@ describe('service worker registration', () => {
 
     await expect(registerServiceWorker()).resolves.toBe(registration);
     expect(register).toHaveBeenCalledWith(
-      '/service-worker.js?build=%2Fassets%2Fjs%2Fspa-digest.js%3Fvsn%3Dd',
+      '/service-worker.js',
       {
         scope: '/',
         updateViaCache: 'none',

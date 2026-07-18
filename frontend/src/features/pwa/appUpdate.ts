@@ -1,13 +1,11 @@
 import { readonly, ref } from 'vue';
-import {
-  getServiceWorkerRegistration,
-  postServiceWorkerMessage,
-} from '@/features/pwa/serviceWorker';
+import { getServiceWorkerRegistration } from '@/features/pwa/serviceWorker';
 
 const CODE_VERSION_PATH = '/assets/code-version.json';
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const UPDATE_TIMEOUT_MS = 10_000;
-const ACTIVATION_TIMEOUT_MS = 12_000;
+const ACTIVATION_TIMEOUT_MS = 60_000;
+const RELOAD_CANCELLATION_GRACE_MS = 1_000;
 
 export type AppCodeVersion = {
   commit_timestamp: string;
@@ -19,24 +17,32 @@ export type AppCodeVersion = {
 const available = ref(false);
 const latestVersion = ref<AppCodeVersion | null>(null);
 const checking = ref(false);
+const reloading = ref(false);
 
 let checkTimer: number | null = null;
 let started = false;
 let checkPromise: Promise<void> | null = null;
+let reloadPromise: Promise<void> | null = null;
 
 const normalizeCodeVersion = (value: unknown): AppCodeVersion | null => {
   if (!value || typeof value !== 'object') return null;
 
   const raw = value as Record<string, unknown>;
-  const commitTimestamp = typeof raw.commit_timestamp === 'string' ? raw.commit_timestamp : '';
-  const commitSha = typeof raw.commit_sha === 'string' ? raw.commit_sha : '';
-  const label = typeof raw.label === 'string' ? raw.label : '';
+  if (
+    typeof raw.commit_timestamp !== 'string' ||
+    typeof raw.commit_sha !== 'string' ||
+    typeof raw.dirty !== 'boolean' ||
+    typeof raw.label !== 'string' ||
+    raw.label.trim() === ''
+  ) {
+    return null;
+  }
 
   return {
-    commit_timestamp: commitTimestamp,
-    commit_sha: commitSha,
-    dirty: raw.dirty === true,
-    label,
+    commit_timestamp: raw.commit_timestamp,
+    commit_sha: raw.commit_sha,
+    dirty: raw.dirty,
+    label: raw.label,
   };
 };
 
@@ -118,13 +124,10 @@ const fetchLatestVersion = async () => {
 };
 
 const runCheck = async () => {
-  let registration: ServiceWorkerRegistration | null = null;
-  let registrationChecked = false;
   try {
-    registration = await updateServiceWorkerRegistration();
-    registrationChecked = true;
+    await updateServiceWorkerRegistration();
   } catch {
-    registrationChecked = false;
+    // Version metadata remains authoritative when the worker check fails.
   }
 
   let remoteVersion: AppCodeVersion | null = null;
@@ -137,22 +140,11 @@ const runCheck = async () => {
   }
   const remoteAvailable =
     remoteVersion !== null && versionKey(remoteVersion) !== currentVersionKey;
-  const workerAvailable = Boolean(registration?.waiting);
 
-  if (remoteAvailable || workerAvailable) {
-    available.value = true;
-    if (remoteAvailable) {
-      latestVersion.value = remoteVersion;
-    } else if (remoteVersionChecked) {
-      latestVersion.value = null;
-    }
-    return;
-  }
+  if (!remoteVersionChecked) return;
 
-  if (registrationChecked && remoteVersionChecked) {
-    available.value = false;
-    latestVersion.value = null;
-  }
+  available.value = remoteAvailable;
+  latestVersion.value = remoteAvailable ? remoteVersion : null;
 };
 
 const documentVisible = () =>
@@ -205,43 +197,109 @@ export const stop = () => {
   window.removeEventListener('online', checkIfVisible);
 };
 
-const waitForControllerChange = () =>
-  withTimeout(
-    new Promise<void>((resolve) => {
-      navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), {
-        once: true,
-      });
-    }),
-    ACTIVATION_TIMEOUT_MS,
-    'Service worker activation timed out.'
-  );
+const waitForWorkerActivation = (worker: ServiceWorker) =>
+  new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer: number | null = null;
 
-export const reload = async () => {
-  if (!('serviceWorker' in navigator)) {
-    window.location.reload();
-    return;
+    const cleanup = () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      worker.removeEventListener?.('statechange', handleStateChange);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const handleStateChange = () => {
+      if (worker.state === 'activated') finish();
+      if (worker.state === 'redundant') {
+        finish(new Error('Service worker update became redundant.'));
+      }
+    };
+    const handleControllerChange = () => handleStateChange();
+
+    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+    worker.addEventListener?.('statechange', handleStateChange);
+    timer = window.setTimeout(
+      () => finish(new Error('Service worker activation timed out.')),
+      ACTIVATION_TIMEOUT_MS
+    );
+    handleStateChange();
+  });
+
+const reloadDocument = () =>
+  new Promise<void>((resolve) => {
+    let recoveryTimer: number | null = null;
+
+    const cleanup = () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+    };
+    const handlePageHide = () => cleanup();
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!event.defaultPrevented) return;
+
+      recoveryTimer = window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, RELOAD_CANCELLATION_GRACE_MS);
+    };
+
+    window.addEventListener('pagehide', handlePageHide, { once: true });
+    window.addEventListener('beforeunload', handleBeforeUnload, { once: true });
+    try {
+      window.location.reload();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+  });
+
+const performReload = async () => {
+  if ('serviceWorker' in navigator) {
+    try {
+      const registration = await withTimeout(
+        getServiceWorkerRegistration(),
+        UPDATE_TIMEOUT_MS,
+        'Service worker registration timed out.'
+      );
+      const worker = registration?.installing ?? registration?.waiting;
+
+      if (worker) {
+        const activation = waitForWorkerActivation(worker);
+        worker.postMessage({ type: 'ACTIVATE_UPDATE' });
+        await activation;
+      }
+    } catch (error) {
+      console.warn('Service worker update activation failed.', error);
+    }
   }
 
-  const registration =
-    (await updateServiceWorkerRegistration().catch(() => null)) ??
-    (await getServiceWorkerRegistration().catch(() => null));
-  const waiting = registration?.waiting;
+  await reloadDocument();
+};
 
-  if (!waiting) {
-    window.location.reload();
-    return;
-  }
+export const reload = () => {
+  if (reloadPromise) return reloadPromise;
 
-  const controllerChange = waitForControllerChange();
-  await postServiceWorkerMessage({ type: 'ACTIVATE_UPDATE' });
-  await controllerChange.catch(() => undefined);
-  window.location.reload();
+  reloading.value = true;
+  reloadPromise = performReload().finally(() => {
+    reloading.value = false;
+    reloadPromise = null;
+  });
+
+  return reloadPromise;
 };
 
 export const useAppUpdateMonitor = () => ({
   available: readonly(available),
   latestVersion: readonly(latestVersion),
   checking: readonly(checking),
+  reloading: readonly(reloading),
   currentVersion,
   checkNow,
   reload,
