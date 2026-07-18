@@ -50,6 +50,10 @@ defmodule IntellectualClubWeb.Router do
   end
 
   scope "/", IntellectualClubWeb do
+    get "/health", HealthController, :show
+  end
+
+  scope "/", IntellectualClubWeb do
     pipe_through :browser
 
     auth_routes AuthController, IntellectualClub.Accounts.User, path: "/auth"

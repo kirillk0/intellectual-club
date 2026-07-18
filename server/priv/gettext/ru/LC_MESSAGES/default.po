@@ -29,8 +29,26 @@ msgstr "Не удалось изменить пароль."
 msgid "Current password is incorrect."
 msgstr "Текущий пароль указан неверно."
 
-msgid "Loading…"
-msgstr "Загрузка…"
+msgid "Preparing the interface…"
+msgstr "Подготавливаем интерфейс…"
 
-msgid "Reload"
-msgstr "Перезагрузить"
+msgid "Waiting for a connection…"
+msgstr "Ожидаем подключения…"
+
+msgid "Restoring the connection…"
+msgstr "Восстанавливаем подключение…"
+
+msgid "Attempt"
+msgstr "Попытка"
+
+msgid "Application startup progress"
+msgstr "Ход запуска приложения"
+
+msgid "Interface"
+msgstr "Интерфейс"
+
+msgid "Section"
+msgstr "Раздел"
+
+msgid "Data"
+msgstr "Данные"

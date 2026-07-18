@@ -1,5 +1,10 @@
 import { QueryClient, type QueryKey } from '@tanstack/vue-query';
 
+import {
+  isTransientReadError,
+  recoverableRetryDelayMs,
+} from '@/features/app/recoverableReadPolicy';
+
 export const SERVER_STATE_QUERY_ROOT = ['server-state'] as const;
 
 type QueryIdentity = string | number | boolean | null | undefined | Record<string, unknown>;
@@ -22,7 +27,9 @@ export const serverStateQueryClient = new QueryClient({
     queries: {
       staleTime: 0,
       gcTime: 5 * 60 * 1000,
-      retry: false,
+      retry: (_failureCount, error) => isTransientReadError(error),
+      retryDelay: (failureCount, error) =>
+        recoverableRetryDelayMs(failureCount, error),
       refetchOnMount: true,
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,

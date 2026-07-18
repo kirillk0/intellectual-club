@@ -6,6 +6,14 @@ export type BackendStatusBannerState = {
 };
 
 const banner = ref<BackendStatusBannerState | null>(null);
+type BannerEntry = {
+  state: BackendStatusBannerState;
+  order: number;
+};
+
+const entries = new Map<string, BannerEntry>();
+let entryOrder = 0;
+let visibleSourceKey: string | null = null;
 
 let lastDismissedFingerprint = '';
 let lastDismissedAt = 0;
@@ -14,11 +22,18 @@ const RESHOW_AFTER_DISMISS_MS = 10_000;
 
 const fingerprint = (value: BackendStatusBannerState) => `${value.title}\n${value.message}`;
 
-export function showBackendStatusBanner(next: BackendStatusBannerState) {
+function refreshVisibleBanner() {
+  const nextEntry = [...entries.entries()].sort((left, right) => right[1].order - left[1].order)[0];
+  visibleSourceKey = nextEntry?.[0] ?? null;
+  banner.value = nextEntry?.[1].state ?? null;
+}
+
+export function showBackendStatusBanner(next: BackendStatusBannerState, sourceKey = 'global') {
   const nextFingerprint = fingerprint(next);
   const now = Date.now();
 
-  if (banner.value && fingerprint(banner.value) === nextFingerprint) return;
+  const currentEntry = entries.get(sourceKey);
+  if (currentEntry && fingerprint(currentEntry.state) === nextFingerprint) return;
 
   if (
     lastDismissedFingerprint === nextFingerprint &&
@@ -27,7 +42,8 @@ export function showBackendStatusBanner(next: BackendStatusBannerState) {
     return;
   }
 
-  banner.value = next;
+  entries.set(sourceKey, { state: next, order: ++entryOrder });
+  refreshVisibleBanner();
 }
 
 function dismissBackendStatusBanner() {
@@ -36,11 +52,13 @@ function dismissBackendStatusBanner() {
     lastDismissedAt = Date.now();
   }
 
-  banner.value = null;
+  if (visibleSourceKey) entries.delete(visibleSourceKey);
+  refreshVisibleBanner();
 }
 
-export function clearBackendStatusBanner() {
-  banner.value = null;
+export function clearBackendStatusBanner(sourceKey = 'global') {
+  if (!entries.delete(sourceKey)) return;
+  refreshVisibleBanner();
 }
 
 export function useBackendStatusBanner() {

@@ -31,7 +31,7 @@
                 </button>
               </div>
 
-              <p v-if="loading" class="muted">Loading…</p>
+              <InitialRoutePlaceholder v-if="loading" />
               <div v-else-if="toolTypeOptions.length" class="type-filter-list" aria-label="Filter by type">
                 <button
                   type="button"
@@ -73,7 +73,7 @@
               </label>
             </section>
 
-            <p v-if="loading" class="muted">Loading…</p>
+            <InitialRoutePlaceholder v-if="loading" />
             <p v-else-if="error" class="error-text">{{ error }}</p>
 
             <section v-else class="card stack">
@@ -144,7 +144,7 @@
           </div>
         </div>
 
-        <p v-if="loading" class="muted">Loading…</p>
+        <InitialRoutePlaceholder v-if="loading" />
         <div v-else-if="toolTypeOptions.length" class="type-filter-list" aria-label="Filter by type">
           <button
             type="button"
@@ -196,6 +196,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';

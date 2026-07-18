@@ -102,6 +102,16 @@ describe('API response timeout', () => {
     expect(bodyStartCount).toBe(2);
   });
 
+  it('leaves default GET retrying to the outer recovery owner', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(
+      api.get('/api/test', { showErrorBanner: false })
+    ).rejects.toThrow('Failed to fetch');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates an external abort while reading the response body without retrying', async () => {
     const controller = new AbortController();
     let notifyBodyStarted!: () => void;

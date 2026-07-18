@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0c0f14" media="(prefers-color-scheme: dark)" />
+    <title>Intellectual Club</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --background: #f5f7fa;
+        --surface: #ffffff;
+        --border: #d9dee7;
+        --text: #172033;
+        --muted: #667085;
+        --accent: #2563eb;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: #0c0f14;
+          --surface: #141922;
+          --border: #2b3442;
+          --text: #eef2f8;
+          --muted: #aab3c2;
+          --accent: #7aa2ff;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--text);
+        font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+
+      .offline-header {
+        display: flex;
+        min-height: 58px;
+        align-items: center;
+        gap: 10px;
+        padding: 10px max(16px, env(safe-area-inset-left));
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .offline-logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+      }
+
+      .offline-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 650;
+      }
+
+      .offline-main {
+        width: min(680px, calc(100% - 32px));
+        margin: 28px auto;
+      }
+
+      .offline-status {
+        display: grid;
+        gap: 14px;
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+      }
+
+      .offline-status h1,
+      .offline-status p {
+        margin: 0;
+      }
+
+      .offline-status h1 {
+        font-size: 1.05rem;
+      }
+
+      .offline-status p {
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .offline-progress {
+        position: relative;
+        height: 4px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+      }
+
+      .offline-progress::after {
+        position: absolute;
+        inset: 0;
+        width: 38%;
+        border-radius: inherit;
+        background: var(--accent);
+        content: "";
+        animation: offline-progress 1.4s ease-in-out infinite;
+      }
+
+      @keyframes offline-progress {
+        from {
+          transform: translateX(-110%);
+        }
+
+        to {
+          transform: translateX(290%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .offline-progress::after {
+          width: 100%;
+          opacity: 0.55;
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="offline-header">
+      <img class="offline-logo" src="/favicon.png" alt="" width="34" height="34" />
+      <p class="offline-title">Intellectual Club</p>
+    </header>
+    <main class="offline-main">
+      <section class="offline-status" role="status" aria-live="polite" aria-atomic="true">
+        <h1 id="offline-heading">Connection interrupted</h1>
+        <p id="offline-copy">
+          The application will continue automatically as soon as the server is available.
+        </p>
+        <div
+          class="offline-progress"
+          role="progressbar"
+          aria-label="Waiting for connection"
+        ></div>
+      </section>
+    </main>
+    <script>
+      (() => {
+        const translations = {
+          en: {
+            heading: "Connection interrupted",
+            copy: "The application will continue automatically as soon as the server is available.",
+            progress: "Waiting for connection",
+          },
+          ru: {
+            heading: "Соединение прервано",
+            copy: "Приложение продолжит загрузку автоматически, как только сервер станет доступен.",
+            progress: "Ожидание соединения",
+          },
+        };
+        const locale = (navigator.language || "en").toLowerCase().startsWith("ru") ? "ru" : "en";
+        const strings = translations[locale];
+        const targetUrl = window.location.href;
+        const reloadGuardKey = "intellectual-club:pwa:offline-reload";
+        const reloadGuardStateKey = "__icPwaOfflineReload";
+        const probeTimeoutMs = 2_500;
+        const retryDelaysMs = [1_000, 2_000, 3_000, 5_000, 10_000, 20_000, 30_000];
+        let attempt = 0;
+        let retryTimer = null;
+        let probing = false;
+        let memoryReloadGuard = "";
+        let activeProbeController = null;
+        let resumeProbeImmediately = false;
+
+        document.documentElement.lang = locale;
+        document.getElementById("offline-heading").textContent = strings.heading;
+        document.getElementById("offline-copy").textContent = strings.copy;
+        document.querySelector(".offline-progress").setAttribute("aria-label", strings.progress);
+
+        const isDocumentVisible = () => document.visibilityState !== "hidden";
+
+        const clearRetryTimer = () => {
+          if (retryTimer === null) return;
+          window.clearTimeout(retryTimer);
+          retryTimer = null;
+        };
+
+        const fetchWithTimeout = async (url, options, sourceSignal) => {
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), probeTimeoutMs);
+          const forwardAbort = () => controller.abort(sourceSignal.reason);
+
+          if (sourceSignal.aborted) {
+            forwardAbort();
+          } else {
+            sourceSignal.addEventListener("abort", forwardAbort, { once: true });
+          }
+
+          try {
+            return await fetch(url, { ...options, signal: controller.signal });
+          } finally {
+            window.clearTimeout(timer);
+            sourceSignal.removeEventListener("abort", forwardAbort);
+          }
+        };
+
+        const readSessionGuard = () => {
+          try {
+            return window.sessionStorage.getItem(reloadGuardKey) || "";
+          } catch (_error) {
+            // History state and the in-memory guard remain available.
+          }
+
+          return "";
+        };
+
+        const readHistoryGuard = () => {
+          try {
+            const state =
+              window.history.state && typeof window.history.state === "object"
+                ? window.history.state
+                : {};
+            const guard = state[reloadGuardStateKey];
+            return typeof guard === "string" ? guard : "";
+          } catch (_error) {
+            // The in-memory guard remains available.
+          }
+
+          return "";
+        };
+
+        const canReload = (buildId) => {
+          if (
+            readSessionGuard() === buildId ||
+            readHistoryGuard() === buildId ||
+            memoryReloadGuard === buildId
+          ) {
+            return false;
+          }
+
+          try {
+            window.sessionStorage.setItem(reloadGuardKey, buildId);
+          } catch (_error) {
+            // History state and the in-memory guard remain available.
+          }
+
+          try {
+            const state =
+              window.history.state && typeof window.history.state === "object"
+                ? window.history.state
+                : {};
+            window.history.replaceState(
+              { ...state, [reloadGuardStateKey]: buildId },
+              "",
+              window.location.href
+            );
+          } catch (_error) {
+            // The in-memory guard remains available.
+          }
+
+          memoryReloadGuard = buildId;
+          return true;
+        };
+
+        const remoteBuildId = async (signal) => {
+          try {
+            const versionUrl = new URL("/assets/code-version.json", window.location.origin);
+            versionUrl.searchParams.set("_", String(Date.now()));
+            const response = await fetchWithTimeout(versionUrl.href, {
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                Accept: "application/json",
+                "X-IC-Recovery-Probe": "1",
+              },
+            }, signal);
+            if (!response.ok) return "unknown";
+
+            const version = await response.json();
+            return typeof version?.label === "string" && version.label
+              ? version.label.slice(0, 256)
+              : "unknown";
+          } catch (_error) {
+            return "unknown";
+          }
+        };
+
+        const scheduleProbe = () => {
+          clearRetryTimer();
+          if (!isDocumentVisible()) return;
+
+          const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
+          attempt += 1;
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            void probe();
+          }, delay);
+        };
+
+        const probe = async () => {
+          if (probing || !isDocumentVisible()) return;
+
+          const probeController = new AbortController();
+          probing = true;
+          activeProbeController = probeController;
+          let restartImmediately = false;
+
+          try {
+            const health = await fetchWithTimeout("/health", {
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                Accept: "text/plain",
+                "X-IC-Recovery-Probe": "1",
+              },
+            }, probeController.signal);
+
+            if (!health.ok) throw new Error("Health check failed.");
+
+            const navigation = await fetchWithTimeout(targetUrl, {
+              cache: "no-store",
+              credentials: "same-origin",
+              redirect: "follow",
+              headers: {
+                Accept: "text/html",
+                "X-IC-Recovery-Probe": "1",
+              },
+            }, probeController.signal);
+
+            if (!navigation.ok) throw new Error("Navigation probe failed.");
+
+            const buildId = await remoteBuildId(probeController.signal);
+            if (canReload(buildId)) {
+              window.location.reload();
+              return;
+            }
+          } catch (_error) {
+            // The retry schedule is the user-visible recovery mechanism.
+          } finally {
+            if (activeProbeController === probeController) {
+              activeProbeController = null;
+            }
+            probing = false;
+            restartImmediately = resumeProbeImmediately && isDocumentVisible();
+            resumeProbeImmediately = false;
+          }
+
+          if (restartImmediately) {
+            void probe();
+            return;
+          }
+
+          scheduleProbe();
+        };
+
+        const resumeProbe = () => {
+          clearRetryTimer();
+          attempt = 0;
+          if (!isDocumentVisible()) return;
+
+          if (probing) {
+            resumeProbeImmediately = true;
+            activeProbeController?.abort();
+            return;
+          }
+
+          void probe();
+        };
+
+        window.addEventListener("online", () => {
+          resumeProbe();
+        });
+        window.addEventListener("pageshow", resumeProbe);
+        document.addEventListener("visibilitychange", () => {
+          if (!isDocumentVisible()) {
+            clearRetryTimer();
+            resumeProbeImmediately = false;
+            activeProbeController?.abort();
+            return;
+          }
+
+          resumeProbe();
+        });
+
+        void probe();
+      })();
+    </script>
+  </body>
+</html>

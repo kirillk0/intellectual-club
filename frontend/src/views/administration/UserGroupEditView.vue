@@ -1,5 +1,5 @@
 <template>
-  <div v-if="loaded" class="stack">
+  <div class="stack">
     <CrudHeader
       title="User group"
       :dirty="headerDirty"
@@ -26,8 +26,6 @@
     />
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
-      <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
-
       <div class="card stack">
         <div v-if="saveFormErrors.length" class="error-text">{{ saveFormErrors.join(' ') }}</div>
 
@@ -72,7 +70,6 @@
     </fieldset>
   </div>
 
-  <p v-else class="muted">Loading…</p>
 </template>
 
 <script setup lang="ts">

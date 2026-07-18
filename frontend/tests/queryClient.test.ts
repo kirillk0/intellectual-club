@@ -30,4 +30,25 @@ describe('server-state query invalidation', () => {
 
     await expect(invalidateServerStateQueries()).resolves.toBeUndefined();
   });
+
+  it('retries only transient reads and honors Retry-After', () => {
+    const options = serverStateQueryClient.getDefaultOptions().queries;
+    const retry = options?.retry as (failureCount: number, error: unknown) => boolean;
+    const retryDelay = options?.retryDelay as (
+      failureCount: number,
+      error: unknown
+    ) => number;
+
+    expect(retry(0, new TypeError('Failed to fetch'))).toBe(true);
+    expect(retry(0, { name: 'HttpError', status: 503 })).toBe(true);
+    expect(retry(0, { name: 'HttpError', status: 404 })).toBe(false);
+    expect(retry(0, new Error('Programming error'))).toBe(false);
+    expect(
+      retryDelay(0, {
+        name: 'HttpError',
+        status: 503,
+        retryAfter: '4',
+      })
+    ).toBe(4_000);
+  });
 });

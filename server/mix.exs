@@ -112,6 +112,8 @@ defmodule IntellectualClub.MixProject do
       ],
       "spa.setup": ["cmd --cd ../frontend npm install"],
       "spa.build": ["cmd --cd ../frontend npm run build"],
+      "pwa.finalize.dev": ["cmd --cd ../frontend npm run pwa:finalize:dev"],
+      "pwa.finalize.prod": ["cmd --cd ../frontend npm run pwa:finalize:prod"],
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",
@@ -121,13 +123,15 @@ defmodule IntellectualClub.MixProject do
         "compile",
         "tailwind intellectual_club",
         "esbuild intellectual_club",
-        "spa.build"
+        "spa.build",
+        "pwa.finalize.dev"
       ],
       "assets.deploy": [
         "tailwind intellectual_club --minify",
         "esbuild intellectual_club --minify",
         "spa.build",
-        "phx.digest"
+        "phx.digest",
+        "pwa.finalize.prod"
       ],
       "picosat.sync": &sync_picosat/1,
       precommit: [

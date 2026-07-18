@@ -55,10 +55,13 @@
       </div>
     </section>
 
-    <p v-if="loading" class="muted">{{ translate('Loading…') }}</p>
+    <InitialRoutePlaceholder v-if="loading" />
     <p v-else-if="error" class="error-text">{{ error }}</p>
 
-    <section v-else class="card stack usage-table-card">
+    <section
+      v-if="!loading && (!error || rows.length > 0 || users.length > 0)"
+      class="card stack usage-table-card"
+    >
       <div class="usage-table-meta">
         <span>{{ fromDate }} – {{ toDate }}</span>
         <span>{{ translate('Configurations: {count}', { count: visibleRows.length }) }}</span>
@@ -112,7 +115,10 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
+import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { translate } from '@/i18n';
 
@@ -202,6 +208,11 @@ const error = ref<string | null>(null);
 const users = ref<UsageUser[]>([]);
 const rows = ref<UsageRow[]>([]);
 const visibleMetricIds = ref<UsageMetricId[]>(loadVisibleMetricIds());
+const usageRead = useRecoverableRead<UsagePayload>({
+  key: () => `llm-usage:${fromDate.value}:${toDate.value}`,
+  stage: 'data',
+  startedAt: startupLoadStartedAt,
+});
 
 const emptyCell: UsageCell = {
   message_count: 0,
@@ -404,16 +415,25 @@ function normalizePayload(payload: UsagePayload) {
 async function loadUsage() {
   if (!fromDate.value || !toDate.value) return;
 
-  loading.value = true;
+  loading.value = users.value.length === 0 && rows.value.length === 0;
   error.value = null;
 
   try {
     const params = new URLSearchParams();
     params.set('from', fromDate.value);
     params.set('to', toDate.value);
-    const payload = await api.get<UsagePayload>(`/api/bff/llm-usage?${params.toString()}`);
+    const payload = await usageRead.run(
+      ({ signal }) =>
+        api.get<UsagePayload>(`/api/bff/llm-usage?${params.toString()}`, {
+          retry: false,
+          showErrorBanner: false,
+          signal,
+        }),
+      { restart: true }
+    );
     normalizePayload(payload);
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') return;
     console.error(e);
     error.value = getApiErrorMessage(e, 'Failed to load usage.');
   } finally {

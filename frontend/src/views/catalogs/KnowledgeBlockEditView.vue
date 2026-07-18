@@ -1,5 +1,5 @@
 <template>
-  <div v-if="loaded" class="stack">
+  <div class="stack">
     <CrudHeader
       title="Knowledge Block"
       :dirty="headerDirty"
@@ -28,8 +28,6 @@
     <KnowledgeBlockReadonlyBanner v-if="sharedReadonly" />
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
-      <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
-
       <KnowledgeBlockMainFields
         v-model:name="form.name"
         v-model:version="form.version"
@@ -97,7 +95,6 @@
     </fieldset>
   </div>
 
-  <p v-else class="muted">Loading…</p>
 </template>
 
 <script setup lang="ts">

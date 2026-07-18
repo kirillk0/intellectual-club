@@ -3,7 +3,16 @@ import path from 'node:path';
 
 import vue from '@vitejs/plugin-vue';
 import svgLoader from 'vite-svg-loader';
-import { defineConfig, type PluginOption } from 'vite';
+import {
+  defineConfig,
+  type OutputBundle,
+  type PluginOption,
+} from 'vite';
+import {
+  buildPwaBundleDescriptor,
+  validateCriticalEntry,
+} from './scripts/pwa-bundle-graph.mjs';
+import { finalizePwaManifest } from './scripts/finalize-pwa-manifest.mjs';
 
 type CodeVersion = {
   commit_timestamp: string;
@@ -34,6 +43,43 @@ const codeVersionPlugin = (codeVersion: CodeVersion): PluginOption => ({
   },
 });
 
+const pwaBundleDescriptorPlugin = (
+  finalizeDevelopmentManifest: boolean
+): PluginOption => ({
+  name: 'pwa-bundle-descriptor',
+  generateBundle(_options, bundle: OutputBundle) {
+    let descriptor;
+
+    try {
+      descriptor = buildPwaBundleDescriptor(bundle);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
+    this.emitFile({
+      type: 'asset',
+      fileName: 'pwa-bundle-descriptor.json',
+      source: `${JSON.stringify(descriptor, null, 2)}\n`,
+    });
+  },
+  writeBundle() {
+    if (!finalizeDevelopmentManifest) return;
+    finalizePwaManifest({ mode: 'dev' });
+  },
+});
+
+const criticalEntryBudgetPlugin = (): PluginOption => ({
+  name: 'critical-entry-budget',
+  generateBundle(_options, bundle: OutputBundle) {
+    try {
+      validateCriticalEntry(bundle);
+    } catch (error) {
+      this.error(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
 export default defineConfig(({ mode }) => {
   const isProd = mode === 'production';
   const codeVersion = buildCodeVersion();
@@ -41,6 +87,8 @@ export default defineConfig(({ mode }) => {
   const spaGeneratedPaths = [
     path.join(spaAssetsDir, 'assets'),
     path.join(spaAssetsDir, 'code-version.json'),
+    path.join(spaAssetsDir, 'pwa-bundle-descriptor.json'),
+    path.join(spaAssetsDir, 'pwa-precache-manifest.js'),
     path.join(spaAssetsDir, 'css/spa.css'),
     path.join(spaAssetsDir, 'css/spa.css.gz'),
     path.join(spaAssetsDir, 'css/spa.css.map'),
@@ -65,6 +113,8 @@ export default defineConfig(({ mode }) => {
       vue(),
       svgLoader({ defaultImport: 'component' }),
       codeVersionPlugin(codeVersion),
+      pwaBundleDescriptorPlugin(mode === 'development'),
+      criticalEntryBudgetPlugin(),
     ],
     resolve: {
       alias: {

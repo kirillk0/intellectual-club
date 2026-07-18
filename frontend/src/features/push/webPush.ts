@@ -1,8 +1,11 @@
-import { api } from '@/api/client';
+import { api, type ApiRequestOptions } from '@/api/client';
+import {
+  getServiceWorkerRegistration,
+  postServiceWorkerMessage as postPwaServiceWorkerMessage,
+  type PwaServiceWorkerMessage,
+} from '@/features/pwa/serviceWorker';
 import { isStandalonePwa } from '@/pwa';
 
-const SERVICE_WORKER_PATH = '/service-worker.js';
-const SERVICE_WORKER_SCOPE = '/';
 const LOCAL_KEY_REVISION = 'intellectual-club:web-push:key-revision';
 const SESSION_CLIENT_ID = 'intellectual-club:web-push:client-id';
 const ACTIVE_CHAT_HEARTBEAT_MS = 20_000;
@@ -29,11 +32,6 @@ type PushSubscriptionJson = {
     auth?: string;
   };
   expirationTime?: number | null;
-};
-
-type ServiceWorkerMessage = {
-  type: string;
-  [key: string]: unknown;
 };
 
 let activeWebPushChatId: number | null = null;
@@ -75,8 +73,12 @@ export const webPushSupportState = (): WebPushSupportState => {
   return { supported: true, reason: null, permission, standalone, ios };
 };
 
-export const loadWebPushConfig = () =>
-  api.get<WebPushClientConfig>('/api/bff/web-push/config', { showErrorBanner: false });
+export const loadWebPushConfig = (options: ApiRequestOptions = {}) =>
+  api.get<WebPushClientConfig>('/api/bff/web-push/config', {
+    ...options,
+    retry: options.retry ?? false,
+    showErrorBanner: false,
+  });
 
 const getStoredKeyRevision = () => {
   try {
@@ -173,12 +175,7 @@ const normalizeGenerationStatus = (status: string | null | undefined) =>
   status === 'done' || status === 'error' ? status : null;
 
 export const getWebPushRegistration = async () => {
-  if (!('serviceWorker' in navigator)) return null;
-
-  const existing = await navigator.serviceWorker.getRegistration(SERVICE_WORKER_SCOPE);
-  if (existing) return existing;
-
-  return navigator.serviceWorker.register(SERVICE_WORKER_PATH, { scope: SERVICE_WORKER_SCOPE });
+  return getServiceWorkerRegistration();
 };
 
 export const currentWebPushSubscription = async () => {
@@ -217,12 +214,10 @@ const deleteSubscriptionOnServer = async (endpoint: string) => {
   await api.del(`/api/bff/web-push/subscriptions?${query.toString()}`, { showErrorBanner: false });
 };
 
-const postServiceWorkerMessage = async (message: ServiceWorkerMessage) => {
+const postServiceWorkerMessage = async (message: PwaServiceWorkerMessage) => {
   if (!('serviceWorker' in navigator)) return;
 
-  const registration = await getWebPushRegistration().catch(() => null);
-  const worker = navigator.serviceWorker.controller || registration?.active || null;
-  worker?.postMessage(message);
+  await postPwaServiceWorkerMessage(message).catch(() => undefined);
 };
 
 const sendWebPushClientState = async (chatId: number, visible: boolean) => {

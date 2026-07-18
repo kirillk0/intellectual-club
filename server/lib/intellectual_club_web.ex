@@ -19,10 +19,10 @@ defmodule IntellectualClubWeb do
 
   def static_paths,
     do:
-      ~w(assets fonts images apple-touch-icon.png favicon.ico favicon.png manifest.webmanifest robots.txt service-worker.js)
+      ~w(assets fonts images pwa apple-touch-icon.png favicon.ico favicon.png manifest.webmanifest robots.txt service-worker.js)
 
   def static_root_path_prefixes,
-    do: ~w(apple-touch-icon favicon manifest robots service-worker)
+    do: ~w(apple-touch-icon favicon manifest pwa robots service-worker)
 
   def router do
     quote do

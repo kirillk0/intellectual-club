@@ -62,7 +62,7 @@
               <p v-if="transferError" class="error-text transfer-message">{{ transferError }}</p>
             </section>
 
-            <p v-if="loading" class="muted">Loading…</p>
+            <InitialRoutePlaceholder v-if="loading" />
             <p v-else-if="error" class="error-text">{{ error }}</p>
 
             <section v-else class="card stack">
@@ -176,6 +176,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { getApiErrorMessage } from '@/api/client';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import KnowledgeBlocksMarkdownExportModal from '@/components/KnowledgeBlocksMarkdownExportModal.vue';
 import KnowledgeBlocksMarkdownImportModal from '@/components/KnowledgeBlocksMarkdownImportModal.vue';

@@ -29,34 +29,41 @@
       <meta name="apple-mobile-web-app-status-bar-style" content="default" />
       <link rel="manifest" href={~p"/manifest.webmanifest"} />
       <link rel="apple-touch-icon" href={~p"/apple-touch-icon.png"} />
+      <meta
+        name="ic-build-id"
+        content={tracked_asset_path(~p"/assets/js/spa.js")}
+      />
       <style phx-no-curly-interpolation>
         :root {
-          --spa-boot-bg: #ffffff;
-          --spa-boot-text: #666666;
-          --spa-boot-primary: #111111;
-          --spa-boot-primary-hover: #1f2937;
-          --spa-boot-primary-contrast: #ffffff;
+          --spa-shell-bg: #ffffff;
+          --spa-shell-surface: #ffffff;
+          --spa-shell-border: #eeeeee;
+          --spa-shell-text: #111111;
+          --spa-shell-text-muted: #666666;
+          --spa-shell-accent: #2563eb;
           color-scheme: light;
-          background: var(--spa-boot-bg);
+          background: var(--spa-shell-bg);
         }
 
         @media (prefers-color-scheme: dark) {
           :root:not([data-theme='light']) {
-            --spa-boot-bg: #0c0f14;
-            --spa-boot-text: #aab3c2;
-            --spa-boot-primary: #f8fafc;
-            --spa-boot-primary-hover: #dbe3ef;
-            --spa-boot-primary-contrast: #0c0f14;
+            --spa-shell-bg: #0c0f14;
+            --spa-shell-surface: #171b22;
+            --spa-shell-border: #303846;
+            --spa-shell-text: #e7eaf0;
+            --spa-shell-text-muted: #aab3c2;
+            --spa-shell-accent: #7aa7ff;
             color-scheme: dark;
           }
         }
 
         :root[data-theme='dark'] {
-          --spa-boot-bg: #0c0f14;
-          --spa-boot-text: #aab3c2;
-          --spa-boot-primary: #f8fafc;
-          --spa-boot-primary-hover: #dbe3ef;
-          --spa-boot-primary-contrast: #0c0f14;
+          --spa-shell-bg: #0c0f14;
+          --spa-shell-surface: #171b22;
+          --spa-shell-border: #303846;
+          --spa-shell-text: #e7eaf0;
+          --spa-shell-text-muted: #aab3c2;
+          --spa-shell-accent: #7aa7ff;
           color-scheme: dark;
         }
 
@@ -68,76 +75,182 @@
 
         body {
           margin: 0;
-          background: var(--spa-boot-bg);
-          color: var(--spa-boot-text);
+          background: var(--spa-shell-bg);
+          color: var(--spa-shell-text);
           font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
 
-        .spa-boot {
-          position: fixed;
-          inset: 0;
-          z-index: 1000;
-          display: grid;
-          place-items: center;
-          box-sizing: border-box;
-          padding: 24px;
-          background: var(--spa-boot-bg);
-          color: var(--spa-boot-text);
+        .spa-bootstrap-shell {
+          min-height: 100dvh;
+          background: var(--spa-shell-bg);
         }
 
-        .spa-boot__content {
-          display: grid;
-          justify-items: center;
+        .spa-bootstrap-header {
+          position: sticky;
+          top: 0;
+          z-index: 20;
+          display: flex;
+          min-height: 52px;
+          align-items: center;
           gap: 12px;
+          box-sizing: border-box;
+          padding: 8px max(16px, env(safe-area-inset-right))
+            8px max(16px, env(safe-area-inset-left));
+          border-bottom: 1px solid var(--spa-shell-border);
+          background: var(--spa-shell-surface);
         }
 
-        .spa-boot__status {
-          margin: 0;
-        }
-
-        .spa-boot .spa-boot__reload {
+        .spa-bootstrap-brand {
           display: inline-flex;
           align-items: center;
-          justify-content: center;
-          gap: 8px;
-          padding: 6px 10px;
-          border: 1px solid var(--spa-boot-primary);
-          border-radius: 6px;
-          background: var(--spa-boot-primary);
-          color: var(--spa-boot-primary-contrast);
-          font: inherit;
-          cursor: pointer;
+          gap: 9px;
+          color: var(--spa-shell-text);
+          font-size: 15px;
+          font-weight: 650;
         }
 
-        .spa-boot .spa-boot__reload:hover {
-          border-color: var(--spa-boot-primary-hover);
-          background: var(--spa-boot-primary-hover);
+        .spa-bootstrap-brand img {
+          width: 28px;
+          height: 28px;
+          border-radius: 7px;
         }
 
-        .spa-boot .spa-boot__reload--pending {
-          opacity: 0.78;
-          cursor: wait;
+        .spa-bootstrap-header-spacer {
+          flex: 1;
         }
 
-        .spa-boot .spa-boot__reload--pending::before {
-          width: 0.85em;
-          height: 0.85em;
+        .spa-bootstrap-main {
+          display: grid;
+          grid-template-columns: minmax(176px, 220px) minmax(0, 1fr);
+          gap: 20px;
           box-sizing: border-box;
-          border: 2px solid currentColor;
-          border-right-color: transparent;
-          border-radius: 50%;
-          content: '';
-          animation: spa-boot-spin 0.7s linear infinite;
+          width: min(1180px, 100%);
+          margin: 0 auto;
+          padding: 20px max(16px, env(safe-area-inset-right))
+            max(20px, env(safe-area-inset-bottom))
+            max(16px, env(safe-area-inset-left));
         }
 
-        @keyframes spa-boot-spin {
-          to {
-            transform: rotate(360deg);
+        .spa-bootstrap-panel {
+          min-width: 0;
+          min-height: 320px;
+          border: 1px solid var(--spa-shell-border);
+          border-radius: 12px;
+          background: var(--spa-shell-surface);
+        }
+
+        .spa-bootstrap-sidebar {
+          display: grid;
+          align-content: start;
+          gap: 14px;
+          padding: 16px;
+        }
+
+        .spa-bootstrap-content {
+          min-height: min(620px, calc(100dvh - 94px));
+          overflow: hidden;
+        }
+
+        .spa-bootstrap-toolbar {
+          display: flex;
+          min-height: 52px;
+          align-items: center;
+          gap: 10px;
+          padding: 0 16px;
+          border-bottom: 1px solid var(--spa-shell-border);
+        }
+
+        .spa-bootstrap-content-body {
+          min-height: calc(100% - 53px);
+        }
+
+        .spa-bootstrap-status {
+          position: fixed;
+          top: calc(52px + env(safe-area-inset-top, 0px));
+          right: 12px;
+          left: 12px;
+          z-index: 30;
+          display: grid;
+          max-width: 720px;
+          gap: 8px;
+          box-sizing: border-box;
+          margin: 8px auto 0;
+          padding: 10px 12px;
+          border: 1px solid var(--spa-shell-border);
+          border-radius: 10px;
+          background: var(--spa-shell-surface);
+          background: color-mix(in srgb, var(--spa-shell-surface) 94%, transparent);
+          box-shadow: 0 8px 24px rgb(0 0 0 / 10%);
+          color: var(--spa-shell-text-muted);
+          font-size: 13px;
+          pointer-events: none;
+          backdrop-filter: blur(12px);
+        }
+
+        .spa-bootstrap-status[hidden] {
+          display: none;
+        }
+
+        .spa-bootstrap-status-copy {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .spa-bootstrap-status-dot {
+          width: 8px;
+          height: 8px;
+          flex: 0 0 auto;
+          border-radius: 50%;
+          background: var(--spa-shell-accent);
+          animation: spa-bootstrap-pulse 1.4s ease-in-out infinite;
+        }
+
+        .spa-bootstrap-steps {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .spa-bootstrap-step {
+          overflow: hidden;
+          padding-top: 5px;
+          border-top: 3px solid var(--spa-shell-border);
+          color: var(--spa-shell-text-muted);
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .spa-bootstrap-step.is-active,
+        .spa-bootstrap-step.is-complete {
+          border-top-color: var(--spa-shell-accent);
+          color: var(--spa-shell-text);
+        }
+
+        @keyframes spa-bootstrap-pulse {
+          50% {
+            opacity: 0.38;
+          }
+        }
+
+        @media (max-width: 720px) {
+          .spa-bootstrap-sidebar {
+            display: none;
+          }
+
+          .spa-bootstrap-main {
+            grid-template-columns: minmax(0, 1fr);
+            padding-top: 12px;
+          }
+
+          .spa-bootstrap-content {
+            min-height: calc(100dvh - 80px);
           }
         }
 
         @media (prefers-reduced-motion: reduce) {
-          .spa-boot .spa-boot__reload--pending::before {
+          .spa-bootstrap-status-dot {
             animation: none;
           }
         }
@@ -167,6 +280,341 @@
       </script>
     <% end %>
     <%= if assigns[:spa] do %>
+      <script phx-no-curly-interpolation>
+        (() => {
+          const stages = ['runtime', 'route', 'data', 'ready'];
+          const buildId =
+            document.querySelector('meta[name="ic-build-id"]')?.getAttribute('content') || '';
+          const state = {
+            buildId,
+            startAt:
+              typeof performance === 'object' && typeof performance.timeOrigin === 'number'
+                ? performance.timeOrigin
+                : Date.now(),
+            stage: 'runtime',
+            delayed: false,
+            online: navigator.onLine,
+            attempt: 0,
+            error: !navigator.onLine,
+          };
+          const recoveryDelays = [0, 500, 1500, 3000, 5000, 10000];
+          const reloadGuardKey = 'ic:bootstrap-reload';
+          const historyReloadGuardKey = '__icBootstrapReload';
+          let recoveryTimer = null;
+          let recoveryAttempt = 0;
+          let recoveryRunning = false;
+          let memoryReloadId = '';
+
+          const shellIsVisible = () =>
+            document.getElementById('spa-bootstrap-shell')?.isConnected === true;
+          const documentIsVisible = () => document.visibilityState !== 'hidden';
+
+          const snapshot = () => ({ ...state });
+
+          const render = () => {
+            const status = document.getElementById('spa-bootstrap-status');
+            if (!status) return;
+
+            const visible = state.delayed && state.stage !== 'ready';
+            status.hidden = !visible;
+            if (!visible) return;
+
+            const message = status.querySelector('[data-bootstrap-message]');
+            if (message) {
+              const preparing = status.dataset.messagePreparing || '';
+              const offline = status.dataset.messageOffline || preparing;
+              const retrying = status.dataset.messageRetrying || preparing;
+              const attemptLabel = status.dataset.attemptLabel || '';
+              const copy = !state.online ? offline : state.error ? retrying : preparing;
+              message.textContent =
+                state.attempt > 0 && attemptLabel
+                  ? `${copy} · ${attemptLabel} ${state.attempt}`
+                  : copy;
+            }
+
+            const progress = status.querySelector('[role="progressbar"]');
+            const activeStage = Math.max(0, stages.indexOf(state.stage));
+            if (progress) {
+              progress.setAttribute('aria-valuenow', String(Math.min(activeStage + 1, 3)));
+            }
+
+            status.querySelectorAll('[data-bootstrap-step]').forEach((step, index) => {
+              step.classList.toggle('is-complete', index < activeStage);
+              step.classList.toggle('is-active', index === activeStage);
+            });
+          };
+
+          const dispatch = () => {
+            document.documentElement.dataset.bootstrapStage = state.stage;
+            render();
+            window.dispatchEvent(
+              new CustomEvent('ic:bootstrap-state', { detail: snapshot() })
+            );
+          };
+
+          const update = (patch = {}) => {
+            const nextStage =
+              typeof patch.stage === 'string' && stages.includes(patch.stage)
+                ? patch.stage
+                : state.stage;
+            if (nextStage === 'ready') {
+              memoryReloadId = '';
+              try {
+                sessionStorage.removeItem(reloadGuardKey);
+              } catch (_error) {
+                // The in-memory guard is enough when session storage is unavailable.
+              }
+              try {
+                const nextHistoryState = { ...(window.history.state || {}) };
+                delete nextHistoryState[historyReloadGuardKey];
+                window.history.replaceState(
+                  nextHistoryState,
+                  '',
+                  window.location.href
+                );
+              } catch (_error) {
+                // The storage and in-memory guards remain available.
+              }
+            }
+            Object.assign(state, patch, {
+              buildId: state.buildId,
+              startAt: state.startAt,
+              stage: nextStage,
+            });
+            dispatch();
+            return snapshot();
+          };
+
+          const api = {
+            update,
+            snapshot,
+            markReady: () => update({ stage: 'ready', error: false }),
+          };
+
+          for (const key of ['buildId', 'startAt', 'stage', 'delayed', 'online', 'attempt']) {
+            Object.defineProperty(api, key, {
+              enumerable: true,
+              get: () => state[key],
+            });
+          }
+
+          window.__IC_BOOTSTRAP__ = api;
+          window.__IC_SERVICE_WORKER_REGISTRATION__ =
+            'serviceWorker' in navigator
+              ? navigator.serviceWorker
+                  .register(
+                    `/service-worker.js?build=${encodeURIComponent(state.buildId)}`,
+                    {
+                      scope: '/',
+                      updateViaCache: 'none',
+                    }
+                  )
+                  .catch((error) => {
+                    console.warn('Service worker registration failed.', error);
+                    return null;
+                  })
+              : Promise.resolve(null);
+
+          const fetchWithTimeout = async (url, options = {}, timeoutMs = 5000) => {
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+              return await fetch(url, { ...options, signal: controller.signal });
+            } finally {
+              window.clearTimeout(timeout);
+            }
+          };
+
+          const probeCurrentDocument = async () => {
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.set('_ic_recovery_probe', String(Date.now()));
+              const response = await fetchWithTimeout(
+                url.href,
+                {
+                  cache: 'no-store',
+                  credentials: 'same-origin',
+                  headers: {
+                    Accept: 'text/html',
+                    'X-IC-Recovery-Probe': 'bootstrap',
+                  },
+                },
+                7000
+              );
+              return response.ok;
+            } catch (_error) {
+              return false;
+            }
+          };
+
+          const remoteBuildId = async () => {
+            try {
+              const url = new URL('/assets/code-version.json', window.location.origin);
+              url.searchParams.set('_', String(Date.now()));
+              const response = await fetchWithTimeout(
+                url.href,
+                {
+                  cache: 'no-store',
+                  credentials: 'same-origin',
+                  headers: { Accept: 'application/json' },
+                },
+                4000
+              );
+              if (!response.ok) return state.buildId;
+              const version = await response.json();
+              return typeof version?.label === 'string' && version.label
+                ? version.label
+                : state.buildId;
+            } catch (_error) {
+              return state.buildId;
+            }
+          };
+
+          const reserveReload = (targetBuildId) => {
+            const reloadId = `${state.buildId}|${targetBuildId}`;
+            const historyReloadId =
+              window.history.state &&
+              typeof window.history.state === 'object' &&
+              typeof window.history.state[historyReloadGuardKey] === 'string'
+                ? window.history.state[historyReloadGuardKey]
+                : '';
+
+            if (historyReloadId === reloadId || memoryReloadId === reloadId) {
+              return false;
+            }
+
+            try {
+              if (sessionStorage.getItem(reloadGuardKey) === reloadId) return false;
+              sessionStorage.setItem(reloadGuardKey, reloadId);
+            } catch (_error) {
+              // History state survives a reload when session storage is unavailable.
+            }
+
+            try {
+              window.history.replaceState(
+                {
+                  ...(window.history.state || {}),
+                  [historyReloadGuardKey]: reloadId,
+                },
+                '',
+                window.location.href
+              );
+            } catch (_error) {
+              // The session and in-memory guards remain available.
+            }
+            memoryReloadId = reloadId;
+            return true;
+          };
+
+          const scheduleRecovery = (immediate = false) => {
+            if (!shellIsVisible() || state.stage === 'ready') return;
+            if (!navigator.onLine || !documentIsVisible()) return;
+            if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+
+            const delay = immediate
+              ? 0
+              : recoveryDelays[Math.min(recoveryAttempt, recoveryDelays.length - 1)];
+            recoveryTimer = window.setTimeout(runRecovery, delay);
+          };
+
+          const runRecovery = async () => {
+            recoveryTimer = null;
+            if (recoveryRunning || !shellIsVisible() || state.stage === 'ready') return;
+            if (!navigator.onLine || !documentIsVisible()) return;
+
+            recoveryRunning = true;
+            recoveryAttempt += 1;
+            update({ online: true, error: true, attempt: recoveryAttempt });
+
+            try {
+              const response = await fetchWithTimeout(
+                `/health?_=${Date.now()}`,
+                {
+                  cache: 'no-store',
+                  credentials: 'same-origin',
+                  headers: { Accept: 'text/plain' },
+                },
+                5000
+              );
+
+              if (response.status === 204) {
+                const documentAvailable = await probeCurrentDocument();
+                if (documentAvailable) {
+                  const targetBuildId = await remoteBuildId();
+                  if (reserveReload(targetBuildId)) {
+                    update({ error: false });
+                    window.location.replace(window.location.href);
+                    return;
+                  }
+                }
+              }
+            } catch (_error) {
+              update({ online: navigator.onLine, error: true });
+            } finally {
+              recoveryRunning = false;
+            }
+
+            scheduleRecovery();
+          };
+
+          const markFailed = () => {
+            if (!shellIsVisible()) return;
+            update({ online: navigator.onLine, error: true });
+            scheduleRecovery(true);
+          };
+
+          window.addEventListener(
+            'error',
+            (event) => {
+              const target = event.target;
+              const failedScript =
+                target instanceof HTMLScriptElement &&
+                (target.type === 'module' || target.src.includes('/assets/js/'));
+              const failedStyle =
+                target instanceof HTMLLinkElement &&
+                target.rel === 'stylesheet' &&
+                target.href.includes('/assets/css/');
+              if (failedScript || failedStyle) markFailed();
+            },
+            true
+          );
+          window.addEventListener('unhandledrejection', markFailed);
+          window.addEventListener('offline', () => {
+            if (!shellIsVisible()) return;
+            update({ online: false, error: true });
+          });
+          window.addEventListener('online', () => {
+            if (!shellIsVisible()) return;
+            update({ online: true });
+            if (state.error) scheduleRecovery(true);
+          });
+          window.addEventListener('focus', () => {
+            if (state.error) scheduleRecovery(true);
+          });
+          window.addEventListener('pageshow', () => {
+            if (state.error) scheduleRecovery(true);
+          });
+          document.addEventListener('visibilitychange', () => {
+            if (!documentIsVisible()) {
+              if (recoveryTimer !== null) {
+                window.clearTimeout(recoveryTimer);
+                recoveryTimer = null;
+              }
+              return;
+            }
+            if (state.error) scheduleRecovery(true);
+          });
+
+          const delayRemaining = Math.max(0, 2000 - (Date.now() - state.startAt));
+          window.setTimeout(() => update({ delayed: true }), delayRemaining);
+          window.setTimeout(() => {
+            if (shellIsVisible() && state.stage === 'runtime') markFailed();
+          }, 15000);
+          document.addEventListener('DOMContentLoaded', render, { once: true });
+          dispatch();
+        })();
+      </script>
       <script
         phx-track-static
         type="module"

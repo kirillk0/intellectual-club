@@ -41,7 +41,7 @@
         </div>
       </section>
 
-      <p v-if="loading" class="muted">Loading…</p>
+      <InitialRoutePlaceholder v-if="loading" />
       <p v-else-if="error" class="error-text">{{ error }}</p>
 
       <section v-else class="card stack">
@@ -79,6 +79,7 @@ import { computed, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { parseImageAsset } from '@/features/media/image';

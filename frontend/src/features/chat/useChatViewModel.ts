@@ -30,6 +30,11 @@ import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
+import {
+  setBootstrapLoadStage,
+  startupLoadStartedAt,
+} from '@/features/app/loadCoordinator';
+import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import type {
   Bot,
@@ -132,6 +137,18 @@ export function useChatViewModel() {
   const loaded = ref(false);
   const loadError = ref('');
   const chatUnavailable = ref(false);
+  const initialChatRead = useRecoverableRead<ChatStatePayload>({
+    key: () => `chat:${chatId.value}`,
+    stage: 'data',
+    label: 'Chat',
+    startedAt: startupLoadStartedAt,
+  });
+  const chatSettingsRead = useRecoverableRead<ChatSettingsStatePayload>({
+    key: () => `chat-settings:${chatId.value}`,
+    stage: 'data',
+    label: 'Chat settings',
+    startedAt: startupLoadStartedAt,
+  });
 
   watch(loaded, (ready) => layer.setReady(ready), { immediate: true });
 
@@ -484,7 +501,6 @@ export function useChatViewModel() {
 
   let chatLoadSeq = 0;
   let chatVisibleLoadSeq = 0;
-  let initialChatLoadAbortController: AbortController | null = null;
   let disposed = false;
 
   const isAbortError = (error: unknown) =>
@@ -499,13 +515,12 @@ export function useChatViewModel() {
     const requestedChatId = chatId.value;
     const seq = mode === 'initial' ? ++chatLoadSeq : chatLoadSeq;
     const visibleSeq = mode === 'initial' ? ++chatVisibleLoadSeq : chatVisibleLoadSeq;
-    const abortController = mode === 'initial' ? new AbortController() : null;
     const isCurrentLoad = () =>
       !disposed && seq === chatLoadSeq && requestedChatId === chatId.value;
 
     if (mode === 'initial') {
-      initialChatLoadAbortController?.abort();
-      initialChatLoadAbortController = abortController;
+      initialChatRead.cancel();
+      chatSettingsRead.cancel();
       loaded.value = false;
       composerRuntime.stopPolling();
       activeGenerationId.value = null;
@@ -519,22 +534,42 @@ export function useChatViewModel() {
     chatUnavailable.value = false;
 
     const settingsRequest = includeSettings
-      ? api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${requestedChatId}/settings`, {
-          showErrorBanner: false,
-          signal: abortController?.signal,
-        })
+      ? chatSettingsRead.run(
+          ({ signal }) =>
+            api.get<ChatSettingsStatePayload>(
+              `/api/bff/chat-state/${requestedChatId}/settings`,
+              {
+                showErrorBanner: false,
+                retry: false,
+                signal,
+              }
+            ),
+          { restart: mode === 'initial' }
+        )
       : null;
 
-    // The settings request starts in parallel but is intentionally not part of the
-    // initial rendering barrier. Attach a handler immediately in case it rejects
-    // before the core chat request settles.
-    void settingsRequest?.catch(() => undefined);
+    void settingsRequest
+      ?.then((settingsPayload) => {
+        if (isCurrentLoad()) applySettingsState(settingsPayload);
+      })
+      .catch((error) => {
+        if (!isCurrentLoad() || isAbortError(error)) return;
+        console.warn('Failed to load secondary chat settings.', error);
+      });
 
     try {
-      const payload = await api.get<ChatStatePayload>(`/api/bff/chat-state/${requestedChatId}`, {
-        showErrorBanner: false,
-        signal: abortController?.signal,
-      });
+      const requestCoreState = ({ signal }: { signal: AbortSignal }) =>
+        api.get<ChatStatePayload>(`/api/bff/chat-state/${requestedChatId}`, {
+          showErrorBanner: false,
+          retry: false,
+          signal,
+        });
+      const payload =
+        mode === 'initial'
+          ? await initialChatRead.run(requestCoreState, { restart: true })
+          : await api.get<ChatStatePayload>(`/api/bff/chat-state/${requestedChatId}`, {
+              showErrorBanner: false,
+            });
 
       if (!isCurrentLoad()) return;
 
@@ -547,6 +582,7 @@ export function useChatViewModel() {
       composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
       loaded.value = true;
+      if (mode === 'initial') setBootstrapLoadStage('ready');
       setActiveWebPushChat(requestedChatId);
       markLatestVisibleGenerationSeen();
       closeWebPushNotificationsForChat(requestedChatId);
@@ -555,20 +591,9 @@ export function useChatViewModel() {
         void scrollToLastMessageIfLayerActive();
       }
 
-      if (!settingsRequest) return;
-
-      try {
-        const settingsPayload = await settingsRequest;
-        if (!isCurrentLoad()) return;
-        applySettingsState(settingsPayload);
-      } catch (error) {
-        if (!isCurrentLoad() || isAbortError(error)) return;
-        if (mode !== 'initial') throw error;
-        console.error(error);
-        loadError.value = getApiErrorMessage(error, 'Failed to load chat.');
-      }
     } catch (error) {
       if (!isCurrentLoad() || isAbortError(error)) return;
+      if (mode === 'initial') chatSettingsRead.cancel();
       throw error;
     } finally {
       if (
@@ -578,12 +603,6 @@ export function useChatViewModel() {
         !disposed
       ) {
         loaded.value = true;
-      }
-      if (abortController) {
-        abortController.abort();
-        if (initialChatLoadAbortController === abortController) {
-          initialChatLoadAbortController = null;
-        }
       }
     }
   };
@@ -617,9 +636,13 @@ export function useChatViewModel() {
   };
 
   const loadInitialChatSafe = async () => {
-    await loadChatSafe({ mode: 'initial' });
-    if (chatUnavailable.value || !chat.value) return;
-    await contextPanel.handleFocusMessage();
+    try {
+      await loadChatSafe({ mode: 'initial' });
+      if (chatUnavailable.value || !chat.value) return;
+      await contextPanel.handleFocusMessage();
+    } finally {
+      setBootstrapLoadStage('ready');
+    }
   };
 
   let chatIdlePollTimer: number | null = null;
@@ -924,8 +947,8 @@ export function useChatViewModel() {
     disposed = true;
     chatLoadSeq += 1;
     chatVisibleLoadSeq += 1;
-    initialChatLoadAbortController?.abort();
-    initialChatLoadAbortController = null;
+    initialChatRead.cancel();
+    chatSettingsRead.cancel();
     clearActiveWebPushChat();
     stopChatIdlePolling();
     void composerRuntime.dispose();

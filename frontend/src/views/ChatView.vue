@@ -591,19 +591,50 @@
       </div>
     </section>
   </div>
-  <div v-else class="spa-boot">
-    <div class="spa-boot__content">
-      <p class="spa-boot__status" role="status" aria-live="polite">{{ translate('Loading…') }}</p>
-      <button
-        class="spa-boot__reload"
-        :class="{ 'spa-boot__reload--pending': reloadingPage }"
-        type="button"
-        :disabled="reloadingPage"
-        :aria-busy="reloadingPage"
-        @click="handleReloadPage"
-      >
-        {{ translate('Reload') }}
-      </button>
+  <div v-else class="stack chat-page chat-page--initializing" aria-busy="true">
+    <StackToolbarTeleport>
+      <div class="toolbar chat-toolbar fill chat-toolbar--initializing">
+        <div class="chat-toolbar__title-wrap">
+          <div class="chat-toolbar__title">{{ translate('Chat') }}</div>
+        </div>
+        <div class="header-actions toolbar-actions-right chat-toolbar__actions">
+          <button
+            class="icon-button icon-button--labeled chat-toolbar__icon-button"
+            type="button"
+            :aria-label="translate('Close')"
+            :title="translate('Close')"
+            @click="vm.backToChats"
+          >
+            <SvgIcon name="x" size="16" />
+            <span class="icon-button__label">{{ translate('Close') }}</span>
+          </button>
+        </div>
+      </div>
+    </StackToolbarTeleport>
+
+    <div class="split-wrapper">
+      <div class="split">
+        <section class="card chat-window chat-window--initializing">
+          <div class="message-list" aria-hidden="true"></div>
+          <form class="chat-input-form" @submit.prevent>
+            <div class="chat-composer">
+              <textarea
+                class="chat-composer__textarea"
+                :placeholder="translate('Type your message')"
+                disabled
+              ></textarea>
+              <div class="chat-composer__actions">
+                <button class="chat-composer__attach" type="button" disabled>
+                  {{ translate('Attach') }}
+                </button>
+                <button class="chat-composer__send" type="submit" disabled>
+                  {{ translate('Send') }}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      </div>
     </div>
   </div>
 </template>
@@ -645,24 +676,12 @@ import {
   pendingFileProgressPercent,
 } from '@/features/chat/attachments';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
-import { reload as reloadPage } from '@/features/pwa/appUpdate';
 import { translate } from '@/i18n';
 import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 
 const vm = reactive(useChatViewModel());
 const route = useRoute();
 const router = useRouter();
-const reloadingPage = ref(false);
-
-const handleReloadPage = () => {
-  if (reloadingPage.value) return;
-  reloadingPage.value = true;
-  void nextTick(() => {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(reloadPage);
-    });
-  });
-};
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const messageTreeOpen = ref(false);
 

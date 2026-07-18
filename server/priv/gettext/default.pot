@@ -29,8 +29,26 @@ msgstr ""
 msgid "Current password is incorrect."
 msgstr ""
 
-msgid "Loading…"
+msgid "Preparing the interface…"
 msgstr ""
 
-msgid "Reload"
+msgid "Waiting for a connection…"
+msgstr ""
+
+msgid "Restoring the connection…"
+msgstr ""
+
+msgid "Attempt"
+msgstr ""
+
+msgid "Application startup progress"
+msgstr ""
+
+msgid "Interface"
+msgstr ""
+
+msgid "Section"
+msgstr ""
+
+msgid "Data"
 msgstr ""

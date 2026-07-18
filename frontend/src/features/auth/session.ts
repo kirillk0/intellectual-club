@@ -1,14 +1,21 @@
 import { computed, ref } from 'vue';
 import { api, isHttpError } from '@/api/client';
+import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { normalizePreferredTheme, setPreferredTheme } from '@/features/app/theme';
+import {
+  createRecoverableRead,
+  type RecoverableReadController,
+} from '@/features/app/useRecoverableRead';
 import { cleanupWebPushForLogout } from '@/features/push/webPush';
 import { clearStoredPwaRoute } from '@/features/pwa/lastRoute';
+import { navigateToLoginWithReturn } from '@/features/auth/loginNavigation';
 import { normalizePreferredLocale, setPreferredLocale } from '@/i18n';
 import type { SessionUser } from '@/types/api';
 
 const currentUser = ref<SessionUser | null>(null);
 const initialized = ref(false);
 let refreshPromise: Promise<SessionUser | null> | null = null;
+let refreshController: RecoverableReadController<SessionUser> | null = null;
 
 const isAuthenticated = computed(() => Boolean(currentUser.value));
 
@@ -71,18 +78,41 @@ export const fetchCurrentUser = async (): Promise<SessionUser> => {
 export const refreshSessionUser = async (): Promise<SessionUser | null> => {
   if (refreshPromise) return refreshPromise;
 
+  const controller = createRecoverableRead<SessionUser>({
+    key: 'session:refresh',
+    stage: 'data',
+    startedAt: startupLoadStartedAt,
+  });
+  refreshController = controller;
+
   refreshPromise = (async () => {
     try {
-      return await fetchCurrentUser();
+      return await controller.run(async ({ signal }) => {
+          const payload = await api.get<{ user: SessionUser }>('/api/bff/auth/me', {
+            redirectOnUnauthorized: false,
+            retry: false,
+            showErrorBanner: false,
+            signal,
+          });
+
+          applySessionUser(payload.user);
+          initialized.value = true;
+          return payload.user;
+        });
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return null;
+
       if (isHttpError(error) && error.status === 401) {
         applySessionUser(null);
         initialized.value = true;
+        navigateToLoginWithReturn();
         return null;
       }
 
       throw error;
     } finally {
+      controller.dispose();
+      if (refreshController === controller) refreshController = null;
       refreshPromise = null;
     }
   })();
@@ -91,6 +121,9 @@ export const refreshSessionUser = async (): Promise<SessionUser | null> => {
 };
 
 export const signOut = async (): Promise<void> => {
+  refreshController?.dispose();
+  refreshController = null;
+
   await cleanupWebPushForLogout().catch((error) => {
     console.warn('Failed to clean up Web Push subscription before sign out.', error);
   });

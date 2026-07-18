@@ -11,7 +11,7 @@
       </div>
     </StackToolbarTeleport>
 
-    <p v-if="loading" class="muted">Loading…</p>
+    <InitialRoutePlaceholder v-if="loading" />
     <p v-else-if="loadError" class="error-text">{{ loadError }}</p>
 
     <template v-else>
@@ -172,10 +172,13 @@ import { useQuery } from '@tanstack/vue-query';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import KnowledgeBlockLinksCard from '@/components/KnowledgeBlockLinksCard.vue';
 import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.vue';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
+import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
+import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { parseImageAsset } from '@/features/media/image';
@@ -197,6 +200,7 @@ import {
   jsonApiUpdate,
   relationshipId,
   toIntId,
+  type JsonApiListResponse,
   type JsonApiResource,
 } from '@/api/jsonApi';
 import type { KnowledgeBlock, SessionUser, UserKnowledgeBlock } from '@/types/api';
@@ -235,6 +239,16 @@ const basePreferredThemeDraft = ref<ThemeDraft>('system');
 const pushConfig = ref<WebPushClientConfig | null>(null);
 const pushSupport = ref<WebPushSupportState | null>(null);
 const pushSubscribed = ref(false);
+const settingsRead = useRecoverableRead<JsonApiListResponse>({
+  key: 'user-settings:knowledge-blocks',
+  stage: 'data',
+  startedAt: startupLoadStartedAt,
+});
+const pushConfigRead = useRecoverableRead<WebPushClientConfig>({
+  key: 'user-settings:web-push-config',
+  stage: 'data',
+  startedAt: startupLoadStartedAt,
+});
 
 const passwordForm = reactive({
   current_password: '',
@@ -675,8 +689,12 @@ const refreshWebPushStatus = async () => {
   pushError.value = '';
 
   try {
-    pushConfig.value = await loadWebPushConfig();
+    pushConfig.value = await pushConfigRead.run(
+      ({ signal }) => loadWebPushConfig({ signal, retry: false }),
+      { restart: true }
+    );
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
     console.error(error);
     pushConfig.value = null;
     pushError.value = 'Failed to load notification settings.';
@@ -734,7 +752,15 @@ const loadSettings = async () => {
   settingsLoadError.value = '';
 
   try {
-    const userBlocksPayload = await jsonApiList('/api/ash/user-knowledge-blocks');
+    const userBlocksPayload = await settingsRead.run(
+      ({ signal }) =>
+        jsonApiList('/api/ash/user-knowledge-blocks', undefined, {
+          retry: false,
+          showErrorBanner: false,
+          signal,
+        }),
+      { restart: true }
+    );
 
     userBlocks.value = (userBlocksPayload.data || [])
       .map((resource) => parseUserKnowledgeBlock(resource))
@@ -744,6 +770,7 @@ const loadSettings = async () => {
     resetLocaleDraft();
     resetThemeDraft();
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
     console.error(error);
     settingsLoadError.value = error instanceof Error ? error.message : 'Failed to load user settings.';
   } finally {

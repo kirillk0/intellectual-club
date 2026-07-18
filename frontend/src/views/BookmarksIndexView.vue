@@ -23,10 +23,9 @@
         </div>
       </section>
 
-      <p v-if="loading" class="muted">Loading…</p>
-      <p v-else-if="error" class="error-text">{{ error }}</p>
+      <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
-      <section v-else class="card stack bookmarks-list">
+      <section class="card stack bookmarks-list">
         <div class="list">
           <ChatListRow
             v-for="entry in visibleBookmarks"
@@ -61,6 +60,8 @@ import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
+import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
 import { useChatChanges } from '@/features/chat/chatEvents';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
@@ -96,6 +97,11 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const searchTerm = ref('');
 const bookmarks = ref<BookmarkEntry[]>([]);
+const bookmarksRead = useRecoverableRead<{ bookmarks: BookmarkEntry[] }>({
+  key: 'bookmarks:index',
+  stage: 'data',
+  startedAt: startupLoadStartedAt,
+});
 
 const normalize = (value: unknown) => String(value || '').trim().toLowerCase();
 
@@ -114,6 +120,7 @@ const visibleBookmarks = computed(() => {
 });
 
 const emptyState = computed(() => {
+  if (loading.value || error.value) return '';
   if (searchTerm.value.trim()) return visibleBookmarks.value.length ? '' : 'No matches found.';
   return bookmarks.value.length ? '' : 'No bookmarks yet.';
 });
@@ -197,13 +204,22 @@ function goBack() {
 }
 
 async function loadBookmarks() {
-  loading.value = true;
+  loading.value = bookmarks.value.length === 0;
   error.value = null;
 
   try {
-    const payload = await api.get<{ bookmarks: BookmarkEntry[] }>('/api/bff/bookmarks');
+    const payload = await bookmarksRead.run(
+      ({ signal }) =>
+        api.get<{ bookmarks: BookmarkEntry[] }>('/api/bff/bookmarks', {
+          retry: false,
+          showErrorBanner: false,
+          signal,
+        }),
+      { restart: true }
+    );
     bookmarks.value = payload.bookmarks || [];
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') return;
     console.error(e);
     error.value = e instanceof Error ? e.message : 'Failed to load bookmarks.';
   } finally {

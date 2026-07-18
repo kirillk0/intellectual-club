@@ -127,7 +127,9 @@
       <div id="toolbar-host" class="toolbar-host"></div>
     </header>
 
-    <div v-if="backendStatusBanner || appUpdateAvailable" class="app-banner-stack">
+    <div v-if="loadingVisible || backendStatusBanner || appUpdateAvailable" class="app-banner-stack">
+      <LoadingStatusBanner />
+
       <section
         v-if="backendStatusBanner"
         class="app-banner backend-status-banner"
@@ -177,14 +179,16 @@ import {
 } from '@/features/auth/session';
 import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
+import { useLoadCoordinator } from '@/features/app/loadCoordinator';
 import { useAppUpdateMonitor } from '@/features/pwa/appUpdate';
 import { syncExistingWebPushSubscription } from '@/features/push/webPush';
 import { clearServerStateQueries } from '@/features/serverState/queryClient';
 import { effectiveLocale, translate } from '@/i18n';
-import appLogoUrl from '@/assets/icon_full_size.png';
+import LoadingStatusBanner from '@/components/LoadingStatusBanner.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
 
+const appLogoUrl = '/favicon.png';
 const router = useRouter();
 const route = useRoute();
 
@@ -192,6 +196,7 @@ ensureAuthInitialized();
 
 const { currentUser } = useSessionAuth();
 const { banner: backendStatusBanner, dismissBackendStatusBanner } = useBackendStatusBanner();
+const { visible: loadingVisible } = useLoadCoordinator();
 const {
   available: appUpdateAvailable,
   reload: reloadApp,
@@ -200,8 +205,12 @@ const {
 } = useAppUpdateMonitor();
 const signingOut = ref(false);
 
-const isLoginRoute = computed(() => route.name === 'login');
-const isChatRoute = computed(() => route.name === 'chat');
+const isLoginRoute = computed(
+  () => route.name === 'login' || (!route.name && window.location.pathname === '/login')
+);
+const isChatRoute = computed(
+  () => route.name === 'chat' || (!route.name && /^\/chats\/\d+\/?$/u.test(window.location.pathname))
+);
 const isLlmConfigurationRoute = computed(() => String(route.name || '').startsWith('llm-'));
 const codeVersionLabel = computed(() => __CODE_VERSION__.label.trim());
 const showCodeVersionFooter = computed(() => Boolean(codeVersionLabel.value) && !isLoginRoute.value && !isChatRoute.value);

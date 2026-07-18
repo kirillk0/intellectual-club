@@ -1,5 +1,5 @@
 <template>
-  <div v-if="loaded" ref="toolEditorRoot" class="stack">
+  <div ref="toolEditorRoot" class="stack">
     <CrudHeader
       title="Tool"
       :dirty="headerDirty"
@@ -30,8 +30,6 @@
     </div>
 
     <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
-      <div v-if="loading" class="loading-float" aria-live="polite">Loading…</div>
-
       <div class="card stack">
         <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
@@ -484,7 +482,6 @@
     />
   </div>
 
-  <p v-else class="muted">Loading…</p>
 </template>
 
 <script setup lang="ts">

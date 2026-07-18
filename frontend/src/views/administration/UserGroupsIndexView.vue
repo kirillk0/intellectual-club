@@ -29,7 +29,7 @@
         </label>
       </section>
 
-      <p v-if="loading" class="muted">Loading…</p>
+      <InitialRoutePlaceholder v-if="loading" />
       <p v-else-if="error" class="error-text">{{ error }}</p>
 
       <section v-else class="card stack">
@@ -67,6 +67,7 @@ import { useQuery } from '@tanstack/vue-query';
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AdministrationNav from '@/components/AdministrationNav.vue';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';

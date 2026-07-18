@@ -95,6 +95,7 @@ function buildHttpErrorMessage(params: {
 export type ApiRequestOptions = RequestInit & {
   redirectOnUnauthorized?: boolean;
   showErrorBanner?: boolean;
+  statusBannerKey?: string;
   invalidateServerState?: boolean;
   timeoutMs?: number | null;
   retry?: false | {
@@ -108,14 +109,22 @@ export class HttpError extends Error {
   statusText: string;
   bodyText: string;
   bodyJson: unknown | null;
+  retryAfter: string | null;
 
-  constructor(params: { status: number; statusText: string; bodyText: string; bodyJson: unknown | null }) {
+  constructor(params: {
+    status: number;
+    statusText: string;
+    bodyText: string;
+    bodyJson: unknown | null;
+    retryAfter?: string | null;
+  }) {
     super(buildHttpErrorMessage(params));
     this.name = 'HttpError';
     this.status = params.status;
     this.statusText = params.statusText;
     this.bodyText = params.bodyText;
     this.bodyJson = params.bodyJson;
+    this.retryAfter = params.retryAfter ?? null;
   }
 }
 
@@ -256,7 +265,7 @@ function buildNetworkBannerMessage(error: unknown): string {
 
 const DEFAULT_READ_TIMEOUT_MS = 10_000;
 const DEFAULT_WRITE_TIMEOUT_MS = 30_000;
-const DEFAULT_RETRY_ATTEMPTS = 2;
+const DEFAULT_EXPLICIT_RETRY_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAYS_MS = [500, 1_500] as const;
 const RETRYABLE_HTTP_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -300,13 +309,16 @@ function resolveRetryOptions(
       : [];
 
     return {
-      attempts: normalizeNonNegativeInteger(retry.attempts, DEFAULT_RETRY_ATTEMPTS),
+      attempts: normalizeNonNegativeInteger(
+        retry.attempts,
+        DEFAULT_EXPLICIT_RETRY_ATTEMPTS
+      ),
       delaysMs: delays.length ? delays : [...DEFAULT_RETRY_DELAYS_MS],
     };
   }
 
   return {
-    attempts: isWrite ? 0 : DEFAULT_RETRY_ATTEMPTS,
+    attempts: 0,
     delaysMs: [...DEFAULT_RETRY_DELAYS_MS],
   };
 }
@@ -440,13 +452,15 @@ function buildHttpError(response: Response, bodyText: string): HttpError {
     statusText: response.statusText,
     bodyText,
     bodyJson,
+    retryAfter: response.headers?.get?.('retry-after') ?? null,
   });
 }
 
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const {
     redirectOnUnauthorized = true,
-    showErrorBanner = true,
+    showErrorBanner: requestedShowErrorBanner,
+    statusBannerKey,
     invalidateServerState = true,
     timeoutMs,
     retry,
@@ -460,7 +474,16 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   }
 
   const method = (requestOptions.method || 'GET').toUpperCase();
+  const bannerPath = (() => {
+    try {
+      return new URL(path, window.location.origin).pathname;
+    } catch {
+      return path;
+    }
+  })();
+  const resolvedStatusBannerKey = statusBannerKey || `${method}:${bannerPath}`;
   const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  const showErrorBanner = requestedShowErrorBanner ?? isWrite;
   const resolvedTimeoutMs = resolveTimeoutMs(timeoutMs, isWrite);
   const resolvedRetry = resolveRetryOptions(retry, isWrite);
   const isFormData =
@@ -500,7 +523,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
         showBackendStatusBanner({
           title: translate('Connection problem'),
           message: buildNetworkBannerMessage(error),
-        });
+        }, resolvedStatusBannerKey);
       }
 
       throw error;
@@ -524,14 +547,14 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
           : null;
 
       if (httpBanner) {
-        showBackendStatusBanner(httpBanner);
+        showBackendStatusBanner(httpBanner, resolvedStatusBannerKey);
       }
 
       throw error;
     }
 
     if (showErrorBanner) {
-      clearBackendStatusBanner();
+      clearBackendStatusBanner(resolvedStatusBannerKey);
     }
 
     let result: T | undefined;

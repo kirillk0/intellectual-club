@@ -55,13 +55,12 @@
               </div>
             </section>
 
-            <p v-if="loading" class="muted">Loading…</p>
-            <section v-else-if="error" class="card stack chat-list-error" role="alert">
+            <section v-if="error && !chats.length" class="card stack chat-list-error" role="alert">
               <p class="error-text">{{ error }}</p>
-              <button class="primary" type="button" @click="loadChats()">{{ translate('Retry') }}</button>
             </section>
 
             <section v-else class="card stack chat-list-main">
+              <p v-if="error" class="error-text" role="alert">{{ error }}</p>
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
@@ -225,6 +224,8 @@ import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
+import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
@@ -290,6 +291,18 @@ type ChatListIdleStatePayload = {
   active_generation_message_id?: number | null;
 };
 
+type ChatListPayload = {
+  chats: ChatSummary[];
+  page?: {
+    number?: number;
+    per_page?: number;
+    total?: number;
+    has_next?: boolean;
+  };
+  stats?: ChatListStats;
+  idle_revision?: string | null;
+};
+
 type GenerationState = 'generating' | 'reconnecting' | 'done';
 
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
@@ -346,6 +359,11 @@ const chatListGenerationPollReconnecting = ref(false);
 const generationCompleteChatIds = ref(new Set<number>());
 const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
+const chatListRead = useRecoverableRead<ChatListPayload>({
+  key: () => `chats:index:${pageNumber.value}:${botFilter.value || 'all'}`,
+  stage: 'data',
+  startedAt: startupLoadStartedAt,
+});
 const botSearchTerm = ref('');
 const botsQuery = useQuery<Bot[]>({
   queryKey: serverStateKeys.reference('bots', 'chat-selector'),
@@ -825,6 +843,7 @@ const chatSearchEmptyState = computed(() => {
 
 const chatListEmptyState = computed(() => {
   if (hasChatSearch.value) return '';
+  if (loading.value || error.value) return '';
   if (chats.value.length === 0) return 'No chats yet.';
   return filteredChats.value.length ? '' : 'No chats match the current filters.';
 });
@@ -1045,20 +1064,21 @@ async function loadChats(
     params.set('per_page', String(perPage.value));
     const bot = String(botFilter.value || '').trim();
     if (bot) params.set('bot', bot);
-    const payload = await api.get<{
-      chats: ChatSummary[];
-      page?: {
-        number?: number;
-        per_page?: number;
-        total?: number;
-        has_next?: boolean;
-      };
-      stats?: ChatListStats;
-      idle_revision?: string | null;
-    }>(`/api/bff/chat-list?${params.toString()}`, {
-      showErrorBanner: opts.showErrorBanner ?? true,
-      signal: opts.signal,
-    });
+    const path = `/api/bff/chat-list?${params.toString()}`;
+    const payload = silent
+      ? await api.get<ChatListPayload>(path, {
+          showErrorBanner: opts.showErrorBanner ?? false,
+          signal: opts.signal,
+        })
+      : await chatListRead.run(
+          ({ signal }) =>
+            api.get<ChatListPayload>(path, {
+              retry: false,
+              showErrorBanner: false,
+              signal,
+            }),
+          { restart: true }
+        );
 
     if (seq !== chatListLoadSeq) return;
 

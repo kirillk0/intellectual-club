@@ -14,7 +14,8 @@ vi.mock('@/api/client', () => ({
   api: apiMocks,
   getApiErrorMessage: (error: unknown, fallback: string) =>
     error instanceof Error && error.message ? error.message : fallback,
-  isHttpError: () => false,
+  isHttpError: (error: unknown) =>
+    error instanceof Error && typeof (error as Error & { status?: unknown }).status === 'number',
 }));
 
 import type {
@@ -131,9 +132,41 @@ describe('useChatViewModel loading', () => {
     await vi.waitFor(() => expect(viewModel.loaded.value).toBe(true));
     expect(viewModel.chat.value?.id).toBe(1);
     expect(viewModel.loadError.value).toBe('');
+    expect(apiMocks.get).toHaveBeenCalledWith(
+      '/api/bff/chat-state/1',
+      expect.objectContaining({ retry: false, signal: expect.any(AbortSignal) })
+    );
+    expect(apiMocks.get).toHaveBeenCalledWith(
+      '/api/bff/chat-state/1/settings',
+      expect.objectContaining({ retry: false, signal: expect.any(AbortSignal) })
+    );
 
     resolveSettings(chatSettings());
     await flushPromises();
+  });
+
+  it('keeps the loaded chat usable when secondary settings fail terminally', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1/settings') {
+        return Promise.reject(
+          Object.assign(new Error('Settings are unavailable.'), { status: 400 })
+        );
+      }
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      return Promise.resolve(undefined);
+    });
+
+    const { viewModel } = await mountViewModel();
+
+    await vi.waitFor(() => expect(viewModel.chat.value?.id).toBe(1));
+    await flushPromises();
+    expect(viewModel.loaded.value).toBe(true);
+    expect(viewModel.loadError.value).toBe('');
+    expect(warn).toHaveBeenCalledWith(
+      'Failed to load secondary chat settings.',
+      expect.any(Error)
+    );
   });
 
   it('aborts the previous initial request when the chat route changes', async () => {
@@ -177,7 +210,9 @@ describe('useChatViewModel loading', () => {
           return new Promise<ChatSettingsStatePayload>(() => undefined);
         }
         if (path === '/api/bff/chat-state/1') {
-          return Promise.reject(new Error('Core request failed.'));
+          return Promise.reject(
+            Object.assign(new Error('Core request failed.'), { status: 400 })
+          );
         }
         return Promise.resolve(undefined);
       }

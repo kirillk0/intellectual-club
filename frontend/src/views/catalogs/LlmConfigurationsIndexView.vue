@@ -49,7 +49,7 @@
               </div>
 
               <template v-if="providerFilterExpanded">
-                <p v-if="loading" class="muted">Loading…</p>
+                <InitialRoutePlaceholder v-if="loading" />
                 <div v-else class="provider-filter-list" aria-label="Filter by provider">
                   <button
                     type="button"
@@ -109,7 +109,7 @@
               </div>
 
               <template v-if="enabledFilterExpanded">
-                <p v-if="loading" class="muted">Loading…</p>
+                <InitialRoutePlaceholder v-if="loading" />
                 <div v-else class="provider-filter-list" aria-label="Filter by status">
                   <button
                     type="button"
@@ -169,7 +169,7 @@
             </label>
           </section>
 
-          <p v-if="loading" class="muted">Loading…</p>
+          <InitialRoutePlaceholder v-if="loading" />
           <p v-else-if="error" class="error-text">{{ error }}</p>
 
           <section v-else class="card stack">
@@ -250,7 +250,7 @@
           </div>
 
           <template v-if="providerFilterExpanded">
-            <p v-if="loading" class="muted">Loading…</p>
+            <InitialRoutePlaceholder v-if="loading" />
             <div v-else class="provider-filter-list" aria-label="Filter by provider">
               <button
                 type="button"
@@ -310,7 +310,7 @@
           </div>
 
           <template v-if="enabledFilterExpanded">
-            <p v-if="loading" class="muted">Loading…</p>
+            <InitialRoutePlaceholder v-if="loading" />
             <div v-else class="provider-filter-list" aria-label="Filter by status">
               <button
                 type="button"
@@ -379,6 +379,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import LlmConfigurationNav from '@/components/LlmConfigurationNav.vue';
 import LlmConfigurationTagsManagerPanel from '@/components/LlmConfigurationTagsManagerPanel.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';

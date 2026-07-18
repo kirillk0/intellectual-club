@@ -22,9 +22,21 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert html =~ ~s(name="apple-mobile-web-app-status-bar-style" content="default")
     assert html =~ ~s(rel="manifest" href="/manifest.webmanifest")
     assert html =~ ~s(rel="apple-touch-icon" href="/apple-touch-icon.png")
-    assert html =~ ~s(class="spa-boot")
-    assert html =~ ~s(class="spa-boot__status")
-    assert html =~ ~s|background: var(--spa-boot-bg)|
+    assert html =~ ~s(id="spa-bootstrap-shell")
+    assert html =~ ~s(id="spa-bootstrap-status")
+    assert html =~ ~s(class="spa-bootstrap-panel spa-bootstrap-content")
+    assert html =~ ~s(name="ic-build-id")
+    assert html =~ "window.__IC_BOOTSTRAP__"
+    assert html =~ "window.__IC_SERVICE_WORKER_REGISTRATION__"
+    assert html =~ "ic:bootstrap-state"
+    assert html =~ "updateViaCache: 'none'"
+    assert html =~ "data-bootstrap-step=\"runtime\""
+    {bootstrap_offset, _length} = :binary.match(html, "window.__IC_SERVICE_WORKER_REGISTRATION__")
+    {module_offset, _length} = :binary.match(html, ~s(type="module"))
+    assert bootstrap_offset < module_offset
+    refute html =~ ~s(class="spa-boot")
+    refute html =~ ">Reload<"
+    assert get_resp_header(conn, "cache-control") == ["private, no-store"]
   end
 
   test "GET /", %{conn: conn} do
@@ -34,14 +46,22 @@ defmodule IntellectualClubWeb.PageControllerTest do
     conn = get(conn, ~p"/")
     html = html_response(conn, 200)
     assert html =~ ~s(id="spa-root")
-    assert html =~ "Loading…"
-    assert html =~ "Reload"
-    assert html =~ "spa-boot__reload--pending"
-    assert html =~ "requestAnimationFrame"
-    assert html =~ "window.location.reload()"
+    assert html =~ ~s(id="spa-bootstrap-shell")
+    assert html =~ ~s(id="spa-bootstrap-status")
+    assert html =~ "Preparing the interface…"
+    assert html =~ "Waiting for a connection…"
+    assert html =~ "Restoring the connection…"
+    assert html =~ "Application startup progress"
+    assert html =~ "window.location.replace(window.location.href)"
+    assert html =~ "historyReloadGuardKey = '__icBootstrapReload'"
+    assert html =~ "sessionStorage.getItem(reloadGuardKey) === reloadId"
+    refute html =~ "reloadGuardWindowMs"
+    refute html =~ "spa-boot__reload"
+    refute html =~ "window.location.reload()"
+    assert get_resp_header(conn, "cache-control") == ["private, no-store"]
   end
 
-  test "GET / localizes the boot screen before JavaScript starts", %{conn: conn} do
+  test "GET / localizes delayed startup status before JavaScript starts", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
 
     conn =
@@ -52,8 +72,21 @@ defmodule IntellectualClubWeb.PageControllerTest do
 
     html = html_response(conn, 200)
     assert html =~ ~s(<html lang="ru")
-    assert html =~ "Загрузка…"
-    assert html =~ "Перезагрузить"
+    assert html =~ "Подготавливаем интерфейс…"
+    assert html =~ "Ожидаем подключения…"
+    assert html =~ "Восстанавливаем подключение…"
+    assert html =~ "Интерфейс"
+    assert html =~ "Раздел"
+    assert html =~ "Данные"
+    refute html =~ "Перезагрузить"
+  end
+
+  test "GET /health returns a dependency-free no-store liveness response", %{conn: conn} do
+    conn = get(conn, ~p"/health")
+
+    assert response(conn, 204) == ""
+    assert get_resp_header(conn, "cache-control") == ["no-store"]
+    refute Map.has_key?(conn.private, :plug_session)
   end
 
   test "GET /manifest.webmanifest serves PWA manifest", %{conn: conn} do
@@ -62,12 +95,13 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert json_response(conn, 200)["name"] == "Intellectual Club"
   end
 
-  test "GET /service-worker.js serves online-only service worker", %{conn: conn} do
+  test "GET /service-worker.js serves recovery service worker", %{conn: conn} do
     conn = get(conn, ~p"/service-worker.js")
 
-    assert response(conn, 200) =~ "skipWaiting"
-    refute response(conn, 200) =~ "fetch"
-    refute response(conn, 200) =~ "caches"
+    service_worker = response(conn, 200)
+    assert service_worker =~ "pwa-precache-manifest.js"
+    assert service_worker =~ "fetch"
+    assert service_worker =~ "caches"
   end
 
   test "GET /apple-touch-icon.png serves touch icon", %{conn: conn} do

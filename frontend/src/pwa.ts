@@ -1,4 +1,5 @@
-const SERVICE_WORKER_PATH = '/service-worker.js';
+import { registerServiceWorker } from '@/features/pwa/serviceWorker';
+
 const DISPLAY_MODE_QUERIES = [
   '(display-mode: standalone)',
   '(display-mode: fullscreen)',
@@ -31,14 +32,6 @@ const getViewportWithZoomDisabled = (content: string) => {
     .filter((directive) => directive && !SCALE_DIRECTIVE_PATTERN.test(directive));
 
   return [...viewportDirectives, ...DISABLED_SCALE_VIEWPORT_DIRECTIVES].join(', ');
-};
-
-const registerServiceWorker = () => {
-  if (!('serviceWorker' in navigator)) return;
-
-  navigator.serviceWorker.register(SERVICE_WORKER_PATH, { scope: '/' }).catch((error) => {
-    console.warn('Service worker registration failed.', error);
-  });
 };
 
 const syncStandaloneZoomBehavior = () => {
@@ -117,11 +110,7 @@ const setupStandaloneZoomBehavior = () => {
 
 export const setupPwa = () => {
   setupStandaloneZoomBehavior();
-
-  if (document.readyState === 'complete') {
-    registerServiceWorker();
-    return;
-  }
-
-  window.addEventListener('load', registerServiceWorker, { once: true });
+  void registerServiceWorker().catch((error) => {
+    console.warn('Service worker registration failed.', error);
+  });
 };

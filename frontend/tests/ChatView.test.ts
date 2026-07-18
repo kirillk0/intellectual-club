@@ -6,18 +6,12 @@ const viewModelMocks = vi.hoisted(() => ({
   useChatViewModel: vi.fn(),
 }));
 
-const appUpdateMocks = vi.hoisted(() => ({
-  reload: vi.fn(),
-}));
-
 vi.mock('@/features/chat/useChatViewModel', () => viewModelMocks);
-vi.mock('@/features/pwa/appUpdate', () => appUpdateMocks);
 
 import ChatView from '@/views/ChatView.vue';
 import { i18n, setPreferredLocale } from '@/i18n';
 
 let activeWrapper: VueWrapper | null = null;
-let requestAnimationFrameSpy: ReturnType<typeof vi.spyOn>;
 
 async function mountChatView() {
   const router = createRouter({
@@ -38,51 +32,46 @@ async function mountChatView() {
 
 describe('ChatView loading state', () => {
   beforeEach(() => {
-    appUpdateMocks.reload.mockReset();
-    requestAnimationFrameSpy = vi
-      .spyOn(window, 'requestAnimationFrame')
-      .mockImplementation((callback) => {
-        callback(0);
-        return 1;
-      });
+    document.body.innerHTML = '<div id="toolbar-host"></div>';
     viewModelMocks.useChatViewModel.mockReset();
     viewModelMocks.useChatViewModel.mockReturnValue({
       loaded: ref(false),
       chat: ref(null),
       sharedReadonly: ref(false),
       handoffPending: ref(false),
+      backToChats: vi.fn(),
     });
     setPreferredLocale('en');
   });
 
   afterEach(() => {
-    requestAnimationFrameSpy.mockRestore();
     activeWrapper?.unmount();
     activeWrapper = null;
+    document.body.innerHTML = '';
     setPreferredLocale(null);
   });
 
-  it('offers a full page reload while the chat is loading', async () => {
+  it('shows the disabled chat frame immediately without a reload action', async () => {
     const wrapper = await mountChatView();
 
-    expect(wrapper.find('.spa-boot').exists()).toBe(true);
-    expect(wrapper.get('[role="status"]').text()).toBe('Loading…');
-    const reloadButton = wrapper.get('button');
-    expect(reloadButton.text()).toBe('Reload');
-
-    await reloadButton.trigger('click');
-
-    expect(reloadButton.attributes('disabled')).toBeDefined();
-    expect(reloadButton.attributes('aria-busy')).toBe('true');
-    expect(reloadButton.classes()).toContain('spa-boot__reload--pending');
-    expect(appUpdateMocks.reload).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('.spa-boot').exists()).toBe(false);
+    expect(wrapper.get('.chat-page--initializing').attributes('aria-busy')).toBe('true');
+    expect(wrapper.find('.message-list').exists()).toBe(true);
+    expect(wrapper.get('textarea').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[role="status"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Attach');
+    expect(wrapper.text()).toContain('Send');
+    expect(document.querySelector('#toolbar-host')?.textContent).toContain('Close');
+    expect(document.body.textContent).not.toContain('Reload');
   });
 
-  it('translates the loading state and reload action', async () => {
+  it('translates the initial chat frame', async () => {
     setPreferredLocale('ru');
     const wrapper = await mountChatView();
 
-    expect(wrapper.get('[role="status"]').text()).toBe('Загрузка…');
-    expect(wrapper.get('button').text()).toBe('Перезагрузить');
+    expect(wrapper.get('textarea').attributes('placeholder')).toBe('Введите сообщение');
+    expect(wrapper.text()).toContain('Прикрепить');
+    expect(wrapper.text()).toContain('Отправить');
+    expect(document.querySelector('#toolbar-host')?.textContent).toContain('Закрыть');
   });
 });
