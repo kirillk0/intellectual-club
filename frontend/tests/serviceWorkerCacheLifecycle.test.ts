@@ -142,12 +142,19 @@ const createWorker = (
   const listeners = new Map<string, (event: any) => void>();
   const claim = vi.fn().mockResolvedValue(undefined);
   const delays: number[] = [];
+  const messages: unknown[] = [];
   const worker = {
     __PWA_PRECACHE_MANIFEST__: manifest,
     location: { origin },
     clients: {
       claim,
-      matchAll: vi.fn().mockResolvedValue([]),
+      matchAll: vi.fn().mockResolvedValue([
+        {
+          postMessage(message: unknown) {
+            messages.push(message);
+          },
+        },
+      ]),
       openWindow: vi.fn(),
     },
     registration: {
@@ -206,7 +213,7 @@ const createWorker = (
     return captured.response;
   };
 
-  return { claim, delays, runFetch, runLifecycleEvent };
+  return { claim, delays, messages, runFetch, runLifecycleEvent };
 };
 
 const manifest = (revision: string): WorkerManifest => ({
@@ -254,6 +261,148 @@ describe('service worker cache lifecycle', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(storage.deleted).not.toContain(cacheName(currentManifest.revision));
     expect(storage.stores.has(cacheName(currentManifest.revision))).toBe(true);
+  });
+
+  it('reuses unchanged versioned assets from an old-format active cache', async () => {
+    const storage = new MemoryCacheStorage();
+    const sharedChunk = '/assets/js/chunks/Shared-unchanged.js';
+    const oldChangedChunk = '/assets/js/chunks/Changed-old.js';
+    const newChangedChunk = '/assets/js/chunks/Changed-new.js';
+    const stableAsset = '/assets/assets/logo.svg';
+    const oldManifest: WorkerManifest = {
+      buildId: '/assets/js/spa-old.js?vsn=d',
+      revision: 'old-revision',
+      mode: 'prod',
+      offlineUrl: '/pwa/offline.html',
+      assets: [
+        '/assets/js/spa-old.js?vsn=d',
+        sharedChunk,
+        oldChangedChunk,
+        stableAsset,
+        appShellUrl,
+        '/pwa/offline.html',
+      ],
+    };
+    const newManifest: WorkerManifest = {
+      buildId: '/assets/js/spa-new.js?vsn=d',
+      revision: 'new-revision',
+      mode: 'prod',
+      offlineUrl: '/pwa/offline.html',
+      assets: [
+        '/assets/js/spa-new.js?vsn=d',
+        sharedChunk,
+        newChangedChunk,
+        stableAsset,
+        appShellUrl,
+        '/pwa/offline.html',
+      ],
+    };
+    await markComplete(storage, oldManifest.revision, oldManifest.assets);
+    await writeMetadata(storage, oldManifest.revision, null);
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      return url.pathname === appShellUrl
+        ? appShellResponse(newManifest.buildId)
+        : new Response(`network:${url.pathname}${url.search}`);
+    });
+    const worker = createWorker(newManifest, storage, fetchMock);
+
+    await worker.runLifecycleEvent('install');
+
+    const fetchedUrls = fetchMock.mock.calls.map(([request]: [Request]) => {
+      const url = new URL(request.url);
+      return `${url.pathname}${url.search}`;
+    });
+    expect(fetchedUrls).not.toContain(sharedChunk);
+    expect(fetchedUrls).toEqual(
+      expect.arrayContaining([
+        newManifest.buildId,
+        newChangedChunk,
+        stableAsset,
+        appShellUrl,
+        newManifest.offlineUrl,
+      ])
+    );
+
+    const newCache = await storage.open(cacheName(newManifest.revision));
+    expect(await (await newCache.match(sharedChunk))?.text()).toBe(sharedChunk);
+    expect(await (await newCache.match(stableAsset))?.text()).toBe(
+      `network:${stableAsset}`
+    );
+
+    const progress = worker.messages.filter(
+      (message): message is { type: string; completed: number; total: number } =>
+        typeof message === 'object' &&
+        message !== null &&
+        (message as { type?: unknown }).type === 'CACHE_PROGRESS'
+    );
+    expect(progress.map((message) => message.completed)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(progress.every((message) => message.total === newManifest.assets.length)).toBe(
+      true
+    );
+  });
+
+  it('reuses a versioned asset from the previous cache when the active cache lacks it', async () => {
+    const storage = new MemoryCacheStorage();
+    const sharedChunk = '/assets/js/chunks/Shared-from-previous.js';
+    const previousManifest = manifest('previous-revision');
+    previousManifest.assets.splice(1, 0, sharedChunk);
+    await markComplete(storage, previousManifest.revision, previousManifest.assets);
+    await writeMetadata(storage, 'active-revision', previousManifest.revision);
+    const nextManifest = manifest('next-revision');
+    nextManifest.assets.splice(1, 0, sharedChunk);
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      return url.pathname === appShellUrl
+        ? appShellResponse(nextManifest.buildId)
+        : new Response(`network:${url.pathname}${url.search}`);
+    });
+    const worker = createWorker(nextManifest, storage, fetchMock);
+
+    await worker.runLifecycleEvent('install');
+
+    const fetchedUrls = fetchMock.mock.calls.map(([request]: [Request]) => request.url);
+    expect(fetchedUrls).not.toContain(`${origin}${sharedChunk}`);
+    expect(
+      await (
+        await storage.open(cacheName(nextManifest.revision))
+      ).match(sharedChunk)
+    ).toBeDefined();
+  });
+
+  it('limits precache network concurrency to six requests', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('concurrent-revision');
+    currentManifest.assets.splice(
+      1,
+      0,
+      ...Array.from(
+        { length: 12 },
+        (_value, index) => `/assets/assets/network-${index}.bin`
+      )
+    );
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    const fetchMock = vi.fn(async (request: Request) => {
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+
+      try {
+        await Promise.resolve();
+        const url = new URL(request.url);
+        return url.pathname === appShellUrl
+          ? appShellResponse(currentManifest.buildId)
+          : new Response(`network:${url.pathname}${url.search}`);
+      } finally {
+        activeRequests -= 1;
+      }
+    });
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    await worker.runLifecycleEvent('install');
+
+    expect(maximumActiveRequests).toBe(6);
+    expect(fetchMock).toHaveBeenCalledTimes(currentManifest.assets.length);
   });
 
   it('repairs an evicted asset even when the completion marker remains', async () => {

@@ -72,6 +72,7 @@ const COMPLETE_KEY = '/__pwa_cache_complete__';
 const CURRENT_CACHE = `${CACHE_PREFIX}assets:${manifest.revision}`;
 const OFFLINE_URL = manifest.offlineUrl || '/pwa/offline.html';
 const ASSET_ATTEMPT_TIMEOUT_MS = 10_000;
+const PRECACHE_CONCURRENCY = 6;
 const PRECACHE_RETRY_DELAYS_MS = [0, 500, 1_500];
 const RUNTIME_RETRY_DELAYS_MS = [500, 1_500, 3_000, 5_000, 10_000];
 const NETWORK_ONLY_PATHS = new Set([
@@ -243,6 +244,117 @@ const cacheIsComplete = async (cache) => {
 const markCacheComplete = (cache) =>
   cache.put(COMPLETE_KEY, new Response(manifest.revision));
 
+const reusablePrecacheUrl = (value) => {
+  const url = new URL(value, self.location.origin);
+
+  if (
+    url.pathname.startsWith('/assets/js/chunks/') &&
+    url.pathname.endsWith('.js')
+  ) {
+    return true;
+  }
+
+  const versionedEntry =
+    /^\/assets\/(?:css\/(?:app|spa)[^/]*\.css|js\/spa[^/]*\.js)$/u.test(
+      url.pathname
+    );
+
+  return (
+    versionedEntry &&
+    (
+      url.searchParams.get('vsn') === 'd' ||
+      url.searchParams.has('v')
+    )
+  );
+};
+
+const reusablePrecacheCacheNames = (metadata) =>
+  [metadata.current, metadata.previous]
+    .filter(
+      (revision, index, revisions) =>
+        revision &&
+        revision !== manifest.revision &&
+        revisions.indexOf(revision) === index
+    )
+    .map(cacheNameForRevision);
+
+const matchReusablePrecacheAsset = async (url, metadata) => {
+  if (!reusablePrecacheUrl(url)) return null;
+
+  for (const cacheName of reusablePrecacheCacheNames(metadata)) {
+    const response = await caches.match(url, { cacheName });
+    if (response?.ok) return response;
+  }
+
+  return null;
+};
+
+const populatePrecacheAsset = async (cache, url, metadata) => {
+  const cached = await cache.match(url);
+  const cachedIsUsable =
+    cached && (url !== APP_SHELL_URL || (await appShellMatchesManifest(cached)));
+
+  if (cachedIsUsable) return;
+
+  const reusable = await matchReusablePrecacheAsset(url, metadata);
+  if (reusable) {
+    await cache.put(url, reusable);
+    return;
+  }
+
+  const response = await fetchPrecacheAsset(url);
+  await cache.put(url, response);
+};
+
+const populatePrecacheAssets = async (cache, metadata) => {
+  let nextIndex = 0;
+  let completed = 0;
+  let failed = false;
+  let firstError = null;
+  let progressPromise = Promise.resolve();
+
+  const reportProgress = () => {
+    const completedCount = completed + 1;
+    completed = completedCount;
+    progressPromise = progressPromise.then(() =>
+      broadcast({
+        type: 'CACHE_PROGRESS',
+        context: 'precache',
+        completed: completedCount,
+        total: manifest.assets.length,
+      })
+    );
+  };
+
+  const runWorker = async () => {
+    while (!failed) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= manifest.assets.length) return;
+
+      try {
+        await populatePrecacheAsset(cache, manifest.assets[index], metadata);
+        reportProgress();
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      }
+    }
+  };
+
+  const workers = Array.from(
+    { length: Math.min(PRECACHE_CONCURRENCY, manifest.assets.length) },
+    () => runWorker()
+  );
+
+  await Promise.all(workers);
+  await progressPromise;
+
+  if (failed) throw firstError;
+};
+
 const populateCurrentCache = async () => {
   let cache = await caches.open(CURRENT_CACHE);
   if (await cacheIsComplete(cache)) return;
@@ -256,24 +368,7 @@ const populateCurrentCache = async () => {
   }
 
   try {
-    for (let index = 0; index < manifest.assets.length; index += 1) {
-      const url = manifest.assets[index];
-      const cached = await cache.match(url);
-      const cachedIsUsable =
-        cached && (url !== APP_SHELL_URL || (await appShellMatchesManifest(cached)));
-
-      if (!cachedIsUsable) {
-        const response = await fetchPrecacheAsset(url);
-        await cache.put(url, response);
-      }
-
-      await broadcast({
-        type: 'CACHE_PROGRESS',
-        context: 'precache',
-        completed: index + 1,
-        total: manifest.assets.length,
-      });
-    }
+    await populatePrecacheAssets(cache, metadata);
     await markCacheComplete(cache);
   } catch (error) {
     if (!updatesActiveCache) {
