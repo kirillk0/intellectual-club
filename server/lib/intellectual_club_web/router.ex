@@ -20,6 +20,13 @@ defmodule IntellectualClubWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :pwa_shell do
+    plug :accepts, ["html"]
+    plug :put_root_layout, html: {IntellectualClubWeb.Layouts, :root}
+    plug :put_secure_browser_headers
+    plug IntellectualClubWeb.Locale
+  end
+
   pipeline :api_session do
     plug :accepts, ["json"]
     plug :fetch_session
@@ -51,6 +58,12 @@ defmodule IntellectualClubWeb.Router do
 
   scope "/", IntellectualClubWeb do
     get "/health", HealthController, :show
+  end
+
+  scope "/", IntellectualClubWeb do
+    pipe_through :pwa_shell
+
+    get "/pwa/app-shell", SpaController, :app_shell
   end
 
   scope "/", IntellectualClubWeb do
@@ -98,6 +111,7 @@ defmodule IntellectualClubWeb.Router do
   scope "/api/bff", IntellectualClubWeb.Bff do
     pipe_through :api_session
 
+    get "/auth/bootstrap", SessionController, :bootstrap
     get "/auth/me", SessionController, :show
     post "/auth/login", SessionController, :create
     post "/auth/logout", SessionController, :delete

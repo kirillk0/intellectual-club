@@ -29,9 +29,23 @@ describe('load coordinator startup handoff', () => {
     coordinator.setBootstrapLoadStage('ready');
 
     expect(coordinator.startupLoadStartedAt()).toBe(startAt);
+    const dataTask = coordinator.beginLoadTask({
+      key: 'background-data',
+      stage: 'data',
+      startedAt: startAt,
+    });
+    expect(coordinator.useLoadCoordinator().status.value).toBeNull();
+
+    const routeTask = coordinator.beginLoadTask({
+      key: 'next-route',
+      stage: 'route',
+      startedAt: startAt,
+    });
+    expect(coordinator.useLoadCoordinator().status.value?.stage).toBe('route');
+    routeTask.finish();
+    dataTask.finish();
 
     await vi.advanceTimersByTimeAsync(0);
     expect(coordinator.startupLoadStartedAt()).toBe(Date.now());
   });
 });
-

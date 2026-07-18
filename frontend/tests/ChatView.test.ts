@@ -32,6 +32,7 @@ async function mountChatView() {
 
 describe('ChatView loading state', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
     document.body.innerHTML = '<div id="toolbar-host"></div>';
     viewModelMocks.useChatViewModel.mockReset();
     viewModelMocks.useChatViewModel.mockReturnValue({
@@ -40,6 +41,7 @@ describe('ChatView loading state', () => {
       sharedReadonly: ref(false),
       handoffPending: ref(false),
       backToChats: vi.fn(),
+      retryLoadChat: vi.fn(),
     });
     setPreferredLocale('en');
   });
@@ -49,9 +51,10 @@ describe('ChatView loading state', () => {
     activeWrapper = null;
     document.body.innerHTML = '';
     setPreferredLocale(null);
+    vi.useRealTimers();
   });
 
-  it('shows the disabled chat frame immediately without a reload action', async () => {
+  it('shows the disabled chat frame immediately and delays the recovery notice', async () => {
     const wrapper = await mountChatView();
 
     expect(wrapper.find('.spa-boot').exists()).toBe(false);
@@ -59,6 +62,11 @@ describe('ChatView loading state', () => {
     expect(wrapper.find('.message-list').exists()).toBe(true);
     expect(wrapper.get('textarea').attributes('disabled')).toBeDefined();
     expect(wrapper.find('[role="status"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(wrapper.find('[role="status"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wrapper.get('[role="status"]').text()).toContain('Loading chat…');
+    expect(wrapper.get('[role="status"] button').text()).toBe('Retry now');
     expect(wrapper.text()).toContain('Attach');
     expect(wrapper.text()).toContain('Send');
     expect(document.querySelector('#toolbar-host')?.textContent).toContain('Close');
@@ -72,6 +80,9 @@ describe('ChatView loading state', () => {
     expect(wrapper.get('textarea').attributes('placeholder')).toBe('Введите сообщение');
     expect(wrapper.text()).toContain('Прикрепить');
     expect(wrapper.text()).toContain('Отправить');
+    expect(wrapper.find('[role="status"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(wrapper.get('[role="status"] button').text()).toBe('Повторить сейчас');
     expect(document.querySelector('#toolbar-host')?.textContent).toContain('Закрыть');
   });
 });

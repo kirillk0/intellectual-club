@@ -101,7 +101,6 @@ import AdministrationNav from '@/components/AdministrationNav.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { formatRelativeDateTime } from '@/utils/dates';
 import type { WebPushSettings } from '@/types/api';
@@ -125,8 +124,6 @@ const settings = ref<WebPushSettings | null>(null);
 const baseSnapshot = ref('');
 const settingsRead = useRecoverableRead<SettingsResponse>({
   key: 'admin:web-push-settings',
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 
 const form = reactive<WebPushSettingsForm>({

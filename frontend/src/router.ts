@@ -6,6 +6,7 @@ import {
   startupLoadStartedAt,
   type LoadTaskHandle,
 } from '@/features/app/loadCoordinator';
+import { subscribeRecoveryHeartbeat } from '@/features/app/recoveryHeartbeat';
 import { navigateDocumentToRoute } from '@/features/app/routeRecoveryNavigation';
 import { ensureAuthInitialized, useSessionAuth } from '@/features/auth/session';
 import { rememberPwaRoute, restorePwaRouteOnLaunch } from '@/features/pwa/lastRoute';
@@ -166,14 +167,14 @@ let routeRecoveryFlightGeneration = 0;
 let routeRecoveryNeedsDocumentNavigation = false;
 let routeRecoveryAllowsDocumentNavigation = false;
 const routeGenerations = new WeakMap<object, number>();
-const routeReloadGuards = new Set<string>();
-const ROUTE_NAVIGATION_WATCHDOG_MS = 15_000;
+const routeReloadGuards = new Map<string, number>();
+const ROUTE_NAVIGATION_WATCHDOG_MS = 10_000;
+const ROUTE_RECOVERY_ATTEMPT_TIMEOUT_MS = 10_000;
+const ROUTE_RELOAD_GUARD_WINDOW_MS = 15_000;
 
 const isDocumentVisible = () => document.visibilityState !== 'hidden';
 
 const waitForReachableServer = async () => {
-  if (navigator.onLine === false || !isDocumentVisible()) return false;
-
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 5_000);
 
@@ -195,37 +196,65 @@ const waitForReachableServer = async () => {
 const routeReloadKey = (target: string) =>
   `intellectual-club:route-reload:${__CODE_VERSION__.label}:${target}`;
 
-const historyRouteReloadGuard = () => {
+type RouteReloadGuard = {
+  key: string;
+  at: number;
+};
+
+const validReloadTimestamp = (value: unknown, now: number) => {
+  const timestamp = typeof value === 'string' ? Number(value) : value;
+  return typeof timestamp === 'number' &&
+    Number.isFinite(timestamp) &&
+    Math.abs(now - timestamp) < ROUTE_RELOAD_GUARD_WINDOW_MS
+    ? timestamp
+    : 0;
+};
+
+const historyRouteReloadGuard = (now = Date.now()): RouteReloadGuard | null => {
   const state = window.history.state;
-  if (!state || typeof state !== 'object') return '';
+  if (!state || typeof state !== 'object') return null;
   const value = (state as Record<string, unknown>).__icRouteReload;
-  return typeof value === 'string' ? value : '';
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const at = validReloadTimestamp(record.at, now);
+  return typeof record.key === 'string' && at > 0
+    ? { key: record.key, at }
+    : null;
 };
 
 const reserveRouteReload = (target: string) => {
   const key = routeReloadKey(target);
-  if (routeReloadGuards.has(key) || historyRouteReloadGuard() === key) return false;
+  const now = Date.now();
+  const timestamps = [validReloadTimestamp(routeReloadGuards.get(key), now)];
+  const historyGuard = historyRouteReloadGuard(now);
+  if (historyGuard?.key === key) timestamps.push(historyGuard.at);
 
   try {
-    if (window.sessionStorage.getItem(key) === '1') {
-      routeReloadGuards.add(key);
-      return false;
-    }
-    window.sessionStorage.setItem(key, '1');
+    timestamps.push(validReloadTimestamp(window.sessionStorage.getItem(key), now));
   } catch {
-    // History state and the in-memory guard still prevent a reload loop.
+    // History state and the in-memory timestamp still prevent a reload storm.
   }
 
+  if (timestamps.some((timestamp) => timestamp > 0)) return false;
+
+  routeReloadGuards.set(key, now);
+  try {
+    window.sessionStorage.setItem(key, String(now));
+  } catch {
+    // History state and the in-memory timestamp still prevent a reload storm.
+  }
   try {
     window.history.replaceState(
-      { ...(window.history.state || {}), __icRouteReload: key },
+      {
+        ...(window.history.state || {}),
+        __icRouteReload: { key, at: now },
+      },
       '',
       window.location.href
     );
   } catch {
-    // The in-memory guard still protects the current document.
+    // The in-memory timestamp still protects the current document.
   }
-  routeReloadGuards.add(key);
   return true;
 };
 
@@ -237,7 +266,7 @@ const clearRouteReloadGuard = (target: string) => {
   } catch {
     // Ignore restricted storage; the in-memory guard was cleared above.
   }
-  if (historyRouteReloadGuard() === key) {
+  if (historyRouteReloadGuard()?.key === key) {
     try {
       const nextState = { ...(window.history.state || {}) };
       delete nextState.__icRouteReload;
@@ -264,6 +293,24 @@ const routeGenerationFor = (route: object & { fullPath: string }) =>
   routeGenerations.get(route) ??
   (routeNavigationTarget === route.fullPath ? activeRouteGeneration : 0);
 
+const withRouteRecoveryDeadline = <T>(promise: Promise<T>) =>
+  new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error('Route recovery timed out.')),
+      ROUTE_RECOVERY_ATTEMPT_TIMEOUT_MS
+    );
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+
 const scheduleRouteRecovery = (delayMs = 500) => {
   const generation = activeRouteGeneration;
   if (
@@ -281,8 +328,6 @@ const scheduleRouteRecovery = (delayMs = 500) => {
     waitingForConnection: navigator.onLine === false,
     waitingForVisibility: !isDocumentVisible(),
   });
-  if (navigator.onLine === false || !isDocumentVisible()) return;
-
   routeRecoveryTimerGeneration = generation;
   routeRecoveryTimer = window.setTimeout(async () => {
     if (routeRecoveryTimerGeneration === generation) {
@@ -297,8 +342,6 @@ const scheduleRouteRecovery = (delayMs = 500) => {
     let retryNavigationTarget = '';
 
     try {
-      if (navigator.onLine === false || !isDocumentVisible()) return;
-
       if (!(await waitForReachableServer())) {
         if (generation !== activeRouteGeneration) return;
         nextDelay =
@@ -344,7 +387,7 @@ const scheduleRouteRecovery = (delayMs = 500) => {
       try {
         retryNavigationTarget = target;
         routeRetryNavigationTarget = target;
-        await router.replace(target);
+        await withRouteRecoveryDeadline(router.replace(target));
         if (generation !== activeRouteGeneration) return;
         if (routeRecoveryTarget === target) routeRecoveryTarget = '';
       } catch {
@@ -402,15 +445,10 @@ const resumeRouteRecovery = () => {
     return;
   }
   clearRouteRecoveryTimer();
-  if (navigator.onLine === false || !isDocumentVisible()) return;
   scheduleRouteRecovery(0);
 };
 
-window.addEventListener('online', resumeRouteRecovery);
-window.addEventListener('offline', resumeRouteRecovery);
-window.addEventListener('focus', resumeRouteRecovery);
-window.addEventListener('pageshow', resumeRouteRecovery);
-document.addEventListener('visibilitychange', resumeRouteRecovery);
+subscribeRecoveryHeartbeat(resumeRouteRecovery);
 
 router.beforeEach((to, from) => {
   clearRouteWatchdog();
@@ -469,7 +507,8 @@ router.beforeEach((to, from) => {
 
   ensureAuthInitialized();
 
-  const { currentUser, isAuthenticated } = useSessionAuth();
+  const { currentUser, initialized, isAuthenticated } = useSessionAuth();
+  if (!initialized.value) return true;
   const loggedIn = isAuthenticated.value;
 
   if (to.name === 'login') {
@@ -519,7 +558,7 @@ router.afterEach((to, from, failure) => {
   routeRetryNavigationTarget = '';
   routeRecoveryFlightGeneration = 0;
   clearRouteReloadGuard(to.fullPath);
-  setBootstrapLoadStage(to.name === 'chat' ? 'data' : 'ready');
+  setBootstrapLoadStage('ready');
 
   const { isAuthenticated } = useSessionAuth();
   rememberPwaRoute(to, isAuthenticated.value);

@@ -1,4 +1,6 @@
 import { readonly, ref } from 'vue';
+
+import { subscribeRecoveryHeartbeat } from '@/features/app/recoveryHeartbeat';
 import { getServiceWorkerRegistration } from '@/features/pwa/serviceWorker';
 
 const CODE_VERSION_PATH = '/assets/code-version.json';
@@ -19,10 +21,11 @@ const latestVersion = ref<AppCodeVersion | null>(null);
 const checking = ref(false);
 const reloading = ref(false);
 
-let checkTimer: number | null = null;
+let unsubscribeHeartbeat: (() => void) | null = null;
 let started = false;
 let checkPromise: Promise<void> | null = null;
 let reloadPromise: Promise<void> | null = null;
+let lastCheckStartedAt = 0;
 
 const normalizeCodeVersion = (value: unknown): AppCodeVersion | null => {
   if (!value || typeof value !== 'object') return null;
@@ -147,12 +150,10 @@ const runCheck = async () => {
   latestVersion.value = remoteAvailable ? remoteVersion : null;
 };
 
-const documentVisible = () =>
-  typeof document === 'undefined' || document.visibilityState !== 'hidden';
-
 export const checkNow = () => {
   if (checkPromise) return checkPromise;
 
+  lastCheckStartedAt = Date.now();
   checking.value = true;
   checkPromise = runCheck()
     .catch(() => undefined)
@@ -164,8 +165,8 @@ export const checkNow = () => {
   return checkPromise;
 };
 
-const checkIfVisible = () => {
-  if (!documentVisible()) return;
+const checkIfDue = (visible: boolean) => {
+  if (!visible || Date.now() - lastCheckStartedAt < CHECK_INTERVAL_MS) return;
   void checkNow();
 };
 
@@ -174,27 +175,16 @@ export const start = () => {
   started = true;
 
   void checkNow();
-  checkTimer = window.setInterval(checkIfVisible, CHECK_INTERVAL_MS);
-
-  document.addEventListener('visibilitychange', checkIfVisible);
-  window.addEventListener('focus', checkIfVisible);
-  window.addEventListener('pageshow', checkIfVisible);
-  window.addEventListener('online', checkIfVisible);
+  unsubscribeHeartbeat = subscribeRecoveryHeartbeat((pulse) => {
+    checkIfDue(pulse.visible);
+  });
 };
 
 export const stop = () => {
   if (!started) return;
   started = false;
-
-  if (checkTimer !== null) {
-    window.clearInterval(checkTimer);
-    checkTimer = null;
-  }
-
-  document.removeEventListener('visibilitychange', checkIfVisible);
-  window.removeEventListener('focus', checkIfVisible);
-  window.removeEventListener('pageshow', checkIfVisible);
-  window.removeEventListener('online', checkIfVisible);
+  unsubscribeHeartbeat?.();
+  unsubscribeHeartbeat = null;
 };
 
 const waitForWorkerActivation = (worker: ServiceWorker) =>

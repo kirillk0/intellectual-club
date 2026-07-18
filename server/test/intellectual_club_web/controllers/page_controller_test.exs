@@ -56,11 +56,51 @@ defmodule IntellectualClubWeb.PageControllerTest do
     assert html =~ "Application startup progress"
     assert html =~ "window.location.replace(window.location.href)"
     assert html =~ "historyReloadGuardKey = '__icBootstrapReload'"
-    assert html =~ "sessionStorage.getItem(reloadGuardKey) === reloadId"
-    refute html =~ "reloadGuardWindowMs"
+    assert html =~ "reloadGuardWindowMs = 15000"
+    assert html =~ "sessionStorage.setItem(reloadGuardKey, String(now))"
+    refute html =~ "remoteBuildId"
     refute html =~ "spa-boot__reload"
     refute html =~ "window.location.reload()"
     assert get_resp_header(conn, "cache-control") == ["private, no-store"]
+  end
+
+  test "GET /pwa/app-shell serves a neutral revision-matched SPA shell", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+
+    conn =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> get(~p"/pwa/app-shell")
+
+    html = html_response(conn, 200)
+    assert html =~ ~s(id="spa-root")
+    assert html =~ ~s(data-session-bootstrap="required")
+    assert html =~ ~s(name="csrf-token" content="")
+    assert html =~ ~s(name="ic-build-id")
+    assert html =~ ~s(data-current-user-id="")
+    assert html =~ ~s(data-current-user-username="")
+
+    code_version_label =
+      :intellectual_club
+      |> Application.app_dir("priv/static/assets/code-version.json")
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.fetch!("label")
+      |> String.trim()
+
+    asset_version =
+      :sha256
+      |> :crypto.hash(code_version_label)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+
+    spa_asset = "/assets/js/spa.js?v=#{asset_version}"
+    assert html =~ ~s(content="#{spa_asset}")
+    assert html =~ ~s(src="#{spa_asset}")
+    assert html =~ ~s(href="/assets/css/app.css?v=#{asset_version}")
+    assert html =~ ~s(href="/assets/css/spa.css?v=#{asset_version}")
+    refute html =~ user.username
+    assert get_resp_header(conn, "cache-control") == ["no-store"]
   end
 
   test "GET / localizes delayed startup status before JavaScript starts", %{conn: conn} do

@@ -27,6 +27,7 @@ export const serverStateQueryClient = new QueryClient({
     queries: {
       staleTime: 0,
       gcTime: 5 * 60 * 1000,
+      networkMode: 'always',
       retry: (_failureCount, error) => isTransientReadError(error),
       retryDelay: (failureCount, error) =>
         recoverableRetryDelayMs(failureCount, error),

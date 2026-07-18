@@ -50,5 +50,6 @@ describe('server-state query invalidation', () => {
         retryAfter: '4',
       })
     ).toBe(4_000);
+    expect(options?.networkMode).toBe('always');
   });
 });

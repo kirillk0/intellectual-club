@@ -9,6 +9,7 @@ const bootstrapMocks = vi.hoisted(() => {
     app,
     createApp: vi.fn(() => app),
     installDomTranslations: vi.fn(),
+    requestRecoveryNow: vi.fn(),
     setBootstrapLoadStage: vi.fn(),
     setupPwa: vi.fn(),
     setupInitialQueryLoadBridge: vi.fn(),
@@ -32,6 +33,9 @@ vi.mock('@/i18n/dom', () => ({
 }));
 vi.mock('@/features/app/loadCoordinator', () => ({
   setBootstrapLoadStage: bootstrapMocks.setBootstrapLoadStage,
+}));
+vi.mock('@/features/app/recoveryHeartbeat', () => ({
+  requestRecoveryNow: bootstrapMocks.requestRecoveryNow,
 }));
 vi.mock('@/pwa', () => ({ setupPwa: bootstrapMocks.setupPwa }));
 vi.mock('@/router', () => ({ router: bootstrapMocks.router }));
@@ -69,6 +73,7 @@ describe('SPA bootstrap', () => {
     expect(bootstrapMocks.setupPwa).toHaveBeenCalledTimes(1);
     expect(bootstrapMocks.setBootstrapLoadStage).toHaveBeenCalledWith('route');
     expect(bootstrapMocks.setupInitialQueryLoadBridge).toHaveBeenCalledTimes(1);
+    expect(bootstrapMocks.requestRecoveryNow).toHaveBeenCalledTimes(1);
     expect(bootstrapMocks.app.mount).toHaveBeenCalledWith(root);
     expect(bootstrapMocks.installDomTranslations).toHaveBeenCalledWith(document.body);
     expect(bootstrapMocks.setupScrollableTabs).toHaveBeenCalledWith(root);

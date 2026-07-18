@@ -117,7 +117,6 @@ import { useRoute, useRouter } from 'vue-router';
 import { api, getApiErrorMessage } from '@/api/client';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { translate } from '@/i18n';
@@ -210,8 +209,6 @@ const rows = ref<UsageRow[]>([]);
 const visibleMetricIds = ref<UsageMetricId[]>(loadVisibleMetricIds());
 const usageRead = useRecoverableRead<UsagePayload>({
   key: () => `llm-usage:${fromDate.value}:${toDate.value}`,
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 
 const emptyCell: UsageCell = {

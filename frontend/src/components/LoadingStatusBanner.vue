@@ -10,6 +10,10 @@
       <span>{{ statusMessage }}</span>
     </div>
 
+    <button type="button" @click="requestRecoveryNow">
+      {{ translate('Retry now') }}
+    </button>
+
     <div
       class="loading-status-progress"
       role="progressbar"
@@ -39,6 +43,7 @@
 import { computed } from 'vue';
 
 import { useLoadCoordinator, type LoadStage } from '@/features/app/loadCoordinator';
+import { requestRecoveryNow } from '@/features/app/recoveryHeartbeat';
 import { translate } from '@/i18n';
 
 const stageLabels = ['Interface', 'Section', 'Data'] as const;

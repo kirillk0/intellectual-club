@@ -1,10 +1,11 @@
-import type { QueryClient } from '@tanstack/vue-query';
+import { focusManager, type QueryClient } from '@tanstack/vue-query';
 
 import {
   beginLoadTask,
   startupLoadStartedAt,
   type LoadTaskHandle,
 } from '@/features/app/loadCoordinator';
+import { subscribeRecoveryHeartbeat } from '@/features/app/recoveryHeartbeat';
 
 type InitialQueryState = {
   active: boolean;
@@ -39,14 +40,13 @@ const initialQueryState = (queryClient: QueryClient): InitialQueryState => {
 
 export const setupInitialQueryLoadBridge = (queryClient: QueryClient) => {
   let task: LoadTaskHandle | null = null;
-  let wakingQueries = false;
   let highestAttempt = 1;
-  let wakePromise: Promise<void> | null = null;
+  let visible = document.visibilityState !== 'hidden';
+  let onlineHint = navigator.onLine !== false;
 
   const sync = () => {
     const state = initialQueryState(queryClient);
     if (!state.active) {
-      if (wakingQueries) return;
       task?.finish();
       task = null;
       highestAttempt = 1;
@@ -65,66 +65,38 @@ export const setupInitialQueryLoadBridge = (queryClient: QueryClient) => {
     task.update({
       attempt: highestAttempt,
       retrying: highestAttempt > 1,
-      waitingForConnection: state.paused && navigator.onLine === false,
-      waitingForVisibility:
-        state.paused && document.visibilityState === 'hidden',
+      waitingForConnection: state.paused && !onlineHint,
+      waitingForVisibility: state.paused && !visible,
     });
   };
 
   const unsubscribe = queryClient.getQueryCache().subscribe(sync);
-  const syncOnEnvironmentChange = () => {
-    if (
-      navigator.onLine === false ||
-      document.visibilityState === 'hidden'
-    ) {
+  const unsubscribeHeartbeat = subscribeRecoveryHeartbeat(
+    (pulse) => {
+      visible = pulse.visible;
+      onlineHint = pulse.onlineHint;
+      // TanStack pauses retryers on focus in addition to network state.
+      // A periodic pulse must release that pause even when WebKit reports
+      // stale visibility after a PWA wake.
+      focusManager.setFocused(true);
+      if (pulse.reason === 'manual') {
+        void queryClient
+          .refetchQueries(
+            { type: 'active' },
+            { cancelRefetch: true, throwOnError: false }
+          )
+          .catch(() => undefined);
+      }
       sync();
-      return;
-    }
-
-    const retryingQueries = activeInitialQueries(queryClient).filter(
-      (query) => query.state.fetchFailureCount > 0
-    );
-    if (!retryingQueries.length || wakePromise) {
-      sync();
-      return;
-    }
-
-    wakingQueries = true;
-    wakePromise = Promise.all(
-      retryingQueries.map(async (query) => {
-        await query.cancel({ silent: true });
-        if (
-          navigator.onLine === false ||
-          document.visibilityState === 'hidden' ||
-          query.getObserversCount() === 0
-        ) {
-          return;
-        }
-        void query.fetch().catch(() => undefined);
-      })
-    )
-      .then(() => undefined)
-      .finally(() => {
-        wakingQueries = false;
-        wakePromise = null;
-        sync();
-      });
-  };
-
-  window.addEventListener('online', syncOnEnvironmentChange);
-  window.addEventListener('offline', syncOnEnvironmentChange);
-  window.addEventListener('focus', syncOnEnvironmentChange);
-  window.addEventListener('pageshow', syncOnEnvironmentChange);
-  document.addEventListener('visibilitychange', syncOnEnvironmentChange);
+    },
+    { immediate: true }
+  );
   sync();
 
   return () => {
     unsubscribe();
-    window.removeEventListener('online', syncOnEnvironmentChange);
-    window.removeEventListener('offline', syncOnEnvironmentChange);
-    window.removeEventListener('focus', syncOnEnvironmentChange);
-    window.removeEventListener('pageshow', syncOnEnvironmentChange);
-    document.removeEventListener('visibilitychange', syncOnEnvironmentChange);
+    unsubscribeHeartbeat();
+    focusManager.setFocused(undefined);
     task?.finish();
     task = null;
   };

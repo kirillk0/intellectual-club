@@ -10,6 +10,19 @@ defmodule IntellectualClubWeb.Bff.SessionController do
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
+  def bootstrap(conn, _params) do
+    user =
+      case Helpers.current_user(conn) do
+        {:ok, user} -> Serializer.user(user)
+        {:error, _reason} -> nil
+      end
+
+    json(conn, %{
+      user: user,
+      csrf_token: Plug.CSRFProtection.get_csrf_token()
+    })
+  end
+
   def show(conn, _params) do
     case Helpers.current_user(conn) do
       {:ok, user} ->

@@ -26,7 +26,8 @@
       <p v-if="error" class="error-text" role="alert">{{ error }}</p>
 
       <section class="card stack bookmarks-list">
-        <div class="list">
+        <InitialRoutePlaceholder v-if="loading && !bookmarks.length" />
+        <div v-else class="list">
           <ChatListRow
             v-for="entry in visibleBookmarks"
             :key="entry.bookmark_id"
@@ -58,9 +59,9 @@ import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 
 import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
 import { useChatChanges } from '@/features/chat/chatEvents';
@@ -99,8 +100,6 @@ const searchTerm = ref('');
 const bookmarks = ref<BookmarkEntry[]>([]);
 const bookmarksRead = useRecoverableRead<{ bookmarks: BookmarkEntry[] }>({
   key: 'bookmarks:index',
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 
 const normalize = (value: unknown) => String(value || '').trim().toLowerCase();

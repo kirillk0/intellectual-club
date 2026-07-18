@@ -9,7 +9,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="csrf-token" content={get_csrf_token()} />
+    <meta
+      name="csrf-token"
+      content={if assigns[:session_bootstrap_required], do: "", else: get_csrf_token()}
+    />
     <%= if assigns[:spa] do %>
       <%= if spa_preferred_theme(assigns[:current_user]) == "system" do %>
         <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
@@ -300,10 +303,11 @@
           const recoveryDelays = [0, 500, 1500, 3000, 5000, 10000];
           const reloadGuardKey = 'ic:bootstrap-reload';
           const historyReloadGuardKey = '__icBootstrapReload';
+          const reloadGuardWindowMs = 15000;
           let recoveryTimer = null;
           let recoveryAttempt = 0;
           let recoveryRunning = false;
-          let memoryReloadId = '';
+          let memoryReloadAt = 0;
 
           const shellIsVisible = () =>
             document.getElementById('spa-bootstrap-shell')?.isConnected === true;
@@ -358,7 +362,7 @@
                 ? patch.stage
                 : state.stage;
             if (nextStage === 'ready') {
-              memoryReloadId = '';
+              memoryReloadAt = 0;
               try {
                 sessionStorage.removeItem(reloadGuardKey);
               } catch (_error) {
@@ -448,45 +452,45 @@
             }
           };
 
-          const remoteBuildId = async () => {
+          const normalizeReloadAt = (value) => {
+            const timestamp = Number(value);
+            return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+          };
+
+          const readSessionReloadAt = () => {
             try {
-              const url = new URL('/assets/code-version.json', window.location.origin);
-              url.searchParams.set('_', String(Date.now()));
-              const response = await fetchWithTimeout(
-                url.href,
-                {
-                  cache: 'no-store',
-                  credentials: 'same-origin',
-                  headers: { Accept: 'application/json' },
-                },
-                4000
-              );
-              if (!response.ok) return state.buildId;
-              const version = await response.json();
-              return typeof version?.label === 'string' && version.label
-                ? version.label
-                : state.buildId;
+              return normalizeReloadAt(sessionStorage.getItem(reloadGuardKey));
             } catch (_error) {
-              return state.buildId;
+              return 0;
             }
           };
 
-          const reserveReload = (targetBuildId) => {
-            const reloadId = `${state.buildId}|${targetBuildId}`;
-            const historyReloadId =
-              window.history.state &&
-              typeof window.history.state === 'object' &&
-              typeof window.history.state[historyReloadGuardKey] === 'string'
-                ? window.history.state[historyReloadGuardKey]
-                : '';
-
-            if (historyReloadId === reloadId || memoryReloadId === reloadId) {
-              return false;
+          const readHistoryReloadAt = () => {
+            try {
+              const historyState =
+                window.history.state && typeof window.history.state === 'object'
+                  ? window.history.state
+                  : {};
+              return normalizeReloadAt(historyState[historyReloadGuardKey]);
+            } catch (_error) {
+              return 0;
             }
+          };
+
+          const reserveReload = () => {
+            const now = Date.now();
+            const recentlyReserved = [
+              readSessionReloadAt(),
+              readHistoryReloadAt(),
+              memoryReloadAt,
+            ].some(
+              (timestamp) =>
+                timestamp > 0 && Math.abs(now - timestamp) < reloadGuardWindowMs
+            );
+            if (recentlyReserved) return false;
 
             try {
-              if (sessionStorage.getItem(reloadGuardKey) === reloadId) return false;
-              sessionStorage.setItem(reloadGuardKey, reloadId);
+              sessionStorage.setItem(reloadGuardKey, String(now));
             } catch (_error) {
               // History state survives a reload when session storage is unavailable.
             }
@@ -495,7 +499,7 @@
               window.history.replaceState(
                 {
                   ...(window.history.state || {}),
-                  [historyReloadGuardKey]: reloadId,
+                  [historyReloadGuardKey]: now,
                 },
                 '',
                 window.location.href
@@ -503,13 +507,12 @@
             } catch (_error) {
               // The session and in-memory guards remain available.
             }
-            memoryReloadId = reloadId;
+            memoryReloadAt = now;
             return true;
           };
 
           const scheduleRecovery = (immediate = false) => {
             if (!shellIsVisible() || state.stage === 'ready') return;
-            if (!navigator.onLine || !documentIsVisible()) return;
             if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
 
             const delay = immediate
@@ -521,7 +524,6 @@
           const runRecovery = async () => {
             recoveryTimer = null;
             if (recoveryRunning || !shellIsVisible() || state.stage === 'ready') return;
-            if (!navigator.onLine || !documentIsVisible()) return;
 
             recoveryRunning = true;
             recoveryAttempt += 1;
@@ -540,13 +542,10 @@
 
               if (response.status === 204) {
                 const documentAvailable = await probeCurrentDocument();
-                if (documentAvailable) {
-                  const targetBuildId = await remoteBuildId();
-                  if (reserveReload(targetBuildId)) {
-                    update({ error: false });
-                    window.location.replace(window.location.href);
-                    return;
-                  }
+                if (documentAvailable && reserveReload()) {
+                  update({ error: false });
+                  window.location.replace(window.location.href);
+                  return;
                 }
               }
             } catch (_error) {
@@ -583,6 +582,7 @@
           window.addEventListener('offline', () => {
             if (!shellIsVisible()) return;
             update({ online: false, error: true });
+            scheduleRecovery();
           });
           window.addEventListener('online', () => {
             if (!shellIsVisible()) return;
@@ -596,14 +596,7 @@
             if (state.error) scheduleRecovery(true);
           });
           document.addEventListener('visibilitychange', () => {
-            if (!documentIsVisible()) {
-              if (recoveryTimer !== null) {
-                window.clearTimeout(recoveryTimer);
-                recoveryTimer = null;
-              }
-              return;
-            }
-            if (state.error) scheduleRecovery(true);
+            if (documentIsVisible() && state.error) scheduleRecovery(true);
           });
 
           const delayRemaining = Math.max(0, 2000 - (Date.now() - state.startAt));

@@ -1,11 +1,24 @@
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 
+const recoveryMocks = vi.hoisted(() => ({
+  requestRecoveryNow: vi.fn(),
+}));
+
+vi.mock('@/features/app/recoveryHeartbeat', () => ({
+  requestRecoveryNow: recoveryMocks.requestRecoveryNow,
+  subscribeRecoveryHeartbeat: vi.fn(() => () => undefined),
+}));
+
 import LoadingStatusBanner from '@/components/LoadingStatusBanner.vue';
 import { beginLoadTask } from '@/features/app/loadCoordinator';
 import { i18n, setPreferredLocale } from '@/i18n';
 
 describe('LoadingStatusBanner', () => {
+  beforeEach(() => {
+    recoveryMocks.requestRecoveryNow.mockReset();
+  });
+
   afterEach(() => {
     setPreferredLocale(null);
   });
@@ -19,6 +32,8 @@ describe('LoadingStatusBanner', () => {
     const wrapper = mount(LoadingStatusBanner, { global: { plugins: [i18n] } });
 
     expect(wrapper.get('[role="status"]').text()).toContain('Loading application');
+    await wrapper.get('button').trigger('click');
+    expect(recoveryMocks.requestRecoveryNow).toHaveBeenCalledTimes(1);
     expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('2');
     expect(wrapper.findAll('.loading-status-progress__stage')).toHaveLength(3);
 

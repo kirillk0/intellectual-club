@@ -5,6 +5,7 @@ import App from './App.vue';
 import { i18n } from './i18n';
 import { installDomTranslations } from './i18n/dom';
 import { setBootstrapLoadStage } from './features/app/loadCoordinator';
+import { requestRecoveryNow } from './features/app/recoveryHeartbeat';
 import { setupPwa } from './pwa';
 import { router } from './router';
 import { serverStateQueryClient } from './features/serverState/queryClient';
@@ -19,6 +20,7 @@ setupPwa();
 if (root) {
   setBootstrapLoadStage('route');
   setupInitialQueryLoadBridge(serverStateQueryClient);
+  requestRecoveryNow();
 
   const app = createApp(App)
     .use(i18n)

@@ -27,6 +27,8 @@ describe('API server-state invalidation', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    document.getElementById('spa-root')?.remove();
+    document.querySelector('meta[name="csrf-token"]')?.remove();
   });
 
   it('does not invalidate server state after GET', async () => {
@@ -64,6 +66,33 @@ describe('API server-state invalidation', () => {
     await api.post('/api/test/preview', { source: 'draft' }, { invalidateServerState: false });
 
     expect(serverStateMocks.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('bootstraps CSRF before a write from the neutral app shell', async () => {
+    const root = document.createElement('div');
+    root.id = 'spa-root';
+    root.dataset.sessionBootstrap = 'required';
+    document.body.append(root);
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ user: null, csrf_token: 'fresh-csrf-token' })
+      )
+      .mockResolvedValueOnce(response());
+
+    await api.post('/api/test', { name: 'new' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/bff/auth/bootstrap',
+      expect.objectContaining({
+        cache: 'no-store',
+        credentials: 'same-origin',
+      })
+    );
+    const writeOptions = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(new Headers(writeOptions.headers).get('x-csrf-token')).toBe(
+      'fresh-csrf-token'
+    );
   });
 
   it('waits for active server-state refresh before resolving a write', async () => {

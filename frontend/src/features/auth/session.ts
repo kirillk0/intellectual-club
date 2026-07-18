@@ -1,6 +1,5 @@
 import { computed, ref } from 'vue';
-import { api, isHttpError } from '@/api/client';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
+import { api, getCsrfToken, isHttpError, setCsrfToken } from '@/api/client';
 import { normalizePreferredTheme, setPreferredTheme } from '@/features/app/theme';
 import {
   createRecoverableRead,
@@ -15,9 +14,14 @@ import type { SessionUser } from '@/types/api';
 const currentUser = ref<SessionUser | null>(null);
 const initialized = ref(false);
 let refreshPromise: Promise<SessionUser | null> | null = null;
-let refreshController: RecoverableReadController<SessionUser> | null = null;
+let refreshController: RecoverableReadController<SessionUser | null> | null = null;
 
 const isAuthenticated = computed(() => Boolean(currentUser.value));
+
+const sessionBootstrapMode = () => {
+  const host = document.getElementById('spa-root') as HTMLElement | null;
+  return host?.dataset.sessionBootstrap === 'required' ? 'server' : 'dom';
+};
 
 const parseInitialUserFromDom = (): SessionUser | null => {
   const host = document.getElementById('spa-root') as HTMLElement | null;
@@ -43,6 +47,7 @@ export const applySessionUser = (user: SessionUser | null) => {
 
 export const ensureAuthInitialized = () => {
   if (initialized.value) return;
+  if (sessionBootstrapMode() === 'server') return;
   applySessionUser(parseInitialUserFromDom());
   initialized.value = true;
 };
@@ -54,6 +59,10 @@ export const useSessionAuth = () => ({
 });
 
 export const signIn = async (username: string, password: string): Promise<SessionUser> => {
+  if (!initialized.value || !getCsrfToken()) {
+    await refreshSessionUser();
+  }
+
   const payload = await api.post<{ user: SessionUser }>(
     '/api/bff/auth/login',
     { username, password },
@@ -78,25 +87,28 @@ export const fetchCurrentUser = async (): Promise<SessionUser> => {
 export const refreshSessionUser = async (): Promise<SessionUser | null> => {
   if (refreshPromise) return refreshPromise;
 
-  const controller = createRecoverableRead<SessionUser>({
+  const controller = createRecoverableRead<SessionUser | null>({
     key: 'session:refresh',
-    stage: 'data',
-    startedAt: startupLoadStartedAt,
   });
   refreshController = controller;
 
   refreshPromise = (async () => {
     try {
       return await controller.run(async ({ signal }) => {
-          const payload = await api.get<{ user: SessionUser }>('/api/bff/auth/me', {
+          const payload = await api.get<{
+            user: SessionUser | null;
+            csrf_token: string;
+          }>('/api/bff/auth/bootstrap', {
             redirectOnUnauthorized: false,
             retry: false,
             showErrorBanner: false,
             signal,
           });
 
+          if (payload.csrf_token) setCsrfToken(payload.csrf_token);
           applySessionUser(payload.user);
           initialized.value = true;
+          if (!payload.user) navigateToLoginWithReturn();
           return payload.user;
         });
     } catch (error) {

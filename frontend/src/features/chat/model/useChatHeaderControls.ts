@@ -214,15 +214,20 @@ export function useChatHeaderControls(params: Params) {
   };
 
   const hydrate = (payload: {
-    selectedConfig: number | '';
-    missingRequiredPerUserToolAliases: string[];
+    selectedConfig?: number | '';
+    missingRequiredPerUserToolAliases?: string[];
   }) => {
-    selectedConfig.value = payload.selectedConfig;
-    configSyncStatus.value = 'synced';
-    configSyncError.value = '';
-    finishConfigSync();
-    missingRequiredPerUserToolAliases.value = payload.missingRequiredPerUserToolAliases || [];
-    showMissingToolsBanner.value = missingRequiredPerUserToolAliases.value.length > 0;
+    if (payload.selectedConfig !== undefined) {
+      selectedConfig.value = payload.selectedConfig;
+      configSyncStatus.value = 'synced';
+      configSyncError.value = '';
+      finishConfigSync();
+    }
+    if (payload.missingRequiredPerUserToolAliases !== undefined) {
+      missingRequiredPerUserToolAliases.value =
+        payload.missingRequiredPerUserToolAliases;
+      showMissingToolsBanner.value = missingRequiredPerUserToolAliases.value.length > 0;
+    }
   };
 
   const noteModalOpen = ref(false);

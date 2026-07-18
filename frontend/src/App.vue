@@ -188,7 +188,7 @@ const route = useRoute();
 
 ensureAuthInitialized();
 
-const { currentUser } = useSessionAuth();
+const { currentUser, initialized: authInitialized } = useSessionAuth();
 const { banner: backendStatusBanner, dismissBackendStatusBanner } = useBackendStatusBanner();
 const { visible: loadingVisible } = useLoadCoordinator();
 const {
@@ -358,10 +358,20 @@ onMounted(() => {
   navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
   startAppUpdateMonitor();
 
-  if (currentUser.value) {
-    void refreshSessionUser().catch((error) => {
-      console.error('Failed to refresh session user.', error);
-    });
+  if (currentUser.value || !authInitialized.value) {
+    void refreshSessionUser()
+      .then((user) => {
+        if (!user || router.currentRoute.value.name !== 'login') return;
+        const next = router.currentRoute.value.query.next;
+        const target =
+          typeof next === 'string' && next.startsWith('/') && !next.startsWith('/login')
+            ? next
+            : '/';
+        return router.replace(target);
+      })
+      .catch((error) => {
+        console.error('Failed to refresh session user.', error);
+      });
   }
 
   syncWebPushForCurrentUser();

@@ -26,6 +26,7 @@
         :edit-config-label="vm.editConfigLabel"
         :config-sync-status="vm.configSyncStatus"
         :config-sync-error="vm.configSyncError"
+        :configuration-options-ready="vm.chatSettingsReady"
         :is-generating="Boolean(vm.activeGenerationId)"
         :menu-open="vm.menuOpen"
         :menu-style="vm.menuStyle"
@@ -65,6 +66,28 @@
     </StackToolbarTeleport>
 
     <p v-if="vm.loadError" class="error-text">{{ vm.loadError }}</p>
+    <section
+      v-if="showChatSettingsRecovery"
+      class="card chat-settings-recovery"
+      :role="vm.chatSettingsStatus === 'error' ? 'alert' : 'status'"
+      aria-live="polite"
+    >
+      <div class="chat-settings-recovery__copy">
+        <strong>
+          {{
+            translate(
+              vm.chatSettingsStatus === 'error'
+                ? 'Chat settings could not be loaded.'
+                : 'Chat settings are still loading. Retrying automatically…'
+            )
+          }}
+        </strong>
+        <span v-if="vm.chatSettingsError">{{ vm.chatSettingsError }}</span>
+      </div>
+      <button type="button" @click="vm.retryChatSettings">
+        {{ translate('Retry now') }}
+      </button>
+    </section>
     <h1 class="chat-print-title">{{ vm.chatFullTitle || vm.chatBaseTitle || 'Chat' }}</h1>
 
     <div class="split-wrapper">
@@ -612,6 +635,18 @@
       </div>
     </StackToolbarTeleport>
 
+    <section
+      v-if="showInitialRecovery"
+      class="card chat-initial-recovery"
+      role="status"
+      aria-live="polite"
+    >
+      <span>{{ translate('Loading chat…') }}</span>
+      <button type="button" @click="vm.retryLoadChat">
+        {{ translate('Retry now') }}
+      </button>
+    </section>
+
     <div class="split-wrapper">
       <div class="split">
         <section class="card chat-window chat-window--initializing">
@@ -661,6 +696,7 @@ import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOv
 import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue';
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';
 import ChatLibrarySidebar from '@/features/chat/components/ChatLibrarySidebar.vue';
+import { useDelayedVisibility } from '@/features/app/delayedVisibility';
 import {
   chatMessageDisplayItems,
   chatMessageHandoffSystemEventKind,
@@ -684,6 +720,11 @@ const route = useRoute();
 const router = useRouter();
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const messageTreeOpen = ref(false);
+const showInitialRecovery = useDelayedVisibility(() => !vm.loaded);
+const showChatSettingsRecovery = useDelayedVisibility(
+  () => vm.loaded && Boolean(vm.chat) && !vm.chatSettingsReady,
+  { showImmediately: () => vm.chatSettingsStatus === 'error' }
+);
 
 const expectedHandoffEventKind = (
   message: ChatBranchMessage
@@ -886,6 +927,27 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 </script>
 
 <style>
+.chat-settings-recovery,
+.chat-initial-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.chat-settings-recovery__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.chat-settings-recovery__copy span {
+  color: var(--color-text-muted);
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
 .chat-page .branch-search {
   display: flex;
   align-items: center;

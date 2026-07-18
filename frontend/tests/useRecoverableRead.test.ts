@@ -1,18 +1,19 @@
 import { HttpError } from '@/api/client';
 import {
   createRecoverableRead,
-  isTransientReadError,
-  retryAfterDelayMs,
   type RecoverableReadController,
 } from '@/features/app/useRecoverableRead';
+import {
+  isTransientReadError,
+  retryAfterDelayMs,
+} from '@/features/app/recoverableReadPolicy';
+import { requestRecoveryNow } from '@/features/app/recoveryHeartbeat';
 
 const controllers: RecoverableReadController<unknown>[] = [];
 
 const createController = <T>() => {
   const controller = createRecoverableRead<T>({
     key: 'test-read',
-    retryDelaysMs: [500, 1_500],
-    random: () => 0.5,
   });
   controllers.push(controller as RecoverableReadController<unknown>);
   return controller;
@@ -21,12 +22,14 @@ const createController = <T>() => {
 describe('recoverable reads', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   });
 
   afterEach(() => {
     controllers.splice(0).forEach((controller) => controller.dispose());
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -45,7 +48,6 @@ describe('recoverable reads', () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(controller.attempt.value).toBe(2);
 
     await vi.advanceTimersByTimeAsync(1_500);
     await expect(first).resolves.toBe('ready');
@@ -103,37 +105,48 @@ describe('recoverable reads', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('pauses offline and resumes immediately after an online signal', async () => {
-    const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+  it('attempts a real read even when navigator reports offline', async () => {
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
     const controller = createController<string>();
     const read = vi.fn().mockResolvedValue('ready');
 
     const result = controller.run(read);
-    await Promise.resolve();
-    expect(read).not.toHaveBeenCalled();
-    expect(controller.waitingForConnection.value).toBe(true);
-
-    online.mockReturnValue(true);
-    window.dispatchEvent(new Event('online'));
     await expect(result).resolves.toBe('ready');
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('distinguishes a hidden-tab pause from an offline pause', async () => {
-    const visibility = vi
+  it('keeps retry timers active while offline and hidden', async () => {
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    vi
       .spyOn(document, 'visibilityState', 'get')
       .mockReturnValue('hidden');
     const controller = createController<string>();
-    const read = vi.fn().mockResolvedValue('ready');
+    const read = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue('ready');
 
     const result = controller.run(read);
-    await Promise.resolve();
-    expect(controller.waitingForVisibility.value).toBe(true);
-    expect(controller.waitingForConnection.value).toBe(false);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
 
-    visibility.mockReturnValue('visible');
-    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(500);
     await expect(result).resolves.toBe('ready');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses a visible heartbeat to accelerate a scheduled retry', async () => {
+    const controller = createController<string>();
+    const read = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue('ready');
+
+    const result = controller.run(read);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+
+    requestRecoveryNow();
+    await expect(result).resolves.toBe('ready');
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it('does not retry terminal HTTP errors', async () => {

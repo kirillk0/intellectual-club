@@ -1,6 +1,7 @@
 importScripts('/assets/pwa-precache-manifest.js');
 
 const manifest = self.__PWA_PRECACHE_MANIFEST__;
+const APP_SHELL_URL = '/pwa/app-shell';
 const FORBIDDEN_PRECACHE_PATHS = new Set([
   '/assets/code-version.json',
   '/assets/pwa-bundle-descriptor.json',
@@ -9,6 +10,7 @@ const FORBIDDEN_PRECACHE_PATHS = new Set([
 const ALLOWED_PRECACHE_PATHS = [
   /^\/assets\/(?:assets|css|js)\//u,
   /^\/images\/pwa\//u,
+  /^\/pwa\/app-shell$/u,
   /^\/pwa\/offline\.html$/u,
   /^\/(?:apple-touch-icon|favicon)\.png$/u,
   /^\/manifest\.webmanifest$/u,
@@ -26,7 +28,7 @@ const validPrecacheUrl = (value) => {
 
   const queryAllowed =
     url.search === '' ||
-    /^\/assets\/(?:css\/spa[^/]*\.css|js\/spa[^/]*\.js)$/u.test(url.pathname);
+    /^\/assets\/(?:css\/(?:app|spa)[^/]*\.css|js\/spa[^/]*\.js)$/u.test(url.pathname);
 
   return (
     url.origin === self.location.origin &&
@@ -55,6 +57,7 @@ if (
   manifest.assets.length > 500 ||
   !uniqueAssets ||
   !manifest.assets.includes(manifest.buildId) ||
+  !manifest.assets.includes(APP_SHELL_URL) ||
   manifest.offlineUrl !== '/pwa/offline.html' ||
   !manifest.assets.includes(manifest.offlineUrl) ||
   !manifest.assets.every(validPrecacheUrl)
@@ -68,7 +71,6 @@ const META_KEY = '/__pwa_cache_metadata__';
 const COMPLETE_KEY = '/__pwa_cache_complete__';
 const CURRENT_CACHE = `${CACHE_PREFIX}assets:${manifest.revision}`;
 const OFFLINE_URL = manifest.offlineUrl || '/pwa/offline.html';
-const NAVIGATION_TIMEOUT_MS = 3_000;
 const ASSET_ATTEMPT_TIMEOUT_MS = 10_000;
 const PRECACHE_RETRY_DELAYS_MS = [0, 500, 1_500];
 const RUNTIME_RETRY_DELAYS_MS = [500, 1_500, 3_000, 5_000, 10_000];
@@ -151,6 +153,26 @@ const matchActiveCaches = async (request, options = {}) => {
   return null;
 };
 
+const appShellMatchesManifest = async (response) => {
+  if (
+    !response ||
+    !response.ok ||
+    !response.headers.get('content-type')?.toLowerCase().includes('text/html')
+  ) {
+    return false;
+  }
+
+  const source = await response.clone().text();
+  const buildId = source.match(
+    /<meta\b[^>]*\bname=["']ic-build-id["'][^>]*\bcontent=["']([^"']+)["'][^>]*>/iu
+  )?.[1];
+
+  return (
+    buildId === manifest.buildId &&
+    /\bdata-session-bootstrap=["']required["']/iu.test(source)
+  );
+};
+
 const fetchPrecacheAsset = async (url) => {
   let lastError = null;
 
@@ -178,6 +200,9 @@ const fetchPrecacheAsset = async (url) => {
       if (!response.ok) {
         throw new Error(`Precache request failed with status ${response.status}: ${url}`);
       }
+      if (url === APP_SHELL_URL && !(await appShellMatchesManifest(response))) {
+        throw new Error('Precached app shell does not match the active build.');
+      }
 
       return response;
     } catch (error) {
@@ -190,7 +215,9 @@ const fetchPrecacheAsset = async (url) => {
 
 const cacheContainsAllAssets = async (cache) => {
   for (const url of manifest.assets) {
-    if (!(await cache.match(url))) return false;
+    const response = await cache.match(url);
+    if (!response) return false;
+    if (url === APP_SHELL_URL && !(await appShellMatchesManifest(response))) return false;
   }
 
   return true;
@@ -232,8 +259,10 @@ const populateCurrentCache = async () => {
     for (let index = 0; index < manifest.assets.length; index += 1) {
       const url = manifest.assets[index];
       const cached = await cache.match(url);
+      const cachedIsUsable =
+        cached && (url !== APP_SHELL_URL || (await appShellMatchesManifest(cached)));
 
-      if (!cached) {
+      if (!cachedIsUsable) {
         const response = await fetchPrecacheAsset(url);
         await cache.put(url, response);
       }
@@ -316,16 +345,23 @@ const isSpaNavigation = (request) => {
   );
 };
 
-const handleNavigation = async (request) => {
+const fetchNavigation = async (request) => {
+  const response = await fetch(request, { cache: 'no-store' });
+
+  if (response.status >= 500) {
+    throw new Error(`Navigation failed with status ${response.status}.`);
+  }
+
+  await broadcast({ type: 'NAVIGATION_READY', url: request.url });
+  return response;
+};
+
+const handleNavigation = async (request, networkResponse) => {
+  const appShell = await matchActiveCaches(APP_SHELL_URL);
+  if (appShell) return appShell;
+
   try {
-    const response = await fetchWithTimeout(request, NAVIGATION_TIMEOUT_MS);
-
-    if (response.status >= 500) {
-      throw new Error(`Navigation failed with status ${response.status}.`);
-    }
-
-    await broadcast({ type: 'NAVIGATION_READY', url: request.url });
-    return response;
+    return await networkResponse;
   } catch (_error) {
     const fallback = await matchActiveCaches(OFFLINE_URL);
     if (fallback) return fallback;
@@ -446,12 +482,19 @@ const cacheRuntimeChunk = async (request, response) => {
 
 const isDevelopmentEntry = (url) =>
   manifest.mode === 'dev' &&
-  (url.pathname === '/assets/js/spa.js' || url.pathname === '/assets/css/spa.css');
+  (
+    url.pathname === '/assets/js/spa.js' ||
+    url.pathname === '/assets/css/spa.css' ||
+    url.pathname === '/assets/css/app.css'
+  );
 
 const handleAsset = async (request) => {
   const url = new URL(request.url);
 
   if (isDevelopmentEntry(url)) {
+    const cached = await matchActiveCaches(request);
+    if (cached) return cached;
+
     try {
       const response = await fetchWithTimeout(
         request.clone(),
@@ -523,7 +566,9 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (isSpaNavigation(event.request)) {
-    event.respondWith(handleNavigation(event.request));
+    const networkResponse = fetchNavigation(event.request);
+    event.waitUntil(networkResponse.catch(() => undefined));
+    event.respondWith(handleNavigation(event.request, networkResponse));
     return;
   }
 

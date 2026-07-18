@@ -64,7 +64,10 @@
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
-              <div class="list">
+              <InitialRoutePlaceholder
+                v-if="loading && !chats.length && !hasChatSearch"
+              />
+              <div v-else class="list">
                 <div v-for="c in visibleChats" :key="c.id" class="chat-list-entry">
                   <ChatListRow
                     :to="chatResultLink(c)"
@@ -222,9 +225,9 @@ import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListRow from '@/components/ChatListRow.vue';
 import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
+import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord } from '@/features/chat/chatAshApi';
@@ -361,8 +364,6 @@ const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
 const chatListRead = useRecoverableRead<ChatListPayload>({
   key: () => `chats:index:${pageNumber.value}:${botFilter.value || 'all'}`,
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 const botSearchTerm = ref('');
 const botsQuery = useQuery<Bot[]>({

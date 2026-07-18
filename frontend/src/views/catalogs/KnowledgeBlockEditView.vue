@@ -108,6 +108,7 @@ import {
   toIntId,
   type JsonApiResource,
 } from '@/api/jsonApi';
+import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
@@ -134,6 +135,7 @@ import type { ImageAsset } from '@/types/api';
 
 const KnowledgeBlockCodeEditor = defineAsyncComponent({
   loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
+  delay: LOADING_NOTICE_DELAY_MS,
   loadingComponent: {
     setup: () => () =>
       h('div', { class: 'muted knowledge-block-code-editor-loading', 'aria-live': 'polite' }, 'Loading editor…'),

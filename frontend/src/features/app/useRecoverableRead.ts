@@ -1,30 +1,23 @@
-import { computed, onBeforeUnmount, ref, shallowRef, type Ref } from 'vue';
+import { onBeforeUnmount } from 'vue';
 
 import {
   beginLoadTask,
-  type LoadStage,
+  startupLoadStartedAt,
   type LoadTaskHandle,
 } from '@/features/app/loadCoordinator';
 import {
   isTransientReadError,
   recoverableRetryDelayMs,
-  retryAfterDelayMs,
 } from '@/features/app/recoverableReadPolicy';
-
-export { isTransientReadError, retryAfterDelayMs };
+import { subscribeRecoveryHeartbeat } from '@/features/app/recoveryHeartbeat';
 
 type RecoverableReadContext = {
   signal: AbortSignal;
-  attempt: number;
 };
 
-export type RecoverableReadOptions = {
+type RecoverableReadOptions = {
   key: string | (() => string);
-  stage?: Exclude<LoadStage, 'ready'>;
   label?: string;
-  startedAt?: () => number;
-  retryDelaysMs?: readonly number[];
-  random?: () => number;
 };
 
 export type RecoverableReadController<T> = {
@@ -34,10 +27,6 @@ export type RecoverableReadController<T> = {
   ) => Promise<T>;
   cancel: () => void;
   dispose: () => void;
-  attempt: Readonly<Ref<number>>;
-  retrying: Readonly<Ref<boolean>>;
-  waitingForConnection: Readonly<Ref<boolean>>;
-  waitingForVisibility: Readonly<Ref<boolean>>;
 };
 
 type SharedExecution<T> = {
@@ -47,10 +36,10 @@ type SharedExecution<T> = {
   task: LoadTaskHandle;
   owners: Set<symbol>;
   wake: (() => void) | null;
-  attempt: Ref<number>;
-  retrying: Ref<boolean>;
-  waitingForConnection: Ref<boolean>;
-  waitingForVisibility: Ref<boolean>;
+  attempt: number;
+  retrying: boolean;
+  waitingForConnection: boolean;
+  waitingForVisibility: boolean;
 };
 
 const activeExecutions = new Map<string, SharedExecution<unknown>>();
@@ -71,12 +60,21 @@ const registeredExecution = <T>(key: string) =>
 
 const updateTask = (execution: SharedExecution<unknown>) => {
   execution.task.update({
-    attempt: Math.max(1, execution.attempt.value),
-    retrying: execution.retrying.value,
-    waitingForConnection: execution.waitingForConnection.value,
-    waitingForVisibility: execution.waitingForVisibility.value,
+    attempt: Math.max(1, execution.attempt),
+    retrying: execution.retrying,
+    waitingForConnection: execution.waitingForConnection,
+    waitingForVisibility: execution.waitingForVisibility,
   });
 };
+
+subscribeRecoveryHeartbeat((pulse) => {
+  for (const execution of activeExecutions.values()) {
+    execution.waitingForConnection = pulse.onlineHint === false;
+    execution.waitingForVisibility = !pulse.visible;
+    updateTask(execution);
+    execution.wake?.();
+  }
+});
 
 const finishExecution = (execution: SharedExecution<unknown>, abort: boolean) => {
   if (abort) execution.controller.abort();
@@ -112,16 +110,8 @@ const waitForNextAttempt = (
 
     execution.wake = finish;
     controller.signal.addEventListener('abort', abort, { once: true });
-
-    if (navigator.onLine === false || document.visibilityState === 'hidden') {
-      execution.waitingForConnection.value = navigator.onLine === false;
-      execution.waitingForVisibility.value = document.visibilityState === 'hidden';
-      updateTask(execution);
-      return;
-    }
-
-    execution.waitingForConnection.value = false;
-    execution.waitingForVisibility.value = false;
+    execution.waitingForConnection = navigator.onLine === false;
+    execution.waitingForVisibility = document.visibilityState === 'hidden';
     updateTask(execution);
     timer = window.setTimeout(finish, delayMs);
   });
@@ -135,9 +125,9 @@ const createExecution = <T>(
   const controller = new AbortController();
   const task = beginLoadTask({
     key,
-    stage: options.stage || 'data',
+    stage: 'data',
     label: options.label,
-    startedAt: options.startedAt?.() ?? Date.now(),
+    startedAt: startupLoadStartedAt(),
   });
   const execution: SharedExecution<T> = {
     key,
@@ -146,15 +136,11 @@ const createExecution = <T>(
     task,
     owners: new Set(),
     wake: null,
-    attempt: ref(0),
-    retrying: ref(false),
-    waitingForConnection: ref(navigator.onLine === false),
-    waitingForVisibility: ref(document.visibilityState === 'hidden'),
+    attempt: 0,
+    retrying: false,
+    waitingForConnection: navigator.onLine === false,
+    waitingForVisibility: document.visibilityState === 'hidden',
   };
-  const retryDelays = options.retryDelaysMs?.length
-    ? options.retryDelaysMs
-    : undefined;
-  const random = options.random || Math.random;
 
   execution.promise = Promise.resolve().then(async () => {
     let retryIndex = 0;
@@ -162,34 +148,28 @@ const createExecution = <T>(
     try {
       for (;;) {
         if (controller.signal.aborted) throw createAbortError();
-        if (navigator.onLine === false || document.visibilityState === 'hidden') {
-          await waitForNextAttempt(execution, 0);
-        }
 
-        execution.attempt.value += 1;
-        execution.retrying.value = execution.attempt.value > 1;
-        execution.waitingForConnection.value = false;
-        execution.waitingForVisibility.value = false;
+        execution.attempt += 1;
+        execution.retrying = execution.attempt > 1;
+        execution.waitingForConnection = false;
+        execution.waitingForVisibility = false;
         updateTask(execution);
 
         try {
-          const result = await read({
-            signal: controller.signal,
-            attempt: execution.attempt.value,
-          });
+          const result = await read({ signal: controller.signal });
           if (controller.signal.aborted) throw createAbortError();
           return result;
         } catch (error) {
           if (controller.signal.aborted || isAbortError(error)) throw error;
           if (!isTransientReadError(error)) throw error;
 
-          execution.retrying.value = true;
-          execution.waitingForConnection.value = navigator.onLine === false;
-          execution.waitingForVisibility.value = document.visibilityState === 'hidden';
+          execution.retrying = true;
+          execution.waitingForConnection = navigator.onLine === false;
+          execution.waitingForVisibility = document.visibilityState === 'hidden';
           updateTask(execution);
           await waitForNextAttempt(
             execution,
-            recoverableRetryDelayMs(retryIndex, error, retryDelays, random)
+            recoverableRetryDelayMs(retryIndex, error)
           );
           retryIndex += 1;
         }
@@ -208,12 +188,12 @@ export const createRecoverableRead = <T>(
 ): RecoverableReadController<T> => {
   const owner = Symbol('recoverable-read-owner');
   let disposed = false;
-  const active = shallowRef<SharedExecution<T> | null>(null);
+  let active: SharedExecution<T> | null = null;
 
   const detach = () => {
-    if (!active.value) return;
-    const execution = active.value;
-    active.value = null;
+    if (!active) return;
+    const execution = active;
+    active = null;
     execution.owners.delete(owner);
     if (
       execution.owners.size === 0 &&
@@ -224,49 +204,15 @@ export const createRecoverableRead = <T>(
   };
 
   const attach = (execution: SharedExecution<T>) => {
-    active.value = execution;
+    active = execution;
     execution.owners.add(owner);
     void execution.promise
       .finally(() => {
-        if (active.value === execution) active.value = null;
+        if (active === execution) active = null;
       })
       .catch(() => undefined);
     return execution.promise;
   };
-
-  const wake = () => {
-    const execution = active.value;
-    if (!execution || navigator.onLine === false || document.visibilityState === 'hidden') {
-      return;
-    }
-    execution.waitingForConnection.value = false;
-    execution.waitingForVisibility.value = false;
-    updateTask(execution);
-    execution.wake?.();
-  };
-
-  const handleOffline = () => {
-    if (!active.value) return;
-    active.value.waitingForConnection.value = true;
-    updateTask(active.value);
-  };
-
-  const handleVisibilityChange = () => {
-    if (!active.value) return;
-    if (document.visibilityState === 'hidden') {
-      active.value.waitingForVisibility.value = true;
-      active.value.waitingForConnection.value = navigator.onLine === false;
-      updateTask(active.value);
-      return;
-    }
-    wake();
-  };
-
-  window.addEventListener('online', wake);
-  window.addEventListener('focus', wake);
-  window.addEventListener('pageshow', wake);
-  window.addEventListener('offline', handleOffline);
-  document.addEventListener('visibilitychange', handleVisibilityChange);
 
   const run: RecoverableReadController<T>['run'] = (read, runOptions = {}) => {
     if (disposed) return Promise.reject(createAbortError());
@@ -280,19 +226,19 @@ export const createRecoverableRead = <T>(
           (existing.owners.size === 1 && existing.owners.has(owner)));
       if (existing && exclusivelyOwned) {
         finishExecution(existing, true);
-        if (active.value === existing) active.value = null;
+        if (active === existing) active = null;
       } else if (existing) {
-        if (active.value && active.value !== existing) detach();
+        if (active && active !== existing) detach();
         return attach(existing);
       }
     } else if (
-      active.value?.key === key &&
-      registeredExecution<T>(key) === active.value
+      active?.key === key &&
+      registeredExecution<T>(key) === active
     ) {
-      return active.value.promise;
+      return active.promise;
     }
 
-    if (active.value) detach();
+    if (active) detach();
     const existing = registeredExecution<T>(key);
     return attach(existing || createExecution(options, key, read));
   };
@@ -301,41 +247,13 @@ export const createRecoverableRead = <T>(
     if (disposed) return;
     disposed = true;
     detach();
-    window.removeEventListener('online', wake);
-    window.removeEventListener('focus', wake);
-    window.removeEventListener('pageshow', wake);
-    window.removeEventListener('offline', handleOffline);
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
   };
-
-  const idleAttempt = ref(0);
-  const idleState = ref(false);
 
   return {
     run,
     cancel: detach,
     dispose,
-    attempt: computed(() => active.value?.attempt.value ?? idleAttempt.value),
-    retrying: computed(() => active.value?.retrying.value ?? idleState.value),
-    waitingForConnection: computed(
-      () => active.value?.waitingForConnection.value ?? idleState.value
-    ),
-    waitingForVisibility: computed(
-      () => active.value?.waitingForVisibility.value ?? idleState.value
-    ),
   };
-};
-
-export const runRecoverableRead = async <T>(
-  options: RecoverableReadOptions,
-  read: (context: RecoverableReadContext) => Promise<T>
-) => {
-  const controller = createRecoverableRead<T>(options);
-  try {
-    return await controller.run(read);
-  } finally {
-    controller.dispose();
-  }
 };
 
 export const useRecoverableRead = <T>(options: RecoverableReadOptions) => {

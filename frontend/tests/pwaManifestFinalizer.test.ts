@@ -1,10 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const frontendRoot = path.resolve(import.meta.dirname, '..');
 const finalizerPath = path.join(frontendRoot, 'scripts/finalize-pwa-manifest.mjs');
+const appShellUrl = '/pwa/app-shell';
 const supplementalAssets = [
   'pwa/offline.html',
   'favicon.png',
@@ -24,6 +26,7 @@ const writeFixture = (staticDir: string, relativePath: string, contents = relati
 
 const prepareFixture = (staticDir: string) => {
   writeFixture(staticDir, 'assets/js/spa.js', 'entry');
+  writeFixture(staticDir, 'assets/css/app.css', 'shared styles');
   writeFixture(staticDir, 'assets/css/spa.css', 'styles');
   writeFixture(staticDir, 'assets/js/chunks/Route-abc123.js', 'route');
   writeFixture(staticDir, 'assets/code-version.json', JSON.stringify({ label: 'test' }));
@@ -66,12 +69,31 @@ describe('PWA precache manifest finalizer', () => {
     fs.rmSync(staticDir, { recursive: true, force: true });
   });
 
-  it('uses the same mtime-versioned entry URL as the development server layout', () => {
-    const modifiedAt = 1_700_000_000;
+  it('uses a stable code version when release copies change asset mtimes', () => {
+    const expectedVersion = crypto
+      .createHash('sha256')
+      .update('test')
+      .digest('hex')
+      .slice(0, 16);
+
+    execFileSync(process.execPath, [
+      finalizerPath,
+      '--mode',
+      'dev',
+      '--static-dir',
+      staticDir,
+    ]);
+    const firstManifest = readGeneratedManifest(staticDir);
+
     fs.utimesSync(
       path.join(staticDir, 'assets/js/spa.js'),
-      modifiedAt,
-      modifiedAt
+      1_700_000_000,
+      1_700_000_000
+    );
+    fs.utimesSync(
+      path.join(staticDir, 'assets/css/spa.css'),
+      1_800_000_000,
+      1_800_000_000
     );
 
     execFileSync(process.execPath, [
@@ -84,16 +106,19 @@ describe('PWA precache manifest finalizer', () => {
 
     const manifest = readGeneratedManifest(staticDir);
     expect(manifest.mode).toBe('dev');
-    expect(manifest.buildId).toBe('/assets/js/spa.js?v=1700000000');
-    expect(manifest.assets).toContain('/assets/css/spa.css?v=' + Math.floor(
-      fs.statSync(path.join(staticDir, 'assets/css/spa.css')).mtimeMs / 1000
-    ));
+    expect(manifest.buildId).toBe(`/assets/js/spa.js?v=${expectedVersion}`);
+    expect(manifest.buildId).toBe(firstManifest.buildId);
+    expect(manifest.assets).toContain(`/assets/css/app.css?v=${expectedVersion}`);
+    expect(manifest.assets).toContain(`/assets/css/spa.css?v=${expectedVersion}`);
     expect(manifest.assets).toContain('/assets/js/chunks/Route-abc123.js');
+    expect(manifest.assets).toContain(appShellUrl);
     expect(manifest.assets).toContain('/pwa/offline.html');
+    expect(fs.existsSync(path.join(staticDir, appShellUrl.slice(1)))).toBe(false);
   });
 
   it('maps only the entry and CSS through the Phoenix digest manifest', () => {
     writeFixture(staticDir, 'assets/js/spa-digest.js', 'entry');
+    writeFixture(staticDir, 'assets/css/app-digest.css', 'shared styles');
     writeFixture(staticDir, 'assets/css/spa-digest.css', 'styles');
     writeFixture(
       staticDir,
@@ -101,6 +126,7 @@ describe('PWA precache manifest finalizer', () => {
       JSON.stringify({
         latest: {
           'assets/js/spa.js': 'assets/js/spa-digest.js',
+          'assets/css/app.css': 'assets/css/app-digest.css',
           'assets/css/spa.css': 'assets/css/spa-digest.css',
           'assets/js/chunks/Route-abc123.js':
             'assets/js/chunks/Route-abc123-phoenix-digest.js',
@@ -119,6 +145,7 @@ describe('PWA precache manifest finalizer', () => {
     const manifest = readGeneratedManifest(staticDir);
     expect(manifest.mode).toBe('prod');
     expect(manifest.buildId).toBe('/assets/js/spa-digest.js?vsn=d');
+    expect(manifest.assets).toContain('/assets/css/app-digest.css?vsn=d');
     expect(manifest.assets).toContain('/assets/css/spa-digest.css?vsn=d');
     expect(manifest.assets).toContain('/assets/js/chunks/Route-abc123.js');
     expect(manifest.assets).not.toContain(

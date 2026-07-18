@@ -23,9 +23,11 @@
 import { computed, defineAsyncComponent, h } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
+import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 
 const MarkdownCodeViewer = defineAsyncComponent({
   loader: () => import('@/components/MarkdownCodeViewer.vue'),
+  delay: LOADING_NOTICE_DELAY_MS,
   loadingComponent: {
     setup: () => () => h('div', { class: 'muted prompt-modal__editor-loading', 'aria-live': 'polite' }, 'Loading editor…'),
   },

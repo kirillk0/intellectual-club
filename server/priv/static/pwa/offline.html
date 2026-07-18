@@ -169,12 +169,13 @@
         const targetUrl = window.location.href;
         const reloadGuardKey = "intellectual-club:pwa:offline-reload";
         const reloadGuardStateKey = "__icPwaOfflineReload";
+        const reloadGuardWindowMs = 15_000;
         const probeTimeoutMs = 2_500;
         const retryDelaysMs = [1_000, 2_000, 3_000, 5_000, 10_000, 20_000, 30_000];
         let attempt = 0;
         let retryTimer = null;
         let probing = false;
-        let memoryReloadGuard = "";
+        let memoryReloadAt = 0;
         let activeProbeController = null;
         let resumeProbeImmediately = false;
 
@@ -182,8 +183,6 @@
         document.getElementById("offline-heading").textContent = strings.heading;
         document.getElementById("offline-copy").textContent = strings.copy;
         document.querySelector(".offline-progress").setAttribute("aria-label", strings.progress);
-
-        const isDocumentVisible = () => document.visibilityState !== "hidden";
 
         const clearRetryTimer = () => {
           if (retryTimer === null) return;
@@ -212,12 +211,13 @@
 
         const readSessionGuard = () => {
           try {
-            return window.sessionStorage.getItem(reloadGuardKey) || "";
+            const timestamp = Number(window.sessionStorage.getItem(reloadGuardKey));
+            return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
           } catch (_error) {
             // History state and the in-memory guard remain available.
           }
 
-          return "";
+          return 0;
         };
 
         const readHistoryGuard = () => {
@@ -226,26 +226,29 @@
               window.history.state && typeof window.history.state === "object"
                 ? window.history.state
                 : {};
-            const guard = state[reloadGuardStateKey];
-            return typeof guard === "string" ? guard : "";
+            const timestamp = Number(state[reloadGuardStateKey]);
+            return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
           } catch (_error) {
             // The in-memory guard remains available.
           }
 
-          return "";
+          return 0;
         };
 
-        const canReload = (buildId) => {
-          if (
-            readSessionGuard() === buildId ||
-            readHistoryGuard() === buildId ||
-            memoryReloadGuard === buildId
-          ) {
-            return false;
-          }
+        const canReload = () => {
+          const now = Date.now();
+          const recentlyReloaded = [
+            readSessionGuard(),
+            readHistoryGuard(),
+            memoryReloadAt,
+          ].some(
+            (timestamp) =>
+              timestamp > 0 && Math.abs(now - timestamp) < reloadGuardWindowMs
+          );
+          if (recentlyReloaded) return false;
 
           try {
-            window.sessionStorage.setItem(reloadGuardKey, buildId);
+            window.sessionStorage.setItem(reloadGuardKey, String(now));
           } catch (_error) {
             // History state and the in-memory guard remain available.
           }
@@ -256,7 +259,7 @@
                 ? window.history.state
                 : {};
             window.history.replaceState(
-              { ...state, [reloadGuardStateKey]: buildId },
+              { ...state, [reloadGuardStateKey]: now },
               "",
               window.location.href
             );
@@ -264,36 +267,12 @@
             // The in-memory guard remains available.
           }
 
-          memoryReloadGuard = buildId;
+          memoryReloadAt = now;
           return true;
-        };
-
-        const remoteBuildId = async (signal) => {
-          try {
-            const versionUrl = new URL("/assets/code-version.json", window.location.origin);
-            versionUrl.searchParams.set("_", String(Date.now()));
-            const response = await fetchWithTimeout(versionUrl.href, {
-              cache: "no-store",
-              credentials: "same-origin",
-              headers: {
-                Accept: "application/json",
-                "X-IC-Recovery-Probe": "1",
-              },
-            }, signal);
-            if (!response.ok) return "unknown";
-
-            const version = await response.json();
-            return typeof version?.label === "string" && version.label
-              ? version.label.slice(0, 256)
-              : "unknown";
-          } catch (_error) {
-            return "unknown";
-          }
         };
 
         const scheduleProbe = () => {
           clearRetryTimer();
-          if (!isDocumentVisible()) return;
 
           const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
           attempt += 1;
@@ -304,7 +283,7 @@
         };
 
         const probe = async () => {
-          if (probing || !isDocumentVisible()) return;
+          if (probing) return;
 
           const probeController = new AbortController();
           probing = true;
@@ -335,8 +314,7 @@
 
             if (!navigation.ok) throw new Error("Navigation probe failed.");
 
-            const buildId = await remoteBuildId(probeController.signal);
-            if (canReload(buildId)) {
+            if (canReload()) {
               window.location.reload();
               return;
             }
@@ -347,7 +325,7 @@
               activeProbeController = null;
             }
             probing = false;
-            restartImmediately = resumeProbeImmediately && isDocumentVisible();
+            restartImmediately = resumeProbeImmediately;
             resumeProbeImmediately = false;
           }
 
@@ -362,7 +340,6 @@
         const resumeProbe = () => {
           clearRetryTimer();
           attempt = 0;
-          if (!isDocumentVisible()) return;
 
           if (probing) {
             resumeProbeImmediately = true;
@@ -377,16 +354,7 @@
           resumeProbe();
         });
         window.addEventListener("pageshow", resumeProbe);
-        document.addEventListener("visibilitychange", () => {
-          if (!isDocumentVisible()) {
-            clearRetryTimer();
-            resumeProbeImmediately = false;
-            activeProbeController?.abort();
-            return;
-          }
-
-          resumeProbe();
-        });
+        document.addEventListener("visibilitychange", resumeProbe);
 
         void probe();
       })();

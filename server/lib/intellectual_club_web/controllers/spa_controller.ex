@@ -26,10 +26,19 @@ defmodule IntellectualClubWeb.SpaController do
     end
   end
 
+  def app_shell(conn, _params) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> assign(:spa, true)
+    |> assign(:session_bootstrap_required, true)
+    |> render(:index, current_user: nil)
+  end
+
   defp render_shell(conn, current_user) do
     conn
     |> put_resp_header("cache-control", "private, no-store")
     |> assign(:spa, true)
+    |> assign(:session_bootstrap_required, false)
     |> render(:index, current_user: current_user)
   end
 

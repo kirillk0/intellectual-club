@@ -190,11 +190,33 @@ defmodule IntellectualClubWeb.Layouts do
         version -> "#{path}?v=#{version}"
       end
     else
-      path
+      IntellectualClubWeb.Endpoint.static_path(path)
     end
   end
 
   defp dev_asset_version(path) do
+    dev_code_version() || dev_asset_mtime(path)
+  end
+
+  defp dev_code_version do
+    code_version_path =
+      Application.app_dir(:intellectual_club, "priv/static/assets/code-version.json")
+
+    with {:ok, source} <- File.read(code_version_path),
+         {:ok, %{"label" => label}} <- Jason.decode(source),
+         true <- is_binary(label),
+         label <- String.trim(label),
+         true <- label != "" do
+      :sha256
+      |> :crypto.hash(label)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+    else
+      _ -> nil
+    end
+  end
+
+  defp dev_asset_mtime(path) do
     static_path =
       path
       |> String.trim_leading("/")

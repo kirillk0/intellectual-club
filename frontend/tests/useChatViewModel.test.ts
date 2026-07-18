@@ -26,11 +26,14 @@ import { useChatViewModel } from '@/features/chat/useChatViewModel';
 
 type ChatViewModel = ReturnType<typeof useChatViewModel>;
 
-const chatState = (id: number): ChatStatePayload => ({
+const chatState = (
+  id: number,
+  llmConfigurationId: number | null = null
+): ChatStatePayload => ({
   chat: {
     id,
     bot_id: null,
-    llm_configuration_id: null,
+    llm_configuration_id: llmConfigurationId,
     can_edit: true,
     shared_incoming: false,
   } as ChatStatePayload['chat'],
@@ -45,7 +48,9 @@ const chatState = (id: number): ChatStatePayload => ({
   idle_revision: `revision-${id}`,
 });
 
-const chatSettings = (): ChatSettingsStatePayload => ({
+const chatSettings = (
+  llmConfigurations: ChatSettingsStatePayload['options']['llm_configurations'] = []
+): ChatSettingsStatePayload => ({
   chat_blocks: [],
   chat_tool_bindings: [],
   prompt_sources: {
@@ -67,7 +72,7 @@ const chatSettings = (): ChatSettingsStatePayload => ({
   missing_required_per_user_tool_aliases: [],
   options: {
     bots: [],
-    llm_configurations: [],
+    llm_configurations: llmConfigurations,
     knowledge_blocks: [],
     tool_instances: [],
   },
@@ -123,7 +128,7 @@ describe('useChatViewModel loading', () => {
 
     apiMocks.get.mockImplementation((path: string) => {
       if (path === '/api/bff/chat-state/1/settings') return settingsRequest;
-      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1, 27));
       return Promise.resolve(undefined);
     });
 
@@ -131,6 +136,8 @@ describe('useChatViewModel loading', () => {
 
     await vi.waitFor(() => expect(viewModel.loaded.value).toBe(true));
     expect(viewModel.chat.value?.id).toBe(1);
+    expect(viewModel.selectedConfig.value).toBe(27);
+    expect(viewModel.chatSettingsStatus.value).toBe('loading');
     expect(viewModel.loadError.value).toBe('');
     expect(apiMocks.get).toHaveBeenCalledWith(
       '/api/bff/chat-state/1',
@@ -143,9 +150,10 @@ describe('useChatViewModel loading', () => {
 
     resolveSettings(chatSettings());
     await flushPromises();
+    expect(viewModel.chatSettingsStatus.value).toBe('ready');
   });
 
-  it('keeps the loaded chat usable when secondary settings fail terminally', async () => {
+  it('shows an explicit recoverable state when secondary settings fail terminally', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     apiMocks.get.mockImplementation((path: string) => {
       if (path === '/api/bff/chat-state/1/settings') {
@@ -163,10 +171,52 @@ describe('useChatViewModel loading', () => {
     await flushPromises();
     expect(viewModel.loaded.value).toBe(true);
     expect(viewModel.loadError.value).toBe('');
+    expect(viewModel.chatSettingsStatus.value).toBe('error');
+    expect(viewModel.chatSettingsError.value).toBe('Settings are unavailable.');
     expect(warn).toHaveBeenCalledWith(
       'Failed to load secondary chat settings.',
       expect.any(Error)
     );
+
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1/settings') {
+        return Promise.resolve(chatSettings());
+      }
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      return Promise.resolve(undefined);
+    });
+    viewModel.retryChatSettings();
+    await vi.waitFor(() => expect(viewModel.chatSettingsStatus.value).toBe('ready'));
+  });
+
+  it('keeps the core configuration when settings arrive before the core chat', async () => {
+    let resolveCore!: (payload: ChatStatePayload) => void;
+    const configuration = {
+      id: 27,
+      label: 'Primary',
+      enabled: true,
+    } as ChatSettingsStatePayload['options']['llm_configurations'][number];
+
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1/settings') {
+        return Promise.resolve(chatSettings([configuration]));
+      }
+      if (path === '/api/bff/chat-state/1') {
+        return new Promise<ChatStatePayload>((resolve) => {
+          resolveCore = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const { viewModel } = await mountViewModel();
+    await vi.waitFor(() => expect(viewModel.chatSettingsStatus.value).toBe('ready'));
+
+    resolveCore(chatState(1, 27));
+    await vi.waitFor(() => expect(viewModel.chat.value?.id).toBe(1));
+
+    expect(viewModel.selectedConfig.value).toBe(27);
+    expect(viewModel.llmConfigurations.value).toEqual([configuration]);
   });
 
   it('aborts the previous initial request when the chat route changes', async () => {

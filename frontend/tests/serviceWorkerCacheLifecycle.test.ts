@@ -12,6 +12,7 @@ const cachePrefix = 'intellectual-club:pwa:';
 const metadataCacheName = `${cachePrefix}meta`;
 const metadataKey = '/__pwa_cache_metadata__';
 const completeKey = '/__pwa_cache_complete__';
+const appShellUrl = '/pwa/app-shell';
 
 class MemoryCache {
   readonly entries = new Map<string, Response>();
@@ -94,6 +95,18 @@ type WorkerManifest = {
 
 const cacheName = (revision: string) => `${cachePrefix}assets:${revision}`;
 
+const appShellResponse = (buildId: string, body = 'app shell') =>
+  new Response(
+    `<!doctype html><meta name="ic-build-id" content="${buildId}"><div data-session-bootstrap="required">${body}</div>`,
+    {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    }
+  );
+
+const cachedAssetResponse = (asset: string, buildId: string) =>
+  asset === appShellUrl ? appShellResponse(buildId) : new Response(asset);
+
 const writeMetadata = async (
   cacheStorage: MemoryCacheStorage,
   current: string,
@@ -114,8 +127,9 @@ const markComplete = async (
   assets: string[]
 ) => {
   const cache = await cacheStorage.open(cacheName(revision));
+  const buildId = assets.find((asset) => asset.startsWith('/assets/js/spa')) ?? assets[0];
   for (const asset of assets) {
-    await cache.put(asset, new Response(asset));
+    await cache.put(asset, cachedAssetResponse(asset, buildId));
   }
   await cache.put(completeKey, new Response(revision));
 };
@@ -178,10 +192,14 @@ const createWorker = (
 
   const runFetch = async (request: Request) => {
     const captured: { response?: Promise<Response> } = {};
+    const backgroundTasks: Promise<unknown>[] = [];
     listeners.get('fetch')?.({
       request,
       respondWith(promise: Promise<Response>) {
         captured.response = promise;
+      },
+      waitUntil(promise: Promise<unknown>) {
+        backgroundTasks.push(promise);
       },
     });
     if (!captured.response) throw new Error('fetch listener did not handle the request.');
@@ -196,8 +214,14 @@ const manifest = (revision: string): WorkerManifest => ({
   revision,
   mode: 'prod',
   offlineUrl: '/pwa/offline.html',
-  assets: ['/assets/js/spa-digest.js?vsn=d', '/pwa/offline.html'],
+  assets: ['/assets/js/spa-digest.js?vsn=d', appShellUrl, '/pwa/offline.html'],
 });
+
+const navigationRequest = (path: string) => {
+  const request = new Request(`${origin}${path}`);
+  Object.defineProperty(request, 'mode', { configurable: true, value: 'navigate' });
+  return request;
+};
 
 describe('service worker cache lifecycle', () => {
   it.each([
@@ -236,7 +260,10 @@ describe('service worker cache lifecycle', () => {
     const storage = new MemoryCacheStorage();
     const currentManifest = manifest('current-revision');
     const cache = await storage.open(cacheName(currentManifest.revision));
-    await cache.put(currentManifest.assets[0], new Response('entry'));
+    const missingAsset = currentManifest.assets.at(-1)!;
+    for (const asset of currentManifest.assets.slice(0, -1)) {
+      await cache.put(asset, cachedAssetResponse(asset, currentManifest.buildId));
+    }
     await cache.put(completeKey, new Response(currentManifest.revision));
     await writeMetadata(storage, currentManifest.revision, null);
     const fetchMock = vi.fn().mockResolvedValue(new Response('restored'));
@@ -245,8 +272,33 @@ describe('service worker cache lifecycle', () => {
     await worker.runLifecycleEvent('install');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(await cache.match(currentManifest.assets[1])).toBeDefined();
+    expect(await cache.match(missingAsset)).toBeDefined();
     expect(storage.deleted).not.toContain(cacheName(currentManifest.revision));
+  });
+
+  it('replaces an app shell whose build marker does not match the manifest', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('current-revision');
+    const cache = await storage.open(cacheName(currentManifest.revision));
+    for (const asset of currentManifest.assets) {
+      await cache.put(
+        asset,
+        asset === appShellUrl
+          ? appShellResponse('/assets/js/other-build.js?vsn=d')
+          : new Response(asset)
+      );
+    }
+    await cache.put(completeKey, new Response(currentManifest.revision));
+    await writeMetadata(storage, currentManifest.revision, null);
+    const fetchMock = vi.fn().mockResolvedValue(appShellResponse(currentManifest.buildId));
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    await worker.runLifecycleEvent('install');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await (await cache.match(appShellUrl))?.text()).toContain(
+      `content="${currentManifest.buildId}"`
+    );
   });
 
   it('deletes only a failed new cache and preserves the active version', async () => {
@@ -291,6 +343,73 @@ describe('service worker cache lifecycle', () => {
     expect(storage.stores.has(cacheName('old-revision'))).toBe(true);
     expect(storage.stores.has(cacheName('older-revision'))).toBe(false);
     expect(worker.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the cached app shell immediately while navigation runs in the background', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('current-revision');
+    await markComplete(storage, currentManifest.revision, currentManifest.assets);
+    await writeMetadata(storage, currentManifest.revision, null);
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    const response = await worker.runFetch(navigationRequest('/chats/42'));
+
+    expect(await response.text()).toContain('data-session-bootstrap="required"');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the previous revision app shell when the current cache has none', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('current-revision');
+    const currentCache = await storage.open(cacheName(currentManifest.revision));
+    await currentCache.put(currentManifest.offlineUrl, new Response('offline'));
+    await markComplete(storage, 'previous-revision', currentManifest.assets);
+    await writeMetadata(storage, currentManifest.revision, 'previous-revision');
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    const response = await worker.runFetch(navigationRequest('/bookmarks'));
+
+    expect(await response.text()).toContain('data-session-bootstrap="required"');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses uncached network navigation without storing the personalized response', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('current-revision');
+    const currentCache = await storage.open(cacheName(currentManifest.revision));
+    await currentCache.put(currentManifest.offlineUrl, new Response('offline'));
+    await writeMetadata(storage, currentManifest.revision, null);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html>personalized navigation</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    const response = await worker.runFetch(navigationRequest('/settings'));
+
+    expect(await response.text()).toBe('<html>personalized navigation</html>');
+    expect(await currentCache.match(appShellUrl)).toBeUndefined();
+  });
+
+  it('uses the offline document when neither app shell nor navigation is available', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest = manifest('current-revision');
+    const currentCache = await storage.open(cacheName(currentManifest.revision));
+    await currentCache.put(currentManifest.offlineUrl, new Response('offline document'));
+    await writeMetadata(storage, currentManifest.revision, null);
+    const worker = createWorker(
+      currentManifest,
+      storage,
+      vi.fn().mockRejectedValue(new TypeError('offline'))
+    );
+
+    const response = await worker.runFetch(navigationRequest('/'));
+
+    expect(await response.text()).toBe('offline document');
   });
 
   it('keeps retrying runtime chunks after network and retryable HTTP failures', async () => {
@@ -403,6 +522,33 @@ describe('service worker cache lifecycle', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('returns an exact precached development entry without waiting for the network', async () => {
+    const storage = new MemoryCacheStorage();
+    const currentManifest: WorkerManifest = {
+      buildId: '/assets/js/spa.js?v=stable',
+      revision: 'dev-revision',
+      mode: 'dev',
+      offlineUrl: '/pwa/offline.html',
+      assets: [
+        '/assets/js/spa.js?v=stable',
+        '/assets/css/app.css?v=stable',
+        appShellUrl,
+        '/pwa/offline.html',
+      ],
+    };
+    await markComplete(storage, currentManifest.revision, currentManifest.assets);
+    await writeMetadata(storage, currentManifest.revision, null);
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    const worker = createWorker(currentManifest, storage, fetchMock);
+
+    const response = await worker.runFetch(
+      new Request(`${origin}/assets/css/app.css?v=stable`)
+    );
+
+    expect(await response.text()).toBe('/assets/css/app.css?v=stable');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('matches a precached development entry when the release copy changes its mtime query', async () => {
     const storage = new MemoryCacheStorage();
     const currentManifest: WorkerManifest = {
@@ -410,7 +556,7 @@ describe('service worker cache lifecycle', () => {
       revision: 'dev-revision',
       mode: 'dev',
       offlineUrl: '/pwa/offline.html',
-      assets: ['/assets/js/spa.js?v=100', '/pwa/offline.html'],
+      assets: ['/assets/js/spa.js?v=100', appShellUrl, '/pwa/offline.html'],
     };
     await markComplete(storage, currentManifest.revision, currentManifest.assets);
     await writeMetadata(storage, currentManifest.revision, null);

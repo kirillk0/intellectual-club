@@ -9,7 +9,10 @@ const descriptorRelativePath = 'assets/pwa-bundle-descriptor.json';
 const codeVersionRelativePath = 'assets/code-version.json';
 const cacheManifestRelativePath = 'cache_manifest.json';
 const outputRelativePath = 'assets/pwa-precache-manifest.js';
+const appShellUrl = '/pwa/app-shell';
+const sharedShellAssets = ['css/app.css'];
 const supplementalAssets = [
+  appShellUrl,
   '/pwa/offline.html',
   '/favicon.png',
   '/apple-touch-icon.png',
@@ -86,12 +89,18 @@ const validateDescriptor = (descriptor) => {
 
 const canonicalAssetUrl = (relativePath) => `/assets/${relativePath.replace(/^\/+/u, '')}`;
 
-const developmentEntryUrl = (staticDir, relativePath) => {
-  const url = canonicalAssetUrl(relativePath);
-  const modifiedAtSeconds = Math.floor(
-    fs.statSync(filePathForUrl(staticDir, url)).mtimeMs / 1000
-  );
-  return `${url}?v=${modifiedAtSeconds}`;
+const developmentAssetVersion = (codeVersion) => {
+  const label = codeVersion?.label;
+
+  if (typeof label !== 'string' || label.trim().length === 0) {
+    throw new Error('Code version label is invalid.');
+  }
+
+  return crypto.createHash('sha256').update(label.trim()).digest('hex').slice(0, 16);
+};
+
+const developmentEntryUrl = (relativePath, version) => {
+  return `${canonicalAssetUrl(relativePath)}?v=${version}`;
 };
 
 const digestEntryUrl = (relativePath, cacheManifest) => {
@@ -105,7 +114,12 @@ const digestEntryUrl = (relativePath, cacheManifest) => {
   return `/${digestedPath}?vsn=d`;
 };
 
-const resolvePrecacheUrls = ({ descriptor, mode, cacheManifest, staticDir }) => {
+const resolvePrecacheUrls = ({
+  descriptor,
+  mode,
+  cacheManifest,
+  developmentVersion,
+}) => {
   const entryPaths = new Set([descriptor.entry, ...(descriptor.css || [])]);
 
   return descriptor.precache.map((relativePath) => {
@@ -114,12 +128,23 @@ const resolvePrecacheUrls = ({ descriptor, mode, cacheManifest, staticDir }) => 
     }
 
     if (mode === 'dev' && entryPaths.has(relativePath)) {
-      return developmentEntryUrl(staticDir, relativePath);
+      return developmentEntryUrl(relativePath, developmentVersion);
     }
 
     return canonicalAssetUrl(relativePath);
   });
 };
+
+const resolveSharedShellUrls = ({
+  mode,
+  cacheManifest,
+  developmentVersion,
+}) =>
+  sharedShellAssets.map((relativePath) =>
+    mode === 'prod'
+      ? digestEntryUrl(relativePath, cacheManifest)
+      : developmentEntryUrl(relativePath, developmentVersion)
+  );
 
 const filePathForUrl = (staticDir, url) => {
   const parsed = new URL(url, 'https://pwa.local');
@@ -127,7 +152,9 @@ const filePathForUrl = (staticDir, url) => {
 };
 
 const assertAssetsExist = (staticDir, urls) => {
-  const missing = urls.filter((url) => !fs.existsSync(filePathForUrl(staticDir, url)));
+  const missing = urls
+    .filter((url) => url !== appShellUrl)
+    .filter((url) => !fs.existsSync(filePathForUrl(staticDir, url)));
 
   if (missing.length > 0) {
     throw new Error(`PWA precache assets are missing:\n${missing.join('\n')}`);
@@ -138,6 +165,7 @@ const revisionFor = (staticDir, urls) => {
   const hash = crypto.createHash('sha256');
 
   for (const url of urls) {
+    if (url === appShellUrl) continue;
     hash.update(url);
     hash.update(fs.readFileSync(filePathForUrl(staticDir, url)));
   }
@@ -161,16 +189,28 @@ export const finalizePwaManifest = ({
   }
 
   const descriptor = readJson(path.join(staticDir, descriptorRelativePath));
-  readJson(path.join(staticDir, codeVersionRelativePath));
+  const codeVersion = readJson(path.join(staticDir, codeVersionRelativePath));
   const cacheManifest =
     mode === 'prod'
       ? readJson(path.join(staticDir, cacheManifestRelativePath))
       : null;
+  const developmentVersion =
+    mode === 'dev' ? developmentAssetVersion(codeVersion) : null;
 
   validateDescriptor(descriptor);
 
   const assets = [
-    ...resolvePrecacheUrls({ descriptor, mode, cacheManifest, staticDir }),
+    ...resolvePrecacheUrls({
+      descriptor,
+      mode,
+      cacheManifest,
+      developmentVersion,
+    }),
+    ...resolveSharedShellUrls({
+      mode,
+      cacheManifest,
+      developmentVersion,
+    }),
     ...supplementalAssets,
   ].filter((url, index, urls) => urls.indexOf(url) === index);
 

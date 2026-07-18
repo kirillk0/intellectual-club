@@ -1,5 +1,8 @@
 import { computed, readonly, ref } from 'vue';
 
+import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
+import { subscribeRecoveryHeartbeat } from '@/features/app/recoveryHeartbeat';
+
 export type LoadStage = 'runtime' | 'route' | 'data' | 'ready';
 
 export type LoadTaskSnapshot = {
@@ -32,7 +35,6 @@ type BootstrapPatch = {
   attempt?: number;
 };
 
-const LOADING_NOTICE_DELAY_MS = 2_000;
 const stageOrder: Record<LoadStage, number> = {
   runtime: 0,
   route: 1,
@@ -99,8 +101,9 @@ const updateBootstrap = (patch: BootstrapPatch) => {
 };
 
 window.addEventListener('ic:bootstrap-state', syncBootstrapState);
-window.addEventListener('online', () => updateBootstrap({ online: true }));
-window.addEventListener('offline', () => updateBootstrap({ online: false }));
+subscribeRecoveryHeartbeat((pulse) => {
+  updateBootstrap({ online: pulse.onlineHint });
+});
 
 export const setBootstrapLoadStage = (stage: LoadStage, patch: Omit<BootstrapPatch, 'stage'> = {}) => {
   updateBootstrap({ ...patch, stage });
@@ -169,7 +172,11 @@ export const beginLoadTask = ({
 
 const activeTask = computed(() => {
   delayRevision.value;
-  return [...tasks.value].sort((left, right) => left.startedAt - right.startedAt)[0] || null;
+  const eligibleTasks =
+    bootstrapStage.value === 'ready'
+      ? tasks.value.filter((task) => task.stage !== 'data')
+      : tasks.value;
+  return [...eligibleTasks].sort((left, right) => left.startedAt - right.startedAt)[0] || null;
 });
 
 const status = computed<LoadTaskSnapshot | null>(() => {

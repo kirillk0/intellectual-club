@@ -239,6 +239,7 @@ interface Props {
   editConfigLabel: string;
   configSyncStatus: 'synced' | 'pending' | 'error';
   configSyncError: string;
+  configurationOptionsReady: boolean;
   isGenerating: boolean;
   menuOpen: boolean;
   menuStyle: Record<string, string>;
@@ -271,6 +272,7 @@ const props = withDefaults(defineProps<Props>(), {
   moreConfigs: () => [],
   selectedDisabledConfig: null,
   selectedDisabledConfigReason: null,
+  configurationOptionsReady: true,
   continuationNav: () => [],
 });
 
@@ -292,12 +294,19 @@ const emit = defineEmits<{
   'dismiss-missing-tools-banner': [];
 }>();
 
-const configSelectorDisabled = computed(() => !props.canEdit || props.configSyncStatus === 'pending' || props.isGenerating);
+const configSelectorDisabled = computed(
+  () =>
+    !props.canEdit ||
+    !props.configurationOptionsReady ||
+    props.configSyncStatus === 'pending' ||
+    props.isGenerating
+);
 
 const hasContinuationNav = computed(() => props.continuationNav.length > 1);
 
 const configSelectorTitle = computed(() => {
   if (!props.canEdit) return t('Shared chats are read-only');
+  if (!props.configurationOptionsReady) return t('Loading configurations…');
   if (props.isGenerating) return t('Cannot change configuration while generating a response');
   if (props.configSyncStatus === 'pending') return t('Waiting for server confirmation');
   return undefined;

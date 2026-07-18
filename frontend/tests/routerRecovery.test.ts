@@ -46,10 +46,14 @@ vi.mock('@/features/app/loadCoordinator', () => ({
 vi.mock('@/features/app/routeRecoveryNavigation', () => ({
   navigateDocumentToRoute: routerMocks.navigateDocumentToRoute,
 }));
+vi.mock('@/features/app/recoveryHeartbeat', () => ({
+  subscribeRecoveryHeartbeat: vi.fn(() => () => undefined),
+}));
 vi.mock('@/features/auth/session', () => ({
   ensureAuthInitialized: vi.fn(),
   useSessionAuth: () => ({
     currentUser: { value: { id: 1, is_admin: true } },
+    initialized: { value: true },
     isAuthenticated: { value: true },
   }),
 }));
@@ -153,7 +157,7 @@ describe('route chunk recovery', () => {
     expect(attempts).toContain(1);
     expect(attempts).toContain(2);
     expect(attempts).toContain(3);
-    expect(attempts).not.toContain(4);
+    expect(Math.max(...attempts)).toBe(4);
   });
 
   it('retries a failed mid-session deep link without replacing the document', async () => {
@@ -196,12 +200,48 @@ describe('route chunk recovery', () => {
     expect(routerMocks.navigateDocumentToRoute).toHaveBeenCalledTimes(1);
   });
 
+  it('times out a stalled retry and schedules another attempt', async () => {
+    const target = route('/settings');
+    const from = route('/bookmarks');
+    fetchMock.mockImplementation(successfulHealth);
+    routerMocks.router.replace.mockReturnValue(new Promise(() => undefined));
+
+    routerMocks.handlers.beforeEach?.(target, from);
+    routerMocks.handlers.onError?.(new TypeError('chunk failed'), target);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(routerMocks.router.replace).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(routerMocks.router.replace).toHaveBeenCalledTimes(2);
+  });
+
+  it('probes the server even when navigator and visibility hints are stale', async () => {
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const target = route('/bookmarks');
+    fetchMock.mockImplementation(successfulHealth);
+    routerMocks.router.replace.mockResolvedValue(undefined);
+
+    routerMocks.handlers.beforeEach?.(target, route('/chats'));
+    routerMocks.handlers.onError?.(new TypeError('chunk failed'), target);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/health',
+      expect.objectContaining({ cache: 'no-store' })
+    );
+    expect(routerMocks.router.replace).toHaveBeenCalledWith('/bookmarks');
+  });
+
   it('recovers a navigation whose lazy route import never settles', async () => {
     const target = route('/catalogs/bots');
     fetchMock.mockImplementation(successfulHealth);
 
     routerMocks.handlers.beforeEach?.(target, route('/boot', []));
-    await vi.advanceTimersByTimeAsync(14_999);
+    await vi.advanceTimersByTimeAsync(9_999);
     expect(routerMocks.navigateDocumentToRoute).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);

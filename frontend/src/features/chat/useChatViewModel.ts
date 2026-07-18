@@ -30,10 +30,6 @@ import { useNavigationStack } from '@/features/stack/navigationStack';
 import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
-import {
-  setBootstrapLoadStage,
-  startupLoadStartedAt,
-} from '@/features/app/loadCoordinator';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import type {
@@ -139,18 +135,15 @@ export function useChatViewModel() {
   const chatUnavailable = ref(false);
   const initialChatRead = useRecoverableRead<ChatStatePayload>({
     key: () => `chat:${chatId.value}`,
-    stage: 'data',
     label: 'Chat',
-    startedAt: startupLoadStartedAt,
   });
   const chatSettingsRead = useRecoverableRead<ChatSettingsStatePayload>({
     key: () => `chat-settings:${chatId.value}`,
-    stage: 'data',
     label: 'Chat settings',
-    startedAt: startupLoadStartedAt,
   });
-
-  watch(loaded, (ready) => layer.setReady(ready), { immediate: true });
+  const chatSettingsStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const chatSettingsError = ref('');
+  const chatSettingsReady = computed(() => chatSettingsStatus.value === 'ready');
 
   const chat = ref<Chat | null>(null);
   const chatNote = ref('');
@@ -477,12 +470,40 @@ export function useChatViewModel() {
     });
   };
 
-  const loadSettingsState = async () => {
-    if (!chatId.value) return;
-    const payload = await api.get<ChatSettingsStatePayload>(`/api/bff/chat-state/${chatId.value}/settings`, {
-      showErrorBanner: false,
+  const resetSettingsState = () => {
+    counters.value = {
+      prompt_token_count: 0,
+      history_token_count: 0,
+      history_message_count: 0,
+    };
+    promptSources.value = {
+      bot: [],
+      chat: [],
+      configuration: [],
+      user: [],
+    };
+    promptBlocks.value = [];
+    compiledPromptText.value = '';
+    bots.value = [];
+    noBotSortActivityAt.value = null;
+    llmConfigurations.value = [];
+    knowledgeBlocks.value = [];
+    toolLibrary.value = [];
+    artifactToolsAvailable.value = false;
+    chatBlockCount.value = 0;
+    chatToolCount.value = 0;
+    headerControls.hydrate({
+      selectedConfig: '',
+      missingRequiredPerUserToolAliases: [],
     });
-    applySettingsState(payload);
+    contextPanel.hydrate({
+      activeToolInstances: [],
+      activeToolBindings: [],
+    });
+    libraryDraft.hydrate({
+      chatBlocks: [],
+      chatToolBindings: [],
+    });
   };
 
   const markLatestVisibleGenerationSeen = () => {
@@ -509,6 +530,61 @@ export function useChatViewModel() {
     'name' in error &&
     (error as { name?: unknown }).name === 'AbortError';
 
+  const runChatSettingsLoad = (
+    requestedChatId: number,
+    isCurrentLoad: () => boolean,
+    restart: boolean
+  ) => {
+    chatSettingsStatus.value = 'loading';
+    chatSettingsError.value = '';
+
+    const request = chatSettingsRead.run(
+      ({ signal }) =>
+        api.get<ChatSettingsStatePayload>(
+          `/api/bff/chat-state/${requestedChatId}/settings`,
+          {
+            showErrorBanner: false,
+            retry: false,
+            signal,
+          }
+        ),
+      { restart }
+    );
+
+    void request
+      .then((settingsPayload) => {
+        if (!isCurrentLoad()) return;
+        applySettingsState(settingsPayload);
+        chatSettingsStatus.value = 'ready';
+        chatSettingsError.value = '';
+      })
+      .catch((error) => {
+        if (!isCurrentLoad() || isAbortError(error)) return;
+        chatSettingsStatus.value = 'error';
+        chatSettingsError.value = getApiErrorMessage(
+          error,
+          'Failed to load chat settings.'
+        );
+        console.warn('Failed to load secondary chat settings.', error);
+      });
+
+    return request;
+  };
+
+  const retryChatSettings = () => {
+    const requestedChatId = chatId.value;
+    const seq = chatLoadSeq;
+    if (!requestedChatId) return;
+    void runChatSettingsLoad(
+      requestedChatId,
+      () =>
+        !disposed &&
+        seq === chatLoadSeq &&
+        requestedChatId === chatId.value,
+      true
+    );
+  };
+
   const loadChat = async (opts: { mode?: 'initial' | 'soft'; includeSettings?: boolean } = {}) => {
     const mode = opts.mode || 'initial';
     const includeSettings = opts.includeSettings !== false;
@@ -522,6 +598,10 @@ export function useChatViewModel() {
       initialChatRead.cancel();
       chatSettingsRead.cancel();
       loaded.value = false;
+      chat.value = null;
+      resetSettingsState();
+      chatSettingsStatus.value = includeSettings ? 'loading' : 'idle';
+      chatSettingsError.value = '';
       composerRuntime.stopPolling();
       activeGenerationId.value = null;
       cancelingGenerationId.value = null;
@@ -533,29 +613,13 @@ export function useChatViewModel() {
     loadError.value = '';
     chatUnavailable.value = false;
 
-    const settingsRequest = includeSettings
-      ? chatSettingsRead.run(
-          ({ signal }) =>
-            api.get<ChatSettingsStatePayload>(
-              `/api/bff/chat-state/${requestedChatId}/settings`,
-              {
-                showErrorBanner: false,
-                retry: false,
-                signal,
-              }
-            ),
-          { restart: mode === 'initial' }
-        )
-      : null;
-
-    void settingsRequest
-      ?.then((settingsPayload) => {
-        if (isCurrentLoad()) applySettingsState(settingsPayload);
-      })
-      .catch((error) => {
-        if (!isCurrentLoad() || isAbortError(error)) return;
-        console.warn('Failed to load secondary chat settings.', error);
-      });
+    if (includeSettings) {
+      void runChatSettingsLoad(
+        requestedChatId,
+        isCurrentLoad,
+        mode === 'initial'
+      );
+    }
 
     try {
       const requestCoreState = ({ signal }: { signal: AbortSignal }) =>
@@ -574,6 +638,9 @@ export function useChatViewModel() {
       if (!isCurrentLoad()) return;
 
       chat.value = payload.chat;
+      headerControls.hydrate({
+        selectedConfig: payload.chat?.llm_configuration_id ?? '',
+      });
       chatNote.value = payload.chat?.note || '';
       branch.value = payload.branch || [];
       relations.value = payload.relations || emptyChatRelations();
@@ -582,7 +649,6 @@ export function useChatViewModel() {
       composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
       loaded.value = true;
-      if (mode === 'initial') setBootstrapLoadStage('ready');
       setActiveWebPushChat(requestedChatId);
       markLatestVisibleGenerationSeen();
       closeWebPushNotificationsForChat(requestedChatId);
@@ -593,7 +659,10 @@ export function useChatViewModel() {
 
     } catch (error) {
       if (!isCurrentLoad() || isAbortError(error)) return;
-      if (mode === 'initial') chatSettingsRead.cancel();
+      if (mode === 'initial') {
+        chatSettingsRead.cancel();
+        chatSettingsStatus.value = 'idle';
+      }
       throw error;
     } finally {
       if (
@@ -636,13 +705,9 @@ export function useChatViewModel() {
   };
 
   const loadInitialChatSafe = async () => {
-    try {
-      await loadChatSafe({ mode: 'initial' });
-      if (chatUnavailable.value || !chat.value) return;
-      await contextPanel.handleFocusMessage();
-    } finally {
-      setBootstrapLoadStage('ready');
-    }
+    await loadChatSafe({ mode: 'initial' });
+    if (chatUnavailable.value || !chat.value) return;
+    await contextPanel.handleFocusMessage();
   };
 
   let chatIdlePollTimer: number | null = null;
@@ -968,6 +1033,10 @@ export function useChatViewModel() {
     loaded,
     loadError,
     retryLoadChat: loadInitialChatSafe,
+    retryChatSettings,
+    chatSettingsStatus,
+    chatSettingsError,
+    chatSettingsReady,
     chatUnavailable,
     chat,
     chatNote,

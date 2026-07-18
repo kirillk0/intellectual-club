@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
 
 describe('PWA static recovery assets', () => {
-  it('keeps navigation network-only and activates upgrades only on request', () => {
+  it('serves cached app-shell navigation while activating upgrades only on request', () => {
     const source = fs.readFileSync(
       path.join(repositoryRoot, 'server/priv/static/service-worker.js'),
       'utf8'
@@ -20,16 +20,19 @@ describe('PWA static recovery assets', () => {
     );
 
     expect(source).toContain("importScripts('/assets/pwa-precache-manifest.js')");
-    expect(source).toContain('const NAVIGATION_TIMEOUT_MS = 3_000');
+    expect(source).toContain("const APP_SHELL_URL = '/pwa/app-shell'");
     expect(source).toContain("request.mode !== 'navigate'");
     expect(source).toContain("data.type === 'ACTIVATE_UPDATE'");
     expect(source).toContain("'/assets/code-version.json'");
     expect(source).toContain("'/assets/pwa-precache-manifest.js'");
     expect(source).toContain("request.headers.has('x-ic-recovery-probe')");
     expect(source).toContain('const COMPLETE_KEY');
-    expect(navigationHandler).toContain('fetchWithTimeout(request, NAVIGATION_TIMEOUT_MS)');
+    expect(navigationHandler).toContain('matchActiveCaches(APP_SHELL_URL)');
+    expect(navigationHandler).toContain('return appShell');
+    expect(navigationHandler).toContain('return await networkResponse');
     expect(navigationHandler).toContain('matchActiveCaches(OFFLINE_URL)');
     expect(navigationHandler).not.toContain('cache.put');
+    expect(source).not.toContain('NAVIGATION_TIMEOUT_MS');
     expect(installHandler).not.toContain('skipWaiting');
   });
 
@@ -46,12 +49,12 @@ describe('PWA static recovery assets', () => {
     expect(source).toContain('Connection interrupted');
     expect(source).toContain('window.sessionStorage');
     expect(source).toContain('window.history.replaceState');
-    expect(source).toContain('memoryReloadGuard');
-    expect(source).toContain('activeProbeController?.abort()');
-    expect(source).toContain('if (!isDocumentVisible()) return');
+    expect(source).toContain('memoryReloadAt');
+    expect(source).toContain('const reloadGuardWindowMs = 15_000');
     expect(source).toContain('const probeTimeoutMs = 2_500');
     expect(source).toContain('"X-IC-Recovery-Probe": "1"');
-    expect(source).toContain('new URL("/assets/code-version.json"');
+    expect(source).not.toContain('remoteBuildId');
+    expect(source).not.toContain('isDocumentVisible');
     expect(source).not.toContain('window.localStorage');
     expect(source).not.toContain('url: targetUrl');
     expect(source).not.toContain('<button');
@@ -190,7 +193,7 @@ describe('PWA static recovery assets', () => {
     ).toThrow(/base64 raster/u);
   });
 
-  it('keeps the offline reload guard non-sensitive and scoped to a build', async () => {
+  it('rate-limits offline reloads by time without storing sensitive navigation data', async () => {
     const source = fs.readFileSync(
       path.join(repositoryRoot, 'server/priv/static/pwa/offline.html'),
       'utf8'
@@ -198,7 +201,7 @@ describe('PWA static recovery assets', () => {
     const script = source.match(/<script>([\s\S]*?)<\/script>/u)?.[1];
     if (!script) throw new Error('Offline shell recovery script is missing.');
 
-    let buildId = 'build-a';
+    let now = 1_000_000;
     let timerId = 0;
     const targetUrl = 'https://club.test/chats/42?filter=private-value';
     const stored = new Map<string, string>();
@@ -236,18 +239,12 @@ describe('PWA static recovery assets', () => {
       querySelector: vi.fn(() => element),
       addEventListener: vi.fn(),
     };
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const url = new URL(String(input), targetUrl);
-      if (url.pathname === '/assets/code-version.json') {
-        return Promise.resolve(
-          new Response(JSON.stringify({ label: buildId }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          })
-        );
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+    class FakeDate extends Date {
+      static now() {
+        return now;
       }
-      return Promise.resolve(new Response(null, { status: 204 }));
-    });
+    }
     const context = {
       window: windowMock,
       document: documentMock,
@@ -255,7 +252,7 @@ describe('PWA static recovery assets', () => {
       fetch: fetchMock,
       AbortController,
       URL,
-      Date,
+      Date: FakeDate,
       Object,
       JSON,
       Number,
@@ -269,23 +266,24 @@ describe('PWA static recovery assets', () => {
     await flushProbe();
 
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(stored.get('intellectual-club:pwa:offline-reload')).toBe('build-a');
+    expect(stored.get('intellectual-club:pwa:offline-reload')).toBe(String(now));
     expect(JSON.stringify(history.state)).not.toContain(targetUrl);
     expect([...stored.values()].join(' ')).not.toContain(targetUrl);
 
+    now += 14_999;
     vm.runInNewContext(script, context);
     await flushProbe();
     expect(reload).toHaveBeenCalledTimes(1);
 
-    buildId = 'build-b';
+    now += 1;
     vm.runInNewContext(script, context);
     await flushProbe();
 
     expect(reload).toHaveBeenCalledTimes(2);
-    expect(stored.get('intellectual-club:pwa:offline-reload')).toBe('build-b');
+    expect(stored.get('intellectual-club:pwa:offline-reload')).toBe(String(now));
   });
 
-  it('aborts an active offline probe while hidden and resumes immediately when visible', async () => {
+  it('keeps an offline recovery probe scheduled across visibility changes', async () => {
     const source = fs.readFileSync(
       path.join(repositoryRoot, 'server/priv/static/pwa/offline.html'),
       'utf8'
@@ -337,22 +335,28 @@ describe('PWA static recovery assets', () => {
       await Promise.resolve();
 
       expect(signals[0]?.aborted).toBe(true);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(signals[1]?.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
 
       setVisibility('visible');
       document.dispatchEvent(new Event('visibilitychange'));
       await Promise.resolve();
+      await Promise.resolve();
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(signals[1]?.aborted).toBe(false);
+      expect(signals[1]?.aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(signals[2]?.aborted).toBe(false);
 
       setVisibility('hidden');
       document.dispatchEvent(new Event('visibilitychange'));
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(signals[1]?.aborted).toBe(true);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(signals[2]?.aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(signals[3]?.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();

@@ -12,7 +12,7 @@
       :key="layerKey(layer.route, index)"
       :class="['stack-layer', index === presentedIndex ? 'stack-layer--active' : 'stack-layer--inactive']"
       :aria-hidden="index !== presentedIndex"
-      :inert="index !== lastIndex || index !== presentedIndex"
+      :inert="index === presentedIndex ? undefined : true"
     >
       <RouterView :route="layer.route" v-slot="{ Component }">
         <StackLayerProvider

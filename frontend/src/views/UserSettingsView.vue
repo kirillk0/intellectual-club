@@ -175,7 +175,6 @@ import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { api, isHttpError } from '@/api/client';
-import { startupLoadStartedAt } from '@/features/app/loadCoordinator';
 import { applySessionUser, useSessionAuth } from '@/features/auth/session';
 import { normalizePreferredTheme, type PreferredTheme } from '@/features/app/theme';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
@@ -241,13 +240,9 @@ const pushSupport = ref<WebPushSupportState | null>(null);
 const pushSubscribed = ref(false);
 const settingsRead = useRecoverableRead<JsonApiListResponse>({
   key: 'user-settings:knowledge-blocks',
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 const pushConfigRead = useRecoverableRead<WebPushClientConfig>({
   key: 'user-settings:web-push-config',
-  stage: 'data',
-  startedAt: startupLoadStartedAt,
 });
 
 const passwordForm = reactive({

@@ -506,6 +506,7 @@ import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { serverStateKeys } from '@/features/serverState/queryClient';
+import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 import { translate } from '@/i18n';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import { formatRelativeDateTime } from '@/utils/dates';
@@ -515,6 +516,7 @@ import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
 
 const MarkdownEditor = defineAsyncComponent({
   loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
+  delay: LOADING_NOTICE_DELAY_MS,
   loadingComponent: {
     setup: () => () => h('div', { class: 'muted', 'aria-live': 'polite' }, 'Loading editor…'),
   },

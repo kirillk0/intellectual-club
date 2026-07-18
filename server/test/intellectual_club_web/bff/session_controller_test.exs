@@ -70,6 +70,34 @@ defmodule IntellectualClubWeb.Bff.SessionControllerTest do
     assert response["error"] == "Unauthorized"
   end
 
+  test "GET /api/bff/auth/bootstrap returns an anonymous session and CSRF token", %{
+    conn: conn
+  } do
+    response =
+      conn
+      |> get("/api/bff/auth/bootstrap")
+      |> json_response(200)
+
+    assert response["user"] == nil
+    assert is_binary(response["csrf_token"])
+    assert response["csrf_token"] != ""
+  end
+
+  test "GET /api/bff/auth/bootstrap returns the authenticated user", %{conn: conn} do
+    %{user: user, password: password} = user_fixture()
+
+    response =
+      conn
+      |> sign_in_conn(user.username, password)
+      |> get("/api/bff/auth/bootstrap")
+      |> json_response(200)
+
+    assert get_in(response, ["user", "id"]) == user.id
+    assert get_in(response, ["user", "username"]) == user.username
+    assert is_binary(response["csrf_token"])
+    assert response["csrf_token"] != ""
+  end
+
   test "GET /api/bff/auth/me returns current user for authenticated request", %{conn: conn} do
     %{user: user, password: password} = user_fixture()
     before = Ash.get!(User, user.id, authorize?: false)

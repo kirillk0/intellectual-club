@@ -10,6 +10,61 @@ export function getCsrfToken(): string | null {
   return meta?.content || null;
 }
 
+export function setCsrfToken(token: string): void {
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'csrf-token';
+    document.head.append(meta);
+  }
+  meta.content = token;
+}
+
+type SessionBootstrapPayload = {
+  csrf_token?: unknown;
+};
+
+let csrfBootstrapPromise: Promise<string | null> | null = null;
+
+const staticShellNeedsSessionBootstrap = () =>
+  document.getElementById('spa-root')?.dataset.sessionBootstrap === 'required';
+
+const ensureStaticShellCsrfToken = async () => {
+  const existing = getCsrfToken();
+  if (existing || !staticShellNeedsSessionBootstrap()) return existing;
+  if (csrfBootstrapPromise) return csrfBootstrapPromise;
+
+  csrfBootstrapPromise = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 10_000);
+
+    try {
+      const response = await fetch('/api/bff/auth/bootstrap', {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Session bootstrap failed with status ${response.status}.`);
+      }
+
+      const payload = (await response.json()) as SessionBootstrapPayload;
+      const token =
+        typeof payload.csrf_token === 'string' ? payload.csrf_token.trim() : '';
+      if (!token) throw new Error('Session bootstrap did not return a CSRF token.');
+      setCsrfToken(token);
+      return token;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  })().finally(() => {
+    csrfBootstrapPromise = null;
+  });
+
+  return csrfBootstrapPromise;
+};
+
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -490,7 +545,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     typeof FormData !== 'undefined' && requestOptions.body instanceof FormData;
 
   if (isWrite) {
-    const token = getCsrfToken();
+    const token = getCsrfToken() || (await ensureStaticShellCsrfToken());
     if (token) headers.set('x-csrf-token', token);
     if (!headers.has('content-type') && !isFormData) headers.set('content-type', 'application/json');
   }

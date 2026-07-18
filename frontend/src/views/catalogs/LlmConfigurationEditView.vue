@@ -369,9 +369,11 @@ import {
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
 import type { Group, KnowledgeBlock } from '@/types/api';
+import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 
 const JsonCodeEditor = defineAsyncComponent({
   loader: () => import('@/features/catalogs/components/JsonCodeEditor.vue'),
+  delay: LOADING_NOTICE_DELAY_MS,
   loadingComponent: {
     setup: () => () => h('div', { class: 'muted json-code-editor-loading', 'aria-live': 'polite' }, 'Loading editor…'),
   },
