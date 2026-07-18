@@ -12,14 +12,8 @@
   >
     <div v-if="hasControls" class="kb-list-item__controls">
       <slot name="leading"></slot>
-      <div class="kb-list-item__controls-end">
-        <span v-if="tokenText" class="kb-list-item__tokens kb-list-item__tokens--controls">(<span>{{ tokenText }}</span>)</span>
-        <span v-if="badgeText" class="badge kb-list-item__badge kb-list-item__badge--controls">
-          {{ badgeText }}
-        </span>
-        <div v-if="slots.actions" class="kb-list-item__actions" @click.stop>
-          <slot name="actions"></slot>
-        </div>
+      <div v-if="slots.actions" class="kb-list-item__actions" @click.stop>
+        <slot name="actions"></slot>
       </div>
     </div>
 
@@ -34,10 +28,18 @@
       >
         <div class="kb-list-item__title-line">
           <span class="kb-list-item__title">{{ name }}</span>
-          <span v-if="tokenText" class="kb-list-item__tokens kb-list-item__tokens--title">(<span>{{ tokenText }}</span>)</span>
           <slot name="title-extra"></slot>
         </div>
-        <div v-if="meta" class="muted kb-list-item__meta">{{ meta }}</div>
+        <div v-if="tokenText || badgeText || meta" class="kb-list-item__details">
+          <span v-if="tokenText" class="kb-list-item__tokens">
+            (<span class="kb-list-item__tokens-full">{{ tokenText }}</span
+            ><span class="kb-list-item__tokens-compact">{{ compactTokenText }}</span>)
+          </span>
+          <span v-if="meta" class="muted kb-list-item__meta">{{ meta }}</span>
+          <span v-if="badgeText" class="badge kb-list-item__version" :title="badgeText">
+            {{ badgeText }}
+          </span>
+        </div>
       </div>
 
       <ImageThumbnail
@@ -47,9 +49,6 @@
         :size="40"
         :hideWithoutImage="true"
       />
-      <span v-if="badgeText" class="badge kb-list-item__badge kb-list-item__badge--content">
-        {{ badgeText }}
-      </span>
       <slot name="trailing"></slot>
     </div>
 
@@ -63,7 +62,7 @@
 import { computed, useSlots } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import type { ImageAsset } from '@/types/api';
-import { formatEstimatedTokens } from '@/utils/tokens';
+import { formatEstimatedTokens, formatEstimatedTokensCompact } from '@/utils/tokens';
 
 const props = withDefaults(
   defineProps<{
@@ -74,7 +73,6 @@ const props = withDefaults(
     tokenCount?: number | string | null;
     openable?: boolean;
     disabled?: boolean;
-    detailsRow?: boolean;
     as?: 'div' | 'label' | 'button';
   }>(),
   {
@@ -84,7 +82,6 @@ const props = withDefaults(
     tokenCount: null,
     openable: false,
     disabled: false,
-    detailsRow: false,
     as: 'div',
   }
 );
@@ -94,7 +91,7 @@ const emit = defineEmits<{
 }>();
 
 const slots = useSlots();
-const hasControls = computed(() => Boolean(props.detailsRow || slots.leading || slots.actions));
+const hasControls = computed(() => Boolean(slots.leading || slots.actions));
 const isRootButton = computed(() => props.as === 'button');
 const bodyOpenable = computed(() => Boolean(props.openable && !isRootButton.value));
 const badgeText = computed(() => {
@@ -107,6 +104,10 @@ const badgeText = computed(() => {
 const tokenText = computed(() => {
   if (props.tokenCount === null || props.tokenCount === undefined || props.tokenCount === '') return '';
   return formatEstimatedTokens(props.tokenCount);
+});
+const compactTokenText = computed(() => {
+  if (props.tokenCount === null || props.tokenCount === undefined || props.tokenCount === '') return '';
+  return formatEstimatedTokensCompact(props.tokenCount);
 });
 
 const emitOpen = () => {
@@ -155,30 +156,9 @@ const emitRootOpen = () => {
 .kb-list-item__controls {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 8px;
   min-width: 0;
-}
-
-.kb-list-item__controls-end {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
-.kb-list-item__badge--controls {
-  display: none;
-}
-
-.kb-list-item--with-controls .kb-list-item__badge--controls {
-  display: inline-flex;
-}
-
-.kb-list-item--with-controls .kb-list-item__badge--content {
-  display: none;
 }
 
 .kb-list-item__content-row {
@@ -186,14 +166,6 @@ const emitRootOpen = () => {
   align-items: flex-start;
   gap: 8px;
   min-width: 0;
-}
-
-.kb-list-item--with-controls .kb-list-item__content-row {
-  order: 1;
-}
-
-.kb-list-item--with-controls .kb-list-item__controls {
-  order: 2;
 }
 
 .kb-list-item__body {
@@ -208,8 +180,16 @@ const emitRootOpen = () => {
   min-width: 0;
 }
 
-.kb-list-item__thumbnail,
-.kb-list-item__badge {
+.kb-list-item__details {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 2px;
+  overflow: hidden;
+}
+
+.kb-list-item__thumbnail {
   flex: 0 0 auto;
 }
 
@@ -244,26 +224,32 @@ const emitRootOpen = () => {
 }
 
 .kb-list-item__tokens {
+  flex: 0 0 auto;
   color: var(--color-text-muted);
   font-size: 0.82rem;
   font-weight: 400;
   white-space: nowrap;
 }
 
-.kb-list-item__tokens--controls {
+.kb-list-item__tokens-full {
   display: none;
 }
 
-.kb-list-item--with-controls .kb-list-item__tokens--controls {
-  display: inline-flex;
+.kb-list-item__tokens-compact {
+  display: inline;
 }
 
-.kb-list-item--with-controls .kb-list-item__tokens--title {
-  display: none;
+.kb-list-item__version {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kb-list-item__meta {
-  margin-top: 2px;
+  flex: 1 1 auto;
   font-size: 0.9rem;
 }
 
@@ -277,28 +263,40 @@ const emitRootOpen = () => {
 }
 
 @media (min-width: 720px) {
-  .kb-list-item__body {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+  .kb-list-item__tokens-full {
+    display: inline;
   }
 
-  .kb-list-item__meta {
-    margin-top: 0;
+  .kb-list-item__tokens-compact {
+    display: none;
+  }
+}
+
+@container (max-width: 559px) {
+  .kb-list-item__tokens-full {
+    display: none;
+  }
+
+  .kb-list-item__tokens-compact {
+    display: inline;
   }
 }
 
 @container (min-width: 560px) {
+  .kb-list-item__tokens-full {
+    display: inline;
+  }
+
+  .kb-list-item__tokens-compact {
+    display: none;
+  }
+
   .kb-list-item--with-controls {
     grid-template-columns: auto minmax(0, 1fr) auto auto;
     align-items: center;
   }
 
   .kb-list-item--with-controls .kb-list-item__controls {
-    display: contents;
-  }
-
-  .kb-list-item--with-controls .kb-list-item__controls-end {
     display: contents;
   }
 
@@ -318,22 +316,6 @@ const emitRootOpen = () => {
     grid-column: 3;
     grid-row: 1;
     align-self: center;
-  }
-
-  .kb-list-item--with-controls .kb-list-item__badge--controls {
-    display: none;
-  }
-
-  .kb-list-item--with-controls .kb-list-item__tokens--controls {
-    display: none;
-  }
-
-  .kb-list-item--with-controls .kb-list-item__badge--content {
-    display: inline-flex;
-  }
-
-  .kb-list-item--with-controls .kb-list-item__tokens--title {
-    display: inline-flex;
   }
 
   .kb-list-item--with-controls .kb-list-item__secondary {

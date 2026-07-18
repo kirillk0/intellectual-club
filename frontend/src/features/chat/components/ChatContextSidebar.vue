@@ -210,7 +210,6 @@
               :version="contextBlockVersion(item.block)"
               :tokenCount="contextBlockTokenCount(item.block)"
               :openable="true"
-              :detailsRow="true"
               @open="emit('open-context-block-editor', item.block)"
             />
           </div>

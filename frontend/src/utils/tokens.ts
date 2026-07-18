@@ -1,4 +1,4 @@
-import { effectiveLocale } from '@/i18n';
+import { effectiveLocale, translate } from '@/i18n';
 
 const toInteger = (value: unknown, fallback: number) => {
   const number = typeof value === 'number' ? value : Number(value);
@@ -15,3 +15,6 @@ export const formatTokenCount = (value: unknown, fallback = 0): string => {
 
 export const formatEstimatedTokens = (value: unknown, fallback = 0): string =>
   `~${formatTokenCount(value, fallback)} tokens`;
+
+export const formatEstimatedTokensCompact = (value: unknown, fallback = 0): string =>
+  `~${formatTokenCount(value, fallback)} ${translate('tok.')}`;

@@ -858,6 +858,7 @@ export const ruMessages: Record<string, string> = {
   'rps': 'rps',
   'selected': 'выбрано',
   'steps': 'шаги',
+  'tok.': 'т.',
   'tokens': 'токены',
   'users': 'пользователи',
   'value': 'значение',
