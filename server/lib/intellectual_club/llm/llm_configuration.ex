@@ -110,7 +110,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
     attribute :timeout_seconds, :integer do
       allow_nil?(false)
       public?(true)
-      default(300)
+      default(120)
       constraints(min: 1)
     end
 

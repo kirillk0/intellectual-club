@@ -472,7 +472,7 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
     temperature: normalizeTemperature(attrs.temperature),
     reasoning_effort: normalizeReasoningEffort(attrs.reasoning_effort),
     enabled: typeof attrs.enabled === 'boolean' ? attrs.enabled : Boolean(attrs.enabled),
-    timeout_seconds: typeof attrs.timeout_seconds === 'number' ? attrs.timeout_seconds : Number(attrs.timeout_seconds || 300),
+    timeout_seconds: typeof attrs.timeout_seconds === 'number' ? attrs.timeout_seconds : Number(attrs.timeout_seconds || 120),
     context_length:
       typeof attrs.context_length === 'number' ? attrs.context_length : toIntId(attrs.context_length as any),
     supports_cache_control: Boolean(attrs.supports_cache_control),
@@ -581,7 +581,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     temperature: null,
     reasoning_effort: null,
     enabled: true,
-    timeout_seconds: 300,
+    timeout_seconds: 120,
     context_length: null,
     supports_cache_control: false,
     supports_image_input: false,

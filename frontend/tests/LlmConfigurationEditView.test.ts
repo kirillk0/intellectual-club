@@ -154,8 +154,13 @@ describe('LlmConfigurationEditView standard parameters', () => {
     const view = await mountView('/catalogs/llm-configurations/new');
     const temperatureMode = view.get<HTMLSelectElement>('#llm-configuration-temperature-mode');
     const reasoningEffort = view.get<HTMLSelectElement>('#llm-configuration-reasoning-effort');
+    const timeout = view
+      .findAll('label')
+      .find((label) => label.text().includes('Timeout (seconds)'))
+      ?.get<HTMLInputElement>('input');
 
     expect(temperatureMode.element.value).toBe('default');
+    expect(timeout?.element.value).toBe('120');
     expect(view.find('input[aria-label="Temperature"]').exists()).toBe(false);
     expect(Array.from(reasoningEffort.element.options).map((option) => option.value)).toEqual([
       '',

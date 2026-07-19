@@ -451,7 +451,7 @@ defmodule IntellectualClub.Generation.Context do
               reasoning_effort: Map.get(configuration, :reasoning_effort)
             })
 
-          timeout_ms = max(1, configuration.timeout_seconds || 300) * 1000
+          timeout_ms = max(1, configuration.timeout_seconds || 120) * 1000
 
           cache_control_enabled =
             adapter_module.supports_cache_control?() and
@@ -856,7 +856,7 @@ defmodule IntellectualClub.Generation.Context do
     timeout_seconds =
       case Map.get(llm_configuration, :timeout_seconds) do
         value when is_integer(value) and value > 0 -> value
-        _other -> 300
+        _other -> 120
       end
 
     timeout_seconds * 1000
