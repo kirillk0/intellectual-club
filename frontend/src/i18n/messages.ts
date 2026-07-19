@@ -319,6 +319,7 @@ export const ruMessages: Record<string, string> = {
   'I understand that shared tools will run using my credentials.': 'Я понимаю, что общие инструменты будут запускаться с моими учетными данными.',
   'If the list is empty, chats with this bot will not filter the configuration selector.': 'Если список пуст, чаты с этим ботом не будут фильтровать выбор конфигурации.',
   'Image': 'Изображение',
+  'Import': 'Импорт',
   'Import action': 'Действие импорта',
   'Import knowledge blocks': 'Импорт блоков знаний',
   'Import Markdown files': 'Импорт Markdown-файлов',

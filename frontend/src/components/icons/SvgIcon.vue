@@ -17,6 +17,8 @@ import BotIcon from './svg/bot.svg?component';
 import ChatIcon from './svg/chat.svg?component';
 import ArrowUpIcon from './svg/arrow-up.svg?component';
 import ArrowDownIcon from './svg/arrow-down.svg?component';
+import ExportIcon from './svg/export.svg?component';
+import ImportIcon from './svg/import.svg?component';
 import ShieldIcon from './svg/shield.svg?component';
 import SidebarIcon from './svg/sidebar.svg?component';
 import SlidersIcon from './svg/sliders.svg?component';
@@ -74,6 +76,8 @@ const iconMap: Record<string, Component> = {
   'chat': ChatIcon,
   'arrow-up': ArrowUpIcon,
   'arrow-down': ArrowDownIcon,
+  'export': ExportIcon,
+  'import': ImportIcon,
   'shield': ShieldIcon,
   'sidebar': SidebarIcon,
   'sliders': SlidersIcon,

@@ -6,19 +6,27 @@
         <div class="header-actions toolbar-actions-right" style="gap: 8px">
           <button
             v-if="transferAvailable"
+            class="icon-button icon-button--labeled"
             type="button"
             @click="openExportModal"
             :disabled="loading || exportSaving || !visibleBlocks.length"
+            aria-label="Export"
+            title="Export"
           >
-            Export
+            <SvgIcon name="export" size="16" />
+            <span class="icon-button__label">Export</span>
           </button>
           <button
             v-if="transferAvailable"
+            class="icon-button icon-button--labeled"
             type="button"
             @click="openImportPicker"
             :disabled="importBusy"
+            aria-label="Import"
+            title="Import"
           >
-            {{ importPreviewLoading ? 'Loading…' : 'Import' }}
+            <SvgIcon name="import" size="16" />
+            <span class="icon-button__label">{{ importPreviewLoading ? 'Loading…' : 'Import' }}</span>
           </button>
           <button
             class="icon-button icon-button--labeled primary toolbar-create-button"
