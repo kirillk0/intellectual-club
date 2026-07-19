@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { VueQueryPlugin } from '@tanstack/vue-query';
 import { defineComponent, h, nextTick, onMounted } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { createMemoryHistory, createRouter, useRoute } from 'vue-router';
 
 const jsonApiMocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -133,6 +133,43 @@ describe('StackRouterView entity identity', () => {
     setDestinationReady(true);
     await nextTick();
     expect(wrapper.get('.stack-layer--active').find('[data-testid="editor"]').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it('keeps an unmanaged reused layer presented when its route params change', async () => {
+    const List = defineComponent({
+      setup: () => () => h('div', { 'data-testid': 'list' }, 'List'),
+    });
+    const Detail = defineComponent({
+      setup() {
+        const route = useRoute();
+        return () => h('div', { 'data-testid': 'detail' }, `Detail ${route.params.id}`);
+      },
+    });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/items', component: List },
+        { path: '/items/:id', component: Detail },
+      ],
+    });
+
+    await router.push('/items');
+    await router.isReady();
+    const wrapper = mount(StackRouterView, { global: { plugins: [router] } });
+    await flushPromises();
+
+    useNavigationStack().markPendingPush(0);
+    await router.push('/items/1');
+    await flushPromises();
+    expect(wrapper.get('.stack-layer--active').find('[data-testid="detail"]').text()).toBe('Detail 1');
+
+    await router.replace('/items/2');
+    await flushPromises();
+
+    expect(wrapper.get('.stack-layer--active').find('[data-testid="detail"]').text()).toBe('Detail 2');
+    expect(wrapper.get('.stack-nav').attributes('aria-busy')).toBe('false');
 
     wrapper.unmount();
   });

@@ -28,8 +28,9 @@ const setReady = (ready: boolean) => {
 
 watch(
   () => props.route.fullPath,
-  () => {
+  (_fullPath, previousFullPath) => {
     Object.assign(layerRoute, props.route);
+    if (previousFullPath !== undefined && !readinessManaged) emit('readyChange', true);
   },
   { immediate: true }
 );
