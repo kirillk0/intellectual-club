@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
   @raw_reasoning_offset 1_000
   @retryable_http_status_codes MapSet.new([429, 502, 503])
   @retryable_provider_error_codes MapSet.new([
+                                    "server_error",
                                     "server_is_overloaded",
                                     "rate_limit_exceeded",
                                     "rate_limited",
@@ -15,6 +16,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
                                     "websocket_connection_limit_reached"
                                   ])
   @retryable_provider_error_types MapSet.new([
+                                    "server_error",
                                     "service_unavailable_error",
                                     "rate_limit_error"
                                   ])
@@ -1127,6 +1129,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
     text != "" and
       (String.contains?(text, "overloaded") or
+         String.contains?(text, "you can retry your request") or
          String.contains?(text, "try again later") or
          String.contains?(text, "rate limit") or
          String.contains?(text, "rate-limited") or

@@ -329,6 +329,49 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     assert error.error_text == "Our servers are currently overloaded. Please try again later."
   end
 
+  test "marks streamed server errors with an explicit retry hint as retryable" do
+    message =
+      "An error occurred while processing your request. You can retry your request, " <>
+        "or contact us through our help center if the error persists."
+
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "error",
+             "sequence_number" => 2,
+             "error" => %{
+               "code" => "server_error",
+               "type" => "server_error",
+               "message" => message,
+               "param" => nil
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    error =
+      run_and_capture_error!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{
+          "model" => "gpt-4.1",
+          "input" => []
+        },
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    assert error.status_code == nil
+    assert error.retryable == true
+    assert error.error_text == message
+    assert error.raw_response["sequence_number"] == 2
+  end
+
   test "marks overloaded failed responses as retryable" do
     scripts = %{
       "/responses" => [
