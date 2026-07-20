@@ -638,6 +638,8 @@ export const ruMessages: Record<string, string> = {
   'Share bot': 'Поделиться ботом',
   'Share chat': 'Поделиться чатом',
   'Share configuration': 'Поделиться конфигурацией',
+  'Share knowledge block': 'Поделиться блоком знаний',
+  'Share tool': 'Поделиться инструментом',
   'Share…': 'Поделиться…',
   'Shared': 'Общее',
   'Shared chats are read-only': 'Общие чаты доступны только для чтения',

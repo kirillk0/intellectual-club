@@ -1,6 +1,6 @@
 defmodule IntellectualClub.Sharing do
   @moduledoc """
-  High-level sharing operations for bots, chats, and LLM configurations.
+  High-level sharing operations for bots, chats, LLM configurations, knowledge blocks, and tools.
   """
 
   alias IntellectualClub.Accounts.UserGroup
@@ -9,15 +9,26 @@ defmodule IntellectualClub.Sharing do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatShare
+  alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Knowledge.KnowledgeBlockShare
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationShare
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.ChatToolBinding
+  alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClub.Tools.ToolInstanceShare
 
   require Ash.Query
 
   @tool_modes [:shared, :per_user]
-  @transaction_resources [BotShare, BotToolBinding, ChatShare, LlmConfigurationShare]
+  @transaction_resources [
+    BotShare,
+    BotToolBinding,
+    ChatShare,
+    KnowledgeBlockShare,
+    LlmConfigurationShare,
+    ToolInstanceShare
+  ]
   @transaction_error_key {__MODULE__, :transaction_error}
 
   def list_actor_groups(actor) do
@@ -62,6 +73,20 @@ defmodule IntellectualClub.Sharing do
     end
   end
 
+  def get_knowledge_block_share_state(knowledge_block_id, actor)
+      when is_integer(knowledge_block_id) do
+    with {:ok, knowledge_block} <- fetch_owned_knowledge_block(knowledge_block_id, actor) do
+      {:ok, load_knowledge_block_share_state(knowledge_block, actor)}
+    end
+  end
+
+  def get_tool_instance_share_state(tool_instance_id, actor)
+      when is_integer(tool_instance_id) do
+    with {:ok, tool_instance} <- fetch_owned_tool_instance(tool_instance_id, actor) do
+      {:ok, load_tool_instance_share_state(tool_instance, actor)}
+    end
+  end
+
   def replace_chat_share_state(chat_id, group_ids, actor)
       when is_integer(chat_id) and is_list(group_ids) do
     with {:ok, chat} <- fetch_owned_chat(chat_id, actor),
@@ -84,6 +109,35 @@ defmodule IntellectualClub.Sharing do
       transaction(fn ->
         with :ok <- replace_llm_configuration_shares(configuration, allowed_group_ids, actor) do
           load_llm_configuration_share_state(configuration, actor)
+        else
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+    end
+  end
+
+  def replace_knowledge_block_share_state(knowledge_block_id, group_ids, actor)
+      when is_integer(knowledge_block_id) and is_list(group_ids) do
+    with {:ok, knowledge_block} <- fetch_owned_knowledge_block(knowledge_block_id, actor),
+         {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor) do
+      transaction(fn ->
+        with :ok <-
+               replace_knowledge_block_shares(knowledge_block, allowed_group_ids, actor) do
+          load_knowledge_block_share_state(knowledge_block, actor)
+        else
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+    end
+  end
+
+  def replace_tool_instance_share_state(tool_instance_id, group_ids, actor)
+      when is_integer(tool_instance_id) and is_list(group_ids) do
+    with {:ok, tool_instance} <- fetch_owned_tool_instance(tool_instance_id, actor),
+         {:ok, allowed_group_ids} <- validate_group_ids(group_ids, actor) do
+      transaction(fn ->
+        with :ok <- replace_tool_instance_shares(tool_instance, allowed_group_ids, actor) do
+          load_tool_instance_share_state(tool_instance, actor)
         else
           {:error, reason} -> {:error, reason}
         end
@@ -147,6 +201,44 @@ defmodule IntellectualClub.Sharing do
       {:ok, nil} -> {:error, :not_found}
       {:error, %Ash.Error.Query.NotFound{}} -> {:error, :not_found}
       {:error, error} -> {:error, error}
+    end
+  end
+
+  defp fetch_owned_knowledge_block(knowledge_block_id, actor) do
+    case Ash.get(KnowledgeBlock, knowledge_block_id, actor: actor) do
+      {:ok, %KnowledgeBlock{owner_id: owner_id} = knowledge_block} when owner_id == actor.id ->
+        {:ok, knowledge_block}
+
+      {:ok, %KnowledgeBlock{}} ->
+        {:error, :forbidden}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, %Ash.Error.Query.NotFound{}} ->
+        {:error, :not_found}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp fetch_owned_tool_instance(tool_instance_id, actor) do
+    case Ash.get(ToolInstance, tool_instance_id, actor: actor) do
+      {:ok, %ToolInstance{owner_id: owner_id} = tool_instance} when owner_id == actor.id ->
+        {:ok, tool_instance}
+
+      {:ok, %ToolInstance{}} ->
+        {:error, :forbidden}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, %Ash.Error.Query.NotFound{}} ->
+        {:error, :not_found}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
@@ -274,6 +366,30 @@ defmodule IntellectualClub.Sharing do
     }
   end
 
+  defp load_knowledge_block_share_state(knowledge_block, actor) do
+    shares =
+      KnowledgeBlockShare
+      |> Ash.Query.filter(knowledge_block_id == ^knowledge_block.id)
+      |> Ash.Query.sort(user_group_id: :asc)
+      |> Ash.read!(actor: actor)
+
+    %{
+      group_ids: Enum.map(shares, & &1.user_group_id)
+    }
+  end
+
+  defp load_tool_instance_share_state(tool_instance, actor) do
+    shares =
+      ToolInstanceShare
+      |> Ash.Query.filter(tool_instance_id == ^tool_instance.id)
+      |> Ash.Query.sort(user_group_id: :asc)
+      |> Ash.read!(actor: actor)
+
+    %{
+      group_ids: Enum.map(shares, & &1.user_group_id)
+    }
+  end
+
   defp replace_bot_shares(bot, requested_group_ids, actor) do
     existing_shares =
       BotShare
@@ -356,6 +472,86 @@ defmodule IntellectualClub.Sharing do
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp replace_knowledge_block_shares(knowledge_block, requested_group_ids, actor) do
+    existing_shares =
+      KnowledgeBlockShare
+      |> Ash.Query.filter(knowledge_block_id == ^knowledge_block.id)
+      |> Ash.read!(actor: actor)
+
+    existing_by_group_id = Map.new(existing_shares, &{&1.user_group_id, &1})
+    requested_group_ids_set = MapSet.new(requested_group_ids)
+
+    existing_shares
+    |> Enum.reject(&MapSet.member?(requested_group_ids_set, &1.user_group_id))
+    |> destroy_shares(actor)
+    |> case do
+      :ok ->
+        requested_group_ids
+        |> Enum.reject(&Map.has_key?(existing_by_group_id, &1))
+        |> Enum.reduce_while(:ok, fn group_id, :ok ->
+          case KnowledgeBlockShare
+               |> Ash.Changeset.for_create(
+                 :create,
+                 %{knowledge_block_id: knowledge_block.id, user_group_id: group_id},
+                 actor: actor
+               )
+               |> Ash.create() do
+            {:ok, _share} -> {:cont, :ok}
+            {:error, error} -> {:halt, {:error, error}}
+          end
+        end)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp replace_tool_instance_shares(tool_instance, requested_group_ids, actor) do
+    existing_shares =
+      ToolInstanceShare
+      |> Ash.Query.filter(tool_instance_id == ^tool_instance.id)
+      |> Ash.read!(actor: actor)
+
+    existing_by_group_id = Map.new(existing_shares, &{&1.user_group_id, &1})
+    requested_group_ids_set = MapSet.new(requested_group_ids)
+
+    existing_shares
+    |> Enum.reject(&MapSet.member?(requested_group_ids_set, &1.user_group_id))
+    |> destroy_shares(actor)
+    |> case do
+      :ok ->
+        requested_group_ids
+        |> Enum.reject(&Map.has_key?(existing_by_group_id, &1))
+        |> Enum.reduce_while(:ok, fn group_id, :ok ->
+          case ToolInstanceShare
+               |> Ash.Changeset.for_create(
+                 :create,
+                 %{tool_instance_id: tool_instance.id, user_group_id: group_id},
+                 actor: actor
+               )
+               |> Ash.create() do
+            {:ok, _share} -> {:cont, :ok}
+            {:error, error} -> {:halt, {:error, error}}
+          end
+        end)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp destroy_shares(shares, actor) do
+    Enum.reduce_while(shares, :ok, fn share, :ok ->
+      case share
+           |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
+           |> Ash.destroy() do
+        :ok -> {:cont, :ok}
+        {:ok, _share} -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
   end
 
   defp validate_chat_share_request(_chat, [], _actor), do: :ok

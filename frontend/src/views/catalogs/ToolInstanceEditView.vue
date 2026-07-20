@@ -17,7 +17,15 @@
       @next="goNext"
       @delete="remove"
       @duplicate="duplicate"
-    />
+    >
+      <template #extra-actions>
+        <ShareToolbarButton
+          v-if="!isNew && !sharedReadonly"
+          :shared="sharing.hasOutgoingShares.value"
+          @click="sharing.openModal"
+        />
+      </template>
+    </CrudHeader>
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
     <RemoteUpdateNotice
@@ -480,6 +488,16 @@
       title="Select knowledge tag"
       @select="selectKnowledgeTag"
     />
+
+    <ShareWithGroupsModal
+      v-model:open="sharing.modalOpen.value"
+      title="Share tool"
+      :groups="sharing.groups.value"
+      :selectedGroupIds="sharing.selectedGroupIds.value"
+      :loading="sharing.loading.value"
+      :saving="sharing.saving.value"
+      @save="sharing.save"
+    />
   </div>
 
 </template>
@@ -490,6 +508,8 @@ import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
+import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
+import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
 import { api, isHttpError } from '@/api/client';
@@ -504,6 +524,7 @@ import {
 } from '@/api/jsonApi';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
+import { useResourceGroupSharing } from '@/features/catalogs/model/useResourceGroupSharing';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { serverStateKeys } from '@/features/serverState/queryClient';
 import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
@@ -826,6 +847,19 @@ const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
 const saving = editor.saving;
 const dirty = editor.dirty;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
+const sharing = useResourceGroupSharing({
+  resourceKey: 'tool-instance-shares',
+  resourceId: editor.numericId,
+  endpoint: (toolId) => `/api/bff/tool-instances/${toolId}/shares`,
+  enabled: computed(
+    () =>
+      !isNew.value &&
+      !sharedReadonly.value &&
+      !editor.deleting.value &&
+      editor.numericId.value != null
+  ),
+  fallbackShared: computed(() => form.shared_outgoing),
+});
 
 const totalCount = editor.totalCount;
 const positionNumber = editor.positionNumber;

@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.BotToolBinding do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
+  alias IntellectualClub.Tools.Changes.RequireToolInstanceUsableByActor
 
   postgres do
     table("bot_tool_bindings")
@@ -89,10 +90,9 @@ defmodule IntellectualClub.Tools.BotToolBinding do
 
       change(relate_actor(:owner))
 
-      change(
-        {RequireRelatedAccessByActor,
-         relationships: [:bot, :tool_instance], access: [bot: :writable, tool_instance: :writable]}
-      )
+      change({RequireRelatedAccessByActor, relationships: [:bot], access: [bot: :writable]})
+
+      change({RequireToolInstanceUsableByActor, []})
     end
 
     update :update do
@@ -104,10 +104,7 @@ defmodule IntellectualClub.Tools.BotToolBinding do
         public?(true)
       end
 
-      change(
-        {RequireRelatedAccessByActor,
-         relationships: [:tool_instance], access: [tool_instance: :writable], required?: false}
-      )
+      change({RequireToolInstanceUsableByActor, []}, where: [changing(:tool_instance_id)])
     end
   end
 

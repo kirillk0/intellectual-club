@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
+  alias IntellectualClub.Tools.Changes.RequireToolInstanceUsableByActor
 
   postgres do
     table("chat_tool_bindings")
@@ -83,11 +84,9 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
 
       change(relate_actor(:owner))
 
-      change(
-        {RequireRelatedAccessByActor,
-         relationships: [:chat, :tool_instance],
-         access: [chat: :writable, tool_instance: :writable]}
-      )
+      change({RequireRelatedAccessByActor, relationships: [:chat], access: [chat: :writable]})
+
+      change({RequireToolInstanceUsableByActor, []})
     end
 
     update :update do
@@ -99,10 +98,7 @@ defmodule IntellectualClub.Tools.ChatToolBinding do
         public?(true)
       end
 
-      change(
-        {RequireRelatedAccessByActor,
-         relationships: [:tool_instance], access: [tool_instance: :writable], required?: false}
-      )
+      change({RequireToolInstanceUsableByActor, []}, where: [changing(:tool_instance_id)])
     end
   end
 

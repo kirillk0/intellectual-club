@@ -132,6 +132,13 @@ defmodule IntellectualClub.Tools.ToolFunction do
 
       authorize_if expr(
                      exists(
+                       tool_instance.shares.user_group.memberships,
+                       user_id == ^actor(:id)
+                     )
+                   )
+
+      authorize_if expr(
+                     exists(
                        tool_instance.bot_bindings,
                        enabled == true and sharing_mode == :shared and
                          exists(bot.shares.user_group.memberships, user_id == ^actor(:id))

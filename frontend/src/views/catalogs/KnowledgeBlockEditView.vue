@@ -17,7 +17,15 @@
       @next="goNext"
       @delete="remove"
       @duplicate="duplicate"
-    />
+    >
+      <template #extra-actions>
+        <ShareToolbarButton
+          v-if="!isNew && !sharedReadonly"
+          :shared="sharing.hasOutgoingShares.value"
+          @click="sharing.openModal"
+        />
+      </template>
+    </CrudHeader>
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
     <RemoteUpdateNotice
@@ -93,6 +101,16 @@
         />
       </div>
     </fieldset>
+
+    <ShareWithGroupsModal
+      v-model:open="sharing.modalOpen.value"
+      title="Share knowledge block"
+      :groups="sharing.groups.value"
+      :selectedGroupIds="sharing.selectedGroupIds.value"
+      :loading="sharing.loading.value"
+      :saving="sharing.saving.value"
+      @save="sharing.save"
+    />
   </div>
 
 </template>
@@ -111,6 +129,8 @@ import {
 import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
+import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
+import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockFilesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockFilesSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
@@ -129,6 +149,7 @@ import {
   type KnowledgeBlockFileDraftItem,
 } from '@/features/catalogs/model/useKnowledgeBlockFileBindingsDraft';
 import { useKnowledgeBlockTagsDraft } from '@/features/catalogs/model/useKnowledgeBlockTagsDraft';
+import { useResourceGroupSharing } from '@/features/catalogs/model/useResourceGroupSharing';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
 import type { ImageAsset } from '@/types/api';
@@ -332,6 +353,19 @@ const loading = editor.loading;
 const loadError = editor.loadError;
 const numericId = editor.numericId;
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
+const sharing = useResourceGroupSharing({
+  resourceKey: 'knowledge-block-shares',
+  resourceId: numericId,
+  endpoint: (blockId) => `/api/bff/knowledge-blocks/${blockId}/shares`,
+  enabled: computed(
+    () =>
+      !isNew.value &&
+      !sharedReadonly.value &&
+      !editor.deleting.value &&
+      numericId.value != null
+  ),
+  fallbackShared: computed(() => form.shared_outgoing),
+});
 
 const fileBindings = useKnowledgeBlockFileBindingsDraft({
   enabled: computed(() => !editor.deleting.value),

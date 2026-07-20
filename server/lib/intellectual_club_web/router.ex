@@ -203,6 +203,10 @@ defmodule IntellectualClubWeb.Router do
     put "/bots/:id/shares", BotSharesController, :update
     get "/llm-configurations/:id/shares", LlmConfigurationSharesController, :show
     put "/llm-configurations/:id/shares", LlmConfigurationSharesController, :update
+    get "/knowledge-blocks/:id/shares", KnowledgeBlockSharesController, :show
+    put "/knowledge-blocks/:id/shares", KnowledgeBlockSharesController, :update
+    get "/tool-instances/:id/shares", ToolInstanceSharesController, :show
+    put "/tool-instances/:id/shares", ToolInstanceSharesController, :update
   end
 
   scope "/api/bff", IntellectualClubWeb.Bff do

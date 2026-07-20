@@ -4,7 +4,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
   alias IntellectualClub.Bots.{Bot, BotCompatibleConfigurationTag, BotKnowledgeBlock, BotShare}
   alias IntellectualClub.Chat.{Chat, Threads}
   alias IntellectualClub.Generation.Context
-  alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Knowledge.{KnowledgeBlock, KnowledgeBlockShare}
 
   alias IntellectualClub.Llm.{
     LlmConfiguration,
@@ -15,7 +15,147 @@ defmodule IntellectualClub.Sharing.AccessTest do
     LlmProvider
   }
 
-  alias IntellectualClub.Tools.{BotToolBinding, BotUserToolBinding, ToolFunction, ToolInstance}
+  alias IntellectualClub.Tools.{
+    BotToolBinding,
+    BotUserToolBinding,
+    ToolFunction,
+    ToolInstance,
+    ToolInstanceShare
+  }
+
+  test "direct shares grant read-only access to knowledge blocks, tools, and tool functions" do
+    %{user: owner} = user_fixture()
+    %{user: recipient} = user_fixture()
+    %{user: outsider} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+    block = create_block!(owner, "Direct block", "Direct block content")
+    tool = create_tool!(owner, "Direct tool", "direct_tool")
+    function = create_tool_function!(owner, tool, "direct_search")
+
+    block_share =
+      KnowledgeBlockShare
+      |> Ash.Changeset.for_create(
+        :create,
+        %{knowledge_block_id: block.id, user_group_id: group.id},
+        actor: owner
+      )
+      |> Ash.create!()
+
+    tool_share =
+      ToolInstanceShare
+      |> Ash.Changeset.for_create(
+        :create,
+        %{tool_instance_id: tool.id, user_group_id: group.id},
+        actor: owner
+      )
+      |> Ash.create!()
+
+    recipient_block =
+      Ash.get!(KnowledgeBlock, block.id,
+        actor: recipient,
+        load: [:can_edit, :shared_incoming, :shared_outgoing]
+      )
+
+    recipient_tool =
+      Ash.get!(ToolInstance, tool.id,
+        actor: recipient,
+        load: [:can_edit, :shared_incoming, :shared_outgoing]
+      )
+
+    owner_block = Ash.get!(KnowledgeBlock, block.id, actor: owner, load: [:shared_outgoing])
+    owner_tool = Ash.get!(ToolInstance, tool.id, actor: owner, load: [:shared_outgoing])
+
+    assert recipient_block.content == "Direct block content"
+    assert recipient_block.can_edit == false
+    assert recipient_block.shared_incoming == true
+    assert recipient_block.shared_outgoing == true
+    assert recipient_tool.can_edit == false
+    assert recipient_tool.shared_incoming == true
+    assert recipient_tool.shared_outgoing == true
+    assert owner_block.shared_outgoing == true
+    assert owner_tool.shared_outgoing == true
+    assert Ash.get!(ToolFunction, function.id, actor: recipient).name == "direct_search"
+    assert {:error, _error} = Ash.get(KnowledgeBlock, block.id, actor: outsider)
+    assert {:error, _error} = Ash.get(ToolInstance, tool.id, actor: outsider)
+
+    recipient_bot = create_bot!(recipient, "Recipient bot")
+
+    direct_tool_binding =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: recipient_bot.id,
+          tool_instance_id: tool.id,
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 10
+        },
+        actor: recipient
+      )
+      |> Ash.create!()
+
+    assert direct_tool_binding.tool_instance_id == tool.id
+
+    assert {:error, _error} =
+             recipient_block
+             |> Ash.Changeset.for_update(:update, %{content: "Recipient edit"}, actor: recipient)
+             |> Ash.update()
+
+    block_share
+    |> Ash.Changeset.for_destroy(:destroy, %{}, actor: owner)
+    |> Ash.destroy!()
+
+    tool_share
+    |> Ash.Changeset.for_destroy(:destroy, %{}, actor: owner)
+    |> Ash.destroy!()
+
+    assert {:error, _error} = Ash.get(KnowledgeBlock, block.id, actor: recipient)
+    assert {:error, _error} = Ash.get(ToolInstance, tool.id, actor: recipient)
+    assert {:error, _error} = Ash.get(ToolFunction, function.id, actor: recipient)
+  end
+
+  test "tools visible only through shared bots cannot be rebound elsewhere" do
+    %{user: owner} = user_fixture()
+    %{user: recipient} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+    shared_bot = create_bot!(owner, "Shared source bot")
+    recipient_bot = create_bot!(recipient, "Recipient destination bot")
+    tool = create_tool!(owner, "Transitive tool", "transitive_tool")
+
+    _binding =
+      BotToolBinding
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          bot_id: shared_bot.id,
+          tool_instance_id: tool.id,
+          sharing_mode: :shared,
+          enabled: true,
+          sequence: 10
+        },
+        actor: owner
+      )
+      |> Ash.create!()
+
+    share_bot!(owner, shared_bot, group)
+    assert Ash.get!(ToolInstance, tool.id, actor: recipient).id == tool.id
+
+    assert {:error, _error} =
+             BotToolBinding
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 bot_id: recipient_bot.id,
+                 tool_instance_id: tool.id,
+                 sharing_mode: :shared,
+                 enabled: true,
+                 sequence: 10
+               },
+               actor: recipient
+             )
+             |> Ash.create()
+  end
 
   test "shared recipients get transitive read access but not write access" do
     %{user: owner} = user_fixture()

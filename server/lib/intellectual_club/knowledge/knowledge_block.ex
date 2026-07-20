@@ -171,6 +171,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       public?(true)
     end
 
+    has_many :shares, IntellectualClub.Knowledge.KnowledgeBlockShare do
+      destination_attribute(:knowledge_block_id)
+    end
+
     many_to_many :tags, IntellectualClub.Knowledge.KnowledgeTag do
       through(IntellectualClub.Knowledge.KnowledgeBlockTag)
       source_attribute_on_join_resource(:knowledge_block_id)
@@ -198,11 +202,12 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
               :boolean,
               expr(
                 owner_id != ^actor(:id) and
-                  (exists(
-                     bot_bindings,
-                     enabled == true and
-                       exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
-                   ) or
+                  (exists(shares.user_group.memberships, user_id == ^actor(:id)) or
+                     exists(
+                       bot_bindings,
+                       enabled == true and
+                         exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
+                     ) or
                      exists(
                        handoff_message_bots,
                        exists(shares.user_group.memberships, user_id == ^actor(:id))
@@ -222,7 +227,8 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     calculate :shared_outgoing,
               :boolean,
               expr(
-                exists(bot_bindings, enabled == true and bot.exists(shares)) or
+                exists(shares) or
+                  exists(bot_bindings, enabled == true and bot.exists(shares)) or
                   exists(handoff_message_bots, exists(shares)) or
                   exists(
                     llm_configuration_bindings,
@@ -250,6 +256,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       change(cascade_destroy(:llm_configuration_bindings, after_action?: false))
       change(cascade_destroy(:chat_bindings, after_action?: false))
       change(cascade_destroy(:file_bindings, after_action?: false))
+      change(cascade_destroy(:shares, after_action?: false))
       change({DeleteAssociatedFile, field: :image_file_id})
     end
 
@@ -449,6 +456,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
+      authorize_if expr(exists(shares.user_group.memberships, user_id == ^actor(:id)))
 
       authorize_if expr(
                      exists(

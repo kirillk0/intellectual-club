@@ -117,6 +117,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
       filter(expr(discovery_available == true))
       public?(true)
     end
+
+    has_many :shares, IntellectualClub.Tools.ToolInstanceShare do
+      destination_attribute(:tool_instance_id)
+    end
   end
 
   calculations do
@@ -183,11 +187,12 @@ defmodule IntellectualClub.Tools.ToolInstance do
               :boolean,
               expr(
                 owner_id != ^actor(:id) and
-                  exists(
-                    bot_bindings,
-                    enabled == true and sharing_mode == :shared and
-                      exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
-                  )
+                  (exists(shares.user_group.memberships, user_id == ^actor(:id)) or
+                     exists(
+                       bot_bindings,
+                       enabled == true and sharing_mode == :shared and
+                         exists(bot.shares.user_group.memberships, user_id == ^actor(:id))
+                     ))
               ) do
       public?(true)
     end
@@ -195,10 +200,11 @@ defmodule IntellectualClub.Tools.ToolInstance do
     calculate :shared_outgoing,
               :boolean,
               expr(
-                exists(
-                  bot_bindings,
-                  enabled == true and sharing_mode == :shared and bot.exists(shares)
-                )
+                exists(shares) or
+                  exists(
+                    bot_bindings,
+                    enabled == true and sharing_mode == :shared and bot.exists(shares)
+                  )
               ) do
       public?(true)
     end
@@ -342,6 +348,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
+      authorize_if expr(exists(shares.user_group.memberships, user_id == ^actor(:id)))
 
       authorize_if expr(
                      exists(

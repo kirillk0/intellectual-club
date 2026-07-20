@@ -6,8 +6,9 @@ defmodule IntellectualClubWeb.Bff.SharingControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Bots.{Bot, BotShare}
+  alias IntellectualClub.Knowledge.{KnowledgeBlock, KnowledgeBlockShare}
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
-  alias IntellectualClub.Tools.{BotToolBinding, ToolInstance}
+  alias IntellectualClub.Tools.{BotToolBinding, ToolInstance, ToolInstanceShare}
 
   require Ash.Query
 
@@ -159,6 +160,78 @@ defmodule IntellectualClubWeb.Bff.SharingControllerTest do
     assert share_group_ids == [group.id]
   end
 
+  test "knowledge block and tool share endpoints replace direct group access", %{conn: conn} do
+    %{user: owner, password: owner_password} = user_fixture()
+    %{user: recipient, password: recipient_password} = user_fixture()
+    %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+    block = create_block!(owner, "Direct block")
+    tool = create_tool!(owner, "Direct tool")
+    owner_conn = sign_in_conn(conn, owner.username, owner_password)
+
+    block_payload =
+      owner_conn
+      |> put("/api/bff/knowledge-blocks/#{block.id}/shares", %{
+        "group_ids" => [Integer.to_string(group.id)]
+      })
+      |> json_response(200)
+
+    tool_payload =
+      owner_conn
+      |> put("/api/bff/tool-instances/#{tool.id}/shares", %{"group_ids" => [group.id]})
+      |> json_response(200)
+
+    assert block_payload["group_ids"] == [group.id]
+    assert tool_payload["group_ids"] == [group.id]
+
+    assert [
+             %KnowledgeBlockShare{
+               knowledge_block_id: block_id,
+               user_group_id: group_id
+             }
+           ] =
+             KnowledgeBlockShare
+             |> Ash.Query.filter(knowledge_block_id == ^block.id)
+             |> Ash.read!(actor: owner)
+
+    assert block_id == block.id
+    assert group_id == group.id
+
+    assert [
+             %ToolInstanceShare{
+               tool_instance_id: tool_id,
+               user_group_id: tool_group_id
+             }
+           ] =
+             ToolInstanceShare
+             |> Ash.Query.filter(tool_instance_id == ^tool.id)
+             |> Ash.read!(actor: owner)
+
+    assert tool_id == tool.id
+    assert tool_group_id == group.id
+
+    recipient_conn = sign_in_conn(build_conn(), recipient.username, recipient_password)
+
+    assert %{"error" => "Forbidden"} =
+             recipient_conn
+             |> get("/api/bff/knowledge-blocks/#{block.id}/shares")
+             |> json_response(403)
+
+    assert %{"error" => "Forbidden"} =
+             recipient_conn
+             |> get("/api/bff/tool-instances/#{tool.id}/shares")
+             |> json_response(403)
+
+    assert %{"group_ids" => []} =
+             owner_conn
+             |> put("/api/bff/knowledge-blocks/#{block.id}/shares", %{"group_ids" => []})
+             |> json_response(200)
+
+    assert %{"group_ids" => []} =
+             owner_conn
+             |> put("/api/bff/tool-instances/#{tool.id}/shares", %{"group_ids" => []})
+             |> json_response(200)
+  end
+
   defp create_bot!(actor, name) do
     Bot
     |> Ash.Changeset.for_create(
@@ -222,6 +295,16 @@ defmodule IntellectualClubWeb.Bff.SharingControllerTest do
         secrets: %{"bearer_token" => "token"},
         max_output_tokens: 2000
       },
+      actor: actor
+    )
+    |> Ash.create!()
+  end
+
+  defp create_block!(actor, name) do
+    KnowledgeBlock
+    |> Ash.Changeset.for_create(
+      :create,
+      %{name: name, version: "v1", content: "Direct content"},
       actor: actor
     )
     |> Ash.create!()

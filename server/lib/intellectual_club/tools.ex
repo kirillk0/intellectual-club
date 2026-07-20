@@ -10,6 +10,7 @@ defmodule IntellectualClub.Tools do
 
   resources do
     resource(IntellectualClub.Tools.ToolInstance)
+    resource(IntellectualClub.Tools.ToolInstanceShare)
     resource(IntellectualClub.Tools.ToolFunction)
     resource(IntellectualClub.Tools.BotToolBinding)
     resource(IntellectualClub.Tools.BotUserToolBinding)

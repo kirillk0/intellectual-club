@@ -98,6 +98,14 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlockFile do
       authorize_if expr(
                      enabled == true and
                        exists(
+                         knowledge_block.shares.user_group.memberships,
+                         user_id == ^actor(:id)
+                       )
+                   )
+
+      authorize_if expr(
+                     enabled == true and
+                       exists(
                          knowledge_block.bot_bindings,
                          enabled == true and
                            exists(bot.shares.user_group.memberships, user_id == ^actor(:id))

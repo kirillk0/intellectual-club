@@ -43,6 +43,14 @@ defmodule IntellectualClub.Accounts.UserGroup do
       destination_attribute(:user_group_id)
     end
 
+    has_many :knowledge_block_shares, IntellectualClub.Knowledge.KnowledgeBlockShare do
+      destination_attribute(:user_group_id)
+    end
+
+    has_many :tool_instance_shares, IntellectualClub.Tools.ToolInstanceShare do
+      destination_attribute(:user_group_id)
+    end
+
     many_to_many :users, IntellectualClub.Accounts.User do
       through(IntellectualClub.Accounts.UserGroupMembership)
       source_attribute_on_join_resource(:user_group_id)
