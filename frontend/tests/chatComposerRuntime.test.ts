@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 
 const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -36,7 +36,11 @@ const pendingFile = (): PendingChatFile => ({
   error: '',
 });
 
-const createRuntime = (activeMessageId: number | null, supportsSteering = true) => {
+const createRuntime = (
+  activeMessageId: number | null,
+  supportsSteering = true,
+  autoScrollEnabled = false
+) => {
   const branch = ref<ChatBranchMessage[]>(
     activeMessageId
       ? [{ id: activeMessageId, role: 'assistant', status: 'generating', llm_configuration_id: 27 }]
@@ -60,7 +64,7 @@ const createRuntime = (activeMessageId: number | null, supportsSteering = true) 
     activeGenerationId,
     cancelingGenerationId: ref(null),
     supportsSteering: computed(() => supportsSteering),
-    autoScrollEnabled: computed(() => false),
+    autoScrollEnabled: computed(() => autoScrollEnabled),
     scrollToLastMessage: vi.fn(),
   });
 
@@ -79,6 +83,13 @@ describe('chat composer runtime', () => {
     apiMocks.get.mockReset();
     apiMocks.isHttpError.mockReset().mockReturnValue(false);
     apiMocks.post.mockReset();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    Reflect.deleteProperty(document, 'scrollingElement');
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('selects Send or Continue from the idle payload without trimming text', () => {
@@ -176,5 +187,126 @@ describe('chat composer runtime', () => {
     runtime.draft.value = 'stop';
 
     expect(runtime.canSteerGeneration.value).toBe(false);
+  });
+
+  it('restores a focused composer covered by the keyboard while polling', async () => {
+    const scroller = { scrollHeight: 2_024, clientHeight: 800, scrollTop: 1_200 };
+    Object.defineProperty(document, 'scrollingElement', {
+      configurable: true,
+      value: scroller,
+    });
+    vi.stubGlobal('visualViewport', { pageTop: 1_200, offsetTop: 0, height: 500 });
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      })
+    );
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    const composer = document.createElement('div');
+    composer.className = 'chat-composer';
+    const textarea = document.createElement('textarea');
+    vi.spyOn(textarea, 'getBoundingClientRect').mockReturnValue({
+      top: 630,
+      bottom: 760,
+      left: 0,
+      right: 100,
+      width: 100,
+      height: 130,
+      x: 0,
+      y: 630,
+      toJSON: () => ({}),
+    });
+    const scrollIntoView = vi.fn();
+    composer.scrollIntoView = scrollIntoView;
+    composer.append(textarea);
+    document.body.append(composer);
+    textarea.focus();
+    apiMocks.get.mockResolvedValueOnce(completedPoll(31));
+    const { runtime } = createRuntime(31, true, true);
+
+    await runtime.startPolling(31);
+    await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'auto',
+      block: 'nearest',
+      inline: 'nearest',
+    });
+    expect(document.activeElement).toBe(textarea);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('does not resume autoscroll after the visual viewport moves away from the bottom', async () => {
+    const scroller = { scrollHeight: 2_000, clientHeight: 800, scrollTop: 1_200 };
+    Object.defineProperty(document, 'scrollingElement', {
+      configurable: true,
+      value: scroller,
+    });
+    vi.stubGlobal('visualViewport', { pageTop: 1_350, height: 500 });
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    apiMocks.get.mockResolvedValueOnce(completedPoll(31));
+    const { runtime } = createRuntime(31, true, true);
+
+    await runtime.startPolling(31);
+    await nextTick();
+    await Promise.resolve();
+
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+  });
+
+  it('keeps the layout viewport at the bottom when visualViewport is available without composer focus', async () => {
+    const scroller = { scrollHeight: 2_000, clientHeight: 800, scrollTop: 1_200 };
+    Object.defineProperty(document, 'scrollingElement', {
+      configurable: true,
+      value: scroller,
+    });
+    vi.stubGlobal('visualViewport', { pageTop: 1_500, offsetTop: 0, height: 500 });
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      })
+    );
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    apiMocks.get.mockResolvedValueOnce(completedPoll(31));
+    const { runtime } = createRuntime(31, true, true);
+
+    await runtime.startPolling(31);
+    await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, left: 0, behavior: 'auto' });
+  });
+
+  it('keeps the layout viewport at the bottom when visualViewport is unavailable', async () => {
+    const scroller = { scrollHeight: 2_000, clientHeight: 800, scrollTop: 1_200 };
+    Object.defineProperty(document, 'scrollingElement', {
+      configurable: true,
+      value: scroller,
+    });
+    vi.stubGlobal('visualViewport', undefined);
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      })
+    );
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    apiMocks.get.mockResolvedValueOnce(completedPoll(31));
+    const { runtime } = createRuntime(31, true, true);
+
+    await runtime.startPolling(31);
+    await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, left: 0, behavior: 'auto' });
   });
 });

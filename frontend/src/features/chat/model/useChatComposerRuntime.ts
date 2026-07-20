@@ -146,21 +146,74 @@ export function useChatComposerRuntime(params: Params) {
     return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
   };
 
+  const getVisiblePageBottom = () => {
+    const viewport = window.visualViewport;
+    if (
+      viewport &&
+      Number.isFinite(viewport.pageTop) &&
+      Number.isFinite(viewport.height) &&
+      viewport.height > 0
+    ) {
+      return viewport.pageTop + viewport.height;
+    }
+
+    const scroller = getPageScroller();
+    return scroller.scrollTop + scroller.clientHeight;
+  };
+
+  const getFocusedComposer = () => {
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLElement)) return null;
+
+    const composer = activeElement.closest<HTMLElement>('.chat-composer');
+    if (!composer) return null;
+
+    return { activeElement, composer };
+  };
+
   const isPageScrolledToBottom = () => {
     if (!canAutoScroll()) return false;
     const scroller = getPageScroller();
-    return getMaxPageScrollTop() - scroller.scrollTop <= 8;
+    return scroller.scrollHeight - getVisiblePageBottom() <= 8;
   };
 
-  const keepPageScrolledToBottom = async () => {
+  const shouldKeepFocusedComposerVisible = () => {
+    const focusedComposer = getFocusedComposer();
+    if (!focusedComposer) return false;
+
+    const rect = focusedComposer.activeElement.getBoundingClientRect();
+    const layoutViewportHeight = getPageScroller().clientHeight;
+
+    return rect.bottom > 0 && rect.top < layoutViewportHeight;
+  };
+
+  const scrollFocusedComposerIntoView = () => {
+    const focusedComposer = getFocusedComposer();
+    if (!focusedComposer) return false;
+
+    focusedComposer.composer.scrollIntoView({
+      behavior: 'auto',
+      block: 'nearest',
+      inline: 'nearest',
+    });
+    return true;
+  };
+
+  const restoreAutoScrollPosition = (allowPageFallback: boolean) => {
+    if (scrollFocusedComposerIntoView()) return;
+    if (!allowPageFallback) return;
+    window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
+  };
+
+  const keepAutoScrollPosition = async (allowPageFallback: boolean) => {
     if (!canAutoScroll()) return;
     await nextTick();
     await waitForAnimationFrame();
     if (!canAutoScroll()) return;
-    window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
+    restoreAutoScrollPosition(allowPageFallback);
     await waitForAnimationFrame();
     if (!canAutoScroll()) return;
-    window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });
+    restoreAutoScrollPosition(allowPageFallback);
   };
 
   const findPendingFile = (filesRef: Ref<PendingChatFile[]>, id: string) =>
@@ -568,6 +621,7 @@ export function useChatComposerRuntime(params: Params) {
 
       const current = params.branch.value.find((item) => item.id === messageId) || null;
       const shouldKeepPageAtBottom = current ? isPageScrolledToBottom() : false;
+      const keepFocusedComposerVisible = current ? shouldKeepFocusedComposerVisible() : false;
 
       if (current) {
         const patch: Partial<ChatBranchMessage> = {
@@ -588,7 +642,9 @@ export function useChatComposerRuntime(params: Params) {
         if (response.working_open !== undefined) {
           params.applyWorkingPoll?.(messageId, response.working_open);
         }
-        if (shouldKeepPageAtBottom) void keepPageScrolledToBottom();
+        if (shouldKeepPageAtBottom || keepFocusedComposerVisible) {
+          void keepAutoScrollPosition(shouldKeepPageAtBottom);
+        }
       }
 
       const doneStatuses = new Set(['done', 'canceled', 'error']);
