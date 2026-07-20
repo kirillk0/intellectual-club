@@ -25,6 +25,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
 
     assert serialized.active_generation_message_id == nil
     assert serialized.last_message_status == "error"
+    assert serialized.background_task == false
     assert serialized.kind == "spawn"
   end
 

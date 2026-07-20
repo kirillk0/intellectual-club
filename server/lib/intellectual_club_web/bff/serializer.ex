@@ -187,6 +187,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       anchor_step_id: Keyword.get(opts, :anchor_step_id),
       anchor_step_sequence: Keyword.get(opts, :anchor_step_sequence),
       anchor_item_sequence: Keyword.get(opts, :anchor_item_sequence),
+      background_task: Keyword.get(opts, :background_task, false) == true,
       kind: relation_kind_string(Keyword.get(opts, :kind, chat.parent_relation_kind)),
       note: chat.note,
       bot_id: chat.bot_id,

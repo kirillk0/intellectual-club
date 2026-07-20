@@ -33,6 +33,7 @@ import CodeIcon from './svg/code.svg?component';
 import FilterIcon from './svg/filter.svg?component';
 import BranchIcon from './svg/branch.svg?component';
 import BookmarkIcon from './svg/bookmark.svg?component';
+import GearIcon from './svg/gear.svg?component';
 import CheckIcon from './svg/check.svg?component';
 import PlusIcon from './svg/plus.svg?component';
 import SaveIcon from './svg/save.svg?component';
@@ -92,6 +93,7 @@ const iconMap: Record<string, Component> = {
   'filter': FilterIcon,
   'branch': BranchIcon,
   'bookmark': BookmarkIcon,
+  'gear': GearIcon,
   'check': CheckIcon,
   'plus': PlusIcon,
   'save': SaveIcon,

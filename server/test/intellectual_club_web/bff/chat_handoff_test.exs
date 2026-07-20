@@ -1,6 +1,7 @@
 defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Bots.{Bot, BotShare}
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
@@ -619,6 +620,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert relation["anchor_step_id"] == step.id
     assert relation["anchor_step_sequence"] == step.sequence
     assert relation["anchor_item_sequence"] == tool_call_item.sequence
+    assert relation["background_task"] == false
 
     target_payload =
       build_conn()
@@ -757,6 +759,97 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert parent_relation["anchor_step_id"] == nil
     assert parent_relation["anchor_step_sequence"] == nil
     assert parent_relation["anchor_item_sequence"] == nil
+    assert parent_relation["background_task"] == false
+  end
+
+  test "GET /api/bff/chat-state marks background subchat relations by target or source tool call",
+       %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    source = create_chat!(actor, "Background relation source")
+
+    {:ok, assistant_message} =
+      Threads.add_message_to_end(source, :assistant, "Create subchats", actor: actor)
+
+    step = first_step!(assistant_message.id, actor)
+    normal_tool_call = create_tool_call_item!(step.id, 2, actor)
+    target_tool_call = create_tool_call_item!(step.id, 3, actor)
+    fallback_tool_call = create_tool_call_item!(step.id, 4, actor)
+
+    normal =
+      create_relation_chat!(
+        actor,
+        source,
+        assistant_message,
+        normal_tool_call,
+        :spawn,
+        "Ordinary spawn"
+      )
+
+    target =
+      create_relation_chat!(
+        actor,
+        source,
+        assistant_message,
+        target_tool_call,
+        :spawn,
+        "Canceled background spawn"
+      )
+
+    fallback =
+      create_relation_chat!(
+        actor,
+        source,
+        assistant_message,
+        fallback_tool_call,
+        :fork,
+        "Completed background fork"
+      )
+
+    _target_task =
+      create_subchat_background_task!(
+        actor,
+        source,
+        assistant_message,
+        step,
+        target_tool_call,
+        :spawn,
+        :canceled,
+        target.id
+      )
+
+    _fallback_task =
+      create_subchat_background_task!(
+        actor,
+        source,
+        assistant_message,
+        step,
+        fallback_tool_call,
+        :fork,
+        :completed,
+        nil
+      )
+
+    payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
+
+    relations =
+      payload["relations"]["children_by_message_id"][
+        Integer.to_string(assistant_message.id)
+      ]
+      |> Map.new(&{&1["chat_id"], &1})
+
+    assert relations[normal.id]["background_task"] == false
+    assert relations[target.id]["background_task"] == true
+    assert relations[fallback.id]["background_task"] == true
+
+    fallback_payload =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> get(~p"/api/bff/chat-state/#{fallback.id}")
+      |> json_response(200)
+
+    assert fallback_payload["relations"]["parent"]["background_task"] == true
   end
 
   test "GET /api/bff/chat-list includes relation hints for terminal continuations", %{conn: conn} do
@@ -1072,6 +1165,63 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       attrs
       |> Map.new()
       |> Map.merge(%{note: ""}),
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_relation_chat!(
+         actor,
+         source,
+         parent_message,
+         parent_tool_call_item,
+         relation_kind,
+         note
+       ) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        note: note,
+        parent_chat_id: source.id,
+        parent_message_id: parent_message.id,
+        parent_tool_call_item_id: parent_tool_call_item.id,
+        parent_relation_kind: relation_kind,
+        subagent: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_subchat_background_task!(
+         actor,
+         source,
+         source_message,
+         source_step,
+         source_tool_call_item,
+         relation_kind,
+         status,
+         target_chat_id
+       ) do
+    BackgroundTask
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        kind: Atom.to_string(relation_kind),
+        adapter: Atom.to_string(relation_kind),
+        status: status,
+        function_name: Atom.to_string(relation_kind),
+        arguments: %{},
+        execution_context: %{"owner_id" => actor.id},
+        runner_ref: %{},
+        source_chat_id: source.id,
+        source_message_id: source_message.id,
+        source_step_id: source_step.id,
+        source_tool_call_item_id: source_tool_call_item.id,
+        target_chat_id: target_chat_id,
+        finished_at: DateTime.utc_now()
+      },
       actor: actor
     )
     |> Ash.create!(actor: actor)

@@ -3,6 +3,7 @@ defmodule IntellectualClub.Chat.Relations do
   Parent and handoff child relation loading for chats.
   """
 
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
@@ -24,7 +25,8 @@ defmodule IntellectualClub.Chat.Relations do
           anchor_tool_call_item_id: integer() | nil,
           anchor_step_id: integer() | nil,
           anchor_step_sequence: integer() | nil,
-          anchor_item_sequence: integer() | nil
+          anchor_item_sequence: integer() | nil,
+          background_task: boolean()
         }
 
   @type continuation_nav_entry :: %{
@@ -52,10 +54,11 @@ defmodule IntellectualClub.Chat.Relations do
   def relations(%Chat{} = chat, messages, actor, children)
       when is_list(messages) and is_list(children) do
     active_message_ids = MapSet.new(messages, & &1.id)
+    background_task_chat_ids = background_task_chat_ids([chat | children], actor)
 
     {children_by_message_id, children_without_message} =
       Enum.reduce(children, {%{}, []}, fn child, {by_message_id, without_message} ->
-        entry = child_entry(child)
+        entry = child_entry(child, background_task_chat_ids)
         message_id = child.parent_message_id
 
         if is_integer(message_id) and MapSet.member?(active_message_ids, message_id) do
@@ -72,15 +75,26 @@ defmodule IntellectualClub.Chat.Relations do
       end)
 
     %{
-      parent: parent_relation(chat, messages, actor),
+      parent: parent_relation(chat, messages, actor, background_task_chat_ids),
       children_by_message_id: children_by_message_id,
       children_without_message: Enum.reverse(children_without_message)
     }
   end
 
   @spec parent_relation(Chat.t(), list(map()), map()) :: relation_entry() | nil
-  def parent_relation(%Chat{parent_chat_id: parent_chat_id} = chat, messages, actor)
-      when is_integer(parent_chat_id) and is_list(messages) do
+  def parent_relation(%Chat{} = chat, messages, actor) when is_list(messages) do
+    parent_relation(chat, messages, actor, background_task_chat_ids([chat], actor))
+  end
+
+  def parent_relation(_chat, _messages, _actor), do: nil
+
+  defp parent_relation(
+         %Chat{parent_chat_id: parent_chat_id} = chat,
+         messages,
+         actor,
+         background_task_chat_ids
+       )
+       when is_integer(parent_chat_id) and is_list(messages) do
     Chat
     |> Ash.Query.filter(id == ^parent_chat_id)
     |> Ash.Query.limit(1)
@@ -95,14 +109,14 @@ defmodule IntellectualClub.Chat.Relations do
             local_fork_anchor(messages, actor)
           end
 
-        relation_entry(parent, chat, parent_anchor, anchor)
+        relation_entry(parent, chat, parent_anchor, anchor, background_task_chat_ids)
 
       _other ->
         nil
     end
   end
 
-  def parent_relation(_chat, _messages, _actor), do: nil
+  defp parent_relation(_chat, _messages, _actor, _background_task_chat_ids), do: nil
 
   @spec child_handoff_chats(integer(), map()) :: [Chat.t()]
   def child_handoff_chats(chat_id, actor) when is_integer(chat_id) do
@@ -277,12 +291,18 @@ defmodule IntellectualClub.Chat.Relations do
     alpha_suffix(div(value, 26), char <> suffix)
   end
 
-  defp child_entry(%Chat{} = child) do
+  defp child_entry(%Chat{} = child, background_task_chat_ids) do
     parent_anchor = loaded_relation_anchor(child.parent_tool_call_item)
-    relation_entry(child, child, parent_anchor, parent_anchor)
+    relation_entry(child, child, parent_anchor, parent_anchor, background_task_chat_ids)
   end
 
-  defp relation_entry(%Chat{} = chat, %Chat{} = relation_source, parent_anchor, anchor) do
+  defp relation_entry(
+         %Chat{} = chat,
+         %Chat{} = relation_source,
+         parent_anchor,
+         anchor,
+         background_task_chat_ids
+       ) do
     %{
       chat: chat,
       kind: relation_source.parent_relation_kind,
@@ -295,8 +315,51 @@ defmodule IntellectualClub.Chat.Relations do
       anchor_tool_call_item_id: anchor_value(anchor, :tool_call_item_id),
       anchor_step_id: anchor_value(anchor, :step_id),
       anchor_step_sequence: anchor_value(anchor, :step_sequence),
-      anchor_item_sequence: anchor_value(anchor, :item_sequence)
+      anchor_item_sequence: anchor_value(anchor, :item_sequence),
+      background_task: MapSet.member?(background_task_chat_ids, relation_source.id)
     }
+  end
+
+  defp background_task_chat_ids(chats, actor) when is_list(chats) do
+    chats = Enum.filter(chats, &match?(%Chat{id: id} when is_integer(id), &1))
+    chat_ids = Enum.map(chats, & &1.id)
+
+    parent_tool_call_item_ids =
+      chats
+      |> Enum.map(& &1.parent_tool_call_item_id)
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+
+    BackgroundTask
+    |> Ash.Query.filter(
+      kind in ["fork", "spawn"] and
+        (target_chat_id in ^chat_ids or source_tool_call_item_id in ^parent_tool_call_item_ids)
+    )
+    |> Ash.Query.select([:target_chat_id, :source_tool_call_item_id])
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, tasks} ->
+        target_chat_ids =
+          tasks
+          |> Enum.map(& &1.target_chat_id)
+          |> Enum.filter(&is_integer/1)
+
+        source_tool_call_item_ids =
+          tasks
+          |> Enum.map(& &1.source_tool_call_item_id)
+          |> Enum.filter(&is_integer/1)
+          |> MapSet.new()
+
+        fallback_chat_ids =
+          chats
+          |> Enum.filter(&MapSet.member?(source_tool_call_item_ids, &1.parent_tool_call_item_id))
+          |> Enum.map(& &1.id)
+
+        MapSet.new(target_chat_ids ++ fallback_chat_ids)
+
+      _other ->
+        MapSet.new()
+    end
   end
 
   defp local_fork_anchor(messages, actor) when is_list(messages) do

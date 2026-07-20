@@ -151,6 +151,7 @@ describe('ChatMessageBubble fork timeline', () => {
       chat_id: 5,
       kind: 'fork',
       note: 'Parent chat',
+      background_task: true,
       parent_tool_call_item_id: 30,
       anchor_message_id: 10,
       anchor_tool_call_item_id: 40,
@@ -182,6 +183,7 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(entries[1]?.classes()).toContain('message-fork-card--parent');
     expect(entries[1]?.text()).toContain('Fork of');
     expect(entries[1]?.text()).toContain('Parent chat');
+    expect(entries[1]?.find('.chat-relation-indicators__background-task').exists()).toBe(false);
     expect(entries[2]?.text()).toContain('Child answer');
   });
 
@@ -197,6 +199,8 @@ describe('ChatMessageBubble fork timeline', () => {
       chat_id: 6,
       kind: 'spawn',
       note: 'Fresh subchat',
+      background_task: true,
+      last_message_status: 'canceled',
       anchor_message_id: 10,
       anchor_tool_call_item_id: 41,
       anchor_step_sequence: 1,
@@ -221,6 +225,10 @@ describe('ChatMessageBubble fork timeline', () => {
     const relation = wrapper.get('.message-fork-card');
     expect(relation.text()).toContain('Spawned into');
     expect(relation.text()).toContain('Fresh subchat');
+    expect(relation.find('.chat-relation-indicators__background-task').exists()).toBe(true);
+    expect(relation.get('.chat-generation-state').classes()).toContain(
+      'chat-generation-state--canceled'
+    );
   });
 
   it('distinguishes copying the final answer from copying all answer items', async () => {

@@ -95,10 +95,10 @@
           >
             <span>{{ forkRelationLabel(entry) }}</span>
             <strong>{{ relationTitle(entry.relation) }}</strong>
-            <ChatGenerationStateIndicator
+            <ChatRelationIndicators
               v-if="entry.direction === 'child'"
-              :state="childRelationGenerationState(entry.relation)"
-              class="message-fork-card__generation-state"
+              :relation="entry.relation"
+              class="message-fork-card__indicators"
             />
           </RouterLink>
           <hr
@@ -316,6 +316,7 @@ import { RouterLink } from 'vue-router';
 
 import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
+import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
 import {
   chatMessageContainsHandoffSystemEvent,
   chatMessageDisplayItems,
@@ -325,7 +326,6 @@ import {
   sortedChatMessageContentParts,
   type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
-import { childRelationGenerationState } from '@/features/chat/model/chatRelations';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
 import type {
   ChatBranchMessage,
@@ -1057,7 +1057,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   background: var(--color-info-bg-strong);
 }
 
-.message-fork-card > span {
+.message-fork-card > span:not(.message-fork-card__indicators) {
   flex: 0 0 auto;
   color: var(--color-text-muted);
 }
@@ -1071,7 +1071,7 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   font-weight: 600;
 }
 
-.message-fork-card__generation-state {
+.message-fork-card__indicators {
   margin-left: auto;
 }
 

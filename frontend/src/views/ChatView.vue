@@ -206,9 +206,9 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
-                <ChatGenerationStateIndicator
-                  :state="childRelationGenerationState(relation)"
-                  class="chat-relation-banner__generation-state"
+                <ChatRelationIndicators
+                  :relation="relation"
+                  class="chat-relation-banner__indicators"
                 />
               </RouterLink>
               <div
@@ -233,9 +233,9 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
-                <ChatGenerationStateIndicator
-                  :state="childRelationGenerationState(relation)"
-                  class="chat-relation-banner__generation-state"
+                <ChatRelationIndicators
+                  :relation="relation"
+                  class="chat-relation-banner__indicators"
                 />
               </RouterLink>
             </div>
@@ -689,7 +689,7 @@ import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
-import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
+import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOverlay.vue';
@@ -702,7 +702,6 @@ import {
   chatMessageHandoffSystemEventKind,
   type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
-import { childRelationGenerationState } from '@/features/chat/model/chatRelations';
 import {
   clipboardHasStringContent,
   describePendingFileUploadStatus,
@@ -1065,7 +1064,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   background: var(--color-info-bg-strong);
 }
 
-.chat-page .chat-relation-banner > span:not(.chat-generation-state) {
+.chat-page .chat-relation-banner > span:not(.chat-relation-banner__indicators) {
   flex: 0 0 auto;
   color: var(--color-text-muted);
 }
@@ -1079,7 +1078,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   font-weight: 600;
 }
 
-.chat-page .chat-relation-banner__generation-state {
+.chat-page .chat-relation-banner__indicators {
   margin-left: auto;
 }
 

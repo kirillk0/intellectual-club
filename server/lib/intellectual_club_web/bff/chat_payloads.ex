@@ -173,7 +173,8 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
       anchor_tool_call_item_id: Map.get(entry, :anchor_tool_call_item_id),
       anchor_step_id: Map.get(entry, :anchor_step_id),
       anchor_step_sequence: Map.get(entry, :anchor_step_sequence),
-      anchor_item_sequence: Map.get(entry, :anchor_item_sequence)
+      anchor_item_sequence: Map.get(entry, :anchor_item_sequence),
+      background_task: Map.get(entry, :background_task, false)
     )
   end
 

@@ -193,6 +193,7 @@ export type ChatContinuationNavItem = {
   subagent?: boolean | null;
   active_generation_message_id?: number | null;
   last_message_status?: string | null;
+  background_task?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -218,6 +219,7 @@ export type ChatRelationSummary = {
   subagent?: boolean | null;
   active_generation_message_id?: number | null;
   last_message_status?: string | null;
+  background_task?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
 };
