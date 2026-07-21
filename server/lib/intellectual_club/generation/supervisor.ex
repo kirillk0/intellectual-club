@@ -401,20 +401,47 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   defp durable_cancel_and_signal(message_id) when is_integer(message_id) do
     with_generation_start_lock(message_id, fn ->
-      cancel_result =
-        Persistence.cancel_generating_message!(message_id,
-          error_detail: nil
-        )
-
       worker_pid = generation_worker_pid(message_id)
 
-      if is_pid(worker_pid) do
-        Worker.cancel(worker_pid)
-      end
+      cancel_result =
+        case cancel_active_worker(worker_pid, message_id) do
+          :ok ->
+            :canceled
+
+          {:error, _reason} ->
+            Persistence.cancel_generating_message!(message_id,
+              error_detail: nil
+            )
+        end
 
       result = if cancel_result == :canceled or is_pid(worker_pid), do: :ok, else: :not_found
       {result, worker_pid}
     end)
+  end
+
+  defp cancel_active_worker(nil, _message_id), do: {:error, :worker_not_found}
+
+  defp cancel_active_worker(worker_pid, message_id) when is_pid(worker_pid) do
+    case Worker.cancel_and_wait(worker_pid, @cancel_wait_timeout_ms) do
+      :ok ->
+        :ok
+
+      {:error, reason} = error ->
+        Logger.warning(
+          "Generation worker cancellation persistence failed; using durable fallback " <>
+            "message_id=#{message_id} reason=#{inspect(reason)}"
+        )
+
+        error
+    end
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Generation worker cancellation did not complete; using durable fallback " <>
+          "message_id=#{message_id} reason=#{inspect(reason)}"
+      )
+
+      {:error, reason}
   end
 
   def steer_generation(message_id, text) when is_integer(message_id) and is_binary(text) do

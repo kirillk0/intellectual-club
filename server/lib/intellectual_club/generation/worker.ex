@@ -64,6 +64,10 @@ defmodule IntellectualClub.Generation.Worker do
     GenServer.cast(pid, :cancel)
   end
 
+  def cancel_and_wait(pid, timeout \\ 5_000) when is_integer(timeout) and timeout > 0 do
+    GenServer.call(pid, :cancel_and_wait, timeout)
+  end
+
   @doc false
   def global_name(message_id) when is_integer(message_id) do
     {__MODULE__, :message, message_id}
@@ -555,23 +559,10 @@ defmodule IntellectualClub.Generation.Worker do
 
   @impl true
   def handle_cast(:cancel, state) do
-    state = cancel_tasks(state)
-    state = stop_provider_session(state)
-
-    _ =
-      safe_cancel_persist(state, fn ->
-        if durable_waiting_tools_step?(state.runtime_step) do
-          Persistence.persist_canceled_from_step!(
-            state.context.message_id,
-            state.runtime_step.id
-          )
-        else
-          Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
-        end
-      end)
+    {_result, state} = cancel_and_persist(state)
 
     broadcast(state, {:canceled, state.context.message_id})
-    {:stop, :normal, %{state | status: :canceled}}
+    {:stop, :normal, state}
   end
 
   def handle_cast(:generation_fence_lost, state) do
@@ -581,6 +572,13 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
+  def handle_call(:cancel_and_wait, _from, state) do
+    {result, state} = cancel_and_persist(state)
+
+    broadcast(state, {:canceled, state.context.message_id})
+    {:stop, :normal, result, state}
+  end
+
   def handle_call({:steer, text}, _from, state) do
     cond do
       text == "" ->
@@ -619,6 +617,25 @@ defmodule IntellectualClub.Generation.Worker do
        status: state.status,
        step: RuntimeTrace.snapshot(state.runtime_step)
      }, state}
+  end
+
+  defp cancel_and_persist(state) do
+    state = cancel_tasks(state)
+    state = stop_provider_session(state)
+
+    result =
+      safe_cancel_persist(state, fn ->
+        if durable_waiting_tools_step?(state.runtime_step) do
+          Persistence.persist_canceled_from_step!(
+            state.context.message_id,
+            state.runtime_step.id
+          )
+        else
+          Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
+        end
+      end)
+
+    {result, %{state | status: :canceled}}
   end
 
   defp steer_waiting_provider(state, text) do
@@ -1241,7 +1258,6 @@ defmodule IntellectualClub.Generation.Worker do
     try do
       case fenced_call(state, fun) do
         {:ok, _result} -> :ok
-        {:error, reason} when reason in [:lease_lost, :lease_not_fenced] -> :ok
         {:error, _reason} = error -> error
       end
     rescue

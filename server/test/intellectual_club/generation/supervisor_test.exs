@@ -5,6 +5,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks.BackgroundTask
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
@@ -14,6 +15,17 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     def stream_generate(%{context: context}, _emit) do
       send(context.test_pid, {:adapter_started, context.message_id})
+      Process.sleep(:infinity)
+    end
+  end
+
+  defmodule PartialBlockingAdapter do
+    @moduledoc false
+
+    def stream_generate(%{context: context}, emit) do
+      emit.({:trace, {:set_text, "reasoning", :reasoning, 1, "Partial reasoning"}})
+      emit.({:trace, {:set_text, "answer", :answer, 1, "Partial answer"}})
+      send(context.test_pid, {:partial_output_ready, context.message_id})
       Process.sleep(:infinity)
     end
   end
@@ -42,11 +54,86 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       {:reply, {:ok, %{text: text}}, test_pid}
     end
 
+    def handle_call(:cancel_and_wait, _from, test_pid) do
+      send(test_pid, :global_worker_canceled)
+      {:stop, :normal, {:error, :not_persisted}, test_pid}
+    end
+
     @impl true
     def handle_cast(:cancel, test_pid) do
       send(test_pid, :global_worker_canceled)
       {:stop, :normal, test_pid}
     end
+  end
+
+  test "canceling a fenced worker preserves partial runtime output" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor)
+
+    {:ok, user_message} =
+      Threads.add_message_to_end(chat, :user, "Generate a partial answer", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "test-model",
+      "messages" => [%{"role" => "user", "content" => "Generate a partial answer"}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
+    assert {:ok, lease} = Lease.acquire(assistant_message.id)
+
+    context = %{
+      owner_id: actor.id,
+      chat_id: chat.id,
+      message_id: assistant_message.id,
+      step_id: step_id,
+      provider_type: "test",
+      adapter_module: PartialBlockingAdapter,
+      request_payload: raw_request,
+      timeout_ms: 5_000,
+      chunk_delay_ms: 0,
+      test_pid: self()
+    }
+
+    worker =
+      start_supervised!(%{
+        id: {Worker, assistant_message.id},
+        start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
+        restart: :temporary
+      })
+
+    monitor_ref = Process.monitor(worker)
+    assert_receive {:partial_output_ready, message_id}, 1_000
+    assert message_id == assistant_message.id
+
+    assert %{step: %{items: [_reasoning, _answer]}} = Worker.get_current_state(worker)
+    assert :ok = GenerationSupervisor.cancel_generation(assistant_message.id)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}, 1_000
+
+    message =
+      Ash.get!(ChatMessage, assistant_message.id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    assert message.status == :canceled
+    assert message.token_count > 0
+    assert message.generation_fence_token == nil
+    assert [step] = message.steps
+    assert step.status == :canceled
+
+    items = Enum.sort_by(step.items, & &1.sequence)
+    assert item_text(Enum.find(items, &(&1.type == :reasoning))) == "Partial reasoning"
+    assert item_text(Enum.find(items, &(&1.type == :answer))) == "Partial answer"
   end
 
   test "canceling a parent generation cancels active subagent descendant generations" do
@@ -337,6 +424,9 @@ defmodule IntellectualClub.Generation.SupervisorTest do
         "stream" => true
       })
 
+    assert {:ok, lease} = Lease.acquire(message.id)
+    on_exit(fn -> Lease.release(lease) end)
+
     stub = start_supervised!({GlobalWorkerStub, self()})
     assert :yes = :global.register_name(Worker.global_name(message.id), stub)
 
@@ -353,7 +443,8 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     assert :ok = GenerationSupervisor.cancel_generation(message.id)
     assert_receive :global_worker_canceled
-    assert wait_for_status!(message.id, actor, :canceled).status == :canceled
+    canceled = wait_for_status!(message.id, actor, :canceled)
+    assert canceled.generation_fence_token == nil
     assert GenerationSupervisor.get_generation_state(message.id) == :not_found
   end
 
@@ -407,6 +498,13 @@ defmodule IntellectualClub.Generation.SupervisorTest do
   defp wait_for_status!(message_id, actor, wanted_status) do
     deadline = System.monotonic_time(:millisecond) + 4_000
     do_wait_for_status!(message_id, actor, wanted_status, deadline)
+  end
+
+  defp item_text(item) do
+    item.contents
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.map_join("", &to_string(&1.content_text || ""))
   end
 
   defp do_wait_for_status!(message_id, actor, wanted_status, deadline) do
