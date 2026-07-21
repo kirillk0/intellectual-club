@@ -40,6 +40,7 @@ vi.mock('@/api/jsonApi', async () => {
 
 import { HttpError } from '@/api/client';
 import CrudHeader from '@/components/CrudHeader.vue';
+import LlmConfigurationTagsPickerModal from '@/components/LlmConfigurationTagsPickerModal.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { serverStateQueryClient } from '@/features/serverState/queryClient';
 import { ruMessages } from '@/i18n/messages';
@@ -101,7 +102,7 @@ function configurationDocument(overrides: Partial<ConfigurationAttributes> = {})
 
 let wrapper: VueWrapper | null = null;
 
-async function mountView(path: '/catalogs/llm-configurations/new' | '/catalogs/llm-configurations/27') {
+async function mountView(path: string) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -190,6 +191,35 @@ describe('LlmConfigurationEditView standard parameters', () => {
     expect(reasoningEffort.element.value).toBe('');
     expect(view.find('input[aria-label="Temperature"]').exists()).toBe(false);
     expect(header(view).props('dirty')).toBe(false);
+  });
+
+  it('reapplies the filtered tag after saving and creating another configuration', async () => {
+    jsonApiMocks.create.mockResolvedValue(configurationDocument());
+    const view = await mountView(
+      '/catalogs/llm-configurations/new?recordsetKey=filtered-configs&defaultTagId=9'
+    );
+    const router = view.vm.$router;
+
+    expect(view.getComponent(LlmConfigurationTagsPickerModal).props('selectedTagIds')).toEqual([9]);
+
+    header(view).vm.$emit('save');
+    await vi.waitFor(() => expect(jsonApiMocks.create).toHaveBeenCalledTimes(1));
+    expect(jsonApiMocks.create.mock.calls[0]?.[2]).toMatchObject({
+      tag_bindings: [{ llm_configuration_tag_id: 9 }],
+    });
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/catalogs/llm-configurations/27'));
+    expect(router.currentRoute.value.query).toMatchObject({
+      recordsetKey: 'filtered-configs',
+      defaultTagId: '9',
+    });
+
+    header(view).vm.$emit('create');
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/catalogs/llm-configurations/new'));
+    expect(router.currentRoute.value.query).toMatchObject({
+      recordsetKey: 'filtered-configs',
+      defaultTagId: '9',
+    });
+    expect(view.getComponent(LlmConfigurationTagsPickerModal).props('selectedTagIds')).toEqual([9]);
   });
 
   it('loads persisted values and sends explicit values or null in the update payload', async () => {

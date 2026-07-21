@@ -177,7 +177,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     return stackNav.push(returnTo.value || options.indexPath);
   };
 
-  const createNew = () => stackNav.push({ path: options.editPath('new'), query: editorQuery.value });
+  const createNew = () => stackNav.replace({ path: options.editPath('new'), query: editorQuery.value });
 
   const documentQuery = (mode: 'load' | 'save' | 'duplicate') => {
     const params = options.documentQuery?.({ mode });

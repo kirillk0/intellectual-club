@@ -56,9 +56,10 @@ type TestEditor = ReturnType<typeof useTestEditor>;
 
 let activeWrapper: VueWrapper | null = null;
 
-async function mountEditor(path = '/items/1') {
+async function mountEditor(path = '/items/1', stackedFrom?: string) {
   serverStateQueryClient.clear();
-  useNavigationStack().reset();
+  const stack = useNavigationStack();
+  stack.reset();
 
   const router = createRouter({
     history: createMemoryHistory(),
@@ -67,8 +68,17 @@ async function mountEditor(path = '/items/1') {
       { path: '/items/:id', component: { template: '<div />' } },
     ],
   });
-  await router.push(path);
-  await router.isReady();
+  if (stackedFrom) {
+    await router.push(stackedFrom);
+    await router.isReady();
+    const parentRoute = router.currentRoute.value;
+    stack.markPendingPush(0);
+    await router.push(path);
+    stack.commitPendingPush(parentRoute);
+  } else {
+    await router.push(path);
+    await router.isReady();
+  }
 
   let editor!: TestEditor;
   const Harness = defineComponent({
@@ -130,6 +140,22 @@ describe('useCrudEditor canonical documents', () => {
     await flushPromises();
     expect(editor.numericId.value).toBe(2);
     expect(editor.form.name).toBe('Second');
+  });
+
+  it('replaces a stacked editor when creating a record so close returns to the list', async () => {
+    jsonApiMocks.get.mockResolvedValue(document(1, 'Initial'));
+    const { editor, router } = await mountEditor('/items/1', '/items');
+    await vi.waitFor(() => expect(editor.loaded.value).toBe(true));
+    const stack = useNavigationStack();
+    expect(stack.top.value?.route.fullPath).toBe('/items');
+
+    await editor.createNew();
+    expect(router.currentRoute.value.fullPath).toBe('/items/new');
+    expect(stack.stack.value).toHaveLength(1);
+    expect(stack.pendingPush.value).toBeNull();
+
+    editor.goList();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/items'));
   });
 
   it('applies a cached document after the parent setup has initialized its document handlers', async () => {

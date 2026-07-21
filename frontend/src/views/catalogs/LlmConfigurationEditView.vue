@@ -628,6 +628,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     shared_outgoing: form.shared_outgoing,
   }),
   duplicatePath: (id) => `/api/ash/llm-configurations/${id}/duplicate`,
+  preserveQueryKeys: ['defaultTagId'],
   documentQuery: () => configurationDocumentQuery(),
   onDocument: (payload) => {
     applyConfigurationDocument(payload);
