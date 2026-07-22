@@ -20,7 +20,7 @@ use crate::config::{
     resolve_app_dir, AppPaths, LauncherConfig, APP_NAME, CONFIG_VERSION, PG_VERSION,
 };
 use crate::fs_utils::{
-    append_log_line, copy_dir_all, is_empty_dir, open_log_file, open_path, open_url,
+    append_log_line, atomic_write, copy_dir_all, is_empty_dir, open_log_file, open_path, open_url,
     remove_file_if_exists, tail_file, timestamp,
 };
 use crate::status::{PathsPayload, RuntimeStatus, ServiceState, ServiceStatus, StatusPayload};
@@ -1116,11 +1116,8 @@ pub fn read_status(path: &Path) -> Result<RuntimeStatus> {
 }
 
 fn write_status(path: &Path, status: &RuntimeStatus) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_string_pretty(status)? + "\n")?;
-    Ok(())
+    let contents = serde_json::to_string_pretty(status)? + "\n";
+    atomic_write(path, contents.as_bytes())
 }
 
 fn write_status_state(path: &Path, state: &str, last_error: Option<String>) -> Result<()> {
@@ -1171,12 +1168,21 @@ async fn stop_child(child: &mut Child) -> Result<()> {
 pub fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        let errno = (result != 0)
+            .then(|| std::io::Error::last_os_error().raw_os_error())
+            .flatten();
+        process_alive_from_kill_result(result, errno)
     }
     #[cfg(not(unix))]
     {
         pid > 0
     }
+}
+
+#[cfg(unix)]
+fn process_alive_from_kill_result(result: i32, errno: Option<i32>) -> bool {
+    result == 0 || errno == Some(libc::EPERM)
 }
 
 fn read_postgres_pid(data_dir: &Path) -> Option<u32> {
@@ -1214,6 +1220,14 @@ fn local_lan_ipv4_host() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn process_probe_treats_permission_denied_as_alive() {
+        assert!(process_alive_from_kill_result(0, None));
+        assert!(process_alive_from_kill_result(-1, Some(libc::EPERM)));
+        assert!(!process_alive_from_kill_result(-1, Some(libc::ESRCH)));
+    }
 
     #[test]
     fn files_backup_path_replaces_dump_extension() {

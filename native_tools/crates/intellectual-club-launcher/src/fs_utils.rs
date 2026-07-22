@@ -2,9 +2,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
+
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct BackupEntry {
@@ -34,6 +37,78 @@ pub fn remove_file_if_exists(path: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)?;
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("path has no file name: {}", path.display()))?
+        .to_string_lossy();
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+
+    if let Err(error) =
+        fs::write(&temporary_path, contents).and_then(|_| replace_file(&temporary_path, path))
+    {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -199,4 +274,43 @@ pub fn append_log_line(path: &Path, line: &str) -> Result<()> {
     let mut file = open_log_file(path)?;
     writeln!(file, "{line}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    fn atomic_write_never_exposes_partial_contents() {
+        let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-atomic-write-{}-{sequence}",
+            std::process::id()
+        ));
+        let path = root.join("status.json");
+        let _ = fs::remove_dir_all(&root);
+        atomic_write(&path, br#"{"iteration":0,"payload":"initial"}"#).unwrap();
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            for iteration in 1..=2_000 {
+                let contents = format!(
+                    r#"{{"iteration":{iteration},"payload":"{}"}}"#,
+                    "x".repeat(512)
+                );
+                atomic_write(&writer_path, contents.as_bytes()).unwrap();
+            }
+        });
+
+        for _ in 0..20_000 {
+            let contents = fs::read_to_string(&path).unwrap();
+            serde_json::from_str::<serde_json::Value>(&contents).unwrap();
+        }
+        writer.join().unwrap();
+
+        let entries = fs::read_dir(&root).unwrap().count();
+        assert_eq!(entries, 1);
+        let _ = fs::remove_dir_all(root);
+    }
 }
