@@ -177,6 +177,36 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert snapshot.step_id == step.id
   end
 
+  test "handoff history exposes only whitelisted entry metadata" do
+    step = %ChatMessageStep{id: 101, sequence: 1}
+    item = %ChatMessageItem{id: 202, sequence: 1, type: :handoff_history}
+
+    content = %ChatMessageContent{
+      id: 303,
+      sequence: 1,
+      kind: :text,
+      content_text: "Original request",
+      content_json: %{
+        "entry_kind" => "message",
+        "role" => "user",
+        "created_at" => "2026-07-22T10:30:00Z",
+        "omitted_count" => -1,
+        "internal_note" => "must stay private"
+      }
+    }
+
+    snapshot = Serializer.message_content_snapshot(content, item, step)
+
+    assert snapshot.handoff_entry == %{
+             entry_kind: "message",
+             role: "user",
+             created_at: "2026-07-22T10:30:00Z",
+             omitted_count: nil
+           }
+
+    assert Serializer.content(content, "handoff_history").content_json == nil
+  end
+
   test "working summary includes completed duration and active step start" do
     step_1_started_at = ~U[2026-04-16 10:00:00.000000Z]
     step_1_finished_at = ~U[2026-04-16 10:00:02.250000Z]

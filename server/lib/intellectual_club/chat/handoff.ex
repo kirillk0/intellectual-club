@@ -137,19 +137,18 @@ defmodule IntellectualClub.Chat.Handoff do
       target = create_target_chat!(source, actor, source_message_id)
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
-      contents =
-        case rolloff_message_contents(rolloff) do
-          {:ok, contents} -> contents
+      item_specs =
+        case rolloff_item_specs(rolloff) do
+          {:ok, item_specs} -> item_specs
           {:error, error} -> Repo.rollback(error)
         end
 
       {:ok, message} =
-        Threads.add_message(target, :user, rolloff.text,
+        Threads.add_message_with_items(target, :user, item_specs,
           actor: actor,
           parent_id: nil,
-          contents: contents,
-          item_type: :handoff_context,
-          status: :done
+          status: :done,
+          token_count: rolloff.token_count
         )
 
       chat = Ash.get!(Chat, target.id, actor: actor, load: [:last_message])
@@ -158,26 +157,74 @@ defmodule IntellectualClub.Chat.Handoff do
     |> unwrap_transaction()
   end
 
-  defp rolloff_message_contents(%{text: text, artifact: nil}) do
-    {:ok, [%{kind: :text, content_text: text}]}
+  defp rolloff_item_specs(%{history: history, handoff_message: handoff_message} = rolloff)
+       when is_list(history) and is_binary(handoff_message) do
+    with {:ok, artifact_content} <- rolloff_artifact_content(Map.get(rolloff, :artifact)) do
+      history_contents = Enum.map(history, &history_content_spec/1)
+
+      {:ok,
+       [
+         %{
+           type: :handoff_history,
+           contents: history_contents ++ List.wrap(artifact_content)
+         },
+         %{
+           type: :handoff_message,
+           contents: [%{kind: :text, content_text: handoff_message}]
+         }
+       ]}
+    end
   end
 
-  defp rolloff_message_contents(%{text: text, artifact: artifact}) when is_map(artifact) do
+  defp rolloff_item_specs(_rolloff), do: {:error, :invalid_rolloff}
+
+  defp rolloff_artifact_content(nil), do: {:ok, nil}
+
+  defp rolloff_artifact_content(artifact) when is_map(artifact) do
     with {:ok, file} <-
            Files.create_from_binary(
              Map.fetch!(artifact, :filename),
              Map.fetch!(artifact, :mime_type),
              Map.fetch!(artifact, :payload)
            ) do
-      {:ok, [%{kind: :text, content_text: text}, %{kind: :media, file_id: file.id}]}
+      {:ok, %{kind: :media, file_id: file.id}}
     end
   end
 
-  defp rolloff_message_contents(%{text: text}) do
-    {:ok, [%{kind: :text, content_text: text}]}
+  defp rolloff_artifact_content(_artifact), do: {:error, :invalid_rolloff_artifact}
+
+  defp history_content_spec(entry) when is_map(entry) do
+    %{
+      kind: :text,
+      content_text: to_string(Map.get(entry, :text) || ""),
+      content_json: history_entry_metadata(entry)
+    }
   end
 
-  defp rolloff_message_contents(_rolloff), do: {:error, :invalid_rolloff}
+  defp history_entry_metadata(entry) when is_map(entry) do
+    %{}
+    |> Map.put("entry_kind", entry |> Map.get(:kind, :message) |> to_string())
+    |> maybe_put_metadata("role", metadata_role(Map.get(entry, :role)))
+    |> maybe_put_metadata("created_at", metadata_datetime(Map.get(entry, :timestamp)))
+    |> maybe_put_metadata("omitted_count", Map.get(entry, :omitted_count))
+  end
+
+  defp metadata_role(role) when role in [:user, :assistant], do: Atom.to_string(role)
+  defp metadata_role(_role), do: nil
+
+  defp metadata_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp metadata_datetime(%NaiveDateTime{} = value) do
+    value
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  defp metadata_datetime(value) when is_binary(value), do: value
+  defp metadata_datetime(_value), do: nil
+
+  defp maybe_put_metadata(map, _key, nil), do: map
+  defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
 
   defp create_target_chat!(%Chat{} = source, actor, source_message_id) do
     Chat

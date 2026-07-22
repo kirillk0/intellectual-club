@@ -614,9 +614,16 @@ defmodule IntellectualClub.Generation.Context do
   defp project_message_text(message) do
     role = Map.get(message, :role)
 
+    if role == :user do
+      History.project_user_input_text(message)
+    else
+      project_regular_message_text(message, role)
+    end
+  end
+
+  defp project_regular_message_text(message, role) do
     wanted_types =
       case role do
-        :user -> History.user_input_item_types()
         :assistant -> History.assistant_answer_item_types()
         _ -> []
       end

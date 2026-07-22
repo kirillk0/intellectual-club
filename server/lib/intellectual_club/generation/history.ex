@@ -8,15 +8,24 @@ defmodule IntellectualClub.Generation.History do
   """
 
   alias IntellectualClub.Chat.Media
+  alias IntellectualClub.Chat.HandoffRolloff
 
   @allowed_roles ["user", "assistant"]
   @missing_user_message_placeholder "<There is no user message yet, you should write first>"
-  @user_input_item_types [:input, :handoff_request, :handoff_context]
+  @user_input_item_types [
+    :input,
+    :handoff_request,
+    :handoff_context,
+    :handoff_history,
+    :handoff_message
+  ]
   @assistant_answer_item_types [:answer, :handoff_summary]
   @item_types [
     :input,
     :handoff_request,
     :handoff_context,
+    :handoff_history,
+    :handoff_message,
     :steering,
     :answer,
     :handoff_summary,
@@ -191,8 +200,34 @@ defmodule IntellectualClub.Generation.History do
     message
     |> ordered_items()
     |> Enum.filter(&(item_type(&1) in wanted_types))
-    |> Enum.flat_map(&contents/1)
-    |> Enum.sort_by(&sort_seq/1)
+    |> Enum.flat_map(fn item -> item |> contents() |> Enum.sort_by(&sort_seq/1) end)
+  end
+
+  @doc """
+  Projects user input contents, rebuilding structured handoff context for model input.
+  """
+  def project_user_input_contents(message) do
+    items =
+      message
+      |> ordered_items()
+      |> Enum.filter(&user_input_item?/1)
+
+    if Enum.any?(items, &(item_type(&1) in [:handoff_history, :handoff_message])) do
+      project_structured_handoff_contents(items)
+    else
+      project_contents_for_item_types(message, user_input_item_types())
+    end
+  end
+
+  @doc """
+  Projects the text portion of user input as it will be sent to a model.
+  """
+  def project_user_input_text(message) do
+    message
+    |> project_user_input_contents()
+    |> Enum.filter(&(content_kind(&1) == :text))
+    |> Enum.map(&to_string(Map.get(&1, :content_text) || ""))
+    |> Enum.join("")
   end
 
   @doc """
@@ -266,7 +301,7 @@ defmodule IntellectualClub.Generation.History do
   defp user_message_empty?(message) do
     content =
       if trace_message?(message) do
-        project_contents_for_item_types(message, user_input_item_types())
+        project_user_input_contents(message)
       else
         case normalize_message(message) do
           %{"content" => content} -> content
@@ -338,4 +373,71 @@ defmodule IntellectualClub.Generation.History do
       |> Enum.sort_by(&sort_seq/1)
     end)
   end
+
+  defp project_structured_handoff_contents(items) do
+    history =
+      items
+      |> Enum.filter(&(item_type(&1) == :handoff_history))
+      |> Enum.flat_map(fn item ->
+        item
+        |> contents()
+        |> Enum.sort_by(&sort_seq/1)
+        |> Enum.filter(&(content_kind(&1) == :text))
+        |> Enum.map(&history_entry_from_content/1)
+      end)
+
+    handoff_message =
+      items
+      |> Enum.filter(&(item_type(&1) == :handoff_message))
+      |> Enum.map(&item_text/1)
+      |> Enum.reject(&(String.trim(&1) == ""))
+      |> Enum.join("\n\n")
+
+    media =
+      items
+      |> Enum.filter(&(item_type(&1) in [:handoff_history, :handoff_message]))
+      |> Enum.flat_map(&media_contents_for_item/1)
+
+    prompt = HandoffRolloff.render_prompt(history, handoff_message)
+    text_content = %{kind: :text, sequence: 1, content_text: prompt, content_json: nil}
+
+    [text_content] ++
+      (media
+       |> Enum.with_index(2)
+       |> Enum.map(fn {content, sequence} -> Map.put(content, :sequence, sequence) end))
+  end
+
+  defp history_entry_from_content(content) do
+    metadata =
+      case Map.get(content, :content_json) do
+        %{} = value -> Map.new(value)
+        _other -> %{}
+      end
+
+    %{
+      kind: history_entry_kind(metadata_value(metadata, "entry_kind")),
+      role: history_entry_role(metadata_value(metadata, "role")),
+      timestamp: metadata_value(metadata, "created_at"),
+      omitted_count: metadata_value(metadata, "omitted_count"),
+      text: to_string(Map.get(content, :content_text) || "")
+    }
+  end
+
+  defp metadata_value(metadata, "entry_kind"),
+    do: Map.get(metadata, "entry_kind", Map.get(metadata, :entry_kind))
+
+  defp metadata_value(metadata, "role"), do: Map.get(metadata, "role", Map.get(metadata, :role))
+
+  defp metadata_value(metadata, "created_at"),
+    do: Map.get(metadata, "created_at", Map.get(metadata, :created_at))
+
+  defp metadata_value(metadata, "omitted_count"),
+    do: Map.get(metadata, "omitted_count", Map.get(metadata, :omitted_count))
+
+  defp history_entry_kind("continuation"), do: :continuation
+  defp history_entry_kind("omission"), do: :omission
+  defp history_entry_kind(_kind), do: :message
+
+  defp history_entry_role("assistant"), do: :assistant
+  defp history_entry_role(_role), do: :user
 end

@@ -5,10 +5,16 @@ import type {
 } from '@/types/api';
 
 export type HandoffSystemEventKind = 'handoff_request' | 'handoff_summary';
+export type HandoffContextItemKind = 'handoff_history' | 'handoff_message';
 
 export const handoffSystemEventItemTypes = new Set<HandoffSystemEventKind>([
   'handoff_request',
   'handoff_summary',
+]);
+
+export const handoffContextItemTypes = new Set<HandoffContextItemKind>([
+  'handoff_history',
+  'handoff_message',
 ]);
 
 const finiteSequence = (value: number | null | undefined) =>
@@ -20,6 +26,11 @@ export const isHandoffSystemEventItemType = (
   itemType: string | null | undefined
 ): itemType is HandoffSystemEventKind =>
   typeof itemType === 'string' && handoffSystemEventItemTypes.has(itemType as HandoffSystemEventKind);
+
+export const isHandoffContextItemType = (
+  itemType: string | null | undefined
+): itemType is HandoffContextItemKind =>
+  typeof itemType === 'string' && handoffContextItemTypes.has(itemType as HandoffContextItemKind);
 
 const inferredDisplayItems = (message: ChatBranchMessage): ChatMessageDisplayItem[] => {
   const values = [
@@ -100,5 +111,25 @@ const primaryChatMessageTexts = (message: ChatBranchMessage) =>
 export const primaryChatMessageText = (message: ChatBranchMessage) =>
   primaryChatMessageTexts(message).at(-1) ?? '';
 
-export const fullChatMessageText = (message: ChatBranchMessage) =>
-  primaryChatMessageTexts(message).join('\n\n');
+export const fullChatMessageText = (message: ChatBranchMessage) => {
+  const parts = sortedChatMessageContentParts(message);
+  const history = parts
+    .filter((part) => part.item_type === 'handoff_history')
+    .map((part) => String(part.text ?? ''))
+    .filter((text) => text.trim() !== '');
+  const handoffMessage = parts
+    .filter((part) => part.item_type === 'handoff_message')
+    .map((part) => String(part.text ?? ''))
+    .filter((text) => text.trim() !== '');
+
+  if (history.length || handoffMessage.length) {
+    return [
+      history.length ? `History\n\n${history.join('\n\n')}` : '',
+      handoffMessage.length ? `Handoff message\n\n${handoffMessage.join('\n\n')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  return primaryChatMessageTexts(message).join('\n\n');
+};

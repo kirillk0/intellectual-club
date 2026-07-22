@@ -28,7 +28,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       case History.message_role(message) do
         "user" ->
           input_contents =
-            History.project_contents_for_item_types(message, History.user_input_item_types())
+            History.project_user_input_contents(message)
 
           [
             %{

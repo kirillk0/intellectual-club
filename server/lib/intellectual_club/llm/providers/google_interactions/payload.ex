@@ -227,7 +227,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     case History.message_role(message) do
       "user" ->
         contents =
-          History.project_contents_for_item_types(message, History.user_input_item_types())
+          History.project_user_input_contents(message)
 
         [%{"type" => "user_input", "content" => trace_content_blocks(contents, opts)}]
 

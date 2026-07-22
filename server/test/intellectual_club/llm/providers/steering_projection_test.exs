@@ -1,6 +1,7 @@
 defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
   use ExUnit.Case, async: true
 
+  alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
   alias IntellectualClub.Llm.Providers.Demo
@@ -310,6 +311,105 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
            ]
   end
 
+  test "structured handoff history has the same model projection for every provider" do
+    history = [
+      %{
+        role: :user,
+        steps: [
+          %{
+            sequence: 1,
+            items: [
+              %{
+                sequence: 1,
+                type: :handoff_history,
+                contents: [
+                  handoff_history_content(
+                    1,
+                    "Original goal",
+                    "user",
+                    "2026-07-22T10:30:00Z"
+                  ),
+                  handoff_history_content(
+                    2,
+                    "Completed step",
+                    "assistant",
+                    "2026-07-22T10:31:00Z"
+                  )
+                ]
+              },
+              trace_item(2, :handoff_message, "Continue from here.")
+            ]
+          }
+        ]
+      }
+    ]
+
+    expected_prompt =
+      HandoffRolloff.render_prompt(
+        [
+          %{
+            kind: :message,
+            role: :user,
+            timestamp: "2026-07-22T10:30:00Z",
+            text: "Original goal"
+          },
+          %{
+            kind: :message,
+            role: :assistant,
+            timestamp: "2026-07-22T10:31:00Z",
+            text: "Completed step"
+          }
+        ],
+        "Continue from here."
+      )
+
+    assert HistoryInput.build_input_items(history) == [user_responses_message(expected_prompt)]
+
+    assert ChatHistory.build_messages(history) == [
+             %{"role" => "user", "content" => expected_prompt}
+           ]
+
+    assert GooglePayload.build_input_steps(history) == [google_user_input(expected_prompt)]
+
+    base_opts = %{
+      history: history,
+      system_prompt: nil,
+      parameters: %{},
+      tools: [],
+      supports_image_input: false,
+      cache_control_enabled: false
+    }
+
+    responses = Responses.build_initial_request(Map.put(base_opts, :model_name, "gpt-5"))
+    assert responses.raw_request["input"] == [user_responses_message(expected_prompt)]
+
+    openrouter =
+      OpenRouterChatCompletion.build_initial_request(
+        Map.put(base_opts, :model_name, "openai/gpt-5")
+      )
+
+    assert openrouter.raw_request["messages"] == [
+             %{"role" => "user", "content" => expected_prompt}
+           ]
+
+    anthropic =
+      AnthropicMessages.build_initial_request(Map.put(base_opts, :model_name, "claude-sonnet-4"))
+
+    assert anthropic.raw_request["messages"] == [
+             %{
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => expected_prompt}]
+             }
+           ]
+
+    google =
+      GoogleInteractions.build_initial_request(
+        Map.put(base_opts, :model_name, "gemini-2.5-flash")
+      )
+
+    assert google.raw_request["input"] == [google_user_input(expected_prompt)]
+  end
+
   test "leading canonical steering stays before a restarted provider response" do
     history = [
       %{
@@ -369,6 +469,19 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
       sequence: sequence,
       type: type,
       contents: [%{sequence: 1, kind: :text, content_text: text}]
+    }
+  end
+
+  defp handoff_history_content(sequence, text, role, created_at) do
+    %{
+      sequence: sequence,
+      kind: :text,
+      content_text: text,
+      content_json: %{
+        "entry_kind" => "message",
+        "role" => role,
+        "created_at" => created_at
+      }
     }
   end
 

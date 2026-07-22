@@ -14,6 +14,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   alias IntellectualClub.Chat.Search
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
   alias IntellectualClub.Sharing
@@ -97,16 +98,35 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     messages = messages_for_chat!(target.id, actor)
     assert Enum.map(messages, & &1.id) == [summary_message.id]
     assert hd(messages).role == :user
-    assert message_item_types(hd(messages)) == [:handoff_context]
+    assert message_item_types(hd(messages)) == [:handoff_history, :handoff_message]
 
     handoff_text = message_text(hd(messages))
-    assert String.starts_with?(handoff_text, "Conversation continued")
-    assert String.contains?(handoff_text, "<summary>Previous conversation</summary>")
+    assert String.starts_with?(handoff_text, "History")
     assert Regex.match?(~r/\*\*user\*\* \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}Z\):/, handoff_text)
     refute Regex.match?(~r/\*\*user\*\* \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, handoff_text)
     assert String.contains?(handoff_text, "Current work")
-    assert String.contains?(handoff_text, "<summary>Handoff message</summary>")
+    assert String.contains?(handoff_text, "Handoff message")
     assert String.contains?(handoff_text, "Continue from this summary.")
+
+    stored_text = stored_message_text(hd(messages))
+    refute String.contains?(stored_text, "Work continued")
+    refute String.contains?(stored_text, "Conversation continued")
+    refute String.contains?(stored_text, "<details>")
+    refute String.contains?(stored_text, "<summary>")
+
+    assert [%ChatMessageContent{} = history_content] =
+             text_contents_for_item_type(hd(messages), :handoff_history)
+
+    assert history_content.content_text == "Current work"
+    assert history_content.content_json["entry_kind"] == "message"
+    assert history_content.content_json["role"] == "user"
+    assert is_binary(history_content.content_json["created_at"])
+    assert Previews.message_preview(hd(messages), 100) == {"Current work", "user"}
+
+    assert Enum.any?(
+             Search.search_messages_in_chat(target.id, "Current work", actor).active,
+             &(&1.id == summary_message.id)
+           )
 
     child_ids =
       source
@@ -148,7 +168,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
              Handoff.complete_manual_generation(legacy_summary.id, actor)
 
     assert [context_message] = messages_for_chat!(target.id, actor)
-    assert message_item_types(context_message) == [:handoff_context]
+    assert message_item_types(context_message) == [:handoff_history, :handoff_message]
     assert String.contains?(message_text(context_message), "Legacy handoff summary")
   end
 
@@ -267,15 +287,39 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert length(target_messages) == 1
     assert hd(target_messages).role == :user
     assert hd(target_messages).status == :done
-    assert message_item_types(hd(target_messages)) == [:handoff_context]
+    assert message_item_types(hd(target_messages)) == [:handoff_history, :handoff_message]
 
     target_text = message_text(hd(target_messages))
-    assert String.starts_with?(target_text, "Conversation continued")
+    assert String.starts_with?(target_text, "History")
     assert String.contains?(target_text, "Summarize me")
     assert String.contains?(target_text, "Manual handoff summary.")
     refute String.contains?(target_text, "You are preparing a handoff summary")
 
     refute Enum.any?(target_messages, &(&1.status == :generating))
+
+    target_payload =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> get(~p"/api/bff/chat-state/#{target_id}")
+      |> json_response(200)
+
+    [target_root] = target_payload["branch"]
+
+    assert Enum.map(target_root["content"]["items"], & &1["item_type"]) == [
+             "handoff_history",
+             "handoff_message"
+           ]
+
+    history_parts =
+      Enum.filter(target_root["content"]["parts"], &(&1["item_type"] == "handoff_history"))
+
+    assert Enum.any?(history_parts, fn part ->
+             part["text"] == "Summarize me" and
+               part["handoff_entry"]["entry_kind"] == "message" and
+               part["handoff_entry"]["role"] == "user" and
+               is_binary(part["handoff_entry"]["created_at"]) and
+               not Map.has_key?(part, "content_json")
+           end)
 
     requests = Agent.get(agent, & &1.requests)
     [request] = Map.get(requests, "/chat/completions", [])
@@ -1023,6 +1067,69 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     refute String.contains?(text, "Parent answer")
   end
 
+  test "handoff re-expands a copied structured root with its original roles" do
+    %{user: actor} = user_fixture()
+    source = create_chat!(actor, "Copied structured source")
+
+    {:ok, source_message} =
+      Threads.add_message_with_items(
+        source,
+        :user,
+        [
+          %{
+            type: :handoff_history,
+            contents: [
+              %{
+                kind: :text,
+                content_text: "Original request",
+                content_json: %{
+                  "entry_kind" => "message",
+                  "role" => "user",
+                  "created_at" => "2026-07-22T10:30:00Z"
+                }
+              },
+              %{
+                kind: :text,
+                content_text: "Original answer",
+                content_json: %{
+                  "entry_kind" => "message",
+                  "role" => "assistant",
+                  "created_at" => "2026-07-22T10:31:00Z"
+                }
+              }
+            ]
+          },
+          %{
+            type: :handoff_message,
+            contents: [%{kind: :text, content_text: "Copied transfer summary"}]
+          }
+        ],
+        actor: actor,
+        parent_id: nil,
+        status: :done
+      )
+
+    assert {:ok, %{chat: target}} =
+             Handoff.create_handoff_chat(source, actor, "Next transfer summary",
+               source_message_id: source_message.id
+             )
+
+    [target_message] = messages_for_chat!(target.id, actor)
+    history_contents = text_contents_for_item_type(target_message, :handoff_history)
+
+    assert Enum.map(history_contents, & &1.content_text) == [
+             "Original request",
+             "Original answer",
+             "Copied transfer summary"
+           ]
+
+    assert Enum.map(history_contents, & &1.content_json["role"]) == [
+             "user",
+             "assistant",
+             "user"
+           ]
+  end
+
   test "handoff history preserves artifact file references in previous conversation" do
     %{user: actor} = user_fixture()
 
@@ -1075,6 +1182,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert String.contains?(text, "Continue after long answer.")
 
     [artifact_content] = media_contents_for_message!(message.id, actor)
+    assert artifact_content.chat_message_item.type == :handoff_history
     assert artifact_content.file.filename == "full_conversation.md"
     assert artifact_content.file.mime_type == "text/markdown"
 
@@ -1363,7 +1471,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
         chat_message_item.chat_message_step.chat_message_id == ^message_id
     )
     |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.load(:file)
+    |> Ash.Query.load([:file, :chat_message_item])
     |> Ash.read!(actor: actor)
   end
 
@@ -1478,7 +1586,34 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
   end
 
   defp message_text(%ChatMessage{} = message) do
-    Previews.message_preview_text(message)
+    if Enum.any?(message_item_types(message), &(&1 in [:handoff_history, :handoff_message])) do
+      History.project_user_input_text(message)
+    else
+      Previews.message_preview_text(message)
+    end
+  end
+
+  defp stored_message_text(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.flat_map(&List.wrap(&1.contents))
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.map_join("\n", &(&1.content_text || ""))
+  end
+
+  defp text_contents_for_item_type(%ChatMessage{} = message, item_type) do
+    message.steps
+    |> List.wrap()
+    |> Enum.sort_by(&(&1.sequence || 0))
+    |> Enum.flat_map(&List.wrap(&1.items))
+    |> Enum.filter(&(&1.type == item_type))
+    |> Enum.flat_map(&List.wrap(&1.contents))
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(&(&1.sequence || 0))
   end
 
   defp message_item_types(%ChatMessage{} = message) do

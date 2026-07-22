@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
@@ -49,6 +50,45 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     assert payload["page"]["number"] == 1
     assert payload["page"]["per_page"] == 20
     assert payload["page"]["has_next"] == false
+  end
+
+  test "GET /api/bff/chat-list keeps the original first message preview through nested handoffs",
+       %{
+         conn: conn
+       } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+    source = create_chat!(actor, "Source")
+
+    {:ok, opening} =
+      Threads.add_message_to_end(source, :assistant, "Original assistant opening", actor: actor)
+
+    {:ok, last_message} =
+      Threads.add_message(source, :user, "Continue the work",
+        actor: actor,
+        parent_id: opening.id
+      )
+
+    assert {:ok, %{chat: first_target, message: first_root}} =
+             Handoff.create_handoff_chat(source, actor, "First transfer",
+               source_message_id: last_message.id
+             )
+
+    assert {:ok, %{chat: terminal_target}} =
+             Handoff.create_handoff_chat(first_target, actor, "Nested transfer",
+               source_message_id: first_root.id
+             )
+
+    payload =
+      conn
+      |> get(~p"/api/bff/chat-list", %{"preview_len" => "80"})
+      |> json_response(200)
+
+    terminal_payload = chat_payload(payload, terminal_target.id)
+
+    assert is_map(terminal_payload)
+    assert terminal_payload["first_message_preview"] == "Original assistant opening"
+    assert terminal_payload["first_message_role"] == "assistant"
   end
 
   test "GET /api/bff/chat-list returns loaded configuration labels", %{conn: conn} do

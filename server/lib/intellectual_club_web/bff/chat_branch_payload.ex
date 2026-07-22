@@ -16,6 +16,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     :input,
     :handoff_request,
     :handoff_context,
+    :handoff_history,
+    :handoff_message,
     :steering,
     :answer,
     :handoff_summary,
@@ -533,7 +535,14 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     do: text_item_for_role?(Atom.to_string(item.type), role)
 
   defp text_item_for_role?(item_type, "user") when is_binary(item_type),
-    do: item_type in ["input", "handoff_request", "handoff_context"]
+    do:
+      item_type in [
+        "input",
+        "handoff_request",
+        "handoff_context",
+        "handoff_history",
+        "handoff_message"
+      ]
 
   defp text_item_for_role?(item_type, "assistant") when is_binary(item_type),
     do: item_type in ["answer", "handoff_summary", "steering"]
@@ -544,7 +553,14 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     do: media_item_for_role?(Atom.to_string(item.type), role)
 
   defp media_item_for_role?(item_type, "user") when is_binary(item_type),
-    do: item_type in ["input", "handoff_request", "handoff_context"]
+    do:
+      item_type in [
+        "input",
+        "handoff_request",
+        "handoff_context",
+        "handoff_history",
+        "handoff_message"
+      ]
 
   defp media_item_for_role?(item_type, "assistant") when is_binary(item_type),
     do: item_type in ["handoff_summary", "artifact"]

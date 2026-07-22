@@ -672,10 +672,15 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert hd(child_messages).role == :user
     assert message_answer_text(hd(child_messages)) == ""
 
+    assert hd(child_messages).steps
+           |> Enum.flat_map(& &1.items)
+           |> Enum.sort_by(& &1.sequence)
+           |> Enum.map(& &1.type) == [:handoff_history, :handoff_message]
+
     child_prompt = user_message_text(hd(child_messages))
-    assert String.starts_with?(child_prompt, "Work continued")
+    assert String.starts_with?(child_prompt, "History")
     assert String.contains?(child_prompt, "Hand off this work")
-    assert String.contains?(child_prompt, "<summary>Handoff message</summary>")
+    assert String.contains?(child_prompt, "Handoff message")
     assert String.contains?(child_prompt, handoff_summary)
 
     assert wait_for_message!(child_generation_message_id, actor, &(&1.status == :done)).status ==
@@ -920,15 +925,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
   end
 
   defp user_message_text(message) do
-    message
-    |> Map.get(:steps, [])
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.flat_map(&Map.get(&1, :items, []))
-    |> Enum.filter(&History.user_input_item?/1)
-    |> Enum.flat_map(&Map.get(&1, :contents, []))
-    |> Enum.filter(&(&1.kind == :text))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map_join("", fn content -> content.content_text || "" end)
+    History.project_user_input_text(message)
   end
 
   defp tool_result_texts(message) do

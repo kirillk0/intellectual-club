@@ -27,6 +27,8 @@ defmodule IntellectualClub.Chat.Search do
     :input,
     :handoff_request,
     :handoff_context,
+    :handoff_history,
+    :handoff_message,
     :answer,
     :handoff_summary
   ]
@@ -288,7 +290,15 @@ defmodule IntellectualClub.Chat.Search do
         steps,
         exists(
           items,
-          type in [:input, :handoff_request, :handoff_context, :answer, :handoff_summary] and
+          type in [
+            :input,
+            :handoff_request,
+            :handoff_context,
+            :handoff_history,
+            :handoff_message,
+            :answer,
+            :handoff_summary
+          ] and
             exists(contents, kind == :text and contains(content_text, ^term))
         )
       )
@@ -525,7 +535,7 @@ defmodule IntellectualClub.Chat.Search do
 
   defp wanted_trace_item_type(message) do
     case Map.get(message, :role) do
-      :user -> [:input, :handoff_request, :handoff_context]
+      :user -> [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
       :assistant -> [:answer, :handoff_summary]
       _ -> []
     end

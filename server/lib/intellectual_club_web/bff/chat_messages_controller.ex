@@ -473,11 +473,15 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
   end
 
-  defp wanted_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  defp wanted_item_types(:user),
+    do: [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
+
   defp wanted_item_types(:assistant), do: [:answer, :handoff_summary]
   defp wanted_item_types(_other), do: [:other]
 
-  defp media_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  defp media_item_types(:user),
+    do: [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
+
   defp media_item_types(:assistant), do: [:artifact, :handoff_summary]
   defp media_item_types(_other), do: [:other]
 

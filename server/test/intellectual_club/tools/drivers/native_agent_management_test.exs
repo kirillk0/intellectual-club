@@ -3,11 +3,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.ExecutionContext
@@ -490,11 +490,31 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert target.parent_relation_kind == :handoff
 
     [first_message | _] = messages_for_chat!(target.id, actor)
-    first_message_text = Previews.message_preview_text(first_message)
-    assert String.starts_with?(first_message_text, "Work continued")
+
+    first_message_types =
+      first_message.steps
+      |> Enum.flat_map(& &1.items)
+      |> Enum.sort_by(& &1.sequence)
+      |> Enum.map(& &1.type)
+
+    assert first_message_types == [:handoff_history, :handoff_message]
+
+    first_message_text = History.project_user_input_text(first_message)
+    assert String.starts_with?(first_message_text, "History")
     assert String.contains?(first_message_text, "Continue in the new chat.")
     assert String.contains?(first_message_text, "Start")
     assert String.contains?(first_message_text, "Working")
+
+    stored_text =
+      first_message.steps
+      |> Enum.flat_map(& &1.items)
+      |> Enum.flat_map(& &1.contents)
+      |> Enum.filter(&(&1.kind == :text))
+      |> Enum.map_join("\n", &(&1.content_text || ""))
+
+    refute String.contains?(stored_text, "Work continued")
+    refute String.contains?(stored_text, "<details>")
+    refute String.contains?(stored_text, "<summary>")
 
     assert wait_until(fn ->
              generation_message =

@@ -43,6 +43,34 @@ const message: ChatBranchMessage = {
   },
 };
 
+const structuredHandoffMessage: ChatBranchMessage = {
+  id: 11,
+  role: 'user',
+  status: 'done',
+  content: {
+    items: [],
+    parts: [
+      {
+        content_id: 4,
+        sequence: 1,
+        text: 'Original request',
+        item_type: 'handoff_history',
+        step_sequence: 1,
+        item_sequence: 1,
+      },
+      {
+        content_id: 5,
+        sequence: 1,
+        text: 'Transfer summary',
+        item_type: 'handoff_message',
+        step_sequence: 1,
+        item_sequence: 2,
+      },
+    ],
+    media: [],
+  },
+};
+
 describe('chat message copy action', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -88,6 +116,44 @@ describe('chat message copy action', () => {
     expect(copyTextWithFallback).toHaveBeenNthCalledWith(2, 'First answer\n\nFinal answer', {
       promptLabel: 'Copy the message text manually:',
     });
+
+    await actions.dispose();
+  });
+
+  it('copies the handoff message first and readable structured context on a repeated click', async () => {
+    const actions = useChatMessageActions({
+      chatId: computed(() => 1),
+      chat: ref(null),
+      readOnly: computed(() => false),
+      branch: ref([structuredHandoffMessage]),
+      selectedConfig: ref(''),
+      fileUploadPolicy: computed(() => ({
+        allowsFiles: true,
+        imagesOnly: false,
+        maxFileSizeBytes: 10_000,
+        accept: '*/*',
+      })),
+      waitForConfigSync: async () => true,
+      messageConfigLabel: () => '',
+      startPolling: async () => undefined,
+      scrollToLastMessage: () => undefined,
+      ensurePendingFilesUploaded: async () => [],
+      removePendingFileFromCollection: async () => undefined,
+      clearPendingFilesCollection: async () => undefined,
+      pushChatRoute: () => undefined,
+    });
+
+    await actions.copyMessage(structuredHandoffMessage);
+    await actions.copyMessage(structuredHandoffMessage);
+
+    expect(copyTextWithFallback).toHaveBeenNthCalledWith(1, 'Transfer summary', {
+      promptLabel: 'Copy the message text manually:',
+    });
+    expect(copyTextWithFallback).toHaveBeenNthCalledWith(
+      2,
+      'History\n\nOriginal request\n\nHandoff message\n\nTransfer summary',
+      { promptLabel: 'Copy the message text manually:' }
+    );
 
     await actions.dispose();
   });

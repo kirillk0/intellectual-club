@@ -46,6 +46,52 @@
       />
 
       <div ref="messageContentEl" class="message-content" @click="handleMessageContentClick">
+        <div v-if="structuredHandoffContext" class="handoff-context">
+          <details class="handoff-context__section handoff-context__history">
+            <summary>{{ translate('History') }}</summary>
+            <div class="handoff-context__body">
+              <div
+                v-for="entry in structuredHandoffContext.history"
+                :key="entry.key"
+                class="handoff-context__entry"
+              >
+                <div v-if="entry.entryKind === 'continuation'" class="handoff-context__marker">
+                  {{ translate('Continued in a new chat') }}
+                </div>
+                <div v-else>
+                  <div v-if="entry.meta" class="handoff-context__meta">{{ entry.meta }}</div>
+                  <div v-if="entry.html" v-html="entry.html"></div>
+                </div>
+              </div>
+              <ChatMediaList
+                v-if="structuredHandoffContext.historyMedia.length"
+                :message-id="messageId"
+                :contents="structuredHandoffContext.historyMedia"
+                @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
+              />
+            </div>
+          </details>
+
+          <details class="handoff-context__section handoff-context__message">
+            <summary>{{ translate('Handoff message') }}</summary>
+            <div class="handoff-context__body">
+              <div
+                v-for="entry in structuredHandoffContext.message"
+                :key="entry.key"
+                class="handoff-context__entry"
+              >
+                <div v-if="entry.html" v-html="entry.html"></div>
+              </div>
+              <ChatMediaList
+                v-if="structuredHandoffContext.messageMedia.length"
+                :message-id="messageId"
+                :contents="structuredHandoffContext.messageMedia"
+                @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
+              />
+            </div>
+          </details>
+        </div>
+
         <template v-for="(entry, entryIdx) in messageTimeline" :key="entry.key">
           <div
             v-if="entry.kind === 'content'"
@@ -321,6 +367,7 @@ import {
   chatMessageContainsHandoffSystemEvent,
   chatMessageDisplayItems,
   chatMessageHandoffSystemEventKind,
+  isHandoffContextItemType,
   isHandoffSystemEventItemType,
   isSteeringContentPart,
   sortedChatMessageContentParts,
@@ -330,6 +377,7 @@ import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActio
 import type {
   ChatBranchMessage,
   ChatMessageContent,
+  ChatMessageContentPart,
   ChatMessageStep,
   ChatRelationSummary,
 } from '@/types/api';
@@ -533,12 +581,63 @@ const displayItemIdentity = (value: {
 }) =>
   `${value.step_id ?? ''}:${value.item_id ?? ''}:${value.step_sequence ?? ''}:${value.item_sequence ?? ''}:${value.item_type ?? ''}`;
 
+type StructuredHandoffEntry = {
+  key: string;
+  html: string;
+  meta: string;
+  entryKind: 'message' | 'continuation' | 'omission';
+};
+
+const structuredHandoffEntry = (
+  part: ChatMessageContentPart,
+  index: number
+): StructuredHandoffEntry => {
+  const metadata = part.handoff_entry;
+  const entryKind = metadata?.entry_kind || 'message';
+  const role = metadata?.role === 'assistant' ? translate('Assistant') : translate('User');
+  const timestamp = formatTimeOfDay(metadata?.created_at || part.created_at);
+
+  return {
+    key: `handoff-context-${part.content_id || index}`,
+    html:
+      entryKind === 'continuation'
+        ? ''
+        : renderMessage(String(part.text ?? ''), {
+            highlightCode: shouldHighlightCode.value,
+            codeCopyButtons: true,
+          }),
+    meta: entryKind === 'message' ? [role, timestamp].filter(Boolean).join(' · ') : '',
+    entryKind,
+  };
+};
+
+const structuredHandoffContext = computed(() => {
+  const items = chatMessageDisplayItems(msg.value);
+  if (!items.some((item) => isHandoffContextItemType(item.item_type))) return null;
+
+  const parts = sortedChatMessageContentParts(msg.value);
+  const history = parts
+    .filter((part) => part.item_type === 'handoff_history')
+    .map(structuredHandoffEntry);
+  const message = parts
+    .filter((part) => part.item_type === 'handoff_message')
+    .map(structuredHandoffEntry);
+  const media = (msg.value.content?.media || []).slice().sort(sortBySequence);
+
+  return {
+    history,
+    message,
+    historyMedia: media.filter((content) => content.item_type === 'handoff_history'),
+    messageMedia: media.filter((content) => content.item_type === 'handoff_message'),
+  };
+});
+
 const messageParts = computed<Array<MessagePart | HandoffPart>>(() => {
   const parts: Array<MessagePart | HandoffPart> = [];
   const sortedParts = sortedChatMessageContentParts(msg.value);
 
   for (const [index, part] of sortedParts.entries()) {
-    if (isHandoffSystemEventItemType(part.item_type)) continue;
+    if (isHandoffSystemEventItemType(part.item_type) || isHandoffContextItemType(part.item_type)) continue;
     const text = String(part.text ?? '');
     const steering = msg.value.role === 'assistant' && isSteeringContentPart(part);
     if (!text.trim() && !steering) continue;
@@ -666,7 +765,11 @@ const messageMediaContents = computed(() =>
 );
 
 const regularMessageMediaContents = computed(() =>
-  messageMediaContents.value.filter((content) => !isHandoffSystemEventItemType(content.item_type))
+  messageMediaContents.value.filter(
+    (content) =>
+      !isHandoffSystemEventItemType(content.item_type) &&
+      !isHandoffContextItemType(content.item_type)
+  )
 );
 
 const previewAttachmentContents = computed(() => messageMediaContents.value);
@@ -1030,6 +1133,55 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 
 .handoff-inline-event__content {
   padding: 9px 10px;
+}
+
+.handoff-context {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.handoff-context__section {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+
+.handoff-context__section > summary {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.handoff-context__section[open] > summary {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.handoff-context__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+}
+
+.handoff-context__entry + .handoff-context__entry {
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.handoff-context__meta,
+.handoff-context__marker {
+  margin-bottom: 5px;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.handoff-context__marker {
+  margin-bottom: 0;
+  font-style: italic;
 }
 
 .message-answer-part::after {

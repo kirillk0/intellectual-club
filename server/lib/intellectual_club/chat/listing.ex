@@ -223,7 +223,8 @@ defmodule IntellectualClub.Chat.Listing do
           contents: [
             :sequence,
             :kind,
-            :content_text
+            :content_text,
+            :content_json
           ]
         ]
       ]

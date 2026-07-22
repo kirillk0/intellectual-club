@@ -41,6 +41,8 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
           :input,
           :handoff_request,
           :handoff_context,
+          :handoff_history,
+          :handoff_message,
           :steering,
           :reasoning,
           :answer,

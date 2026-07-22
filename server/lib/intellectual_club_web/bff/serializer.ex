@@ -367,6 +367,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       sequence: content.sequence,
       text: Map.get(serialized, :content_text),
       content_text_truncated: Map.get(serialized, :content_text_truncated),
+      handoff_entry: handoff_entry_snapshot(item_type, content.content_json),
       created_at: datetime_iso(item.created_at || step.created_at)
     }
   end
@@ -932,12 +933,33 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp sanitize_content_json(item_type, kind, content_json) do
-    if item_type == "tool_result" and kind == "opaque" do
-      sanitize_tool_result_content_json(content_json)
-    else
-      content_json
+    cond do
+      item_type == "handoff_history" ->
+        nil
+
+      item_type == "tool_result" and kind == "opaque" ->
+        sanitize_tool_result_content_json(content_json)
+
+      true ->
+        content_json
     end
   end
+
+  defp handoff_entry_snapshot("handoff_history", %{} = metadata) do
+    entry_kind = Map.get(metadata, "entry_kind", Map.get(metadata, :entry_kind))
+    role = Map.get(metadata, "role", Map.get(metadata, :role))
+    created_at = Map.get(metadata, "created_at", Map.get(metadata, :created_at))
+    omitted_count = Map.get(metadata, "omitted_count", Map.get(metadata, :omitted_count))
+
+    %{
+      entry_kind: if(entry_kind in ["message", "continuation", "omission"], do: entry_kind),
+      role: if(role in ["user", "assistant"], do: role),
+      created_at: if(is_binary(created_at), do: created_at),
+      omitted_count: if(is_integer(omitted_count) and omitted_count > 0, do: omitted_count)
+    }
+  end
+
+  defp handoff_entry_snapshot(_item_type, _metadata), do: nil
 
   defp sanitize_tool_result_content_json(%{} = content_json) do
     content_json = Map.new(content_json)

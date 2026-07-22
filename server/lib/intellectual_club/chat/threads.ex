@@ -87,6 +87,48 @@ defmodule IntellectualClub.Chat.Threads do
   end
 
   @doc """
+  Adds a message whose persisted trace contains multiple typed items.
+  """
+  def add_message_with_items(chat_or_id, role, item_specs, opts \\ [])
+      when is_list(item_specs) and is_list(opts) do
+    actor = Keyword.fetch!(opts, :actor)
+    chat = fetch_chat!(chat_or_id, actor)
+    items = normalize_item_specs(item_specs)
+
+    token_count =
+      Keyword.get_lazy(opts, :token_count, fn ->
+        items
+        |> Enum.flat_map(& &1.contents)
+        |> text_from_contents()
+        |> TokenCounter.estimate()
+      end)
+
+    params = %{
+      chat_id: chat.id,
+      role: role,
+      parent_id: Keyword.get(opts, :parent_id),
+      llm_configuration_id: Keyword.get(opts, :llm_configuration_id),
+      status: Keyword.get(opts, :status, :done),
+      error_detail: Keyword.get(opts, :error_detail),
+      token_count: token_count
+    }
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(:add_message, params, actor: actor)
+      |> Ash.create!()
+
+    case persist_message_items_trace!(message, items, actor) do
+      {:ok, _items} ->
+        _chat = set_last_message!(chat, message.id, actor)
+        {:ok, message}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  @doc """
   Returns active branch messages from root to `chat.last_message`.
   """
   def active_branch(chat_or_id, actor, opts \\ []) do
@@ -648,6 +690,27 @@ defmodule IntellectualClub.Chat.Threads do
 
   def normalize_content_specs(_other), do: []
 
+  @doc """
+  Normalizes typed message item specs for persistence.
+  """
+  def normalize_item_specs(item_specs) when is_list(item_specs) do
+    item_specs
+    |> Enum.filter(&is_map/1)
+    |> Enum.with_index(1)
+    |> Enum.flat_map(fn {item, sequence} ->
+      type = Map.get(item, :type, Map.get(item, "type"))
+      contents = Map.get(item, :contents, Map.get(item, "contents", []))
+
+      if is_atom(type) do
+        [%{sequence: sequence, type: type, contents: normalize_content_specs(contents)}]
+      else
+        []
+      end
+    end)
+  end
+
+  def normalize_item_specs(_other), do: []
+
   defp normalize_content_spec(content, sequence) when is_map(content) and is_integer(sequence) do
     kind =
       case Map.get(content, :kind, Map.get(content, "kind")) do
@@ -674,7 +737,7 @@ defmodule IntellectualClub.Chat.Threads do
           sequence: sequence,
           kind: kind,
           content_text: if(kind == :text, do: content_text, else: ""),
-          content_json: if(kind == :opaque, do: content_json, else: nil),
+          content_json: if(is_map(content_json), do: Map.new(content_json), else: nil),
           file_id: if(kind == :media, do: file_id, else: nil)
         }
     end
@@ -743,5 +806,62 @@ defmodule IntellectualClub.Chat.Threads do
         end)
       end
     end
+  end
+
+  @doc """
+  Persists an ordered set of typed items in a single message trace step.
+  """
+  def persist_message_items_trace!(message, item_specs, actor) when is_list(item_specs) do
+    with {:ok, step} <-
+           ChatMessageStep
+           |> Ash.Changeset.for_create(:create, %{chat_message_id: message.id, sequence: 1},
+             actor: actor
+           )
+           |> Ash.create() do
+      Enum.reduce_while(item_specs, {:ok, []}, fn item_spec, {:ok, persisted_items} ->
+        with {:ok, item} <-
+               ChatMessageItem
+               |> Ash.Changeset.for_create(
+                 :create,
+                 %{
+                   chat_message_step_id: step.id,
+                   sequence: item_spec.sequence,
+                   type: item_spec.type
+                 },
+                 actor: actor
+               )
+               |> Ash.create(),
+             :ok <- persist_item_contents(item, item_spec.contents, actor) do
+          {:cont, {:ok, persisted_items ++ [item]}}
+        else
+          {:error, error} -> {:halt, {:error, error}}
+        end
+      end)
+    end
+  end
+
+  defp persist_item_contents(_item, [], _actor), do: :ok
+
+  defp persist_item_contents(item, contents, actor) when is_list(contents) do
+    Enum.reduce_while(contents, :ok, fn content, :ok ->
+      ChatMessageContent
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_item_id: item.id,
+          sequence: content.sequence,
+          kind: content.kind,
+          content_text: content.content_text,
+          content_json: content.content_json,
+          file_id: content.file_id
+        },
+        actor: actor
+      )
+      |> Ash.create()
+      |> case do
+        {:ok, _content} -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
   end
 end

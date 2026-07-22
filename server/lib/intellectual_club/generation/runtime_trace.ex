@@ -63,6 +63,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           :input
           | :handoff_request
           | :handoff_context
+          | :handoff_history
+          | :handoff_message
           | :steering
           | :answer
           | :handoff_summary

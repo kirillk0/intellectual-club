@@ -2,6 +2,7 @@ import {
   chatMessageContainsHandoffSystemEvent,
   chatMessageHandoffSystemEventKind,
   fullChatMessageText,
+  isHandoffContextItemType,
   isSteeringContentPart,
   primaryChatMessageText,
   sortedChatMessageContentParts,
@@ -148,5 +149,30 @@ describe('chat message content', () => {
     expect(chatMessageHandoffSystemEventKind(context)).toBeNull();
     expect(chatMessageContainsHandoffSystemEvent(mixed)).toBe(true);
     expect(chatMessageHandoffSystemEventKind(mixed)).toBeNull();
+  });
+
+  it('copies the handoff message first and both structured sections when copying all', () => {
+    const message: ChatBranchMessage = {
+      id: 14,
+      role: 'user',
+      status: 'done',
+      content: {
+        items: [],
+        parts: [
+          part(1, 'Original request', 'handoff_history', 1, 1),
+          part(2, 'Earlier answer', 'handoff_history', 1, 1),
+          part(3, 'Transfer summary', 'handoff_message', 1, 2),
+        ],
+        media: [],
+      },
+    };
+
+    expect(isHandoffContextItemType('handoff_history')).toBe(true);
+    expect(isHandoffContextItemType('handoff_message')).toBe(true);
+    expect(isHandoffContextItemType('handoff_context')).toBe(false);
+    expect(primaryChatMessageText(message)).toBe('Transfer summary');
+    expect(fullChatMessageText(message)).toBe(
+      'History\n\nOriginal request\n\nEarlier answer\n\nHandoff message\n\nTransfer summary'
+    );
   });
 });

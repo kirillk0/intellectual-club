@@ -328,6 +328,12 @@ export type ChatMessageContentPart = {
   sequence: number;
   text: string;
   content_text_truncated?: boolean;
+  handoff_entry?: {
+    entry_kind: 'message' | 'continuation' | 'omission' | null;
+    role: 'user' | 'assistant' | null;
+    created_at: string | null;
+    omitted_count: number | null;
+  } | null;
   created_at?: string | null;
 };
 

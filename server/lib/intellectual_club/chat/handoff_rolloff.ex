@@ -20,7 +20,8 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
         }
 
   @type result :: %{
-          required(:text) => String.t(),
+          required(:history) => [map()],
+          required(:handoff_message) => String.t(),
           required(:artifact) => artifact_payload() | nil,
           required(:strategy) => atom(),
           required(:token_count) => non_neg_integer()
@@ -34,27 +35,28 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
       full_document = previous_conversation_document(entries, :full)
 
       entries
-      |> build_candidates(summary, opts, full_document)
-      |> select_candidate(summary, opts)
+      |> build_candidates(summary, full_document)
+      |> select_candidate(summary)
     end
   end
 
   def budget_tokens, do: @budget_tokens
 
-  defp build_candidates(entries, summary, opts, full_document) do
+  defp build_candidates(entries, summary, full_document) do
     [
-      candidate(entries, summary, opts, :full, false, full_document),
-      candidate(entries, summary, opts, :assistant_200, true, full_document),
-      candidate(entries, summary, opts, :massive, true, full_document)
+      candidate(entries, summary, :full, false, full_document),
+      candidate(entries, summary, :assistant_200, true, full_document),
+      candidate(entries, summary, :massive, true, full_document)
     ]
   end
 
-  defp candidate(entries, summary, opts, strategy, attach_full?, full_document) do
-    previous = previous_conversation_details(entries, strategy)
-    text = handoff_message(previous, summary, opts)
+  defp candidate(entries, summary, strategy, attach_full?, full_document) do
+    history = Enum.map(entries, &truncate_entry(&1, strategy))
+    text = render_prompt(history, summary)
 
     %{
-      text: text,
+      history: history,
+      handoff_message: summary,
       artifact: artifact_payload(attach_full?, full_document),
       strategy: strategy,
       token_count: TokenCounter.estimate(text),
@@ -62,40 +64,35 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     }
   end
 
-  defp select_candidate(candidates, summary, opts) do
+  defp select_candidate(candidates, summary) do
     case Enum.find(candidates, &(Map.get(&1, :token_count) <= @budget_tokens)) do
       nil ->
         entries = candidates |> List.first() |> Map.fetch!(:entries)
         full_document = previous_conversation_document(entries, :full)
-        hard_middle_out(entries, summary, opts, full_document)
+        hard_middle_out(entries, summary, full_document)
 
       candidate ->
         {:ok, public_candidate(candidate)}
     end
   end
 
-  defp hard_middle_out(entries, summary, opts, full_document) do
+  defp hard_middle_out(entries, summary, full_document) do
     entries = Enum.map(entries, &truncate_entry(&1, :massive))
     first_entry = List.first(entries)
     tail_entries = entries |> Enum.drop(1) |> Enum.reverse()
 
     {summary, included_tail} =
-      fit_hard_middle_out(first_entry, tail_entries, summary, opts, [])
+      fit_hard_middle_out(first_entry, tail_entries, summary, [])
 
     omitted_count =
       max(length(entries) - length(included_tail) - if(first_entry, do: 1, else: 0), 0)
 
-    previous =
-      hard_previous_conversation_details(
-        first_entry,
-        Enum.reverse(included_tail),
-        omitted_count
-      )
-
-    text = handoff_message(previous, summary, opts)
+    history = hard_history(first_entry, Enum.reverse(included_tail), omitted_count)
+    text = render_prompt(history, summary)
 
     candidate = %{
-      text: text,
+      history: history,
+      handoff_message: summary,
       artifact: artifact_payload(true, full_document),
       strategy: :hard_middle_out,
       token_count: TokenCounter.estimate(text)
@@ -104,22 +101,17 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     {:ok, public_candidate(candidate)}
   end
 
-  defp fit_hard_middle_out(first_entry, tail_entries, summary, opts, included_tail) do
+  defp fit_hard_middle_out(first_entry, tail_entries, summary, included_tail) do
     omitted_count = omitted_count(first_entry, tail_entries, included_tail)
-
-    previous =
-      hard_previous_conversation_details(first_entry, Enum.reverse(included_tail), omitted_count)
-
-    summary = fit_summary(summary, previous, opts)
+    history = hard_history(first_entry, Enum.reverse(included_tail), omitted_count)
+    summary = fit_summary(summary, history)
 
     Enum.reduce_while(tail_entries, {summary, included_tail}, fn entry, {summary, included} ->
       next_included = [entry | included]
       next_omitted = omitted_count(first_entry, tail_entries, next_included)
 
-      previous =
-        hard_previous_conversation_details(first_entry, Enum.reverse(next_included), next_omitted)
-
-      text = handoff_message(previous, summary, opts)
+      history = hard_history(first_entry, Enum.reverse(next_included), next_omitted)
+      text = render_prompt(history, summary)
 
       if TokenCounter.estimate(text) <= @budget_tokens do
         {:cont, {summary, next_included}}
@@ -137,20 +129,20 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     max(length(tail_entries) - length(included_tail), 0)
   end
 
-  defp fit_summary(summary, previous, opts) do
-    text = handoff_message(previous, summary, opts)
+  defp fit_summary(summary, history) do
+    text = render_prompt(history, summary)
 
     if TokenCounter.estimate(text) <= @budget_tokens do
       summary
     else
-      empty_summary_text = handoff_message(previous, "", opts)
+      empty_summary_text = render_prompt(history, "")
       remaining = max(@budget_tokens - TokenCounter.estimate(empty_summary_text), 0)
-      trim_summary_to_budget(truncate_text(summary, remaining), previous, opts)
+      trim_summary_to_budget(truncate_text(summary, remaining), history)
     end
   end
 
-  defp trim_summary_to_budget(summary, previous, opts) do
-    if TokenCounter.estimate(handoff_message(previous, summary, opts)) <= @budget_tokens do
+  defp trim_summary_to_budget(summary, history) do
+    if TokenCounter.estimate(render_prompt(history, summary)) <= @budget_tokens do
       summary
     else
       next_limit = max(TokenCounter.estimate(summary) - 50, 0)
@@ -158,14 +150,14 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
       if next_limit == 0 do
         truncate_text(summary, next_limit)
       else
-        trim_summary_to_budget(truncate_text(summary, next_limit), previous, opts)
+        trim_summary_to_budget(truncate_text(summary, next_limit), history)
       end
     end
   end
 
   defp public_candidate(candidate) do
     candidate
-    |> Map.take([:text, :artifact, :strategy, :token_count])
+    |> Map.take([:history, :handoff_message, :artifact, :strategy, :token_count])
   end
 
   defp artifact_payload(false, _full_document), do: nil
@@ -178,48 +170,30 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     }
   end
 
-  defp handoff_message(previous, summary, opts) do
-    title =
-      case Keyword.get(opts, :handoff_mode, :manual) do
-        :tool -> "Work continued"
-        _other -> "Conversation continued"
-      end
-
+  @doc """
+  Renders structured handoff data for model input without changing persisted display text.
+  """
+  @spec render_prompt([map()], String.t()) :: String.t()
+  def render_prompt(history, summary) when is_list(history) do
     [
-      title,
+      "History",
       "",
-      previous,
+      Enum.map_join(history, "\n", &entry_block/1),
       "",
-      "<details>",
-      "<summary>Handoff message</summary>",
+      "Handoff message",
       "",
-      String.trim(to_string(summary || "")),
-      "",
-      "</details>"
+      String.trim(to_string(summary || ""))
     ]
     |> Enum.join("\n")
     |> String.trim()
     |> Kernel.<>("\n")
   end
 
-  defp previous_conversation_details(entries, strategy) do
-    body =
-      entries
-      |> Enum.map(&truncate_entry(&1, strategy))
-      |> Enum.map_join("\n", &entry_block/1)
-
-    details_wrap("Previous conversation", body)
-  end
-
-  defp hard_previous_conversation_details(first_entry, tail_entries, omitted_count) do
-    entries =
-      []
-      |> maybe_append(first_entry)
-      |> maybe_append(omission_entry(omitted_count))
-      |> Kernel.++(tail_entries)
-
-    body = Enum.map_join(entries, "\n", &entry_block/1)
-    details_wrap("Previous conversation", body)
+  defp hard_history(first_entry, tail_entries, omitted_count) do
+    []
+    |> maybe_append(first_entry)
+    |> maybe_append(omission_entry(omitted_count))
+    |> Kernel.++(tail_entries)
   end
 
   defp previous_conversation_document(entries, strategy) do
@@ -234,24 +208,13 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     |> Kernel.<>("\n")
   end
 
-  defp details_wrap(summary, body) do
-    [
-      "<details>",
-      "<summary>#{summary}</summary>",
-      "",
-      String.trim(to_string(body || "")),
-      "",
-      "</details>"
-    ]
-    |> Enum.join("\n")
-  end
-
   defp maybe_append(values, nil), do: values
   defp maybe_append(values, value), do: values ++ [value]
 
   defp omission_entry(count) when is_integer(count) and count > 0 do
     %{
       kind: :omission,
+      omitted_count: count,
       text: "[... omitted #{count} middle messages; see attached full_conversation.md ...]"
     }
   end
@@ -260,7 +223,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
 
   defp truncate_entry(%{kind: :omission} = entry, _strategy), do: entry
 
-  defp truncate_entry(%{placeholder?: true} = entry, _strategy), do: entry
+  defp truncate_entry(%{kind: :continuation} = entry, _strategy), do: entry
 
   defp truncate_entry(%{role: :assistant, text: text} = entry, :assistant_200) do
     %{entry | text: truncate_text(text, @assistant_soft_limit)}
@@ -490,20 +453,17 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
 
   defp placeholder_entry(%ChatMessage{} = message) do
     %{
+      kind: :continuation,
       role: :assistant,
       timestamp: message.created_at,
-      text: "<continued in new chat>",
-      placeholder?: true
+      text: "<continued in new chat>"
     }
   end
 
   defp message_entries(%ChatMessage{role: :user} = message) do
-    text = message_text(message, [:input, :handoff_request, :handoff_context])
-
-    if String.trim(text) == "" do
-      []
-    else
-      [%{role: :user, timestamp: message.created_at, text: text}]
+    case structured_handoff_entries(message) do
+      [] -> regular_user_message_entries(message)
+      entries -> entries
     end
   end
 
@@ -512,6 +472,84 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
   end
 
   defp message_entries(_message), do: []
+
+  defp regular_user_message_entries(message) do
+    text = message_text(message, [:input, :handoff_request, :handoff_context])
+
+    if String.trim(text) == "" do
+      []
+    else
+      [%{kind: :message, role: :user, timestamp: message.created_at, text: text}]
+    end
+  end
+
+  defp structured_handoff_entries(%ChatMessage{} = message) do
+    items =
+      message
+      |> Map.get(:steps, [])
+      |> ordered()
+      |> Enum.flat_map(fn step -> step |> Map.get(:items, []) |> ordered() end)
+
+    history_items = Enum.filter(items, &(Map.get(&1, :type) == :handoff_history))
+    message_items = Enum.filter(items, &(Map.get(&1, :type) == :handoff_message))
+
+    if history_items == [] and message_items == [] do
+      []
+    else
+      history_entries =
+        history_items
+        |> Enum.flat_map(fn item -> item |> Map.get(:contents, []) |> ordered() end)
+        |> Enum.filter(&(Map.get(&1, :kind) == :text))
+        |> Enum.map(&structured_history_entry(&1, message.created_at))
+        |> Enum.reject(&(String.trim(Map.get(&1, :text, "")) == ""))
+
+      message_entries =
+        message_items
+        |> Enum.map(&item_text(message, &1))
+        |> Enum.reject(&(String.trim(&1) == ""))
+        |> Enum.map(fn text ->
+          %{kind: :message, role: :user, timestamp: message.created_at, text: text}
+        end)
+
+      history_entries ++ message_entries
+    end
+  end
+
+  defp structured_history_entry(content, fallback_timestamp) do
+    metadata =
+      case Map.get(content, :content_json) do
+        %{} = value -> Map.new(value)
+        _other -> %{}
+      end
+
+    kind = metadata_value(metadata, "entry_kind")
+
+    %{
+      kind: structured_entry_kind(kind),
+      role: structured_entry_role(metadata_value(metadata, "role")),
+      timestamp: metadata_value(metadata, "created_at") || fallback_timestamp,
+      omitted_count: metadata_value(metadata, "omitted_count"),
+      text: to_string(Map.get(content, :content_text) || "")
+    }
+  end
+
+  defp metadata_value(metadata, "entry_kind"),
+    do: Map.get(metadata, "entry_kind", Map.get(metadata, :entry_kind))
+
+  defp metadata_value(metadata, "role"), do: Map.get(metadata, "role", Map.get(metadata, :role))
+
+  defp metadata_value(metadata, "created_at"),
+    do: Map.get(metadata, "created_at", Map.get(metadata, :created_at))
+
+  defp metadata_value(metadata, "omitted_count"),
+    do: Map.get(metadata, "omitted_count", Map.get(metadata, :omitted_count))
+
+  defp structured_entry_kind("continuation"), do: :continuation
+  defp structured_entry_kind("omission"), do: :omission
+  defp structured_entry_kind(_kind), do: :message
+
+  defp structured_entry_role("assistant"), do: :assistant
+  defp structured_entry_role(_role), do: :user
 
   defp message_item_entries(%ChatMessage{} = message, item_types) when is_list(item_types) do
     message
@@ -527,7 +565,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
     |> Enum.reject(fn {_type, text} -> String.trim(text) == "" end)
     |> Enum.map(fn {type, text} ->
       role = if type == :steering, do: :user, else: :assistant
-      %{role: role, timestamp: message.created_at, text: text}
+      %{kind: :message, role: role, timestamp: message.created_at, text: text}
     end)
   end
 
@@ -623,6 +661,7 @@ defmodule IntellectualClub.Chat.HandoffRolloff do
             :sequence,
             :kind,
             :content_text,
+            :content_json,
             :file_id,
             file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
           ]

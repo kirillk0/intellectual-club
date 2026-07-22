@@ -329,6 +329,118 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(wrapper.find('[aria-label="Branch from message 1"]').exists()).toBe(true);
   });
 
+  it('renders structured handoff history and message as localized collapsed sections', async () => {
+    setPreferredLocale('ru');
+
+    const message: ChatBranchMessage = {
+      id: 27,
+      role: 'user',
+      status: 'done',
+      content: {
+        items: [
+          {
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+            item_type: 'handoff_history',
+          },
+          {
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 11,
+            item_sequence: 2,
+            item_type: 'handoff_message',
+          },
+        ],
+        parts: [
+          {
+            content_id: 1,
+            sequence: 1,
+            text: 'Original request',
+            item_type: 'handoff_history',
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+            handoff_entry: {
+              entry_kind: 'message',
+              role: 'assistant',
+              created_at: '2026-07-22T10:30:00Z',
+              omitted_count: null,
+            },
+          },
+          {
+            content_id: 2,
+            sequence: 2,
+            text: '<continued in new chat>',
+            item_type: 'handoff_history',
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+            handoff_entry: {
+              entry_kind: 'continuation',
+              role: null,
+              created_at: '2026-07-22T10:31:00Z',
+              omitted_count: null,
+            },
+          },
+          {
+            content_id: 3,
+            sequence: 1,
+            text: 'Transfer summary',
+            item_type: 'handoff_message',
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 11,
+            item_sequence: 2,
+          },
+        ],
+        media: [
+          {
+            id: 4,
+            step_id: 1,
+            step_sequence: 1,
+            item_id: 10,
+            item_sequence: 1,
+            item_type: 'handoff_history',
+            external_id: 'content-4',
+            sequence: 3,
+            kind: 'media',
+            media: {
+              external_id: 'file-4',
+              filename: 'full_conversation.md',
+              mime_type: 'text/markdown',
+              size_bytes: 128,
+              sha256: 'sha256',
+              is_image: false,
+            },
+          },
+        ],
+      },
+    };
+
+    const wrapper = mount(ChatMessageBubble, { props: { message, index: 0 } });
+    const sections = wrapper.findAll('.handoff-context__section');
+
+    expect(sections).toHaveLength(2);
+    expect(sections[0]?.get('summary').text()).toBe('История');
+    expect(sections[1]?.get('summary').text()).toBe('Сообщение для передачи');
+    expect(sections[0]?.attributes('open')).toBeUndefined();
+    expect(sections[1]?.attributes('open')).toBeUndefined();
+    expect(sections[0]?.text()).toContain('Ассистент');
+    expect(sections[0]?.text()).toContain('Продолжено в новом чате');
+    expect(sections[0]?.text()).toContain('full_conversation.md');
+    expect(sections[1]?.text()).toContain('Transfer summary');
+    expect(wrapper.find('.message-answer-part').exists()).toBe(false);
+
+    await sections[0]?.get('summary').trigger('click');
+
+    expect(sections[0]?.attributes('open')).toBe('');
+    expect(sections[1]?.attributes('open')).toBeUndefined();
+  });
+
   it('groups handoff items inline inside mixed messages without changing ordinary items', () => {
     const message: ChatBranchMessage = {
       id: 25,

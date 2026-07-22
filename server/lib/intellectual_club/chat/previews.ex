@@ -31,6 +31,13 @@ defmodule IntellectualClub.Chat.Previews do
 
   @spec message_preview_text(ChatMessage.t()) :: String.t()
   def message_preview_text(%ChatMessage{} = message) do
+    case structured_handoff_preview(message) do
+      {text, _role} -> text
+      nil -> regular_message_preview_text(message)
+    end
+  end
+
+  defp regular_message_preview_text(%ChatMessage{} = message) do
     wanted_types =
       case message.role do
         :user -> [:input, :handoff_request, :handoff_context]
@@ -77,13 +84,64 @@ defmodule IntellectualClub.Chat.Previews do
 
   @spec message_preview(ChatMessage.t(), integer()) :: {String.t() | nil, String.t() | nil}
   def message_preview(%ChatMessage{} = message, limit) when is_integer(limit) do
-    role =
-      case message.role do
-        :user -> "user"
-        :assistant -> "assistant"
-        _ -> nil
+    {text, role} =
+      case structured_handoff_preview(message) do
+        {text, role} -> {text, role}
+        nil -> {regular_message_preview_text(message), message_role(message.role)}
       end
 
-    {format_preview(message_preview_text(message), limit), role}
+    {format_preview(text, limit), role}
   end
+
+  defp structured_handoff_preview(%ChatMessage{} = message) do
+    items =
+      message.steps
+      |> Enum.sort_by(& &1.sequence)
+      |> Enum.flat_map(fn %ChatMessageStep{} = step ->
+        Enum.sort_by(step.items, & &1.sequence)
+      end)
+
+    history_items = Enum.filter(items, &(&1.type == :handoff_history))
+    message_items = Enum.filter(items, &(&1.type == :handoff_message))
+
+    cond do
+      history_items == [] and message_items == [] ->
+        nil
+
+      true ->
+        first_history_entry(history_items) || handoff_message_fallback(message_items)
+    end
+  end
+
+  defp first_history_entry(items) do
+    items
+    |> Enum.flat_map(fn item -> Enum.sort_by(item.contents, & &1.sequence) end)
+    |> Enum.find_value(fn content ->
+      metadata = if is_map(content.content_json), do: content.content_json, else: %{}
+      entry_kind = Map.get(metadata, "entry_kind", Map.get(metadata, :entry_kind))
+      role = Map.get(metadata, "role", Map.get(metadata, :role))
+      text = to_string(content.content_text || "") |> String.trim()
+
+      if content.kind == :text and entry_kind == "message" and text != "" do
+        {text, message_role(role)}
+      end
+    end)
+  end
+
+  defp handoff_message_fallback(items) do
+    text =
+      items
+      |> Enum.flat_map(fn item -> Enum.sort_by(item.contents, & &1.sequence) end)
+      |> Enum.filter(&(&1.kind == :text))
+      |> Enum.map_join("", &to_string(&1.content_text || ""))
+      |> String.trim()
+
+    if text == "", do: {"", "user"}, else: {text, "user"}
+  end
+
+  defp message_role(:user), do: "user"
+  defp message_role("user"), do: "user"
+  defp message_role(:assistant), do: "assistant"
+  defp message_role("assistant"), do: "assistant"
+  defp message_role(_role), do: nil
 end
