@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Generation.History
+  alias IntellectualClub.Llm.Providers.Common.ToolCallHistory
 
   @responses_item_types MapSet.new([
                           "message",
@@ -37,11 +38,21 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
           ]
 
         "assistant" ->
-          emitted =
+          steps =
             message
             |> History.steps()
             |> Enum.sort_by(&History.sort_seq/1)
-            |> Enum.flat_map(&messages_from_step(&1, opts))
+
+          result_refs =
+            steps
+            |> Enum.flat_map(&History.items/1)
+            |> ToolCallHistory.result_refs(fn item ->
+              item
+              |> tool_result_payload()
+              |> get_any(["tool_call_id", "call_id"])
+            end)
+
+          emitted = Enum.flat_map(steps, &messages_from_step(&1, opts, result_refs))
 
           if emitted == [] do
             fallback_text =
@@ -108,7 +119,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
   defp normalize_payload_message(_other), do: []
 
-  defp messages_from_step(step, opts) do
+  defp messages_from_step(step, opts, result_refs) do
     items = step |> History.items() |> Enum.sort_by(&History.sort_seq/1)
 
     items
@@ -117,7 +128,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       if History.item_type(first) == :steering do
         Enum.flat_map(trace_items, &steering_message/1)
       else
-        messages_from_trace_items(trace_items, opts)
+        messages_from_trace_items(trace_items, opts, result_refs)
       end
     end)
   end
@@ -129,7 +140,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     end
   end
 
-  defp messages_from_trace_items(items, opts) do
+  defp messages_from_trace_items(items, opts, result_refs) do
     {answer_parts, tool_calls, tool_results} =
       Enum.reduce(items, {[], [], []}, fn item, {answers_acc, calls_acc, results_acc} ->
         case History.item_type(item) do
@@ -143,7 +154,14 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
                 _other -> nil
               end
 
-            next_calls = if is_map(call), do: [{item, call} | calls_acc], else: calls_acc
+            next_calls =
+              if is_map(call) and
+                   ToolCallHistory.paired?(item, tool_call_id(call), result_refs) do
+                [{item, call} | calls_acc]
+              else
+                calls_acc
+              end
+
             {answers_acc, next_calls, results_acc}
 
           :tool_result ->

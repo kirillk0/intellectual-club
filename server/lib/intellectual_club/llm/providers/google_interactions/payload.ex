@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.NativeModalities
   alias IntellectualClub.Generation.RequestPayload
+  alias IntellectualClub.Llm.Providers.Common.ToolCallHistory
 
   @generation_config_keys MapSet.new([
                             "temperature",
@@ -231,11 +232,17 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         [%{"type" => "user_input", "content" => trace_content_blocks(contents, opts)}]
 
       "assistant" ->
-        steps =
+        trace_steps =
           message
           |> History.steps()
           |> Enum.sort_by(&History.sort_seq/1)
-          |> Enum.flat_map(&steps_from_trace_step(&1, opts))
+
+        result_refs =
+          trace_steps
+          |> Enum.flat_map(&History.items/1)
+          |> ToolCallHistory.result_refs(&function_result_call_id(&1, opts))
+
+        steps = Enum.flat_map(trace_steps, &steps_from_trace_step(&1, opts, result_refs))
 
         if steps == [] do
           fallback_text =
@@ -260,34 +267,43 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
     end
   end
 
-  defp steps_from_trace_step(step, opts) do
+  defp steps_from_trace_step(step, opts, result_refs) do
     step
     |> History.items()
     |> Enum.sort_by(&History.sort_seq/1)
-    |> Enum.flat_map(&step_from_trace_item(&1, opts))
+    |> Enum.flat_map(&step_from_trace_item(&1, opts, result_refs))
   end
 
-  defp step_from_trace_item(item, opts) do
-    case google_step_from_opaque(item) do
-      %{} = step ->
-        [step]
+  defp step_from_trace_item(item, opts, result_refs) do
+    case History.item_type(item) do
+      :reasoning ->
+        []
+
+      :tool_call ->
+        item
+        |> projected_steps(opts)
+        |> Enum.filter(fn
+          %{"type" => "function_call", "id" => call_id} ->
+            ToolCallHistory.paired?(item, call_id, result_refs)
+
+          _step ->
+            false
+        end)
 
       _other ->
-        step_from_generic_trace_item(item, opts)
+        projected_steps(item, opts)
+    end
+  end
+
+  defp projected_steps(item, opts) do
+    case google_step_from_opaque(item) do
+      %{} = step -> [step]
+      _other -> step_from_generic_trace_item(item, opts)
     end
   end
 
   defp step_from_generic_trace_item(item, opts) do
     case History.item_type(item) do
-      :reasoning ->
-        summary = text_blocks(History.item_text(item))
-
-        if summary == [] do
-          []
-        else
-          [%{"type" => "thought", "summary" => summary}]
-        end
-
       type when type in [:answer, :handoff_summary] ->
         content = text_blocks(History.item_text(item))
 
@@ -409,6 +425,15 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
           )
       }
       |> maybe_delete_blank("name")
+    end
+  end
+
+  defp function_result_call_id(item, opts) do
+    step = google_step_from_opaque(item) || generic_function_result_step(item, opts)
+
+    case step do
+      %{"type" => "function_result", "call_id" => call_id} -> call_id
+      _other -> nil
     end
   end
 

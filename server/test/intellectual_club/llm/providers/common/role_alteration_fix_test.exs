@@ -144,4 +144,31 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFixTest do
              }
            ]
   end
+
+  test "fixes Google interaction steps with Google-native user boundaries" do
+    assert RoleAlterationFix.fix_google_interaction_steps([
+             %{"type" => "model_output", "content" => [%{"type" => "text", "text" => "First"}]},
+             %{
+               "type" => "model_output",
+               "content" => [%{"type" => "text", "text" => "Second"}]
+             }
+           ]) == [
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             },
+             %{
+               "type" => "model_output",
+               "content" => [
+                 %{"type" => "text", "text" => "First"},
+                 %{"type" => "text", "text" => "\n\n"},
+                 %{"type" => "text", "text" => "Second"}
+               ]
+             },
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             }
+           ]
+  end
 end

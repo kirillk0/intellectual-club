@@ -8,6 +8,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.RoleAlterationFix
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Api
@@ -68,6 +69,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
         supports_image_input: Map.get(opts, :supports_image_input, false),
         provider_type: type()
       )
+      |> maybe_fix_role_alteration(Map.get(opts, :fix_role_alteration, false))
 
     raw_request =
       Payload.build_interaction_payload(
@@ -136,6 +138,12 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
 
   @impl true
   def request_snapshot(raw_request), do: Payload.request_snapshot(raw_request)
+
+  defp maybe_fix_role_alteration(input_steps, true) when is_list(input_steps) do
+    RoleAlterationFix.fix_google_interaction_steps(input_steps)
+  end
+
+  defp maybe_fix_role_alteration(input_steps, _fix_role_alteration), do: input_steps
 
   defp maybe_put_temperature(parameters, nil), do: parameters
 

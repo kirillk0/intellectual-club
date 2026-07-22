@@ -351,9 +351,11 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
             sequence: 1,
             items: [
               trace_item(1, :answer, "Checking"),
-              tool_call_item(2),
-              tool_result_item(3),
-              trace_item(4, :steering, "Use the new source")
+              historical_reasoning_item(2),
+              tool_call_item(3),
+              tool_result_item(4),
+              orphan_tool_call_item(5),
+              trace_item(6, :steering, "Use the new source")
             ]
           },
           %{sequence: 2, items: [trace_item(1, :answer, "Updated answer")]}
@@ -367,6 +369,29 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
       sequence: sequence,
       type: type,
       contents: [%{sequence: 1, kind: :text, content_text: text}]
+    }
+  end
+
+  defp historical_reasoning_item(sequence) do
+    %{
+      sequence: sequence,
+      type: :reasoning,
+      contents: [
+        %{sequence: 1, kind: :text, content_text: "Persisted reasoning must not be replayed"},
+        %{
+          sequence: 10_000,
+          kind: :opaque,
+          content_json: %{
+            "google_interaction_step" => %{
+              "type" => "thought",
+              "signature" => "historical_thought_signature",
+              "summary" => [
+                %{"type" => "text", "text" => "Persisted reasoning must not be replayed"}
+              ]
+            }
+          }
+        }
+      ]
     }
   end
 
@@ -400,6 +425,25 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
           sequence: 10_000,
           kind: :opaque,
           content_json: %{"tool_call_id" => "call_1", "name" => "lookup"}
+        }
+      ]
+    }
+  end
+
+  defp orphan_tool_call_item(sequence) do
+    %{
+      id: 102,
+      sequence: sequence,
+      type: :tool_call,
+      contents: [
+        %{
+          sequence: 10_000,
+          kind: :opaque,
+          content_json: %{
+            "tool_call_id" => "call_orphan",
+            "name" => "lookup",
+            "arguments" => %{"query" => "never completed"}
+          }
         }
       ]
     }

@@ -318,6 +318,41 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.system_prompt == "Use tools when needed."
   end
 
+  test "google interactions provider fixes role alteration when requested" do
+    result =
+      GoogleInteractions.build_initial_request(%{
+        history: [
+          %{role: :assistant, content: "First"},
+          %{role: :assistant, content: "Second"}
+        ],
+        system_prompt: "System",
+        model_name: "gemini-2.5-flash-lite",
+        parameters: %{},
+        tools: [],
+        supports_image_input: false,
+        fix_role_alteration: true
+      })
+
+    assert result.raw_request["input"] == [
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             },
+             %{
+               "type" => "model_output",
+               "content" => [
+                 %{"type" => "text", "text" => "First"},
+                 %{"type" => "text", "text" => "\n\n"},
+                 %{"type" => "text", "text" => "Second"}
+               ]
+             },
+             %{
+               "type" => "user_input",
+               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+             }
+           ]
+  end
+
   test "google interactions provider rebuilds stateless followup with function results" do
     initial =
       GoogleInteractions.build_initial_request(%{
@@ -334,6 +369,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         raw_request: initial.raw_request,
         raw_response: %{
           "steps" => [
+            %{
+              "type" => "thought",
+              "signature" => "thought_sig_1",
+              "summary" => [%{"type" => "text", "text" => "Need current weather."}]
+            },
             %{
               "type" => "function_call",
               "id" => "call_1",
@@ -383,6 +423,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              %{
                "type" => "user_input",
                "content" => [%{"type" => "text", "text" => "Weather in Paris?"}]
+             },
+             %{
+               "type" => "thought",
+               "signature" => "thought_sig_1",
+               "summary" => [%{"type" => "text", "text" => "Need current weather."}]
              },
              %{
                "type" => "function_call",

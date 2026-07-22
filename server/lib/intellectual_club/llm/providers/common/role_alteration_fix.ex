@@ -31,6 +31,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     |> ensure_user_boundaries(&responses_message_role/1, &placeholder_responses_user_item/0)
   end
 
+  @spec fix_google_interaction_steps([term()], keyword()) :: [term()]
+  def fix_google_interaction_steps(steps, opts \\ []) when is_list(steps) and is_list(opts) do
+    separator = Keyword.get(opts, :separator, @default_separator)
+
+    steps
+    |> merge_adjacent(&google_step_role/1, &merge_google_step(&1, &2, &3, separator))
+    |> replace_empty_user_messages(&google_step_role/1, &put_placeholder_google_user_content/1)
+    |> ensure_user_boundaries(&google_step_role/1, &placeholder_google_user_step/0)
+  end
+
   defp merge_adjacent(items, role_fun, merge_fun) do
     items
     |> Enum.reduce([], fn item, acc ->
@@ -91,6 +101,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
     left
     |> merge_message_base(right)
     |> put_merged_content(left, right, merge_responses_content(left, right, role, separator))
+  end
+
+  defp merge_google_step(left, right, _role, separator) do
+    left
+    |> merge_message_base(right)
+    |> put_merged_content(
+      left,
+      right,
+      merge_content(content_of(left), content_of(right), separator, &google_text_block/1)
+    )
   end
 
   defp merge_message_base(left, right) when is_map(left) and is_map(right) do
@@ -284,6 +304,10 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
 
   defp responses_message_role(_item), do: nil
 
+  defp google_step_role(%{"type" => "user_input"}), do: "user"
+  defp google_step_role(%{"type" => "model_output"}), do: "assistant"
+  defp google_step_role(_step), do: nil
+
   defp role_value(%{} = message), do: Map.get(message, "role")
   defp role_value(_message), do: nil
 
@@ -299,6 +323,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   defp responses_output_text_block(text) do
     %{"type" => "output_text", "text" => text, "annotations" => []}
   end
+
+  defp google_text_block(text), do: %{"type" => "text", "text" => text}
 
   defp placeholder_chat_user_message,
     do: %{"role" => "user", "content" => @missing_user_message_placeholder}
@@ -324,4 +350,19 @@ defmodule IntellectualClub.Llm.Providers.Common.RoleAlterationFix do
   end
 
   defp put_placeholder_responses_user_content(_item), do: placeholder_responses_user_item()
+
+  defp placeholder_google_user_step do
+    %{
+      "type" => "user_input",
+      "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
+    }
+  end
+
+  defp put_placeholder_google_user_content(%{} = step) do
+    Map.put(step, "content", [
+      %{"type" => "text", "text" => @missing_user_message_placeholder}
+    ])
+  end
+
+  defp put_placeholder_google_user_content(_step), do: placeholder_google_user_step()
 end

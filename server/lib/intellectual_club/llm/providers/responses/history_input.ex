@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
 
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Generation.History
+  alias IntellectualClub.Llm.Providers.Common.ToolCallHistory
 
   @responses_item_types MapSet.new([
                           "reasoning",
@@ -51,7 +52,14 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
               |> Enum.sort_by(&History.sort_seq/1)
             end)
 
-          valid_tool_call_refs = valid_tool_call_refs(items)
+          result_refs =
+            ToolCallHistory.result_refs(items, fn item ->
+              case item_for_tool_result(item) do
+                %{} = map -> Map.get(map, "call_id")
+                _other -> nil
+              end
+            end)
+
           indexed_items = Enum.with_index(items)
           last_answer_index = last_non_empty_answer_item_index(indexed_items)
 
@@ -81,10 +89,10 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
                       []
 
                     %{} = map ->
-                      if orphaned_tool_call?(item, map, valid_tool_call_refs) do
-                        []
-                      else
+                      if ToolCallHistory.paired?(item, Map.get(map, "call_id"), result_refs) do
                         [map]
+                      else
+                        []
                       end
                   end
 
@@ -292,69 +300,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
         (Map.has_key?(payload, "tool_call_id") or Map.has_key?(payload, "call_id") or
            Map.has_key?(payload, "raw") or Map.has_key?(payload, "name"))
     end)
-  end
-
-  defp valid_tool_call_refs(items) when is_list(items) do
-    Enum.reduce(items, %{item_ids: MapSet.new(), call_ids: MapSet.new()}, fn item, acc ->
-      case History.item_type(item) do
-        :tool_result ->
-          acc =
-            case History.tool_call_item_id(item) do
-              value when is_integer(value) -> Map.update!(acc, :item_ids, &MapSet.put(&1, value))
-              _other -> acc
-            end
-
-          case item_for_tool_result(item) do
-            %{} = map ->
-              call_id =
-                map
-                |> Map.get("call_id", "")
-                |> to_string()
-                |> String.trim()
-
-              if call_id == "" do
-                acc
-              else
-                Map.update!(acc, :call_ids, &MapSet.put(&1, call_id))
-              end
-
-            _other ->
-              acc
-          end
-
-        _other ->
-          acc
-      end
-    end)
-  end
-
-  defp valid_tool_call_refs(_items), do: %{item_ids: MapSet.new(), call_ids: MapSet.new()}
-
-  defp orphaned_tool_call?(item, %{} = map, %{item_ids: item_ids, call_ids: call_ids}) do
-    item_id = History.item_id(item)
-
-    if is_integer(item_id) and MapSet.size(item_ids) > 0 do
-      not MapSet.member?(item_ids, item_id)
-    else
-      orphaned_tool_call_by_call_id?(map, call_ids)
-    end
-  end
-
-  defp orphaned_tool_call?(item, %{} = map, valid_tool_call_ids)
-       when is_struct(valid_tool_call_ids, MapSet) do
-    orphaned_tool_call?(item, map, %{item_ids: MapSet.new(), call_ids: valid_tool_call_ids})
-  end
-
-  defp orphaned_tool_call?(_item, _map, _valid_tool_call_refs), do: false
-
-  defp orphaned_tool_call_by_call_id?(%{} = map, valid_tool_call_ids) do
-    call_id =
-      map
-      |> Map.get("call_id", "")
-      |> to_string()
-      |> String.trim()
-
-    call_id != "" and not MapSet.member?(valid_tool_call_ids, call_id)
   end
 
   defp last_non_empty_answer_item_index(indexed_items) when is_list(indexed_items) do
