@@ -237,7 +237,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert step.finished_at == nil
   end
 
-  test "passes fix role alteration from llm configuration into initial provider request" do
+  test "fixes canonical history before building the initial provider request" do
     %{user: actor} = user_fixture()
 
     provider =
@@ -288,6 +288,12 @@ defmodule IntellectualClub.Generation.ContextTest do
         llm_configuration_id: configuration.id
       )
 
+    {:ok, _assistant} =
+      Threads.add_message_to_end(chat, :assistant, "Synthetic second turn",
+        actor: actor,
+        llm_configuration_id: configuration.id
+      )
+
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
     assert context.fix_role_alteration == true
@@ -295,6 +301,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.request_payload["messages"] == [
              %{"role" => "user", "content" => @missing_user_message_placeholder},
              %{"role" => "assistant", "content" => "Synthetic first turn"},
+             %{"role" => "assistant", "content" => "Synthetic second turn"},
              %{"role" => "user", "content" => @missing_user_message_placeholder}
            ]
   end

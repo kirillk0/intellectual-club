@@ -383,6 +383,18 @@ defmodule IntellectualClub.Generation.Context do
 
     history = history_branch_for_generation(source_branch)
 
+    fix_role_alteration =
+      ash_boolean_true?(
+        chat.llm_configuration && Map.get(chat.llm_configuration, :fix_role_alteration)
+      )
+
+    history =
+      if fix_role_alteration do
+        History.fix_role_alteration(history)
+      else
+        history
+      end
+
     history_mode = :agent
 
     history_entries =
@@ -425,7 +437,6 @@ defmodule IntellectualClub.Generation.Context do
               chat_id: chat_id,
               owner_id: owner_id,
               conversation_affinity_id: conversation_affinity_id,
-              fix_role_alteration: false,
               cache_control_enabled: false
             })
 
@@ -469,8 +480,6 @@ defmodule IntellectualClub.Generation.Context do
               chat_id: chat_id,
               owner_id: owner_id,
               conversation_affinity_id: conversation_affinity_id,
-              fix_role_alteration:
-                ash_boolean_true?(Map.get(configuration, :fix_role_alteration)),
               cache_control_enabled: cache_control_enabled
             })
 
@@ -523,10 +532,7 @@ defmodule IntellectualClub.Generation.Context do
       context_length: configuration_context_length(chat.llm_configuration),
       supports_image_input: supports_image_input,
       supports_steering: configuration_supports_steering?(chat.llm_configuration),
-      fix_role_alteration:
-        ash_boolean_true?(
-          chat.llm_configuration && Map.get(chat.llm_configuration, :fix_role_alteration)
-        ),
+      fix_role_alteration: fix_role_alteration,
       messages: messages,
       request_payload: request_payload,
       tools_payload: tools_payload,

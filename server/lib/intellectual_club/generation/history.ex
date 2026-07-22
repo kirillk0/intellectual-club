@@ -10,6 +10,7 @@ defmodule IntellectualClub.Generation.History do
   alias IntellectualClub.Chat.Media
 
   @allowed_roles ["user", "assistant"]
+  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
   @user_input_item_types [:input, :handoff_request, :handoff_context]
   @assistant_answer_item_types [:answer, :handoff_summary]
   @item_types [
@@ -32,6 +33,19 @@ defmodule IntellectualClub.Generation.History do
   Returns item types that project as user input in provider histories.
   """
   def user_input_item_types, do: @user_input_item_types
+
+  @doc """
+  Ensures canonical history has non-empty user messages at both boundaries.
+
+  Existing messages and their steps remain separate. Empty user messages are
+  replaced with a provider-independent placeholder message.
+  """
+  @spec fix_role_alteration([term()]) :: [term()]
+  def fix_role_alteration(history) when is_list(history) do
+    history
+    |> Enum.map(&replace_empty_user_message/1)
+    |> ensure_user_boundaries()
+  end
 
   @doc """
   Returns item types that project as assistant answers in provider histories.
@@ -223,6 +237,80 @@ defmodule IntellectualClub.Generation.History do
   def normalize_content(content) when is_list(content), do: Enum.map(content, &Map.new/1)
   def normalize_content(content) when is_map(content), do: Map.new(content)
   def normalize_content(content), do: to_string(content)
+
+  defp replace_empty_user_message(message) do
+    if canonical_role(message) == "user" and user_message_empty?(message) do
+      placeholder_user_message()
+    else
+      message
+    end
+  end
+
+  defp ensure_user_boundaries([]), do: [placeholder_user_message()]
+
+  defp ensure_user_boundaries(history) do
+    history =
+      if canonical_role(List.first(history)) == "user" do
+        history
+      else
+        [placeholder_user_message() | history]
+      end
+
+    if canonical_role(List.last(history)) == "user" do
+      history
+    else
+      history ++ [placeholder_user_message()]
+    end
+  end
+
+  defp user_message_empty?(message) do
+    content =
+      if trace_message?(message) do
+        project_contents_for_item_types(message, user_input_item_types())
+      else
+        case normalize_message(message) do
+          %{"content" => content} -> content
+          _other -> nil
+        end
+      end
+
+    content_empty?(content)
+  end
+
+  defp content_empty?(nil), do: true
+  defp content_empty?(content) when is_binary(content), do: String.trim(content) == ""
+  defp content_empty?(content) when is_list(content), do: Enum.all?(content, &content_empty?/1)
+
+  defp content_empty?(%{} = content) do
+    cond do
+      content_kind(content) == :text -> content |> Map.get(:content_text) |> content_empty?()
+      content_kind(content) == :media -> false
+      Map.has_key?(content, "text") -> content |> Map.get("text") |> content_empty?()
+      Map.has_key?(content, :text) -> content |> Map.get(:text) |> content_empty?()
+      Map.has_key?(content, "content") -> content |> Map.get("content") |> content_empty?()
+      Map.has_key?(content, :content) -> content |> Map.get(:content) |> content_empty?()
+      true -> false
+    end
+  end
+
+  defp content_empty?(content), do: content |> to_string() |> String.trim() == ""
+
+  defp canonical_role(message) do
+    case message_role(message) do
+      nil ->
+        case normalize_message(message) do
+          %{"role" => role} -> role
+          _other -> nil
+        end
+
+      role ->
+        role
+    end
+  end
+
+  defp placeholder_user_message do
+    %{role: :user, content: @missing_user_message_placeholder}
+  end
 
   defp normalize_role_content(role, content) do
     if role in @allowed_roles do

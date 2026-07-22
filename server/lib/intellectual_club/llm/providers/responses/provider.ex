@@ -12,7 +12,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
-  alias IntellectualClub.Llm.Providers.Common.RoleAlterationFix
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Responses.Api
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
@@ -77,7 +76,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         supports_image_input: Map.get(opts, :supports_image_input, false),
         provider_type: type()
       )
-      |> maybe_fix_role_alteration(Map.get(opts, :fix_role_alteration, false))
 
     raw_request =
       RequestBuilder.build_responses_payload_from_input_items(
@@ -293,12 +291,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp fallback_instructions("", context), do: Map.get(context, :system_prompt, "")
   defp fallback_instructions(instructions, _context), do: instructions
-
-  defp maybe_fix_role_alteration(input_items, true) when is_list(input_items) do
-    RoleAlterationFix.fix_responses_input_items(input_items)
-  end
-
-  defp maybe_fix_role_alteration(input_items, _fix_role_alteration), do: input_items
 
   defp include_from_request(payload) when is_map(payload) do
     case RequestPayload.include(payload) do

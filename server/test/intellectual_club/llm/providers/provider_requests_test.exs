@@ -9,8 +9,6 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
 
-  @missing_user_message_placeholder "<There is no user message yet, you should write first>"
-
   test "openrouter provider builds initial request and snapshot from canonical chat history" do
     result =
       OpenRouterChatCompletion.build_initial_request(%{
@@ -55,29 +53,6 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.model_input == result.raw_request["messages"]
     assert result.request_snapshot.system_prompt == "Be careful."
     assert result.request_snapshot.history_length == 2
-  end
-
-  test "openrouter provider fixes role alteration when requested" do
-    result =
-      OpenRouterChatCompletion.build_initial_request(%{
-        history: [
-          %{role: :assistant, content: "First"},
-          %{role: :assistant, content: "Second"}
-        ],
-        system_prompt: "System",
-        model_name: "openai/gpt-5-mini",
-        parameters: %{},
-        tools: [],
-        supports_image_input: false,
-        fix_role_alteration: true
-      })
-
-    assert result.raw_request["messages"] == [
-             %{"role" => "system", "content" => "System"},
-             %{"role" => "user", "content" => @missing_user_message_placeholder},
-             %{"role" => "assistant", "content" => "First\n\nSecond"},
-             %{"role" => "user", "content" => @missing_user_message_placeholder}
-           ]
   end
 
   test "responses provider builds initial request and snapshot from canonical history" do
@@ -219,49 +194,6 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            ]
   end
 
-  test "responses provider fixes role alteration when requested" do
-    result =
-      Responses.build_initial_request(%{
-        history: [
-          %{role: :assistant, content: "First"},
-          %{role: :assistant, content: "Second"}
-        ],
-        system_prompt: "System",
-        model_name: "gpt-5",
-        parameters: %{},
-        tools: [],
-        supports_image_input: false,
-        fix_role_alteration: true
-      })
-
-    assert result.raw_request["input"] == [
-             %{
-               "type" => "message",
-               "role" => "user",
-               "content" => [
-                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
-               ]
-             },
-             %{
-               "type" => "message",
-               "role" => "assistant",
-               "status" => "completed",
-               "content" => [
-                 %{"type" => "output_text", "text" => "First", "annotations" => []},
-                 %{"type" => "output_text", "text" => "\n\n", "annotations" => []},
-                 %{"type" => "output_text", "text" => "Second", "annotations" => []}
-               ]
-             },
-             %{
-               "type" => "message",
-               "role" => "user",
-               "content" => [
-                 %{"type" => "input_text", "text" => @missing_user_message_placeholder}
-               ]
-             }
-           ]
-  end
-
   test "google interactions provider builds stateless initial request from canonical history" do
     result =
       GoogleInteractions.build_initial_request(%{
@@ -316,41 +248,6 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.request_snapshot.model_input == result.raw_request["input"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
-  end
-
-  test "google interactions provider fixes role alteration when requested" do
-    result =
-      GoogleInteractions.build_initial_request(%{
-        history: [
-          %{role: :assistant, content: "First"},
-          %{role: :assistant, content: "Second"}
-        ],
-        system_prompt: "System",
-        model_name: "gemini-2.5-flash-lite",
-        parameters: %{},
-        tools: [],
-        supports_image_input: false,
-        fix_role_alteration: true
-      })
-
-    assert result.raw_request["input"] == [
-             %{
-               "type" => "user_input",
-               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
-             },
-             %{
-               "type" => "model_output",
-               "content" => [
-                 %{"type" => "text", "text" => "First"},
-                 %{"type" => "text", "text" => "\n\n"},
-                 %{"type" => "text", "text" => "Second"}
-               ]
-             },
-             %{
-               "type" => "user_input",
-               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
-             }
-           ]
   end
 
   test "google interactions provider rebuilds stateless followup with function results" do
@@ -494,37 +391,6 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.request_snapshot.model_input == result.raw_request["messages"]
     assert result.request_snapshot.system_prompt == "Use tools when needed."
-  end
-
-  test "anthropic provider preserves its own merge behavior and uses placeholder user guards when requested" do
-    result =
-      AnthropicMessages.build_initial_request(%{
-        history: [
-          %{role: :assistant, content: "First"},
-          %{role: :assistant, content: "Second"}
-        ],
-        system_prompt: "System",
-        model_name: "claude-sonnet-4-20250514",
-        parameters: %{"max_tokens" => 200},
-        tools: [],
-        supports_image_input: false,
-        fix_role_alteration: true
-      })
-
-    assert result.raw_request["messages"] == [
-             %{
-               "role" => "user",
-               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
-             },
-             %{
-               "role" => "assistant",
-               "content" => [%{"type" => "text", "text" => "First\n\nSecond"}]
-             },
-             %{
-               "role" => "user",
-               "content" => [%{"type" => "text", "text" => @missing_user_message_placeholder}]
-             }
-           ]
   end
 
   test "anthropic provider uses 32k max tokens by default" do
