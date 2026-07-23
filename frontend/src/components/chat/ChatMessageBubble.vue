@@ -101,15 +101,15 @@
             <div v-if="entry.steering" class="message-steering-label">
               {{ translate('Steering') }}
             </div>
-            <span v-if="entry.showTimestamp && entry.timestamp" class="message-answer-time">
-              {{ entry.timestamp }}
+            <span v-if="entry.showTimestamp && timelineEntryMeta(entry)" class="message-answer-time">
+              {{ timelineEntryMeta(entry) }}
             </span>
             <div v-html="entry.html"></div>
           </div>
           <template v-else-if="entry.kind === 'handoff'">
             <div v-if="handoffEventKind" class="message-answer-part handoff-system-event__content">
-              <span v-if="entry.showTimestamp && entry.timestamp" class="message-answer-time">
-                {{ entry.timestamp }}
+              <span v-if="entry.showTimestamp && timelineEntryMeta(entry)" class="message-answer-time">
+                {{ timelineEntryMeta(entry) }}
               </span>
               <div v-if="entry.html" v-html="entry.html"></div>
               <ChatMediaList
@@ -132,21 +132,25 @@
               </div>
             </details>
           </template>
-          <RouterLink
-            v-else
-            class="message-fork-card"
-            :class="`message-fork-card--${entry.direction}`"
-            :to="chatRoute(entry.relation.chat_id)"
-            @click.capture="emit('relation-navigate', $event, entry.relation.chat_id)"
-          >
-            <span>{{ forkRelationLabel(entry) }}</span>
-            <strong>{{ relationTitle(entry.relation) }}</strong>
-            <ChatRelationIndicators
-              v-if="entry.direction === 'child'"
-              :relation="entry.relation"
-              class="message-fork-card__indicators"
-            />
-          </RouterLink>
+          <div v-else class="message-fork-entry">
+            <RouterLink
+              class="message-fork-card"
+              :class="`message-fork-card--${entry.direction}`"
+              :to="chatRoute(entry.relation.chat_id)"
+              @click.capture="emit('relation-navigate', $event, entry.relation.chat_id)"
+            >
+              <span>{{ forkRelationLabel(entry) }}</span>
+              <strong>{{ relationTitle(entry.relation) }}</strong>
+              <ChatRelationIndicators
+                v-if="entry.direction === 'child'"
+                :relation="entry.relation"
+                class="message-fork-card__indicators"
+              />
+            </RouterLink>
+            <span v-if="timelineEntryMeta(entry)" class="message-fork-entry__meta">
+              {{ timelineEntryMeta(entry) }}
+            </span>
+          </div>
           <hr
             v-if="msg.role === 'assistant' && entryIdx < messageTimeline.length - 1"
             class="message-answer-divider"
@@ -564,6 +568,7 @@ type ForkPart = {
   key: string;
   relation: ChatRelationSummary;
   direction: 'parent' | 'child';
+  timestamp: string;
   stepSequence: number;
   itemSequence: number;
   sequence: number;
@@ -571,6 +576,16 @@ type ForkPart = {
 };
 
 type MessageTimelineEntry = MessagePart | HandoffPart | ForkPart;
+
+const timelineEntryMeta = (entry: Pick<MessageTimelineEntry, 'timestamp' | 'stepSequence'>) =>
+  [
+    entry.timestamp,
+    Number.isInteger(entry.stepSequence) && entry.stepSequence > 0
+      ? String(entry.stepSequence)
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
 const displayItemIdentity = (value: {
   step_id?: number | null;
@@ -713,6 +728,7 @@ const messageTimeline = computed<MessageTimelineEntry[]>(() => {
     key: `fork-child-${relation.chat_id}`,
     relation,
     direction: 'child',
+    timestamp: formatTimeOfDay(relation.created_at),
     stepSequence: relation.anchor_step_sequence || 0,
     itemSequence: relation.anchor_item_sequence || 0,
     sequence: 0,
@@ -726,6 +742,7 @@ const messageTimeline = computed<MessageTimelineEntry[]>(() => {
           key: `fork-parent-${props.parentForkRelation.chat_id}`,
           relation: props.parentForkRelation,
           direction: 'parent',
+          timestamp: formatTimeOfDay(props.parentForkRelation.created_at),
           stepSequence: props.parentForkRelation.anchor_step_sequence || 0,
           itemSequence: props.parentForkRelation.anchor_item_sequence || 0,
           sequence: 0,
@@ -1190,8 +1207,16 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   clear: both;
 }
 
+.message-fork-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .message-fork-card {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1225,6 +1250,16 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 
 .message-fork-card__indicators {
   margin-left: auto;
+}
+
+.message-fork-entry__meta {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .message-steering-part {

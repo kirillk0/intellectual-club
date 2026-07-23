@@ -75,6 +75,7 @@ describe('ChatMessageBubble fork timeline', () => {
             item_type: 'answer',
             step_sequence: 1,
             item_sequence: 1,
+            created_at: '2026-07-23T10:15:00Z',
           },
         ],
         media: [],
@@ -90,6 +91,7 @@ describe('ChatMessageBubble fork timeline', () => {
       anchor_tool_call_item_id: 30,
       anchor_step_sequence: 1,
       anchor_item_sequence: 2,
+      created_at: '2026-07-23T10:16:00Z',
     };
 
     const wrapper = mount(ChatMessageBubble, {
@@ -108,14 +110,20 @@ describe('ChatMessageBubble fork timeline', () => {
     });
 
     const entries = wrapper.get('.message-content').findAll(
-      ':scope > .message-answer-part, :scope > .message-fork-card'
+      ':scope > .message-answer-part, :scope > .message-fork-entry'
     );
 
     expect(entries).toHaveLength(3);
     expect(entries[0]?.text()).toContain('Before the fork');
-    expect(entries[1]?.classes()).toContain('message-fork-card');
-    expect(entries[1]?.text()).toContain('Investigate independently');
+    expect(entries[0]?.get('.message-answer-time').text()).toMatch(/^\d{2}:\d{2} · 1$/);
+    expect(entries[1]?.get('.message-fork-card').text()).toContain('Investigate independently');
+    expect(
+      entries[1]?.get(':scope > .message-fork-card + .message-fork-entry__meta').text()
+    ).toMatch(/^\d{2}:\d{2} · 1$/);
+    expect(entries[1]?.get('.message-fork-card').find('.message-fork-entry__meta').exists()).toBe(false);
     expect(entries[2]?.text()).toContain('After the fork');
+
+    wrapper.unmount();
   });
 
   it('renders a parent fork link at the mirrored tool call position', () => {
@@ -175,12 +183,12 @@ describe('ChatMessageBubble fork timeline', () => {
     });
 
     const entries = wrapper.get('.message-content').findAll(
-      ':scope > .message-answer-part, :scope > .message-fork-card'
+      ':scope > .message-answer-part, :scope > .message-fork-entry'
     );
 
     expect(entries).toHaveLength(3);
     expect(entries[0]?.text()).toContain('Copied context');
-    expect(entries[1]?.classes()).toContain('message-fork-card--parent');
+    expect(entries[1]?.get('.message-fork-card').classes()).toContain('message-fork-card--parent');
     expect(entries[1]?.text()).toContain('Fork of');
     expect(entries[1]?.text()).toContain('Parent chat');
     expect(entries[1]?.find('.chat-relation-indicators__background-task').exists()).toBe(false);
