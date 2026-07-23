@@ -13,6 +13,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Executor
+  alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -202,6 +203,44 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       assert result.raw["isError"] == true
       assert result.raw["code"] == "tool_function_disabled"
     end)
+  end
+
+  test "background subagent launch rejects an exhausted nesting limit before queueing" do
+    %{user: actor} = user_fixture()
+    root = create_chat!(actor, "Root")
+    source = create_subagent_chat!(actor, root)
+
+    tool_instance =
+      create_tool_instance!(actor, %{
+        "nested_subchats_limit" => 0,
+        "allow_handoff_in_subchats" => true
+      })
+
+    calls = [
+      {"fork_background", %{"task" => "Check one thing."}},
+      {"spawn_background", %{"brief" => "Research", "prompt" => "Check one thing."}}
+    ]
+
+    Enum.each(calls, fn {name, args} ->
+      enable_fixed_function!(tool_instance, name, actor)
+
+      result =
+        Executor.execute_llm_tool(
+          %{"agent_management" => tool_instance},
+          "agent_management__#{name}",
+          args,
+          %ExecutionContext{owner_id: actor.id, chat_id: source.id}
+        )
+
+      assert result.text ==
+               "Nested subchat is disabled for this subagent. " <>
+                 "Increase nested_subchats_limit to allow it."
+
+      assert result.raw["isError"] == true
+    end)
+
+    assert [] =
+             BackgroundTask |> Ash.Query.filter(owner_id == ^actor.id) |> Ash.read!(actor: actor)
   end
 
   test "background status check preserves terminal media and artifacts" do
@@ -641,7 +680,22 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     |> Ash.create!(actor: actor)
   end
 
-  defp create_tool_instance!(actor) do
+  defp create_subagent_chat!(actor, parent) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        note: "",
+        parent_chat_id: parent.id,
+        parent_relation_kind: :spawn,
+        subagent: true
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_tool_instance!(actor, config \\ %{}) do
     ToolInstance
     |> Ash.Changeset.for_create(
       :create,
@@ -650,9 +704,25 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         name: "Agent management",
         description: "",
         alias: "agent_management",
-        config: %{},
+        config: config,
         secrets: %{},
         max_output_tokens: 20_000
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp enable_fixed_function!(tool_instance, name, actor) do
+    ToolFunction
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        tool_instance_id: tool_instance.id,
+        name: name,
+        description: "",
+        parameters_schema: %{},
+        enabled: true
       },
       actor: actor
     )

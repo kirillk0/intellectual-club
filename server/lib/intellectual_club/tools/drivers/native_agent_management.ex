@@ -304,6 +304,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       )
       when is_map(args) do
     with {:ok, task} <- required_task(args),
+         :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
          {:ok, result} <- BackgroundTasks.start_fork(tool_instance, task, context) do
       {:ok, result}
     else
@@ -339,6 +340,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       )
       when is_map(args) do
     with {:ok, brief, prompt} <- required_spawn_args(args),
+         :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
          {:ok, result} <- BackgroundTasks.start_spawn(tool_instance, brief, prompt, context) do
       {:ok, result}
     else

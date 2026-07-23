@@ -145,6 +145,29 @@ defmodule IntellectualClub.Chat.Subagent do
     end
   end
 
+  @doc false
+  @spec preflight_creation_allowed(ToolInstance.t(), ExecutionContext.t()) ::
+          :ok | {:error, String.t()}
+  def preflight_creation_allowed(
+        %ToolInstance{} = tool_instance,
+        %ExecutionContext{} = context
+      ) do
+    actor = actor_from_context(context)
+
+    case {actor, context.chat_id} do
+      {%User{} = actor, chat_id} when is_integer(chat_id) ->
+        case fetch_owned_chat(chat_id, actor) do
+          {:ok, %Chat{} = chat} -> ensure_creation_allowed(tool_instance, chat, actor)
+          _other -> :ok
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  def preflight_creation_allowed(_tool_instance, _context), do: :ok
+
   @spec ensure_handoff_allowed(ToolInstance.t(), ExecutionContext.t()) ::
           :ok | {:error, String.t()}
   def ensure_handoff_allowed(%ToolInstance{} = tool_instance, %ExecutionContext{} = context) do
