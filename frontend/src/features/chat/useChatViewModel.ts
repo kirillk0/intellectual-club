@@ -113,7 +113,7 @@ export function useChatViewModel() {
 
   const navigateToChat = (id: number, query: Record<string, string> = {}) => {
     const target = chatRouteTarget(id, query);
-    if (stack.active.value) return stackNav.replace(target);
+    if (stack.active.value) return stackNav.push(target);
     return router.push(target);
   };
 

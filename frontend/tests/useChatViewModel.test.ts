@@ -23,6 +23,7 @@ import type {
   ChatStatePayload,
 } from '@/features/chat/model/chatViewModel.shared';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
+import { useNavigationStack } from '@/features/stack/navigationStack';
 
 type ChatViewModel = ReturnType<typeof useChatViewModel>;
 
@@ -80,11 +81,19 @@ const chatSettings = (
 
 let activeWrapper: VueWrapper | null = null;
 
-async function mountViewModel(path = '/chats/1') {
+async function mountViewModel(path = '/chats/1', previousPath?: string) {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/chats/:id', name: 'chat', component: { template: '<div />' } }],
+    routes: [
+      { path: '/chats', name: 'chats', component: { template: '<div />' } },
+      { path: '/chats/:id', name: 'chat', component: { template: '<div />' } },
+    ],
   });
+  let previousRoute = null;
+  if (previousPath) {
+    await router.push(previousPath);
+    previousRoute = router.currentRoute.value;
+  }
   await router.push(path);
   await router.isReady();
 
@@ -97,7 +106,7 @@ async function mountViewModel(path = '/chats/1') {
   });
 
   activeWrapper = mount(Harness, { global: { plugins: [router] } });
-  return { viewModel, router };
+  return { viewModel, router, previousRoute };
 }
 
 describe('useChatViewModel loading', () => {
@@ -117,7 +126,28 @@ describe('useChatViewModel loading', () => {
   afterEach(() => {
     activeWrapper?.unmount();
     activeWrapper = null;
+    useNavigationStack().reset();
     vi.unstubAllGlobals();
+  });
+
+  it('returns to the parent chat after opening a subchat from a stacked chat', async () => {
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      const match = path.match(/^\/api\/bff\/chat-state\/(\d+)$/u);
+      return match ? Promise.resolve(chatState(Number(match[1]))) : Promise.resolve(undefined);
+    });
+
+    const { viewModel, router, previousRoute } = await mountViewModel('/chats/1', '/chats');
+    if (!previousRoute) throw new Error('Missing previous chat list route');
+    const stack = useNavigationStack();
+    stack.markPendingPush(0);
+    stack.commitPendingPush(previousRoute);
+
+    await viewModel.openChat(2);
+    expect(router.currentRoute.value.fullPath).toBe('/chats/2');
+
+    router.back();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/chats/1'));
   });
 
   it('shows the chat after the core response while settings are still pending', async () => {
