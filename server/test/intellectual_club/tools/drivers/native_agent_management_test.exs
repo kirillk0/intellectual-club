@@ -48,7 +48,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert fork_function["enabled_by_default"] == false
     assert fork_schema["required"] == ["task"]
     assert fork_schema["properties"]["task"]["type"] == "string"
-    assert String.contains?(fork_schema["properties"]["task"]["description"], "Brief task")
+    assert String.contains?(fork_function["description"], "exactly one task")
+    assert String.contains?(fork_function["description"], "copied model becomes the subagent")
+    assert String.contains?(fork_function["description"], "discard every pending intention")
+    assert String.contains?(fork_function["description"], "must not continue")
+    assert String.contains?(fork_function["description"], "becomes this tool call's result")
+
+    assert String.contains?(
+             fork_schema["properties"]["task"]["description"],
+             "the only task"
+           )
 
     background_functions =
       Enum.filter(functions, fn function ->
@@ -64,6 +73,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
     assert fork_background["schema"]["required"] == ["task"]
+    assert String.contains?(fork_background["description"], "exactly one task")
+    assert String.contains?(fork_background["description"], "copied model becomes the subagent")
+    assert String.contains?(fork_background["description"], "discard every pending intention")
+    assert String.contains?(fork_background["description"], "must not continue")
+    assert String.contains?(fork_background["description"], "background task id")
 
     for name <- ["spawn", "spawn_background"] do
       function = Enum.find(functions, &(&1["name"] == name))

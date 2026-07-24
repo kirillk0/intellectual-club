@@ -94,6 +94,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         |> Map.put(:provider_type, type())
         |> Map.put(:cache_control_enabled, Map.get(context, :cache_control_enabled, false))
         |> Map.put(:history_length, Map.get(context, :history_length))
+        |> Map.put(:supports_image_input, Map.get(context, :supports_image_input, false))
       )
 
     raw_request =

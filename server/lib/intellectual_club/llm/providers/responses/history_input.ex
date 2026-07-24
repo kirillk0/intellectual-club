@@ -64,70 +64,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
           last_answer_index = last_non_empty_answer_item_index(indexed_items)
 
           out =
-            Enum.flat_map(indexed_items, fn {item, item_index} ->
-              case History.item_type(item) do
-                :reasoning ->
-                  []
-
-                type when type in [:answer, :handoff_summary] ->
-                  text = History.item_text(item)
-
-                  if String.trim(text) == "" do
-                    []
-                  else
-                    [
-                      synthesized_answer_item(
-                        text,
-                        answer_phase(item_index, last_answer_index)
-                      )
-                    ]
-                  end
-
-                :tool_call ->
-                  case item_for_tool_call(item) do
-                    nil ->
-                      []
-
-                    %{} = map ->
-                      if ToolCallHistory.paired?(item, Map.get(map, "call_id"), result_refs) do
-                        [map]
-                      else
-                        []
-                      end
-                  end
-
-                :tool_result ->
-                  out =
-                    case item_for_tool_result(item) do
-                      nil -> []
-                      %{} = map -> [map]
-                    end
-
-                  out ++
-                    Media.media_followup_input_items(History.media_contents_for_item(item), opts)
-
-                :steering ->
-                  text = History.item_text(item)
-
-                  if text == "" do
-                    []
-                  else
-                    [
-                      %{
-                        "type" => "message",
-                        "role" => "user",
-                        "content" => [%{"type" => "input_text", "text" => text}]
-                      }
-                    ]
-                  end
-
-                :artifact ->
-                  []
-
-                _other ->
-                  []
-              end
-            end)
+            project_indexed_items(indexed_items, opts, result_refs, last_answer_index)
 
           if out == [] do
             fallback_text =
@@ -169,6 +106,99 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
             }
           ]
       end
+    end
+  end
+
+  defp project_indexed_items([], _opts, _result_refs, _last_answer_index), do: []
+
+  defp project_indexed_items(
+         [{item, _item_index} = indexed_item | rest],
+         opts,
+         result_refs,
+         last_answer_index
+       ) do
+    case History.item_type(item) do
+      :tool_result ->
+        {batch_tail, remaining} =
+          Enum.split_while(rest, fn {candidate, _index} ->
+            History.item_type(candidate) in [:tool_result, :artifact]
+          end)
+
+        result_items =
+          [indexed_item | batch_tail]
+          |> Enum.map(&elem(&1, 0))
+          |> Enum.filter(&(History.item_type(&1) == :tool_result))
+
+        output_items =
+          Enum.flat_map(result_items, fn result_item ->
+            case item_for_tool_result(result_item) do
+              nil -> []
+              %{} = map -> [map]
+            end
+          end)
+
+        media_items =
+          result_items
+          |> Enum.map(&History.media_contents_for_item/1)
+          |> Media.media_followup_input_items(opts)
+
+        output_items ++
+          media_items ++
+          project_indexed_items(remaining, opts, result_refs, last_answer_index)
+
+      :artifact ->
+        project_indexed_items(rest, opts, result_refs, last_answer_index)
+
+      _other ->
+        project_indexed_item(indexed_item, result_refs, last_answer_index) ++
+          project_indexed_items(rest, opts, result_refs, last_answer_index)
+    end
+  end
+
+  defp project_indexed_item({item, item_index}, result_refs, last_answer_index) do
+    case History.item_type(item) do
+      :reasoning ->
+        []
+
+      type when type in [:answer, :handoff_summary] ->
+        text = History.item_text(item)
+
+        if String.trim(text) == "" do
+          []
+        else
+          [synthesized_answer_item(text, answer_phase(item_index, last_answer_index))]
+        end
+
+      :tool_call ->
+        case item_for_tool_call(item) do
+          nil ->
+            []
+
+          %{} = map ->
+            if ToolCallHistory.paired?(item, Map.get(map, "call_id"), result_refs) do
+              [map]
+            else
+              []
+            end
+        end
+
+      :steering ->
+        case History.item_text(item) do
+          "" ->
+            []
+
+          text ->
+            [
+              %{
+                "type" => "message",
+                "role" => "user",
+                "content" => [%{"type" => "input_text", "text" => text}]
+              }
+            ]
+        end
+
+      _other ->
+        []
     end
   end
 

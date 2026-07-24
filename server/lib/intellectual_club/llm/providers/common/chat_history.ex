@@ -212,10 +212,10 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
       end)
       |> Map.new()
 
-    tool_messages =
+    projected_results =
       tool_results
       |> Enum.with_index()
-      |> Enum.flat_map(fn {result, idx} ->
+      |> Enum.map(fn {result, idx} ->
         text =
           result
           |> get_any(["content", "text"])
@@ -256,9 +256,17 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
             ]
           end
 
-        base_messages ++
-          Media.media_followup_messages(Map.get(result, "media_contents", []), opts)
+        {base_messages, Map.get(result, "media_contents", [])}
       end)
+
+    tool_messages = Enum.flat_map(projected_results, &elem(&1, 0))
+
+    media_messages =
+      projected_results
+      |> Enum.map(&elem(&1, 1))
+      |> Media.media_followup_messages(opts)
+
+    tool_messages = tool_messages ++ media_messages
 
     if String.trim(answer_text) == "" and tool_calls == [] do
       tool_messages

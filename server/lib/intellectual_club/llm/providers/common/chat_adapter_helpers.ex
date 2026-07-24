@@ -209,15 +209,21 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
       provider_type: Map.get(opts, :provider_type)
     ]
 
-    Enum.flat_map(results, fn result ->
-      base_message = %{
-        "role" => "tool",
-        "tool_call_id" => result.call_id,
-        "content" => result.text
-      }
+    tool_messages =
+      Enum.map(results, fn result ->
+        %{
+          "role" => "tool",
+          "tool_call_id" => result.call_id,
+          "content" => result.text
+        }
+      end)
 
-      [base_message | Media.media_followup_messages(result.media_contents, media_opts)]
-    end)
+    media_messages =
+      results
+      |> Enum.map(&Map.get(&1, :media_contents, []))
+      |> Media.media_followup_messages(media_opts)
+
+    tool_messages ++ media_messages
   end
 
   defp extract_assistant_chat_message(%{} = raw_response) do

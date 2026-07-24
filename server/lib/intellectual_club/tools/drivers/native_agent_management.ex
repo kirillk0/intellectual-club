@@ -104,15 +104,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       %{
         "name" => "fork",
         "description" =>
-          "Start a linked subagent chat from the current assistant turn. " <>
-            "Pass only a brief task for this subagent; the full context is already copied.",
+          "IMPORTANT: isolated delegation, not a continuation. Call this tool by itself to " <>
+            "delegate exactly one task and wait for the answer. The current model state and " <>
+            "full conversation are copied into a new branch, where the copied model becomes " <>
+            "the subagent. In that branch it must discard every pending intention from the " <>
+            "parent turn, including plans and tool calls before or after this fork; perform " <>
+            "only the task argument; write one final answer; and stop. It must not continue " <>
+            "the parent agent's task. The parent alone continues the original work, using the " <>
+            "subagent's final answer, which becomes this tool call's result.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
             "task" => %{
               "type" => "string",
               "description" =>
-                "Brief task for this specific subagent. Do not repeat the full context."
+                "Complete instructions for the only task the copied subagent must perform. " <>
+                  "When this task appears in the copied branch, abandon the parent turn's plan, " <>
+                  "complete only these instructions, answer once, and stop."
             }
           },
           "required" => ["task"],
@@ -124,15 +132,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       %{
         "name" => "fork_background",
         "description" =>
-          "Start a linked subagent chat without waiting for it to finish. " <>
-            "Save the returned background task id and check it explicitly.",
+          "IMPORTANT: isolated delegation, not a continuation. Call this tool by itself to " <>
+            "delegate exactly one task without waiting for the answer. The current model state " <>
+            "and full conversation are copied into a new branch, where the copied model becomes " <>
+            "the subagent. In that branch it must discard every pending intention from the " <>
+            "parent turn, including plans and tool calls before or after this fork; perform " <>
+            "only the task argument; write one final answer; and stop. It must not continue the " <>
+            "parent agent's task. The parent alone continues the original work. This call " <>
+            "returns a background task id; check it to retrieve the subagent's final answer.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
             "task" => %{
               "type" => "string",
               "description" =>
-                "Brief task for this specific subagent. Do not repeat the full context."
+                "Complete instructions for the only task the copied subagent must perform. " <>
+                  "When this task appears in the copied branch, abandon the parent turn's plan, " <>
+                  "complete only these instructions, answer once, and stop."
             }
           },
           "required" => ["task"],

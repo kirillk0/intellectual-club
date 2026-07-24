@@ -115,12 +115,13 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       apply_tool_results_to_trace(runtime_step, Map.get(opts, :results, []))
 
     media_input_items =
-      Enum.flat_map(Map.get(opts, :results, []), fn result ->
-        Media.media_followup_input_items(result.media_contents,
-          supports_image_input: Map.get(context, :supports_image_input, false),
-          provider_type: type()
-        )
-      end)
+      opts
+      |> Map.get(:results, [])
+      |> Enum.map(&Map.get(&1, :media_contents, []))
+      |> Media.media_followup_input_items(
+        supports_image_input: Map.get(context, :supports_image_input, false),
+        provider_type: type()
+      )
 
     next_input_items =
       RequestPayload.input(previous_raw_request) ++

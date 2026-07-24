@@ -345,6 +345,105 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              ~s({"temperature":18.5})
   end
 
+  test "google interactions provider preserves a signed parallel call batch and closes every call" do
+    initial =
+      GoogleInteractions.build_initial_request(%{
+        history: [%{role: :user, content: "Split the work"}],
+        system_prompt: "System",
+        model_name: "gemini-3.1-pro-preview",
+        parameters: %{},
+        tools: [],
+        supports_image_input: false
+      })
+
+    function_calls = [
+      %{
+        "type" => "function_call",
+        "id" => "call_a",
+        "signature" => "parallel_batch_signature",
+        "name" => "agent_management__fork",
+        "arguments" => %{"task" => "Branch A"}
+      },
+      %{
+        "type" => "function_call",
+        "id" => "call_b",
+        "name" => "agent_management__fork",
+        "arguments" => %{"task" => "Branch B"}
+      }
+    ]
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: initial.raw_request,
+        raw_response: %{"steps" => function_calls}
+      )
+
+    results = [
+      %{
+        call_id: "call_a",
+        name: "agent_management__fork",
+        text: "Skipped in this forked branch. Do not retry it.",
+        result_raw: %{"fork_skipped" => %{"skipped" => true}},
+        media_contents: [],
+        artifact_contents: []
+      },
+      %{
+        call_id: "call_b",
+        name: "agent_management__fork",
+        text: "Fork branch initialized. The task follows as a user instruction.",
+        result_raw: %{"fork_instruction" => %{"subagent" => true, "task" => "Branch B"}},
+        media_contents: [],
+        artifact_contents: []
+      }
+    ]
+
+    followup =
+      GoogleInteractions.build_followup_request(%{
+        context: %{
+          model_name: "gemini-3.1-pro-preview",
+          parameters: %{},
+          system_prompt: "System",
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: results,
+        tools: []
+      })
+
+    steering_text =
+      "You are now operating in a forked subagent branch. Execute only the task below.\n\n" <>
+        "Task:\nBranch B"
+
+    steered =
+      GoogleInteractions.inject_steering(
+        followup.raw_request,
+        [%{text: steering_text, placement: :after_response}],
+        %{}
+      )
+
+    [_user_input, first_call, second_call, first_result, second_result, steering] =
+      steered.raw_request["input"]
+
+    assert first_call == Enum.at(function_calls, 0)
+    assert second_call == Enum.at(function_calls, 1)
+    assert first_result["type"] == "function_result"
+    assert first_result["call_id"] == "call_a"
+    assert second_result["type"] == "function_result"
+    assert second_result["call_id"] == "call_b"
+
+    assert second_result["result"] == [
+             %{
+               "type" => "text",
+               "text" => "Fork branch initialized. The task follows as a user instruction."
+             }
+           ]
+
+    assert steering == %{
+             "type" => "user_input",
+             "content" => [%{"type" => "text", "text" => steering_text}]
+           }
+  end
+
   test "anthropic provider builds initial messages request from canonical chat history" do
     result =
       AnthropicMessages.build_initial_request(%{
@@ -548,6 +647,72 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})
+  end
+
+  test "openrouter provider closes every parallel tool call before one combined media message" do
+    raw_request =
+      RequestBuilder.build_chat_completions_payload(
+        "moonshotai/kimi-k3",
+        %{},
+        [%{"role" => "user", "content" => "Inspect both images."}],
+        tools: []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: raw_request,
+        raw_response: %{
+          "choices" => [
+            %{"message" => %{"role" => "assistant", "content" => ""}}
+          ]
+        }
+      )
+
+    first_file_id = "11111111-1111-4111-8111-111111111111"
+    second_file_id = "22222222-2222-4222-8222-222222222222"
+
+    results = [
+      chat_result("read_image_1", "read_image", [result_media(2, 41, first_file_id, "one.png")]),
+      chat_result("shell_2", "run_command", []),
+      chat_result("read_image_3", "read_image", [
+        result_media(2, 42, second_file_id, "two.png")
+      ])
+    ]
+
+    followup =
+      OpenRouterChatCompletion.build_followup_request(%{
+        context: %{
+          cache_control_enabled: false,
+          chat_id: 131,
+          model_name: "moonshotai/kimi-k3",
+          parameters: %{},
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: results,
+        tools: []
+      })
+
+    [_initial_user, assistant | followup_messages] = followup.raw_request["messages"]
+    assert assistant["role"] == "assistant"
+
+    assert Enum.map(followup_messages, & &1["role"]) == ["tool", "tool", "tool", "user"]
+
+    assert Enum.map(Enum.take(followup_messages, 3), & &1["tool_call_id"]) == [
+             "read_image_1",
+             "shell_2",
+             "read_image_3"
+           ]
+
+    media_message = List.last(followup_messages)
+
+    assert is_binary(media_message["content"])
+    assert String.contains?(media_message["content"], first_file_id)
+    assert String.contains?(media_message["content"], second_file_id)
+
+    {first_position, _length} = :binary.match(media_message["content"], "one.png")
+    {second_position, _length} = :binary.match(media_message["content"], "two.png")
+    assert first_position < second_position
   end
 
   test "responses provider rebuilds followup request from previous raw request raw response and tool results" do
@@ -1041,5 +1206,40 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            ]
 
     assert followup.request_snapshot.history_length == 1
+  end
+
+  defp chat_result(call_id, name, media_contents) do
+    %{
+      call_id: call_id,
+      name: name,
+      args: %{},
+      raw: %{
+        "id" => call_id,
+        "type" => "function",
+        "function" => %{"name" => name, "arguments" => "{}"}
+      },
+      text: "done",
+      result_raw: %{"ok" => true},
+      media_contents: media_contents,
+      artifact_contents: []
+    }
+  end
+
+  defp result_media(sequence, id, external_id, filename) do
+    %{
+      kind: :media,
+      sequence: sequence,
+      external_id:
+        "33333333-3333-4333-8333-#{id |> Integer.to_string() |> String.pad_leading(12, "0")}",
+      file_id: id,
+      file: %{
+        id: id,
+        external_id: external_id,
+        filename: filename,
+        mime_type: "image/png",
+        size_bytes: 3,
+        sha256: String.duplicate("a", 64)
+      }
+    }
   end
 end

@@ -518,15 +518,31 @@ defmodule IntellectualClub.Chat.Fork do
         source_step = source_context.followup_state.step
         copied_step = copied_step_for_source!(copied_message, source_step)
 
-        copied_call =
+        prepared_step =
           prepare_copied_tool_step!(copied_step, source_step, source_context.source_call, actor)
 
-        result =
-          Persistence.persist_tool_result!(
+        results =
+          Enum.map(prepared_step.calls, fn call ->
+            result =
+              if call.item_id == prepared_step.selected_call.item_id do
+                selected_result(call, source_context.task)
+              else
+                skipped_result(call, prepared_step.selected_call)
+              end
+
+            Persistence.persist_tool_result!(
+              copied_message_id,
+              copied_step.id,
+              call,
+              result
+            )
+          end)
+
+        _steering =
+          Persistence.persist_steering_after_provider!(
             copied_message_id,
             copied_step.id,
-            copied_call,
-            synthetic_result(source_context.source_call, source_context.task)
+            fork_steering_instruction(source_context.task)
           )
 
         followup_state = Persistence.load_step_for_followup!(copied_step.id)
@@ -548,15 +564,23 @@ defmodule IntellectualClub.Chat.Fork do
             available_file_external_ids: context.available_file_external_ids || []
           )
 
-        followup =
+        tool_followup =
           generation_context.adapter_module.build_followup_request(%{
             context: generation_context,
             runtime_step: followup_state.runtime_step,
-            results: [result],
+            results: results,
             tools:
               generation_context.tools_payload ||
                 RequestPayload.tools(copied_step.raw_request || %{})
           })
+
+        followup =
+          inject_fork_steering!(
+            generation_context.adapter_module,
+            tool_followup,
+            followup_state.steering_items,
+            generation_context
+          )
 
         :ok = Persistence.mark_step_done!(copied_step.id)
 
@@ -826,46 +850,31 @@ defmodule IntellectualClub.Chat.Fork do
        ) do
     copied_step =
       copied_step
-      |> trim_to_tool_call!(source_call, actor)
-      |> update_copied_step!(source_step, source_call, actor)
-      |> load_step_with_items!(actor)
+      |> reset_copied_tool_step!(actor)
+      |> update_copied_step!(source_step, actor)
 
-    copied_item =
-      copied_step
-      |> ordered_items()
-      |> Enum.find(fn item ->
-        item.type == :tool_call and item.sequence == source_call.sequence
+    followup_state = Persistence.load_step_for_followup!(copied_step.id)
+
+    selected_call =
+      Enum.find(followup_state.tool_calls, fn call ->
+        call.sequence == source_call.sequence
       end)
 
-    if is_nil(copied_item) do
+    if is_nil(selected_call) do
       raise "Copied fork tool call was not found"
     end
 
-    %ToolCall{
-      source_call
-      | item_id: copied_item.id,
-        step_id: copied_step.id,
-        created_at: copied_item.created_at
+    %{
+      selected_call: selected_call,
+      calls: followup_state.tool_calls
     }
   end
 
-  defp trim_to_tool_call!(%ChatMessageStep{} = step, %ToolCall{} = source_call, actor) do
+  defp reset_copied_tool_step!(%ChatMessageStep{} = step, actor) do
     step
     |> ordered_items()
     |> Enum.each(fn item ->
-      delete? =
-        cond do
-          item.type in [:tool_result, :artifact] ->
-            true
-
-          item.type == :tool_call ->
-            item.sequence != source_call.sequence
-
-          true ->
-            false
-        end
-
-      if delete? do
+      if item.type in [:tool_result, :artifact] do
         Ash.destroy!(item, actor: actor)
       end
     end)
@@ -876,7 +885,6 @@ defmodule IntellectualClub.Chat.Fork do
   defp update_copied_step!(
          %ChatMessageStep{} = copied_step,
          %ChatMessageStep{} = source_step,
-         %ToolCall{} = source_call,
          actor
        ) do
     copied_step
@@ -884,7 +892,7 @@ defmodule IntellectualClub.Chat.Fork do
       :update,
       %{
         status: :waiting_tools,
-        raw_response: filter_raw_response_for_call(source_step.raw_response, source_call),
+        raw_response: source_step.raw_response,
         response_final: source_step.response_final || true,
         input_tokens: source_step.input_tokens,
         output_tokens: source_step.output_tokens,
@@ -899,17 +907,64 @@ defmodule IntellectualClub.Chat.Fork do
     |> Ash.update!()
   end
 
-  defp synthetic_result(%ToolCall{} = call, task) do
-    text =
-      "You are a subagent. Task: #{task}\n\n" <>
-        "Continue from the copied context and write the final answer for this task."
-
+  defp selected_result(%ToolCall{} = call, task) do
     %{
-      text: text,
+      text:
+        "Fork branch initialized. The parent response is complete; follow only the next " <>
+          "user instruction.",
       result_raw: %{
         "fork_instruction" => %{
           "subagent" => true,
           "task" => task
+        }
+      },
+      media_contents: [],
+      artifact_contents: [],
+      call_id: call.call_id,
+      name: call.name,
+      args: call.args || %{}
+    }
+  end
+
+  defp fork_steering_instruction(task) do
+    "FORK CONTROL MESSAGE\n\n" <>
+      "The preceding assistant response and fork tool call were produced by the parent " <>
+      "branch and are already complete. They are context only. You are now operating in " <>
+      "a separate forked subagent branch.\n\n" <>
+      "Execute only the task below. Do not continue the parent conversation, its ROOT ROLE, " <>
+      "its pending plan, or any sibling tool calls. Do not repeat tool calls merely because " <>
+      "the parent was instructed to make them. Use a tool only when the task below itself " <>
+      "requires that tool. Begin the task immediately without explaining this branch " <>
+      "transition. When the task is complete, return its answer directly; that answer becomes " <>
+      "the fork result sent to the parent.\n\nTask:\n#{task}"
+  end
+
+  defp inject_fork_steering!(adapter, followup, steering_items, context)
+       when is_atom(adapter) and is_map(followup) and is_list(steering_items) do
+    case adapter.inject_steering(followup.raw_request || %{}, steering_items, context) do
+      %{raw_request: %{} = raw_request} = injected ->
+        Map.merge(followup, Map.put(injected, :raw_request, raw_request))
+
+      {:ok, %{raw_request: %{} = raw_request} = injected} ->
+        Map.merge(followup, Map.put(injected, :raw_request, raw_request))
+
+      other ->
+        raise "Invalid fork steering request: #{inspect(other)}"
+    end
+  end
+
+  defp skipped_result(%ToolCall{} = call, %ToolCall{} = selected_call) do
+    text =
+      "Skipped in this forked branch because this call is unrelated to the selected " <>
+        "subagent task. Do not retry it."
+
+    %{
+      text: text,
+      result_raw: %{
+        "fork_skipped" => %{
+          "skipped" => true,
+          "reason" => "not_selected_for_subagent",
+          "selected_tool_call_id" => selected_call.call_id
         }
       },
       media_contents: [],
@@ -1100,29 +1155,6 @@ defmodule IntellectualClub.Chat.Fork do
     load_message_with_steps!(message.id, actor)
   end
 
-  defp load_step_with_items!(step_id, actor) when is_integer(step_id) do
-    Ash.get!(ChatMessageStep, step_id,
-      actor: actor,
-      load: [
-        items: [
-          :sequence,
-          :type,
-          contents: [
-            :sequence,
-            :kind,
-            :content_text,
-            :content_json,
-            :file_id
-          ]
-        ]
-      ]
-    )
-  end
-
-  defp load_step_with_items!(%ChatMessageStep{} = step, actor) do
-    load_step_with_items!(step.id, actor)
-  end
-
   defp ordered_items(%{steps: steps}) when is_list(steps) do
     steps
     |> Enum.sort_by(&sort_seq/1)
@@ -1140,129 +1172,4 @@ defmodule IntellectualClub.Chat.Fork do
 
   defp unwrap_transaction({:ok, result}), do: {:ok, result}
   defp unwrap_transaction({:error, reason}), do: {:error, reason}
-
-  defp filter_raw_response_for_call(nil, _call), do: nil
-
-  defp filter_raw_response_for_call(%{} = raw_response, %ToolCall{} = call) do
-    raw_response
-    |> RequestPayload.stringify_keys()
-    |> filter_tool_collections(call)
-  end
-
-  defp filter_raw_response_for_call(raw_response, _call), do: raw_response
-
-  defp filter_tool_collections(%{} = map, %ToolCall{} = call) do
-    map
-    |> update_tool_list("tool_calls", call)
-    |> update_tool_list("content", call)
-    |> update_tool_list("output", call)
-    |> update_tool_list("steps", call)
-    |> update_choices(call)
-  end
-
-  defp update_choices(%{"choices" => choices} = map, %ToolCall{} = call) when is_list(choices) do
-    choices =
-      Enum.map(choices, fn
-        %{} = choice ->
-          choice
-          |> update_nested_map("message", call)
-          |> update_nested_map("delta", call)
-
-        other ->
-          other
-      end)
-
-    Map.put(map, "choices", choices)
-  end
-
-  defp update_choices(map, _call), do: map
-
-  defp update_nested_map(%{} = map, key, %ToolCall{} = call) do
-    case Map.get(map, key) do
-      %{} = nested -> Map.put(map, key, filter_tool_collections(nested, call))
-      _other -> map
-    end
-  end
-
-  defp update_tool_list(%{} = map, key, %ToolCall{} = call) do
-    case Map.get(map, key) do
-      items when is_list(items) -> Map.put(map, key, filter_tool_items(items, call))
-      _other -> map
-    end
-  end
-
-  defp filter_tool_items(items, %ToolCall{} = call) when is_list(items) do
-    Enum.filter(items, fn
-      %{} = item ->
-        not tool_item?(item) or tool_item_matches?(item, call)
-
-      _other ->
-        true
-    end)
-  end
-
-  defp tool_item?(%{} = item) do
-    type =
-      item
-      |> Map.get("type", "")
-      |> to_string()
-      |> String.trim()
-
-    type in ["tool_call", "tool_use", "function_call"]
-  end
-
-  defp tool_item_matches?(%{} = item, %ToolCall{} = call) do
-    call_id = call.call_id |> to_string() |> String.trim()
-
-    id_match? =
-      [
-        Map.get(item, "id"),
-        Map.get(item, "call_id"),
-        Map.get(item, "tool_call_id"),
-        Map.get(item, "tool_use_id")
-      ]
-      |> Enum.map(&(to_string(&1 || "") |> String.trim()))
-      |> Enum.any?(&(&1 != "" and &1 == call_id))
-
-    id_match? or
-      (tool_item_name(item) == call.name and tool_item_args(item) == normalized_args(call.args))
-  end
-
-  defp tool_item_name(%{} = item) do
-    [
-      Map.get(item, "name"),
-      get_in(item, ["function", "name"])
-    ]
-    |> Enum.find("", &(to_string(&1 || "") |> String.trim() != ""))
-    |> to_string()
-    |> String.trim()
-  end
-
-  defp tool_item_args(%{} = item) do
-    [
-      Map.get(item, "arguments"),
-      Map.get(item, "input"),
-      get_in(item, ["function", "arguments"])
-    ]
-    |> Enum.find(%{}, fn value ->
-      case normalize_args(value) do
-        %{} = map when map_size(map) > 0 -> true
-        _other -> false
-      end
-    end)
-    |> normalize_args()
-  end
-
-  defp normalized_args(args), do: normalize_args(args)
-
-  defp normalize_args(%{} = args), do: RequestPayload.stringify_keys(args)
-
-  defp normalize_args(args) when is_binary(args) do
-    case Jason.decode(args) do
-      {:ok, %{} = decoded} -> RequestPayload.stringify_keys(decoded)
-      _other -> %{}
-    end
-  end
-
-  defp normalize_args(_args), do: %{}
 end

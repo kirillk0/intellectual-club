@@ -85,7 +85,7 @@ defmodule IntellectualClub.Chat.Media do
     blocks =
       contents
       |> Enum.filter(&is_map/1)
-      |> Enum.sort_by(&sort_seq/1)
+      |> order_contents(opts)
       |> Enum.flat_map(fn content ->
         case Map.get(content, :kind) do
           :text ->
@@ -125,7 +125,7 @@ defmodule IntellectualClub.Chat.Media do
 
     contents
     |> Enum.filter(&is_map/1)
-    |> Enum.sort_by(&sort_seq/1)
+    |> order_contents(opts)
     |> Enum.flat_map(fn content ->
       case Map.get(content, :kind) do
         :text ->
@@ -145,39 +145,30 @@ defmodule IntellectualClub.Chat.Media do
 
   @spec media_followup_messages(list(), keyword()) :: list(map())
   def media_followup_messages(contents, opts \\ []) when is_list(contents) and is_list(opts) do
-    contents
-    |> Enum.filter(&media_content?/1)
-    |> Enum.sort_by(&sort_seq/1)
-    |> Enum.map(fn content ->
-      %{"role" => "user", "content" => chat_message_content([content], opts)}
-    end)
-    |> Enum.reject(fn message ->
-      case Map.get(message, "content") do
-        "" -> true
-        [] -> true
-        _ -> false
-      end
-    end)
+    content =
+      contents
+      |> ordered_media_contents()
+      |> chat_message_content(Keyword.put(opts, :preserve_order, true))
+
+    if content in ["", []] do
+      []
+    else
+      [%{"role" => "user", "content" => content}]
+    end
   end
 
   @spec media_followup_input_items(list(), keyword()) :: list(map())
   def media_followup_input_items(contents, opts \\ []) when is_list(contents) and is_list(opts) do
-    contents
-    |> Enum.filter(&media_content?/1)
-    |> Enum.sort_by(&sort_seq/1)
-    |> Enum.map(fn content ->
-      %{
-        "type" => "message",
-        "role" => "user",
-        "content" => responses_message_content([content], opts)
-      }
-    end)
-    |> Enum.reject(fn item ->
-      case Map.get(item, "content") do
-        [] -> true
-        _ -> false
-      end
-    end)
+    content =
+      contents
+      |> ordered_media_contents()
+      |> responses_message_content(Keyword.put(opts, :preserve_order, true))
+
+    if content == [] do
+      []
+    else
+      [%{"type" => "message", "role" => "user", "content" => content}]
+    end
   end
 
   @spec image_mime_type?(String.t() | nil) :: boolean()
@@ -252,6 +243,36 @@ defmodule IntellectualClub.Chat.Media do
       %Ash.NotLoaded{} -> %{}
       %{} = file -> file
       _other -> %{}
+    end
+  end
+
+  defp ordered_media_contents(contents) do
+    contents
+    |> content_groups()
+    |> Enum.flat_map(fn group ->
+      group
+      |> Enum.filter(&media_content?/1)
+      |> Enum.sort_by(&sort_seq/1)
+    end)
+  end
+
+  defp content_groups(contents) do
+    if Enum.any?(contents, &is_list/1) do
+      Enum.map(contents, fn
+        group when is_list(group) -> group
+        content when is_map(content) -> [content]
+        _other -> []
+      end)
+    else
+      [contents]
+    end
+  end
+
+  defp order_contents(contents, opts) do
+    if Keyword.get(opts, :preserve_order, false) do
+      contents
+    else
+      Enum.sort_by(contents, &sort_seq/1)
     end
   end
 

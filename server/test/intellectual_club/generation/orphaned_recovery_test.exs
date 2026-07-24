@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.RequestImages
@@ -471,6 +472,120 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
     assert raw == result.raw
+  end
+
+  test "fork preserves a parallel provider response and closes every copied tool call" do
+    %{user: actor} = user_fixture()
+    selected_task = "Investigate the selected branch"
+
+    parent =
+      create_parent_parallel_fork_calls!(actor, "Investigate the sibling branch", selected_task)
+
+    context = fork_execution_context(parent, actor)
+    test_process = self()
+
+    starter =
+      Task.async(fn ->
+        Fork.start_or_resume(parent.tool_instance, selected_task, context, actor,
+          on_reference: fn reference ->
+            send(test_process, {:parallel_fork_prepared, self(), reference})
+
+            receive do
+              :continue_parallel_fork -> :ok
+            after
+              5_000 -> {:error, :parallel_fork_barrier_timeout}
+            end
+          end
+        )
+      end)
+
+    assert_receive {:parallel_fork_prepared, starter_pid, reference}, 5_000
+
+    child_message =
+      Ash.get!(ChatMessage, reference.generation_message_id,
+        actor: actor,
+        load: [steps: [items: [:contents]]]
+      )
+
+    [copied_step, followup_step] = Enum.sort_by(child_message.steps, & &1.sequence)
+
+    assert copied_step.raw_response == parent.raw_response
+
+    copied_calls =
+      copied_step.items
+      |> Enum.filter(&(&1.type == :tool_call))
+      |> Enum.sort_by(& &1.sequence)
+
+    copied_results =
+      copied_step.items
+      |> Enum.filter(&(&1.type == :tool_result))
+      |> Enum.sort_by(& &1.sequence)
+
+    [steering] = Enum.filter(copied_step.items, &(&1.type == :steering))
+    steering_text = History.item_text(steering)
+
+    assert length(copied_calls) == 2
+    assert length(copied_results) == 2
+    assert String.starts_with?(steering_text, "FORK CONTROL MESSAGE")
+    assert String.contains?(steering_text, "Execute only the task below")
+    assert String.contains?(steering_text, "Task:\n#{selected_task}")
+
+    [skipped_call, selected_call] = copied_calls
+
+    skipped_raw =
+      copied_results
+      |> Enum.find(&(&1.tool_call_item_id == skipped_call.id))
+      |> tool_result_raw_from_item!()
+
+    selected_raw =
+      copied_results
+      |> Enum.find(&(&1.tool_call_item_id == selected_call.id))
+      |> tool_result_raw_from_item!()
+
+    assert skipped_raw == %{
+             "fork_skipped" => %{
+               "reason" => "not_selected_for_subagent",
+               "selected_tool_call_id" => parent.call.call_id,
+               "skipped" => true
+             }
+           }
+
+    assert selected_raw == %{
+             "fork_instruction" => %{
+               "subagent" => true,
+               "task" => selected_task
+             }
+           }
+
+    messages = followup_step.raw_request["messages"]
+    assistant_message = Enum.find(messages, &(&1["role"] == "assistant"))
+    tool_messages = Enum.filter(messages, &(&1["role"] == "tool"))
+    steering_message = List.last(messages)
+
+    assert Enum.map(assistant_message["tool_calls"], & &1["id"]) ==
+             Enum.map(parent.calls, & &1.call_id)
+
+    assert assistant_message["reasoning_details"] ==
+             get_in(parent.raw_response, ["choices", Access.at(0), "message", "reasoning_details"])
+
+    assert Enum.map(tool_messages, & &1["tool_call_id"]) ==
+             Enum.map(parent.calls, & &1.call_id)
+
+    selected_tool_message =
+      Enum.find(tool_messages, &(&1["tool_call_id"] == parent.call.call_id))
+
+    assert selected_tool_message["content"] ==
+             "Fork branch initialized. The parent response is complete; follow only the next " <>
+               "user instruction."
+
+    refute String.contains?(selected_tool_message["content"], selected_task)
+    assert steering_message == %{"role" => "user", "content" => steering_text}
+
+    send(starter_pid, :continue_parallel_fork)
+    assert {:ok, ^reference} = Task.await(starter, 5_000)
+
+    completed = wait_for_status!(reference.generation_message_id, actor, [:done], 6_000)
+    assert completed.error_detail == nil
   end
 
   test "stale parent epoch cannot prepare a fork child" do
@@ -1734,6 +1849,122 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     create_parent_subagent_call!(actor, "fork", %{"task" => task}, "Fork now")
   end
 
+  defp create_parent_parallel_fork_calls!(actor, sibling_task, selected_task) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    tool_instance = create_agent_management_tool_instance!(actor)
+    _function = create_tool_function!(actor, tool_instance, "fork")
+    _binding = create_chat_tool_binding!(actor, chat, tool_instance)
+
+    {:ok, user_message} =
+      Threads.add_message_to_end(chat, :user, "Fork two branches", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    raw_request = %{
+      "model" => "demo-model",
+      "messages" => [%{"role" => "user", "content" => "Fork two branches"}],
+      "stream" => true
+    }
+
+    step_id = Persistence.ensure_step_started!(message.id, 1, raw_request, [])
+    first_call_id = "fork_#{System.unique_integer([:positive])}"
+    second_call_id = "fork_#{System.unique_integer([:positive])}"
+
+    call_specs = [
+      {first_call_id, sibling_task, 1},
+      {second_call_id, selected_task, 2}
+    ]
+
+    reasoning_details = [
+      %{
+        "type" => "reasoning.encrypted",
+        "format" => "google-gemini-v1",
+        "data" => "opaque-reasoning-signature"
+      }
+    ]
+
+    raw_tool_calls =
+      Enum.map(call_specs, fn {call_id, task, _sequence} ->
+        %{
+          "id" => call_id,
+          "type" => "function",
+          "function" => %{
+            "name" => "agent_management__fork",
+            "arguments" => Jason.encode!(%{"task" => task})
+          }
+        }
+      end)
+
+    interaction_steps =
+      Enum.map(call_specs, fn {call_id, task, sequence} ->
+        %{
+          "type" => "function_call",
+          "id" => call_id,
+          "name" => "agent_management__fork",
+          "arguments" => %{"task" => task}
+        }
+        |> then(fn step ->
+          if sequence == 1, do: Map.put(step, "signature", "batch-signature"), else: step
+        end)
+      end)
+
+    raw_response = %{
+      "steps" => interaction_steps,
+      "choices" => [
+        %{
+          "message" => %{
+            "role" => "assistant",
+            "content" => "",
+            "reasoning_details" => reasoning_details,
+            "tool_calls" => raw_tool_calls
+          }
+        }
+      ]
+    }
+
+    runtime_step =
+      Enum.reduce(
+        call_specs,
+        RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: raw_request),
+        fn
+          {call_id, task, sequence}, runtime_step ->
+            add_tool_call_to_runtime_step(
+              runtime_step,
+              call_id,
+              "agent_management__fork",
+              %{"task" => task},
+              sequence
+            )
+        end
+      )
+      |> RuntimeTrace.apply_event({:set_step_raw_response, raw_response})
+      |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+    %{tool_calls: calls} = Persistence.persist_provider_completed!(message.id, runtime_step)
+    selected_call = Enum.find(calls, &(&1.call_id == second_call_id))
+
+    %{
+      chat: chat,
+      message: message,
+      step_id: step_id,
+      call: selected_call,
+      calls: calls,
+      raw_response: raw_response,
+      tool_instance: tool_instance
+    }
+  end
+
   defp create_parent_spawn_call!(actor, brief, prompt) do
     create_parent_subagent_call!(
       actor,
@@ -2027,6 +2258,21 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           %{kind: :opaque, content_json: %{"raw" => %{} = raw}} -> raw
           _other -> nil
         end)
+    end
+  end
+
+  defp tool_result_raw_from_item!(item) do
+    item
+    |> History.opaque_payloads()
+    |> Enum.find_value(fn opaque ->
+      case Map.get(opaque, "raw") do
+        %{} = raw -> raw
+        _other -> nil
+      end
+    end)
+    |> case do
+      %{} = raw -> raw
+      _other -> flunk("Expected tool result raw payload")
     end
   end
 
