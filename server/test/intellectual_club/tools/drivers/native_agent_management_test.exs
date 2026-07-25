@@ -72,6 +72,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert Enum.all?(background_functions, &(&1["enabled_by_default"] == false))
 
     fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
+    assert fork_background["is_background_function"] == true
     assert fork_background["schema"]["required"] == ["task"]
     assert String.contains?(fork_background["description"], "exactly one task")
     assert String.contains?(fork_background["description"], "copied model becomes the subagent")
@@ -83,6 +84,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       function = Enum.find(functions, &(&1["name"] == name))
       assert function["enabled"] == false
       assert function["enabled_by_default"] == false
+      assert Map.get(function, "is_background_function", false) == (name == "spawn_background")
       assert function["schema"]["required"] == ["brief", "prompt"]
       assert function["schema"]["additionalProperties"] == false
     end
@@ -90,6 +92,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     check_background =
       Enum.find(functions, &(&1["name"] == "check_background_task_status"))
 
+    assert check_background["provides_background_task_status"] == true
+    refute Map.get(check_background, "is_background_function", false)
     assert check_background["schema"]["required"] == ["background_task_id"]
     assert check_background["schema"]["properties"]["background_task_id"]["format"] == "uuid"
     assert check_background["schema"]["properties"]["cursor"]["type"] == "string"

@@ -997,6 +997,213 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert "agent__fork" in names
   end
 
+  test "fixed background functions require an enabled status provider" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    ssh =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "ssh",
+          name: "Background SSH",
+          alias: "ssh",
+          config: %{"host" => "example.com", "username" => "root"},
+          secrets: %{"password" => "secret"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    agent =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-agent-management",
+          name: "Background status",
+          alias: "agent",
+          config: %{},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    background_override =
+      create_context_tool_function!(actor, ssh, %{
+        name: "run_command_background",
+        enabled: true
+      })
+
+    status_override =
+      create_context_tool_function!(actor, agent, %{
+        name: "check_background_task_status",
+        enabled: false
+      })
+
+    create_chat_tool_binding!(actor, chat, ssh, 0)
+    create_chat_tool_binding!(actor, chat, agent, 1)
+
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+    names = tool_payload_names(resolution)
+
+    assert "ssh__run_command" in names
+    refute "ssh__run_command_background" in names
+    refute "agent__check_background_task_status" in names
+    assert String.contains?(resolution.tool_context, "`ssh__run_command`")
+    refute String.contains?(resolution.tool_context, "`ssh__run_command_background`")
+
+    assert Enum.find(resolution.effective_tool_bindings, &(&1.alias == "ssh")).background_functions_unavailable
+
+    refute Enum.find(resolution.effective_tool_bindings, &(&1.alias == "agent")).background_functions_unavailable
+
+    assert Ash.get!(ToolFunction, background_override.id, actor: actor).enabled == true
+
+    status_override
+    |> Ash.Changeset.for_update(:update, %{enabled: true}, actor: actor)
+    |> Ash.update!()
+
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+    names = tool_payload_names(resolution)
+
+    assert "ssh__run_command_background" in names
+    assert "agent__check_background_task_status" in names
+    assert String.contains?(resolution.tool_context, "`ssh__run_command_background`")
+    refute Enum.any?(resolution.effective_tool_bindings, & &1.background_functions_unavailable)
+  end
+
+  test "stored background classification does not depend on function names" do
+    %{user: actor} = user_fixture()
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    shadowed_status_provider =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-agent-management",
+          name: "Shadowed status provider",
+          alias: "ops",
+          config: %{},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    create_context_tool_function!(actor, shadowed_status_provider, %{
+      name: "check_background_task_status",
+      enabled: true
+    })
+
+    outlet =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "outlet",
+          name: "Stored background functions",
+          alias: "ops",
+          config: %{},
+          secrets: %{"token" => "stored-background-token"}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    direct_function =
+      create_context_tool_function!(actor, outlet, %{
+        name: "ordinary_background",
+        description: "A direct function whose name ends in _background."
+      })
+
+    background_function =
+      create_context_tool_function!(actor, outlet, %{
+        name: "enqueue_work",
+        description: "A background function without a special suffix.",
+        execution_mode: :background,
+        target_function_name: "ordinary_background"
+      })
+
+    name_only_status_function =
+      create_context_tool_function!(actor, outlet, %{
+        name: "check_background_task_status",
+        description: "A regular stored function with a provider-like name."
+      })
+
+    create_chat_tool_binding!(actor, chat, shadowed_status_provider, 0)
+    create_chat_tool_binding!(actor, chat, outlet, 10)
+
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+    names = tool_payload_names(resolution)
+
+    assert "ops__ordinary_background" in names
+    assert "ops__check_background_task_status" in names
+    refute "ops__enqueue_work" in names
+    assert String.contains?(resolution.tool_context, "`ops__ordinary_background`")
+    refute String.contains?(resolution.tool_context, "`ops__enqueue_work`")
+
+    assert [%{alias: "ops", background_functions_unavailable: true}] =
+             Enum.map(resolution.effective_tool_bindings, fn binding ->
+               Map.take(binding, [:alias, :background_functions_unavailable])
+             end)
+
+    assert Ash.get!(ToolFunction, background_function.id, actor: actor).enabled == true
+
+    for function <- [direct_function, name_only_status_function] do
+      function
+      |> Ash.Changeset.for_update(:update, %{enabled: false}, actor: actor)
+      |> Ash.update!()
+    end
+
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+    assert resolution.tools_payload == []
+    assert resolution.tool_context == ""
+    assert resolution.artifact_tools_available == false
+
+    active_status_provider =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-agent-management",
+          name: "Active status provider",
+          alias: "agent",
+          config: %{},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    create_context_tool_function!(actor, active_status_provider, %{
+      name: "check_background_task_status",
+      enabled: true
+    })
+
+    create_chat_tool_binding!(actor, chat, active_status_provider, 20)
+
+    resolution = BindingResolver.resolve_for_chat(chat, actor)
+    names = tool_payload_names(resolution)
+
+    assert "ops__enqueue_work" in names
+    assert "agent__check_background_task_status" in names
+    assert String.contains?(resolution.tool_context, "`ops__enqueue_work`")
+    assert resolution.artifact_tools_available == true
+    refute Enum.any?(resolution.effective_tool_bindings, & &1.background_functions_unavailable)
+  end
+
   test "unavailable discovered background wrappers are not model-visible" do
     %{user: actor} = user_fixture()
 
@@ -3210,6 +3417,23 @@ defmodule IntellectualClub.Generation.ContextTest do
 
   defp tool_payload_names(%{tools_payload: tools_payload}) when is_list(tools_payload) do
     Enum.map(tools_payload, &get_in(&1, ["function", "name"]))
+  end
+
+  defp create_context_tool_function!(actor, tool, attrs) do
+    attrs =
+      Map.merge(
+        %{
+          tool_instance_id: tool.id,
+          description: "",
+          parameters_schema: %{"type" => "object", "properties" => %{}},
+          enabled: true
+        },
+        attrs
+      )
+
+    ToolFunction
+    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+    |> Ash.create!(actor: actor)
   end
 
   defp create_bot_tool_binding!(actor, bot, tool, sharing_mode, sequence) do

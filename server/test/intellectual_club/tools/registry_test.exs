@@ -103,4 +103,32 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert schema["required"] == ["seconds"]
     assert schema["properties"]["seconds"]["type"] == "number"
   end
+
+  test "driver metadata exposes normalized background function capabilities" do
+    ssh_functions = DriverMetadata.for_type("ssh")["fixed_functions"]
+
+    assert %{
+             "is_background_function" => false,
+             "provides_background_task_status" => false
+           } = Enum.find(ssh_functions, &(&1["name"] == "run_command"))
+
+    assert %{
+             "is_background_function" => true,
+             "provides_background_task_status" => false
+           } = Enum.find(ssh_functions, &(&1["name"] == "run_command_background"))
+
+    agent_functions = DriverMetadata.for_type("native-agent-management")["fixed_functions"]
+
+    for name <- ["fork_background", "spawn_background"] do
+      assert %{
+               "is_background_function" => true,
+               "provides_background_task_status" => false
+             } = Enum.find(agent_functions, &(&1["name"] == name))
+    end
+
+    assert %{
+             "is_background_function" => false,
+             "provides_background_task_status" => true
+           } = Enum.find(agent_functions, &(&1["name"] == "check_background_task_status"))
+  end
 end

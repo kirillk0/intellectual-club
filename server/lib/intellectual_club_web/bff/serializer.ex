@@ -257,6 +257,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       alias: Map.get(binding, :alias) || "",
       sequence: Map.get(binding, :sequence) || 0,
       tool_instance_id: Map.get(binding, :tool_instance_id),
+      background_functions_unavailable:
+        Map.get(binding, :background_functions_unavailable) == true,
       tool_instance: if(is_map(tool_instance), do: tool_instance_option(tool_instance), else: nil)
     }
   end

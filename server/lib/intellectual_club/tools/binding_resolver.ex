@@ -30,7 +30,13 @@ defmodule IntellectualClub.Tools.BindingResolver do
       |> effective_entries()
 
     missing_aliases = missing_per_user_aliases(bot_bindings, entries)
-    tool_groups = build_tool_groups(entries, actor)
+
+    {tool_groups, background_unavailable_aliases} =
+      entries
+      |> build_tool_groups(actor)
+      |> gate_background_functions()
+
+    entries = annotate_background_availability(entries, background_unavailable_aliases)
     artifact_tools_available = artifact_tools_available?(tool_groups)
 
     %{
@@ -192,6 +198,54 @@ defmodule IntellectualClub.Tools.BindingResolver do
   end
 
   defp build_tool_groups(_other, _actor), do: []
+
+  defp gate_background_functions(groups) when is_list(groups) do
+    if background_task_status_available?(groups) do
+      {groups, MapSet.new()}
+    else
+      background_unavailable_aliases =
+        groups
+        |> Enum.filter(fn group ->
+          Enum.any?(group.functions, & &1.is_background_function)
+        end)
+        |> Enum.map(& &1.alias)
+        |> MapSet.new()
+
+      visible_groups =
+        Enum.flat_map(groups, fn group ->
+          functions = Enum.reject(group.functions, & &1.is_background_function)
+
+          if functions == [] do
+            []
+          else
+            [%{group | functions: functions}]
+          end
+        end)
+
+      {visible_groups, background_unavailable_aliases}
+    end
+  end
+
+  defp gate_background_functions(_other), do: {[], MapSet.new()}
+
+  defp background_task_status_available?(groups) when is_list(groups) do
+    Enum.any?(groups, fn group ->
+      Enum.any?(group.functions, & &1.provides_background_task_status)
+    end)
+  end
+
+  defp annotate_background_availability(entries, background_unavailable_aliases)
+       when is_list(entries) do
+    Enum.map(entries, fn entry ->
+      Map.put(
+        entry,
+        :background_functions_unavailable,
+        MapSet.member?(background_unavailable_aliases, entry.alias)
+      )
+    end)
+  end
+
+  defp annotate_background_availability(_entries, _background_unavailable_aliases), do: []
 
   defp artifact_tools_available?(groups) when is_list(groups) do
     Enum.any?(groups, fn
@@ -366,7 +420,9 @@ defmodule IntellectualClub.Tools.BindingResolver do
             name: fn_record.name,
             description: fn_record.description || "",
             parameters_schema: fn_record.parameters_schema || %{},
-            enabled: fn_record.enabled and fn_record.discovery_available
+            enabled: fn_record.enabled and fn_record.discovery_available,
+            is_background_function: fn_record.execution_mode == :background,
+            provides_background_task_status: false
           }
         end)
 
@@ -422,12 +478,18 @@ defmodule IntellectualClub.Tools.BindingResolver do
         description: description,
         parameters_schema: parameters_schema,
         enabled: enabled_by_default,
-        enabled_by_default: enabled_by_default
+        enabled_by_default: enabled_by_default,
+        is_background_function: function_flag?(raw, "is_background_function"),
+        provides_background_task_status: function_flag?(raw, "provides_background_task_status")
       }
     end
   end
 
   defp normalize_fixed_function(_other), do: nil
+
+  defp function_flag?(raw, key) when is_map(raw) and is_binary(key) do
+    Map.get(raw, key) == true
+  end
 
   defp fixed_function_overrides(%{id: tool_instance_id}, actor)
        when is_integer(tool_instance_id) do

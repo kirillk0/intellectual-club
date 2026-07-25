@@ -237,7 +237,19 @@
             :showToggle="false"
             :showActions="false"
             @open="(toolInstanceId) => emit('open-context-tool-editor', toolInstanceId)"
-          />
+          >
+            <template #item-meta-extra="{ item }">
+              <span
+                v-if="item.background_functions_unavailable"
+                class="background-functions-warning"
+                role="img"
+                :title="backgroundFunctionsUnavailableLabel"
+                :aria-label="backgroundFunctionsUnavailableLabel"
+              >
+                !
+              </span>
+            </template>
+          </ToolBindingsCard>
         </div>
       </div>
     </div>
@@ -251,6 +263,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeBlockListItem from '@/components/KnowledgeBlockListItem.vue';
 import ToolBindingsCard from '@/components/ToolBindingsCard.vue';
 import { toolBindingDisplayText, toolTypeLabel as formatToolTypeLabel } from '@/features/tools/model/toolInstances';
+import { translate } from '@/i18n';
 import { formatEstimatedTokens } from '@/utils/tokens';
 import type {
   ActiveToolBinding,
@@ -328,6 +341,9 @@ const activeToolBindingText = (binding: ActiveToolBinding) =>
 const activeToolBindingType = (binding: ActiveToolBinding) => binding.tool_instance?.type || '';
 const activeToolBindingIsOutlet = (binding: ActiveToolBinding) => binding.tool_instance?.type === 'outlet';
 const activeToolBindingIsOnline = (binding: ActiveToolBinding) => Boolean(binding.tool_instance?.outlet_online);
+const backgroundFunctionsUnavailableLabel = computed(() =>
+  translate('Background functions are unavailable because check_background_task_status is disabled.')
+);
 
 const contextBlockLinks = computed(() =>
   (props.linkedBlocks || []).map((item, index) => ({
@@ -359,5 +375,22 @@ const contextBlockTokenCount = (blockId: number) => contextBlocksById.value.get(
 <style scoped>
 .context-block-list {
   margin-top: 8px;
+}
+
+.background-functions-warning {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 4px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 50%;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: help;
 }
 </style>

@@ -25,6 +25,8 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
 
     assert is_map(run_command)
     assert is_map(background)
+    refute Map.get(run_command, "is_background_function", false)
+    assert background["is_background_function"] == true
     assert background["enabled"] == false
     assert background["enabled_by_default"] == false
     assert background["schema"] == run_command["schema"]

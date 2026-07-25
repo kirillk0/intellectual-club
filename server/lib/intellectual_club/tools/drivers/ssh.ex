@@ -183,6 +183,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
         "description" =>
           "Start a shell command on the SSH host in the background and return a background task ID immediately.",
         "schema" => command_schema,
+        "is_background_function" => true,
         "enabled" => false,
         "enabled_by_default" => false
       },

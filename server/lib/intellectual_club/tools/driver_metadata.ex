@@ -110,7 +110,10 @@ defmodule IntellectualClub.Tools.DriverMetadata do
         "description" => description,
         "enabled" => enabled_by_default,
         "enabled_by_default" => enabled_by_default,
-        "parameters_schema" => parameters_schema
+        "parameters_schema" => parameters_schema,
+        "is_background_function" => Map.get(raw, "is_background_function") == true,
+        "provides_background_task_status" =>
+          Map.get(raw, "provides_background_task_status") == true
       }
     end
   end

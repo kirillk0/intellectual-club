@@ -255,6 +255,7 @@ export type ActiveToolBinding = {
   alias: string;
   sequence: number;
   tool_instance_id: number;
+  background_functions_unavailable?: boolean;
   tool_instance?: ToolInstanceOption | null;
 };
 

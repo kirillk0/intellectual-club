@@ -574,6 +574,8 @@ type ToolDriverMeta = {
     enabled: boolean;
     enabled_by_default?: boolean;
     parameters_schema: unknown;
+    is_background_function: boolean;
+    provides_background_task_status: boolean;
   }>;
 };
 

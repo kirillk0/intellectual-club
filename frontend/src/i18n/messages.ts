@@ -57,6 +57,8 @@ export const ruMessages: Record<string, string> = {
   'Available reasoning effort levels depend on the selected model.': 'Доступные уровни усилия рассуждений зависят от выбранной модели.',
   'Back': 'Назад',
   'Back to chats': 'Назад к чатам',
+  'Background functions are unavailable because check_background_task_status is disabled.':
+    'Фоновые функции недоступны, потому что функция check_background_task_status отключена.',
   'Base URL': 'Базовый URL',
   'Blocks': 'Блоки',
   'Bookmark': 'Закладка',

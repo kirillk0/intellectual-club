@@ -154,6 +154,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "required" => ["task"],
           "additionalProperties" => false
         },
+        "is_background_function" => true,
         "enabled" => false,
         "enabled_by_default" => false
       },
@@ -172,6 +173,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "Start a linked subagent chat with an empty conversation without waiting for it to " <>
             "finish. Save the returned background task id and check it explicitly.",
         "schema" => spawn_schema(),
+        "is_background_function" => true,
         "enabled" => false,
         "enabled_by_default" => false
       },
@@ -195,6 +197,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "required" => ["background_task_id"],
           "additionalProperties" => false
         },
+        "provides_background_task_status" => true,
         "enabled" => false,
         "enabled_by_default" => false
       },
