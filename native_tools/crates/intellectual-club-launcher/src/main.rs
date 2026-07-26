@@ -13,9 +13,9 @@ use crate::cli::{Args, CommandKind};
 use crate::config::{AppPaths, LauncherConfig};
 use crate::gui::run_gui;
 use crate::operations::{
-    backup_command, daemon_command, doctor_command, logs_command, move_data_command,
-    move_files_data_command, open_command, paths_command, restore_command, start_command,
-    status_command, stop_command,
+    backup_command, create_admin_command, daemon_command, doctor_command, logs_command,
+    move_data_command, move_files_data_command, open_command, paths_command, restore_command,
+    start_command, status_command, stop_command,
 };
 
 fn main() -> Result<()> {
@@ -45,6 +45,7 @@ fn main() -> Result<()> {
             CommandKind::Status { json } => status_command(&paths, &config, json).await,
             CommandKind::Logs { source, lines } => logs_command(&paths, &config, source, lines),
             CommandKind::Open => open_command(&paths, &config).await,
+            CommandKind::CreateAdmin => create_admin_command(&paths, &config).await,
             CommandKind::Backup { output } => backup_command(&paths, &config, output)
                 .await
                 .map(|path| println!("{}", path.display())),
@@ -82,6 +83,7 @@ mod tests {
     use crate::config::{
         Locale, TextKey, CONFIG_VERSION, DATABASE_NAME, DEFAULT_PORT, DEFAULT_POSTGRES_PORT,
     };
+    use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
 
@@ -102,6 +104,21 @@ mod tests {
         assert_eq!(Locale::En.text(TextKey::PostgresLog), "Postgres log");
         assert_eq!(Locale::Ru.text(TextKey::FilesDataDir), "Файлы");
         assert_eq!(Locale::En.text(TextKey::MoveFilesData), "Move files");
+        assert_eq!(Locale::Ru.text(TextKey::Administrators), "Администраторы");
+        assert_eq!(
+            Locale::En.text(TextKey::CreateAdministrator),
+            "Create administrator"
+        );
+        assert_eq!(
+            Locale::Ru.text(TextKey::AdministratorCreationFailed),
+            "Не удалось создать администратора"
+        );
+    }
+
+    #[test]
+    fn create_admin_subcommand_is_parsed() {
+        let args = Args::try_parse_from(["intellectual-club-launcher", "create-admin"]).unwrap();
+        assert!(matches!(args.command, Some(CommandKind::CreateAdmin)));
     }
 
     #[test]

@@ -10,6 +10,7 @@ defmodule IntellectualClub.MixProject do
       elixirc_options: [warnings_as_errors: true],
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
+      releases: releases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader]
@@ -141,6 +142,10 @@ defmodule IntellectualClub.MixProject do
         "cmd mix test"
       ]
     ]
+  end
+
+  defp releases do
+    [intellectual_club: [overlays: ["rel/overlays"]]]
   end
 
   defp sync_picosat(_args) do

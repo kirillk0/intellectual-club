@@ -68,6 +68,7 @@ Run the launcher from CLI:
 ```bash
 ./build/dev/bin/intellectual-club-launcher start
 ./build/dev/bin/intellectual-club-launcher status --json
+./build/dev/bin/intellectual-club-launcher create-admin
 ./build/dev/bin/intellectual-club-launcher backup
 ./build/dev/bin/intellectual-club-launcher move-files --to /path/to/files
 ./build/dev/bin/intellectual-club-launcher stop
@@ -76,6 +77,10 @@ Run the launcher from CLI:
 The launcher stores config, PostgreSQL data, file storage, backups, runtime status, and
 cached PostgreSQL installations in OS-specific app data directories via
 `directories::ProjectDirs`.
+
+The `create-admin` command prompts for credentials without echoing the password, starts
+the embedded PostgreSQL instance when needed, applies pending migrations, and creates a
+new administrator. The same form is available in the launcher's `Administrators` page.
 
 ## Shell Outlet Image
 

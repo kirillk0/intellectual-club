@@ -64,6 +64,7 @@ pub enum CommandKind {
         lines: usize,
     },
     Open,
+    CreateAdmin,
     Backup {
         #[arg(long, value_name = "PATH")]
         output: Option<PathBuf>,

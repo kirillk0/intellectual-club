@@ -12,6 +12,8 @@ use postgresql_commands::pg_restore::PgRestoreBuilder;
 use postgresql_commands::psql::PsqlBuilder;
 use postgresql_commands::{AsyncCommandExecutor, CommandBuilder};
 use postgresql_embedded::{PostgreSQL, Settings, Status as PostgresStatus};
+use serde::Deserialize;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
 
@@ -215,6 +217,148 @@ pub async fn open_command(paths: &AppPaths, config: &LauncherConfig) -> Result<(
     } else {
         open_url(&config.app_url())
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateAdminResponse {
+    ok: bool,
+    username: Option<String>,
+    message: Option<String>,
+}
+
+pub async fn create_admin_command(paths: &AppPaths, config: &LauncherConfig) -> Result<()> {
+    paths.ensure_dirs()?;
+    let admin = ensure_postgres_for_admin(paths, config).await?;
+    ensure_database(admin.postgres(), config).await?;
+    let database_url = config.database_url(admin.settings());
+
+    let result = async {
+        let mut command = create_admin_release_command(config, &database_url)?;
+        let status = command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .context("failed to run create-admin release command")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            bail!("create-admin release command exited with {status}")
+        }
+    }
+    .await;
+
+    admin.finish().await;
+    result
+}
+
+pub async fn create_admin_with_credentials(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    username: &str,
+    password: &str,
+    password_confirmation: &str,
+) -> Result<String> {
+    paths.ensure_dirs()?;
+    let admin = ensure_postgres_for_admin(paths, config).await?;
+    ensure_database(admin.postgres(), config).await?;
+    let database_url = config.database_url(admin.settings());
+
+    let result = async {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "username": username,
+            "password": password,
+            "password_confirmation": password_confirmation,
+        }))?;
+        let mut command = create_admin_release_command(config, &database_url)?;
+        let mut child = command
+            .arg("--json-stdin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to run create-admin release command")?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open create-admin stdin"))?;
+        stdin.write_all(&payload).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+
+        let output = child.wait_with_output().await?;
+        let response = parse_create_admin_response(&output.stdout, &output.stderr);
+
+        if output.status.success() {
+            let response = response.context("create-admin returned no JSON response")?;
+            if !response.ok {
+                bail!(
+                    "{}",
+                    response
+                        .message
+                        .unwrap_or_else(|| "create-admin failed".to_string())
+                );
+            }
+            Ok(response.username.unwrap_or_else(|| username.to_string()))
+        } else {
+            let message = response
+                .and_then(|response| response.message)
+                .unwrap_or_else(|| command_output_message(&output.stderr, &output.stdout));
+            bail!("{message}")
+        }
+    }
+    .await;
+
+    admin.finish().await;
+    result
+}
+
+fn create_admin_release_command(config: &LauncherConfig, database_url: &str) -> Result<Command> {
+    let app_dir = resolve_app_dir(config)?;
+    let command_path = app_dir.join("bin").join("create-admin");
+    if !command_path.exists() {
+        bail!(
+            "create-admin release command not found: {}",
+            command_path.display()
+        );
+    }
+
+    let mut command = Command::new(command_path);
+    command
+        .current_dir(&app_dir)
+        .env("DATABASE_URL", database_url)
+        .env("FILE_STORAGE_PATH", &config.files_data_dir)
+        .env("PORT", config.app_port.to_string())
+        .env("POOL_SIZE", "10")
+        .env("SECRET_KEY_BASE", &config.secret_key_base)
+        .env("TOKEN_SIGNING_SECRET", &config.token_signing_secret);
+    Ok(command)
+}
+
+fn parse_create_admin_response(stdout: &[u8], stderr: &[u8]) -> Option<CreateAdminResponse> {
+    [stdout, stderr]
+        .into_iter()
+        .flat_map(|stream| {
+            String::from_utf8_lossy(stream)
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .rev()
+        .find_map(|line| serde_json::from_str(&line).ok())
+}
+
+fn command_output_message(primary: &[u8], secondary: &[u8]) -> String {
+    for output in [primary, secondary] {
+        let message = String::from_utf8_lossy(output).trim().to_string();
+        if !message.is_empty() {
+            return message;
+        }
+    }
+    "create-admin release command failed".to_string()
 }
 
 pub async fn start_application_command(paths: &AppPaths, config: &LauncherConfig) -> Result<()> {
@@ -1220,6 +1364,7 @@ fn local_lan_ipv4_host() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Locale;
 
     #[cfg(unix)]
     #[test]
@@ -1235,6 +1380,58 @@ mod tests {
             files_backup_path_for(Path::new("/tmp/intellectual-club.dump")),
             PathBuf::from("/tmp/intellectual-club.files")
         );
+    }
+
+    #[test]
+    fn create_admin_release_command_uses_release_path_and_database_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-create-admin-command-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join("create-admin"), b"#!/bin/sh\n").unwrap();
+
+        let config = LauncherConfig {
+            version: CONFIG_VERSION,
+            app_dir: Some(root.clone()),
+            postgres_data_dir: root.join("postgres"),
+            files_data_dir: root.join("files"),
+            postgres_port: 55432,
+            app_port: 4000,
+            database_name: "intellectual_club".to_string(),
+            postgres_user: "postgres".to_string(),
+            postgres_password: "postgres-password".to_string(),
+            secret_key_base: "secret-key-base".to_string(),
+            token_signing_secret: "token-signing-secret".to_string(),
+            locale: Locale::En,
+        };
+        let database_url = "postgresql://postgres:password@127.0.0.1:55432/intellectual_club";
+
+        let command = create_admin_release_command(&config, database_url).unwrap();
+        let command = command.as_std();
+        assert_eq!(command.get_program(), root.join("bin").join("create-admin"));
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "DATABASE_URL" && value == Some(std::ffi::OsStr::new(database_url))
+        }));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "FILE_STORAGE_PATH" && value == Some(config.files_data_dir.as_os_str())
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_admin_response_is_parsed_from_command_output() {
+        let response = parse_create_admin_response(
+            b"migration log\n{\"ok\":true,\"username\":\"admin\"}\n",
+            b"",
+        )
+        .unwrap();
+
+        assert!(response.ok);
+        assert_eq!(response.username.as_deref(), Some("admin"));
     }
 
     #[test]

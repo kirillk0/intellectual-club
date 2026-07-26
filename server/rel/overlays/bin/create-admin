@@ -1,0 +1,59 @@
+#!/bin/sh
+
+set -eu
+
+SCRIPT_DIR="$(CDPATH='' cd "$(dirname "$0")" && pwd -P)"
+
+# Runtime configuration requires these endpoint secrets even though this task
+# starts only the repository. Use task-local values when deployment secrets are
+# intentionally not supplied to a one-off container.
+SECRET_KEY_BASE="${SECRET_KEY_BASE:-create-admin-task-only-secret-key-base-00000000000000000000000000000000}"
+TOKEN_SIGNING_SECRET="${TOKEN_SIGNING_SECRET:-create-admin-task-only-token-signing-secret-0000000000000000000000000000}"
+export SECRET_KEY_BASE TOKEN_SIGNING_SECRET
+
+if [ "$#" -gt 0 ]; then
+  exec "${SCRIPT_DIR}/intellectual_club" eval \
+    'IntellectualClub.ReleaseTasks.CreateAdmin.main(System.argv())' "$@"
+fi
+
+if [ ! -t 0 ]; then
+  echo "Interactive terminal required. Run the container with -it." >&2
+  exit 1
+fi
+
+printf 'Username: '
+if ! IFS= read -r username; then
+  printf '\nInput ended before the username was provided.\n' >&2
+  exit 1
+fi
+
+terminal_state="$(stty -g)"
+restore_terminal() {
+  stty "${terminal_state}"
+}
+trap restore_terminal EXIT
+trap 'exit 130' INT
+trap 'exit 129' HUP
+trap 'exit 143' TERM
+
+stty -echo
+printf 'Password: '
+if ! IFS= read -r password; then
+  printf '\nInput ended before the password was provided.\n' >&2
+  exit 1
+fi
+printf '\nConfirm password: '
+if ! IFS= read -r password_confirmation; then
+  printf '\nInput ended before the password confirmation was provided.\n' >&2
+  exit 1
+fi
+printf '\n'
+restore_terminal
+trap - EXIT HUP INT TERM
+
+{
+  printf '%s\n' "${username}"
+  printf '%s\n' "${password}"
+  printf '%s\n' "${password_confirmation}"
+} | "${SCRIPT_DIR}/intellectual_club" eval \
+  'IntellectualClub.ReleaseTasks.CreateAdmin.main(System.argv())' --line-stdin

@@ -36,6 +36,7 @@ COPY frontend ../frontend
 
 RUN mix compile
 RUN mix assets.deploy
+COPY server/rel ./rel
 RUN mix release
 
 FROM debian:trixie-slim AS app

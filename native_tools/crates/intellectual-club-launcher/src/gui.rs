@@ -10,9 +10,10 @@ use crate::cli::LogSource;
 use crate::config::{AppPaths, LauncherConfig, Locale, TextKey};
 use crate::fs_utils::{list_backups, open_path, BackupEntry};
 use crate::operations::{
-    backup_command, build_status_payload, log_path_for, move_data_command, move_files_data_command,
-    open_command, open_log, read_log, restart_application_command, restore_command,
-    start_application_command, start_command, stop_application_command, stop_command,
+    backup_command, build_status_payload, create_admin_with_credentials, log_path_for,
+    move_data_command, move_files_data_command, open_command, open_log, read_log,
+    restart_application_command, restore_command, start_application_command, start_command,
+    stop_application_command, stop_command,
 };
 use crate::status::{ServiceState, ServiceStatus, StatusPayload};
 
@@ -22,6 +23,7 @@ const LOG_BOTTOM_TOLERANCE: f32 = 2.0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum View {
     Overview,
+    Administrators,
     BackupRestore,
     Logs,
     Paths,
@@ -45,6 +47,9 @@ pub struct LauncherGui {
     last_message: String,
     moving_to: String,
     files_moving_to: String,
+    admin_username: String,
+    admin_password: String,
+    admin_password_confirmation: String,
     busy: Option<String>,
     last_refresh: Instant,
 }
@@ -53,6 +58,8 @@ pub struct LauncherGui {
 enum GuiEvent {
     Status(StatusPayload),
     Info(String),
+    AdminCreated(String),
+    AdminCreateFailed(String),
     Error(String),
 }
 
@@ -78,6 +85,9 @@ impl LauncherGui {
             last_message: String::new(),
             moving_to: String::new(),
             files_moving_to: String::new(),
+            admin_username: String::new(),
+            admin_password: String::new(),
+            admin_password_confirmation: String::new(),
             busy: None,
             last_refresh: Instant::now() - REFRESH_INTERVAL,
         };
@@ -153,6 +163,26 @@ impl LauncherGui {
         });
     }
 
+    fn run_create_admin_task<F>(&mut self, label: String, task: F)
+    where
+        F: Future<Output = Result<String>> + Send + 'static,
+    {
+        self.busy = Some(label);
+        self.last_error.clear();
+        self.last_message.clear();
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            match task.await {
+                Ok(username) => {
+                    let _ = tx.send(GuiEvent::AdminCreated(username));
+                }
+                Err(error) => {
+                    let _ = tx.send(GuiEvent::AdminCreateFailed(error.to_string()));
+                }
+            }
+        });
+    }
+
     fn process_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
@@ -161,6 +191,30 @@ impl LauncherGui {
                     self.busy = None;
                     self.last_error.clear();
                     self.last_message = message;
+                    self.refresh_all();
+                }
+                GuiEvent::AdminCreated(username) => {
+                    self.busy = None;
+                    self.last_error.clear();
+                    self.last_message = format!(
+                        "{}: {}",
+                        self.config.locale.text(TextKey::AdministratorCreated),
+                        username
+                    );
+                    self.admin_username.clear();
+                    self.admin_password.clear();
+                    self.admin_password_confirmation.clear();
+                    self.refresh_all();
+                }
+                GuiEvent::AdminCreateFailed(error) => {
+                    self.busy = None;
+                    self.last_error = format!(
+                        "{}: {}",
+                        self.config
+                            .locale
+                            .text(TextKey::AdministratorCreationFailed),
+                        error
+                    );
                     self.refresh_all();
                 }
                 GuiEvent::Error(error) => {
@@ -241,6 +295,12 @@ impl LauncherGui {
                     &mut self.view,
                     View::Overview,
                     locale.text(TextKey::Overview),
+                );
+                nav_button(
+                    ui,
+                    &mut self.view,
+                    View::Administrators,
+                    locale.text(TextKey::Administrators),
                 );
                 nav_button(
                     ui,
@@ -679,6 +739,81 @@ impl LauncherGui {
         self.render_messages(ui);
     }
 
+    fn render_administrators(&mut self, ui: &mut egui::Ui) {
+        let locale = self.config.locale;
+        ui.heading(locale.text(TextKey::Administrators));
+        ui.add_space(8.0);
+        ui.label(locale.text(TextKey::AdministratorHelp));
+        ui.add_space(16.0);
+
+        egui::Grid::new("create_admin_form")
+            .num_columns(2)
+            .spacing([16.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(locale.text(TextKey::Username));
+                ui.add(egui::TextEdit::singleline(&mut self.admin_username).desired_width(360.0));
+                ui.end_row();
+
+                ui.label(locale.text(TextKey::Password));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.admin_password)
+                        .password(true)
+                        .desired_width(360.0),
+                );
+                ui.end_row();
+
+                ui.label(locale.text(TextKey::ConfirmPassword));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.admin_password_confirmation)
+                        .password(true)
+                        .desired_width(360.0),
+                );
+                ui.end_row();
+            });
+
+        let passwords_mismatch = !self.admin_password_confirmation.is_empty()
+            && self.admin_password != self.admin_password_confirmation;
+        if passwords_mismatch {
+            ui.colored_label(
+                egui::Color32::from_rgb(176, 43, 43),
+                locale.text(TextKey::PasswordsDoNotMatch),
+            );
+        }
+
+        ui.add_space(12.0);
+        let can_submit = !self.is_busy()
+            && !self.admin_username.trim().is_empty()
+            && !self.admin_password.is_empty()
+            && !self.admin_password_confirmation.is_empty()
+            && !passwords_mismatch;
+        if ui
+            .add_enabled(
+                can_submit,
+                egui::Button::new(locale.text(TextKey::CreateAdministrator)),
+            )
+            .clicked()
+        {
+            let paths = self.paths.clone();
+            let config = self.config.clone();
+            let username = self.admin_username.trim().to_string();
+            let password = std::mem::take(&mut self.admin_password);
+            let password_confirmation = std::mem::take(&mut self.admin_password_confirmation);
+            let label = locale.text(TextKey::CreateAdministrator).to_string();
+            self.run_create_admin_task(label, async move {
+                create_admin_with_credentials(
+                    &paths,
+                    &config,
+                    &username,
+                    &password,
+                    &password_confirmation,
+                )
+                .await
+            });
+        }
+
+        self.render_messages(ui);
+    }
+
     fn render_paths(&mut self, ui: &mut egui::Ui) {
         let locale = self.config.locale;
         ui.heading(locale.text(TextKey::Paths));
@@ -844,6 +979,7 @@ impl eframe::App for LauncherGui {
             ui.add_space(10.0);
             match self.view {
                 View::Overview => self.render_overview(ui),
+                View::Administrators => self.render_administrators(ui),
                 View::BackupRestore => self.render_backup_restore(ui),
                 View::Logs => self.render_logs(ui),
                 View::Paths => self.render_paths(ui),
