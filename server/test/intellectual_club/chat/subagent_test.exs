@@ -76,7 +76,10 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
     for source <- [fork_child, spawn_child, handoff_after_fork] do
       assert {:error, message} = Subagent.ensure_creation_allowed(disabled, source, actor)
-      assert message =~ "nested_subchats_limit"
+
+      assert message ==
+               "Nested subchat creation is unavailable for this subagent. " <>
+                 "Continue working on the task yourself without creating another subchat."
     end
 
     one_level = create_tool_instance!(actor, %{"nested_subchats_limit" => 1})
@@ -87,7 +90,10 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
     for source <- [fork_after_spawn, spawn_after_handoff] do
       assert {:error, message} = Subagent.ensure_creation_allowed(one_level, source, actor)
-      assert message =~ "nested_subchats_limit"
+
+      assert message ==
+               "Nested subchat creation is unavailable for this subagent. " <>
+                 "Continue working on the task yourself without creating another subchat."
     end
 
     two_levels = create_tool_instance!(actor, %{"nested_subchats_limit" => 2})
@@ -129,7 +135,10 @@ defmodule IntellectualClub.Chat.SubagentTest do
     limit = create_tool_instance!(actor, %{"nested_subchats_limit" => 64})
 
     assert {:error, message} = Subagent.ensure_creation_allowed(limit, source, actor)
-    assert message =~ "nested_subchats_limit"
+
+    assert message ==
+             "Nested subchat creation is unavailable for this subagent. " <>
+               "Continue working on the task yourself without creating another subchat."
   end
 
   defp create_chat!(actor, nil, nil, subagent) do

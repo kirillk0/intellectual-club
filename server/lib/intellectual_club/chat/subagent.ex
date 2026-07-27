@@ -140,8 +140,8 @@ defmodule IntellectualClub.Chat.Subagent do
 
       _exceeded_or_invalid_chain ->
         {:error,
-         "Nested subchat is disabled for this subagent. " <>
-           "Increase nested_subchats_limit to allow it."}
+         "Nested subchat creation is unavailable for this subagent. " <>
+           "Continue working on the task yourself without creating another subchat."}
     end
   end
 

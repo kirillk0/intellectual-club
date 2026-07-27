@@ -251,8 +251,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         )
 
       assert result.text ==
-               "Nested subchat is disabled for this subagent. " <>
-                 "Increase nested_subchats_limit to allow it."
+               "Nested subchat creation is unavailable for this subagent. " <>
+                 "Continue working on the task yourself without creating another subchat."
 
       assert result.raw["isError"] == true
     end)
