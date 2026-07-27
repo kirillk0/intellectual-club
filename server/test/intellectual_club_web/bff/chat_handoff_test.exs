@@ -921,6 +921,15 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
     assert nav_labels(target_summary) == ["1", "2"]
     assert nav_chat_ids(target_summary) == [source.id, target.id]
 
+    source_summary_payload =
+      conn
+      |> get(~p"/api/bff/chat-list/#{source.id}/summary")
+      |> json_response(200)
+      |> Map.fetch!("chat")
+
+    assert nav_labels(source_summary_payload) == ["1", "2"]
+    assert nav_chat_ids(source_summary_payload) == [source.id, target.id]
+
     summary_payload =
       conn
       |> get(~p"/api/bff/chat-list/#{target.id}/summary")

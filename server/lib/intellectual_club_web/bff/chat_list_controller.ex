@@ -279,6 +279,15 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   defp direct_subchat_summaries(_chats, _actor, _preview_len), do: %{}
 
+  defp put_continuation_nav(
+         %{child_handoff_count: 0} = payload,
+         %{parent_relation_kind: relation_kind},
+         _actor
+       )
+       when relation_kind != :handoff do
+    Map.put(payload, :continuation_nav, [])
+  end
+
   defp put_continuation_nav(payload, chat, actor) do
     Map.put(
       payload,
