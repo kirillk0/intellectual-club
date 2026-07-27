@@ -17,6 +17,7 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Alpha beta", actor: actor)
     content = load_content_by_message!(message.id, actor)
 
+    assert content.item_type == :input
     assert active_hit_ids(Search.search_messages_in_chat(chat.id, "alpha", actor)) == [message.id]
     assert active_hit_ids(Search.search_messages_in_chat(chat.id, "beta", actor)) == [message.id]
 
@@ -38,6 +39,24 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
       |> Ash.update!(actor: actor)
 
     assert active_hit_ids(Search.search_messages_in_chat(chat.id, "gamma", actor)) == []
+  end
+
+  test "content item type follows its parent item type" do
+    %{user: actor} = user_fixture()
+
+    chat = create_chat!(actor, "Item type sync chat")
+    {:ok, message} = Threads.add_message_to_end(chat, :user, "Searchable text", actor: actor)
+    item = load_item_by_message!(message.id, actor)
+
+    assert load_content_by_message!(message.id, actor).item_type == :input
+
+    _item =
+      item
+      |> Ash.Changeset.for_update(:update, %{type: :reasoning}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+    assert load_content_by_message!(message.id, actor).item_type == :reasoning
+    assert active_hit_ids(Search.search_messages_in_chat(chat.id, "searchable", actor)) == []
   end
 
   test "message search excludes deleted text contents" do
@@ -63,20 +82,23 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
   end
 
   defp load_content_by_message!(message_id, actor) do
+    item = load_item_by_message!(message_id, actor)
+
+    ChatMessageContent
+    |> Ash.Query.filter(chat_message_item_id == ^item.id)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.read_one!(actor: actor)
+  end
+
+  defp load_item_by_message!(message_id, actor) do
     step =
       ChatMessageStep
       |> Ash.Query.filter(chat_message_id == ^message_id)
       |> Ash.Query.sort(id: :asc)
       |> Ash.read_one!(actor: actor)
 
-    item =
-      ChatMessageItem
-      |> Ash.Query.filter(chat_message_step_id == ^step.id)
-      |> Ash.Query.sort(id: :asc)
-      |> Ash.read_one!(actor: actor)
-
-    ChatMessageContent
-    |> Ash.Query.filter(chat_message_item_id == ^item.id)
+    ChatMessageItem
+    |> Ash.Query.filter(chat_message_step_id == ^step.id)
     |> Ash.Query.sort(id: :asc)
     |> Ash.read_one!(actor: actor)
   end

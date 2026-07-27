@@ -290,16 +290,12 @@ defmodule IntellectualClub.Chat.Search do
         steps,
         exists(
           items,
-          type in [
-            :input,
-            :handoff_request,
-            :handoff_context,
-            :handoff_history,
-            :handoff_message,
-            :answer,
-            :handoff_summary
-          ] and
-            exists(contents, kind == :text and contains(content_text, ^term))
+          type in ^@searchable_trace_item_types and
+            exists(
+              contents,
+              item_type in ^@searchable_trace_item_types and kind == :text and
+                contains(content_text, ^term)
+            )
         )
       )
     )
@@ -519,7 +515,8 @@ defmodule IntellectualClub.Chat.Search do
     |> Enum.flat_map(fn chunk ->
       ChatMessageContent
       |> Ash.Query.filter(
-        chat_message_item_id in ^chunk and kind == :text and contains(content_text, ^term)
+        chat_message_item_id in ^chunk and item_type in ^@searchable_trace_item_types and
+          kind == :text and contains(content_text, ^term)
       )
       |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
       |> Ash.read!(actor: actor)
@@ -635,16 +632,11 @@ defmodule IntellectualClub.Chat.Search do
 
   defp search_message_candidates(search, bot_filter, meta_ids, limit, actor)
        when is_tuple(search) do
-    user_candidates = read_message_candidates(search, bot_filter, meta_ids, limit, actor, :user)
-
-    assistant_candidates =
-      read_message_candidates(search, bot_filter, meta_ids, limit, actor, :assistant)
-
-    user_candidates ++ assistant_candidates
+    read_message_candidates(search, bot_filter, meta_ids, limit * 2, actor)
   end
 
-  defp read_message_candidates(search, bot_filter, meta_ids, limit, actor, role)
-       when is_tuple(search) and is_atom(role) do
+  defp read_message_candidates(search, bot_filter, meta_ids, limit, actor)
+       when is_tuple(search) do
     meta_list = MapSet.to_list(meta_ids)
     handoff_relation_kind = Handoff.relation_kind()
 
@@ -660,7 +652,7 @@ defmodule IntellectualClub.Chat.Search do
           )
       )
     )
-    |> Ash.Query.filter(role == ^role)
+    |> Ash.Query.filter(role in [:user, :assistant])
     |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
     |> apply_bot_filter_via_chat(bot_filter)
