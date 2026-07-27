@@ -7,6 +7,7 @@ import {
   getAttachmentMimeType,
   getAttachmentName,
   getAttachmentPreviewKind,
+  type AttachmentPreviewKind,
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
@@ -367,7 +368,7 @@ export function useChatInspectors(params: Params) {
   const attachmentPreviewOpen = ref(false);
   const attachmentPreviewTitle = ref('Attachment');
   const attachmentPreviewUrl = ref('');
-  const attachmentPreviewKind = ref<'image' | 'text' | 'markdown' | 'binary'>('binary');
+  const attachmentPreviewKind = ref<AttachmentPreviewKind>('binary');
   const attachmentPreviewLoading = ref(false);
   const attachmentPreviewDownloadPending = ref(false);
   const attachmentPreviewError = ref('');

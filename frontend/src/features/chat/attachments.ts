@@ -35,7 +35,10 @@ export type ChatUploadPolicy = {
 };
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd']);
+const HTML_EXTENSIONS = new Set(['html', 'htm', 'xhtml']);
 const DEFAULT_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
+
+export type AttachmentPreviewKind = 'image' | 'html' | 'markdown' | 'text' | 'binary';
 
 export const formatFileBytes = (value: number) => {
   if (!Number.isFinite(value) || value < 0) return '0 B';
@@ -231,8 +234,11 @@ const getAttachmentExtension = (name: string) => {
   return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
 };
 
+const normalizeAttachmentMimeType = (mimeType: string) =>
+  mimeType.split(';', 1)[0]?.trim().toLowerCase() || '';
+
 const isMarkdownAttachment = (name: string, mimeType: string) => {
-  const normalizedMimeType = mimeType.trim().toLowerCase();
+  const normalizedMimeType = normalizeAttachmentMimeType(mimeType);
   return (
     normalizedMimeType === 'text/markdown' ||
     normalizedMimeType === 'text/x-markdown' ||
@@ -241,8 +247,17 @@ const isMarkdownAttachment = (name: string, mimeType: string) => {
   );
 };
 
+const isHtmlAttachment = (name: string, mimeType: string) => {
+  const normalizedMimeType = normalizeAttachmentMimeType(mimeType);
+  return (
+    normalizedMimeType === 'text/html' ||
+    normalizedMimeType === 'application/xhtml+xml' ||
+    HTML_EXTENSIONS.has(getAttachmentExtension(name))
+  );
+};
+
 const isTextAttachment = (name: string, mimeType: string) => {
-  const normalizedMimeType = mimeType.trim().toLowerCase();
+  const normalizedMimeType = normalizeAttachmentMimeType(mimeType);
 
   if (isMarkdownAttachment(name, mimeType)) return true;
   if (normalizedMimeType.startsWith('text/')) return true;
@@ -259,11 +274,16 @@ const isTextAttachment = (name: string, mimeType: string) => {
   ]).has(normalizedMimeType);
 };
 
-export const getAttachmentPreviewKind = (name: string, mimeType: string, isImage: boolean) => {
-  if (isImage) return 'image' as const;
-  if (isMarkdownAttachment(name, mimeType)) return 'markdown' as const;
-  if (isTextAttachment(name, mimeType)) return 'text' as const;
-  return 'binary' as const;
+export const getAttachmentPreviewKind = (
+  name: string,
+  mimeType: string,
+  isImage: boolean
+): AttachmentPreviewKind => {
+  if (isImage) return 'image';
+  if (isHtmlAttachment(name, mimeType)) return 'html';
+  if (isMarkdownAttachment(name, mimeType)) return 'markdown';
+  if (isTextAttachment(name, mimeType)) return 'text';
+  return 'binary';
 };
 
 export const mapContentToExistingAttachment = (
