@@ -19,6 +19,7 @@ export type PendingChatFile = {
 export type ExistingChatAttachment = {
   id: number;
   messageId: number;
+  queuedMessageId?: number;
   name: string;
   size: number;
   mimeType: string;
@@ -213,6 +214,9 @@ export const clipboardHasStringContent = (event: ClipboardEvent) => {
 
 export const buildMessageContentFileUrl = (messageId: number, contentId: number) =>
   `/api/bff/chat-messages/${messageId}/contents/${contentId}/file`;
+
+export const buildQueuedMessageContentFileUrl = (queuedMessageId: number, contentId: number) =>
+  `/api/bff/chat-queued-messages/${queuedMessageId}/contents/${contentId}/file`;
 
 export const getAttachmentName = (content: ChatMessageContent) => content.media?.filename || 'Attachment';
 

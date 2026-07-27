@@ -13,6 +13,8 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.ChatMessageStepRequestFile
+  alias IntellectualClub.Chat.QueuedMessage
+  alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
@@ -34,6 +36,8 @@ defmodule IntellectualClub.Generation.Persistence do
     ChatMessageStepRequestFile,
     ChatMessageItem,
     ChatMessageContent,
+    QueuedMessage,
+    QueuedMessageContent,
     StoredFile,
     LlmUsageRecord
   ]
@@ -123,6 +127,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: :done,
           error_detail: nil,
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -156,6 +161,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: :done,
           error_detail: nil,
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -182,6 +188,7 @@ defmodule IntellectualClub.Generation.Persistence do
         %{
           status: :canceled,
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -216,6 +223,7 @@ defmodule IntellectualClub.Generation.Persistence do
         %{
           status: :canceled,
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -243,6 +251,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: :error,
           error_detail: to_string(error_text || ""),
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -284,6 +293,7 @@ defmodule IntellectualClub.Generation.Persistence do
           status: :error,
           error_detail: to_string(error_text || ""),
           token_count: TokenCounter.estimate(answer_text),
+          generation_fence_token: nil,
           finished_at: now
         },
         actor
@@ -515,6 +525,126 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
+  @doc "Atomically commits a FIFO queued steering batch into a waiting provider request."
+  def persist_queued_steering_before_provider!(message_id, step_id, specs, raw_request)
+      when is_integer(message_id) and is_integer(step_id) and is_list(specs) and
+             is_map(raw_request) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      _message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      queued_messages = lock_queued_steers!(message_id, specs)
+
+      with :ok <- validate_queued_steering_specs(queued_messages, specs) do
+        step.items
+        |> List.wrap()
+        |> Enum.reject(&(&1.type == :steering))
+        |> ordered_by_sequence()
+        |> Enum.reverse()
+        |> Enum.each(&Ash.destroy!(&1, actor: actor))
+
+        steering_items =
+          Enum.map(queued_messages, fn queued_message ->
+            steering =
+              create_steering_item!(
+                step,
+                queued_steering_text(queued_message),
+                :before_response,
+                actor
+              )
+
+            mark_queued_steering_delivered!(queued_message, steering.id, actor)
+            steering
+          end)
+
+        step =
+          update_step!(
+            step,
+            %{
+              status: :waiting_provider,
+              raw_request: normalize_json_map(raw_request),
+              raw_response: nil,
+              response_final: false,
+              input_tokens: nil,
+              output_tokens: nil,
+              cached_input_tokens: nil,
+              reasoning_tokens: nil,
+              cost: nil,
+              first_token_at: nil,
+              finished_at: nil
+            },
+            actor
+          )
+
+        %{
+          deliveries:
+            Enum.zip_with(queued_messages, steering_items, fn queued_message, steering ->
+              %{queued_message_id: queued_message.id, item_id: steering.id}
+            end),
+          runtime_step:
+            step.id
+            |> load_step_with_items!(actor)
+            |> runtime_step_from_persisted_step(&(&1.type == :steering))
+        }
+      end
+    end)
+  end
+
+  @doc "Completes a tool step and commits queued steering into its receiving next step."
+  def complete_step_and_start_next_with_queued_steering!(
+        message_id,
+        step_id,
+        next_sequence,
+        raw_request,
+        specs
+      )
+      when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
+             next_sequence > 0 and is_map(raw_request) and is_list(specs) do
+    actor = actor_for_message!(message_id)
+    now = DateTime.utc_now()
+    raw_request = normalize_json_map(raw_request)
+
+    transaction!(fn ->
+      _message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      queued_messages = lock_queued_steers!(message_id, specs)
+
+      with :ok <- validate_queued_steering_specs(queued_messages, specs) do
+        step = update_step!(step, %{status: :done, finished_at: now}, actor)
+        persist_usage_record!(step.id, nil, :done, now, actor)
+
+        next_step = upsert_waiting_provider_step!(message_id, next_sequence, raw_request, actor)
+
+        deliveries =
+          Enum.map(queued_messages, fn queued_message ->
+            steering =
+              create_steering_item!(
+                next_step,
+                queued_steering_text(queued_message),
+                :before_response,
+                actor
+              )
+
+            mark_queued_steering_delivered!(queued_message, steering.id, actor)
+            %{queued_message_id: queued_message.id, item_id: steering.id}
+          end)
+
+        next_step = load_step_with_items!(next_step.id, actor)
+
+        %{
+          step_id: next_step.id,
+          step_sequence: next_step.sequence,
+          raw_request: raw_request,
+          deliveries: deliveries,
+          runtime_step: runtime_step_from_persisted_step(next_step, &(&1.type == :steering))
+        }
+      end
+    end)
+  end
+
   def complete_step_and_start_next!(message_id, step_id, next_sequence, raw_request)
       when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
              next_sequence > 0 and is_map(raw_request) do
@@ -631,6 +761,55 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
+  @doc false
+  def enrich_handoff_tool_results!(step_id, child_chat_id, handoff_payload)
+      when is_integer(step_id) and is_integer(child_chat_id) and is_map(handoff_payload) do
+    actor = actor_for_step!(step_id)
+    handoff_payload = normalize_json_map(handoff_payload)
+
+    transaction!(fn ->
+      updated_count =
+        step_id
+        |> load_step_with_items!(actor)
+        |> ordered_items()
+        |> Enum.filter(&(&1.type == :tool_result))
+        |> Enum.flat_map(&List.wrap(&1.contents))
+        |> Enum.filter(&(&1.kind == :opaque and is_map(&1.content_json)))
+        |> Enum.count(fn content ->
+          opaque = normalize_json_map(content.content_json)
+          raw = normalize_json_map(Map.get(opaque, "raw", %{}))
+          current_handoff = normalize_json_map(Map.get(raw, "handoff", %{}))
+
+          if Map.get(current_handoff, "chat_id") == child_chat_id do
+            content_json =
+              Map.put(
+                opaque,
+                "raw",
+                Map.put(raw, "handoff", Map.merge(current_handoff, handoff_payload))
+              )
+
+            content
+            |> Ash.Changeset.for_update(
+              :update,
+              %{content_json: content_json},
+              actor: actor
+            )
+            |> Ash.update!(actor: actor)
+
+            true
+          else
+            false
+          end
+        end)
+
+      if updated_count == 0 do
+        raise ArgumentError, "Handoff tool result not found"
+      end
+
+      updated_count
+    end)
+  end
+
   defp persist_tool_result_for_step_in_transaction!(
          %ChatMessageStep{} = step,
          %ToolCall{} = call,
@@ -738,14 +917,23 @@ defmodule IntellectualClub.Generation.Persistence do
       |> Enum.filter(&is_integer/1)
       |> MapSet.new()
 
+    cancel_opts =
+      opts
+      |> Keyword.delete(:except_message_ids)
+      |> Keyword.put_new(:error_detail, "Orphaned generation (worker not found)")
+
     ChatMessage
     |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
     |> Ash.Query.select([:id])
     |> Ash.read!(authorize?: false)
     |> Enum.reject(&MapSet.member?(except_message_ids, &1.id))
-    |> Enum.each(&cancel_orphaned_generating_message!(&1.id))
-
-    :ok
+    |> Enum.reduce([], fn message, canceled_ids ->
+      case cancel_generating_message!(message.id, cancel_opts) do
+        :canceled -> [message.id | canceled_ids]
+        _other -> canceled_ids
+      end
+    end)
+    |> Enum.reverse()
   end
 
   def cancel_generating_message!(message_id, opts \\ [])
@@ -1354,6 +1542,102 @@ defmodule IntellectualClub.Generation.Persistence do
     )
 
     load_item_with_contents!(item, actor)
+  end
+
+  defp lock_queued_steers!(message_id, specs)
+       when is_integer(message_id) and is_list(specs) do
+    ids =
+      specs
+      |> Enum.map(&Map.get(&1, :id))
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+
+    QueuedMessage
+    |> Ash.Query.filter(
+      id in ^ids and kind == :steer and status == :pending and
+        target_generation_message_id == ^message_id
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.load(:contents)
+    |> Ash.read!(authorize?: false)
+  end
+
+  defp validate_queued_steering_specs([], _specs), do: {:error, :queued_steering_changed}
+
+  defp validate_queued_steering_specs(queued_messages, specs) do
+    actual = Enum.map(queued_messages, &%{id: &1.id, text: queued_steering_text(&1)})
+
+    expected =
+      specs
+      |> Enum.map(&%{id: Map.get(&1, :id), text: to_string(Map.get(&1, :text) || "")})
+      |> Enum.sort_by(& &1.id)
+
+    if actual == expected, do: :ok, else: {:error, :queued_steering_changed}
+  end
+
+  defp queued_steering_text(%QueuedMessage{} = queued_message) do
+    queued_message
+    |> Map.get(:contents, [])
+    |> List.wrap()
+    |> Enum.reject(&match?(%Ash.NotLoaded{}, &1))
+    |> Enum.filter(&(&1.kind == :text))
+    |> Enum.sort_by(& &1.sequence)
+    |> Enum.map_join("", &to_string(&1.content_text || ""))
+  end
+
+  defp mark_queued_steering_delivered!(queued_message, steering_item_id, actor) do
+    queued_message
+    |> Ash.Changeset.for_update(
+      :update_state,
+      %{
+        status: :delivered,
+        blocked_reason: nil,
+        steering_item_id: steering_item_id,
+        finished_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      },
+      actor: actor,
+      authorize?: false
+    )
+    |> Ash.update!(actor: actor, authorize?: false)
+
+    queued_message
+    |> Map.get(:contents, [])
+    |> List.wrap()
+    |> Enum.reject(&match?(%Ash.NotLoaded{}, &1))
+    |> Enum.each(fn content ->
+      content
+      |> Ash.Changeset.for_destroy(:destroy_after_transfer, %{},
+        actor: actor,
+        authorize?: false
+      )
+      |> Ash.destroy!(actor: actor, authorize?: false)
+    end)
+  end
+
+  defp upsert_waiting_provider_step!(message_id, sequence, raw_request, actor) do
+    attrs = %{
+      status: :waiting_provider,
+      raw_request: raw_request,
+      raw_response: nil,
+      response_final: false,
+      input_tokens: nil,
+      output_tokens: nil,
+      cached_input_tokens: nil,
+      reasoning_tokens: nil,
+      cost: nil,
+      first_token_at: nil,
+      finished_at: nil
+    }
+
+    case get_step_by_sequence(message_id, sequence, actor) do
+      nil ->
+        create_step!(Map.merge(attrs, %{chat_message_id: message_id, sequence: sequence}), actor)
+
+      %ChatMessageStep{} = existing ->
+        replace_step_items!(existing, [], actor)
+        update_step!(existing, attrs, actor)
+    end
   end
 
   defp steering_item_payload(%ChatMessageItem{} = item) do

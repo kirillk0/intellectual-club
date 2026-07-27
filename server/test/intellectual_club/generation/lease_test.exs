@@ -111,6 +111,52 @@ defmodule IntellectualClub.Generation.LeaseTest do
     assert :ok = Lease.release(reservation)
   end
 
+  test "terminal persistence clears the durable fence in the same transaction" do
+    %{actor: actor, chat: chat, message: message, step_id: step_id} =
+      generating_message_fixture!()
+
+    assert {:ok, lease} = Lease.acquire(message.id)
+
+    assert {:ok, :ok} =
+             Lease.with_chat_fence(
+               lease,
+               chat.id,
+               fn -> Persistence.persist_completed_from_step!(message.id, step_id) end,
+               allowed_statuses: [:generating],
+               required_role: :assistant
+             )
+
+    terminal = Ash.get!(ChatMessage, message.id, actor: actor)
+    assert terminal.status == :done
+    assert terminal.generation_fence_token == nil
+    assert :ok = Lease.release(lease)
+  end
+
+  test "retry claim is rejected when another generation won the chat turn" do
+    %{actor: actor, chat: chat, message: message} = generating_message_fixture!()
+    set_message_status!(message, actor, :error)
+
+    other =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert other.status == :generating
+    assert {:ok, reservation} = Lease.reserve(message.id)
+
+    assert {:error, :generation_active} =
+             Lease.claim_and_run_with_chat(reservation, chat.id, [:error], fn -> :claimed end)
+
+    target = Ash.get!(ChatMessage, message.id, actor: actor)
+    assert target.status == :error
+    assert target.generation_fence_token == nil
+    assert :ok = Lease.release(reservation)
+  end
+
   test "fenced persistence dispatches Ash notifications after the transaction commits" do
     %{message: message, step_id: step_id, raw_request: raw_request} =
       generating_message_fixture!()

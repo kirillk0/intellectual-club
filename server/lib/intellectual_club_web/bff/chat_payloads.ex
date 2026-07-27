@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   alias IntellectualClub.Chat.Metrics, as: ChatMetrics
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Generation.Context, as: GenerationContext
@@ -18,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClubWeb.Bff.ChatBranchPayload
+  alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.Loads
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -28,14 +30,16 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     {messages, branch_meta_by_id} = load_branch(chat, actor)
     child_relations = Relations.child_relation_chats(chat.id, actor)
     relations = Relations.relations(chat, messages, actor, child_relations)
+    queued_messages = active_queue(chat.id, actor)
 
     %{
       chat: Serializer.chat_detail(chat),
       branch: serialize_branch(messages, branch_meta_by_id, actor),
       relations: serialize_relations(relations),
       continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
+      queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages),
       active_generation_message_id: active_generation_message_id(messages),
-      idle_revision: Revisions.chat_revision(chat, child_relations)
+      idle_revision: Revisions.chat_revision(chat, child_relations, queued_messages)
     }
   end
 
@@ -295,4 +299,11 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   end
 
   defp load_editable_tool_instances(_actor), do: []
+
+  defp active_queue(chat_id, actor) do
+    case QueuedMessages.list_for_chat(chat_id, actor) do
+      {:ok, queued_messages} -> queued_messages
+      {:error, _error} -> []
+    end
+  end
 end

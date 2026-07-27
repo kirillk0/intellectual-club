@@ -176,20 +176,26 @@ defmodule IntellectualClub.Notifications do
   def record_generation_seen(_actor, _params),
     do: {:error, {:validation, "Invalid generation seen state."}}
 
-  @spec deliver_generation_finished(integer(), :done | :error, keyword()) :: :ok
+  @spec deliver_generation_finished(integer(), :done | :error | :canceled, keyword()) :: :ok
   def deliver_generation_finished(message_id, status, opts \\ [])
 
   def deliver_generation_finished(message_id, status, opts)
-      when is_integer(message_id) and status in [:done, :error] and is_list(opts) do
-    message = load_message_for_notification(message_id)
-    actor = %User{id: message.owner_id}
-    suppressed? = Keyword.get(opts, :suppressed?, false) == true or message.chat.subagent == true
-
-    case create_generation_event(message, status, actor, suppressed?) do
+      when is_integer(message_id) and status in [:done, :error, :canceled] and is_list(opts) do
+    case record_generation_finished(message_id, status, opts) do
       {:ok, %WebPushGenerationEvent{suppressed: true}} ->
         :ok
 
       {:ok, %WebPushGenerationEvent{} = event} ->
+        message = load_message_for_notification(message_id)
+        actor = %User{id: message.owner_id}
+        maybe_dispatch_generation_event(event, message, status, actor, opts)
+
+      {:duplicate, %WebPushGenerationEvent{suppressed: true}} ->
+        :ok
+
+      {:duplicate, %WebPushGenerationEvent{delivered_count: count} = event} when count < 0 ->
+        message = load_message_for_notification(message_id)
+        actor = %User{id: message.owner_id}
         maybe_dispatch_generation_event(event, message, status, actor, opts)
 
       {:duplicate, _event} ->
@@ -220,9 +226,64 @@ defmodule IntellectualClub.Notifications do
 
   def deliver_generation_finished(_message_id, _status, _opts), do: :ok
 
-  @spec suppress_generation_finished(integer(), :done | :error) :: :ok
+  @doc "Durably records a terminal generation event before its push side effect runs."
+  @spec record_generation_finished(integer(), :done | :error | :canceled, keyword()) ::
+          {:ok, WebPushGenerationEvent.t()}
+          | {:duplicate, WebPushGenerationEvent.t()}
+          | {:error, term()}
+  def record_generation_finished(message_id, status, opts \\ [])
+
+  def record_generation_finished(message_id, status, opts)
+      when is_integer(message_id) and status in [:done, :error, :canceled] and is_list(opts) do
+    message = load_message_for_notification(message_id)
+    actor = %User{id: message.owner_id}
+
+    suppressed? =
+      Keyword.get(opts, :suppressed?, false) == true or
+        match?(%{subagent: true}, message.chat)
+
+    create_generation_event(message, status, actor, suppressed?)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def record_generation_finished(_message_id, _status, _opts),
+    do: {:error, :invalid_generation_event}
+
+  @doc "Retries every terminal generation event whose delivery was not durably acknowledged."
+  @spec recover_pending_generation_events() :: :ok
+  def recover_pending_generation_events do
+    minimum_age_ms = default_generation_delivery_delay_ms()
+    now = DateTime.utc_now()
+
+    WebPushGenerationEvent
+    |> Ash.Query.filter(suppressed == false and delivered_count < 0)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.read!(authorize?: false)
+    |> Enum.filter(&generation_event_due?(&1, now, minimum_age_ms))
+    |> Enum.each(fn event ->
+      deliver_generation_finished(event.chat_message_id, event.status, delay_ms: 0)
+    end)
+
+    :ok
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to recover pending web push generation events: #{Exception.message(exception)}"
+      )
+
+      :ok
+  catch
+    :exit, reason ->
+      Logger.warning("Pending web push generation event recovery exited: #{inspect(reason)}")
+      :ok
+  end
+
+  @spec suppress_generation_finished(integer(), :done | :error | :canceled) :: :ok
   def suppress_generation_finished(message_id, status)
-      when is_integer(message_id) and status in [:done, :error] do
+      when is_integer(message_id) and status in [:done, :error, :canceled] do
     deliver_generation_finished(message_id, status, suppressed?: true)
   end
 
@@ -252,6 +313,8 @@ defmodule IntellectualClub.Notifications do
         |> Enum.count(&(&1 == :ok))
 
       mark_event_delivered(event, delivered_count, actor)
+    else
+      mark_event_delivered(event, 0, actor)
     end
 
     :ok
@@ -260,11 +323,19 @@ defmodule IntellectualClub.Notifications do
   defp maybe_dispatch_generation_event(event, message, status, actor, opts) do
     maybe_wait_before_dispatch(opts)
 
-    if ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
-      mark_event_delivered(event, 0, actor)
-    else
-      dispatch_generation_event(event, message, status, actor)
-    end
+    Ash.transaction([WebPushGenerationEvent], fn ->
+      current = lock_generation_event!(event.id)
+
+      if current.delivered_count < 0 and current.suppressed == false do
+        if ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
+          mark_event_delivered(current, 0, actor)
+        else
+          dispatch_generation_event(current, message, status, actor)
+        end
+      end
+    end)
+
+    :ok
   end
 
   defp maybe_wait_before_dispatch(opts) do
@@ -284,6 +355,14 @@ defmodule IntellectualClub.Notifications do
     )
     |> normalize_non_negative_integer(@default_generation_delivery_delay_ms)
   end
+
+  defp generation_event_due?(_event, _now, 0), do: true
+
+  defp generation_event_due?(%{created_at: %DateTime{} = created_at}, now, minimum_age_ms) do
+    DateTime.diff(now, created_at, :millisecond) >= minimum_age_ms
+  end
+
+  defp generation_event_due?(_event, _now, _minimum_age_ms), do: false
 
   defp maybe_send_generation_payload(subscription, payload, settings, actor, chat_id) do
     if ActiveWebPushClients.active?(actor.id, subscription.endpoint, chat_id) do
@@ -630,7 +709,7 @@ defmodule IntellectualClub.Notifications do
             chat_message_id: message.id,
             status: status,
             suppressed: suppressed? == true,
-            delivered_count: 0
+            delivered_count: if(suppressed? == true, do: 0, else: -1)
           },
           actor: actor
         )
@@ -653,6 +732,18 @@ defmodule IntellectualClub.Notifications do
     WebPushGenerationEvent
     |> Ash.Query.filter(chat_message_id == ^message_id and status == ^status)
     |> Ash.read_one!(actor: actor)
+  end
+
+  defp lock_generation_event!(event_id) do
+    WebPushGenerationEvent
+    |> Ash.Query.filter(id == ^event_id)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(authorize?: false)
+    |> case do
+      %WebPushGenerationEvent{} = event -> event
+      nil -> raise ArgumentError, "Web push generation event not found"
+    end
   end
 
   defp load_message_for_notification(message_id) do
@@ -686,8 +777,10 @@ defmodule IntellectualClub.Notifications do
 
   defp notification_title(:done, "ru"), do: "Генерация завершена"
   defp notification_title(:error, "ru"), do: "Ошибка генерации"
+  defp notification_title(:canceled, "ru"), do: "Генерация отменена"
   defp notification_title(:done, _locale), do: "Generation finished"
   defp notification_title(:error, _locale), do: "Generation failed"
+  defp notification_title(:canceled, _locale), do: "Generation canceled"
 
   defp notification_body(%ChatMessage{} = message, _status, _locale) do
     [chat_label(message), answer_preview(message)]
@@ -732,6 +825,7 @@ defmodule IntellectualClub.Notifications do
   defp answer_item_text(_item), do: nil
 
   defp fallback_notification_body(%{status: :error}), do: "Generation failed."
+  defp fallback_notification_body(%{status: :canceled}), do: "Generation canceled."
   defp fallback_notification_body(_message), do: "Generation finished."
 
   defp normalize_notification_text(value) when is_binary(value) do
@@ -802,6 +896,7 @@ defmodule IntellectualClub.Notifications do
 
   defp normalize_generation_status(:done), do: :done
   defp normalize_generation_status(:error), do: :error
+  defp normalize_generation_status(:canceled), do: :canceled
   defp normalize_generation_status(_status), do: nil
 
   defp parse_positive_integer(value, default) do

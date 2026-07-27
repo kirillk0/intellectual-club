@@ -24,6 +24,12 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
         {:error, :not_found} ->
           ChatAccess.render_error(conn, :not_found)
 
+        {:error, :queue_not_empty} ->
+          render_queue_not_empty(conn)
+
+        {:error, :generation_active} ->
+          render_generation_active(conn)
+
         {:error, {:user_message, error}} ->
           conn
           |> put_status(:unprocessable_entity)
@@ -52,6 +58,12 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
 
         {:error, error} when error in [:forbidden, :not_found] ->
           ChatAccess.render_error(conn, error)
+
+        {:error, :queue_not_empty} ->
+          render_queue_not_empty(conn)
+
+        {:error, :generation_active} ->
+          render_generation_active(conn)
 
         {:error, reason} ->
           conn
@@ -88,6 +100,12 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
         {:error, %Plug.Conn{} = conn} ->
           conn
 
+        {:error, :queue_not_empty} ->
+          render_queue_not_empty(conn)
+
+        {:error, :generation_active} ->
+          render_generation_active(conn)
+
         {:error, error_message} when is_binary(error_message) ->
           conn
           |> put_status(:unprocessable_entity)
@@ -109,6 +127,12 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
         {:ok, payload} ->
           json(conn, payload)
 
+        {:error, :queue_not_empty} ->
+          render_queue_not_empty(conn)
+
+        {:error, :generation_active} ->
+          render_generation_active(conn)
+
         {:error, %Plug.Conn{} = conn} ->
           conn
 
@@ -119,5 +143,23 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
       {:error, error} ->
         ChatAccess.render_error(conn, error)
     end
+  end
+
+  defp render_queue_not_empty(conn) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      code: "queue_not_empty",
+      error: "A queued follow-up must be dispatched before starting a direct turn."
+    })
+  end
+
+  defp render_generation_active(conn) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      code: "generation_active",
+      error: "The active generation must stop before starting a direct turn."
+    })
   end
 end

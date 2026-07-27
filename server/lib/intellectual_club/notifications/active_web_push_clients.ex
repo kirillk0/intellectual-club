@@ -42,17 +42,19 @@ defmodule IntellectualClub.Notifications.ActiveWebPushClients do
     GenServer.call(__MODULE__, {:active?, owner_id, endpoint, chat_id})
   end
 
-  @spec record_generation_seen(integer(), integer(), integer(), :done | :error) :: :ok
+  @spec record_generation_seen(integer(), integer(), integer(), :done | :error | :canceled) ::
+          :ok
   def record_generation_seen(owner_id, chat_id, message_id, status)
       when is_integer(owner_id) and is_integer(chat_id) and is_integer(message_id) and
-             status in [:done, :error] do
+             status in [:done, :error, :canceled] do
     GenServer.call(__MODULE__, {:record_generation_seen, owner_id, chat_id, message_id, status})
   end
 
-  @spec generation_seen?(integer(), integer(), integer(), :done | :error) :: boolean()
+  @spec generation_seen?(integer(), integer(), integer(), :done | :error | :canceled) ::
+          boolean()
   def generation_seen?(owner_id, chat_id, message_id, status)
       when is_integer(owner_id) and is_integer(chat_id) and is_integer(message_id) and
-             status in [:done, :error] do
+             status in [:done, :error, :canceled] do
     GenServer.call(__MODULE__, {:generation_seen?, owner_id, chat_id, message_id, status})
   end
 

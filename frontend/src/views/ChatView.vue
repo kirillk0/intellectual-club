@@ -250,6 +250,16 @@
               <strong>Creating continuation…</strong>
             </div>
           </div>
+          <ChatQueuedMessagesPanel
+            :messages="vm.queuedMessages"
+            :active-generation-id="vm.activeGenerationId"
+            :action-id="vm.queueActionId"
+            :head-follow-up-id="vm.queuedFollowUpHeadId"
+            @edit="vm.startQueuedEdit"
+            @remove="vm.removeFromQueue"
+            @send-next="vm.sendNextQueuedMessage"
+            @open-attachment="vm.openExistingAttachmentPreview"
+          />
           <div v-if="vm.sharedReadonly" class="chat-readonly-panel">
             <div>
               <strong>Shared read-only chat</strong>
@@ -329,12 +339,21 @@
                   Attach
                 </button>
                 <button
-                  v-if="vm.activeGenerationId && vm.canSteerGeneration"
+                  v-if="vm.activeGenerationId"
                   class="chat-composer__send"
                   type="button"
                   :disabled="
+                    !vm.canSteerGeneration ||
+                    vm.sending ||
                     vm.steeringGenerationId === vm.activeGenerationId ||
                     vm.cancelingGenerationId === vm.activeGenerationId
+                  "
+                  :title="
+                    !vm.supportsActiveGenerationSteering
+                      ? translate('Steering is not supported by this configuration.')
+                      : !vm.draft
+                        ? translate('Type a text instruction to steer the active generation.')
+                        : undefined
                   "
                   @click="vm.steerGeneration"
                 >
@@ -342,11 +361,28 @@
                 </button>
                 <button
                   v-if="vm.activeGenerationId"
+                  class="chat-composer__queue"
+                  type="button"
+                  :disabled="
+                    !vm.hasSendPayload ||
+                    vm.sending ||
+                    vm.steeringGenerationId === vm.activeGenerationId ||
+                    vm.cancelingGenerationId === vm.activeGenerationId ||
+                    vm.isConfigSyncPending
+                  "
+                  :title="translate('Add this message to the server queue')"
+                  @click="vm.queueMessage"
+                >
+                  {{ vm.queueButtonLabel }}
+                </button>
+                <button
+                  v-if="vm.activeGenerationId"
                   class="chat-composer__cancel"
                   type="button"
                   :disabled="
                     vm.cancelingGenerationId === vm.activeGenerationId ||
-                    vm.steeringGenerationId === vm.activeGenerationId
+                    vm.steeringGenerationId === vm.activeGenerationId ||
+                    vm.sending
                   "
                   @pointerdown="vm.handleCancelPointerDown"
                   @click="vm.cancelActiveGeneration"
@@ -357,7 +393,11 @@
                   v-else
                   class="chat-composer__send"
                   type="submit"
-                  :disabled="vm.sending || vm.isConfigSyncPending"
+                  :disabled="
+                    vm.sending ||
+                    vm.isConfigSyncPending ||
+                    (vm.hasFollowUpBacklog && !vm.hasSendPayload)
+                  "
                   :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
                 >
                   {{ vm.sendButtonLabel }}
@@ -485,6 +525,30 @@
         @preview-existing-attachment="vm.openExistingAttachmentPreview"
         @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'edit')"
         @save="vm.saveEdit"
+      />
+    </Teleport>
+
+    <Teleport to="body">
+      <ChatEditMessageModal
+        :open="Boolean(vm.editingQueuedMessage)"
+        :mode="vm.editingQueuedMessage?.kind === 'steer' ? 'queue_steer' : 'queue_follow_up'"
+        v-model="vm.queuedEditContents"
+        :existing-attachments="vm.queuedEditExistingAttachments"
+        :pending-files="vm.queuedEditPendingFiles"
+        :error="vm.queuedEditError"
+        :attachments-enabled="
+          vm.editingQueuedMessage?.kind === 'follow_up' && vm.canAttachFiles && !vm.savingQueuedEdit
+        "
+        :attachment-accept="vm.fileInputAccept"
+        :attachment-help="vm.editAttachmentHelp"
+        :saving="vm.savingQueuedEdit"
+        @cancel="vm.cancelQueuedEdit"
+        @add-files="vm.addQueuedEditPendingFiles"
+        @remove-pending-file="vm.removeQueuedEditPendingFile"
+        @remove-existing-attachment="vm.removeQueuedEditExistingAttachment"
+        @preview-existing-attachment="vm.openExistingAttachmentPreview"
+        @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'queue-edit')"
+        @save="vm.saveQueuedEdit"
       />
     </Teleport>
 
@@ -689,6 +753,7 @@ import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
+import ChatQueuedMessagesPanel from '@/components/chat/ChatQueuedMessagesPanel.vue';
 import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
@@ -1432,6 +1497,27 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   transition: background-color 0.15s ease, opacity 0.15s ease;
 }
 
+.chat-composer__queue {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-composer__queue:hover {
+  background: var(--color-surface-hover);
+}
+
+.chat-composer__queue:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .chat-composer__cancel:hover {
   background: color-mix(in srgb, var(--color-danger-bg) 75%, var(--color-danger-border));
 }
@@ -1474,7 +1560,25 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 @media (max-width: 720px) {
   .chat-composer__actions {
+    flex-wrap: wrap;
     padding: 4px 8px;
+  }
+
+  .chat-composer__actions > button {
+    flex: 1 1 calc(50% - 6px);
+  }
+
+  .chat-composer__attach {
+    order: 1;
+  }
+
+  .chat-composer__send,
+  .chat-composer__queue {
+    order: 2;
+  }
+
+  .chat-composer__cancel {
+    order: 3;
   }
 }
 
@@ -1540,6 +1644,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   .chat-page .sidebar,
   .chat-page .panel-toggle,
   .chat-page .chat-input-form,
+  .chat-page .queued-messages,
   .chat-page .chat-readonly-panel {
     display: none !important;
   }

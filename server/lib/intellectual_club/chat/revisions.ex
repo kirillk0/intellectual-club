@@ -22,11 +22,17 @@ defmodule IntellectualClub.Chat.Revisions do
 
   @spec chat_revision(Chat.t()) :: String.t()
   def chat_revision(%Chat{} = chat) do
-    chat_revision(chat, [])
+    chat_revision(chat, [], [])
   end
 
   @spec chat_revision(Chat.t(), [Chat.t()]) :: String.t()
   def chat_revision(%Chat{} = chat, related_chats) when is_list(related_chats) do
+    chat_revision(chat, related_chats, [])
+  end
+
+  @spec chat_revision(Chat.t(), [Chat.t()], [map()]) :: String.t()
+  def chat_revision(%Chat{} = chat, related_chats, queued_messages)
+      when is_list(related_chats) and is_list(queued_messages) do
     last_message = loaded_last_message(chat)
 
     [
@@ -37,7 +43,8 @@ defmodule IntellectualClub.Chat.Revisions do
       active_generation_message_id(chat),
       message_status_revision_value(last_message),
       datetime_revision_value(Map.get(last_message || %{}, :updated_at)),
-      relation_revision_rows(related_chats)
+      relation_revision_rows(related_chats),
+      queue_revision_rows(queued_messages)
     ]
     |> hash()
   end
@@ -97,6 +104,42 @@ defmodule IntellectualClub.Chat.Revisions do
       ]
     end)
   end
+
+  defp queue_revision_rows(queued_messages) do
+    queued_messages
+    |> Enum.sort_by(&Map.get(&1, :id))
+    |> Enum.map(fn queued_message ->
+      [
+        Map.get(queued_message, :id),
+        Map.get(queued_message, :kind),
+        Map.get(queued_message, :status),
+        Map.get(queued_message, :blocked_reason),
+        Map.get(queued_message, :anchor_message_id),
+        Map.get(queued_message, :target_generation_message_id),
+        datetime_revision_value(Map.get(queued_message, :updated_at)),
+        queue_content_revision_rows(Map.get(queued_message, :contents))
+      ]
+    end)
+  end
+
+  defp queue_content_revision_rows(%Ash.NotLoaded{}), do: []
+
+  defp queue_content_revision_rows(contents) when is_list(contents) do
+    contents
+    |> Enum.sort_by(&Map.get(&1, :sequence))
+    |> Enum.map(fn content ->
+      [
+        Map.get(content, :id),
+        Map.get(content, :sequence),
+        Map.get(content, :kind),
+        Map.get(content, :content_text),
+        Map.get(content, :file_id),
+        datetime_revision_value(Map.get(content, :updated_at))
+      ]
+    end)
+  end
+
+  defp queue_content_revision_rows(_contents), do: []
 
   defp loaded_last_message(%Chat{} = chat) do
     case Map.get(chat, :last_message) do

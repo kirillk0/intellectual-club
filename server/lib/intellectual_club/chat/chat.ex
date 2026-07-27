@@ -372,6 +372,8 @@ defmodule IntellectualClub.Chat.Chat do
 
     has_many :messages, IntellectualClub.Chat.ChatMessage
 
+    has_many :queued_messages, IntellectualClub.Chat.QueuedMessage
+
     has_many :root_messages, IntellectualClub.Chat.ChatMessage do
       destination_attribute(:chat_id)
       filter expr(is_nil(parent_id))
@@ -454,6 +456,7 @@ defmodule IntellectualClub.Chat.Chat do
       change(cascade_destroy(:shares, after_action?: false))
       change(cascade_destroy(:knowledge_block_bindings, after_action?: false))
       change(cascade_destroy(:tool_bindings, after_action?: false))
+      change(cascade_destroy(:queued_messages, after_action?: false))
 
       change(
         cascade_destroy(:root_messages, action: :destroy_with_children, after_action?: false)

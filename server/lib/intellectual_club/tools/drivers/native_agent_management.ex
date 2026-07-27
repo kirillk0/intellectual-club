@@ -14,8 +14,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Spawn, as: AgentSpawn
   alias IntellectualClub.Chat.Subagent
-  alias IntellectualClub.Generation.Context, as: GenerationContext
-  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -257,27 +255,24 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
          {:ok, chat_id} <- required_integer(context.chat_id, "chat_id"),
          {:ok, assistant_message_id} <-
            required_integer(context.assistant_message_id || context.message_id, "message_id"),
+         {:ok, tool_call_item_id} <-
+           required_integer(context.tool_call_item_id, "tool_call_item_id"),
          actor = %User{id: owner_id},
-         {:ok, {result, generation_context}} <-
+         {:ok, result} <-
            Subagent.with_parent_generation_fence(context, fn ->
-             with {:ok, result} <-
-                    Handoff.create_handoff_chat(chat_id, actor, summary,
-                      source_message_id: assistant_message_id,
-                      handoff_mode: :tool,
-                      start_generation?: false
-                    ) do
-               generation_context = GenerationContext.build!(result.chat.id, actor: actor)
-               {:ok, {result, generation_context}}
-             end
-           end),
-         :ok <- start_prepared_handoff_generation(generation_context, actor) do
+             Handoff.create_handoff_chat(chat_id, actor, summary,
+               source_message_id: assistant_message_id,
+               parent_tool_call_item_id: tool_call_item_id,
+               handoff_mode: :tool,
+               start_generation?: false
+             )
+           end) do
       chat = result.chat
       message = result.message
 
       payload = %{
         "chat_id" => chat.id,
         "message_id" => message.id,
-        "generation_message_id" => generation_context.message_id,
         "url" => "/chats/#{chat.id}"
       }
 
@@ -449,21 +444,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   def execute(%ToolInstance{} = _tool_instance, function_name, _args, _context)
       when is_binary(function_name) do
     {:error, "Unknown function: #{function_name}"}
-  end
-
-  defp start_prepared_handoff_generation(generation_context, actor) do
-    case GenerationSupervisor.start_prepared_generation(
-           generation_context.chat_id,
-           generation_context.message_id,
-           generation_context.step_id,
-           generation_context.request_payload || %{},
-           actor: actor,
-           available_file_external_ids: generation_context.available_file_external_ids || []
-         ) do
-      {:ok, _context} -> :ok
-      {:error, :already_running} -> :ok
-      {:error, _reason} = error -> error
-    end
   end
 
   defp required_summary(args) when is_map(args) do

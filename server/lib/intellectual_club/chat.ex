@@ -18,6 +18,8 @@ defmodule IntellectualClub.Chat do
     resource(IntellectualClub.Chat.ChatMessageStepRequestFile)
     resource(IntellectualClub.Chat.ChatMessageItem)
     resource(IntellectualClub.Chat.ChatMessageContent)
+    resource(IntellectualClub.Chat.QueuedMessage)
+    resource(IntellectualClub.Chat.QueuedMessageContent)
   end
 
   json_api do

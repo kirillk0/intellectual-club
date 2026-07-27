@@ -8,17 +8,21 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   require Logger
 
   alias IntellectualClub.Chat.ContentFiles
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Media
+  alias IntellectualClub.Chat.QueuedMessages
+  alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Generation.Persistence, as: GenerationPersistence
+  alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatBranchPayload
+  alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
@@ -29,11 +33,14 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      with {:ok, _message} <- Ash.get(ChatMessage, message_id, actor: actor) do
+      with {:ok, access_message} <- Ash.get(ChatMessage, message_id, actor: actor) do
         case GenerationSupervisor.poll_generation(message_id, %{}, []) do
           {:ok, runtime} ->
             message = load_persisted_message(message_id, actor)
             current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
+
+            queued_messages =
+              ChatQueuedMessagePayload.list_for_chat(access_message.chat_id, actor)
 
             payload =
               if message,
@@ -54,7 +61,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
                 token_count: if(message, do: message.token_count, else: nil),
                 error_detail: if(message, do: message.error_detail, else: nil),
                 finished_at:
-                  if(message, do: Serializer.datetime_iso(message.finished_at), else: nil)
+                  if(message, do: Serializer.datetime_iso(message.finished_at), else: nil),
+                queued_messages: queued_messages,
+                active_generation_message_id:
+                  active_generation_message_id(access_message.chat_id, actor)
               }
               |> maybe_put_working_open(message_id, params, actor, current_step)
 
@@ -112,14 +122,17 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       content = params |> Map.get("content", "") |> to_string()
 
       with {:ok, _message} <- fetch_owned_message(message_id, actor) do
-        case if(content == "",
-               do: {:error, :empty_steering},
-               else: GenerationSupervisor.steer_generation(message_id, content)
-             ) do
-          {:ok, payload} ->
-            json(conn, Map.put(payload, :status, "ok"))
+        case QueuedMessages.enqueue_steer(message_id, %{content: content}, actor) do
+          {:ok, queued_message} ->
+            notify_queued_message_changed(queued_message)
 
-          {:error, :empty_steering} ->
+            conn
+            |> put_status(:created)
+            |> json(%{
+              queued_message: ChatQueuedMessagePayload.queued_message(queued_message)
+            })
+
+          {:error, :empty_message} ->
             render_steering_error(conn, :unprocessable_entity, :empty_steering)
 
           {:error, :steering_not_supported} ->
@@ -128,13 +141,13 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           {:error, :generation_not_active} ->
             render_steering_error(conn, :conflict, :generation_not_active)
 
-          {:error, :terminal_handoff_in_progress} ->
-            render_steering_error(conn, :conflict, :terminal_handoff_in_progress)
-
-          {:error, {:steering_failed, reason}} ->
+          {:error, reason} ->
             conn
             |> put_status(:unprocessable_entity)
-            |> json(%{code: "steering_failed", error: "Failed to steer: #{inspect(reason)}"})
+            |> json(%{
+              code: "steering_failed",
+              error: "Failed to queue steering: #{inspect(reason)}"
+            })
         end
       else
         {:error, error} -> render_access_error(conn, error)
@@ -867,7 +880,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
                 "Poll fallback failed to resume orphaned generation message_id=#{message_id}: #{inspect(reason)}"
               )
 
-              :ok = GenerationPersistence.cancel_orphaned_generating_message!(message_id)
+              _ = GenerationSupervisor.cancel_generation(message_id)
 
               Ash.get!(ChatMessage, message_id, actor: actor)
           end
@@ -876,6 +889,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
         end
 
       payload = ChatBranchPayload.message(message, actor)
+      queued_messages = ChatQueuedMessagePayload.list_for_chat(message.chat_id, actor)
 
       response =
         %{
@@ -887,7 +901,9 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           working: Map.get(payload, :working, Serializer.working_summary([])),
           token_count: message.token_count,
           error_detail: message.error_detail,
-          finished_at: Serializer.datetime_iso(message.finished_at)
+          finished_at: Serializer.datetime_iso(message.finished_at),
+          queued_messages: queued_messages,
+          active_generation_message_id: active_generation_message_id(message.chat_id, actor)
         }
         |> maybe_put_working_open(message_id, params, actor, nil)
 
@@ -907,6 +923,14 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
       {:error, _error} ->
         nil
+    end
+  end
+
+  defp active_generation_message_id(chat_id, actor) when is_integer(chat_id) do
+    case Ash.get(Chat, chat_id, actor: actor, load: [:last_message]) do
+      {:ok, %Chat{} = chat} -> Revisions.active_generation_message_id(chat)
+      {:ok, nil} -> nil
+      {:error, _error} -> nil
     end
   end
 
@@ -1055,6 +1079,20 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     do: is_integer(owner_id) and owner_id == actor_id
 
   defp actor_owns_message?(_message, _actor), do: false
+
+  defp notify_queued_message_changed(%{kind: :steer, target_generation_message_id: message_id})
+       when is_integer(message_id) do
+    GenerationSupervisor.queue_changed(message_id)
+    :ok
+  end
+
+  defp notify_queued_message_changed(%{kind: :follow_up, chat_id: chat_id})
+       when is_integer(chat_id) do
+    QueueDispatcher.kick(chat_id)
+    :ok
+  end
+
+  defp notify_queued_message_changed(_queued_message), do: :ok
 
   defp render_access_error(conn, :forbidden) do
     conn

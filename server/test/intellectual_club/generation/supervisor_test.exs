@@ -3,6 +3,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.Lease
@@ -362,6 +363,13 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     target_step_id = Persistence.ensure_step_started!(target_message.id, 1, raw_request, [])
     _orphan_step_id = Persistence.ensure_step_started!(orphan_message.id, 1, raw_request, [])
 
+    assert {:ok, queued_message} =
+             QueuedMessages.enqueue_follow_up(
+               chat.id,
+               %{content: "Continue after the orphan"},
+               actor
+             )
+
     assert {:ok, _context} =
              GenerationSupervisor.start_prepared_generation(
                chat.id,
@@ -381,6 +389,10 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
       assert orphan_message.status == :canceled
       assert orphan_message.error_detail == "Orphaned generation (worker not found)"
+
+      assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
+      assert blocked.status == :blocked
+      assert blocked.blocked_reason == "generation_canceled"
 
       assert {:ok, %{status: :generating}} =
                GenerationSupervisor.get_generation_state(target_message.id)
@@ -424,6 +436,13 @@ defmodule IntellectualClub.Generation.SupervisorTest do
         "stream" => true
       })
 
+    assert {:ok, queued_message} =
+             QueuedMessages.enqueue_follow_up(
+               chat.id,
+               %{content: "Continue after fallback cancellation"},
+               actor
+             )
+
     assert {:ok, lease} = Lease.acquire(message.id)
     on_exit(fn -> Lease.release(lease) end)
 
@@ -445,6 +464,10 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert_receive :global_worker_canceled
     canceled = wait_for_status!(message.id, actor, :canceled)
     assert canceled.generation_fence_token == nil
+
+    assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
+    assert blocked.status == :blocked
+    assert blocked.blocked_reason == "generation_canceled"
     assert GenerationSupervisor.get_generation_state(message.id) == :not_found
   end
 

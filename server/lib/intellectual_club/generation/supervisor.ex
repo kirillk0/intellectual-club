@@ -14,7 +14,9 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Worker
+  alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
 
   require Ash.Query
 
@@ -36,11 +38,19 @@ defmodule IntellectualClub.Generation.Supervisor do
     actor = Keyword.get(opts, :actor)
 
     :ok = Context.authorize_chat!(chat_id, actor)
-    :ok = cancel_for_chat(chat_id)
 
-    context = Context.build!(chat_id, opts)
-    with_generation_lease(context.message_id, &start_worker(context, &1))
+    with {:ok, context} <- QueueCoordinator.prepare_direct_generation(chat_id, opts) do
+      start_prepared_context(context)
+    end
   end
+
+  @doc "Starts a generation whose canonical assistant and initial step already exist."
+  def start_prepared_context(%{message_id: message_id} = context)
+      when is_integer(message_id) do
+    with_generation_lease(message_id, &start_worker(context, &1))
+  end
+
+  def start_prepared_context(_context), do: {:error, :invalid_context}
 
   def start_prepared_generation(chat_id, message_id, step_id, _raw_request, opts \\ [])
       when is_integer(chat_id) and is_integer(message_id) and is_integer(step_id) and
@@ -102,6 +112,7 @@ defmodule IntellectualClub.Generation.Supervisor do
          {:ok, {lease, step_id}} <-
            claim_retry_and_replace_steps(
              lease,
+             context.chat_id,
              allowed_statuses,
              context.message_id,
              step_sequence,
@@ -144,12 +155,7 @@ defmodule IntellectualClub.Generation.Supervisor do
           start_worker(%{context | initial_resume_mode: :completed_tool_step}, lease)
 
         :finalize_completed_step ->
-          case Lease.with_fence(lease, fn ->
-                 Persistence.persist_completed_from_step!(context.message_id, context.step_id)
-               end) do
-            {:ok, :ok} -> {:ok, context}
-            {:error, _reason} = error -> error
-          end
+          start_worker(%{context | initial_resume_mode: :finalize_completed_step}, lease)
 
         :restart_step ->
           with {:ok, step_id} <-
@@ -255,7 +261,12 @@ defmodule IntellectualClub.Generation.Supervisor do
             :ok
 
           {:error, :no_steps_to_retry} ->
-            :ok = Persistence.cancel_orphaned_generating_message!(message_id)
+            _ =
+              QueueCoordinator.cancel_generation(message_id,
+                error_detail: "Orphaned generation (worker not found)"
+              )
+
+            NotificationsDispatcher.notify_generation_finished(message_id, :canceled)
 
             Logger.info(
               "Canceled orphaned generation without retryable steps message_id=#{message_id}"
@@ -280,8 +291,16 @@ defmodule IntellectualClub.Generation.Supervisor do
       {result, worker_pid}
       when result in [:ok, :not_found] and (is_nil(worker_pid) or is_pid(worker_pid)) ->
         if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
-        :ok = cancel_descendant_generations_for_message(message_id, opts)
-        result
+
+        case cancel_descendant_generations_for_message(message_id, opts) do
+          :ok -> result
+          {:error, _reason} = error -> error
+        end
+
+      {{:error, _reason} = error, worker_pid}
+      when is_nil(worker_pid) or is_pid(worker_pid) ->
+        if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
+        error
 
       {:error, _reason} = error ->
         error
@@ -393,8 +412,8 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   defp generation_message_status(message_id) when is_integer(message_id) do
-    case Ash.get(ChatMessage, message_id, authorize?: false) do
-      {:ok, %ChatMessage{status: status}} -> status
+    case read_generation_message_status(message_id) do
+      {:ok, status} -> status
       _other -> nil
     end
   end
@@ -403,20 +422,58 @@ defmodule IntellectualClub.Generation.Supervisor do
     with_generation_start_lock(message_id, fn ->
       worker_pid = generation_worker_pid(message_id)
 
-      cancel_result =
-        case cancel_active_worker(worker_pid, message_id) do
-          :ok ->
-            :canceled
+      _worker_result = cancel_active_worker(worker_pid, message_id)
+      fallback_result = persist_cancel_fallback(message_id)
+      result = cancellation_result(message_id, fallback_result)
 
-          {:error, _reason} ->
-            Persistence.cancel_generating_message!(message_id,
-              error_detail: nil
-            )
-        end
-
-      result = if cancel_result == :canceled or is_pid(worker_pid), do: :ok, else: :not_found
       {result, worker_pid}
     end)
+  end
+
+  defp cancellation_result(message_id, fallback_result) when is_integer(message_id) do
+    case read_generation_message_status(message_id) do
+      {:ok, :canceled} ->
+        finish_canceled_generation(message_id)
+        :ok
+
+      {:ok, :generating} ->
+        {:error, {:cancellation_not_persisted, fallback_result}}
+
+      {:ok, _terminal_status} ->
+        :not_found
+
+      :not_found ->
+        :not_found
+
+      {:error, reason} ->
+        {:error, {:cancellation_status_unavailable, reason}}
+    end
+  end
+
+  defp persist_cancel_fallback(message_id) when is_integer(message_id) do
+    QueueCoordinator.cancel_generation(message_id, error_detail: nil)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp read_generation_message_status(message_id) when is_integer(message_id) do
+    ChatMessage
+    |> Ash.Query.filter(id == ^message_id)
+    |> Ash.Query.select([:id, :status])
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(authorize?: false)
+    |> case do
+      {:ok, %ChatMessage{status: status}} -> {:ok, status}
+      {:ok, nil} -> :not_found
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp finish_canceled_generation(message_id) when is_integer(message_id) do
+    NotificationsDispatcher.notify_generation_finished(message_id, :canceled)
+    :ok
   end
 
   defp cancel_active_worker(nil, _message_id), do: {:error, :worker_not_found}
@@ -458,24 +515,35 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
+  def queue_changed(message_id) when is_integer(message_id) do
+    case generation_worker_pid(message_id) do
+      pid when is_pid(pid) ->
+        Worker.queue_changed(pid)
+        :ok
+
+      nil ->
+        _ = recover_orphaned_generations_async()
+        :ok
+    end
+  end
+
+  def queue_changed(_message_id), do: :ok
+
   def cancel_for_chat(chat_id), do: cancel_for_chat(chat_id, [])
 
   defp cancel_for_chat(chat_id, opts) do
     orphan_exception_message_ids = Keyword.get(opts, :orphan_exception_message_ids, [])
 
-    active_message_ids =
-      cancel_active_workers_for_chat(chat_id,
-        except_message_ids: orphan_exception_message_ids
+    with {:ok, active_message_ids} <-
+           cancel_active_workers_for_chat(chat_id,
+             except_message_ids: orphan_exception_message_ids
+           ),
+         :ok <- cancel_descendant_generations_for_chat(chat_id) do
+      cancel_orphaned_generating_messages_for_chat(
+        chat_id,
+        Enum.uniq(active_message_ids ++ orphan_exception_message_ids)
       )
-
-    :ok = cancel_descendant_generations_for_chat(chat_id)
-
-    :ok =
-      Persistence.cancel_orphaned_generating_messages!(chat_id,
-        except_message_ids: Enum.uniq(active_message_ids ++ orphan_exception_message_ids)
-      )
-
-    :ok
+    end
   end
 
   defp cancel_active_workers_for_chat(chat_id, opts \\ [])
@@ -492,17 +560,32 @@ defmodule IntellectualClub.Generation.Supervisor do
     results =
       message_ids
       |> Enum.reject(&MapSet.member?(except_message_ids, &1))
-      |> Enum.map(&durable_cancel_and_signal/1)
+      |> Enum.map(fn message_id -> {message_id, durable_cancel_and_signal(message_id)} end)
 
-    Enum.each(results, fn {_result, worker_pid} ->
-      if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
+    Enum.each(results, fn
+      {_message_id, {_result, worker_pid}} when is_pid(worker_pid) ->
+        await_worker_stopped(worker_pid)
+
+      _other ->
+        :ok
     end)
 
-    message_ids
-    |> Enum.filter(&generating_message?/1)
+    case cancellation_failure(results) do
+      nil -> {:ok, Enum.filter(message_ids, &generating_message?/1)}
+      {message_id, reason} -> {:error, {:generation_cancel_failed, message_id, reason}}
+    end
   end
 
-  defp cancel_active_workers_for_chat(_chat_id, _opts), do: []
+  defp cancel_active_workers_for_chat(_chat_id, _opts), do: {:ok, []}
+
+  defp cancellation_failure(results) when is_list(results) do
+    Enum.find_value(results, fn
+      {message_id, {{:error, reason}, _worker_pid}} -> {message_id, reason}
+      {message_id, {:error, reason}} -> {message_id, reason}
+      {_message_id, {result, _worker_pid}} when result in [:ok, :not_found] -> nil
+      {message_id, other} -> {message_id, {:unexpected_cancel_result, other}}
+    end)
+  end
 
   defp cancel_descendant_generations_for_message(message_id, opts)
        when is_integer(message_id) and is_list(opts) do
@@ -520,19 +603,50 @@ defmodule IntellectualClub.Generation.Supervisor do
        when is_integer(chat_id) and is_list(opts) do
     chat_id
     |> subagent_descendant_chat_ids(opts)
-    |> Enum.each(fn descendant_chat_id ->
-      active_message_ids = cancel_active_workers_for_chat(descendant_chat_id)
+    |> Enum.reduce_while(:ok, fn descendant_chat_id, :ok ->
+      case cancel_active_workers_for_chat(descendant_chat_id) do
+        {:ok, active_message_ids} ->
+          result =
+            cancel_orphaned_generating_messages_for_chat(
+              descendant_chat_id,
+              active_message_ids
+            )
 
-      :ok =
-        Persistence.cancel_orphaned_generating_messages!(descendant_chat_id,
-          except_message_ids: active_message_ids
-        )
+          {:cont, result}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
     end)
-
-    :ok
   end
 
   defp cancel_descendant_generations_for_chat(_chat_id, _opts), do: :ok
+
+  defp cancel_orphaned_generating_messages_for_chat(chat_id, except_message_ids)
+       when is_integer(chat_id) and is_list(except_message_ids) do
+    except_message_ids = MapSet.new(except_message_ids)
+
+    ChatMessage
+    |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
+    |> Ash.Query.select([:id])
+    |> Ash.read!(authorize?: false)
+    |> Enum.reject(&MapSet.member?(except_message_ids, &1.id))
+    |> Enum.reduce_while(:ok, fn message, :ok ->
+      case QueueCoordinator.cancel_generation(message.id,
+             error_detail: "Orphaned generation (worker not found)"
+           ) do
+        :canceled ->
+          finish_canceled_generation(message.id)
+          {:cont, :ok}
+
+        result when result in [:not_generating, :not_found] ->
+          {:cont, :ok}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
 
   defp message_chat_id(message_id) when is_integer(message_id) do
     ChatMessage
@@ -742,16 +856,17 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   defp claim_retry_and_replace_steps(
          %Lease{} = lease,
+         chat_id,
          allowed_statuses,
          message_id,
          step_sequence,
          request_payload,
          steering_specs
        )
-       when is_list(allowed_statuses) and is_integer(message_id) and
+       when is_integer(chat_id) and is_list(allowed_statuses) and is_integer(message_id) and
               is_integer(step_sequence) and is_map(request_payload) and
               is_list(steering_specs) do
-    case Lease.claim_and_run(lease, allowed_statuses, fn ->
+    case Lease.claim_and_run_with_chat(lease, chat_id, allowed_statuses, fn ->
            Persistence.replace_steps_for_retry!(
              message_id,
              step_sequence,

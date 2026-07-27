@@ -12,6 +12,7 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Repo
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.History
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Knowledge.KnowledgeBlock
 
@@ -37,13 +38,13 @@ defmodule IntellectualClub.Chat.Handoff do
 
   @spec manual_handoff(integer(), map()) :: {:ok, map()} | {:error, term()}
   def manual_handoff(source_chat_id, actor) when is_integer(source_chat_id) do
-    with {:ok, %ChatMessage{} = prompt_message} <-
-           prepare_manual_handoff_message(source_chat_id, actor) do
-      GenerationSupervisor.start_generation(source_chat_id,
-        actor: actor,
-        parent_id: prompt_message.id,
-        completion_effect: :manual_handoff
-      )
+    with {:ok, context} <-
+           QueueCoordinator.prepare_direct_generation(
+             source_chat_id,
+             [actor: actor, completion_effect: :manual_handoff],
+             fn -> prepare_manual_handoff_message(source_chat_id, actor) end
+           ) do
+      GenerationSupervisor.start_prepared_context(context)
     end
   end
 
@@ -76,6 +77,7 @@ defmodule IntellectualClub.Chat.Handoff do
     with {:ok, %Chat{} = source} <- fetch_owned_chat(source_chat_or_id, actor),
          {:ok, summary} <- normalize_summary(summary) do
       start_generation? = Keyword.get(opts, :start_generation?, false) == true
+      parent_tool_call_item_id = Keyword.get(opts, :parent_tool_call_item_id)
 
       source_message_id =
         normalize_source_message_id(Keyword.get(opts, :source_message_id), source)
@@ -86,23 +88,32 @@ defmodule IntellectualClub.Chat.Handoff do
         exclude_message_ids: Keyword.get(opts, :exclude_message_ids, [])
       ]
 
-      with {:ok, rolloff} <- HandoffRolloff.build(source, actor, summary, rolloff_opts) do
-        case create_target_with_summary(source, actor, rolloff, source_message_id) do
-          {:ok, %{chat: chat} = result} when start_generation? ->
-            case GenerationSupervisor.start_generation(chat.id, actor: actor) do
-              {:ok, context} ->
-                {:ok, Map.put(result, :generation, context)}
+      case existing_tool_handoff_result(
+             parent_tool_call_item_id,
+             source.id,
+             source_message_id,
+             actor
+           ) do
+        {:ok, result} ->
+          {:ok, Map.put_new(result, :generation, nil)}
 
-              {:error, reason} ->
-                {:error, reason}
-            end
-
-          {:ok, result} ->
-            {:ok, Map.put_new(result, :generation, nil)}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+        :not_found ->
+          with {:ok, rolloff} <- HandoffRolloff.build(source, actor, summary, rolloff_opts) do
+            source
+            |> create_target_with_summary(
+              actor,
+              rolloff,
+              source_message_id,
+              parent_tool_call_item_id
+            )
+            |> recover_tool_handoff_create(
+              parent_tool_call_item_id,
+              source.id,
+              source_message_id,
+              actor
+            )
+            |> maybe_start_handoff_generation(start_generation?, actor)
+          end
       end
     end
   end
@@ -115,11 +126,17 @@ defmodule IntellectualClub.Chat.Handoff do
     with {:ok, %ChatMessage{} = message} <- fetch_handoff_summary_message(message_id, actor),
          {:ok, summary} <- summary_from_message(message),
          %Chat{id: source_chat_id} when is_integer(source_chat_id) <- Map.get(message, :chat) do
-      create_handoff_chat(source_chat_id, actor, summary,
-        source_message_id: message.id,
-        exclude_message_ids: [message.id, message.parent_id],
-        start_generation?: false
-      )
+      case existing_handoff_result(source_chat_id, message.id, actor) do
+        {:ok, %{chat: %Chat{}} = result} ->
+          {:ok, result}
+
+        :not_found ->
+          create_handoff_chat(source_chat_id, actor, summary,
+            source_message_id: message.id,
+            exclude_message_ids: [message.id, message.parent_id],
+            start_generation?: false
+          )
+      end
     else
       nil -> {:error, :chat_not_loaded}
       {:error, reason} -> {:error, reason}
@@ -132,9 +149,17 @@ defmodule IntellectualClub.Chat.Handoff do
   def relation_kind, do: @relation_kind
   def summary_request, do: @summary_request
 
-  defp create_target_with_summary(source, actor, rolloff, source_message_id) do
+  defp create_target_with_summary(
+         source,
+         actor,
+         rolloff,
+         source_message_id,
+         parent_tool_call_item_id
+       ) do
     Repo.transaction(fn ->
-      target = create_target_chat!(source, actor, source_message_id)
+      target =
+        create_target_chat!(source, actor, source_message_id, parent_tool_call_item_id)
+
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
       item_specs =
@@ -156,6 +181,123 @@ defmodule IntellectualClub.Chat.Handoff do
     end)
     |> unwrap_transaction()
   end
+
+  defp existing_handoff_result(source_chat_id, source_message_id, actor) do
+    Chat
+    |> Ash.Query.filter(
+      parent_chat_id == ^source_chat_id and parent_message_id == ^source_message_id and
+        parent_relation_kind == ^@relation_kind
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load(:last_message)
+    |> Ash.read_one!(actor: actor)
+    |> case do
+      %Chat{last_message: %ChatMessage{} = message} = chat ->
+        {:ok, %{chat: chat, message: message}}
+
+      %Chat{} = chat ->
+        {:ok, %{chat: chat, message: nil}}
+
+      nil ->
+        :not_found
+    end
+  end
+
+  defp existing_tool_handoff_result(
+         tool_call_item_id,
+         source_chat_id,
+         source_message_id,
+         actor
+       )
+       when is_integer(tool_call_item_id) and is_integer(source_chat_id) and
+              is_integer(source_message_id) do
+    Chat
+    |> Ash.Query.filter(
+      parent_relation_kind == ^@relation_kind and
+        (parent_tool_call_item_id == ^tool_call_item_id or
+           (parent_chat_id == ^source_chat_id and parent_message_id == ^source_message_id and
+              not is_nil(parent_tool_call_item_id)))
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.load(:last_message)
+    |> Ash.read_one!(actor: actor)
+    |> case do
+      %Chat{} = chat ->
+        {:ok, %{chat: chat, message: handoff_entry_message(chat.id, actor)}}
+
+      nil ->
+        :not_found
+    end
+  end
+
+  defp existing_tool_handoff_result(
+         _tool_call_item_id,
+         _source_chat_id,
+         _source_message_id,
+         _actor
+       ),
+       do: :not_found
+
+  defp handoff_entry_message(chat_id, actor) when is_integer(chat_id) do
+    ChatMessage
+    |> Ash.Query.filter(chat_id == ^chat_id and role == :user and is_nil(parent_id))
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(actor: actor)
+  end
+
+  defp recover_tool_handoff_create(
+         {:ok, result},
+         _tool_call_item_id,
+         _source_chat_id,
+         _source_message_id,
+         _actor
+       ),
+       do: {:ok, result}
+
+  defp recover_tool_handoff_create(
+         {:error, reason},
+         tool_call_item_id,
+         source_chat_id,
+         source_message_id,
+         actor
+       )
+       when is_integer(tool_call_item_id) and is_integer(source_chat_id) and
+              is_integer(source_message_id) do
+    case existing_tool_handoff_result(
+           tool_call_item_id,
+           source_chat_id,
+           source_message_id,
+           actor
+         ) do
+      {:ok, result} -> {:ok, result}
+      :not_found -> {:error, reason}
+    end
+  end
+
+  defp recover_tool_handoff_create(
+         {:error, reason},
+         _tool_call_item_id,
+         _source_chat_id,
+         _source_message_id,
+         _actor
+       ),
+       do: {:error, reason}
+
+  defp maybe_start_handoff_generation({:ok, %{chat: chat} = result}, true, actor) do
+    case GenerationSupervisor.start_generation(chat.id, actor: actor) do
+      {:ok, context} -> {:ok, Map.put(result, :generation, context)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_start_handoff_generation({:ok, result}, false, _actor),
+    do: {:ok, Map.put_new(result, :generation, nil)}
+
+  defp maybe_start_handoff_generation({:error, reason}, _start_generation?, _actor),
+    do: {:error, reason}
 
   defp rolloff_item_specs(%{history: history, handoff_message: handoff_message} = rolloff)
        when is_list(history) and is_binary(handoff_message) do
@@ -226,7 +368,12 @@ defmodule IntellectualClub.Chat.Handoff do
   defp maybe_put_metadata(map, _key, nil), do: map
   defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
 
-  defp create_target_chat!(%Chat{} = source, actor, source_message_id) do
+  defp create_target_chat!(
+         %Chat{} = source,
+         actor,
+         source_message_id,
+         parent_tool_call_item_id
+       ) do
     Chat
     |> Ash.Changeset.for_create(
       :create_empty,
@@ -236,6 +383,7 @@ defmodule IntellectualClub.Chat.Handoff do
         llm_configuration_id: source.llm_configuration_id,
         parent_chat_id: source.id,
         parent_message_id: source_message_id,
+        parent_tool_call_item_id: parent_tool_call_item_id,
         parent_relation_kind: @relation_kind,
         subagent: source.subagent == true
       },

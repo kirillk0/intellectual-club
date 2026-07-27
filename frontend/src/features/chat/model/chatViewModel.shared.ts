@@ -43,8 +43,60 @@ export type ChatStatePayload = {
   branch: ChatBranchMessage[];
   relations?: ChatRelations;
   continuation_nav?: ChatContinuationNavItem[];
+  queued_messages?: ChatQueuedMessage[];
   active_generation_message_id: number | null;
   idle_revision?: string | null;
+};
+
+export type ChatQueuedMessageKind = 'follow_up' | 'steer';
+
+export type ChatQueuedMessageStatus =
+  | 'pending'
+  | 'blocked'
+  | 'delivered'
+  | 'canceled';
+
+export type ChatQueuedMessageFile = {
+  id: number;
+  external_id?: string | null;
+  filename: string;
+  content_type?: string;
+  mime_type?: string;
+  size?: number;
+  size_bytes?: number;
+  url?: string | null;
+};
+
+export type ChatQueuedMessageContent = {
+  id: number;
+  position?: number;
+  sequence?: number;
+  type?: 'text' | 'media';
+  kind?: 'text' | 'media' | string;
+  text?: string | null;
+  content_text?: string | null;
+  file?: ChatQueuedMessageFile | null;
+  url?: string | null;
+};
+
+export type ChatQueuedMessage = {
+  id: number;
+  chat_id: number;
+  kind: ChatQueuedMessageKind;
+  status: ChatQueuedMessageStatus;
+  position?: number | null;
+  anchor_message_id?: number | null;
+  target_generation_message_id?: number | null;
+  user_message_id?: number | null;
+  assistant_message_id?: number | null;
+  steering_item_id?: number | null;
+  attempt_count?: number;
+  blocked_reason?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  finished_at?: string | null;
+  contents: ChatQueuedMessageContent[];
+  content?: ChatQueuedMessageContent[];
 };
 
 export type ChatSettingsStatePayload = {
@@ -86,6 +138,8 @@ export type PollResponse = {
   message_id: number;
   runtime: boolean;
   status: string;
+  queued_messages?: ChatQueuedMessage[];
+  active_generation_message_id?: number | null;
   content?: ChatBranchMessage['content'];
   usage?: ChatBranchMessage['usage'];
   working?: ChatBranchMessage['working'];

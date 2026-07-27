@@ -150,6 +150,105 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert [_event] = events_for(message.id, :done, actor)
   end
 
+  test "unsuppressed generation event remains pending until delivery starts" do
+    %{user: actor} = user_fixture()
+    message = assistant_message!(actor, "Pending answer")
+
+    assert {:ok, %WebPushGenerationEvent{} = event} =
+             Notifications.record_generation_finished(message.id, :done)
+
+    assert event.suppressed == false
+    assert event.delivered_count == -1
+    refute_receive {:web_push_send, _, _, _}, 50
+
+    assert [%WebPushGenerationEvent{delivered_count: -1, suppressed: false}] =
+             events_for(message.id, :done, actor)
+  end
+
+  test "concurrent duplicate delivery dispatches one pending event exactly once" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+    message = assistant_message!(actor, "Concurrent answer")
+
+    assert {:ok, %WebPushGenerationEvent{delivered_count: -1}} =
+             Notifications.record_generation_finished(message.id, :done)
+
+    results =
+      1..2
+      |> Task.async_stream(
+        fn _index -> Notifications.deliver_generation_finished(message.id, :done) end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 15_000
+      )
+      |> Enum.to_list()
+
+    assert [{:ok, :ok}, {:ok, :ok}] = results
+    assert_receive {:web_push_send, "https://push.example/one", payload, 1}
+    assert payload.message_id == message.id
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{delivered_count: 1, suppressed: false}] =
+             events_for(message.id, :done, actor)
+  end
+
+  test "pending generation event is delivered by recovery" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(
+        actor,
+        subscription_payload("https://push.example/recovery")
+      )
+
+    message = assistant_message!(actor, "Recovered answer")
+
+    assert {:ok, %WebPushGenerationEvent{delivered_count: -1}} =
+             Notifications.record_generation_finished(message.id, :done)
+
+    assert :ok = Notifications.recover_pending_generation_events()
+
+    assert_receive {:web_push_send, "https://push.example/recovery", payload, 1}
+    assert payload.message_id == message.id
+
+    assert [%WebPushGenerationEvent{delivered_count: 1, suppressed: false}] =
+             events_for(message.id, :done, actor)
+  end
+
+  test "recovery preserves the notification grace window for fresh events" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(
+        actor,
+        subscription_payload("https://push.example/grace-window")
+      )
+
+    Application.put_env(:intellectual_club, :web_push_generation_delivery_delay_ms, 5_000)
+    message = assistant_message!(actor, "Fresh pending answer")
+
+    assert {:ok, %WebPushGenerationEvent{delivered_count: -1}} =
+             Notifications.record_generation_finished(message.id, :done)
+
+    assert :ok = Notifications.recover_pending_generation_events()
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{delivered_count: -1, suppressed: false}] =
+             events_for(message.id, :done, actor)
+  end
+
   test "expired subscriptions are pruned without failing notification delivery" do
     %{user: admin} = user_fixture(%{is_admin: true})
     %{user: actor} = user_fixture()

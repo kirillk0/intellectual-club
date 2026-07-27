@@ -19,6 +19,7 @@ import {
 } from '@/features/chat/upload';
 import {
   buildSendPayload,
+  type ChatQueuedMessage,
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
@@ -40,12 +41,15 @@ type Params = {
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
+  queuedMessages?: Ref<ChatQueuedMessage[]>;
   supportsSteering: ComputedRef<boolean>;
   draftReady?: ComputedRef<boolean>;
   autoScrollEnabled?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
   getOpenWorkingPollRequest?: (messageId: number) => string | null;
   applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
+  onQueuedMessagesUpdated?: (messages: ChatQueuedMessage[]) => void;
+  onQueuedMessageCreated?: (message: ChatQueuedMessage) => void;
   onGenerationSettled?: (messageId: number, status: string) => Promise<void> | void;
 };
 
@@ -54,7 +58,7 @@ export function useChatComposerRuntime(params: Params) {
   const pendingFiles = ref<PendingChatFile[]>([]);
   const draft = ref('');
   const sending = ref(false);
-  const sendingMode = ref<'send' | 'continue' | null>(null);
+  const sendingMode = ref<'send' | 'queue' | 'continue' | null>(null);
   const steeringGenerationId = ref<number | null>(null);
   const generationPollReconnecting = ref(false);
   const draftReady = computed(() => params.draftReady?.value ?? true);
@@ -62,11 +66,16 @@ export function useChatComposerRuntime(params: Params) {
     const chatId = params.chatId.value;
     return chatId ? `ic.draft.chat.composer.${chatId}` : null;
   });
+  watch(
+    () => params.chatId.value,
+    () => {
+      draft.value = '';
+    },
+    { flush: 'sync' }
+  );
   const chatDraftRevision = computed(() => {
     if (!draftReady.value || !params.chatId.value) return null;
-    return (params.branch.value || [])
-      .map((message) => `${message.id}:${message.created_at || ''}`)
-      .join('|') || 'empty';
+    return 'composer-v2';
   });
   const chatTextDraft = useLocalTextDraft({
     storageKey: chatDraftStorageKey,
@@ -74,11 +83,18 @@ export function useChatComposerRuntime(params: Params) {
     value: draft,
     enabled: computed(() => draftReady.value && Boolean(params.chatId.value) && !params.readOnly.value),
     isDraft: computed(() => draft.value !== '' && !params.readOnly.value && Boolean(params.chatId.value)),
-    clearValueOnInvalidation: true,
+    clearValueOnInvalidation: false,
   });
 
   const hasDraftText = computed(() => draft.value !== '');
   const hasSendPayload = computed(() => hasDraftText.value || pendingFiles.value.length > 0);
+  const hasFollowUpBacklog = computed(() =>
+    (params.queuedMessages?.value || []).some(
+      (message) =>
+        message.kind === 'follow_up' &&
+        (message.status === 'pending' || message.status === 'blocked')
+    )
+  );
   const canSteerGeneration = computed(
     () => Boolean(params.activeGenerationId.value) && params.supportsSteering.value && hasDraftText.value
   );
@@ -86,6 +102,7 @@ export function useChatComposerRuntime(params: Params) {
   const sendButtonLabel = computed(() => {
     if (sending.value) {
       if (sendingMode.value === 'continue') return translate('Continuing…');
+      if (sendingMode.value === 'queue') return translate('Queueing…');
 
       const uploadProgress = overallPendingUploadProgress(pendingFiles.value);
       if (uploadProgress.active) {
@@ -97,8 +114,13 @@ export function useChatComposerRuntime(params: Params) {
       return translate('Sending…');
     }
 
+    if (hasFollowUpBacklog.value) return translate('Queue');
     return hasSendPayload.value ? translate('Send') : translate('Continue');
   });
+
+  const queueButtonLabel = computed(() =>
+    sending.value && sendingMode.value === 'queue' ? translate('Queueing…') : translate('Queue')
+  );
 
   const cancelButtonLabel = computed(() =>
     params.cancelingGenerationId.value === params.activeGenerationId.value
@@ -482,17 +504,19 @@ export function useChatComposerRuntime(params: Params) {
     return upload.upload_id;
   };
 
-  const ensurePendingFilesUploaded = async (filesRef: Ref<PendingChatFile[]>) => {
+  const ensurePendingFilesUploaded = async (
+    filesRef: Ref<PendingChatFile[]>,
+    fileIds?: ReadonlySet<string>
+  ) => {
     if (!params.chatId.value) return [];
 
-    let index = 0;
+    const targetIds = fileIds ? [...fileIds] : filesRef.value.map((item) => item.id);
 
-    while (index < filesRef.value.length) {
-      const item = filesRef.value[index];
-      if (!item) break;
+    for (const fileId of targetIds) {
+      const item = findPendingFile(filesRef, fileId);
+      if (!item) continue;
 
       if (item.uploadStatus === 'uploaded' && item.uploadId) {
-        index += 1;
         continue;
       }
 
@@ -508,15 +532,13 @@ export function useChatComposerRuntime(params: Params) {
 
       const updated = findPendingFile(filesRef, item.id);
       if (!updated) continue;
-      if (updated.uploadStatus === 'uploaded' && updated.uploadId) {
-        index += 1;
-        continue;
-      }
+      if (updated.uploadStatus === 'uploaded' && updated.uploadId) continue;
 
       throw new Error(updated.error || 'Failed to upload attachment.');
     }
 
     return filesRef.value
+      .filter((item) => !fileIds || fileIds.has(item.id))
       .map((item) => item.uploadId)
       .filter((value): value is string => typeof value === 'string' && value.trim() !== '');
   };
@@ -619,6 +641,10 @@ export function useChatComposerRuntime(params: Params) {
       if (pollingToken !== token) return false;
       generationPollReconnecting.value = false;
 
+      if (Array.isArray(response.queued_messages)) {
+        params.onQueuedMessagesUpdated?.(response.queued_messages);
+      }
+
       const current = params.branch.value.find((item) => item.id === messageId) || null;
       const shouldKeepPageAtBottom = current ? isPageScrolledToBottom() : false;
       const keepFocusedComposerVisible = current ? shouldKeepFocusedComposerVisible() : false;
@@ -649,10 +675,18 @@ export function useChatComposerRuntime(params: Params) {
 
       const doneStatuses = new Set(['done', 'canceled', 'error']);
       if (doneStatuses.has(response.status)) {
+        const nextGenerationId =
+          typeof response.active_generation_message_id === 'number' &&
+          response.active_generation_message_id !== messageId
+            ? response.active_generation_message_id
+            : null;
         if (params.activeGenerationId.value === messageId) params.activeGenerationId.value = null;
         if (params.cancelingGenerationId.value === messageId) params.cancelingGenerationId.value = null;
         stopPolling();
         await params.onGenerationSettled?.(messageId, response.status);
+        if (nextGenerationId && params.activeGenerationId.value !== nextGenerationId) {
+          void startPolling(nextGenerationId);
+        }
         if (params.chatId.value) {
           publishChatChange({
             operation: 'touch',
@@ -756,6 +790,10 @@ export function useChatComposerRuntime(params: Params) {
     generation: { message_id: number };
   };
 
+  type QueuedMessagePayload = {
+    queued_message: ChatQueuedMessage;
+  };
+
   const applyGenerationStart = async (payload: GenerationStartPayload) => {
     params.branch.value = payload.branch || [];
 
@@ -769,6 +807,55 @@ export function useChatComposerRuntime(params: Params) {
     }
   };
 
+  const apiErrorCode = (error: unknown) => {
+    if (!isHttpError(error) || !error.bodyJson || typeof error.bodyJson !== 'object') return null;
+    const code = (error.bodyJson as { code?: unknown }).code;
+    return typeof code === 'string' ? code : null;
+  };
+
+  const queueErrorMessage = (error: unknown) => {
+    const code = apiErrorCode(error);
+    const messageByCode: Record<string, string> = {
+      empty_message: 'A queued message must contain text or an attachment.',
+      invalid_file_ids: 'Some queued attachments are no longer available.',
+      queue_not_empty: 'The message was added after the existing queue.',
+      generation_active: 'The message was added after the active generation.',
+    };
+    if (code && messageByCode[code]) return translate(messageByCode[code]);
+    return errorMessage(error, translate('Failed to queue message.'));
+  };
+
+  const clearAcknowledgedComposerSnapshot = (
+    content: string,
+    pendingFileIds: ReadonlySet<string>,
+    storageKey: string | null
+  ) => {
+    if (draft.value === content) draft.value = '';
+    if (pendingFileIds.size > 0) {
+      pendingFiles.value = pendingFiles.value.filter((file) => !pendingFileIds.has(file.id));
+    }
+    if (draft.value === '') chatTextDraft.clear(storageKey);
+  };
+
+  const createQueuedMessage = async (
+    content: string,
+    uploadIds: string[]
+  ) => {
+    const payload = await api.post<QueuedMessagePayload>(
+      `/api/bff/chat-generation/${params.chatId.value}/queue`,
+      buildSendPayload(content, uploadIds)
+    );
+    if (payload.queued_message) params.onQueuedMessageCreated?.(payload.queued_message);
+    if (params.chatId.value) {
+      publishChatChange({
+        operation: 'touch',
+        id: params.chatId.value,
+        meta: { reason: 'queue-created' },
+      });
+    }
+    return payload;
+  };
+
   const sendMessage = async () => {
     if (params.readOnly.value) return;
     if (!params.chatId.value || sending.value) return;
@@ -776,6 +863,8 @@ export function useChatComposerRuntime(params: Params) {
     if (!hasSendPayload.value) return;
 
     const draftStorageKeyBeforeSend = chatDraftStorageKey.value;
+    const content = draft.value;
+    const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
     sending.value = true;
     sendingMode.value = 'send';
     params.loadError.value = '';
@@ -787,25 +876,79 @@ export function useChatComposerRuntime(params: Params) {
         return;
       }
 
-      const content = draft.value;
       const hasUserText = content !== '';
-      const uploadIds = pendingFiles.value.length > 0 ? await ensurePendingFilesUploaded(pendingFiles) : [];
+      const uploadIds = pendingFileIds.size > 0
+        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
+        : [];
       const hasPendingFiles = uploadIds.length > 0;
       if (!hasUserText && !hasPendingFiles) return;
 
-      const payload = await api.post<GenerationStartPayload>(
-        `/api/bff/chat-generation/${params.chatId.value}/send`,
-        buildSendPayload(content, uploadIds)
-      );
+      let payload: GenerationStartPayload;
+      try {
+        payload = await api.post<GenerationStartPayload>(
+          `/api/bff/chat-generation/${params.chatId.value}/send`,
+          buildSendPayload(content, uploadIds)
+        );
+      } catch (error) {
+        if (
+          isHttpError(error) &&
+          error.status === 409 &&
+          ['queue_not_empty', 'generation_active'].includes(apiErrorCode(error) || '')
+        ) {
+          sendingMode.value = 'queue';
+          await createQueuedMessage(content, uploadIds);
+          clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSend);
+          return;
+        }
+        throw error;
+      }
 
-      if (draft.value === content) draft.value = '';
-      if (hasPendingFiles) pendingFiles.value = [];
-      if (draft.value === '') chatTextDraft.clear(draftStorageKeyBeforeSend);
+      clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSend);
 
       await applyGenerationStart(payload);
     } catch (error) {
       console.error(error);
-      params.loadError.value = errorMessage(error, translate('Failed to send message.'));
+      params.loadError.value = [
+        'empty_message',
+        'invalid_file_ids',
+        'queue_not_empty',
+        'generation_active',
+      ].includes(apiErrorCode(error) || '')
+        ? queueErrorMessage(error)
+        : errorMessage(error, translate('Failed to send message.'));
+    } finally {
+      sending.value = false;
+      sendingMode.value = null;
+    }
+  };
+
+  const queueMessage = async () => {
+    if (params.readOnly.value || !params.chatId.value || sending.value || !hasSendPayload.value) return;
+
+    const content = draft.value;
+    const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
+    const draftStorageKeyBeforeQueue = chatDraftStorageKey.value;
+    sending.value = true;
+    sendingMode.value = 'queue';
+    params.loadError.value = '';
+
+    try {
+      const configReady = await params.waitForConfigSync();
+      if (!configReady) {
+        params.loadError.value = translate('Configuration change is still syncing. Please wait.');
+        return;
+      }
+
+      const uploadIds = pendingFileIds.size > 0
+        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
+        : [];
+      if (content === '' && uploadIds.length === 0) return;
+
+      await createQueuedMessage(content, uploadIds);
+      clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeQueue);
+    } catch (error) {
+      console.error(error);
+      params.loadError.value = queueErrorMessage(error);
     } finally {
       sending.value = false;
       sendingMode.value = null;
@@ -856,10 +999,12 @@ export function useChatComposerRuntime(params: Params) {
     params.loadError.value = '';
 
     try {
-      await api.post<{ status: 'ok'; message_id: number; step_id: number }>(
+      const payload = await api.post<QueuedMessagePayload>(
         `/api/bff/chat-messages/${messageId}/steer`,
         { content }
       );
+
+      if (payload.queued_message) params.onQueuedMessageCreated?.(payload.queued_message);
 
       if (draft.value === content) {
         draft.value = '';
@@ -883,10 +1028,17 @@ export function useChatComposerRuntime(params: Params) {
       return;
     }
 
+    if (hasFollowUpBacklog.value && hasSendPayload.value) {
+      await queueMessage();
+      return;
+    }
+
     if (hasSendPayload.value) {
       await sendMessage();
       return;
     }
+
+    if (hasFollowUpBacklog.value) return;
 
     await continueGeneration();
   };
@@ -964,8 +1116,10 @@ export function useChatComposerRuntime(params: Params) {
     steeringGenerationId,
     generationPollReconnecting,
     hasSendPayload,
+    hasFollowUpBacklog,
     canSteerGeneration,
     sendButtonLabel,
+    queueButtonLabel,
     cancelButtonLabel,
     steerButtonLabel,
     findPendingFile,
@@ -979,6 +1133,7 @@ export function useChatComposerRuntime(params: Params) {
     handleFocus,
     syncServerGenerationState,
     sendMessage,
+    queueMessage,
     continueGeneration,
     steerGeneration,
     submitComposer,

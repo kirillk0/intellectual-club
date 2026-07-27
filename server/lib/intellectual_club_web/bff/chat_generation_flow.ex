@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatParams
@@ -25,8 +26,8 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
          upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor),
          {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
          :ok <- validate_send_payload(content, prepared_uploads),
-         {:ok, :ok} <-
-           create_user_message_with_prepared_attachments(
+         {:ok, context} <-
+           prepare_user_generation_with_attachments(
              chat_id,
              actor,
              upload_policy,
@@ -35,7 +36,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
              parent_id,
              explicit_parent?
            ),
-         {:ok, context} <- GenerationSupervisor.start_generation(chat_id, actor: actor) do
+         {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
     end
   end
@@ -56,7 +57,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
     generation_opts = ChatParams.generation_parent_opts(params, actor)
 
     with {:ok, _chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
-         {:ok, context} <- GenerationSupervisor.start_generation(chat_id, generation_opts) do
+         {:ok, context} <-
+           QueueCoordinator.prepare_direct_generation(chat_id, generation_opts),
+         {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
     end
   end
@@ -80,13 +83,13 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
   def branch_to_new_chat(_chat_id, _message_id, _params, _actor), do: {:error, :message_required}
 
   def manual_handoff(chat_id, actor) do
-    with {:ok, prompt_message} <- Handoff.prepare_manual_handoff_message(chat_id, actor),
-         {:ok, context} <-
-           GenerationSupervisor.start_generation(chat_id,
-             actor: actor,
-             parent_id: prompt_message.id,
-             completion_effect: :manual_handoff
-           ) do
+    with {:ok, context} <-
+           QueueCoordinator.prepare_direct_generation(
+             chat_id,
+             [actor: actor, completion_effect: :manual_handoff],
+             fn -> Handoff.prepare_manual_handoff_message(chat_id, actor) end
+           ),
+         {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
     end
   end
@@ -100,7 +103,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
     }
   end
 
-  defp create_user_message_with_prepared_attachments(
+  defp prepare_user_generation_with_attachments(
          chat_id,
          actor,
          upload_policy,
@@ -123,42 +126,33 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
 
         media_contents = Enum.map(file_ids, &%{kind: :media, file_id: &1})
 
-        maybe_create_user_message(
-          chat_id,
-          text_contents ++ media_contents,
-          parent_id,
-          explicit_parent?,
-          actor
-        )
-        |> case do
-          :ok -> {:ok, :ok}
-          {:error, reason} -> {:error, reason}
-        end
+        QueueCoordinator.prepare_direct_generation(chat_id, [actor: actor], fn ->
+          create_user_message(
+            chat_id,
+            text_contents ++ media_contents,
+            parent_id,
+            explicit_parent?,
+            actor
+          )
+        end)
       end
     )
   end
 
-  defp maybe_create_user_message(chat_id, contents, parent_id, explicit_parent?, actor) do
-    if contents == [] do
-      :ok
-    else
-      params =
-        %{
-          chat_id: chat_id,
-          contents: contents,
-          use_active_leaf_parent: not explicit_parent?
-        }
-        |> maybe_put_parent_id(parent_id, explicit_parent?)
+  defp create_user_message(chat_id, contents, parent_id, explicit_parent?, actor) do
+    params =
+      %{
+        chat_id: chat_id,
+        contents: contents,
+        use_active_leaf_parent: not explicit_parent?
+      }
+      |> maybe_put_parent_id(parent_id, explicit_parent?)
 
-      with {:ok, _message} <-
-             ChatMessage
-             |> Ash.Changeset.for_create(:add_user_message_with_contents, params, actor: actor)
-             |> Ash.create() do
-        :ok
-      else
-        {:error, error} ->
-          {:error, {:user_message, error}}
-      end
+    case ChatMessage
+         |> Ash.Changeset.for_create(:add_user_message_with_contents, params, actor: actor)
+         |> Ash.create() do
+      {:ok, message} -> {:ok, message}
+      {:error, error} -> {:error, {:user_message, error}}
     end
   end
 

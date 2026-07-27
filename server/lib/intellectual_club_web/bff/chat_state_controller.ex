@@ -8,9 +8,11 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
+  alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.Helpers
 
   def state(conn, %{"id" => id}) do
@@ -68,14 +70,16 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
          {:ok, chat_id} <- ChatParams.resource_id(id),
          {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat_for_idle(chat_id, actor) do
       child_relations = Relations.child_relation_chats(chat.id, actor)
-      revision = Revisions.chat_revision(chat, child_relations)
+      queued_messages = active_queue(chat.id, actor)
+      revision = Revisions.chat_revision(chat, child_relations, queued_messages)
 
       if Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")
       else
         json(conn, %{
           revision: revision,
-          active_generation_message_id: Revisions.active_generation_message_id(chat)
+          active_generation_message_id: Revisions.active_generation_message_id(chat),
+          queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages)
         })
       end
     else
@@ -87,6 +91,13 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
 
       {:error, error} ->
         ChatAccess.render_error(conn, error)
+    end
+  end
+
+  defp active_queue(chat_id, actor) do
+    case QueuedMessages.list_for_chat(chat_id, actor) do
+      {:ok, queued_messages} -> queued_messages
+      {:error, _error} -> []
     end
   end
 end

@@ -3,6 +3,7 @@ defmodule IntellectualClub.Generation.Lease do
 
   use GenServer
 
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Repo
 
@@ -125,6 +126,70 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
+  @doc false
+  @spec claim_and_run_with_chat(t(), pos_integer(), [atom()], (-> result)) ::
+          {:ok, {t(), result}} | {:error, term()}
+        when result: term()
+  def claim_and_run_with_chat(
+        %__MODULE__{fence_token: nil} = lease,
+        chat_id,
+        allowed_statuses,
+        fun
+      )
+      when is_integer(chat_id) and chat_id > 0 and is_list(allowed_statuses) and
+             allowed_statuses != [] and is_function(fun, 0) do
+    if active?(lease) do
+      token = Ecto.UUID.generate()
+
+      case lease_transaction(
+             [Chat, ChatMessage],
+             fn ->
+               with {:ok, _chat} <- lock_chat(chat_id),
+                    {:ok, current} <- lock_message(lease.message_id) do
+                 active_generation = lock_other_generating_message(chat_id, lease.message_id)
+
+                 cond do
+                   current.chat_id != chat_id ->
+                     {:error, :chat_mismatch}
+
+                   current.role != :assistant or current.status not in allowed_statuses ->
+                     {:error, :invalid_status}
+
+                   match?(%ChatMessage{}, active_generation) ->
+                     {:error, :generation_active}
+
+                   true ->
+                     current
+                     |> Ash.Changeset.for_update(
+                       :set_generation_fence,
+                       %{generation_fence_token: token},
+                       authorize?: false
+                     )
+                     |> Ash.update!(authorize?: false)
+
+                     {:ok, {%{lease | fence_token: token}, fun.()}}
+                 end
+               end
+             end,
+             []
+           ) do
+        {:ok, {%__MODULE__{} = fenced, result}} ->
+          case register_fence(fenced) do
+            :ok -> {:ok, {fenced, result}}
+            {:error, _reason} = error -> error
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :lease_lost}
+    end
+  end
+
+  def claim_and_run_with_chat(_lease, _chat_id, _allowed_statuses, _fun),
+    do: {:error, :invalid_generation_lease}
+
   @spec transfer(t(), pid()) :: :ok | {:error, term()}
   def transfer(%__MODULE__{} = lease, new_owner) when is_pid(new_owner) do
     GenServer.call(lease.manager, {:transfer, lease, self(), new_owner}, :infinity)
@@ -182,6 +247,58 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   @doc false
+  @spec with_chat_fence(t(), pos_integer(), (-> result), keyword()) ::
+          {:ok, result} | {:error, term()}
+        when result: term()
+  def with_chat_fence(lease, chat_id, fun, opts \\ [])
+
+  def with_chat_fence(%__MODULE__{fence_token: nil}, _chat_id, _fun, _opts) do
+    {:error, :lease_not_fenced}
+  end
+
+  def with_chat_fence(%__MODULE__{} = lease, chat_id, fun, opts)
+      when is_integer(chat_id) and chat_id > 0 and is_function(fun, 0) and is_list(opts) do
+    allowed_statuses = Keyword.get(opts, :allowed_statuses)
+    required_role = Keyword.get(opts, :required_role)
+
+    if active?(lease) do
+      case lease_transaction(
+             [Chat, ChatMessage],
+             fn ->
+               with {:ok, _chat} <- lock_chat(chat_id),
+                    {:ok, current} <- lock_message(lease.message_id) do
+                 cond do
+                   current.chat_id != chat_id ->
+                     {:error, :chat_mismatch}
+
+                   current.generation_fence_token != lease.fence_token ->
+                     {:error, :lease_lost}
+
+                   is_list(allowed_statuses) and current.status not in allowed_statuses ->
+                     {:error, :invalid_status}
+
+                   not is_nil(required_role) and current.role != required_role ->
+                     {:error, :invalid_role}
+
+                   true ->
+                     {:ok, fun.()}
+                 end
+               end
+             end,
+             []
+           ) do
+        {:ok, result} -> {:ok, result}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :lease_lost}
+    end
+  end
+
+  def with_chat_fence(_lease, _chat_id, _fun, _opts),
+    do: {:error, :invalid_generation_fence}
+
+  @doc false
   @spec with_token_fence(pos_integer(), Ecto.UUID.t(), (-> result), keyword()) ::
           {:ok, result} | {:error, term()}
         when result: term()
@@ -216,6 +333,56 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   def with_token_fence(_message_id, _fence_token, _fun, _opts),
+    do: {:error, :invalid_generation_fence}
+
+  @doc false
+  @spec with_token_chat_fence(
+          pos_integer(),
+          pos_integer(),
+          Ecto.UUID.t(),
+          (-> result),
+          keyword()
+        ) :: {:ok, result} | {:error, term()}
+        when result: term()
+  def with_token_chat_fence(message_id, chat_id, fence_token, fun, opts \\ [])
+
+  def with_token_chat_fence(message_id, chat_id, fence_token, fun, opts)
+      when is_integer(message_id) and message_id > 0 and is_integer(chat_id) and chat_id > 0 and
+             is_binary(fence_token) and is_function(fun, 0) and is_list(opts) do
+    allowed_statuses = Keyword.get(opts, :allowed_statuses)
+    required_role = Keyword.get(opts, :required_role)
+
+    case lease_transaction(
+           [Chat, ChatMessage],
+           fn ->
+             with {:ok, _chat} <- lock_chat(chat_id),
+                  {:ok, current} <- lock_message(message_id) do
+               cond do
+                 current.chat_id != chat_id ->
+                   {:error, :chat_mismatch}
+
+                 current.generation_fence_token != fence_token ->
+                   {:error, :lease_lost}
+
+                 is_list(allowed_statuses) and current.status not in allowed_statuses ->
+                   {:error, :invalid_status}
+
+                 not is_nil(required_role) and current.role != required_role ->
+                   {:error, :invalid_role}
+
+                 true ->
+                   {:ok, fun.()}
+               end
+             end
+           end,
+           []
+         ) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def with_token_chat_fence(_message_id, _chat_id, _fence_token, _fun, _opts),
     do: {:error, :invalid_generation_fence}
 
   @spec valid?(t()) :: boolean()
@@ -505,7 +672,7 @@ defmodule IntellectualClub.Generation.Lease do
     message =
       ChatMessage
       |> Ash.Query.filter(id == ^message_id)
-      |> Ash.Query.select([:id, :role, :status, :generation_fence_token])
+      |> Ash.Query.select([:id, :chat_id, :role, :status, :generation_fence_token])
       |> Ash.Query.lock(:for_update)
       |> Ash.read_one!(authorize?: false)
 
@@ -515,8 +682,38 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
+  defp lock_other_generating_message(chat_id, excluded_message_id) do
+    ChatMessage
+    |> Ash.Query.filter(
+      chat_id == ^chat_id and id != ^excluded_message_id and status == :generating
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(authorize?: false)
+  end
+
+  defp lock_chat(chat_id) do
+    chat =
+      Chat
+      |> Ash.Query.filter(id == ^chat_id)
+      |> Ash.Query.select([:id])
+      |> Ash.Query.lock(:for_update)
+      |> Ash.read_one!(authorize?: false)
+
+    case chat do
+      %Chat{} = chat -> {:ok, chat}
+      nil -> {:error, :not_found}
+    end
+  end
+
   defp lease_transaction(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
-    case Ash.transaction(ChatMessage, fun, opts) do
+    lease_transaction(ChatMessage, fun, opts)
+  end
+
+  defp lease_transaction(resources, fun, opts)
+       when is_function(fun, 0) and is_list(opts) do
+    case Ash.transaction(resources, fun, opts) do
       {:ok, {:ok, result}} -> {:ok, result}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}

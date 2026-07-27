@@ -3,6 +3,7 @@ import { computed, ref, type Ref } from 'vue';
 import { api, getApiErrorMessage } from '@/api/client';
 import {
   buildMessageContentFileUrl,
+  buildQueuedMessageContentFileUrl,
   getAttachmentMimeType,
   getAttachmentName,
   getAttachmentPreviewKind,
@@ -39,9 +40,11 @@ type Params = {
   composerPendingFiles: Ref<PendingChatFile[]>;
   editPendingFiles: Ref<PendingChatFile[]>;
   editExistingAttachments: Ref<ExistingChatAttachment[]>;
+  queueEditPendingFiles?: Ref<PendingChatFile[]>;
+  queueEditExistingAttachments?: Ref<ExistingChatAttachment[]>;
 };
 
-type PendingAttachmentScope = 'composer' | 'edit';
+type PendingAttachmentScope = 'composer' | 'edit' | 'queue-edit';
 
 type AttachmentPreviewItem =
   | {
@@ -55,6 +58,12 @@ type AttachmentPreviewItem =
       type: 'pending';
       scope: PendingAttachmentScope;
       fileId: string;
+    }
+  | {
+      key: string;
+      type: 'queued';
+      queuedMessageId: number;
+      content: ChatMessageContent;
     };
 
 type PreparedAttachmentDownload = {
@@ -374,13 +383,17 @@ export function useChatInspectors(params: Params) {
 
   const previewItemKey = (item: AttachmentPreviewItem) => item.key;
   const messagePreviewKey = (messageId: number, contentId: number) => `message-${messageId}-${contentId}`;
+  const queuedPreviewKey = (messageId: number, contentId: number) => `queued-${messageId}-${contentId}`;
   const pendingPreviewKey = (scope: PendingAttachmentScope, fileId: string) => `pending-${scope}-${fileId}`;
   const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => (a.sequence ?? 0) - (b.sequence ?? 0);
   const normalizePreviewIndex = (index: number, length: number) => ((index % length) + length) % length;
   const isPreviewableKind = (kind: ReturnType<typeof getAttachmentPreviewKind>) => kind !== 'binary';
 
-  const getPendingFilesForScope = (scope: PendingAttachmentScope) =>
-    scope === 'edit' ? params.editPendingFiles.value : params.composerPendingFiles.value;
+  const getPendingFilesForScope = (scope: PendingAttachmentScope) => {
+    if (scope === 'edit') return params.editPendingFiles.value;
+    if (scope === 'queue-edit') return params.queueEditPendingFiles?.value || [];
+    return params.composerPendingFiles.value;
+  };
 
   const findPendingAttachment = (fileId: string, scope: PendingAttachmentScope) =>
     getPendingFilesForScope(scope).find((item) => item.id === fileId) || null;
@@ -402,7 +415,9 @@ export function useChatInspectors(params: Params) {
     isPreviewableKind(getPendingAttachmentPreviewKind(file));
 
   const canPreviewAttachmentItem = (item: AttachmentPreviewItem) => {
-    if (item.type === 'message') return canPreviewMessageAttachment(item.content);
+    if (item.type === 'message' || item.type === 'queued') {
+      return canPreviewMessageAttachment(item.content);
+    }
 
     const pending = findPendingAttachment(item.fileId, item.scope);
     return pending ? canPreviewPendingAttachment(pending) : false;
@@ -452,6 +467,32 @@ export function useChatInspectors(params: Params) {
       })
     ),
   ].filter(canPreviewAttachmentItem);
+
+  const buildQueueEditPreviewItems = () => [
+    ...(params.queueEditExistingAttachments?.value || []).map(
+      (attachment): AttachmentPreviewItem => ({
+        key: queuedPreviewKey(attachment.queuedMessageId || attachment.messageId, attachment.id),
+        type: 'queued',
+        queuedMessageId: attachment.queuedMessageId || attachment.messageId,
+        content: attachment.content,
+      })
+    ),
+    ...(params.queueEditPendingFiles?.value || []).map(
+      (file): AttachmentPreviewItem => ({
+        key: pendingPreviewKey('queue-edit', file.id),
+        type: 'pending',
+        scope: 'queue-edit',
+        fileId: file.id,
+      })
+    ),
+  ].filter(canPreviewAttachmentItem);
+
+  const persistedAttachmentUrl = (
+    item: Extract<AttachmentPreviewItem, { type: 'message' | 'queued' }>,
+    contentId: number
+  ) => item.type === 'queued'
+    ? buildQueuedMessageContentFileUrl(item.queuedMessageId, contentId)
+    : buildMessageContentFileUrl(item.messageId, contentId);
 
   const revokeAttachmentPreviewObjectUrl = () => {
     if (!attachmentPreviewObjectUrl) return;
@@ -506,11 +547,11 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewDownloadPending.value = true;
 
     try {
-      if (item.type === 'message') {
+      if (item.type === 'message' || item.type === 'queued') {
         const contentId = Number(item.content?.id || 0);
         const name = getAttachmentName(item.content);
         const mimeType = getAttachmentMimeType(item.content);
-        const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
+        const url = contentId ? persistedAttachmentUrl(item, contentId) : '';
         if (!url) throw new Error('Attachment is not available.');
 
         if (options.usePreparedDownload && shouldUseFileShareForDownloads()) {
@@ -585,12 +626,12 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewDownloadPending.value = false;
     attachmentPreviewCurrentItem.value = item;
 
-    if (item.type === 'message') {
+    if (item.type === 'message' || item.type === 'queued') {
       const contentId = Number(item.content?.id || 0);
       const name = getAttachmentName(item.content);
       const mimeType = getAttachmentMimeType(item.content);
       const kind = getMessageAttachmentPreviewKind(item.content);
-      const url = contentId ? buildMessageContentFileUrl(item.messageId, contentId) : '';
+      const url = contentId ? persistedAttachmentUrl(item, contentId) : '';
 
       attachmentPreviewTitle.value = name;
       attachmentPreviewUrl.value = url;
@@ -697,7 +738,11 @@ export function useChatInspectors(params: Params) {
       return;
     }
 
-    const items = scope === 'edit' ? buildEditPreviewItems() : buildComposerPreviewItems();
+    const items = scope === 'edit'
+      ? buildEditPreviewItems()
+      : scope === 'queue-edit'
+        ? buildQueueEditPreviewItems()
+        : buildComposerPreviewItems();
     const currentKey = pendingPreviewKey(scope, fileId);
     const currentIndex = items.findIndex((item) => previewItemKey(item) === currentKey);
     if (currentIndex < 0) return;
@@ -705,6 +750,25 @@ export function useChatInspectors(params: Params) {
   };
 
   const openExistingAttachmentPreview = async (attachment: ExistingChatAttachment) => {
+    if (attachment.queuedMessageId) {
+      const currentItem: AttachmentPreviewItem = {
+        key: queuedPreviewKey(attachment.queuedMessageId, attachment.id),
+        type: 'queued',
+        queuedMessageId: attachment.queuedMessageId,
+        content: attachment.content,
+      };
+
+      if (!canPreviewAttachmentItem(currentItem)) {
+        await downloadAttachmentItem(currentItem);
+        return;
+      }
+
+      const items = buildQueueEditPreviewItems();
+      const currentIndex = items.findIndex((item) => previewItemKey(item) === currentItem.key);
+      await openAttachmentPreviewItems(currentIndex >= 0 ? items : [currentItem], Math.max(currentIndex, 0));
+      return;
+    }
+
     const currentItem: AttachmentPreviewItem = {
       key: messagePreviewKey(attachment.messageId, attachment.id),
       type: 'message',

@@ -153,6 +153,7 @@ defmodule IntellectualClubWeb.Router do
     post "/chat-branches/:id/move-to-new-chat", ChatBranchesController, :move_to_new_chat
 
     post "/chat-generation/:id/send", ChatGenerationController, :send
+    post "/chat-generation/:chat_id/queue", ChatQueuedMessagesController, :create
     post "/chat-generation/:id/generate", ChatGenerationController, :generate
     post "/chat-generation/:id/branch-to-new-chat", ChatGenerationController, :branch_to_new_chat
     post "/chat-generation/:id/handoff", ChatGenerationController, :handoff
@@ -164,6 +165,14 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-uploads/:chat_id/:upload_id", ChatUploadsController, :show
     put "/chat-uploads/:chat_id/:upload_id/chunk", ChatUploadsController, :append_chunk
     delete "/chat-uploads/:chat_id/:upload_id", ChatUploadsController, :delete
+
+    patch "/chat-queued-messages/:id", ChatQueuedMessagesController, :update
+    delete "/chat-queued-messages/:id", ChatQueuedMessagesController, :delete
+    post "/chat-queued-messages/:id/send-next", ChatQueuedMessagesController, :send_next
+
+    get "/chat-queued-messages/:id/contents/:content_id/file",
+        ChatQueuedMessagesController,
+        :content_file
 
     post "/chat-messages/:id/cancel", ChatMessagesController, :cancel
     post "/chat-messages/:id/steer", ChatMessagesController, :steer

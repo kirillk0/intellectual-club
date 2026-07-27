@@ -13,16 +13,26 @@ defmodule IntellectualClub.Generation.Worker do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.Handoff
+  alias IntellectualClub.Chat.QueuedMessages
+  alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.QueueCoordinator
+  alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
+  alias IntellectualClub.Notifications
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
   alias IntellectualClub.Tools.Executor
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Registry, as: ToolRegistry
+
+  defmodule CompletionEffectFailure do
+    @moduledoc false
+    defexception [:message]
+  end
 
   @default_auto_retry_backoff_ms [500, 1_500, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000]
   @default_auto_retry_jitter_ratio 0.2
@@ -41,6 +51,7 @@ defmodule IntellectualClub.Generation.Worker do
     :stream_ref,
     :tool_task,
     :retry_timer_ref,
+    :queued_steering_retry_attempt,
     :step_attempt,
     :step_sequence,
     :tool_round,
@@ -75,6 +86,10 @@ defmodule IntellectualClub.Generation.Worker do
 
   def steer(pid, text) when is_binary(text) do
     GenServer.call(pid, {:steer, text}, 30_000)
+  end
+
+  def queue_changed(pid) when is_pid(pid) do
+    GenServer.cast(pid, :queue_changed)
   end
 
   @doc false
@@ -162,6 +177,10 @@ defmodule IntellectualClub.Generation.Worker do
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_completed_tool_step}
 
+        {:finalize_completed_step, _status, step_id} when is_integer(step_id) ->
+          completed = Persistence.load_step_for_followup!(step_id)
+          {completed.runtime_step, :finalize_completed_step}
+
         {:waiting_tools, _status, step_id} when is_integer(step_id) ->
           followup = Persistence.load_step_for_followup!(step_id)
           {followup.runtime_step, :resume_waiting_tools}
@@ -196,6 +215,7 @@ defmodule IntellectualClub.Generation.Worker do
       stream_task: nil,
       stream_ref: nil,
       retry_timer_ref: nil,
+      queued_steering_retry_attempt: 0,
       provider_session: provider_session
     }
 
@@ -213,8 +233,14 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   def handle_continue(:start_stream, state) do
-    state = start_stream_task(state)
-    {:noreply, state}
+    case consume_queued_steers_waiting_provider(state) do
+      {:ok, state, _consumed?} ->
+        {:noreply, start_stream_task(state)}
+
+      {:retry, state} ->
+        schedule_queued_steering_retry(state)
+        {:noreply, state}
+    end
   end
 
   def handle_continue(:resume_waiting_tools, state) do
@@ -234,6 +260,10 @@ defmodule IntellectualClub.Generation.Worker do
 
   def handle_continue(:resume_completed_tool_step, state) do
     handle_tool_results(state, [], persist_results?: false)
+  end
+
+  def handle_continue(:finalize_completed_step, state) do
+    finalize_done_from_step(state, state.runtime_step.id)
   end
 
   @impl true
@@ -431,6 +461,11 @@ defmodule IntellectualClub.Generation.Worker do
   def handle_info(:retry_current_step, state), do: {:noreply, state}
 
   @impl true
+  def handle_info(:consume_queued_steers, state) do
+    consume_queued_steers_signal(state)
+  end
+
+  @impl true
   def handle_info({:provider_event, _stale_stream_ref, _event}, state) do
     {:noreply, state}
   end
@@ -559,8 +594,9 @@ defmodule IntellectualClub.Generation.Worker do
 
   @impl true
   def handle_cast(:cancel, state) do
-    {_result, state} = cancel_and_persist(state)
+    {result, state} = cancel_and_persist(state)
 
+    maybe_finish_canceled_queue(state, result)
     broadcast(state, {:canceled, state.context.message_id})
     {:stop, :normal, state}
   end
@@ -571,10 +607,16 @@ defmodule IntellectualClub.Generation.Worker do
     {:stop, :normal, state}
   end
 
+  def handle_cast(:queue_changed, state) do
+    Process.send_after(self(), :consume_queued_steers, 10)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_call(:cancel_and_wait, _from, state) do
     {result, state} = cancel_and_persist(state)
 
+    maybe_finish_canceled_queue(state, result)
     broadcast(state, {:canceled, state.context.message_id})
     {:stop, :normal, result, state}
   end
@@ -624,18 +666,146 @@ defmodule IntellectualClub.Generation.Worker do
     state = stop_provider_session(state)
 
     result =
-      safe_cancel_persist(state, fn ->
-        if durable_waiting_tools_step?(state.runtime_step) do
-          Persistence.persist_canceled_from_step!(
-            state.context.message_id,
-            state.runtime_step.id
-          )
-        else
-          Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
-        end
-      end)
+      case safe_chat_persist_value(state, :canceled, fn ->
+             if durable_waiting_tools_step?(state.runtime_step) do
+               Persistence.persist_canceled_from_step!(
+                 state.context.message_id,
+                 state.runtime_step.id
+               )
+             else
+               Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
+             end
+
+             _ = settle_terminal_queue!(state, :canceled)
+             record_terminal_event!(state, :canceled, false)
+             :ok
+           end) do
+        {:ok, :ok} -> :ok
+        {:error, _reason} = error -> error
+      end
 
     {result, %{state | status: :canceled}}
+  end
+
+  defp consume_queued_steers_signal(state) do
+    cond do
+      state.status != :generating ->
+        {:noreply, state}
+
+      state.runtime_step.status != :waiting_provider ->
+        {:noreply, state}
+
+      true ->
+        case consume_queued_steers_waiting_provider(state) do
+          {:ok, state, true} ->
+            {:noreply, start_stream_task(state)}
+
+          {:ok, state, false} ->
+            {:noreply, state}
+
+          {:retry, state} ->
+            schedule_queued_steering_retry(state)
+            {:noreply, state}
+        end
+    end
+  end
+
+  defp consume_queued_steers_waiting_provider(state) do
+    with true <- Map.get(state.context, :supports_steering) == true,
+         {:ok, queued_messages} <-
+           QueuedMessages.list_pending_steers(state.context.message_id),
+         specs when specs != [] <- queued_steering_specs(queued_messages),
+         steering_items <-
+           Enum.map(specs, &%{text: &1.text, placement: :before_response}),
+         {:ok, injected} <-
+           inject_steering_request(state, state.runtime_step.raw_request, steering_items),
+         {:ok, persisted} when is_map(persisted) <-
+           safe_persist_value(state, :queued_steering_before_response, fn ->
+             Persistence.persist_queued_steering_before_provider!(
+               state.context.message_id,
+               state.runtime_step.id,
+               specs,
+               injected.raw_request
+             )
+           end) do
+      retry_pending? = not is_nil(state.retry_timer_ref)
+      provider_started? = retry_pending? or not is_nil(state.stream_task)
+
+      state =
+        state
+        |> cancel_retry_timer()
+        |> cancel_stream_task()
+        |> stop_provider_session()
+
+      provider_session = start_provider_session(state.adapter, state.context)
+
+      state =
+        state
+        |> Map.put(:provider_session, provider_session)
+        |> Map.put(:runtime_step, persisted.runtime_step)
+        |> Map.put(:queued_steering_retry_attempt, 0)
+        |> Map.update!(:step_attempt, fn attempt ->
+          if provider_started? and not retry_pending?, do: attempt + 1, else: attempt
+        end)
+
+      broadcast(state, {:steering, state.context.message_id})
+      {:ok, state, true}
+    else
+      false ->
+        {:ok, %{state | queued_steering_retry_attempt: 0}, false}
+
+      [] ->
+        {:ok, %{state | queued_steering_retry_attempt: 0}, false}
+
+      {:ok, []} ->
+        {:ok, %{state | queued_steering_retry_attempt: 0}, false}
+
+      {:ok, {:error, :queued_steering_changed}} ->
+        {:retry, queued_steering_retry_state(state, :queued_steering_changed)}
+
+      {:error, :queued_steering_changed} ->
+        {:retry, queued_steering_retry_state(state, :queued_steering_changed)}
+
+      {:ok, {:error, reason}} ->
+        {:retry, queued_steering_retry_state(state, reason)}
+
+      {:error, reason} ->
+        {:retry, queued_steering_retry_state(state, reason)}
+    end
+  end
+
+  defp queued_steering_retry_state(state, reason) do
+    attempt = max((state.queued_steering_retry_attempt || 0) + 1, 1)
+
+    Logger.warning(
+      "Failed to consume queued steering; provider start deferred " <>
+        "message_id=#{state.context.message_id} attempt=#{attempt} reason=#{inspect(reason)}"
+    )
+
+    %{state | queued_steering_retry_attempt: attempt}
+  end
+
+  defp schedule_queued_steering_retry(state) do
+    delays = [50, 100, 250, 500, 1_000, 2_000, 5_000]
+    attempt = max(state.queued_steering_retry_attempt || 1, 1)
+    delay_ms = Enum.at(delays, attempt - 1, List.last(delays))
+    Process.send_after(self(), :consume_queued_steers, delay_ms)
+    :ok
+  end
+
+  defp queued_steering_specs(queued_messages) when is_list(queued_messages) do
+    queued_messages
+    |> Enum.map(fn queued_message ->
+      text =
+        queued_message
+        |> QueuedMessages.content_specs()
+        |> Enum.filter(&(&1.kind == :text))
+        |> Enum.map_join("", &to_string(&1.content_text || ""))
+
+      %{id: queued_message.id, text: text}
+    end)
+    |> Enum.reject(&(&1.text == ""))
+    |> Enum.sort_by(& &1.id)
   end
 
   defp steer_waiting_provider(state, text) do
@@ -745,45 +915,69 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp normalize_steering_error(reason), do: {:steering_failed, reason}
 
-  defp finalize_done_from_step(state, step_id) when is_integer(step_id) do
-    case safe_persist(state, :done, fn ->
+  defp finalize_done_from_step(state, step_id, opts \\ [])
+       when is_integer(step_id) and is_list(opts) do
+    case safe_chat_persist_value(state, :done, fn ->
+           effect = durable_completion_effect!(state, step_id, opts)
            Persistence.persist_completed_from_step!(state.context.message_id, step_id)
+
+           result =
+             if effect == :ok,
+               do: {:queue_boundary, settle_done_queue!(state)},
+               else: effect
+
+           record_terminal_event!(state, :done, completion_suppressed?(result))
+           result
          end) do
-      :ok ->
-        finalize_completion_effect(state, step_id)
+      {:ok, {:queue_boundary, queue_result}} ->
+        finish_done_queue(state, queue_result)
+        broadcast(state, {:done, state.context.message_id})
+        {:stop, :normal, %{state | status: :done}}
+
+      {:ok, {:handoff, result}} ->
+        finish_manual_handoff_queue(state, result)
+        broadcast(state, {:done, state.context.message_id})
+        {:stop, :normal, %{state | status: :done}}
+
+      {:ok, {:terminal_handoff, payload, _transfer}} ->
+        finish_terminal_handoff_queue(state, payload)
+        broadcast(state, {:done, state.context.message_id})
+        {:stop, :normal, %{state | status: :done}}
+
+      {:error, %CompletionEffectFailure{message: error_text}} ->
+        if persist_terminal_error_from_step(state, step_id, error_text) == :ok,
+          do: finish_error_queue(state)
+
+        broadcast(state, {:error, state.context.message_id, error_text})
+        {:stop, :normal, %{state | status: :error}}
 
       {:error, reason} ->
         error_text = "Failed to persist final generation state: #{inspect(reason)}"
-        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
+
+        if persist_terminal_error_from_step(state, step_id, error_text) == :ok,
+          do: finish_error_queue(state)
+
         broadcast(state, {:error, state.context.message_id, error_text})
         {:stop, :normal, %{state | status: :error}}
     end
   end
 
-  defp finalize_completion_effect(state, step_id) when is_integer(step_id) do
-    case safe_persist_value(state, :completion_effect, fn -> run_completion_effect(state) end) do
-      {:ok, :ok} ->
-        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
-        broadcast(state, {:done, state.context.message_id})
-        {:stop, :normal, %{state | status: :done}}
+  defp durable_completion_effect!(state, step_id, opts) do
+    result =
+      case Map.get(state.context, :completion_effect) do
+        :manual_handoff ->
+          run_completion_effect(state)
 
-      {:ok, {:error, error_text}} ->
-        _ =
-          safe_persist(state, :completion_effect_error, fn ->
-            Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
-          end)
+        _other ->
+          case terminal_handoff_payload(step_id, opts) do
+            %{} = payload -> transfer_terminal_handoff(state, step_id, payload)
+            nil -> :ok
+          end
+      end
 
-        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
-        broadcast(state, {:error, state.context.message_id, error_text})
-        {:stop, :normal, %{state | status: :error}}
-
-      {:error, reason} ->
-        Logger.warning(
-          "Skipped generation completion effect after losing its fence " <>
-            "message_id=#{state.context.message_id} reason=#{inspect(reason)}"
-        )
-
-        {:stop, :normal, state}
+    case result do
+      {:error, error_text} -> raise CompletionEffectFailure, message: error_text
+      result -> result
     end
   end
 
@@ -791,8 +985,18 @@ defmodule IntellectualClub.Generation.Worker do
     actor = %User{id: state.context.owner_id}
 
     case Handoff.complete_manual_generation(state.context.message_id, actor) do
-      {:ok, _result} ->
-        :ok
+      {:ok, result} ->
+        case QueueCoordinator.transfer_to_handoff(
+               state.context.message_id,
+               result.chat.id,
+               nil
+             ) do
+          {:ok, payload} ->
+            {:handoff, Map.put(result, :queue_transfer, payload)}
+
+          {:error, reason} ->
+            {:error, "Failed to transfer manual handoff queue: #{inspect(reason)}"}
+        end
 
       {:error, reason} ->
         {:error, "Failed to complete manual handoff: #{inspect(reason)}"}
@@ -800,6 +1004,224 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp run_completion_effect(_state), do: :ok
+
+  defp settle_done_queue!(state) do
+    case QueueCoordinator.settle_generation(state.context.message_id, :done) do
+      {:ok, %{chat_id: chat_id}} ->
+        case QueueCoordinator.prepare_next(
+               chat_id,
+               boundary_message_id: state.context.message_id
+             ) do
+          {:error, reason} ->
+            raise CompletionEffectFailure,
+              message: "Failed to prepare queued generation: #{inspect(reason)}"
+
+          result ->
+            result
+        end
+
+      {:error, reason} ->
+        raise CompletionEffectFailure,
+          message: "Failed to settle completed generation queue: #{inspect(reason)}"
+    end
+  end
+
+  defp settle_terminal_queue!(state, status) when status in [:error, :canceled] do
+    case QueueCoordinator.settle_generation(state.context.message_id, status) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise CompletionEffectFailure,
+          message: "Failed to settle terminal generation queue: #{inspect(reason)}"
+    end
+  end
+
+  defp completion_suppressed?({:queue_boundary, {:ok, _context}}), do: true
+
+  defp completion_suppressed?({:handoff, %{queue_transfer: %{transferred_count: count}}})
+       when is_integer(count) and count > 0,
+       do: true
+
+  defp completion_suppressed?({:terminal_handoff, _payload, _transfer}), do: true
+  defp completion_suppressed?(_result), do: false
+
+  defp record_terminal_event!(state, status, suppressed?) do
+    case Notifications.record_generation_finished(state.context.message_id, status,
+           suppressed?: suppressed?
+         ) do
+      {:ok, _event} ->
+        :ok
+
+      {:duplicate, _event} ->
+        :ok
+
+      {:error, reason} ->
+        raise CompletionEffectFailure,
+          message: "Failed to record terminal generation event: #{inspect(reason)}"
+    end
+  end
+
+  defp persist_terminal_error_from_step(state, step_id, error_text)
+       when is_integer(step_id) do
+    case safe_chat_persist_value(state, :completion_effect_error, fn ->
+           Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
+           _ = settle_terminal_queue!(state, :error)
+           record_terminal_event!(state, :error, false)
+           :ok
+         end) do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp terminal_handoff_payload(step_id, opts) do
+    case Keyword.get(opts, :terminal_handoff) do
+      %{} = payload ->
+        payload
+
+      _other ->
+        step_id
+        |> Persistence.load_step_for_followup!()
+        |> Map.get(:results, [])
+        |> handoff_payload()
+    end
+  end
+
+  defp transfer_terminal_handoff(state, step_id, payload) do
+    child_chat_id = parse_int(Map.get(payload, "chat_id") || Map.get(payload, :chat_id))
+
+    if is_integer(child_chat_id) do
+      case QueueCoordinator.prepare_terminal_handoff(
+             state.context.message_id,
+             child_chat_id
+           ) do
+        {:ok, transfer} ->
+          generation_message_id = transfer.child_generation_message_id
+          queue_anchor_message_id = transfer.child_queue_anchor_message_id
+
+          canonical_payload =
+            payload
+            |> Map.put("generation_message_id", generation_message_id)
+            |> Map.put("queue_anchor_message_id", queue_anchor_message_id)
+
+          _ =
+            Persistence.enrich_handoff_tool_results!(
+              step_id,
+              child_chat_id,
+              canonical_payload
+            )
+
+          runtime_payload =
+            Map.put(canonical_payload, :prepared_context, transfer.prepared_context)
+
+          {:terminal_handoff, runtime_payload, transfer}
+
+        {:error, reason} ->
+          {:error, "Failed to transfer handoff queue: #{inspect(reason)}"}
+      end
+    else
+      {:error, "Invalid terminal handoff destination"}
+    end
+  end
+
+  defp finish_done_queue(state, {:ok, context}) do
+    QueueDispatcher.start_prepared(context)
+    NotificationsDispatcher.suppress_generation_finished(state.context.message_id, :done)
+  end
+
+  defp finish_done_queue(state, _queue_result) do
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
+  end
+
+  defp finish_terminal_handoff_queue(state, payload) do
+    child_chat_id = parse_int(Map.get(payload, "chat_id") || Map.get(payload, :chat_id))
+
+    case Map.get(payload, :prepared_context) do
+      %{} = context ->
+        QueueDispatcher.start_prepared(context)
+
+      _other ->
+        resume_terminal_handoff_generation(state, payload)
+    end
+
+    if is_integer(child_chat_id), do: QueueDispatcher.kick(child_chat_id)
+
+    NotificationsDispatcher.suppress_generation_finished(
+      state.context.message_id,
+      :done
+    )
+  end
+
+  defp resume_terminal_handoff_generation(state, payload) do
+    generation_message_id =
+      parse_int(
+        Map.get(payload, "generation_message_id") ||
+          Map.get(payload, :generation_message_id)
+      )
+
+    if is_integer(generation_message_id) do
+      actor = %User{id: state.context.owner_id}
+
+      case Subagent.resume_generation_if_needed(generation_message_id, actor) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Durable handoff generation start deferred " <>
+              "message_id=#{generation_message_id} reason=#{inspect(reason)}"
+          )
+      end
+    end
+
+    :ok
+  end
+
+  defp finish_manual_handoff_queue(
+         state,
+         %{chat: %{id: child_chat_id}, queue_transfer: %{transferred_count: count}}
+       )
+       when is_integer(child_chat_id) and count > 0 do
+    QueueDispatcher.kick(child_chat_id)
+
+    NotificationsDispatcher.suppress_generation_finished(
+      state.context.message_id,
+      :done
+    )
+  end
+
+  defp finish_manual_handoff_queue(state, %{queue_transfer: %{transferred_count: 0}}) do
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
+  end
+
+  defp finish_manual_handoff_queue(state, %{chat: %{id: child_chat_id}})
+       when is_integer(child_chat_id) do
+    case QueueDispatcher.handoff(state.context.message_id, child_chat_id, nil) do
+      {:transferred, _payload} ->
+        NotificationsDispatcher.suppress_generation_finished(
+          state.context.message_id,
+          :done
+        )
+
+      _other ->
+        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
+    end
+  end
+
+  defp finish_manual_handoff_queue(state, _result) do
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
+  end
+
+  defp finish_error_queue(state) do
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
+  end
+
+  defp maybe_finish_canceled_queue(state, :ok) do
+    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :canceled)
+  end
+
+  defp maybe_finish_canceled_queue(_state, _result), do: :ok
 
   defp finalize_error(state, error_text) do
     finalize_error(state, error_text, %{})
@@ -813,8 +1235,8 @@ defmodule IntellectualClub.Generation.Worker do
       |> RuntimeTrace.apply_event({:ensure_item, "error", :error, nil})
       |> RuntimeTrace.apply_event({:set_text, "error", :error, 1, to_string(error_text || "")})
 
-    _ =
-      safe_persist(state, :error, fn ->
+    result =
+      safe_chat_persist_value(state, :error, fn ->
         if durable_waiting_tools_step?(runtime_step) do
           Persistence.persist_error_from_step!(
             state.context.message_id,
@@ -828,9 +1250,13 @@ defmodule IntellectualClub.Generation.Worker do
             error_text
           )
         end
+
+        _ = settle_terminal_queue!(state, :error)
+        record_terminal_event!(state, :error, false)
+        :ok
       end)
 
-    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
+    if match?({:ok, :ok}, result), do: finish_error_queue(state)
     broadcast(state, {:error, state.context.message_id, error_text})
     {:stop, :normal, %{state | status: :error}}
   end
@@ -1219,69 +1645,21 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp safe_persist(%__MODULE__{} = state, status, fun) when is_function(fun, 0) do
-    message_id = state.context.message_id
-
-    try do
-      case fenced_call(state, fun) do
-        {:ok, _result} ->
-          :ok
-
-        {:error, reason} = error ->
-          if generation_fence_lost?(reason),
-            do: exit({:generation_lease_lost, reason}),
-            else: error
-      end
-    rescue
-      exception ->
-        Logger.warning(
-          "Generation persistence failed (message_id=#{message_id}, status=#{status}): #{Exception.message(exception)}"
-        )
-
-        {:error, exception}
-    catch
-      :exit, {:generation_lease_lost, _reason} = reason ->
-        exit(reason)
-
-      :exit, reason ->
-        Logger.warning(
-          "Generation persistence exited (message_id=#{message_id}, status=#{status}): #{inspect(reason)}"
-        )
-
-        {:error, reason}
-    end
-  end
-
-  defp safe_cancel_persist(%__MODULE__{} = state, fun) when is_function(fun, 0) do
-    message_id = state.context.message_id
-
-    try do
-      case fenced_call(state, fun) do
-        {:ok, _result} -> :ok
-        {:error, _reason} = error -> error
-      end
-    rescue
-      exception ->
-        Logger.warning(
-          "Generation cancellation persistence failed (message_id=#{message_id}): #{Exception.message(exception)}"
-        )
-
-        {:error, exception}
-    catch
-      :exit, reason ->
-        Logger.warning(
-          "Generation cancellation persistence exited (message_id=#{message_id}): #{inspect(reason)}"
-        )
-
-        {:error, reason}
-    end
-  end
-
   defp safe_persist_value(%__MODULE__{} = state, status, fun) when is_function(fun, 0) do
+    safe_persist_value(state, status, fun, &fenced_call/2)
+  end
+
+  defp safe_chat_persist_value(%__MODULE__{} = state, status, fun)
+       when is_function(fun, 0) do
+    safe_persist_value(state, status, fun, &chat_fenced_call/2)
+  end
+
+  defp safe_persist_value(%__MODULE__{} = state, status, fun, fence_fun)
+       when is_function(fun, 0) and is_function(fence_fun, 2) do
     message_id = state.context.message_id
 
     try do
-      case fenced_call(state, fun) do
+      case fence_fun.(state, fun) do
         {:error, reason} = error ->
           if generation_fence_lost?(reason),
             do: exit({:generation_lease_lost, reason}),
@@ -1315,6 +1693,18 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp fenced_call(%__MODULE__{lease: nil}, fun) when is_function(fun, 0) do
+    {:ok, fun.()}
+  end
+
+  defp chat_fenced_call(%__MODULE__{lease: %Lease{} = lease} = state, fun)
+       when is_function(fun, 0) do
+    Lease.with_chat_fence(lease, state.context.chat_id, fun,
+      allowed_statuses: [:generating],
+      required_role: :assistant
+    )
+  end
+
+  defp chat_fenced_call(%__MODULE__{lease: nil}, fun) when is_function(fun, 0) do
     {:ok, fun.()}
   end
 
@@ -1675,16 +2065,8 @@ defmodule IntellectualClub.Generation.Worker do
             finalize_handoff_tool_step(state, payload)
 
           nil ->
-            with {:ok, followup} <- build_followup_with_steering(state, persisted),
-                 {:ok, next_step} <-
-                   safe_persist_value(state, :step_done, fn ->
-                     Persistence.complete_step_and_start_next!(
-                       state.context.message_id,
-                       state.runtime_step.id,
-                       state.step_sequence + 1,
-                       followup.raw_request
-                     )
-                   end) do
+            with {:ok, followup, next_step} <-
+                   prepare_tool_followup(state, persisted) do
               continue_after_tool_step(state, followup, next_step, opts)
             else
               {:error, reason} ->
@@ -1717,9 +2099,8 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp finalize_handoff_tool_step(state, _payload) do
-    IntellectualClub.Notifications.suppress_generation_finished(state.context.message_id, :done)
-    finalize_done_from_step(state, state.runtime_step.id)
+  defp finalize_handoff_tool_step(state, payload) do
+    finalize_done_from_step(state, state.runtime_step.id, terminal_handoff: payload)
   end
 
   defp handoff_payload(results) when is_list(results) do
@@ -1748,17 +2129,74 @@ defmodule IntellectualClub.Generation.Worker do
           tools: current_tools_payload(state)
         })
 
-      case Map.get(persisted, :steering_items, []) do
-        [] ->
-          {:ok, followup}
-
-        steering_items ->
-          inject_steering_request(state, followup.raw_request, steering_items)
+      with {:ok, followup} <-
+             maybe_inject_steering(
+               state,
+               followup,
+               Map.get(persisted, :steering_items, [])
+             ),
+           {:ok, queued_messages} <-
+             QueuedMessages.list_pending_steers(state.context.message_id),
+           queued_specs = queued_steering_specs(queued_messages),
+           {:ok, followup} <-
+             maybe_inject_steering(
+               state,
+               followup,
+               Enum.map(queued_specs, &%{text: &1.text, placement: :before_response})
+             ) do
+        {:ok, followup, queued_specs}
       end
     rescue
       exception -> {:error, exception}
     catch
       kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  defp maybe_inject_steering(_state, followup, []), do: {:ok, followup}
+
+  defp maybe_inject_steering(state, followup, steering_items) do
+    inject_steering_request(state, followup.raw_request, steering_items)
+  end
+
+  defp prepare_tool_followup(state, persisted, attempt \\ 0) do
+    with {:ok, followup, queued_specs} <- build_followup_with_steering(state, persisted) do
+      result =
+        safe_persist_value(state, :step_done, fn ->
+          if queued_specs == [] do
+            Persistence.complete_step_and_start_next!(
+              state.context.message_id,
+              state.runtime_step.id,
+              state.step_sequence + 1,
+              followup.raw_request
+            )
+          else
+            Persistence.complete_step_and_start_next_with_queued_steering!(
+              state.context.message_id,
+              state.runtime_step.id,
+              state.step_sequence + 1,
+              followup.raw_request,
+              queued_specs
+            )
+          end
+        end)
+
+      case result do
+        {:ok, next_step} when is_map(next_step) ->
+          {:ok, followup, next_step}
+
+        {:ok, {:error, :queued_steering_changed}} when attempt < 8 ->
+          prepare_tool_followup(state, persisted, attempt + 1)
+
+        {:error, :queued_steering_changed} when attempt < 8 ->
+          prepare_tool_followup(state, persisted, attempt + 1)
+
+        {:ok, {:error, reason}} ->
+          {:error, reason}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1768,13 +2206,14 @@ defmodule IntellectualClub.Generation.Worker do
     next_sequence = next_state.step_sequence + 1
 
     runtime_step =
-      RuntimeTrace.new_step(
-        id: step_id,
-        sequence: next_sequence,
-        started_at: DateTime.utc_now(),
-        status: :waiting_provider,
-        raw_request: raw_request
-      )
+      Map.get(next_step, :runtime_step) ||
+        RuntimeTrace.new_step(
+          id: step_id,
+          sequence: next_sequence,
+          started_at: DateTime.utc_now(),
+          status: :waiting_provider,
+          raw_request: raw_request
+        )
 
     state =
       next_state

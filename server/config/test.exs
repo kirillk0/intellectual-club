@@ -33,6 +33,9 @@ config :intellectual_club,
   file_gc_enabled: false,
   recover_background_tasks_on_startup: false,
   recover_orphaned_generations_on_startup: false,
+  queue_dispatcher_reconcile: false,
+  web_push_dispatch_async: false,
+  web_push_generation_delivery_delay_ms: 0,
   token_signing_secret: "test-token-signing-secret",
   openai_oauth_req_options: [
     plug: {Req.Test, IntellectualClub.Llm.Auth.OpenAIOAuth}

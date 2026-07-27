@@ -11,6 +11,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Threads
@@ -237,6 +238,7 @@ defmodule IntellectualClub.Generation.Context do
         history_length: Map.get(request_snapshot, :history_length),
         initial_step_sequence: retry_step.sequence,
         initial_step_status: retry_step.status,
+        completion_effect: retry_completion_effect(message, actor),
         chunk_delay_ms:
           Keyword.get(
             opts,
@@ -721,6 +723,22 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp normalize_allowed_statuses(_other), do: [:error, :canceled]
+
+  defp retry_completion_effect(%ChatMessage{parent_id: parent_id}, actor)
+       when is_integer(parent_id) do
+    ChatMessageItem
+    |> Ash.Query.filter(
+      chat_message_step.chat_message_id == ^parent_id and type == :handoff_request
+    )
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(actor: actor)
+    |> case do
+      {:ok, %ChatMessageItem{}} -> :manual_handoff
+      _other -> nil
+    end
+  end
+
+  defp retry_completion_effect(_message, _actor), do: nil
 
   defp load_retry_step(message, opts) when is_map(message) and is_list(opts) do
     actor = Keyword.get(opts, :actor)

@@ -1,5 +1,5 @@
 import { mount, type VueWrapper } from '@vue/test-utils';
-import { ref } from 'vue';
+import { ref, type Component } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
 const viewModelMocks = vi.hoisted(() => ({
@@ -13,7 +13,7 @@ import { i18n, setPreferredLocale } from '@/i18n';
 
 let activeWrapper: VueWrapper | null = null;
 
-async function mountChatView() {
+async function mountChatView(stubs: Record<string, boolean | Component> = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/chats/:id', name: 'chat', component: { template: '<div />' } }],
@@ -24,6 +24,7 @@ async function mountChatView() {
   activeWrapper = mount(ChatView, {
     global: {
       plugins: [router, i18n],
+      stubs,
     },
   });
 
@@ -84,5 +85,98 @@ describe('ChatView loading state', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(wrapper.get('[role="status"] button').text()).toBe('Повторить сейчас');
     expect(document.querySelector('#toolbar-host')?.textContent).toContain('Закрыть');
+  });
+
+  it('shows Steer, Queue, and Cancel together and keeps the shortcut on Steer', async () => {
+    const submitComposer = vi.fn();
+    const queueMessage = vi.fn();
+    viewModelMocks.useChatViewModel.mockReturnValue({
+      loaded: ref(true),
+      chatUnavailable: ref(false),
+      chat: ref({ id: 1, bot_id: null, llm_configuration_id: 27 }),
+      chatSettingsReady: ref(true),
+      chatSettingsStatus: ref('ready'),
+      chatSettingsError: ref(''),
+      loadError: ref(''),
+      chatFullTitle: ref('Queue test'),
+      chatBaseTitle: ref('Queue test'),
+      gridColumns: ref('1fr'),
+      leftOpen: ref(false),
+      rightOpen: ref(false),
+      isMobile: ref(false),
+      branch: ref([]),
+      fallbackChildRelations: ref([]),
+      parentRelationBanner: ref(null),
+      handoffPending: ref(false),
+      sharedReadonly: ref(false),
+      continuingConversation: ref(false),
+      queuedMessages: ref([]),
+      queuedFollowUpHeadId: ref(null),
+      queueActionId: ref(null),
+      pendingFiles: ref([]),
+      activeGenerationId: ref(31),
+      cancelingGenerationId: ref(null),
+      steeringGenerationId: ref(null),
+      canSteerGeneration: ref(true),
+      supportsActiveGenerationSteering: ref(true),
+      hasSendPayload: ref(true),
+      hasFollowUpBacklog: ref(false),
+      sending: ref(false),
+      isConfigSyncPending: ref(false),
+      draft: ref('direction'),
+      canAttachFiles: ref(true),
+      fileAttachTitle: ref('Attach files'),
+      fileInputAccept: ref(''),
+      fileDropHint: ref('Drop files'),
+      steerButtonLabel: ref('Steer'),
+      queueButtonLabel: ref('Queue'),
+      cancelButtonLabel: ref('Cancel'),
+      generationPollReconnecting: ref(false),
+      editingMessage: ref(null),
+      editingQueuedMessage: ref(null),
+      queuedEditContents: ref([]),
+      queuedEditExistingAttachments: ref([]),
+      queuedEditPendingFiles: ref([]),
+      queuedEditError: ref(''),
+      savingQueuedEdit: ref(false),
+      submitComposer,
+      queueMessage,
+      steerGeneration: vi.fn(),
+      cancelActiveGeneration: vi.fn(),
+      handleCancelPointerDown: vi.fn(),
+      onPendingFilesSelected: vi.fn(),
+      addPendingFiles: vi.fn(),
+      backToChats: vi.fn(),
+      setMessageRef: vi.fn(),
+    });
+
+    const wrapper = await mountChatView({
+      StackToolbarTeleport: { template: '<div><slot /></div>' },
+      ChatHeaderToolbar: true,
+      ChatQueuedMessagesPanel: true,
+      ChatEditMessageModal: true,
+      ChatAttachmentPreviewModal: true,
+      ChatPromptModal: true,
+      ChatNoteModal: true,
+      ChatMessageStatsModal: true,
+      ChatStepDetailsModal: true,
+      ChatStepRawModal: true,
+      ShareWithGroupsModal: true,
+      BotSelectorModal: true,
+      KnowledgeBlocksPickerModal: true,
+      ChatMessageTreeOverlay: true,
+      Teleport: true,
+    });
+
+    expect(wrapper.findAll('.chat-composer__actions > button').map((button) => button.text())).toEqual([
+      'Attach',
+      'Steer',
+      'Queue',
+      'Cancel',
+    ]);
+    await wrapper.get('.chat-composer__queue').trigger('click');
+    expect(queueMessage).toHaveBeenCalledTimes(1);
+    await wrapper.get('textarea').trigger('keydown', { key: 'Enter', ctrlKey: true });
+    expect(submitComposer).toHaveBeenCalledTimes(1);
   });
 });

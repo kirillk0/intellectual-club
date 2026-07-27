@@ -38,6 +38,7 @@
                 v-model.number="selectedContentIndex"
                 class="message-edit-select"
                 aria-label="Select content"
+                :disabled="saving"
               >
                 <option v-for="idx in contents.length" :key="idx - 1" :value="idx - 1">
                   {{ `Content ${idx}` }}
@@ -50,6 +51,7 @@
               :value="selectedContentValue"
               rows="6"
               autofocus
+              :disabled="saving"
               :aria-label="contents.length > 1 ? `Message content ${selectedContentIndex + 1}` : 'Message content'"
               @paste="handleTextareaPaste"
               @input="(event) => updateAt(selectedContentIndex, (event.target as HTMLTextAreaElement).value)"
@@ -103,6 +105,7 @@
                   class="attachment-row__remove"
                   type="button"
                   aria-label="Remove attachment"
+                  :disabled="saving"
                   @click.stop="emit('remove-existing-attachment', attachment.id)"
                 >✕</button>
               </div>
@@ -135,6 +138,7 @@
                   class="attachment-row__remove"
                   type="button"
                   aria-label="Remove pending attachment"
+                  :disabled="saving"
                   @click.stop="emit('remove-pending-file', item.id)"
                 >✕</button>
               </div>
@@ -174,10 +178,11 @@ import {
   type PendingChatFile,
 } from '@/features/chat/attachments';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import { translate } from '@/i18n';
 
 interface Props {
   open: boolean;
-  mode: 'edit' | 'branch' | 'branch_new_chat';
+  mode: 'edit' | 'branch' | 'branch_new_chat' | 'queue_follow_up' | 'queue_steer';
   modelValue: string[];
   existingAttachments?: ExistingChatAttachment[];
   pendingFiles?: PendingChatFile[];
@@ -258,6 +263,7 @@ watch(
 );
 
 const updateAt = (idx: number, value: string) => {
+  if (saving.value) return;
   const next = [...contents.value];
   next[idx] = value;
   emit('update:modelValue', next);
@@ -266,9 +272,13 @@ const updateAt = (idx: number, value: string) => {
 const saving = computed(() => Boolean(props.saving));
 const errorText = computed(() => (props.error || '').trim());
 const showAttachments = computed(
-  () => props.mode === 'edit' || props.mode === 'branch' || props.mode === 'branch_new_chat'
+  () =>
+    props.mode === 'edit' ||
+    props.mode === 'branch' ||
+    props.mode === 'branch_new_chat' ||
+    props.mode === 'queue_follow_up'
 );
-const attachmentsEnabled = computed(() => Boolean(props.attachmentsEnabled));
+const attachmentsEnabled = computed(() => Boolean(props.attachmentsEnabled) && !saving.value);
 const hasAttachments = computed(
   () => existingAttachments.value.length > 0 || pendingFiles.value.length > 0
 );
@@ -277,9 +287,16 @@ const attachmentHelpText = computed(() => (props.attachmentHelp || '').trim());
 const attachmentDropHint = computed(() =>
   attachmentAccept.value === 'image/*' ? 'Drop images to attach' : 'Drop files to attach'
 );
-const title = computed(() => (props.mode === 'edit' ? 'Edit message' : 'Branch message'));
+const title = computed(() => {
+  if (props.mode === 'queue_follow_up') return translate('Edit queued message');
+  if (props.mode === 'queue_steer') return translate('Edit queued steer');
+  return props.mode === 'edit' ? 'Edit message' : 'Branch message';
+});
 const confirmLabel = computed(() => {
   if ((props.saveLabel || '').trim() !== '') return props.saveLabel || '';
+  if (props.mode === 'queue_follow_up' || props.mode === 'queue_steer') {
+    return saving.value ? translate('Saving…') : translate('Save');
+  }
   if (saving.value) return props.mode === 'edit' ? 'Saving…' : 'Branching…';
   if (props.mode === 'branch_new_chat') return 'Branch to new chat';
   return props.mode === 'branch' ? 'Branch' : 'Save';

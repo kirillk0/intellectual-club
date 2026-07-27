@@ -172,7 +172,7 @@ const getWebPushClientId = () => {
 const webPushChatNotificationTag = (chatId: number) => `chat:${chatId}`;
 
 const normalizeGenerationStatus = (status: string | null | undefined) =>
-  status === 'done' || status === 'error' ? status : null;
+  status === 'done' || status === 'error' || status === 'canceled' ? status : null;
 
 export const getWebPushRegistration = async () => {
   return getServiceWorkerRegistration();

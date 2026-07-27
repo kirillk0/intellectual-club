@@ -18,6 +18,7 @@ vi.mock('@/features/chat/chatEvents', () => ({
 
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import type { PendingChatFile } from '@/features/chat/attachments';
+import type { ChatQueuedMessage } from '@/features/chat/model/chatViewModel.shared';
 import type { ChatBranchMessage } from '@/types/api';
 
 const pendingFile = (): PendingChatFile => ({
@@ -36,10 +37,38 @@ const pendingFile = (): PendingChatFile => ({
   error: '',
 });
 
+const uploadedPendingFile = (id = 'pending-1'): PendingChatFile => ({
+  ...pendingFile(),
+  id,
+  uploadId: `upload-${id}`,
+  uploadStatus: 'uploaded',
+  uploadedBytes: 4,
+  progress: 1,
+});
+
+const queuedMessage = (id = 70): ChatQueuedMessage => ({
+  id,
+  chat_id: 12,
+  kind: 'follow_up',
+  status: 'pending',
+  anchor_message_id: 31,
+  contents: [{ id: id * 10, sequence: 1, kind: 'text', content_text: 'queued' }],
+});
+
+const queuedSteer = (id = 72): ChatQueuedMessage => ({
+  id,
+  chat_id: 12,
+  kind: 'steer',
+  status: 'pending',
+  target_generation_message_id: 31,
+  contents: [{ id: id * 10, sequence: 1, kind: 'text', content_text: 'change direction' }],
+});
+
 const createRuntime = (
   activeMessageId: number | null,
   supportsSteering = true,
-  autoScrollEnabled = false
+  autoScrollEnabled = false,
+  initialQueue: ChatQueuedMessage[] = []
 ) => {
   const branch = ref<ChatBranchMessage[]>(
     activeMessageId
@@ -48,6 +77,9 @@ const createRuntime = (
   );
   const activeGenerationId = ref(activeMessageId);
   const loadError = ref('');
+  const queuedMessages = ref(initialQueue);
+  const onQueuedMessageCreated = vi.fn();
+  const onQueuedMessagesUpdated = vi.fn();
 
   const runtime = useChatComposerRuntime({
     chatId: computed(() => 12),
@@ -63,12 +95,23 @@ const createRuntime = (
     waitForConfigSync: async () => true,
     activeGenerationId,
     cancelingGenerationId: ref(null),
+    queuedMessages,
     supportsSteering: computed(() => supportsSteering),
     autoScrollEnabled: computed(() => autoScrollEnabled),
     scrollToLastMessage: vi.fn(),
+    onQueuedMessageCreated,
+    onQueuedMessagesUpdated,
   });
 
-  return { runtime, branch, activeGenerationId, loadError };
+  return {
+    runtime,
+    branch,
+    activeGenerationId,
+    loadError,
+    queuedMessages,
+    onQueuedMessageCreated,
+    onQueuedMessagesUpdated,
+  };
 };
 
 const completedPoll = (messageId: number) => ({
@@ -107,7 +150,7 @@ describe('chat composer runtime', () => {
   });
 
   it('steers with text only, keeps pending files, and clears the acknowledged draft', async () => {
-    apiMocks.post.mockResolvedValueOnce({ status: 'ok', message_id: 31, step_id: 4 });
+    apiMocks.post.mockResolvedValueOnce({ queued_message: queuedSteer() });
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
     const { runtime } = createRuntime(31);
     const file = pendingFile();
@@ -129,7 +172,7 @@ describe('chat composer runtime', () => {
   });
 
   it('routes the shared Ctrl/Cmd+Enter submit action to steering during generation', async () => {
-    apiMocks.post.mockResolvedValueOnce({ status: 'ok', message_id: 31, step_id: 4 });
+    apiMocks.post.mockResolvedValueOnce({ queued_message: queuedSteer() });
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
     const { runtime } = createRuntime(31);
     runtime.draft.value = 'shortcut direction';
@@ -166,7 +209,7 @@ describe('chat composer runtime', () => {
   });
 
   it('does not clear text typed while steering is being acknowledged', async () => {
-    let acknowledge!: (value: { status: 'ok'; message_id: number; step_id: number }) => void;
+    let acknowledge!: (value: { queued_message: ChatQueuedMessage }) => void;
     apiMocks.post.mockReturnValueOnce(new Promise((resolve) => {
       acknowledge = resolve;
     }));
@@ -176,10 +219,120 @@ describe('chat composer runtime', () => {
 
     const request = runtime.steerGeneration();
     runtime.draft.value = 'new draft';
-    acknowledge({ status: 'ok', message_id: 31, step_id: 4 });
+    acknowledge({ queued_message: queuedSteer() });
     await request;
 
     expect(runtime.draft.value).toBe('new draft');
+  });
+
+  it('queues text and files while generating and clears only the acknowledged snapshot', async () => {
+    let acknowledge!: (value: { queued_message: ChatQueuedMessage }) => void;
+    apiMocks.post.mockReturnValueOnce(new Promise((resolve) => {
+      acknowledge = resolve;
+    }));
+    const { runtime, onQueuedMessageCreated } = createRuntime(31);
+    const submittedFile = uploadedPendingFile('submitted');
+    const laterFile = uploadedPendingFile('later');
+    runtime.pendingFiles.value = [submittedFile];
+    runtime.draft.value = 'first follow-up';
+
+    const request = runtime.queueMessage();
+    await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+    runtime.draft.value = 'new draft';
+    runtime.pendingFiles.value = [...runtime.pendingFiles.value, laterFile];
+    acknowledge({ queued_message: queuedMessage() });
+    await request;
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/12/queue', {
+      content: 'first follow-up',
+      upload_ids: ['upload-submitted'],
+    });
+    expect(runtime.draft.value).toBe('new draft');
+    expect(runtime.pendingFiles.value).toEqual([laterFile]);
+    expect(onQueuedMessageCreated).toHaveBeenCalledWith(queuedMessage());
+  });
+
+  it('appends composer submissions to an existing follow-up backlog', async () => {
+    apiMocks.post.mockResolvedValueOnce({ queued_message: queuedMessage(71) });
+    const { runtime } = createRuntime(null, true, false, [queuedMessage()]);
+    runtime.draft.value = 'tail';
+
+    await runtime.submitComposer();
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/12/queue', {
+      content: 'tail',
+    });
+    expect(runtime.sendButtonLabel.value).toBe('Queue');
+  });
+
+  it.each(['queue_not_empty', 'generation_active'])(
+    'falls back to enqueue when a direct send races with %s',
+    async (code) => {
+      const conflict = { status: 409, bodyJson: { code } };
+      apiMocks.isHttpError.mockImplementation((value) => value === conflict);
+      apiMocks.post
+        .mockRejectedValueOnce(conflict)
+        .mockResolvedValueOnce({ queued_message: queuedMessage() });
+      const { runtime } = createRuntime(null);
+      runtime.draft.value = 'racing follow-up';
+
+      await runtime.sendMessage();
+
+      expect(apiMocks.post).toHaveBeenNthCalledWith(
+        1,
+        '/api/bff/chat-generation/12/send',
+        { content: 'racing follow-up' }
+      );
+      expect(apiMocks.post).toHaveBeenNthCalledWith(
+        2,
+        '/api/bff/chat-generation/12/queue',
+        { content: 'racing follow-up' }
+      );
+      expect(runtime.draft.value).toBe('');
+    }
+  );
+
+  it('keeps a new draft when the server appends messages to the branch', async () => {
+    const { runtime, branch } = createRuntime(null);
+    runtime.draft.value = 'keep this';
+
+    branch.value = [
+      { id: 1, role: 'user', status: 'done', created_at: '2026-07-27T10:00:00Z' },
+      { id: 2, role: 'assistant', status: 'done', created_at: '2026-07-27T10:00:01Z' },
+    ];
+    await nextTick();
+
+    expect(runtime.draft.value).toBe('keep this');
+  });
+
+  it('hydrates queue updates returned by generation polling', async () => {
+    apiMocks.get.mockResolvedValueOnce({
+      ...completedPoll(31),
+      queued_messages: [queuedMessage()],
+    });
+    const { runtime, onQueuedMessagesUpdated } = createRuntime(31);
+
+    await runtime.startPolling(31);
+
+    expect(onQueuedMessagesUpdated).toHaveBeenCalledWith([queuedMessage()]);
+  });
+
+  it('discovers and polls the next server-created generation', async () => {
+    apiMocks.get
+      .mockResolvedValueOnce({
+        ...completedPoll(31),
+        active_generation_message_id: 32,
+      })
+      .mockResolvedValueOnce(completedPoll(32));
+    const { runtime } = createRuntime(31);
+
+    await runtime.startPolling(31);
+    await vi.waitFor(() => {
+      expect(apiMocks.get).toHaveBeenCalledWith(
+        '/api/bff/chat-messages/32/poll',
+        expect.objectContaining({ showErrorBanner: false })
+      );
+    });
   });
 
   it('hides steering when the active configuration does not support it', () => {

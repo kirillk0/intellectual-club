@@ -22,7 +22,7 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
     attribute :status, :atom do
       allow_nil?(false)
       public?(true)
-      constraints(one_of: [:done, :error])
+      constraints(one_of: [:done, :error, :canceled])
     end
 
     attribute :suppressed, :boolean do
@@ -35,7 +35,7 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
       allow_nil?(false)
       public?(true)
       default(0)
-      constraints(min: 0)
+      constraints(min: -1)
     end
 
     create_timestamp(:created_at)

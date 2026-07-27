@@ -183,6 +183,32 @@ describe('useChatViewModel loading', () => {
     expect(viewModel.chatSettingsStatus.value).toBe('ready');
   });
 
+  it('hydrates durable queued messages from the core chat state', async () => {
+    const state = chatState(1);
+    state.queued_messages = [
+      {
+        id: 91,
+        chat_id: 1,
+        kind: 'follow_up',
+        status: 'blocked',
+        anchor_message_id: 40,
+        blocked_reason: 'generation_error',
+        contents: [{ id: 911, sequence: 1, kind: 'text', content_text: 'Try once more' }],
+      },
+    ];
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(state);
+      return Promise.resolve(undefined);
+    });
+
+    const { viewModel } = await mountViewModel();
+    await vi.waitFor(() => expect(viewModel.loaded.value).toBe(true));
+
+    expect(viewModel.queuedMessages.value).toEqual(state.queued_messages);
+    expect(viewModel.hasFollowUpBacklog.value).toBe(true);
+  });
+
   it('shows an explicit recoverable state when secondary settings fail terminally', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     apiMocks.get.mockImplementation((path: string) => {

@@ -14,6 +14,7 @@ defmodule IntellectualClub.Chat.Subagent do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Tools.ExecutionContext
@@ -40,10 +41,20 @@ defmodule IntellectualClub.Chat.Subagent do
       when is_binary(fence_token) and is_function(fun, 0) do
     message_id = context.message_id || context.assistant_message_id
 
-    case Lease.with_token_fence(message_id, fence_token, fun,
-           allowed_statuses: [:generating],
-           required_role: :assistant
-         ) do
+    fence_result =
+      if is_integer(context.chat_id) do
+        Lease.with_token_chat_fence(message_id, context.chat_id, fence_token, fun,
+          allowed_statuses: [:generating],
+          required_role: :assistant
+        )
+      else
+        Lease.with_token_fence(message_id, fence_token, fun,
+          allowed_statuses: [:generating],
+          required_role: :assistant
+        )
+      end
+
+    case fence_result do
       {:ok, result} ->
         result
 
@@ -285,7 +296,12 @@ defmodule IntellectualClub.Chat.Subagent do
           :ok
 
         {:error, :no_steps_to_retry} ->
-          Persistence.cancel_orphaned_generating_message!(message_id)
+          case QueueCoordinator.cancel_generation(message_id,
+                 error_detail: "Orphaned generation (worker not found)"
+               ) do
+            result when result in [:canceled, :not_generating, :not_found] -> :ok
+            {:error, reason} -> {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, "Failed to resume subagent: #{inspect(reason)}"}
@@ -307,7 +323,10 @@ defmodule IntellectualClub.Chat.Subagent do
       :not_found ->
         case Ash.get(ChatMessage, message_id, actor: actor) do
           {:ok, %ChatMessage{status: :generating}} ->
-            Persistence.cancel_orphaned_generating_message!(message_id)
+            _ =
+              QueueCoordinator.cancel_generation(message_id,
+                error_detail: "Orphaned generation (worker not found)"
+              )
 
           _other ->
             :ok

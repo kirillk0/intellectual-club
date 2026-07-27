@@ -9,6 +9,7 @@ import { useChatHeaderControls } from '@/features/chat/model/useChatHeaderContro
 import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
 import { useChatLibraryDraft } from '@/features/chat/model/useChatLibraryDraft';
 import { useChatMessageActions } from '@/features/chat/model/useChatMessageActions';
+import { useChatQueueRuntime } from '@/features/chat/model/useChatQueueRuntime';
 import {
   useChatUiChrome,
 } from '@/features/chat/model/useChatUiChrome';
@@ -20,6 +21,7 @@ import {
 } from '@/features/push/webPush';
 import {
   type ChatIdleStatePayload,
+  type ChatQueuedMessage,
   type ChatPromptContextPayload,
   type ChatSettingsStatePayload,
   type ChatStatePayload,
@@ -150,6 +152,7 @@ export function useChatViewModel() {
   const canEdit = computed(() => chat.value?.can_edit !== false);
   const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
   const branch = ref<ChatBranchMessage[]>([]);
+  const queuedMessages = ref<ChatQueuedMessage[]>([]);
   const relations = ref<ChatRelations>(emptyChatRelations());
   const continuationNav = ref<ChatContinuationNavItem[]>([]);
   const counters = ref<Counters>({
@@ -368,6 +371,22 @@ export function useChatViewModel() {
     return configuration?.supports_steering === true;
   });
 
+  const replaceQueuedMessages = (messages: ChatQueuedMessage[]) => {
+    queuedMessages.value = Array.isArray(messages) ? messages : [];
+  };
+
+  const upsertQueuedMessage = (message: ChatQueuedMessage) => {
+    if (message.status === 'delivered' || message.status === 'canceled') {
+      queuedMessages.value = queuedMessages.value.filter((item) => item.id !== message.id);
+      return;
+    }
+
+    const exists = queuedMessages.value.some((item) => item.id === message.id);
+    queuedMessages.value = exists
+      ? queuedMessages.value.map((item) => item.id === message.id ? message : item)
+      : [...queuedMessages.value, message];
+  };
+
   const composerRuntime = useChatComposerRuntime({
     chatId,
     branch,
@@ -377,12 +396,15 @@ export function useChatViewModel() {
     waitForConfigSync: headerControls.waitForConfigSync,
     activeGenerationId,
     cancelingGenerationId,
+    queuedMessages,
     supportsSteering: activeGenerationSupportsSteering,
     draftReady: computed(() => loaded.value && Boolean(chat.value)),
     autoScrollEnabled: computed(() => layer.active.value),
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
+    onQueuedMessagesUpdated: replaceQueuedMessages,
+    onQueuedMessageCreated: upsertQueuedMessage,
     onGenerationSettled: async (messageId, status) => {
       const settledChatId = chatId.value;
       markWebPushGenerationSeen(chatId.value, messageId, status);
@@ -417,6 +439,18 @@ export function useChatViewModel() {
   getOpenWorkingPollRequest = messageActions.getOpenWorkingPollRequest;
   applyWorkingPoll = messageActions.applyWorkingPoll;
 
+  const queueRuntime = useChatQueueRuntime({
+    chatId,
+    queuedMessages,
+    readOnly: sharedReadonly,
+    loadError,
+    fileUploadPolicy: headerControls.fileUploadPolicy,
+    ensurePendingFilesUploaded: composerRuntime.ensurePendingFilesUploaded,
+    removePendingFileFromCollection: composerRuntime.removePendingFileFromCollection,
+    clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
+    refreshChat: () => loadChatSafe({ mode: 'soft', includeSettings: false }),
+  });
+
   const inspectors = useChatInspectors({
     compiledPromptText,
     loadError,
@@ -428,6 +462,8 @@ export function useChatViewModel() {
     composerPendingFiles: composerRuntime.pendingFiles,
     editPendingFiles: messageActions.editPendingFiles,
     editExistingAttachments: messageActions.editExistingAttachments,
+    queueEditPendingFiles: queueRuntime.editPendingFiles,
+    queueEditExistingAttachments: queueRuntime.editExistingAttachments,
   });
 
   const libraryDraft = useChatLibraryDraft({
@@ -605,6 +641,7 @@ export function useChatViewModel() {
       composerRuntime.stopPolling();
       activeGenerationId.value = null;
       cancelingGenerationId.value = null;
+      queuedMessages.value = [];
       artifactToolsAvailable.value = false;
       chatBlockCount.value = 0;
       chatToolCount.value = 0;
@@ -645,6 +682,7 @@ export function useChatViewModel() {
       branch.value = payload.branch || [];
       relations.value = payload.relations || emptyChatRelations();
       continuationNav.value = payload.continuation_nav || [];
+      replaceQueuedMessages(payload.queued_messages || []);
       chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
       composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
 
@@ -690,6 +728,7 @@ export function useChatViewModel() {
       branch.value = [];
       relations.value = emptyChatRelations();
       continuationNav.value = [];
+      queuedMessages.value = [];
       chatIdleRevision.value = null;
       chatBlockCount.value = 0;
       chatToolCount.value = 0;
@@ -1018,6 +1057,7 @@ export function useChatViewModel() {
     stopChatIdlePolling();
     void composerRuntime.dispose();
     void messageActions.dispose();
+    void queueRuntime.dispose();
     contextPanel.dispose();
     inspectors.dispose();
     document.removeEventListener('visibilitychange', composerRuntime.handleVisibilityChange);
@@ -1176,8 +1216,11 @@ export function useChatViewModel() {
     sending: composerRuntime.sending,
     steeringGenerationId: composerRuntime.steeringGenerationId,
     hasSendPayload: composerRuntime.hasSendPayload,
+    hasFollowUpBacklog: composerRuntime.hasFollowUpBacklog,
     canSteerGeneration: composerRuntime.canSteerGeneration,
+    supportsActiveGenerationSteering: activeGenerationSupportsSteering,
     sendButtonLabel: composerRuntime.sendButtonLabel,
+    queueButtonLabel: composerRuntime.queueButtonLabel,
     cancelButtonLabel: composerRuntime.cancelButtonLabel,
     steerButtonLabel: composerRuntime.steerButtonLabel,
     activeGenerationId,
@@ -1185,10 +1228,28 @@ export function useChatViewModel() {
     generationPollReconnecting: composerRuntime.generationPollReconnecting,
     handleCancelPointerDown: composerRuntime.handleCancelPointerDown,
     sendMessage: composerRuntime.sendMessage,
+    queueMessage: composerRuntime.queueMessage,
     continueGeneration: composerRuntime.continueGeneration,
     steerGeneration: composerRuntime.steerGeneration,
     submitComposer: composerRuntime.submitComposer,
     cancelActiveGeneration: composerRuntime.cancelActiveGeneration,
+    queuedMessages: queueRuntime.visibleQueuedMessages,
+    queuedFollowUpHeadId: queueRuntime.headFollowUpId,
+    queueActionId: queueRuntime.queueActionId,
+    editingQueuedMessage: queueRuntime.editingQueuedMessage,
+    queuedEditContents: queueRuntime.editContents,
+    queuedEditExistingAttachments: queueRuntime.editExistingAttachments,
+    queuedEditPendingFiles: queueRuntime.editPendingFiles,
+    queuedEditError: queueRuntime.editError,
+    savingQueuedEdit: queueRuntime.savingEdit,
+    startQueuedEdit: queueRuntime.startEdit,
+    cancelQueuedEdit: queueRuntime.cancelEdit,
+    addQueuedEditPendingFiles: queueRuntime.addEditPendingFiles,
+    removeQueuedEditPendingFile: queueRuntime.removeEditPendingFile,
+    removeQueuedEditExistingAttachment: queueRuntime.removeEditExistingAttachment,
+    saveQueuedEdit: queueRuntime.saveEdit,
+    removeFromQueue: queueRuntime.removeFromQueue,
+    sendNextQueuedMessage: queueRuntime.sendNext,
     editingMessage: messageActions.editingMessage,
     modalMode: messageActions.modalMode,
     editContents: messageActions.editContents,
