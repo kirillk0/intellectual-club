@@ -47,6 +47,8 @@ defmodule IntellectualClub.DataCase do
   def stop_background_test_tasks do
     terminate_dynamic_children(IntellectualClub.BackgroundTasks.Supervisor)
     terminate_dynamic_children(IntellectualClub.BackgroundTasks.ExecutionSupervisor)
+    terminate_dynamic_children(IntellectualClub.Generation.Supervisor)
+    terminate_dynamic_children(IntellectualClub.Notifications.Dispatcher)
     :ok
   end
 
