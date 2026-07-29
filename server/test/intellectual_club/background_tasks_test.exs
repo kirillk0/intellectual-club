@@ -169,6 +169,74 @@ defmodule IntellectualClub.BackgroundTasksTest do
              |> Ash.read!(actor: actor)
   end
 
+  test "source lifecycle cancellation marks only active tasks" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    unrelated_source = create_source_tool_call!(actor)
+
+    queued =
+      create_background_task!(
+        actor,
+        source
+        |> source_message_attrs(actor)
+        |> Map.put(:status, :queued)
+      )
+
+    running =
+      create_background_task!(
+        actor,
+        source
+        |> source_message_attrs(actor)
+        |> Map.merge(%{status: :running, started_at: DateTime.utc_now()})
+      )
+
+    completed =
+      create_background_task!(actor, source_message_attrs(source, actor))
+      |> then(fn task ->
+        assert {:ok, completed} = BackgroundTasks.mark_completed(task, %{text: "done"})
+        completed
+      end)
+
+    unrelated =
+      create_background_task!(actor, source_message_attrs(unrelated_source, actor))
+
+    requested_ids = BackgroundTasks.request_cancel_for_source_message!(source.message.id)
+
+    assert MapSet.new(requested_ids) == MapSet.new([queued.id, running.id])
+
+    assert {:ok, %{status: :queued, cancel_requested: true}} =
+             BackgroundTasks.fetch_internal(queued.id)
+
+    assert {:ok, %{status: :running, cancel_requested: true}} =
+             BackgroundTasks.fetch_internal(running.id)
+
+    assert {:ok, %{status: :completed, cancel_requested: false}} =
+             BackgroundTasks.fetch_internal(completed.id)
+
+    assert {:ok, %{status: :queued, cancel_requested: false}} =
+             BackgroundTasks.fetch_internal(unrelated.id)
+  end
+
+  test "claim fails closed after the source generation becomes terminal" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    task = create_background_task!(actor, source_message_attrs(source, actor))
+
+    _done =
+      source.message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :done, finished_at: DateTime.utc_now()},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert {:ok, canceled} = BackgroundTasks.mark_running(task)
+    assert canceled.status == :canceled
+    assert canceled.cancel_requested == true
+    assert canceled.started_at == nil
+  end
+
   test "execution context is rebuilt from its persisted JSON shape" do
     %{user: actor} = user_fixture()
     created_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
@@ -257,13 +325,19 @@ defmodule IntellectualClub.BackgroundTasksTest do
 
   test "live reaper fails a running SSH task as execution_lost without rerunning it" do
     %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
 
     task =
-      create_background_task!(actor, %{
-        status: :running,
-        started_at: DateTime.utc_now(),
-        arguments: %{"command" => "non-idempotent-command"}
-      })
+      create_background_task!(
+        actor,
+        source
+        |> source_message_attrs(actor)
+        |> Map.merge(%{
+          status: :running,
+          started_at: DateTime.utc_now(),
+          arguments: %{"command" => "non-idempotent-command"}
+        })
+      )
 
     test_pid = self()
 
@@ -358,7 +432,8 @@ defmodule IntellectualClub.BackgroundTasksTest do
 
   test "live reaper does not duplicate an already active worker" do
     %{user: actor} = user_fixture()
-    task = create_background_task!(actor, %{status: :queued})
+    source = create_source_tool_call!(actor)
+    task = create_background_task!(actor, source_message_attrs(source, actor))
     execution_supervisor = IntellectualClub.BackgroundTasks.ExecutionSupervisor
 
     :ok = :sys.suspend(execution_supervisor)
@@ -384,6 +459,55 @@ defmodule IntellectualClub.BackgroundTasksTest do
 
     :ok = :sys.resume(execution_supervisor)
     assert wait_for_terminal_status(task.id, actor.id) == "failed"
+  end
+
+  test "live reaper cancels a task with a terminal source even when its worker is alive" do
+    %{user: actor} = user_fixture()
+    source = create_source_tool_call!(actor)
+    task = create_background_task!(actor, source_message_attrs(source, actor))
+    execution_supervisor = IntellectualClub.BackgroundTasks.ExecutionSupervisor
+
+    :ok = :sys.suspend(execution_supervisor)
+
+    on_exit(fn ->
+      case Process.whereis(execution_supervisor) do
+        pid when is_pid(pid) -> _ = :sys.resume(pid)
+        _other -> :ok
+      end
+    end)
+
+    assert :ok = Reaper.sweep()
+    [{worker_pid, _value}] = wait_for_worker(task.id)
+    assert Process.alive?(worker_pid)
+
+    _done =
+      source.message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :done, finished_at: DateTime.utc_now()},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert [task_id] = BackgroundTasks.request_cancel_for_source_message!(source.message.id)
+    assert task_id == task.id
+
+    reaper = Task.async(fn -> Reaper.sweep() end)
+    :ok = :sys.resume(execution_supervisor)
+    assert :ok = Task.await(reaper, 12_000)
+    assert wait_for_terminal_status(task.id, actor.id) == "canceled"
+    assert Registry.lookup(IntellectualClub.BackgroundTasks.ProcessRegistry, task.id) == []
+  end
+
+  test "live reaper cancels active tasks whose source is missing" do
+    %{user: actor} = user_fixture()
+    task = create_background_task!(actor, %{status: :queued})
+
+    assert :ok = Reaper.sweep()
+    assert {:ok, snapshot} = BackgroundTasks.snapshot(task.id, nil, actor.id)
+    assert snapshot["status"] == "canceled"
+    assert snapshot["cancel_requested"] == true
+    assert Registry.lookup(IntellectualClub.BackgroundTasks.ProcessRegistry, task.id) == []
   end
 
   test "a waiter execution_lost result cannot beat a durable cancel request" do
@@ -691,6 +815,19 @@ defmodule IntellectualClub.BackgroundTasksTest do
       |> Ash.create!(actor: actor)
 
     %{chat: chat, message: message, step: step, item: item}
+  end
+
+  defp source_message_attrs(source, actor) do
+    %{
+      source_chat_id: source.chat.id,
+      source_message_id: source.message.id,
+      execution_context: %{
+        "owner_id" => actor.id,
+        "chat_id" => source.chat.id,
+        "message_id" => source.message.id,
+        "assistant_message_id" => source.message.id
+      }
+    }
   end
 
   defp create_ssh_tool_instance!(actor) do

@@ -12,6 +12,7 @@ defmodule IntellectualClub.Generation.Worker do
   require Logger
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Subagent
@@ -677,12 +678,17 @@ defmodule IntellectualClub.Generation.Worker do
              end
 
              _ = settle_terminal_queue!(state, :canceled)
+             _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
              record_terminal_event!(state, :canceled, false)
              :ok
            end) do
         {:ok, :ok} -> :ok
         {:error, _reason} = error -> error
       end
+
+    if result == :ok do
+      BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
+    end
 
     {result, %{state | status: :canceled}}
   end
@@ -917,18 +923,26 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp finalize_done_from_step(state, step_id, opts \\ [])
        when is_integer(step_id) and is_list(opts) do
-    case safe_chat_persist_value(state, :done, fn ->
-           effect = durable_completion_effect!(state, step_id, opts)
-           Persistence.persist_completed_from_step!(state.context.message_id, step_id)
+    result =
+      safe_chat_persist_value(state, :done, fn ->
+        effect = durable_completion_effect!(state, step_id, opts)
+        Persistence.persist_completed_from_step!(state.context.message_id, step_id)
+        _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
 
-           result =
-             if effect == :ok,
-               do: {:queue_boundary, settle_done_queue!(state)},
-               else: effect
+        result =
+          if effect == :ok,
+            do: {:queue_boundary, settle_done_queue!(state)},
+            else: effect
 
-           record_terminal_event!(state, :done, completion_suppressed?(result))
-           result
-         end) do
+        record_terminal_event!(state, :done, completion_suppressed?(result))
+        result
+      end)
+
+    if match?({:ok, _result}, result) do
+      BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
+    end
+
+    case result do
       {:ok, {:queue_boundary, queue_result}} ->
         finish_done_queue(state, queue_result)
         broadcast(state, {:done, state.context.message_id})
@@ -1067,6 +1081,7 @@ defmodule IntellectualClub.Generation.Worker do
     case safe_chat_persist_value(state, :completion_effect_error, fn ->
            Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
            _ = settle_terminal_queue!(state, :error)
+           _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
            record_terminal_event!(state, :error, false)
            :ok
          end) do
@@ -1214,6 +1229,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp finish_error_queue(state) do
+    BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
     NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
   end
 
@@ -1252,6 +1268,7 @@ defmodule IntellectualClub.Generation.Worker do
         end
 
         _ = settle_terminal_queue!(state, :error)
+        _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
         record_terminal_event!(state, :error, false)
         :ok
       end)

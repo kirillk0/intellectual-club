@@ -3,6 +3,8 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
 
   require Ash.Query
 
+  alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessages
@@ -139,6 +141,7 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     %{user: actor} = user_fixture()
     {chat, _root, _anchor} = create_chat_with_anchor!(actor)
     generation = create_generating_assistant!(chat, actor)
+    background_task = create_background_task!(generation, actor)
 
     assert {:ok, queued} =
              QueuedMessages.enqueue_follow_up(chat.id, %{content: "After cancellation"}, actor)
@@ -164,6 +167,48 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
 
     assert [%WebPushGenerationEvent{suppressed: false, delivered_count: -1}] =
              canceled_events_for(generation.id, actor)
+
+    assert wait_for_background_status!(background_task.id, actor, :canceled).cancel_requested ==
+             true
+  end
+
+  test "done, error, and canceled boundaries cancel active background tasks only" do
+    %{user: actor} = user_fixture()
+
+    Enum.each([:done, :error, :canceled], fn terminal_status ->
+      {chat, _root, _anchor} = create_chat_with_anchor!(actor)
+      generation = create_generating_assistant!(chat, actor)
+      queued = create_background_task!(generation, actor)
+
+      running =
+        create_background_task!(generation, actor, %{
+          status: :running,
+          started_at: DateTime.utc_now()
+        })
+
+      completed = create_background_task!(generation, actor)
+      assert {:ok, completed} = BackgroundTasks.mark_completed(completed, %{text: "done"})
+
+      {unrelated_chat, _root, _anchor} = create_chat_with_anchor!(actor)
+      unrelated_generation = create_generating_assistant!(unrelated_chat, actor)
+      unrelated = create_background_task!(unrelated_generation, actor)
+
+      set_generation_status!(generation, terminal_status, actor)
+
+      refute match?(
+               {:error, _reason},
+               QueueDispatcher.generation_finished(generation.id, terminal_status)
+             )
+
+      assert wait_for_background_status!(queued.id, actor, :canceled).cancel_requested == true
+      assert wait_for_background_status!(running.id, actor, :canceled).cancel_requested == true
+
+      assert %BackgroundTask{status: :completed, cancel_requested: false} =
+               Ash.get!(BackgroundTask, completed.id, actor: actor)
+
+      assert %BackgroundTask{status: :queued, cancel_requested: false} =
+               Ash.get!(BackgroundTask, unrelated.id, actor: actor)
+    end)
   end
 
   test "branch changes pause the queue and send-next reanchors it to the active branch" do
@@ -422,6 +467,50 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp create_background_task!(generation, actor, attrs \\ %{}) do
+    base = %{
+      kind: "ssh_command",
+      adapter: "ssh",
+      status: :queued,
+      function_name: "run_command",
+      arguments: %{"command" => "echo test"},
+      execution_context: %{
+        "owner_id" => actor.id,
+        "chat_id" => generation.chat_id,
+        "message_id" => generation.id,
+        "assistant_message_id" => generation.id
+      },
+      runner_ref: %{},
+      source_chat_id: generation.chat_id,
+      source_message_id: generation.id
+    }
+
+    BackgroundTask
+    |> Ash.Changeset.for_create(:create, Map.merge(base, attrs), actor: actor)
+    |> Ash.create!(actor: actor)
+  end
+
+  defp wait_for_background_status!(task_id, actor, wanted_status) do
+    deadline = System.monotonic_time(:millisecond) + 4_000
+    do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
+  end
+
+  defp do_wait_for_background_status!(task_id, actor, wanted_status, deadline) do
+    task = Ash.get!(BackgroundTask, task_id, actor: actor)
+
+    cond do
+      task.status == wanted_status ->
+        task
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(20)
+        do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
+
+      true ->
+        flunk("Background task #{task_id} did not reach #{inspect(wanted_status)}")
+    end
   end
 
   defp canceled_events_for(message_id, actor) do

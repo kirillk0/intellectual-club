@@ -20,6 +20,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -1072,7 +1073,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert hd(steps).status == :done
   end
 
-  test "durable background spawn remains authorized after its parent generation is canceled" do
+  test "durable background spawn is rejected after its parent generation is canceled" do
     %{user: actor} = user_fixture()
     brief = "Detached spawn"
     prompt = "Finish after the parent is canceled."
@@ -1085,16 +1086,14 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         generation_fence_token: lease.fence_token
       )
 
-    assert :canceled =
-             Persistence.cancel_generating_message!(parent.message.id,
-               error_detail: nil
-             )
+    assert :canceled = QueueCoordinator.cancel_generation(parent.message.id, error_detail: nil)
 
     assert :ok = Lease.release(lease)
+    assert wait_for_background_status!(background_task.id, actor.id, "canceled", 6_000)
     context = BackgroundTasks.execution_context(background_task)
     assert context.generation_fence_token != nil
 
-    assert {:completed, %ExecutionResult{}} =
+    assert {:error, _reason} =
              Spawn.execute_background(
                background_task,
                parent.tool_instance,
@@ -1103,9 +1102,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
                context
              )
 
-    [child_chat_id] = fork_child_ids_for_call(actor, parent.call.item_id)
-    child = Ash.get!(Chat, child_chat_id, actor: actor, load: [:last_message])
-    assert child.last_message.status == :done
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
   end
 
   test "background spawn persists spawn refs and completes through its adapter" do

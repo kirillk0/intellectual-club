@@ -7,6 +7,8 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   """
 
   alias IntellectualClub.Accounts.User
+  alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
@@ -32,6 +34,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     ChatMessageContent,
     QueuedMessage,
     QueuedMessageContent,
+    BackgroundTask,
     WebPushGenerationEvent
   ]
 
@@ -122,6 +125,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
               {:error, :stale_generation_boundary}
 
             true ->
+              _ = BackgroundTasks.request_cancel_for_source_message!(message_id)
               queue = lock_active_queue!(chat_id)
               actor = %User{id: owner_id}
               converted = convert_pending_steers!(queue, message, status, actor)
@@ -170,6 +174,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
                 actor = %User{id: owner_id}
                 _ = convert_pending_steers!(queue, canceled_message, :canceled, actor)
                 _ = apply_follow_up_boundary!(queue, canceled_message, :canceled, actor)
+                _ = BackgroundTasks.request_cancel_for_source_message!(message_id)
                 record_canceled_event!(message_id)
                 :canceled
 
@@ -181,6 +186,14 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
           end
         end)
         |> unwrap_cancel_result()
+        |> then(fn
+          :canceled = result ->
+            BackgroundTasks.cancel_for_source_message_async(message_id)
+            result
+
+          result ->
+            result
+        end)
 
       {:error, :not_found} ->
         :not_found

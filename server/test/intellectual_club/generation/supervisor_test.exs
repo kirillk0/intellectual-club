@@ -214,7 +214,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
   end
 
-  test "canceling a parent skips an active background fork root" do
+  test "canceling a parent cancels an active background fork task" do
     %{user: actor} = user_fixture()
     test_pid = self()
 
@@ -232,7 +232,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     fork_message = start_blocking_generation!(fork_chat, actor, test_pid, "Background fork")
 
-    _task =
+    task =
       BackgroundTask
       |> Ash.Changeset.for_create(
         :create,
@@ -251,6 +251,29 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       )
       |> Ash.create!(actor: actor)
 
+    nested_task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "ssh_command",
+          adapter: "ssh",
+          status: :queued,
+          function_name: "run_command",
+          arguments: %{"command" => "echo nested"},
+          execution_context: %{
+            "owner_id" => actor.id,
+            "chat_id" => fork_chat.id,
+            "message_id" => fork_message.id,
+            "assistant_message_id" => fork_message.id
+          },
+          source_chat_id: fork_chat.id,
+          source_message_id: fork_message.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     parent_message_id = parent_message.id
     fork_message_id = fork_message.id
 
@@ -259,20 +282,13 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
     assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert Ash.get!(ChatMessage, fork_message.id, actor: actor).status == :generating
-
-    assert {:ok, %{status: :generating}} =
-             GenerationSupervisor.get_generation_state(fork_message.id)
-
-    assert :ok =
-             GenerationSupervisor.cancel_generation(fork_message.id,
-               include_background_tasks?: true
-             )
-
     assert wait_for_status!(fork_message.id, actor, :canceled).status == :canceled
+    assert wait_for_background_status!(task.id, actor, :canceled).cancel_requested == true
+    assert wait_for_background_status!(nested_task.id, actor, :canceled).cancel_requested == true
+    assert GenerationSupervisor.get_generation_state(fork_message.id) == :not_found
   end
 
-  test "canceling a parent skips an active background spawn root" do
+  test "canceling a parent cancels an active background spawn task" do
     %{user: actor} = user_fixture()
     test_pid = self()
 
@@ -290,7 +306,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     spawn_message = start_blocking_generation!(spawn_chat, actor, test_pid, "Background spawn")
 
-    _task =
+    task =
       BackgroundTask
       |> Ash.Changeset.for_create(
         :create,
@@ -317,17 +333,9 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
     assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert Ash.get!(ChatMessage, spawn_message.id, actor: actor).status == :generating
-
-    assert {:ok, %{status: :generating}} =
-             GenerationSupervisor.get_generation_state(spawn_message.id)
-
-    assert :ok =
-             GenerationSupervisor.cancel_generation(spawn_message.id,
-               include_background_tasks?: true
-             )
-
     assert wait_for_status!(spawn_message.id, actor, :canceled).status == :canceled
+    assert wait_for_background_status!(task.id, actor, :canceled).cancel_requested == true
+    assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
   end
 
   test "prepared generation preserves its message while canceling other orphans" do
@@ -523,6 +531,11 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     do_wait_for_status!(message_id, actor, wanted_status, deadline)
   end
 
+  defp wait_for_background_status!(task_id, actor, wanted_status) do
+    deadline = System.monotonic_time(:millisecond) + 4_000
+    do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
+  end
+
   defp item_text(item) do
     item.contents
     |> Enum.filter(&(&1.kind == :text))
@@ -541,6 +554,21 @@ defmodule IntellectualClub.Generation.SupervisorTest do
         do_wait_for_status!(message_id, actor, wanted_status, deadline)
       else
         flunk("Message #{message_id} did not reach #{inspect(wanted_status)}")
+      end
+    end
+  end
+
+  defp do_wait_for_background_status!(task_id, actor, wanted_status, deadline) do
+    task = Ash.get!(BackgroundTask, task_id, actor: actor)
+
+    if task.status == wanted_status do
+      task
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(20)
+        do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
+      else
+        flunk("Background task #{task_id} did not reach #{inspect(wanted_status)}")
       end
     end
   end

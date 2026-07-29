@@ -5,10 +5,26 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.BackgroundTasks.Supervisor, as: TaskSupervisor
   alias IntellectualClub.BackgroundTasks.Worker
+  alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.Threads
 
   test "worker retries an initial database claim failure" do
     %{user: actor} = user_fixture()
-    task = create_background_task!(actor, %{status: :queued})
+    source = create_source_message!(actor)
+
+    task =
+      create_background_task!(actor, %{
+        status: :queued,
+        source_chat_id: source.chat.id,
+        source_message_id: source.message.id,
+        execution_context: %{
+          "owner_id" => actor.id,
+          "chat_id" => source.chat.id,
+          "message_id" => source.message.id,
+          "assistant_message_id" => source.message.id
+        }
+      })
 
     assert {:ok, worker_pid} = TaskSupervisor.start_task(task.id)
 
@@ -91,6 +107,26 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
     else
       task
     end
+  end
+
+  defp create_source_message!(actor) do
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Run", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    %{chat: chat, message: message}
   end
 
   defp wait_until(fun, timeout_ms \\ 2_000) when is_function(fun, 0) do
