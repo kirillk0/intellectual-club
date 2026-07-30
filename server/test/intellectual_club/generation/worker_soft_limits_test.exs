@@ -3,6 +3,7 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
 
   import Plug.Conn
 
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
@@ -50,6 +51,9 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
               {{"No scripted response for #{request_path}", 500}, %{state | requests: requests}}
           end
         end)
+
+      response_chunks =
+        if is_function(response_chunks, 0), do: response_chunks.(), else: response_chunks
 
       conn =
         conn
@@ -690,6 +694,247 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     assert length(Map.get(requests, "/chat/completions", [])) == 2
   end
 
+  test "handoff transfers an active background task to the child generation" do
+    test_pid = self()
+
+    handoff_call = %{
+      "id" => "call_handoff_with_background_task",
+      "type" => "function",
+      "function" => %{
+        "name" => "agent_management__handoff",
+        "arguments" =>
+          Jason.encode!(%{
+            "summary" => "Background task 00000000-0000-0000-0000-000000000000 is still queued."
+          })
+      }
+    }
+
+    parent_chunks =
+      sse_chunks([
+        %{
+          "id" => "chatcmpl-handoff-background-parent",
+          "object" => "chat.completion",
+          "created" => 1,
+          "model" => "test-chat-model",
+          "choices" => [
+            %{
+              "index" => 0,
+              "message" => %{
+                "role" => "assistant",
+                "content" => "",
+                "tool_calls" => [handoff_call]
+              },
+              "finish_reason" => "tool_calls"
+            }
+          ]
+        }
+      ])
+
+    child_chunks =
+      sse_chunks([
+        %{
+          "id" => "chatcmpl-handoff-background-child",
+          "object" => "chat.completion",
+          "created" => 2,
+          "model" => "test-chat-model",
+          "choices" => [
+            %{
+              "index" => 0,
+              "message" => %{"role" => "assistant", "content" => "Child finished."},
+              "finish_reason" => "stop"
+            }
+          ]
+        }
+      ])
+
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         fn ->
+           send(test_pid, {:provider_waiting, :parent, self()})
+
+           receive do
+             :release_provider -> parent_chunks
+           after
+             5_000 -> parent_chunks
+           end
+         end},
+        {200,
+         fn ->
+           send(test_pid, {:provider_waiting, :child, self()})
+
+           receive do
+             :release_provider -> child_chunks
+           after
+             5_000 -> child_chunks
+           end
+         end}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :openrouter_chat_completion, handoff_tool?: true)
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Keep the task alive through handoff", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert_receive {:provider_waiting, :parent, parent_provider}, 2_000
+
+    task =
+      BackgroundTask
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          kind: "fork",
+          adapter: "fork",
+          status: :queued,
+          function_name: "fork",
+          arguments: %{"task" => "Long-running work"},
+          execution_context: %{
+            "owner_id" => actor.id,
+            "chat_id" => chat.id,
+            "message_id" => context.message_id,
+            "assistant_message_id" => context.message_id
+          },
+          runner_ref: %{},
+          source_chat_id: chat.id,
+          source_message_id: context.message_id,
+          lifecycle_message_id: context.message_id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    send(parent_provider, :release_provider)
+    assert_receive {:provider_waiting, :child, child_provider}, 2_000
+
+    parent = wait_for_message!(context.message_id, actor, &(&1.status == :done))
+    [handoff_payload] = handoff_payloads(parent)
+    child_message_id = handoff_payload["generation_message_id"]
+
+    transferred = Ash.get!(BackgroundTask, task.id, actor: actor)
+    assert transferred.status == :queued
+    assert transferred.cancel_requested == false
+    assert transferred.lifecycle_message_id == child_message_id
+    assert transferred.source_chat_id == chat.id
+    assert transferred.source_message_id == context.message_id
+    assert transferred.execution_context == task.execution_context
+
+    send(child_provider, :release_provider)
+    assert wait_for_message!(child_message_id, actor, &(&1.status == :done)).status == :done
+
+    canceled =
+      wait_for_background_task!(task.id, actor, fn current ->
+        current.cancel_requested == true
+      end)
+
+    assert canceled.lifecycle_message_id == child_message_id
+  end
+
+  test "handoff executes alone and soft-refuses other calls in the same response" do
+    background_call = %{
+      "id" => "call_background_with_handoff",
+      "type" => "function",
+      "function" => %{
+        "name" => "agent_management__fork_background",
+        "arguments" => Jason.encode!(%{"task" => "This call must not start."})
+      }
+    }
+
+    handoff_call = %{
+      "id" => "call_single_handoff",
+      "type" => "function",
+      "function" => %{
+        "name" => "agent_management__handoff",
+        "arguments" => Jason.encode!(%{"summary" => "Continue without starting the task."})
+      }
+    }
+
+    scripts = %{
+      "/chat/completions" => [
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-mixed-handoff",
+             "object" => "chat.completion",
+             "created" => 1,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{
+                   "role" => "assistant",
+                   "content" => "",
+                   "tool_calls" => [background_call, handoff_call]
+                 },
+                 "finish_reason" => "tool_calls"
+               }
+             ]
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "id" => "chatcmpl-mixed-handoff-child",
+             "object" => "chat.completion",
+             "created" => 2,
+             "model" => "test-chat-model",
+             "choices" => [
+               %{
+                 "index" => 0,
+                 "message" => %{"role" => "assistant", "content" => "Continued."},
+                 "finish_reason" => "stop"
+               }
+             ]
+           }
+         ])}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :openrouter_chat_completion, handoff_tool?: true)
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Hand off without starting another task",
+        actor: actor
+      )
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    message = wait_for_message!(context.message_id, actor, &(&1.status == :done))
+
+    assert length(handoff_payloads(message)) == 1
+
+    assert message
+           |> tool_result_raw_errors()
+           |> Enum.member?("handoff_must_be_called_alone")
+
+    background_tasks =
+      BackgroundTask
+      |> Ash.Query.filter(source_message_id == ^context.message_id)
+      |> Ash.read!(authorize?: false)
+
+    assert background_tasks == []
+
+    [handoff_payload] = handoff_payloads(message)
+
+    assert wait_for_message!(
+             handoff_payload["generation_message_id"],
+             actor,
+             &(&1.status == :done)
+           ).status == :done
+  end
+
   defp start_scripted_server!(scripts) when is_map(scripts) do
     {:ok, agent} =
       start_supervised(
@@ -867,6 +1112,29 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     do_wait_for_message(message_id, actor, predicate, deadline)
   end
 
+  defp wait_for_background_task!(task_id, actor, predicate, timeout_ms \\ 2_000)
+       when is_function(predicate, 1) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_background_task(task_id, actor, predicate, deadline)
+  end
+
+  defp do_wait_for_background_task(task_id, actor, predicate, deadline) do
+    task = Ash.get!(BackgroundTask, task_id, actor: actor)
+
+    if predicate.(task) do
+      task
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        receive do
+        after
+          20 -> do_wait_for_background_task(task_id, actor, predicate, deadline)
+        end
+      else
+        flunk("Background task condition was not met before timeout")
+      end
+    end
+  end
+
   defp do_wait_for_message(message_id, actor, predicate, deadline) do
     message =
       Ash.get!(ChatMessage, message_id,
@@ -951,6 +1219,17 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
         _other -> []
       end
     end)
+  end
+
+  defp tool_result_raw_errors(message) do
+    message
+    |> Map.get(:steps, [])
+    |> Enum.flat_map(&Map.get(&1, :items, []))
+    |> Enum.filter(&(&1.type == :tool_result))
+    |> Enum.flat_map(&Map.get(&1, :contents, []))
+    |> Enum.filter(&(&1.kind == :opaque))
+    |> Enum.map(&get_in(&1.content_json || %{}, ["raw", "error"]))
+    |> Enum.reject(&is_nil/1)
   end
 
   defp messages_for_chat!(chat_id, actor) do

@@ -11,6 +11,10 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
     table("background_tasks")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:lifecycle_message, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:owner_id, :status, :inserted_at],
         name: "background_tasks_owner_status_inserted_index"
@@ -18,6 +22,11 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
 
       index([:source_chat_id, :status], name: "background_tasks_source_chat_status_index")
       index([:target_chat_id], name: "background_tasks_target_chat_id_index")
+
+      index([:lifecycle_message_id, :id],
+        name: "background_tasks_active_lifecycle_message_index",
+        where: "status IN ('queued', 'running')"
+      )
 
       index([:status, :inserted_at],
         name: "background_tasks_active_status_inserted_index",
@@ -123,6 +132,10 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
       allow_nil?: true,
       attribute_type: :integer
 
+    belongs_to :lifecycle_message, IntellectualClub.Chat.ChatMessage,
+      allow_nil?: true,
+      attribute_type: :integer
+
     belongs_to :source_step, IntellectualClub.Chat.ChatMessageStep,
       allow_nil?: true,
       attribute_type: :integer
@@ -157,6 +170,7 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
         :tool_instance_id,
         :source_chat_id,
         :source_message_id,
+        :lifecycle_message_id,
         :source_step_id,
         :source_tool_call_item_id,
         :target_chat_id,
@@ -178,7 +192,8 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
         :cancel_requested,
         :started_at,
         :finished_at,
-        :target_chat_id
+        :target_chat_id,
+        :lifecycle_message_id
       ])
 
       require_atomic?(false)

@@ -81,8 +81,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       %{
         "name" => "handoff",
         "description" =>
-          "Continue work in a new chat, especially when context is approaching its limit. " <>
-            "The summary must be sufficient for the new chat to continue without the old context.",
+          "Call this tool by itself to continue work in a new chat, especially when context " <>
+            "is approaching its limit. The summary must be sufficient for the new chat to " <>
+            "continue without the old context. Near the beginning, list every active " <>
+            "background_task_id together with its purpose, latest cursor, and current status; " <>
+            "active background tasks are transferred to the new generation.",
         "schema" => %{
           "type" => "object",
           "properties" => %{

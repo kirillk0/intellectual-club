@@ -120,12 +120,16 @@ defmodule IntellectualClub.BackgroundTasks do
   def cancel(_task_id, _owner_id), do: {:error, :not_found}
 
   @doc false
-  @spec request_cancel_for_source_message!(pos_integer()) :: [Ecto.UUID.t()]
-  def request_cancel_for_source_message!(message_id)
+  @spec request_cancel_for_lifecycle_message!(pos_integer()) :: [Ecto.UUID.t()]
+  def request_cancel_for_lifecycle_message!(message_id)
       when is_integer(message_id) and message_id > 0 do
     case Ash.transaction(BackgroundTask, fn ->
            BackgroundTask
-           |> Ash.Query.filter(source_message_id == ^message_id and status in ^@active_statuses)
+           |> Ash.Query.filter(
+             (lifecycle_message_id == ^message_id or
+                (is_nil(lifecycle_message_id) and source_message_id == ^message_id)) and
+               status in ^@active_statuses
+           )
            |> Ash.Query.sort(id: :asc)
            |> Ash.Query.lock(:for_update)
            |> Ash.read!(authorize?: false)
@@ -151,17 +155,63 @@ defmodule IntellectualClub.BackgroundTasks do
     end
   end
 
-  def request_cancel_for_source_message!(_message_id), do: []
+  def request_cancel_for_lifecycle_message!(_message_id), do: []
 
   @doc false
-  @spec cancel_for_source_message_async(pos_integer()) :: :ok
-  def cancel_for_source_message_async(message_id)
+  @spec cancel_for_lifecycle_message_async(pos_integer()) :: :ok
+  def cancel_for_lifecycle_message_async(message_id)
       when is_integer(message_id) and message_id > 0 do
-    _ = start_maintenance_task(fn -> cancel_active_tasks_for_source_message(message_id) end)
+    _ = start_maintenance_task(fn -> cancel_active_tasks_for_lifecycle_message(message_id) end)
     :ok
   end
 
-  def cancel_for_source_message_async(_message_id), do: :ok
+  def cancel_for_lifecycle_message_async(_message_id), do: :ok
+
+  @doc false
+  @spec transfer_active_for_handoff!(pos_integer(), pos_integer()) :: [Ecto.UUID.t()]
+  def transfer_active_for_handoff!(source_message_id, child_message_id)
+      when is_integer(source_message_id) and source_message_id > 0 and
+             is_integer(child_message_id) and child_message_id > 0 do
+    case Ash.transaction([ChatMessage, BackgroundTask], fn ->
+           source_message = lock_lifecycle_message(source_message_id)
+           child_message = lock_lifecycle_message(child_message_id)
+
+           validate_handoff_lifecycle_messages!(source_message, child_message)
+
+           BackgroundTask
+           |> Ash.Query.filter(
+             (lifecycle_message_id == ^source_message_id or
+                (is_nil(lifecycle_message_id) and source_message_id == ^source_message_id)) and
+               status in ^@active_statuses and cancel_requested != true
+           )
+           |> Ash.Query.sort(id: :asc)
+           |> Ash.Query.lock(:for_update)
+           |> Ash.read!(authorize?: false)
+           |> Enum.map(fn task ->
+             if task.owner_id != child_message.owner_id do
+               Repo.rollback(:background_task_owner_mismatch)
+             end
+
+             case update_task(
+                    task,
+                    %{lifecycle_message_id: child_message.id},
+                    actor(task.owner_id)
+                  ) do
+               {:ok, %BackgroundTask{} = transferred} -> transferred.id
+               {:error, reason} -> Repo.rollback(reason)
+             end
+           end)
+         end) do
+      {:ok, task_ids} ->
+        task_ids
+
+      {:error, reason} ->
+        raise "Failed to transfer background tasks through handoff: #{inspect(reason)}"
+    end
+  end
+
+  def transfer_active_for_handoff!(_source_message_id, _child_message_id),
+    do: raise(ArgumentError, "Invalid background task handoff lifecycle")
 
   @doc "Returns an owned task record for adapter integrations."
   @spec get(Ecto.UUID.t(), pos_integer()) :: {:ok, BackgroundTask.t()} | {:error, :not_found}
@@ -191,54 +241,81 @@ defmodule IntellectualClub.BackgroundTasks do
         fun
       )
       when is_binary(task_id) and is_function(fun, 0) do
-    case Ash.transaction([ChatMessage, BackgroundTask], fn ->
-           source_message_id = context.assistant_message_id || context.message_id
-           source_message = lock_source_message(source_message_id)
-
-           current =
-             lock_background_task(task_id,
-               select: [
-                 :id,
-                 :status,
-                 :cancel_requested,
-                 :owner_id,
-                 :source_chat_id,
-                 :source_message_id,
-                 :source_step_id,
-                 :source_tool_call_item_id
-               ]
-             )
-
-           case {source_message, current} do
-             {%ChatMessage{role: :assistant, status: :generating},
-              %BackgroundTask{status: status, cancel_requested: cancel_requested}}
-             when status in @active_statuses and cancel_requested != true ->
-               if task_authorizes_context?(current, context) do
-                 fun.()
-               else
-                 Repo.rollback(:background_task_context_mismatch)
-               end
-
-             {%ChatMessage{}, %BackgroundTask{}} ->
-               Repo.rollback(:source_generation_inactive)
-
-             {nil, %BackgroundTask{}} ->
-               Repo.rollback(:source_generation_missing)
-
-             {_source_message, %BackgroundTask{}} ->
-               Repo.rollback(:background_task_inactive)
-
-             {_source_message, nil} ->
-               Repo.rollback(:background_task_not_found)
-           end
-         end) do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
-    end
+    do_with_active_task_authority(task_id, context, fun, 0)
   end
 
   def with_active_task_authority(_task, _context, _fun),
     do: {:error, :invalid_background_task}
+
+  defp do_with_active_task_authority(task_id, context, fun, attempt) do
+    with {:ok, observed} <- fetch_internal(task_id),
+         lifecycle_message_id when is_integer(lifecycle_message_id) <-
+           lifecycle_generation_message_id(observed) do
+      case Ash.transaction([ChatMessage, BackgroundTask], fn ->
+             lifecycle_message = lock_lifecycle_message(lifecycle_message_id)
+
+             current =
+               lock_background_task(task_id,
+                 select: [
+                   :id,
+                   :status,
+                   :cancel_requested,
+                   :owner_id,
+                   :source_chat_id,
+                   :source_message_id,
+                   :lifecycle_message_id,
+                   :source_step_id,
+                   :source_tool_call_item_id
+                 ]
+               )
+
+             current_lifecycle_message_id = lifecycle_generation_message_id(current)
+
+             case {lifecycle_message, current} do
+               {_message, %BackgroundTask{}}
+               when current_lifecycle_message_id != lifecycle_message_id ->
+                 {:retry_lifecycle, current_lifecycle_message_id}
+
+               {%ChatMessage{role: :assistant, status: :generating},
+                %BackgroundTask{status: status, cancel_requested: cancel_requested}}
+               when status in @active_statuses and cancel_requested != true ->
+                 if task_authorizes_context?(current, context) do
+                   fun.()
+                 else
+                   Repo.rollback(:background_task_context_mismatch)
+                 end
+
+               {%ChatMessage{}, %BackgroundTask{}} ->
+                 Repo.rollback(:lifecycle_generation_inactive)
+
+               {nil, %BackgroundTask{}} ->
+                 Repo.rollback(:lifecycle_generation_missing)
+
+               {_lifecycle_message, %BackgroundTask{}} ->
+                 Repo.rollback(:background_task_inactive)
+
+               {_lifecycle_message, nil} ->
+                 Repo.rollback(:background_task_not_found)
+             end
+           end) do
+        {:ok, {:retry_lifecycle, message_id}}
+        when is_integer(message_id) and attempt < 2 ->
+          do_with_active_task_authority(task_id, context, fun, attempt + 1)
+
+        {:ok, {:retry_lifecycle, _message_id}} ->
+          {:error, :background_task_lifecycle_unstable}
+
+        {:ok, result} ->
+          result
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :lifecycle_generation_missing}
+    end
+  end
 
   defp task_authorizes_context?(%BackgroundTask{} = task, %ExecutionContext{} = context) do
     task.owner_id == context.owner_id and
@@ -455,20 +532,27 @@ defmodule IntellectualClub.BackgroundTasks do
 
   @doc false
   def mark_running(%BackgroundTask{} = task) do
-    source_message_id = source_generation_message_id(task)
+    do_mark_running(task.id, lifecycle_generation_message_id(task), 0)
+  end
 
+  defp do_mark_running(task_id, lifecycle_message_id, attempt)
+       when is_binary(task_id) and is_integer(lifecycle_message_id) do
     case Ash.transaction([ChatMessage, BackgroundTask], fn ->
-           source_message = lock_source_message(source_message_id)
-           current = lock_background_task(task.id)
+           lifecycle_message = lock_lifecycle_message(lifecycle_message_id)
+           current = lock_background_task(task_id)
+           current_lifecycle_message_id = lifecycle_generation_message_id(current)
 
            cond do
              is_nil(current) ->
                Repo.rollback(:not_found)
 
+             current_lifecycle_message_id != lifecycle_message_id ->
+               {:retry_lifecycle, current_lifecycle_message_id}
+
              current.status in @terminal_statuses ->
                current
 
-             not source_generation_active?(source_message) ->
+             not lifecycle_generation_active?(lifecycle_message) ->
                update_task!(current, %{
                  status: :canceled,
                  cancel_requested: true,
@@ -486,10 +570,23 @@ defmodule IntellectualClub.BackgroundTasks do
                Repo.rollback(:not_queued)
            end
          end) do
-      {:ok, %BackgroundTask{} = current} -> {:ok, current}
-      {:error, reason} -> {:error, reason}
+      {:ok, %BackgroundTask{} = current} ->
+        {:ok, current}
+
+      {:ok, {:retry_lifecycle, next_message_id}}
+      when is_integer(next_message_id) and attempt < 2 ->
+        do_mark_running(task_id, next_message_id, attempt + 1)
+
+      {:ok, {:retry_lifecycle, _message_id}} ->
+        {:error, :background_task_lifecycle_unstable}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  defp do_mark_running(_task_id, _lifecycle_message_id, _attempt),
+    do: {:error, :lifecycle_generation_missing}
 
   @doc false
   def mark_running_detached(%BackgroundTask{} = task, refs) when is_map(refs) do
@@ -788,11 +885,11 @@ defmodule IntellectualClub.BackgroundTasks do
   @spec recover() :: :ok
   def recover do
     tasks = active_tasks()
-    source_messages = source_messages_by_id(tasks)
+    lifecycle_messages = lifecycle_messages_by_id(tasks)
 
     tasks
     |> Enum.each(fn task ->
-      case safe_reconcile_active_task(task, source_messages, :startup) do
+      case safe_reconcile_active_task(task, lifecycle_messages, :startup) do
         :ok -> :ok
         {:error, _reason} -> schedule_recovery_retry(task.id)
       end
@@ -805,12 +902,12 @@ defmodule IntellectualClub.BackgroundTasks do
   @spec reap_lost_workers() :: :ok | {:error, term()}
   def reap_lost_workers do
     tasks = active_tasks()
-    source_messages = source_messages_by_id(tasks)
+    lifecycle_messages = lifecycle_messages_by_id(tasks)
 
     failures =
       tasks
       |> Enum.reduce([], fn task, failures ->
-        case safe_reconcile_active_task(task, source_messages, :live) do
+        case safe_reconcile_active_task(task, lifecycle_messages, :live) do
           :ok -> failures
           {:error, reason} -> [{task.id, reason} | failures]
         end
@@ -879,6 +976,7 @@ defmodule IntellectualClub.BackgroundTasks do
           tool_instance_id: tool_instance.id,
           source_chat_id: context.chat_id,
           source_message_id: context.assistant_message_id || context.message_id,
+          lifecycle_message_id: context.assistant_message_id || context.message_id,
           source_step_id: context.step_id,
           source_tool_call_item_id: source_tool_call_item_id
         }
@@ -1325,19 +1423,29 @@ defmodule IntellectualClub.BackgroundTasks do
       {:error, {kind, reason}}
   end
 
-  defp safe_reconcile_active_task(%BackgroundTask{} = task, source_messages, mode)
-       when is_map(source_messages) do
-    source_message = Map.get(source_messages, source_generation_message_id(task))
+  defp safe_reconcile_active_task(%BackgroundTask{} = task, lifecycle_messages, mode)
+       when is_map(lifecycle_messages) do
+    do_safe_reconcile_active_task(task, lifecycle_messages, mode, 0)
+  end
+
+  defp do_safe_reconcile_active_task(task, lifecycle_messages, mode, attempt) do
+    lifecycle_message =
+      Map.get(lifecycle_messages, lifecycle_generation_message_id(task))
 
     cond do
       task.cancel_requested == true ->
         cancel_active_task(task)
 
-      source_generation_active?(source_message) ->
+      lifecycle_generation_active?(lifecycle_message) ->
         safe_recover_if_lost(task, mode)
 
       true ->
-        cancel_active_task(task)
+        cancel_inactive_lifecycle_task(
+          task,
+          lifecycle_generation_message_id(task),
+          mode,
+          attempt
+        )
     end
   rescue
     exception ->
@@ -1356,6 +1464,36 @@ defmodule IntellectualClub.BackgroundTasks do
 
       {:error, {kind, reason}}
   end
+
+  defp cancel_inactive_lifecycle_task(task, lifecycle_message_id, mode, attempt)
+       when is_integer(lifecycle_message_id) and attempt < 3 do
+    requested_ids = request_cancel_for_lifecycle_message!(lifecycle_message_id)
+
+    if task.id in requested_ids do
+      cancel_active_task(task)
+    else
+      case fetch_internal(task.id) do
+        {:ok, %BackgroundTask{status: status} = current} when status in @active_statuses ->
+          fresh_messages = lifecycle_messages_by_id([current])
+          do_safe_reconcile_active_task(current, fresh_messages, mode, attempt + 1)
+
+        {:ok, %BackgroundTask{}} ->
+          :ok
+
+        {:error, :not_found} ->
+          :ok
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp cancel_inactive_lifecycle_task(task, nil, _mode, _attempt),
+    do: cancel_active_task(task)
+
+  defp cancel_inactive_lifecycle_task(_task, _lifecycle_message_id, _mode, _attempt),
+    do: :ok
 
   defp safe_recover_if_lost(%BackgroundTask{} = task, mode) do
     if worker_active?(task.id) do
@@ -1424,9 +1562,9 @@ defmodule IntellectualClub.BackgroundTasks do
 
     case fetch_internal(task_id) do
       {:ok, %BackgroundTask{status: status} = task} when status in @active_statuses ->
-        source_messages = source_messages_by_id([task])
+        lifecycle_messages = lifecycle_messages_by_id([task])
 
-        case safe_reconcile_active_task(task, source_messages, :startup) do
+        case safe_reconcile_active_task(task, lifecycle_messages, :startup) do
           :ok -> :ok
           {:error, _reason} -> retry_recovery_task(task_id, attempt + 1)
         end
@@ -1582,10 +1720,10 @@ defmodule IntellectualClub.BackgroundTasks do
     |> Ash.read!(authorize?: false)
   end
 
-  defp source_messages_by_id(tasks) when is_list(tasks) do
+  defp lifecycle_messages_by_id(tasks) when is_list(tasks) do
     message_ids =
       tasks
-      |> Enum.map(&source_generation_message_id/1)
+      |> Enum.map(&lifecycle_generation_message_id/1)
       |> Enum.filter(&is_integer/1)
       |> Enum.uniq()
 
@@ -1594,17 +1732,21 @@ defmodule IntellectualClub.BackgroundTasks do
     else
       ChatMessage
       |> Ash.Query.filter(id in ^message_ids)
-      |> Ash.Query.select([:id, :role, :status])
+      |> Ash.Query.select([:id, :role, :status, :owner_id])
       |> Ash.read!(authorize?: false)
       |> Map.new(&{&1.id, &1})
     end
   end
 
-  defp source_generation_message_id(%BackgroundTask{source_message_id: message_id})
+  defp lifecycle_generation_message_id(%BackgroundTask{lifecycle_message_id: message_id})
        when is_integer(message_id),
        do: message_id
 
-  defp source_generation_message_id(%BackgroundTask{execution_context: context})
+  defp lifecycle_generation_message_id(%BackgroundTask{source_message_id: message_id})
+       when is_integer(message_id),
+       do: message_id
+
+  defp lifecycle_generation_message_id(%BackgroundTask{execution_context: context})
        when is_map(context) do
     case Map.get(context, "assistant_message_id") || Map.get(context, "message_id") do
       message_id when is_integer(message_id) -> message_id
@@ -1612,20 +1754,29 @@ defmodule IntellectualClub.BackgroundTasks do
     end
   end
 
-  defp source_generation_message_id(_task), do: nil
+  defp lifecycle_generation_message_id(_task), do: nil
 
-  defp source_generation_active?(%ChatMessage{role: :assistant, status: :generating}), do: true
-  defp source_generation_active?(_message), do: false
+  defp lifecycle_generation_active?(%ChatMessage{role: :assistant, status: :generating}),
+    do: true
 
-  defp lock_source_message(message_id) when is_integer(message_id) do
+  defp lifecycle_generation_active?(_message), do: false
+
+  defp lock_lifecycle_message(message_id) when is_integer(message_id) do
     ChatMessage
     |> Ash.Query.filter(id == ^message_id)
-    |> Ash.Query.select([:id, :role, :status])
+    |> Ash.Query.select([:id, :role, :status, :owner_id])
     |> Ash.Query.lock(:for_update)
     |> Ash.read_one!(authorize?: false)
   end
 
-  defp lock_source_message(_message_id), do: nil
+  defp validate_handoff_lifecycle_messages!(
+         %ChatMessage{role: :assistant, status: :done, owner_id: owner_id},
+         %ChatMessage{role: :assistant, status: :generating, owner_id: owner_id}
+       ),
+       do: :ok
+
+  defp validate_handoff_lifecycle_messages!(_source_message, _child_message),
+    do: Repo.rollback(:invalid_background_task_handoff_lifecycle)
 
   defp lock_background_task(task_id, opts \\ []) when is_binary(task_id) and is_list(opts) do
     query =
@@ -1642,9 +1793,13 @@ defmodule IntellectualClub.BackgroundTasks do
     Ash.read_one!(query, authorize?: false)
   end
 
-  defp cancel_active_tasks_for_source_message(message_id) when is_integer(message_id) do
+  defp cancel_active_tasks_for_lifecycle_message(message_id) when is_integer(message_id) do
     BackgroundTask
-    |> Ash.Query.filter(source_message_id == ^message_id and status in ^@active_statuses)
+    |> Ash.Query.filter(
+      (lifecycle_message_id == ^message_id or
+         (is_nil(lifecycle_message_id) and source_message_id == ^message_id)) and
+        status in ^@active_statuses
+    )
     |> Ash.Query.sort(id: :asc)
     |> Ash.read!(authorize?: false)
     |> Enum.reduce_while(:ok, fn task, :ok ->

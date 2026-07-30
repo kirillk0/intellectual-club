@@ -154,14 +154,14 @@ defmodule IntellectualClub.Generation.QueueDispatcher do
     result =
       case QueueCoordinator.settle_generation(message_id, status) do
         {:ok, %{chat_id: chat_id}} when status == :done ->
-          BackgroundTasks.cancel_for_source_message_async(message_id)
+          BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
 
           chat_id
           |> dispatch_chat(boundary_message_id: message_id)
           |> normalize_boundary_dispatch()
 
         {:ok, payload} ->
-          BackgroundTasks.cancel_for_source_message_async(message_id)
+          BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
           {:blocked, payload}
 
         {:error, reason} = error ->
@@ -282,7 +282,7 @@ defmodule IntellectualClub.Generation.QueueDispatcher do
   defp settle_without_dispatcher(message_id, status) do
     case QueueCoordinator.settle_generation(message_id, status) do
       {:ok, %{chat_id: chat_id}} when status == :done ->
-        BackgroundTasks.cancel_for_source_message_async(message_id)
+        BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
 
         case QueueCoordinator.prepare_next(chat_id, boundary_message_id: message_id) do
           {:ok, context} -> start_prepared_without_dispatcher(context)
@@ -291,7 +291,7 @@ defmodule IntellectualClub.Generation.QueueDispatcher do
         end
 
       {:ok, payload} ->
-        BackgroundTasks.cancel_for_source_message_async(message_id)
+        BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
         {:blocked, payload}
 
       {:error, _reason} = error ->

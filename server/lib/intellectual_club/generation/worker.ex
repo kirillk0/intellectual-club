@@ -562,6 +562,13 @@ defmodule IntellectualClub.Generation.Worker do
 
     cond do
       not manual_handoff? and
+        can_execute_tools?(state, max_tool_rounds, context_limit_reached) and
+          mixed_handoff_tool_calls?(state, tool_calls) ->
+        soft_refuse_tool_calls(state, tool_calls, mixed_handoff_refusal_payload(),
+          allow_handoff?: true
+        )
+
+      not manual_handoff? and
           can_execute_tools?(state, max_tool_rounds, context_limit_reached) ->
         runtime_step = %{state.runtime_step | status: :waiting_tools}
         state = %{state | runtime_step: runtime_step}
@@ -678,7 +685,10 @@ defmodule IntellectualClub.Generation.Worker do
              end
 
              _ = settle_terminal_queue!(state, :canceled)
-             _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
+
+             _ =
+               BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
+
              record_terminal_event!(state, :canceled, false)
              :ok
            end) do
@@ -687,7 +697,7 @@ defmodule IntellectualClub.Generation.Worker do
       end
 
     if result == :ok do
-      BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
+      BackgroundTasks.cancel_for_lifecycle_message_async(state.context.message_id)
     end
 
     {result, %{state | status: :canceled}}
@@ -927,7 +937,7 @@ defmodule IntellectualClub.Generation.Worker do
       safe_chat_persist_value(state, :done, fn ->
         effect = durable_completion_effect!(state, step_id, opts)
         Persistence.persist_completed_from_step!(state.context.message_id, step_id)
-        _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
+        _ = settle_background_task_lifecycle!(state, effect)
 
         result =
           if effect == :ok,
@@ -939,7 +949,7 @@ defmodule IntellectualClub.Generation.Worker do
       end)
 
     if match?({:ok, _result}, result) do
-      BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
+      BackgroundTasks.cancel_for_lifecycle_message_async(state.context.message_id)
     end
 
     case result do
@@ -1060,6 +1070,39 @@ defmodule IntellectualClub.Generation.Worker do
   defp completion_suppressed?({:terminal_handoff, _payload, _transfer}), do: true
   defp completion_suppressed?(_result), do: false
 
+  defp settle_background_task_lifecycle!(
+         state,
+         {:terminal_handoff, payload, _transfer}
+       ) do
+    child_message_id =
+      parse_int(
+        Map.get(payload, "generation_message_id") ||
+          Map.get(payload, :generation_message_id)
+      )
+
+    if is_integer(child_message_id) do
+      task_ids =
+        BackgroundTasks.transfer_active_for_handoff!(
+          state.context.message_id,
+          child_message_id
+        )
+
+      Logger.info(
+        "Transferred background task lifecycle through handoff " <>
+          "count=#{length(task_ids)} source_message_id=#{state.context.message_id} " <>
+          "child_message_id=#{child_message_id}"
+      )
+
+      task_ids
+    else
+      raise CompletionEffectFailure, message: "Invalid terminal handoff generation"
+    end
+  end
+
+  defp settle_background_task_lifecycle!(state, _effect) do
+    BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
+  end
+
   defp record_terminal_event!(state, status, suppressed?) do
     case Notifications.record_generation_finished(state.context.message_id, status,
            suppressed?: suppressed?
@@ -1081,7 +1124,10 @@ defmodule IntellectualClub.Generation.Worker do
     case safe_chat_persist_value(state, :completion_effect_error, fn ->
            Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
            _ = settle_terminal_queue!(state, :error)
-           _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
+
+           _ =
+             BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
+
            record_terminal_event!(state, :error, false)
            :ok
          end) do
@@ -1229,7 +1275,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp finish_error_queue(state) do
-    BackgroundTasks.cancel_for_source_message_async(state.context.message_id)
+    BackgroundTasks.cancel_for_lifecycle_message_async(state.context.message_id)
     NotificationsDispatcher.notify_generation_finished(state.context.message_id, :error)
   end
 
@@ -1268,7 +1314,7 @@ defmodule IntellectualClub.Generation.Worker do
         end
 
         _ = settle_terminal_queue!(state, :error)
-        _ = BackgroundTasks.request_cancel_for_source_message!(state.context.message_id)
+        _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
         record_terminal_event!(state, :error, false)
         :ok
       end)
@@ -1826,6 +1872,15 @@ defmodule IntellectualClub.Generation.Worker do
     }
   end
 
+  defp mixed_handoff_refusal_payload do
+    %{
+      text:
+        "[tool error] Tool call refused because handoff must be called by itself. " <>
+          "Only the first handoff call in this response is executed.",
+      raw: %{"error" => "handoff_must_be_called_alone"}
+    }
+  end
+
   defp context_limit_refusal_instruction(true) do
     "Non-handoff tool calls will be refused. " <>
       "If more work is needed, call the available handoff tool with a continuation summary; " <>
@@ -1917,6 +1972,10 @@ defmodule IntellectualClub.Generation.Worker do
     |> then(&handoff_tool_name?(state, &1))
   end
 
+  defp mixed_handoff_tool_calls?(state, tool_calls) when is_list(tool_calls) do
+    length(tool_calls) > 1 and Enum.any?(tool_calls, &handoff_tool_call?(state, &1))
+  end
+
   defp handoff_tool_name?(state, name) when is_binary(name) do
     with {alias_value, "handoff"} <- split_tool_name(name),
          %{} = tool_instance <- Map.get(state.context.tool_instances_by_alias || %{}, alias_value),
@@ -1943,16 +2002,22 @@ defmodule IntellectualClub.Generation.Worker do
        when is_list(tool_calls) and is_map(refusal) and is_list(opts) do
     if Keyword.get(opts, :allow_handoff?, false) do
       {handoff_calls, refused_calls} = Enum.split_with(tool_calls, &handoff_tool_call?(state, &1))
-      refusal_results = build_refusal_results(refused_calls, refusal)
 
-      if handoff_calls == [] do
-        handle_tool_results(state, refusal_results,
-          tool_round_delta: 0,
-          refusal_round_delta: 1
-        )
-      else
-        state = start_tool_task(state, handoff_calls, refusal_results)
-        {:noreply, state}
+      case handoff_calls do
+        [] ->
+          refusal_results = build_refusal_results(refused_calls, refusal)
+
+          handle_tool_results(state, refusal_results,
+            tool_round_delta: 0,
+            refusal_round_delta: 1
+          )
+
+        [handoff_call | duplicate_handoff_calls] ->
+          refusal_results =
+            build_refusal_results(refused_calls ++ duplicate_handoff_calls, refusal)
+
+          state = start_tool_task(state, [handoff_call], refusal_results)
+          {:noreply, state}
       end
     else
       results = build_refusal_results(tool_calls, refusal)
