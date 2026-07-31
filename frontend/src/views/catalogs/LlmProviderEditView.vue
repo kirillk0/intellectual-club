@@ -36,15 +36,17 @@
       supported type is selected.
     </div>
 
-    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
+    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div class="card stack">
-        <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
+        <fieldset class="stack" :disabled="sharedReadonly">
+          <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
-        <label :class="{ 'field-error': errors.hasField('name') }">
-          Name
-          <input v-model="form.name" class="full" @input="errors.clearField('name')" />
-          <div v-if="errors.hasField('name')" class="error-text">{{ errors.messageFor('name') }}</div>
-        </label>
+          <label :class="{ 'field-error': errors.hasField('name') }">
+            Name
+            <input v-model="form.name" class="full" @input="errors.clearField('name')" />
+            <div v-if="errors.hasField('name')" class="error-text">{{ errors.messageFor('name') }}</div>
+          </label>
+        </fieldset>
 
         <div class="tabs">
           <button
@@ -65,7 +67,8 @@
           </button>
         </div>
 
-        <div v-if="providerTab === 'settings'" class="stack">
+        <fieldset class="stack" :disabled="sharedReadonly">
+          <div v-if="providerTab === 'settings'" class="stack">
           <label :class="{ 'field-error': errors.hasField('type') }">
             Type
             <select v-model="form.type" class="full" @change="errors.clearField('type')">
@@ -93,7 +96,7 @@
           </label>
         </div>
 
-        <div v-else class="stack">
+          <div v-else class="stack">
           <label :class="{ 'field-error': errors.hasField('auth_method') }">
             Auth method
             <select v-model="form.auth_method" class="full" @change="errors.clearField('auth_method')">
@@ -192,7 +195,8 @@
               Refresh token will be removed on save.
             </div>
           </label>
-        </div>
+          </div>
+        </fieldset>
       </div>
     </fieldset>
   </div>

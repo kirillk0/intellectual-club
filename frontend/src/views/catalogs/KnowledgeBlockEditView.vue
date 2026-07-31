@@ -35,70 +35,74 @@
     />
     <KnowledgeBlockReadonlyBanner v-if="sharedReadonly" />
 
-    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
-      <KnowledgeBlockMainFields
-        v-model:name="form.name"
-        v-model:version="form.version"
-        :form-errors="formErrors"
-        :name-error="nameError"
-        :version-error="versionError"
-        @clear-field="clearField"
-      />
+    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
+      <fieldset class="stack" :disabled="sharedReadonly">
+        <KnowledgeBlockMainFields
+          v-model:name="form.name"
+          v-model:version="form.version"
+          :form-errors="formErrors"
+          :name-error="nameError"
+          :version-error="versionError"
+          @clear-field="clearField"
+        />
+      </fieldset>
 
       <div class="card stack">
         <KnowledgeBlockTabsNav v-model="blockTab" :tags-count="tagsTabCount" :files-count="filesTabCount" />
 
-        <KnowledgeBlockCodeEditor
-          v-if="blockTab === 'code'"
-          ref="codeEditorRef"
-          v-model:content="form.content"
-          :content-error="contentError"
-          :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
-          @clear-content-error="errors.clearField('content')"
-        />
+        <fieldset :disabled="sharedReadonly">
+          <KnowledgeBlockCodeEditor
+            v-if="blockTab === 'code'"
+            ref="codeEditorRef"
+            v-model:content="form.content"
+            :content-error="contentError"
+            :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
+            @clear-content-error="errors.clearField('content')"
+          />
 
-        <KnowledgeBlockTagsSection
-          v-else-if="blockTab === 'tags'"
-          v-model:modal-open="tagModalOpen"
-          :attached-tags="attachedTags"
-          :attached-tag-ids="attachedTagIds"
-          :all-tags="allTags"
-          :all-tags-loading="allTagsLoading"
-          :all-tags-error="allTagsError"
-          :loading="tagBindingsLoading"
-          :error="tagBindingsError"
-          :dirty="tagsDirty"
-          :saving="saving"
-          @open-picker="openTagModal"
-          @toggle-tag="toggleTag"
-          @remove-tag="removeTag"
-        />
+          <KnowledgeBlockTagsSection
+            v-else-if="blockTab === 'tags'"
+            v-model:modal-open="tagModalOpen"
+            :attached-tags="attachedTags"
+            :attached-tag-ids="attachedTagIds"
+            :all-tags="allTags"
+            :all-tags-loading="allTagsLoading"
+            :all-tags-error="allTagsError"
+            :loading="tagBindingsLoading"
+            :error="tagBindingsError"
+            :dirty="tagsDirty"
+            :saving="saving"
+            @open-picker="openTagModal"
+            @toggle-tag="toggleTag"
+            @remove-tag="removeTag"
+          />
 
-        <KnowledgeBlockFilesSection
-          v-else-if="blockTab === 'files'"
-          :attachments="fileAttachments"
-          :loading="filesLoading"
-          :error="filesError"
-          :dirty="filesDirty"
-          :saving="saving"
-          :shared-readonly="sharedReadonly"
-          :action-disabled="filesActionDisabled"
-          :is-new="isNew"
-          @add-files="handleFilesSelected"
-          @remove-file="removeAttachment"
-          @set-enabled="toggleAttachmentEnabled"
-        />
+          <KnowledgeBlockFilesSection
+            v-else-if="blockTab === 'files'"
+            :attachments="fileAttachments"
+            :loading="filesLoading"
+            :error="filesError"
+            :dirty="filesDirty"
+            :saving="saving"
+            :shared-readonly="sharedReadonly"
+            :action-disabled="filesActionDisabled"
+            :is-new="isNew"
+            @add-files="handleFilesSelected"
+            @remove-file="removeAttachment"
+            @set-enabled="toggleAttachmentEnabled"
+          />
 
-        <KnowledgeBlockDetailsSection
-          v-else
-          v-model:image="form.image"
-          :name="form.name"
-          :is-new="isNew"
-          :saving="saving"
-          :block-id="numericId"
-          :external-id="form.external_id"
-          :token-count="form.token_count"
-        />
+          <KnowledgeBlockDetailsSection
+            v-else
+            v-model:image="form.image"
+            :name="form.name"
+            :is-new="isNew"
+            :saving="saving"
+            :block-id="numericId"
+            :external-id="form.external_id"
+            :token-count="form.token_count"
+          />
+        </fieldset>
       </div>
     </fieldset>
 

@@ -37,34 +37,36 @@
       <strong>Shared with you.</strong> This tool is read-only. Duplicate it to create an editable copy.
     </div>
 
-    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError) || sharedReadonly">
+    <fieldset class="stack" :disabled="loading || saving || Boolean(loadError)">
       <div class="card stack">
-        <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
+        <fieldset class="stack" :disabled="sharedReadonly">
+          <div v-if="formErrors.length" class="error-text">{{ formErrors.join(' ') }}</div>
 
-        <label :class="{ 'field-error': errors.hasField('name') }">
-          Name
-          <input v-model="form.name" class="full" @input="handleNameInput" />
-          <div v-if="errors.hasField('name')" class="error-text">{{ errors.messageFor('name') }}</div>
-        </label>
+          <label :class="{ 'field-error': errors.hasField('name') }">
+            Name
+            <input v-model="form.name" class="full" @input="handleNameInput" />
+            <div v-if="errors.hasField('name')" class="error-text">{{ errors.messageFor('name') }}</div>
+          </label>
 
-        <label :class="{ 'field-error': errors.hasField('alias') }">
-          Alias
-          <input v-model="form.alias" class="full" @input="handleAliasInput" />
-          <div v-if="errors.hasField('alias')" class="error-text">{{ errors.messageFor('alias') }}</div>
-          <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
-        </label>
+          <label :class="{ 'field-error': errors.hasField('alias') }">
+            Alias
+            <input v-model="form.alias" class="full" @input="handleAliasInput" />
+            <div v-if="errors.hasField('alias')" class="error-text">{{ errors.messageFor('alias') }}</div>
+            <div class="muted" style="margin-top: 4px">Used as the model-visible tool prefix.</div>
+          </label>
 
-        <div class="tool-type-field" :class="{ 'field-error': errors.hasField('type') }">
-          <div class="tool-type-field__label">Type</div>
-          <ToolTypeSelect
-            v-model="form.type"
-            :options="toolTypes"
-            :disabled="!isNew"
-            :title="!isNew ? 'Tool type cannot be changed after creation.' : ''"
-            @change="errors.clearField('type')"
-          />
-          <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
-        </div>
+          <div class="tool-type-field" :class="{ 'field-error': errors.hasField('type') }">
+            <div class="tool-type-field__label">Type</div>
+            <ToolTypeSelect
+              v-model="form.type"
+              :options="toolTypes"
+              :disabled="!isNew"
+              :title="!isNew ? 'Tool type cannot be changed after creation.' : ''"
+              @change="errors.clearField('type')"
+            />
+            <div v-if="errors.hasField('type')" class="error-text">{{ errors.messageFor('type') }}</div>
+          </div>
+        </fieldset>
 
         <div class="tabs">
           <button
@@ -102,7 +104,8 @@
           </button>
         </div>
 
-        <div v-if="toolTab === 'settings'" class="stack">
+        <fieldset class="stack" :disabled="sharedReadonly">
+          <div v-if="toolTab === 'settings'" class="stack">
           <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
           <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
 
@@ -268,16 +271,16 @@
           </div>
         </div>
 
-        <MarkdownEditor
-          v-else-if="toolTab === 'description'"
-          v-model:content="form.description"
-          :content-error="errors.hasField('description') ? errors.messageFor('description') : null"
-          :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
-          label="Description"
-          placeholder="Describe when and how the model should use this tool."
-          hint="Visible to the model when this tool is available."
-          @clear-content-error="errors.clearField('description')"
-        />
+          <MarkdownEditor
+            v-else-if="toolTab === 'description'"
+            v-model:content="form.description"
+            :content-error="errors.hasField('description') ? errors.messageFor('description') : null"
+            :readonly="loading || saving || Boolean(loadError) || sharedReadonly"
+            label="Description"
+            placeholder="Describe when and how the model should use this tool."
+            hint="Visible to the model when this tool is available."
+            @clear-content-error="errors.clearField('description')"
+          />
 
 	        <div v-else-if="toolTab === 'credentials'" class="stack">
 	          <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
@@ -389,7 +392,7 @@
           </template>
         </div>
 
-        <div v-else class="stack">
+          <div v-else class="stack">
           <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
             <strong>Functions</strong>
             <button
@@ -474,7 +477,8 @@
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        </fieldset>
       </div>
     </fieldset>
 
