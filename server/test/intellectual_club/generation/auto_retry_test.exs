@@ -87,11 +87,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0, 0, 60_000])
     Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
 
-    table = :ic_openai_oauth_token_cache
-
-    if :ets.whereis(table) != :undefined do
-      :ets.delete_all_objects(table)
-    end
+    IntellectualClub.Llm.Auth.OpenAIOAuthCache.clear()
 
     on_exit(fn ->
       restore_env(:generation_auto_retry_backoff_ms, previous_backoff)

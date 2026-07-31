@@ -3,15 +3,12 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
 
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Auth.OpenAIOAuth
+  alias IntellectualClub.Llm.Auth.OpenAIOAuthCache
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Llm.Providers.Responses
 
   setup do
-    table = :ic_openai_oauth_token_cache
-
-    if :ets.whereis(table) != :undefined do
-      :ets.delete_all_objects(table)
-    end
+    OpenAIOAuthCache.clear()
 
     :ok
   end
@@ -61,6 +58,36 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     assert reloaded_provider.oauth_refresh_token == next_refresh_token
 
     assert OpenAIOAuth.get_access_token(refresh_token, provider_id: provider.id) == {:ok, "at_1"}
+  end
+
+  test "keeps cached tokens after the caller process exits" do
+    refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
+    test_pid = self()
+
+    Req.Test.expect(OpenAIOAuth, 1, fn conn ->
+      Req.Test.json(conn, %{
+        "access_token" => "at_from_task",
+        "expires_in" => 3600
+      })
+    end)
+
+    task =
+      Task.async(fn ->
+        receive do
+          :continue -> OpenAIOAuth.get_access_token(refresh_token)
+        end
+      end)
+
+    Req.Test.allow(OpenAIOAuth, test_pid, task.pid)
+    send(task.pid, :continue)
+
+    assert Task.await(task) == {:ok, "at_from_task"}
+    refute Process.alive?(task.pid)
+
+    assert :ets.info(OpenAIOAuthCache.table(), :owner) ==
+             Process.whereis(OpenAIOAuthCache)
+
+    assert OpenAIOAuth.get_access_token(refresh_token) == {:ok, "at_from_task"}
   end
 
   test "uses rotated refresh token on subsequent refresh" do

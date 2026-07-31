@@ -8,9 +8,9 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
 
   import Ecto.Query, only: [from: 2]
 
+  alias IntellectualClub.Llm.Auth.OpenAIOAuthCache
   alias IntellectualClub.Repo
 
-  @cache_table :ic_openai_oauth_token_cache
   @default_lock_timeout_ms 15_000
   @default_lock_stale_after_ms 60_000
   @retryable_http_status_codes MapSet.new([429, 502, 503])
@@ -33,8 +33,6 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
           {:ok, String.t()} | {:error, String.t(), error_meta()}
   def get_access_token_with_meta(refresh_token, opts \\ []) when is_binary(refresh_token) do
     provider_id = Keyword.get(opts, :provider_id)
-
-    ensure_cache_table!()
 
     cache_key = cache_key(provider_id, refresh_token)
     now = System.system_time(:second)
@@ -62,7 +60,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   defp lookup_cached_token(cache_key, now) do
     early_seconds = refresh_early_seconds()
 
-    case :ets.lookup(@cache_table, cache_key) do
+    case OpenAIOAuthCache.lookup(cache_key) do
       [{^cache_key, token, expires_at, _refresh_token}]
       when is_binary(token) and is_integer(expires_at) ->
         if now + early_seconds < expires_at do
@@ -157,7 +155,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
               new_refresh_token
             end
 
-          :ets.insert(@cache_table, {cache_key, token, expires_at, refresh_token_for_cache})
+          OpenAIOAuthCache.insert({cache_key, token, expires_at, refresh_token_for_cache})
 
           if is_integer(provider_id) and is_binary(new_refresh_token) and
                not blank?(new_refresh_token) do
@@ -449,7 +447,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   defp try_acquire_lock(lock_key) do
     started_ms = System.monotonic_time(:millisecond)
 
-    if :ets.insert_new(@cache_table, {lock_key, started_ms}) do
+    if OpenAIOAuthCache.insert_new({lock_key, started_ms}) do
       :acquired
     else
       :busy
@@ -457,7 +455,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   end
 
   defp release_lock(lock_key) do
-    :ets.delete(@cache_table, lock_key)
+    OpenAIOAuthCache.delete(lock_key)
   end
 
   defp wait_for_refresh(cache_key, lock_key) do
@@ -490,10 +488,10 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   defp lock_stale?(lock_key) do
     now_ms = System.monotonic_time(:millisecond)
 
-    case :ets.lookup(@cache_table, lock_key) do
+    case OpenAIOAuthCache.lookup(lock_key) do
       [{^lock_key, started_ms}] when is_integer(started_ms) ->
         if now_ms - started_ms > lock_stale_after_ms() do
-          :ets.delete(@cache_table, lock_key)
+          OpenAIOAuthCache.delete(lock_key)
           true
         else
           false
@@ -512,28 +510,6 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
   defp lock_stale_after_ms do
     Application.get_env(:intellectual_club, :openai_oauth, [])
     |> Keyword.get(:lock_stale_after_ms, @default_lock_stale_after_ms)
-  end
-
-  defp ensure_cache_table! do
-    case :ets.whereis(@cache_table) do
-      :undefined ->
-        try do
-          :ets.new(@cache_table, [
-            :named_table,
-            :public,
-            read_concurrency: true,
-            write_concurrency: true
-          ])
-        rescue
-          ArgumentError ->
-            :ok
-        end
-
-        :ok
-
-      _tid ->
-        :ok
-    end
   end
 
   defp safe_string(value) when is_binary(value), do: value
