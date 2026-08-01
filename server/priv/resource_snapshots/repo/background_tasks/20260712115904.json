@@ -323,6 +323,37 @@
           "global": null,
           "strategy": null
         },
+        "name": "background_tasks_lifecycle_message_id_fkey",
+        "on_delete": "nilify",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "chat_messages"
+      },
+      "scale": null,
+      "size": null,
+      "source": "lifecycle_message_id",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
         "name": "background_tasks_source_step_id_fkey",
         "on_delete": null,
         "on_update": null,
@@ -487,6 +518,97 @@
       "all_tenants?": false,
       "concurrently": false,
       "error_fields": [
+        "lifecycle_message_id",
+        "id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "lifecycle_message_id"
+        },
+        {
+          "type": "atom",
+          "value": "id"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "background_tasks_active_lifecycle_message_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": "status IN ('queued', 'running')"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "status",
+        "inserted_at"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "status"
+        },
+        {
+          "type": "atom",
+          "value": "inserted_at"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "background_tasks_active_status_inserted_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": "status IN ('queued', 'running')"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "tool_instance_id",
+        "adapter",
+        "status",
+        "inserted_at"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "tool_instance_id"
+        },
+        {
+          "type": "atom",
+          "value": "adapter"
+        },
+        {
+          "type": "atom",
+          "value": "status"
+        },
+        {
+          "type": "atom",
+          "value": "inserted_at"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "background_tasks_active_tool_adapter_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": "status IN ('queued', 'running')"
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
         "source_tool_call_item_id"
       ],
       "fields": [
@@ -508,7 +630,7 @@
   ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "01C4BF54EC9F01BD7C76AFC85CA4328CD921ADC9C2DA59128F584ACE2AE64F84",
+  "hash": "139D078964F957EAEA705A480C1DC02609618A6CDC64152039ED6A28D391DC49",
   "identities": [],
   "multitenancy": {
     "attribute": null,

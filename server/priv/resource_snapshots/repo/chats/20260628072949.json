@@ -38,6 +38,18 @@
     },
     {
       "allow_nil?": false,
+      "default": "false",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "subagent",
+      "type": "boolean"
+    },
+    {
+      "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
       "precision": null,
@@ -245,6 +257,37 @@
       "size": null,
       "source": "parent_message_id",
       "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "chats_parent_tool_call_item_id_fkey",
+        "on_delete": null,
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "chat_message_items"
+      },
+      "scale": null,
+      "size": null,
+      "source": "parent_tool_call_item_id",
+      "type": "bigint"
     }
   ],
   "base_filter": null,
@@ -276,6 +319,43 @@
       "include": null,
       "message": null,
       "name": "chats_owner_updated_id_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "owner_id",
+        "subagent",
+        "updated_at",
+        "id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "owner_id"
+        },
+        {
+          "type": "atom",
+          "value": "subagent"
+        },
+        {
+          "type": "atom",
+          "value": "updated_at"
+        },
+        {
+          "type": "atom",
+          "value": "id"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "chats_owner_subagent_updated_id_index",
       "nulls_distinct": true,
       "prefix": null,
       "table": null,
@@ -348,6 +428,50 @@
       "unique": false,
       "using": null,
       "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "parent_tool_call_item_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "parent_tool_call_item_id"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "chats_parent_tool_call_item_id_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "parent_tool_call_item_id"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "parent_tool_call_item_id"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": "chats_unique_parent_tool_call_item_id_index",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": true,
+      "using": null,
+      "where": "parent_tool_call_item_id IS NOT NULL"
     }
   ],
   "custom_statements": [
@@ -360,7 +484,7 @@
     }
   ],
   "has_create_action": true,
-  "hash": "F0DB48B350DDE283B0194F7E45931AB0C8F27BC446F207C374CD4B75279B430B",
+  "hash": "32144E6CBEEF395775E65A59BC760CB2324A3A996072CEF27096FE8FEEA7B2E1",
   "identities": [],
   "multitenancy": {
     "attribute": null,

@@ -62,6 +62,42 @@
     },
     {
       "allow_nil?": false,
+      "default": "true",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "discovery_available",
+      "type": "boolean"
+    },
+    {
+      "allow_nil?": false,
+      "default": "\"direct\"",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "execution_mode",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "target_function_name",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
       "precision": null,
@@ -188,7 +224,7 @@
   ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "6B22D4B3F2ADD54D2FAAB38705CCBCB9897FDB63597E9F04189367B819FCAE27",
+  "hash": "F1B00831B300C4F3D5D8385157FBB9226008ADAA6FD9C5CC8BAC9E60016718E0",
   "identities": [
     {
       "all_tenants?": false,

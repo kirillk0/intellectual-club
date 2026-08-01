@@ -8,142 +8,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
   use Ecto.Migration
 
   def up do
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_elixir_or(left BOOLEAN, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE)
-    AS $$ SELECT COALESCE(NULLIF($1, FALSE), $2) $$
-    LANGUAGE SQL
-    SET search_path = ''
-    IMMUTABLE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_elixir_or(left ANYCOMPATIBLE, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE)
-    AS $$ SELECT COALESCE($1, $2) $$
-    LANGUAGE SQL
-    SET search_path = ''
-    IMMUTABLE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_elixir_and(left BOOLEAN, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE) AS $$
-      SELECT CASE
-        WHEN $1 IS TRUE THEN $2
-        ELSE $1
-      END $$
-    LANGUAGE SQL
-    SET search_path = ''
-    IMMUTABLE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_elixir_and(left ANYCOMPATIBLE, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE) AS $$
-      SELECT CASE
-        WHEN $1 IS NOT NULL THEN $2
-        ELSE $1
-      END $$
-    LANGUAGE SQL
-    SET search_path = ''
-    IMMUTABLE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_trim_whitespace(arr text[])
-    RETURNS text[] AS $$
-    DECLARE
-        start_index INT = 1;
-        end_index INT = array_length(arr, 1);
-    BEGIN
-        WHILE start_index <= end_index AND arr[start_index] = '' LOOP
-            start_index := start_index + 1;
-        END LOOP;
-
-        WHILE end_index >= start_index AND arr[end_index] = '' LOOP
-            end_index := end_index - 1;
-        END LOOP;
-
-        IF start_index > end_index THEN
-            RETURN ARRAY[]::text[];
-        ELSE
-            RETURN arr[start_index : end_index];
-        END IF;
-    END; $$
-    LANGUAGE plpgsql
-    SET search_path = ''
-    IMMUTABLE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_raise_error(json_data jsonb)
-    RETURNS BOOLEAN AS $$
-    BEGIN
-        -- Raise an error with the provided JSON data.
-        -- The JSON object is converted to text for inclusion in the error message.
-        RAISE EXCEPTION 'ash_error: %', json_data::text;
-        RETURN NULL;
-    END;
-    $$ LANGUAGE plpgsql
-    STABLE
-    SET search_path = '';
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_raise_error(json_data jsonb, type_signal ANYCOMPATIBLE)
-    RETURNS ANYCOMPATIBLE AS $$
-    BEGIN
-        -- Raise an error with the provided JSON data.
-        -- The JSON object is converted to text for inclusion in the error message.
-        RAISE EXCEPTION 'ash_error: %', json_data::text;
-        RETURN NULL;
-    END;
-    $$ LANGUAGE plpgsql
-    STABLE
-    SET search_path = '';
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION ash_required(value ANYCOMPATIBLE, payload jsonb)
-    RETURNS ANYCOMPATIBLE AS $$
-    BEGIN
-      IF value IS NULL THEN
-        RETURN ash_raise_error(payload, value);
-      END IF;
-
-      RETURN value;
-    END;
-    $$ LANGUAGE plpgsql
-    STABLE
-    SET search_path = '';
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION uuid_generate_v7()
-    RETURNS UUID
-    AS $$
-    DECLARE
-      timestamp    TIMESTAMPTZ;
-      microseconds INT;
-    BEGIN
-      timestamp    = clock_timestamp();
-      microseconds = (cast(extract(microseconds FROM timestamp)::INT - (floor(extract(milliseconds FROM timestamp))::INT * 1000) AS DOUBLE PRECISION) * 4.096)::INT;
-
-      RETURN encode(
-        set_byte(
-          set_byte(
-            overlay(uuid_send(gen_random_uuid()) placing substring(int8send(floor(extract(epoch FROM timestamp) * 1000)::BIGINT) FROM 3) FROM 1 FOR 6
-          ),
-          6, (b'0111' || (microseconds >> 8)::bit(4))::bit(8)::int
-        ),
-        7, microseconds::bit(8)::int
-      ),
-      'hex')::UUID;
-    END
-    $$
-    LANGUAGE PLPGSQL
-    SET search_path = ''
-    VOLATILE;
-    """)
-
-    execute("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\"")
+    install_extensions()
 
     create table(:user_group_memberships, primary_key: false) do
       add :id, :bigserial, null: false, primary_key: true
@@ -203,6 +68,33 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              name: "chat_message_steps_unique_chat_message_sequence_index"
            )
 
+    create table(:knowledge_block_shares, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :knowledge_block_id, :bigint, null: false
+      add :user_group_id, :bigint, null: false
+    end
+
+    create index(:knowledge_block_shares, [:user_group_id],
+             name: "knowledge_block_shares_user_group_id_index"
+           )
+
+    create index(:knowledge_block_shares, [:knowledge_block_id],
+             name: "knowledge_block_shares_knowledge_block_id_index"
+           )
+
+    create unique_index(:knowledge_block_shares, [:knowledge_block_id, :user_group_id],
+             name: "knowledge_block_shares_unique_pair_index"
+           )
+
     create table(:llm_configuration_knowledge_blocks, primary_key: false) do
       add :id, :bigserial, null: false, primary_key: true
       add :selection, :text, null: false, default: "bottom"
@@ -249,6 +141,76 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     create unique_index(:llm_configuration_tags, [:owner_id, :name],
              name: "llm_configuration_tags_unique_name_index"
+           )
+
+    create table(:background_tasks, primary_key: false) do
+      add :id, :uuid, null: false, default: fragment("gen_random_uuid()"), primary_key: true
+      add :kind, :text, null: false
+      add :adapter, :text, null: false
+      add :status, :text, null: false, default: "queued"
+      add :function_name, :text, null: false
+      add :arguments, :map, null: false, default: %{}
+      add :execution_context, :map, null: false, default: %{}
+      add :runner_ref, :map, null: false, default: %{}
+      add :result, :map
+      add :error, :map
+      add :cancel_requested, :boolean, null: false, default: false
+      add :started_at, :utc_datetime_usec
+      add :finished_at, :utc_datetime_usec
+
+      add :inserted_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :owner_id, :bigint, null: false
+      add :tool_instance_id, :bigint
+      add :source_chat_id, :bigint
+      add :source_message_id, :bigint
+      add :lifecycle_message_id, :bigint
+      add :source_step_id, :bigint
+      add :source_tool_call_item_id, :bigint
+      add :target_chat_id, :bigint
+    end
+
+    create constraint(:background_tasks, :background_tasks_status_check,
+             check: "status IN ('queued', 'running', 'completed', 'failed', 'canceled')"
+           )
+
+    create index(:background_tasks, [:source_tool_call_item_id],
+             name: "background_tasks_unique_source_tool_call_item_id_index",
+             unique: true,
+             where: "source_tool_call_item_id IS NOT NULL"
+           )
+
+    create index(:background_tasks, [:tool_instance_id, :adapter, :status, :inserted_at],
+             name: "background_tasks_active_tool_adapter_index",
+             where: "status IN ('queued', 'running')"
+           )
+
+    create index(:background_tasks, [:status, :inserted_at],
+             name: "background_tasks_active_status_inserted_index",
+             where: "status IN ('queued', 'running')"
+           )
+
+    create index(:background_tasks, [:lifecycle_message_id, :id],
+             name: "background_tasks_active_lifecycle_message_index",
+             where: "status IN ('queued', 'running')"
+           )
+
+    create index(:background_tasks, [:target_chat_id],
+             name: "background_tasks_target_chat_id_index"
+           )
+
+    create index(:background_tasks, [:source_chat_id, :status],
+             name: "background_tasks_source_chat_status_index"
+           )
+
+    create index(:background_tasks, [:owner_id, :status, :inserted_at],
+             name: "background_tasks_owner_status_inserted_index"
            )
 
     create table(:bot_compatible_configuration_tags, primary_key: false) do
@@ -404,6 +366,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :id, :bigserial, null: false, primary_key: true
       add :note, :text, default: ""
       add :parent_relation_kind, :text
+      add :subagent, :boolean, null: false, default: false
 
       add :created_at, :utc_datetime_usec,
         null: false,
@@ -419,13 +382,28 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :last_message_id, :bigint
       add :parent_chat_id, :bigint
       add :parent_message_id, :bigint
+      add :parent_tool_call_item_id, :bigint
     end
+
+    create index(:chats, [:parent_tool_call_item_id],
+             name: "chats_unique_parent_tool_call_item_id_index",
+             unique: true,
+             where: "parent_tool_call_item_id IS NOT NULL"
+           )
+
+    create index(:chats, [:parent_tool_call_item_id],
+             name: "chats_parent_tool_call_item_id_index"
+           )
 
     create index(:chats, [:parent_relation_kind], name: "chats_parent_relation_kind_index")
 
     create index(:chats, [:parent_message_id], name: "chats_parent_message_id_index")
 
     create index(:chats, [:parent_chat_id], name: "chats_parent_chat_id_index")
+
+    create index(:chats, [:owner_id, :subagent, :updated_at, :id],
+             name: "chats_owner_subagent_updated_id_index"
+           )
 
     create index(:chats, [:owner_id, :updated_at, :id], name: "chats_owner_updated_id_index")
 
@@ -533,6 +511,57 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              name: "bot_user_tool_bindings_unique_owner_bot_tool_instance_index"
            )
 
+    create table(:chat_queued_messages, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+      add :kind, :text, null: false
+      add :status, :text, null: false, default: "pending"
+      add :blocked_reason, :text
+      add :attempt_count, :bigint, null: false, default: 0
+      add :finished_at, :utc_datetime_usec
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :owner_id, :bigint, null: false
+      add :chat_id, :bigint, null: false
+      add :anchor_message_id, :bigint
+      add :target_generation_message_id, :bigint
+      add :user_message_id, :bigint
+      add :assistant_message_id, :bigint
+      add :steering_item_id, :bigint
+    end
+
+    create index(:chat_queued_messages, [:steering_item_id],
+             name: "chat_queued_messages_unique_steering_item_index",
+             unique: true,
+             where: "steering_item_id IS NOT NULL"
+           )
+
+    create index(:chat_queued_messages, [:assistant_message_id],
+             name: "chat_queued_messages_unique_assistant_message_index",
+             unique: true,
+             where: "assistant_message_id IS NOT NULL"
+           )
+
+    create index(:chat_queued_messages, [:user_message_id],
+             name: "chat_queued_messages_unique_user_message_index",
+             unique: true,
+             where: "user_message_id IS NOT NULL"
+           )
+
+    create index(:chat_queued_messages, [:target_generation_message_id, :status, :id],
+             name: "chat_queued_messages_target_generation_status_id_index"
+           )
+
+    create index(:chat_queued_messages, [:chat_id, :kind, :status, :id],
+             name: "chat_queued_messages_chat_kind_status_id_index"
+           )
+
     create table(:bots, primary_key: false) do
       add :id, :bigserial, null: false, primary_key: true
       add :external_id, :uuid, null: false, default: fragment("gen_random_uuid()")
@@ -599,11 +628,14 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :model_name, :text, null: false
       add :note, :text
       add :parameters, :map, null: false, default: %{}
+      add :temperature, :float
+      add :reasoning_effort, :text
       add :enabled, :boolean, null: false, default: true
-      add :timeout_seconds, :bigint, null: false, default: 300
+      add :timeout_seconds, :bigint, null: false, default: 120
       add :context_length, :bigint
       add :supports_cache_control, :boolean, null: false, default: false
       add :supports_image_input, :boolean, null: false, default: false
+      add :supports_steering, :boolean, null: false, default: true
       add :fix_role_alteration, :boolean, null: false, default: false
 
       add :created_at, :utc_datetime_usec,
@@ -812,6 +844,17 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              )
     end
 
+    alter table(:background_tasks) do
+      modify :owner_id,
+             references(:users,
+               column: :id,
+               name: "background_tasks_owner_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+    end
+
     alter table(:bot_compatible_configuration_tags) do
       modify :owner_id,
              references(:users,
@@ -982,6 +1025,24 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              )
     end
 
+    alter table(:chat_queued_messages) do
+      modify :owner_id,
+             references(:users,
+               column: :id,
+               name: "chat_queued_messages_owner_id_fkey",
+               type: :bigint,
+               prefix: "public"
+             )
+
+      modify :chat_id,
+             references(:chats,
+               column: :id,
+               name: "chat_queued_messages_chat_id_fkey",
+               type: :bigint,
+               prefix: "public"
+             )
+    end
+
     alter table(:bots) do
       modify :owner_id,
              references(:users,
@@ -1090,6 +1151,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :is_admin, :boolean, null: false, default: false
       add :preferred_locale, :text
       add :preferred_theme, :text, null: false, default: "system"
+      add :last_activity_at, :utc_datetime_usec
 
       add :created_at, :utc_datetime_usec,
         null: false,
@@ -1102,8 +1164,55 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     create unique_index(:users, [:username], name: "users_unique_username_index")
 
+    create table(:tool_instance_shares, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :tool_instance_id, :bigint, null: false
+      add :user_group_id, :bigint, null: false
+    end
+
+    create index(:tool_instance_shares, [:user_group_id],
+             name: "tool_instance_shares_user_group_id_index"
+           )
+
+    create index(:tool_instance_shares, [:tool_instance_id],
+             name: "tool_instance_shares_tool_instance_id_index"
+           )
+
+    create unique_index(:tool_instance_shares, [:tool_instance_id, :user_group_id],
+             name: "tool_instance_shares_unique_pair_index"
+           )
+
     create table(:tool_instances, primary_key: false) do
       add :id, :bigserial, null: false, primary_key: true
+    end
+
+    alter table(:background_tasks) do
+      modify :tool_instance_id,
+             references(:tool_instances,
+               column: :id,
+               name: "background_tasks_tool_instance_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :source_chat_id,
+             references(:chats,
+               column: :id,
+               name: "background_tasks_source_chat_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
     end
 
     alter table(:outlet_pairing_requests) do
@@ -1146,6 +1255,26 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              )
     end
 
+    alter table(:tool_instance_shares) do
+      modify :tool_instance_id,
+             references(:tool_instances,
+               column: :id,
+               name: "tool_instance_shares_tool_instance_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+
+      modify :user_group_id,
+             references(:user_groups,
+               column: :id,
+               name: "tool_instance_shares_user_group_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+    end
+
     alter table(:tool_instances) do
       add :type, :text, null: false
       add :name, :text, null: false
@@ -1183,6 +1312,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :external_id, :uuid, null: false, default: fragment("gen_random_uuid()")
       add :sequence, :bigint, null: false
       add :kind, :text, null: false
+      add :item_type, :text, null: false
       add :content_text, :text, null: false, default: ""
       add :content_json, :map
 
@@ -1229,6 +1359,43 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     create unique_index(:chat_message_contents, [:chat_message_item_id, :sequence],
              name: "chat_message_contents_unique_item_sequence_index"
+           )
+
+    create table(:chat_message_step_request_files, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+      add :reference_key, :uuid, null: false
+      add :source_file_external_id, :uuid, null: false
+      add :variant_key, :text, null: false
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :chat_message_step_id,
+          references(:chat_message_steps,
+            column: :id,
+            name: "chat_message_step_request_files_chat_message_step_id_fkey",
+            type: :bigint,
+            prefix: "public"
+          ),
+          null: false
+
+      add :file_id,
+          references(:files,
+            column: :id,
+            name: "chat_message_step_request_files_file_id_fkey",
+            type: :bigint,
+            prefix: "public"
+          ),
+          null: false
+    end
+
+    create unique_index(:chat_message_step_request_files, [:file_id],
+             name: "chat_message_step_request_files_unique_file_index"
+           )
+
+    create unique_index(:chat_message_step_request_files, [:chat_message_step_id, :reference_key],
+             name: "chat_message_step_request_files_unique_step_reference_index"
            )
 
     create table(:llm_configuration_tag_bindings, primary_key: false) do
@@ -1286,6 +1453,45 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              :llm_configuration_tag_bindings,
              [:llm_configuration_id, :llm_configuration_tag_id],
              name: "llm_configuration_tag_bindings_unique_pair_index"
+           )
+
+    create table(:background_task_events, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+      add :stream, :text, null: false
+      add :data, :text, null: false
+      add :byte_size, :bigint, null: false, default: 0
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :background_task_id,
+          references(:background_tasks,
+            column: :id,
+            name: "background_task_events_background_task_id_fkey",
+            type: :uuid,
+            prefix: "public",
+            on_delete: :delete_all
+          ),
+          null: false
+
+      add :owner_id,
+          references(:users,
+            column: :id,
+            name: "background_task_events_owner_id_fkey",
+            type: :bigint,
+            prefix: "public",
+            on_delete: :delete_all
+          ),
+          null: false
+    end
+
+    create constraint(:background_task_events, :background_task_events_stream_check,
+             check: "stream IN ('stdout', 'stderr')"
+           )
+
+    create index(:background_task_events, [:background_task_id, :id],
+             name: "background_task_events_task_id_index"
            )
 
     create table(:chat_knowledge_blocks, primary_key: false) do
@@ -1648,6 +1854,26 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :id, :bigserial, null: false, primary_key: true
     end
 
+    alter table(:knowledge_block_shares) do
+      modify :knowledge_block_id,
+             references(:knowledge_blocks,
+               column: :id,
+               name: "knowledge_block_shares_knowledge_block_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+
+      modify :user_group_id,
+             references(:user_groups,
+               column: :id,
+               name: "knowledge_block_shares_user_group_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+    end
+
     alter table(:llm_configuration_knowledge_blocks) do
       modify :knowledge_block_id,
              references(:knowledge_blocks,
@@ -1798,6 +2024,56 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              name: "web_push_settings_unique_singleton_key_index"
            )
 
+    create table(:chat_queued_message_contents, primary_key: false) do
+      add :id, :bigserial, null: false, primary_key: true
+      add :sequence, :bigint, null: false
+      add :kind, :text, null: false
+      add :content_text, :text, null: false, default: ""
+
+      add :created_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :owner_id,
+          references(:users,
+            column: :id,
+            name: "chat_queued_message_contents_owner_id_fkey",
+            type: :bigint,
+            prefix: "public"
+          ),
+          null: false
+
+      add :queued_message_id,
+          references(:chat_queued_messages,
+            column: :id,
+            name: "chat_queued_message_contents_queued_message_id_fkey",
+            type: :bigint,
+            prefix: "public",
+            on_delete: :delete_all
+          ),
+          null: false
+
+      add :file_id,
+          references(:files,
+            column: :id,
+            name: "chat_queued_message_contents_file_id_fkey",
+            type: :bigint,
+            prefix: "public"
+          )
+    end
+
+    create index(:chat_queued_message_contents, [:file_id],
+             name: "chat_queued_message_contents_file_id_index"
+           )
+
+    create unique_index(:chat_queued_message_contents, [:queued_message_id, :sequence],
+             name: "chat_queued_message_contents_unique_message_sequence_index"
+           )
+
     create table(:chat_messages, primary_key: false) do
       add :id, :bigserial, null: false, primary_key: true
     end
@@ -1809,6 +2085,53 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                name: "chat_message_steps_chat_message_id_fkey",
                type: :bigint,
                prefix: "public"
+             )
+    end
+
+    alter table(:background_tasks) do
+      modify :source_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "background_tasks_source_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :lifecycle_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "background_tasks_lifecycle_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :source_step_id,
+             references(:chat_message_steps,
+               column: :id,
+               name: "background_tasks_source_step_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :source_tool_call_item_id,
+             references(:chat_message_items,
+               column: :id,
+               name: "background_tasks_source_tool_call_item_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :target_chat_id,
+             references(:chats,
+               column: :id,
+               name: "background_tasks_target_chat_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
              )
     end
 
@@ -1835,6 +2158,62 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                name: "chats_parent_message_id_fkey",
                type: :bigint,
                prefix: "public"
+             )
+
+      modify :parent_tool_call_item_id,
+             references(:chat_message_items,
+               column: :id,
+               name: "chats_parent_tool_call_item_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+    end
+
+    alter table(:chat_queued_messages) do
+      modify :anchor_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "chat_queued_messages_anchor_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :target_generation_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "chat_queued_messages_target_generation_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :delete_all
+             )
+
+      modify :user_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "chat_queued_messages_user_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :assistant_message_id,
+             references(:chat_messages,
+               column: :id,
+               name: "chat_queued_messages_assistant_message_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
+             )
+
+      modify :steering_item_id,
+             references(:chat_message_items,
+               column: :id,
+               name: "chat_queued_messages_steering_item_id_fkey",
+               type: :bigint,
+               prefix: "public",
+               on_delete: :nilify_all
              )
     end
 
@@ -1882,6 +2261,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :error_detail, :text
       add :token_count, :bigint, null: false, default: 0
       add :finished_at, :utc_datetime_usec
+      add :generation_fence_token, :uuid
 
       add :created_at, :utc_datetime_usec,
         null: false,
@@ -1942,6 +2322,9 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       add :description, :text, null: false, default: ""
       add :parameters_schema, :map, null: false, default: %{}
       add :enabled, :boolean, null: false, default: true
+      add :discovery_available, :boolean, null: false, default: true
+      add :execution_mode, :text, null: false, default: "direct"
+      add :target_function_name, :text
 
       add :discovered_at, :utc_datetime_usec,
         null: false,
@@ -2022,13 +2405,94 @@ defmodule IntellectualClub.Repo.Migrations.Init do
              name: "llm_configuration_shares_unique_pair_index"
            )
 
+    create constraint(:chat_queued_message_contents, :chat_queued_message_contents_kind_check,
+             check: """
+               kind IN ('text', 'media')
+             """
+           )
+
+    create constraint(
+             :chat_queued_message_contents,
+             :chat_queued_message_contents_kind_file_check,
+             check: """
+               (kind = 'text' AND file_id IS NULL) OR (kind = 'media' AND file_id IS NOT NULL)
+             """
+           )
+
     execute("""
-    CREATE INDEX IF NOT EXISTS chat_message_contents_content_text_trgm_index ON chat_message_contents USING gin (content_text gin_trgm_ops) WHERE kind = 'text'
+    CREATE OR REPLACE FUNCTION set_chat_message_content_item_type()
+    RETURNS trigger AS $$
+    BEGIN
+      SELECT type
+      INTO NEW.item_type
+      FROM chat_message_items
+      WHERE id = NEW.chat_message_item_id;
+
+      IF NEW.item_type IS NULL THEN
+        RAISE EXCEPTION 'Cannot resolve item type for chat message item %', NEW.chat_message_item_id;
+      END IF;
+
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """)
+
+    execute("""
+    CREATE TRIGGER chat_message_contents_set_item_type
+    BEFORE INSERT OR UPDATE OF chat_message_item_id, item_type
+    ON chat_message_contents
+    FOR EACH ROW
+    EXECUTE FUNCTION set_chat_message_content_item_type()
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION sync_chat_message_content_item_type()
+    RETURNS trigger AS $$
+    BEGIN
+      UPDATE chat_message_contents
+      SET item_type = NEW.type
+      WHERE chat_message_item_id = NEW.id
+        AND item_type IS DISTINCT FROM NEW.type;
+
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """)
+
+    execute("""
+    CREATE TRIGGER chat_message_contents_sync_item_type
+    AFTER UPDATE OF type
+    ON chat_message_items
+    FOR EACH ROW
+    WHEN (OLD.type IS DISTINCT FROM NEW.type)
+    EXECUTE FUNCTION sync_chat_message_content_item_type()
+    """)
+
+    execute("""
+    CREATE INDEX IF NOT EXISTS chat_message_contents_searchable_content_text_trgm_index ON chat_message_contents USING gin (content_text gin_trgm_ops) WHERE kind = 'text' AND item_type IN ('input', 'handoff_request', 'handoff_context', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
     """)
 
     execute("""
     CREATE INDEX IF NOT EXISTS bots_name_trgm_index ON bots USING gin (name gin_trgm_ops)
     """)
+
+    create constraint(:chat_queued_messages, :chat_queued_messages_kind_check,
+             check: """
+               kind IN ('follow_up', 'steer')
+             """
+           )
+
+    create constraint(:chat_queued_messages, :chat_queued_messages_status_check,
+             check: """
+               status IN ('pending', 'blocked', 'delivered', 'canceled')
+             """
+           )
+
+    create constraint(:chat_queued_messages, :chat_queued_messages_kind_target_check,
+             check: """
+               (kind = 'follow_up' AND target_generation_message_id IS NULL) OR (kind = 'steer' AND anchor_message_id IS NULL AND target_generation_message_id IS NOT NULL)
+             """
+           )
 
     execute("""
     CREATE INDEX IF NOT EXISTS chats_note_trgm_index ON chats USING gin (note gin_trgm_ops) WHERE note <> ''
@@ -2040,13 +2504,45 @@ defmodule IntellectualClub.Repo.Migrations.Init do
     DROP INDEX IF EXISTS chats_note_trgm_index
     """)
 
+    drop_if_exists constraint(:chat_queued_messages, :chat_queued_messages_kind_target_check)
+
+    drop_if_exists constraint(:chat_queued_messages, :chat_queued_messages_status_check)
+
+    drop_if_exists constraint(:chat_queued_messages, :chat_queued_messages_kind_check)
+
     execute("""
     DROP INDEX IF EXISTS bots_name_trgm_index
     """)
 
     execute("""
-    DROP INDEX IF EXISTS chat_message_contents_content_text_trgm_index
+    DROP INDEX IF EXISTS chat_message_contents_searchable_content_text_trgm_index
     """)
+
+    execute("""
+    DROP TRIGGER IF EXISTS chat_message_contents_sync_item_type ON chat_message_items
+    """)
+
+    execute("""
+    DROP FUNCTION IF EXISTS sync_chat_message_content_item_type()
+    """)
+
+    execute("""
+    DROP TRIGGER IF EXISTS chat_message_contents_set_item_type ON chat_message_contents
+    """)
+
+    execute("""
+    DROP FUNCTION IF EXISTS set_chat_message_content_item_type()
+    """)
+
+    drop_if_exists constraint(
+                     :chat_queued_message_contents,
+                     :chat_queued_message_contents_kind_file_check
+                   )
+
+    drop_if_exists constraint(
+                     :chat_queued_message_contents,
+                     :chat_queued_message_contents_kind_check
+                   )
 
     drop constraint(
            :llm_configuration_shares,
@@ -2110,6 +2606,7 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       remove :owner_id
       remove :updated_at
       remove :created_at
+      remove :generation_fence_token
       remove :finished_at
       remove :token_count
       remove :error_detail
@@ -2141,16 +2638,58 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       modify :chat_message_id, :bigint
     end
 
+    drop constraint(:chat_queued_messages, "chat_queued_messages_anchor_message_id_fkey")
+
+    drop constraint(
+           :chat_queued_messages,
+           "chat_queued_messages_target_generation_message_id_fkey"
+         )
+
+    drop constraint(:chat_queued_messages, "chat_queued_messages_user_message_id_fkey")
+
+    drop constraint(:chat_queued_messages, "chat_queued_messages_assistant_message_id_fkey")
+
+    drop constraint(:chat_queued_messages, "chat_queued_messages_steering_item_id_fkey")
+
+    alter table(:chat_queued_messages) do
+      modify :steering_item_id, :bigint
+      modify :assistant_message_id, :bigint
+      modify :user_message_id, :bigint
+      modify :target_generation_message_id, :bigint
+      modify :anchor_message_id, :bigint
+    end
+
     drop constraint(:chats, "chats_last_message_id_fkey")
 
     drop constraint(:chats, "chats_parent_chat_id_fkey")
 
     drop constraint(:chats, "chats_parent_message_id_fkey")
 
+    drop constraint(:chats, "chats_parent_tool_call_item_id_fkey")
+
     alter table(:chats) do
+      modify :parent_tool_call_item_id, :bigint
       modify :parent_message_id, :bigint
       modify :parent_chat_id, :bigint
       modify :last_message_id, :bigint
+    end
+
+    drop constraint(:background_tasks, "background_tasks_source_message_id_fkey")
+
+    drop constraint(:background_tasks, "background_tasks_lifecycle_message_id_fkey")
+
+    drop constraint(:background_tasks, "background_tasks_source_step_id_fkey")
+
+    drop constraint(:background_tasks, "background_tasks_source_tool_call_item_id_fkey")
+
+    drop constraint(:background_tasks, "background_tasks_target_chat_id_fkey")
+
+    alter table(:background_tasks) do
+      modify :target_chat_id, :bigint
+      modify :source_tool_call_item_id, :bigint
+      modify :source_step_id, :bigint
+      modify :lifecycle_message_id, :bigint
+      modify :source_message_id, :bigint
     end
 
     drop constraint(:chat_message_steps, "chat_message_steps_chat_message_id_fkey")
@@ -2160,6 +2699,25 @@ defmodule IntellectualClub.Repo.Migrations.Init do
     end
 
     drop table(:chat_messages)
+
+    drop constraint(:chat_queued_message_contents, "chat_queued_message_contents_owner_id_fkey")
+
+    drop constraint(
+           :chat_queued_message_contents,
+           "chat_queued_message_contents_queued_message_id_fkey"
+         )
+
+    drop constraint(:chat_queued_message_contents, "chat_queued_message_contents_file_id_fkey")
+
+    drop_if_exists unique_index(:chat_queued_message_contents, [:queued_message_id, :sequence],
+                     name: "chat_queued_message_contents_unique_message_sequence_index"
+                   )
+
+    drop_if_exists index(:chat_queued_message_contents, [:file_id],
+                     name: "chat_queued_message_contents_file_id_index"
+                   )
+
+    drop table(:chat_queued_message_contents)
 
     drop_if_exists unique_index(:web_push_settings, [:singleton_key],
                      name: "web_push_settings_unique_singleton_key_index"
@@ -2239,6 +2797,15 @@ defmodule IntellectualClub.Repo.Migrations.Init do
          )
 
     alter table(:llm_configuration_knowledge_blocks) do
+      modify :knowledge_block_id, :bigint
+    end
+
+    drop constraint(:knowledge_block_shares, "knowledge_block_shares_knowledge_block_id_fkey")
+
+    drop constraint(:knowledge_block_shares, "knowledge_block_shares_user_group_id_fkey")
+
+    alter table(:knowledge_block_shares) do
+      modify :user_group_id, :bigint
       modify :knowledge_block_id, :bigint
     end
 
@@ -2390,6 +2957,16 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     drop table(:chat_knowledge_blocks)
 
+    drop constraint(:background_task_events, "background_task_events_background_task_id_fkey")
+
+    drop constraint(:background_task_events, "background_task_events_owner_id_fkey")
+
+    drop_if_exists index(:background_task_events, [:background_task_id, :id],
+                     name: "background_task_events_task_id_index"
+                   )
+
+    drop table(:background_task_events)
+
     drop constraint(
            :llm_configuration_tag_bindings,
            "llm_configuration_tag_bindings_owner_id_fkey"
@@ -2424,6 +3001,28 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                    )
 
     drop table(:llm_configuration_tag_bindings)
+
+    drop constraint(
+           :chat_message_step_request_files,
+           "chat_message_step_request_files_chat_message_step_id_fkey"
+         )
+
+    drop constraint(
+           :chat_message_step_request_files,
+           "chat_message_step_request_files_file_id_fkey"
+         )
+
+    drop_if_exists unique_index(
+                     :chat_message_step_request_files,
+                     [:chat_message_step_id, :reference_key],
+                     name: "chat_message_step_request_files_unique_step_reference_index"
+                   )
+
+    drop_if_exists unique_index(:chat_message_step_request_files, [:file_id],
+                     name: "chat_message_step_request_files_unique_file_index"
+                   )
+
+    drop table(:chat_message_step_request_files)
 
     drop constraint(:chat_message_contents, "chat_message_contents_owner_id_fkey")
 
@@ -2465,6 +3064,15 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       remove :type
     end
 
+    drop constraint(:tool_instance_shares, "tool_instance_shares_tool_instance_id_fkey")
+
+    drop constraint(:tool_instance_shares, "tool_instance_shares_user_group_id_fkey")
+
+    alter table(:tool_instance_shares) do
+      modify :user_group_id, :bigint
+      modify :tool_instance_id, :bigint
+    end
+
     drop constraint(:bot_user_tool_bindings, "bot_user_tool_bindings_tool_instance_id_fkey")
 
     alter table(:bot_user_tool_bindings) do
@@ -2489,13 +3097,37 @@ defmodule IntellectualClub.Repo.Migrations.Init do
       modify :tool_instance_id, :bigint
     end
 
+    drop constraint(:background_tasks, "background_tasks_tool_instance_id_fkey")
+
+    drop constraint(:background_tasks, "background_tasks_source_chat_id_fkey")
+
+    alter table(:background_tasks) do
+      modify :source_chat_id, :bigint
+      modify :tool_instance_id, :bigint
+    end
+
     drop table(:tool_instances)
+
+    drop_if_exists unique_index(:tool_instance_shares, [:tool_instance_id, :user_group_id],
+                     name: "tool_instance_shares_unique_pair_index"
+                   )
+
+    drop_if_exists index(:tool_instance_shares, [:tool_instance_id],
+                     name: "tool_instance_shares_tool_instance_id_index"
+                   )
+
+    drop_if_exists index(:tool_instance_shares, [:user_group_id],
+                     name: "tool_instance_shares_user_group_id_index"
+                   )
+
+    drop table(:tool_instance_shares)
 
     drop_if_exists unique_index(:users, [:username], name: "users_unique_username_index")
 
     alter table(:users) do
       remove :updated_at
       remove :created_at
+      remove :last_activity_at
       remove :preferred_theme
       remove :preferred_locale
       remove :is_admin
@@ -2554,6 +3186,15 @@ defmodule IntellectualClub.Repo.Migrations.Init do
     alter table(:bots) do
       modify :default_llm_configuration_id, :bigint
       modify :image_file_id, :bigint
+      modify :owner_id, :bigint
+    end
+
+    drop constraint(:chat_queued_messages, "chat_queued_messages_owner_id_fkey")
+
+    drop constraint(:chat_queued_messages, "chat_queued_messages_chat_id_fkey")
+
+    alter table(:chat_queued_messages) do
+      modify :chat_id, :bigint
       modify :owner_id, :bigint
     end
 
@@ -2647,6 +3288,12 @@ defmodule IntellectualClub.Repo.Migrations.Init do
     alter table(:bot_compatible_configuration_tags) do
       modify :llm_configuration_tag_id, :bigint
       modify :bot_id, :bigint
+      modify :owner_id, :bigint
+    end
+
+    drop constraint(:background_tasks, "background_tasks_owner_id_fkey")
+
+    alter table(:background_tasks) do
       modify :owner_id, :bigint
     end
 
@@ -2758,6 +3405,28 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     drop table(:bots)
 
+    drop_if_exists index(:chat_queued_messages, [:chat_id, :kind, :status, :id],
+                     name: "chat_queued_messages_chat_kind_status_id_index"
+                   )
+
+    drop_if_exists index(:chat_queued_messages, [:target_generation_message_id, :status, :id],
+                     name: "chat_queued_messages_target_generation_status_id_index"
+                   )
+
+    drop_if_exists index(:chat_queued_messages, [:user_message_id],
+                     name: "chat_queued_messages_unique_user_message_index"
+                   )
+
+    drop_if_exists index(:chat_queued_messages, [:assistant_message_id],
+                     name: "chat_queued_messages_unique_assistant_message_index"
+                   )
+
+    drop_if_exists index(:chat_queued_messages, [:steering_item_id],
+                     name: "chat_queued_messages_unique_steering_item_index"
+                   )
+
+    drop table(:chat_queued_messages)
+
     drop_if_exists unique_index(:bot_user_tool_bindings, [:owner_id, :bot_id, :tool_instance_id],
                      name: "bot_user_tool_bindings_unique_owner_bot_tool_instance_index"
                    )
@@ -2806,12 +3475,24 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                      name: "chats_owner_updated_id_index"
                    )
 
+    drop_if_exists index(:chats, [:owner_id, :subagent, :updated_at, :id],
+                     name: "chats_owner_subagent_updated_id_index"
+                   )
+
     drop_if_exists index(:chats, [:parent_chat_id], name: "chats_parent_chat_id_index")
 
     drop_if_exists index(:chats, [:parent_message_id], name: "chats_parent_message_id_index")
 
     drop_if_exists index(:chats, [:parent_relation_kind],
                      name: "chats_parent_relation_kind_index"
+                   )
+
+    drop_if_exists index(:chats, [:parent_tool_call_item_id],
+                     name: "chats_parent_tool_call_item_id_index"
+                   )
+
+    drop_if_exists index(:chats, [:parent_tool_call_item_id],
+                     name: "chats_unique_parent_tool_call_item_id_index"
                    )
 
     drop table(:chats)
@@ -2886,6 +3567,36 @@ defmodule IntellectualClub.Repo.Migrations.Init do
 
     drop table(:bot_compatible_configuration_tags)
 
+    drop_if_exists index(:background_tasks, [:owner_id, :status, :inserted_at],
+                     name: "background_tasks_owner_status_inserted_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:source_chat_id, :status],
+                     name: "background_tasks_source_chat_status_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:target_chat_id],
+                     name: "background_tasks_target_chat_id_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:lifecycle_message_id, :id],
+                     name: "background_tasks_active_lifecycle_message_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:status, :inserted_at],
+                     name: "background_tasks_active_status_inserted_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:tool_instance_id, :adapter, :status, :inserted_at],
+                     name: "background_tasks_active_tool_adapter_index"
+                   )
+
+    drop_if_exists index(:background_tasks, [:source_tool_call_item_id],
+                     name: "background_tasks_unique_source_tool_call_item_id_index"
+                   )
+
+    drop table(:background_tasks)
+
     drop_if_exists unique_index(:llm_configuration_tags, [:owner_id, :name],
                      name: "llm_configuration_tags_unique_name_index"
                    )
@@ -2903,6 +3614,20 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                    )
 
     drop table(:llm_configuration_knowledge_blocks)
+
+    drop_if_exists unique_index(:knowledge_block_shares, [:knowledge_block_id, :user_group_id],
+                     name: "knowledge_block_shares_unique_pair_index"
+                   )
+
+    drop_if_exists index(:knowledge_block_shares, [:knowledge_block_id],
+                     name: "knowledge_block_shares_knowledge_block_id_index"
+                   )
+
+    drop_if_exists index(:knowledge_block_shares, [:user_group_id],
+                     name: "knowledge_block_shares_user_group_id_index"
+                   )
+
+    drop table(:knowledge_block_shares)
 
     drop_if_exists unique_index(:chat_message_steps, [:chat_message_id, :sequence],
                      name: "chat_message_steps_unique_chat_message_sequence_index"
@@ -2923,6 +3648,150 @@ defmodule IntellectualClub.Repo.Migrations.Init do
                    )
 
     drop table(:user_group_memberships)
+
+    uninstall_extensions()
+  end
+
+  defp install_extensions do
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_elixir_or(left BOOLEAN, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE)
+    AS $$ SELECT COALESCE(NULLIF($1, FALSE), $2) $$
+    LANGUAGE SQL
+    SET search_path = ''
+    IMMUTABLE;
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_elixir_or(left ANYCOMPATIBLE, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE)
+    AS $$ SELECT COALESCE($1, $2) $$
+    LANGUAGE SQL
+    SET search_path = ''
+    IMMUTABLE;
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_elixir_and(left BOOLEAN, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE) AS $$
+      SELECT CASE
+        WHEN $1 IS TRUE THEN $2
+        ELSE $1
+      END $$
+    LANGUAGE SQL
+    SET search_path = ''
+    IMMUTABLE;
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_elixir_and(left ANYCOMPATIBLE, in right ANYCOMPATIBLE, out f1 ANYCOMPATIBLE) AS $$
+      SELECT CASE
+        WHEN $1 IS NOT NULL THEN $2
+        ELSE $1
+      END $$
+    LANGUAGE SQL
+    SET search_path = ''
+    IMMUTABLE;
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_trim_whitespace(arr text[])
+    RETURNS text[] AS $$
+    DECLARE
+        start_index INT = 1;
+        end_index INT = array_length(arr, 1);
+    BEGIN
+        WHILE start_index <= end_index AND arr[start_index] = '' LOOP
+            start_index := start_index + 1;
+        END LOOP;
+
+        WHILE end_index >= start_index AND arr[end_index] = '' LOOP
+            end_index := end_index - 1;
+        END LOOP;
+
+        IF start_index > end_index THEN
+            RETURN ARRAY[]::text[];
+        ELSE
+            RETURN arr[start_index : end_index];
+        END IF;
+    END; $$
+    LANGUAGE plpgsql
+    SET search_path = ''
+    IMMUTABLE;
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_raise_error(json_data jsonb)
+    RETURNS BOOLEAN AS $$
+    BEGIN
+        -- Raise an error with the provided JSON data.
+        -- The JSON object is converted to text for inclusion in the error message.
+        RAISE EXCEPTION 'ash_error: %', json_data::text;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql
+    STABLE
+    SET search_path = '';
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_raise_error(json_data jsonb, type_signal ANYCOMPATIBLE)
+    RETURNS ANYCOMPATIBLE AS $$
+    BEGIN
+        -- Raise an error with the provided JSON data.
+        -- The JSON object is converted to text for inclusion in the error message.
+        RAISE EXCEPTION 'ash_error: %', json_data::text;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql
+    STABLE
+    SET search_path = '';
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION ash_required(value ANYCOMPATIBLE, payload jsonb)
+    RETURNS ANYCOMPATIBLE AS $$
+    BEGIN
+      IF value IS NULL THEN
+        RETURN ash_raise_error(payload, value);
+      END IF;
+
+      RETURN value;
+    END;
+    $$ LANGUAGE plpgsql
+    STABLE
+    SET search_path = '';
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION uuid_generate_v7()
+    RETURNS UUID
+    AS $$
+    DECLARE
+      timestamp    TIMESTAMPTZ;
+      microseconds INT;
+    BEGIN
+      timestamp    = clock_timestamp();
+      microseconds = (cast(extract(microseconds FROM timestamp)::INT - (floor(extract(milliseconds FROM timestamp))::INT * 1000) AS DOUBLE PRECISION) * 4.096)::INT;
+
+      RETURN encode(
+        set_byte(
+          set_byte(
+            overlay(uuid_send(gen_random_uuid()) placing substring(int8send(floor(extract(epoch FROM timestamp) * 1000)::BIGINT) FROM 3) FROM 1 FOR 6
+          ),
+          6, (b'0111' || (microseconds >> 8)::bit(4))::bit(8)::int
+        ),
+        7, microseconds::bit(8)::int
+      ),
+      'hex')::UUID;
+    END
+    $$
+    LANGUAGE PLPGSQL
+    SET search_path = ''
+    VOLATILE;
+    """)
+
+    execute("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\"")
+  end
+
+  defp uninstall_extensions do
     # Uncomment this if you actually want to uninstall the extensions
     # when this migration is rolled back:
     execute(

@@ -73,6 +73,18 @@
       "type": "text"
     },
     {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "last_activity_at",
+      "type": "utc_datetime_usec"
+    },
+    {
       "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
@@ -103,7 +115,7 @@
   "custom_indexes": [],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "A52CEB8008421BFA1D4AA2E2993DE1344D39011220845516A7568FB5C20A36ED",
+  "hash": "C46A8DB48FC23E2F31A9D51ECB60CABFFF9D51C797A5A2395201B27FABA9A60E",
   "identities": [
     {
       "all_tenants?": false,

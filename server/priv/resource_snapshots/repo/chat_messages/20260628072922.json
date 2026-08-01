@@ -73,6 +73,18 @@
       "type": "utc_datetime_usec"
     },
     {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "generation_fence_token",
+      "type": "uuid"
+    },
+    {
       "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
@@ -314,7 +326,7 @@
   ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "94ED41A897D75A11D034AE48CCC9293281BE286A5F7EEA19F09EC13960924AC3",
+  "hash": "97BB3632C5D13F564ABC921CA181377ED3D332798F97FC53A111DC7F7FEB3C7B",
   "identities": [],
   "multitenancy": {
     "attribute": null,

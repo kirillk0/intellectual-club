@@ -61,6 +61,30 @@
       "type": "map"
     },
     {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "temperature",
+      "type": "float"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "reasoning_effort",
+      "type": "text"
+    },
+    {
       "allow_nil?": false,
       "default": "true",
       "generated?": false,
@@ -74,7 +98,7 @@
     },
     {
       "allow_nil?": false,
-      "default": "300",
+      "default": "120",
       "generated?": false,
       "precision": null,
       "primary_key?": false,
@@ -118,6 +142,18 @@
       "scale": null,
       "size": null,
       "source": "supports_image_input",
+      "type": "boolean"
+    },
+    {
+      "allow_nil?": false,
+      "default": "true",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "supports_steering",
       "type": "boolean"
     },
     {
@@ -225,7 +261,7 @@
   "custom_indexes": [],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "03B2042AFB92C817668FE7A706D4B3E9F8584E48F1A38C80431D139DD504C2FD",
+  "hash": "9F2BC4E0D5BAA5BBCDC1BEEEB3BBB1003C632080C2B493FE5C96C7C73341A85E",
   "identities": [
     {
       "all_tenants?": false,
