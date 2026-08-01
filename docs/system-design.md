@@ -29,7 +29,7 @@
 │  └────────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌──────────────────────────┐      ┌───────────────────────────────────┐ │
-│  │     Outlet Subsystem     │      │        Scheduling (Oban)          │ │
+│  │     Outlet Subsystem     │      │                                   │
 │  │ (Phoenix Controllers/API)│      │        DB-backed on PostgreSQL    │ │
 │  └──────────────────────────┘      └───────────────────────────────────┘ │
 │                                                                          │
@@ -62,7 +62,6 @@ Outlet ─────────► MDM (Ash)        : ToolInstance, OutletCal
    - for the runtime trace (the latest unfinished step), a full snapshot is preferred because structural deltas become complex and unstable when stream order is non-deterministic
    - old steps are never polled because they are immutable after finalization
 7. **The SPA is served by Phoenix**. There is one build pipeline (`mix assets.*`) and one dev watcher flow, without a separate Vite dev server.
-8. **Module calculations handle aggregates** through Ash/PostgreSQL expressions.
 
 ### 1.4 Generation streaming model (trace-only)
 
