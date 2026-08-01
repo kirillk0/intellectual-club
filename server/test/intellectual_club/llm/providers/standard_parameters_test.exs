@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
   alias IntellectualClub.Llm.Providers.Common.MissingProvider
   alias IntellectualClub.Llm.Providers.Demo
   alias IntellectualClub.Llm.Providers.GoogleInteractions
+  alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.ResponsesWss
@@ -25,6 +26,7 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
           Responses,
           ResponsesWss,
           OpenRouterChatCompletion,
+          NvidiaBuildChatCompletion,
           GoogleInteractions,
           AnthropicMessages,
           Demo,
@@ -32,6 +34,30 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
           SelfContainedTestProvider
         ] do
       assert provider.apply_standard_parameters(parameters, settings) == parameters
+    end
+  end
+
+  test "NVIDIA Build writes top-level reasoning effort and removes OpenRouter reasoning" do
+    parameters = %{
+      "temperature" => 1.5,
+      "reasoning" => %{"effort" => "old"},
+      "reasoning_effort" => "old",
+      "reasoning_budget" => 2_048,
+      "custom" => "kept"
+    }
+
+    for effort <- @efforts do
+      result =
+        NvidiaBuildChatCompletion.apply_standard_parameters(parameters, %{
+          temperature: 0,
+          reasoning_effort: effort
+        })
+
+      assert result["temperature"] == 0
+      assert result["reasoning_effort"] == Atom.to_string(effort)
+      assert result["reasoning_budget"] == 2_048
+      assert result["custom"] == "kept"
+      refute Map.has_key?(result, "reasoning")
     end
   end
 

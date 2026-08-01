@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.GoogleInteractions
+  alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.ResponsesWss
@@ -53,6 +54,32 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.request_snapshot.model_input == result.raw_request["messages"]
     assert result.request_snapshot.system_prompt == "Be careful."
     assert result.request_snapshot.history_length == 2
+  end
+
+  test "NVIDIA Build provider builds a Chat Completions request without OpenRouter fields" do
+    result =
+      NvidiaBuildChatCompletion.build_initial_request(%{
+        history: [%{role: :user, content: "Hello"}],
+        system_prompt: "Be careful.",
+        model_name: "nvidia/nemotron-3-nano-30b-a3b",
+        parameters: %{"reasoning_effort" => "high"},
+        chat_id: 123,
+        conversation_affinity_id: 77,
+        tools: [],
+        supports_image_input: false,
+        cache_control_enabled: true
+      })
+
+    assert result.raw_request["model"] == "nvidia/nemotron-3-nano-30b-a3b"
+    assert result.raw_request["reasoning_effort"] == "high"
+    assert result.raw_request["stream"] == true
+    assert result.raw_request["stream_options"] == %{"include_usage" => true}
+    refute Map.has_key?(result.raw_request, "session_id")
+
+    [system_message, user_message] = result.raw_request["messages"]
+    assert system_message == %{"role" => "system", "content" => "Be careful."}
+    assert user_message == %{"role" => "user", "content" => "Hello"}
+    assert result.request_snapshot.history_length == nil
   end
 
   test "responses provider builds initial request and snapshot from canonical history" do
@@ -647,6 +674,100 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})
+  end
+
+  test "NVIDIA Build provider rebuilds followup chat request without OpenRouter fields" do
+    previous_messages = [
+      %{
+        "role" => "system",
+        "content" => [
+          %{"type" => "text", "text" => "System", "cache_control" => %{"type" => "ephemeral"}}
+        ]
+      },
+      %{"role" => "user", "content" => "Hello"}
+    ]
+
+    raw_request =
+      RequestBuilder.build_chat_completions_payload(
+        "nvidia/nemotron-3-nano-30b-a3b",
+        %{
+          "reasoning_budget" => 2_048,
+          "session_id" => "legacy-session",
+          "stream_options" => %{"custom" => true}
+        },
+        previous_messages,
+        tools: []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        raw_request: raw_request,
+        raw_response: %{
+          "choices" => [
+            %{
+              "message" => %{
+                "role" => "assistant",
+                "content" => nil,
+                "tool_calls" => [
+                  %{
+                    "id" => "call_weather",
+                    "type" => "function",
+                    "function" => %{
+                      "name" => "weather__get",
+                      "arguments" => ~s({"city":"Paris"})
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      )
+
+    followup =
+      NvidiaBuildChatCompletion.build_followup_request(%{
+        context: %{
+          cache_control_enabled: true,
+          history_length: 2,
+          model_name: "nvidia/nemotron-3-nano-30b-a3b",
+          parameters: %{},
+          supports_image_input: false
+        },
+        runtime_step: runtime_step,
+        results: [
+          %{
+            call_id: "call_weather",
+            name: "weather__get",
+            args: %{"city" => "Paris"},
+            raw: %{
+              "id" => "call_weather",
+              "type" => "function",
+              "function" => %{
+                "name" => "weather__get",
+                "arguments" => ~s({"city":"Paris"})
+              }
+            },
+            text: ~s({"temperature":18.5}),
+            result_raw: %{"temperature" => 18.5},
+            media_contents: [],
+            artifact_contents: []
+          }
+        ],
+        tools: []
+      })
+
+    refute Map.has_key?(followup.raw_request, "session_id")
+    assert followup.raw_request["reasoning_budget"] == 2_048
+    assert followup.raw_request["stream_options"] == %{"custom" => true, "include_usage" => true}
+    assert followup.request_snapshot.history_length == nil
+
+    assert Enum.any?(followup.raw_request["messages"], fn message ->
+             message["role"] == "tool" and message["tool_call_id"] == "call_weather"
+           end)
+
+    refute followup.raw_request["messages"]
+           |> inspect()
+           |> String.contains?("cache_control")
   end
 
   test "openrouter provider closes every parallel tool call before one combined media message" do

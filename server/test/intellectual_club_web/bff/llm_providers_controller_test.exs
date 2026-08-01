@@ -14,6 +14,7 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
 
     types = response["types"]
     anthropic = Enum.find(types, &(&1["type"] == "anthropic_messages"))
+    nvidia = Enum.find(types, &(&1["type"] == "nvidia_build_chat_completion"))
     openrouter = Enum.find(types, &(&1["type"] == "openrouter_chat_completion"))
     responses = Enum.find(types, &(&1["type"] == "responses"))
     responses_wss = Enum.find(types, &(&1["type"] == "responses_wss"))
@@ -31,6 +32,11 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     assert openrouter["default_auth_method"] == "api_key"
     assert openrouter["base_url_options"] == ["https://openrouter.ai/api/v1"]
     assert openrouter["supports_model_discovery"] == true
+
+    assert nvidia["label"] == "NVIDIA Build Chat Completions"
+    assert nvidia["default_auth_method"] == "api_key"
+    assert nvidia["base_url_options"] == ["https://integrate.api.nvidia.com/v1"]
+    assert nvidia["supports_model_discovery"] == true
 
     assert Enum.any?(responses["auth_methods"], fn method ->
              method["value"] == "openai_oauth_refresh_token" and
@@ -53,6 +59,48 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
            ]
 
     assert google["supports_model_discovery"] == true
+  end
+
+  test "GET /api/bff/llm-providers/:id/models loads the sparse NVIDIA catalog", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+
+    scripts = %{
+      "/models" => [
+        {200,
+         %{
+           "object" => "list",
+           "data" => [
+             %{
+               "id" => "nvidia/nemotron-3-nano-30b-a3b",
+               "object" => "model",
+               "owned_by" => "nvidia"
+             }
+           ]
+         }}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    provider = create_provider!(actor, base_url, :nvidia_build_chat_completion)
+
+    response =
+      conn
+      |> sign_in_conn(actor.username, password)
+      |> get("/api/bff/llm-providers/#{provider.id}/models")
+      |> json_response(200)
+
+    assert response["models"] == [
+             %{
+               "id" => "nvidia/nemotron-3-nano-30b-a3b",
+               "label" => "nvidia/nemotron-3-nano-30b-a3b",
+               "context_length" => nil,
+               "supports_image_input" => nil
+             }
+           ]
+
+    [request] = requests_for(agent, "/models")
+    assert request.query_string == ""
+    assert {"authorization", "Bearer test-key"} in request.headers
   end
 
   test "GET /api/bff/llm-providers/:id/models loads OpenRouter tool-capable models", %{

@@ -3,6 +3,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   import Plug.Conn
 
+  alias IntellectualClub.Llm.Providers.Common.ChatCompletions
+  alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
   @request_payload %{
@@ -35,6 +37,92 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
 
     assert {"http-referer", "https://github.com/kirillk0/intellectual-club"} in request.headers
     assert {"x-openrouter-title", "Intellectual Club"} in request.headers
+  end
+
+  test "shared client applies provider-specific retry statuses without OpenRouter headers" do
+    scripts = %{
+      "/chat/completions" => [
+        {504,
+         [
+           Jason.encode!(%{
+             "message" => "Service temporarily overloaded",
+             "type" => "Overloaded",
+             "code" => 504
+           })
+         ]}
+      ]
+    }
+
+    {base_url, agent} = start_scripted_server!(scripts)
+    parent = self()
+
+    :ok =
+      ChatCompletions.stream_generate(
+        %{
+          provider: :nvidia_build_chat_completion,
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: @request_payload,
+          retryable_http_status_codes: [429, 504],
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        },
+        fn event -> send(parent, {:provider_event, event}) end
+      )
+
+    assert_receive {:provider_event, {:response_error, error}}, 2_000
+    assert error.provider == :nvidia_build_chat_completion
+    assert error.status_code == 504
+    assert error.retryable == true
+    assert error.error_text == "Service temporarily overloaded"
+
+    [request] = recorded_requests(agent, "/chat/completions")
+    refute Enum.any?(request.headers, fn {name, _value} -> name == "http-referer" end)
+    refute Enum.any?(request.headers, fn {name, _value} -> name == "x-openrouter-title" end)
+  end
+
+  test "NVIDIA provider keeps HTTP 500 request failures non-retryable" do
+    message =
+      "ValueError: Received multimodal data but multimodal processing is not enabled. " <>
+        "Use --enable-multimodal flag to enable multimodal processing."
+
+    scripts = %{
+      "/chat/completions" => [
+        {500,
+         [
+           Jason.encode!(%{
+             "error" => %{
+               "code" => 500,
+               "message" => message,
+               "type" => "internal_server_error"
+             }
+           })
+         ]}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    parent = self()
+
+    :ok =
+      NvidiaBuildChatCompletion.stream_generate(
+        %{
+          context: %{
+            provider_type: NvidiaBuildChatCompletion.type(),
+            provider_base_url: base_url,
+            provider_api_key: "test-key"
+          },
+          request_payload: @request_payload,
+          timeout_ms: 1_000
+        },
+        fn event -> send(parent, {:provider_event, event}) end
+      )
+
+    assert_receive {:provider_event, {:response_error, error}}, 2_000
+    assert error.provider == :nvidia_build_chat_completion
+    assert error.status_code == 500
+    assert error.retryable == false
+    assert error.error_text == message
   end
 
   test "uses metadata raw text for generic streamed provider errors" do
