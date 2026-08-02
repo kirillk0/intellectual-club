@@ -92,7 +92,18 @@ impl LauncherGui {
             last_refresh: Instant::now() - REFRESH_INTERVAL,
         };
         app.refresh_all();
+        app.start_on_open();
         app
+    }
+
+    fn start_on_open(&mut self) {
+        let paths = self.paths.clone();
+        let config = self.config.clone();
+        let label = self.config.locale.text(TextKey::Start).to_string();
+        self.run_task(label.clone(), async move {
+            start_command(&paths, &config, true).await?;
+            Ok(label)
+        });
     }
 
     fn refresh_all(&mut self) {
@@ -992,7 +1003,10 @@ impl eframe::App for LauncherGui {
 
 pub fn run_gui(paths: AppPaths, config: LauncherConfig) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1080.0, 720.0]),
+        // Preserve the application bundle icon instead of replacing it with eframe's default.
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1080.0, 720.0])
+            .with_icon(egui::IconData::default()),
         run_and_return: false,
         ..Default::default()
     };

@@ -35,3 +35,17 @@ password. It always creates a new administrator and refuses to modify an existin
 username.
 
 The shell outlet image is built from `native_tools/outlet-shell-image/Dockerfile`.
+
+## macOS application
+
+Build the Apple Silicon development app bundle:
+
+```bash
+./bin/build-dev-artifacts
+open "build/dev/Intellectual Club.app"
+```
+
+The bundle contains the desktop launcher and the BEAM/ERTS release. PostgreSQL is
+downloaded and managed by the launcher in the user's application data directory.
+Unsigned production ZIP archives for macOS 15 and newer are published in GitHub
+Releases.

@@ -381,14 +381,18 @@ pub enum TextKey {
 
 pub fn default_app_dir() -> Option<PathBuf> {
     let exe = env::current_exe().ok()?;
-    let bin_dir = exe.parent()?;
-    let build_dev = bin_dir.parent()?;
-    let release = build_dev.join(APP_NAME);
-    if release.join("bin").join(APP_NAME).exists() {
-        Some(release)
-    } else {
-        None
-    }
+    default_app_dir_from_executable(&exe)
+}
+
+pub fn bundled_app_dir() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    bundled_app_dir_from_executable(&exe)
+}
+
+pub fn select_app_dir(explicit: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
+    let bundled = bundled_app_dir();
+    let fallback = default_app_dir();
+    select_app_dir_with_discovery(explicit, configured, bundled, fallback)
 }
 
 pub fn resolve_app_dir(config: &LauncherConfig) -> Result<PathBuf> {
@@ -423,6 +427,48 @@ pub fn random_secret(prefix: &str) -> String {
     secret
 }
 
+fn default_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    bundled_app_dir_from_executable(executable)
+        .or_else(|| legacy_app_dir_from_executable(executable))
+}
+
+fn bundled_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    let macos_dir = executable.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()? != "Contents" {
+        return None;
+    }
+
+    existing_release_dir(contents_dir.join("Resources").join(APP_NAME))
+}
+
+fn legacy_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    let bin_dir = executable.parent()?;
+    let build_dir = bin_dir.parent()?;
+    existing_release_dir(build_dir.join(APP_NAME))
+}
+
+fn existing_release_dir(path: PathBuf) -> Option<PathBuf> {
+    if path.join("bin").join(APP_NAME).is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn select_app_dir_with_discovery(
+    explicit: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    bundled: Option<PathBuf>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    explicit.or(bundled).or(configured).or(fallback)
+}
+
 fn restrict_file_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -431,4 +477,89 @@ fn restrict_file_permissions(path: &Path) -> Result<()> {
             .with_context(|| format!("failed to chmod 0600 {}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_release_is_discovered_from_macos_executable() {
+        let root = unique_temp_dir("bundled-app-dir");
+        let executable = root
+            .join("Intellectual Club.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("intellectual-club-launcher");
+        let release = root
+            .join("Intellectual Club.app")
+            .join("Contents")
+            .join("Resources")
+            .join(APP_NAME);
+        create_release(&release);
+
+        assert_eq!(
+            bundled_app_dir_from_executable(&executable),
+            Some(release.clone())
+        );
+        assert_eq!(default_app_dir_from_executable(&executable), Some(release));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_release_layout_remains_supported() {
+        let root = unique_temp_dir("legacy-app-dir");
+        let executable = root.join("bin").join("intellectual-club-launcher");
+        let release = root.join(APP_NAME);
+        create_release(&release);
+
+        assert_eq!(default_app_dir_from_executable(&executable), Some(release));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_release_replaces_stale_configured_path() {
+        let configured = PathBuf::from("/old/build/dev/intellectual_club");
+        let bundled = PathBuf::from(
+            "/Applications/Intellectual Club.app/Contents/Resources/intellectual_club",
+        );
+
+        assert_eq!(
+            select_app_dir_with_discovery(None, Some(configured), Some(bundled.clone()), None),
+            Some(bundled)
+        );
+    }
+
+    #[test]
+    fn explicit_app_dir_has_priority_over_bundled_release() {
+        let explicit = PathBuf::from("/tmp/custom-release");
+        let bundled = PathBuf::from(
+            "/Applications/Intellectual Club.app/Contents/Resources/intellectual_club",
+        );
+
+        assert_eq!(
+            select_app_dir_with_discovery(
+                Some(explicit.clone()),
+                Some(PathBuf::from("/tmp/configured-release")),
+                Some(bundled),
+                None
+            ),
+            Some(explicit)
+        );
+    }
+
+    fn create_release(path: &Path) {
+        let bin_dir = path.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join(APP_NAME), "release").unwrap();
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-config-{name}-{}",
+            std::process::id()
+        ))
+    }
 }

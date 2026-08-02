@@ -10,7 +10,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Args, CommandKind};
-use crate::config::{AppPaths, LauncherConfig};
+use crate::config::{select_app_dir, AppPaths, LauncherConfig};
 use crate::gui::run_gui;
 use crate::operations::{
     backup_command, create_admin_command, daemon_command, doctor_command, logs_command,
@@ -24,8 +24,9 @@ fn main() -> Result<()> {
 
     let paths = AppPaths::discover()?;
     let mut config = LauncherConfig::load_or_default(&paths.config_path, &paths)?;
-    if let Some(app_dir) = args.app_dir {
-        config.app_dir = Some(app_dir);
+    let selected_app_dir = select_app_dir(args.app_dir, config.app_dir.clone());
+    if config.app_dir != selected_app_dir {
+        config.app_dir = selected_app_dir;
         config.save(&paths.config_path)?;
     }
 

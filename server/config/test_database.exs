@@ -17,7 +17,17 @@ end
 
 launcher_database_url = fn ->
   repo_root = Path.expand("../..", __DIR__)
-  launcher_path = Path.join([repo_root, "build", "dev", "bin", "intellectual-club-launcher"])
+
+  launcher_path =
+    Path.join([
+      repo_root,
+      "build",
+      "dev",
+      "Intellectual Club.app",
+      "Contents",
+      "MacOS",
+      "intellectual-club-launcher"
+    ])
 
   with launcher_path when is_binary(launcher_path) <- System.find_executable(launcher_path),
        {output, 0} <- System.cmd(launcher_path, ["status", "--json"], stderr_to_stdout: true),
@@ -46,7 +56,7 @@ unless postgres_url?.(base_database_url) do
   Set IC_TEST_DATABASE_URL or DATABASE_URL to a PostgreSQL URL, or start the dev launcher:
 
       ./bin/build-dev-artifacts
-      build/dev/bin/intellectual-club-launcher start
+      "build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" start
       cd server && mix test
 
   You can also use the wrapper, which starts the launcher when needed:

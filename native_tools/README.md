@@ -57,22 +57,31 @@ cargo run --manifest-path native_tools/Cargo.toml -p openai-oauth
 cargo run --manifest-path native_tools/Cargo.toml -p openai-oauth -- --refresh '<refresh_token>'
 ```
 
-Run the desktop launcher GUI from a dev artifact bundle:
+Build and run the desktop launcher from the development macOS app bundle:
 
 ```bash
-./build/dev/bin/intellectual-club-launcher
+./bin/build-dev-artifacts
+open "build/dev/Intellectual Club.app"
 ```
 
-Run the launcher from CLI:
+Opening the app starts PostgreSQL and the bundled BEAM release, then opens the web UI.
+Closing the launcher window leaves both services running. Run the bundled launcher from
+CLI to manage them:
 
 ```bash
-./build/dev/bin/intellectual-club-launcher start
-./build/dev/bin/intellectual-club-launcher status --json
-./build/dev/bin/intellectual-club-launcher create-admin
-./build/dev/bin/intellectual-club-launcher backup
-./build/dev/bin/intellectual-club-launcher move-files --to /path/to/files
-./build/dev/bin/intellectual-club-launcher stop
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" start
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" restart
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" status --json
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" logs
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" open
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" create-admin
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" backup
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" move-files --to /path/to/files
+"build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" stop
 ```
+
+The unsigned Apple Silicon production bundle is published automatically in GitHub
+Releases. It supports macOS 15 and newer.
 
 The launcher stores config, PostgreSQL data, file storage, backups, runtime status, and
 cached PostgreSQL installations in OS-specific app data directories via

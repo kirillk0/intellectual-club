@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/build-macos-app --mode <dev|prod> --output <directory>
+
+Environment variables:
+  IC_BUNDLE_BUILD_ID       Human-readable build identifier stored in Info.plist
+  IC_BUNDLE_BUILD_VERSION  Numeric CFBundleVersion value (defaults to Unix time)
+EOF
+}
+
+MODE=""
+OUTPUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)
+      MODE="${2:-}"
+      shift 2
+      ;;
+    --output)
+      OUTPUT_DIR="${2:-}"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "${MODE}" != "dev" && "${MODE}" != "prod" ]]; then
+  echo "--mode must be either dev or prod" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  echo "--output is required" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "The macOS app bundle must be built on Apple Silicon" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SERVER_DIR="${REPO_ROOT}/server"
+FRONTEND_DIR="${REPO_ROOT}/frontend"
+NATIVE_DIR="${REPO_ROOT}/native_tools"
+ICON_SOURCE="${FRONTEND_DIR}/src/assets/icon_full_size.png"
+BUNDLE_NAME="Intellectual Club.app"
+BUNDLE_IDENTIFIER="org.intellectualclub.desktop"
+BUNDLE_EXECUTABLE="intellectual-club-launcher"
+RELEASE_NAME="intellectual_club"
+MINIMUM_MACOS_VERSION="15.0"
+
+if [[ "${OUTPUT_DIR}" != /* ]]; then
+  OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
+fi
+
+APP_VERSION="$({
+  sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' "${SERVER_DIR}/mix.exs"
+} | head -n 1)"
+BUILD_VERSION="${IC_BUNDLE_BUILD_VERSION:-$(date -u +%s)}"
+BUILD_ID="${IC_BUNDLE_BUILD_ID:-dev-${BUILD_VERSION}}"
+
+if [[ -z "${APP_VERSION}" ]]; then
+  echo "Could not read the application version from server/mix.exs" >&2
+  exit 1
+fi
+
+if [[ ! "${BUILD_VERSION}" =~ ^[0-9]+$ ]]; then
+  echo "IC_BUNDLE_BUILD_VERSION must contain only digits" >&2
+  exit 1
+fi
+
+mkdir -p "${OUTPUT_DIR}"
+STAGING_DIR="$(mktemp -d "${OUTPUT_DIR}/.intellectual-club-app.XXXXXX")"
+trap 'rm -rf "${STAGING_DIR}"' EXIT
+
+APP_DIR="${STAGING_DIR}/${BUNDLE_NAME}"
+CONTENTS_DIR="${APP_DIR}/Contents"
+MACOS_DIR="${CONTENTS_DIR}/MacOS"
+RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+RELEASE_DEST="${RESOURCES_DIR}/${RELEASE_NAME}"
+PLIST_PATH="${CONTENTS_DIR}/Info.plist"
+ICONSET_DIR="${STAGING_DIR}/AppIcon.iconset"
+
+npm --prefix "${FRONTEND_DIR}" ci
+
+pushd "${SERVER_DIR}" >/dev/null
+if [[ "${MODE}" == "prod" ]]; then
+  MIX_ENV=prod mix deps.get --only prod
+else
+  MIX_ENV=dev mix deps.get
+fi
+MIX_ENV="${MODE}" mix deps.compile
+MIX_ENV="${MODE}" mix picosat.sync
+MIX_ENV="${MODE}" mix compile
+if [[ "${MODE}" == "prod" ]]; then
+  MIX_ENV=prod mix assets.deploy
+else
+  IC_DEV_RELEASE=1 MIX_ENV=dev mix assets.build
+fi
+IC_DEV_RELEASE=1 MIX_ENV="${MODE}" mix release --overwrite
+if [[ "${MODE}" == "prod" ]]; then
+  MIX_ENV=prod mix phx.digest.clean --all --no-compile
+fi
+popd >/dev/null
+
+MACOSX_DEPLOYMENT_TARGET="${MINIMUM_MACOS_VERSION}" \
+  cargo build \
+    --manifest-path "${NATIVE_DIR}/Cargo.toml" \
+    --release \
+    --locked \
+    --package intellectual-club-launcher
+
+RELEASE_SOURCE="${SERVER_DIR}/_build/${MODE}/rel/${RELEASE_NAME}"
+LAUNCHER_SOURCE="${NATIVE_DIR}/target/release/${BUNDLE_EXECUTABLE}"
+
+if [[ ! -x "${RELEASE_SOURCE}/bin/${RELEASE_NAME}" ]]; then
+  echo "BEAM release was not created at ${RELEASE_SOURCE}" >&2
+  exit 1
+fi
+
+if [[ ! -x "${LAUNCHER_SOURCE}" ]]; then
+  echo "Launcher was not created at ${LAUNCHER_SOURCE}" >&2
+  exit 1
+fi
+
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${ICONSET_DIR}"
+install -m 755 "${LAUNCHER_SOURCE}" "${MACOS_DIR}/${BUNDLE_EXECUTABLE}"
+cp -R "${RELEASE_SOURCE}" "${RELEASE_DEST}"
+
+create_icon() {
+  local size="$1"
+  local scale="$2"
+  local pixels=$((size * scale))
+  local suffix=""
+
+  if [[ "${scale}" -eq 2 ]]; then
+    suffix="@2x"
+  fi
+
+  sips \
+    --resampleHeightWidth "${pixels}" "${pixels}" \
+    "${ICON_SOURCE}" \
+    --out "${ICONSET_DIR}/icon_${size}x${size}${suffix}.png" \
+    >/dev/null
+}
+
+for size in 16 32 128 256 512; do
+  create_icon "${size}" 1
+  create_icon "${size}" 2
+done
+iconutil --convert icns "${ICONSET_DIR}" --output "${RESOURCES_DIR}/AppIcon.icns"
+
+plutil -create xml1 "${PLIST_PATH}"
+plutil -insert CFBundleDisplayName -string "Intellectual Club" "${PLIST_PATH}"
+plutil -insert CFBundleExecutable -string "${BUNDLE_EXECUTABLE}" "${PLIST_PATH}"
+plutil -insert CFBundleIdentifier -string "${BUNDLE_IDENTIFIER}" "${PLIST_PATH}"
+plutil -insert CFBundleName -string "Intellectual Club" "${PLIST_PATH}"
+plutil -insert CFBundlePackageType -string "APPL" "${PLIST_PATH}"
+plutil -insert CFBundleShortVersionString -string "${APP_VERSION}" "${PLIST_PATH}"
+plutil -insert CFBundleVersion -string "${BUILD_VERSION}" "${PLIST_PATH}"
+plutil -insert CFBundleGetInfoString -string "Intellectual Club ${BUILD_ID}" "${PLIST_PATH}"
+plutil -insert CFBundleIconFile -string "AppIcon" "${PLIST_PATH}"
+plutil -insert CFBundleIconName -string "AppIcon" "${PLIST_PATH}"
+plutil -insert LSApplicationCategoryType -string "public.app-category.productivity" "${PLIST_PATH}"
+plutil -insert LSMinimumSystemVersion -string "${MINIMUM_MACOS_VERSION}" "${PLIST_PATH}"
+plutil -insert NSHighResolutionCapable -bool true "${PLIST_PATH}"
+plutil -lint "${PLIST_PATH}" >/dev/null
+
+FINAL_APP_DIR="${OUTPUT_DIR}/${BUNDLE_NAME}"
+rm -rf "${FINAL_APP_DIR}"
+mv "${APP_DIR}" "${FINAL_APP_DIR}"
+
+printf 'Built %s bundle at %s\n' "${MODE}" "${FINAL_APP_DIR}"

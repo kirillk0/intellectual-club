@@ -1,0 +1,310 @@
+name: Publish Intellectual Club macOS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-intellectual-club-macos.yml
+      - bin/build-macos-app
+      - frontend/**
+      - native_tools/Cargo.lock
+      - native_tools/Cargo.toml
+      - native_tools/crates/intellectual-club-launcher/**
+      - server/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-intellectual-club-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      app_version: ${{ steps.release.outputs.app_version }}
+      commit_epoch: ${{ steps.release.outputs.commit_epoch }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_timestamp: ${{ steps.release.outputs.release_timestamp }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Generate release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit_sha="$(git rev-parse HEAD)"
+          short_sha="${commit_sha:0:12}"
+          commit_epoch="$(git show -s --format=%ct "${commit_sha}")"
+          release_timestamp="$(date -u --date="@${commit_epoch}" '+%Y%m%dT%H%M%SZ')"
+          release_id="${release_timestamp}-${short_sha}"
+          release_tag="intellectual-club-macos-${release_id}"
+          app_version="$({
+            sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' server/mix.exs
+          } | head -n 1)"
+
+          if [ -z "${app_version}" ]; then
+            echo "Could not read the application version" >&2
+            exit 1
+          fi
+
+          {
+            echo "app_version=${app_version}"
+            echo "commit_epoch=${commit_epoch}"
+            echo "commit_sha=${commit_sha}"
+            echo "release_id=${release_id}"
+            echo "release_tag=${release_tag}"
+            echo "release_timestamp=${release_timestamp}"
+            echo "short_sha=${short_sha}"
+          } >>"${GITHUB_OUTPUT}"
+
+  build:
+    name: Build macOS arm64
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29.0"
+          elixir-version: "1.20.2"
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: macos-arm64-prod-elixir-1.20.2-otp-29.0-${{ hashFiles('server/mix.lock') }}
+          restore-keys: |
+            macos-arm64-prod-elixir-1.20.2-otp-29.0-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.92.0"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native_tools -> target
+          key: aarch64-apple-darwin-intellectual-club-launcher
+
+      - name: Build application bundle
+        env:
+          IC_BUNDLE_BUILD_ID: ${{ needs.prepare.outputs.release_id }}
+          IC_BUNDLE_BUILD_VERSION: ${{ needs.prepare.outputs.commit_epoch }}
+        run: ./bin/build-macos-app --mode prod --output build/release
+
+      - name: Validate application bundle
+        shell: bash
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+        run: |
+          set -euo pipefail
+
+          app="build/release/Intellectual Club.app"
+          launcher="${app}/Contents/MacOS/intellectual-club-launcher"
+          release="${app}/Contents/Resources/intellectual_club"
+          plist="${app}/Contents/Info.plist"
+          beam=("${release}"/erts-*/bin/beam.smp)
+
+          test "$(uname -m)" = "arm64"
+          test -x "${launcher}"
+          test -x "${release}/bin/intellectual_club"
+          test -s "${app}/Contents/Resources/AppIcon.icns"
+          test ! -e "${app}/Contents/_CodeSignature"
+          test "${#beam[@]}" -eq 1
+          plutil -lint "${plist}"
+          test "$(plutil -extract CFBundleIdentifier raw "${plist}")" = "org.intellectualclub.desktop"
+          test "$(plutil -extract CFBundleShortVersionString raw "${plist}")" = "${APP_VERSION}"
+          test "$(plutil -extract LSMinimumSystemVersion raw "${plist}")" = "15.0"
+          test "$(lipo -archs "${launcher}")" = "arm64"
+          test "$(lipo -archs "${beam[0]}")" = "arm64"
+
+          while IFS= read -r -d '' binary; do
+            if file "${binary}" | grep -q 'Mach-O'; then
+              test "$(lipo -archs "${binary}")" = "arm64"
+            fi
+          done < <(find "${release}" -type f -print0)
+
+      - name: Smoke test bundled release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app="${PWD}/build/release/Intellectual Club.app"
+          launcher="${app}/Contents/MacOS/intellectual-club-launcher"
+          release="${app}/Contents/Resources/intellectual_club"
+          export HOME="${RUNNER_TEMP}/intellectual-club-smoke-home"
+          mkdir -p "${HOME}"
+
+          cleanup() {
+            exit_code=$?
+            if [ "${exit_code}" -ne 0 ]; then
+              "${launcher}" logs || true
+            fi
+            "${launcher}" stop || true
+          }
+          trap cleanup EXIT
+
+          "${launcher}" start
+          status_json="$("${launcher}" status --json)"
+          jq -e --arg app_dir "${release}" \
+            '.running and .app.healthy and .postgres.healthy and .paths.app_dir == $app_dir' \
+            <<<"${status_json}"
+          curl --fail --silent --show-error http://127.0.0.1:4000/health >/dev/null
+          "${launcher}" stop
+          trap - EXIT
+
+      - name: Package application bundle
+        shell: bash
+        env:
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          archive="dist/intellectual-club-${RELEASE_ID}-macos-arm64.zip"
+          ditto \
+            -c -k --sequesterRsrc --keepParent \
+            "build/release/Intellectual Club.app" \
+            "${archive}"
+
+          unpacked="${RUNNER_TEMP}/intellectual-club-unpacked"
+          rm -rf "${unpacked}"
+          mkdir -p "${unpacked}"
+          ditto -x -k "${archive}" "${unpacked}"
+          test -x "${unpacked}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
+          test -x "${unpacked}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
+          plutil -lint "${unpacked}/Intellectual Club.app/Contents/Info.plist"
+
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v4
+        with:
+          name: intellectual-club-macos-arm64
+          path: dist/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged application
+        uses: actions/download-artifact@v4
+        with:
+          name: intellectual-club-macos-arm64
+          path: dist
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TIMESTAMP: ${{ needs.prepare.outputs.release_timestamp }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(dist/*.zip)
+          if [ "${#assets[@]}" -ne 1 ]; then
+            echo "Expected one release archive, found ${#assets[@]}" >&2
+            exit 1
+          fi
+
+          (
+            cd dist
+            sha256sum -- *.zip >SHA256SUMS.txt
+          )
+
+          tagged_sha="$({
+            gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null
+          })" || tagged_sha=""
+          if [ -n "${tagged_sha}" ] && [ "${tagged_sha}" != "${COMMIT_SHA}" ]; then
+            echo "Tag ${RELEASE_TAG} points to ${tagged_sha}, expected ${COMMIT_SHA}" >&2
+            exit 1
+          fi
+
+          release_json="$({
+            gh release view "${RELEASE_TAG}" --json assets,isDraft 2>/dev/null
+          })" || release_json=""
+          if [ -n "${release_json}" ]; then
+            archive_name="$(basename "${assets[0]}")"
+            archive_present="$(
+              jq -r --arg name "${archive_name}" 'any(.assets[]; .name == $name)' \
+                <<<"${release_json}"
+            )"
+            checksums_present="$(
+              jq -r 'any(.assets[]; .name == "SHA256SUMS.txt")' <<<"${release_json}"
+            )"
+            is_draft="$(jq -r .isDraft <<<"${release_json}")"
+
+            if [ "${archive_present}" = true ] && [ "${checksums_present}" = true ]; then
+              if [ "${is_draft}" = true ]; then
+                gh release edit "${RELEASE_TAG}" --draft=false
+              fi
+              echo "Release ${RELEASE_TAG} already contains all expected assets"
+              exit 0
+            fi
+
+            gh release upload "${RELEASE_TAG}" \
+              "${assets[@]}" dist/SHA256SUMS.txt \
+              --clobber
+
+            if [ "${is_draft}" = true ]; then
+              gh release edit "${RELEASE_TAG}" --draft=false
+            fi
+          else
+            tag_flag=(--target "${COMMIT_SHA}")
+            if [ -n "${tagged_sha}" ]; then
+              tag_flag=(--verify-tag)
+            fi
+
+            gh release create "${RELEASE_TAG}" \
+              "${assets[@]}" dist/SHA256SUMS.txt \
+              "${tag_flag[@]}" \
+              --notes "Automated unsigned Apple Silicon build from commit ${COMMIT_SHA}." \
+              --title "Intellectual Club macOS ${RELEASE_TIMESTAMP} (${SHORT_SHA})"
+          fi
