@@ -80,8 +80,8 @@ CLI to manage them:
 "build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" stop
 ```
 
-The unsigned Apple Silicon production bundle is published automatically in GitHub
-Releases. It supports macOS 15 and newer.
+The ad-hoc-signed, non-notarized Apple Silicon production bundle is published
+automatically in GitHub Releases. It supports macOS 15 and newer.
 
 The launcher stores config, PostgreSQL data, file storage, backups, runtime status, and
 cached PostgreSQL installations in OS-specific app data directories via

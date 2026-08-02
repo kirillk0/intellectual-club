@@ -126,6 +126,18 @@ jobs:
           IC_BUNDLE_BUILD_VERSION: ${{ needs.prepare.outputs.commit_epoch }}
         run: ./bin/build-macos-app --mode prod --output build/release
 
+      - name: Ad-hoc sign application bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            --timestamp=none \
+            "build/release/Intellectual Club.app"
+
       - name: Validate application bundle
         shell: bash
         env:
@@ -143,7 +155,7 @@ jobs:
           test -x "${launcher}"
           test -x "${release}/bin/intellectual_club"
           test -s "${app}/Contents/Resources/AppIcon.icns"
-          test ! -e "${app}/Contents/_CodeSignature"
+          test -d "${app}/Contents/_CodeSignature"
           test "${#beam[@]}" -eq 1
           plutil -lint "${plist}"
           test "$(plutil -extract CFBundleIdentifier raw "${plist}")" = "org.intellectualclub.desktop"
@@ -151,6 +163,11 @@ jobs:
           test "$(plutil -extract LSMinimumSystemVersion raw "${plist}")" = "15.0"
           test "$(lipo -archs "${launcher}")" = "arm64"
           test "$(lipo -archs "${beam[0]}")" = "arm64"
+
+          codesign --verify --deep --strict --verbose=2 "${app}"
+          signature_info="$(codesign --display --verbose=4 "${app}" 2>&1)"
+          grep -q '^Signature=adhoc$' <<<"${signature_info}"
+          grep -q '^TeamIdentifier=not set$' <<<"${signature_info}"
 
           while IFS= read -r -d '' binary; do
             if file "${binary}" | grep -q 'Mach-O'; then
@@ -208,6 +225,7 @@ jobs:
           test -x "${unpacked}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
           test -x "${unpacked}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
           plutil -lint "${unpacked}/Intellectual Club.app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "${unpacked}/Intellectual Club.app"
 
       - name: Upload packaged application
         uses: actions/upload-artifact@v4
@@ -305,6 +323,6 @@ jobs:
             gh release create "${RELEASE_TAG}" \
               "${assets[@]}" dist/SHA256SUMS.txt \
               "${tag_flag[@]}" \
-              --notes "Automated unsigned Apple Silicon build from commit ${COMMIT_SHA}." \
+              --notes "Automated ad-hoc-signed, non-notarized Apple Silicon build from commit ${COMMIT_SHA}." \
               --title "Intellectual Club macOS ${RELEASE_TIMESTAMP} (${SHORT_SHA})"
           fi

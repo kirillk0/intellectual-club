@@ -47,5 +47,5 @@ open "build/dev/Intellectual Club.app"
 
 The bundle contains the desktop launcher and the BEAM/ERTS release. PostgreSQL is
 downloaded and managed by the launcher in the user's application data directory.
-Unsigned production ZIP archives for macOS 15 and newer are published in GitHub
-Releases.
+Ad-hoc-signed, non-notarized production ZIP archives for macOS 15 and newer are
+published in GitHub Releases.
