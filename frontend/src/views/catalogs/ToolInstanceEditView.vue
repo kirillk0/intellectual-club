@@ -114,6 +114,45 @@
             <span v-if="currentToolType.description">{{ currentToolType.description }}</span>
           </div>
 
+          <div v-if="isMcpHttp" class="stack mcp-headers-field">
+            <span class="field-label-text">{{ translate('Open headers') }}</span>
+            <div class="mcp-headers-editor" data-testid="open-headers-editor">
+              <div v-for="(row, index) in form.open_header_rows" :key="row.id" class="mcp-header-row">
+                <input
+                  v-model="row.name"
+                  class="full"
+                  :aria-label="translate('Open header {index} name', { index: index + 1 })"
+                  :placeholder="translate('Header name')"
+                  autocomplete="off"
+                  spellcheck="false"
+                  @input="handleOpenHeadersChange"
+                />
+                <input
+                  v-model="row.value"
+                  class="full"
+                  :aria-label="translate('Open header {index} value', { index: index + 1 })"
+                  :placeholder="translate('Header value')"
+                  autocomplete="off"
+                  spellcheck="false"
+                  @input="handleOpenHeadersChange"
+                />
+                <button type="button" class="danger" @click="removeOpenHeader(index)">
+                  {{ translate('Remove') }}
+                </button>
+              </div>
+              <div v-if="!form.open_header_rows.length" class="muted">
+                {{ translate('No open headers configured.') }}
+              </div>
+              <button type="button" class="mcp-add-header" @click="addOpenHeader">
+                {{ translate('Add header') }}
+              </button>
+            </div>
+            <div v-if="openHeadersError" class="error-text">{{ openHeadersError }}</div>
+            <div class="muted">
+              {{ translate('Open header names and values are visible to users who can view this tool.') }}
+            </div>
+          </div>
+
           <template v-if="configFields.length">
             <label
               v-for="field in configFields"
@@ -298,6 +337,49 @@
                 <option value="private_key">private_key</option>
               </select>
             </label>
+
+            <div v-if="isMcpHttp" class="stack mcp-headers-field">
+              <span class="field-label-text">{{ translate('Secret headers') }}</span>
+              <div class="mcp-headers-editor" data-testid="secret-headers-editor">
+                <div v-for="(row, index) in form.secret_header_rows" :key="row.id" class="mcp-header-row">
+                  <input
+                    v-model="row.name"
+                    class="full"
+                    :aria-label="translate('Secret header {index} name', { index: index + 1 })"
+                    :placeholder="translate('Header name')"
+                    autocomplete="off"
+                    spellcheck="false"
+                    @input="handleSecretHeadersChange"
+                  />
+                  <div class="mcp-secret-value">
+                    <input
+                      v-model="row.value"
+                      class="full"
+                      type="password"
+                      :aria-label="translate('Secret header {index} value', { index: index + 1 })"
+                      :placeholder="secretHeaderValuePlaceholder(row)"
+                      autocomplete="new-password"
+                      spellcheck="false"
+                      @input="handleSecretHeadersChange"
+                    />
+                    <span v-if="isStoredSecretHeader(row)" class="badge">{{ translate('stored') }}</span>
+                  </div>
+                  <button type="button" class="danger" @click="removeSecretHeader(index)">
+                    {{ translate('Remove') }}
+                  </button>
+                </div>
+                <div v-if="!form.secret_header_rows.length" class="muted">
+                  {{ translate('No secret headers configured.') }}
+                </div>
+                <button type="button" class="mcp-add-header" @click="addSecretHeader">
+                  {{ translate('Add header') }}
+                </button>
+              </div>
+              <div v-if="secretHeadersError" class="error-text">{{ secretHeadersError }}</div>
+              <div class="muted">
+                {{ translate('Secret header names remain visible; values are write-only and stored on the server.') }}
+              </div>
+            </div>
 
             <label v-for="field in visibleSecretsFields" :key="field.key">
               {{ fieldLabel(field.key, field.schema) }}
@@ -596,9 +678,19 @@ type ToolInstanceForm = {
   secrets_present: string[];
   secrets_patch: Record<string, string>;
   secrets_clear: Record<string, boolean>;
+  open_header_rows: HeaderRow[];
+  secret_header_rows: HeaderRow[];
+  removed_secret_header_names: string[];
   can_edit: boolean;
   shared_incoming: boolean;
   shared_outgoing: boolean;
+};
+
+type HeaderRow = {
+  id: string;
+  name: string;
+  value: string;
+  original_name: string;
 };
 
 type ToolFunctionRow = {
@@ -625,6 +717,58 @@ function normalizeString(value: unknown): string {
 function normalizeObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+let headerRowSequence = 0;
+
+function createHeaderRow(name = '', value = '', originalName = ''): HeaderRow {
+  headerRowSequence += 1;
+  return {
+    id: `header-row-${headerRowSequence}`,
+    name,
+    value,
+    original_name: originalName,
+  };
+}
+
+function headerRowsFromObject(value: unknown): HeaderRow[] {
+  const headers = normalizeObject(value);
+  return Object.entries(headers).map(([name, headerValue]) =>
+    createHeaderRow(name, typeof headerValue === 'string' ? headerValue : String(headerValue ?? ''))
+  );
+}
+
+function headerRowsFromNames(value: unknown): HeaderRow[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((name) => String(name ?? '').trim())
+    .filter(Boolean)
+    .map((name) => createHeaderRow(name, '', name));
+}
+
+function headerRowsToObject(rows: HeaderRow[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  for (const row of rows || []) {
+    const name = String(row.name || '').trim();
+    if (!name) continue;
+    headers[name] = String(row.value ?? '').trim();
+  }
+
+  return headers;
+}
+
+function headerNamesFromRows(rows: HeaderRow[]): string[] {
+  return (rows || []).map((row) => String(row.name || '').trim()).filter(Boolean);
+}
+
+function normalizedHeaderRows(rows: HeaderRow[]) {
+  return (rows || []).map((row) => ({
+    name: String(row.name || '').trim(),
+    value: String(row.value ?? ''),
+    original_name: String(row.original_name || '').trim(),
+  }));
 }
 
 function aliasFromName(value: unknown): string {
@@ -720,6 +864,9 @@ function fromApi(resource: JsonApiResource): Partial<ToolInstanceForm> {
     secrets_present,
     secrets_patch: {},
     secrets_clear: {},
+    open_header_rows: headerRowsFromObject(config.open_headers),
+    secret_header_rows: headerRowsFromNames(config.secret_header_names),
+    removed_secret_header_names: [],
     can_edit: attrs.can_edit !== false,
     shared_incoming: Boolean(attrs.shared_incoming),
     shared_outgoing: Boolean(attrs.shared_outgoing),
@@ -775,17 +922,27 @@ const editor = useCrudEditor<ToolInstanceForm>({
     secrets_present: [],
     secrets_patch: {},
     secrets_clear: {},
+    open_header_rows: [],
+    secret_header_rows: [],
+    removed_secret_header_names: [],
     can_edit: true,
     shared_incoming: false,
     shared_outgoing: false,
   }),
   fromApi,
   toAttributes: (form) => {
+    const config = { ...normalizeObject(form.config) };
+
+    if (String(form.type || '').trim() === 'mcp-http') {
+      config.open_headers = headerRowsToObject(form.open_header_rows);
+      config.secret_header_names = headerNamesFromRows(form.secret_header_rows);
+    }
+
     const attrs: Record<string, unknown> = {
       name: form.name,
       description: form.description,
       alias: form.alias,
-      config: normalizeObject(form.config),
+      config,
       max_output_tokens: form.max_output_tokens,
       rps_limit: parseNullableNumber(form.rps_limit),
     };
@@ -793,7 +950,7 @@ const editor = useCrudEditor<ToolInstanceForm>({
     // Create requires type, update does not accept it.
     if (isNewRoute.value) attrs.type = form.type || 'mcp-http';
 
-    const patch: Record<string, string> = {};
+    const patch: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(form.secrets_patch || {})) {
       const trimmed = String(value || '').trim();
@@ -804,6 +961,24 @@ const editor = useCrudEditor<ToolInstanceForm>({
       if (!value) continue;
       patch[key] = '';
     }
+
+    const secretHeadersPatch: Record<string, string> = {};
+
+    for (const removedName of form.removed_secret_header_names || []) {
+      const name = String(removedName || '').trim();
+      if (name) secretHeadersPatch[name] = '';
+    }
+
+    for (const row of form.secret_header_rows || []) {
+      const name = String(row.name || '').trim();
+      const originalName = String(row.original_name || '').trim();
+      const value = String(row.value ?? '').trim();
+
+      if (originalName && originalName !== name) secretHeadersPatch[originalName] = '';
+      if (name && value) secretHeadersPatch[name] = value;
+    }
+
+    if (Object.keys(secretHeadersPatch).length) patch.secret_headers = secretHeadersPatch;
 
     if (Object.keys(patch).length) attrs.secrets = patch;
 
@@ -819,6 +994,9 @@ const editor = useCrudEditor<ToolInstanceForm>({
     rps_limit: parseNullableNumber(form.rps_limit),
     secrets_patch: form.secrets_patch,
     secrets_clear: form.secrets_clear,
+    open_header_rows: normalizedHeaderRows(form.open_header_rows),
+    secret_header_rows: normalizedHeaderRows(form.secret_header_rows),
+    removed_secret_header_names: [...(form.removed_secret_header_names || [])].sort(),
     can_edit: form.can_edit,
     shared_incoming: form.shared_incoming,
     shared_outgoing: form.shared_outgoing,
@@ -896,6 +1074,7 @@ const handleConfigInput = () => {
       return;
     }
     form.config = parsed;
+    syncMcpHeaderRowsFromConfig();
     configError.value = null;
   } catch (e) {
     configError.value = e instanceof Error ? e.message : 'Invalid JSON.';
@@ -934,6 +1113,8 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
   const meta = toolTypesByType.value[String(form.type || '').trim()];
   return meta || null;
 });
+
+const isMcpHttp = computed(() => String(form.type || '').trim() === 'mcp-http');
 
 const functionsMode = computed(() => {
   const raw = currentToolType.value?.functions_mode;
@@ -984,6 +1165,155 @@ function configWidget(schema: JsonSchema): string {
     if (typeof widget === 'string') return widget;
   }
   return '';
+}
+
+const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const invalidHeaderValuePattern = /[\u0000-\u0008\u000a-\u001f\u007f]/;
+const openHeadersError = ref<string | null>(null);
+const secretHeadersError = ref<string | null>(null);
+
+function syncMcpHeaderConfig() {
+  if (!isMcpHttp.value) return;
+
+  form.config = {
+    ...normalizeObject(form.config),
+    open_headers: headerRowsToObject(form.open_header_rows),
+    secret_header_names: headerNamesFromRows(form.secret_header_rows),
+  };
+}
+
+function syncMcpHeaderRowsFromConfig() {
+  if (!isMcpHttp.value) return;
+
+  form.open_header_rows = headerRowsFromObject(form.config.open_headers);
+
+  const configuredNames = Array.isArray(form.config.secret_header_names)
+    ? form.config.secret_header_names.map((name) => String(name ?? '').trim()).filter(Boolean)
+    : [];
+  const configuredNameSet = new Set(configuredNames);
+  const currentRows = [...(form.secret_header_rows || [])];
+
+  for (const row of currentRows) {
+    const originalName = String(row.original_name || '').trim();
+    if (!originalName || configuredNameSet.has(String(row.name || '').trim())) continue;
+    if (!form.removed_secret_header_names.includes(originalName)) {
+      form.removed_secret_header_names.push(originalName);
+    }
+  }
+
+  form.secret_header_rows = configuredNames.map((name) => {
+    const existing = currentRows.find((row) => String(row.name || '').trim() === name);
+    return existing || createHeaderRow(name);
+  });
+}
+
+function handleOpenHeadersChange() {
+  openHeadersError.value = null;
+  errors.clearField('config');
+  syncMcpHeaderConfig();
+}
+
+function handleSecretHeadersChange() {
+  secretHeadersError.value = null;
+  errors.clearField('config');
+  errors.clearField('secrets');
+  syncMcpHeaderConfig();
+}
+
+function addOpenHeader() {
+  form.open_header_rows.push(createHeaderRow());
+  openHeadersError.value = null;
+}
+
+function removeOpenHeader(index: number) {
+  form.open_header_rows.splice(index, 1);
+  handleOpenHeadersChange();
+}
+
+function addSecretHeader() {
+  form.secret_header_rows.push(createHeaderRow());
+  secretHeadersError.value = null;
+}
+
+function removeSecretHeader(index: number) {
+  const [removed] = form.secret_header_rows.splice(index, 1);
+  const originalName = String(removed?.original_name || '').trim();
+
+  if (originalName && !form.removed_secret_header_names.includes(originalName)) {
+    form.removed_secret_header_names.push(originalName);
+  }
+
+  handleSecretHeadersChange();
+}
+
+function isStoredSecretHeader(row: HeaderRow): boolean {
+  const name = String(row.name || '').trim();
+  const originalName = String(row.original_name || '').trim();
+  return Boolean(name && originalName === name);
+}
+
+function secretHeaderValuePlaceholder(row: HeaderRow): string {
+  return isStoredSecretHeader(row)
+    ? translate('Leave blank to keep the stored value')
+    : translate('Secret value');
+}
+
+function validateHeaderRows(rows: HeaderRow[], kind: 'open' | 'secret'): string | null {
+  const seen = new Set<string>();
+
+  for (const [index, row] of (rows || []).entries()) {
+    const name = String(row.name || '').trim();
+    const value = String(row.value ?? '').trim();
+    const originalName = String(row.original_name || '').trim();
+
+    if (!name) return translate('Header {index}: name is required.', { index: index + 1 });
+    if (!headerNamePattern.test(name)) {
+      return translate('Header {index}: the name is invalid.', { index: index + 1 });
+    }
+
+    const normalizedName = name.toLowerCase();
+    if (seen.has(normalizedName)) {
+      return translate('Header {index}: the name is duplicated.', { index: index + 1 });
+    }
+    seen.add(normalizedName);
+
+    if (invalidHeaderValuePattern.test(value)) {
+      return translate('Header {index}: the value contains invalid control characters.', { index: index + 1 });
+    }
+
+    if (kind === 'secret' && !value && originalName !== name) {
+      return translate('Header {index}: enter a value for a new or renamed secret header.', { index: index + 1 });
+    }
+  }
+
+  return null;
+}
+
+function validateMcpHeaders(): boolean {
+  if (!isMcpHttp.value) return true;
+
+  openHeadersError.value = validateHeaderRows(form.open_header_rows, 'open');
+  secretHeadersError.value = validateHeaderRows(form.secret_header_rows, 'secret');
+
+  if (!openHeadersError.value && !secretHeadersError.value) {
+    const openNames = new Set(
+      headerNamesFromRows(form.open_header_rows).map((name) => name.toLowerCase())
+    );
+    const conflict = headerNamesFromRows(form.secret_header_rows).find((name) =>
+      openNames.has(name.toLowerCase())
+    );
+
+    if (conflict) {
+      secretHeadersError.value = translate('Header {name} cannot be both open and secret.', {
+        name: conflict,
+      });
+    }
+  }
+
+  if (openHeadersError.value) toolTab.value = 'settings';
+  else if (secretHeadersError.value) toolTab.value = 'credentials';
+
+  return !openHeadersError.value && !secretHeadersError.value;
 }
 
 function parseKnowledgeTagRow(resource: JsonApiResource): KnowledgeTagRow | null {
@@ -1092,6 +1422,7 @@ const configFields = computed<SchemaField[]>(() => {
       schema: (raw && typeof raw === 'object' ? raw : {}) as JsonSchema,
     }))
     .filter((f) => Boolean(f.key.trim()))
+    .filter((f) => configWidget(f.schema) !== 'hidden')
     .sort(compareSchemaFields);
 });
 
@@ -1123,6 +1454,7 @@ const secretsFields = computed<SchemaField[]>(() => {
       schema: (raw && typeof raw === 'object' ? raw : {}) as JsonSchema,
     }))
     .filter((f) => Boolean(f.key.trim()))
+    .filter((f) => configWidget(f.schema) !== 'hidden')
     .sort(compareSchemaFields);
 });
 
@@ -1475,6 +1807,9 @@ watch(
     persistedFunctionRows.value = [];
     form.secrets_patch = {};
     form.secrets_clear = {};
+    form.removed_secret_header_names = [];
+    openHeadersError.value = null;
+    secretHeadersError.value = null;
     authMethodTouched.value = false;
     configError.value = null;
     resetConfigText();
@@ -1587,6 +1922,9 @@ const saveWithValidation = async () => {
   }
 
   if (!validateRequiredConfigFields()) return;
+  if (!validateMcpHeaders()) return;
+
+  syncMcpHeaderConfig();
 
   const saved = await editor.save();
   if (!saved) return;
@@ -1621,10 +1959,50 @@ watch(
 </script>
 
 <style scoped>
+.mcp-headers-field {
+  gap: 6px;
+}
+
+.mcp-headers-editor {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.mcp-header-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1.2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.mcp-secret-value {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.mcp-add-header {
+  justify-self: start;
+}
+
 .field-label-text {
   display: inline-flex;
   gap: 3px;
   align-items: baseline;
+}
+
+@media (max-width: 720px) {
+  .mcp-header-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mcp-header-row > button {
+    justify-self: start;
+  }
 }
 
 .tool-type-field {

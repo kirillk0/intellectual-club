@@ -383,6 +383,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
   end
 
   defp credential_present?(value) when is_binary(value), do: String.trim(value) != ""
+
+  defp credential_present?(%{} = value),
+    do: Enum.any?(value, fn {_key, item} -> credential_present?(item) end)
+
   defp credential_present?(_value), do: false
 
   defp secrets_schema_properties(nil), do: %{}

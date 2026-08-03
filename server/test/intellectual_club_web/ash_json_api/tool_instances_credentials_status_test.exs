@@ -47,8 +47,14 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
         %{
           type: "mcp-http",
           name: "With token",
-          config: %{"server_url" => "https://example.com"},
-          secrets: %{"bearer_token" => "super-secret"},
+          config: %{
+            "server_url" => "https://example.com",
+            "secret_header_names" => ["X-API-Key"]
+          },
+          secrets: %{
+            "bearer_token" => "super-secret",
+            "secret_headers" => %{"X-API-Key" => "header-secret"}
+          },
           max_output_tokens: 500
         },
         actor: actor
@@ -78,7 +84,10 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesCredentialsStatusTest do
       |> json_response(200)
 
     attrs_with = response_with["data"]["attributes"]
-    assert attrs_with["secrets_present"] == ["bearer_token"]
+
+    assert MapSet.new(attrs_with["secrets_present"]) ==
+             MapSet.new(["bearer_token", "secret_headers"])
+
     refute Map.has_key?(attrs_with, "secrets")
 
     response_without =

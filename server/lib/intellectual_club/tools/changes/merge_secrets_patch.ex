@@ -5,6 +5,7 @@ defmodule IntellectualClub.Tools.Changes.MergeSecretsPatch do
   Rules:
   - Keys not present in the patch remain unchanged.
   - `nil` or empty string values unset the key.
+  - Nested maps use the same patch semantics for their keys.
   - Tool-specific aliases are normalized to canonical keys.
   """
 
@@ -68,6 +69,18 @@ defmodule IntellectualClub.Tools.Changes.MergeSecretsPatch do
           merged
           |> Map.put(@canonical_key, value)
           |> Map.delete(key)
+
+        is_map(value) ->
+          current_nested =
+            case Map.get(merged, key) do
+              %{} = nested -> nested
+              _other -> %{}
+            end
+
+          case apply_patch(current_nested, value) do
+            nested when map_size(nested) == 0 -> Map.delete(merged, key)
+            nested -> Map.put(merged, key, nested)
+          end
 
         true ->
           Map.put(merged, key, value)

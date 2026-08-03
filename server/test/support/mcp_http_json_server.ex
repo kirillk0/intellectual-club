@@ -5,9 +5,10 @@ defmodule IntellectualClub.TestSupport.McpHttpJsonServer do
 
   def init(opts), do: opts
 
-  def call(conn, _opts) do
+  def call(conn, opts) do
     {:ok, body, conn} = read_body(conn)
     payload = Jason.decode!(body)
+    notify_request(opts, payload["method"], conn.req_headers)
 
     case payload["method"] do
       "initialize" ->
@@ -43,6 +44,13 @@ defmodule IntellectualClub.TestSupport.McpHttpJsonServer do
         conn
         |> put_resp_content_type("text/plain")
         |> send_resp(500, "Unsupported method: #{inspect(method)}")
+    end
+  end
+
+  defp notify_request(opts, method, headers) do
+    case Keyword.get(opts, :test_pid) do
+      test_pid when is_pid(test_pid) -> send(test_pid, {:mcp_request, method, headers})
+      _other -> :ok
     end
   end
 

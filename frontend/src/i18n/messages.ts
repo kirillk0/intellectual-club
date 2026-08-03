@@ -8,6 +8,33 @@ export const ruMessages: Record<string, string> = {
   '1 continuation': '1 продолжение',
   '1 subchat': '1 сабчат',
   'Add': 'Добавить',
+  'Add header': 'Добавить заголовок',
+  'Header name': 'Название заголовка',
+  'Header value': 'Значение заголовка',
+  'Header {index}: enter a value for a new or renamed secret header.':
+    'Заголовок {index}: укажите значение для нового или переименованного секретного заголовка.',
+  'Header {index}: name is required.': 'Заголовок {index}: укажите название.',
+  'Header {index}: the name is duplicated.': 'Заголовок {index}: название повторяется.',
+  'Header {index}: the name is invalid.': 'Заголовок {index}: некорректное название.',
+  'Header {index}: the value contains invalid control characters.':
+    'Заголовок {index}: значение содержит недопустимые управляющие символы.',
+  'Header {name} cannot be both open and secret.':
+    'Заголовок {name} не может одновременно быть открытым и секретным.',
+  'Leave blank to keep the stored value': 'Оставьте пустым, чтобы сохранить записанное значение',
+  'No open headers configured.': 'Открытые заголовки не настроены.',
+  'No secret headers configured.': 'Секретные заголовки не настроены.',
+  'Open header {index} name': 'Название открытого заголовка {index}',
+  'Open header {index} value': 'Значение открытого заголовка {index}',
+  'Open header names and values are visible to users who can view this tool.':
+    'Названия и значения открытых заголовков видны пользователям, которым доступен этот инструмент.',
+  'Open headers': 'Открытые заголовки',
+  'Secret header {index} name': 'Название секретного заголовка {index}',
+  'Secret header {index} value': 'Значение секретного заголовка {index}',
+  'Secret header names remain visible; values are write-only and stored on the server.':
+    'Названия секретных заголовков остаются видимыми; значения доступны только для записи и хранятся на сервере.',
+  'Secret headers': 'Секретные заголовки',
+  'Secret value': 'Секретное значение',
+  'stored': 'сохранено',
   'Add bookmark': 'Добавить закладку',
   'Add a short note': 'Добавить короткую заметку',
   'Add chat blocks': 'Добавить блоки чата',

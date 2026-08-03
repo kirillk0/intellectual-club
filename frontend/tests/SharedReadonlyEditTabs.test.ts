@@ -65,6 +65,7 @@ vi.mock('@/api/knowledgeBlockFiles', async () => {
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
+import CrudHeader from '@/components/CrudHeader.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { serverStateQueryClient } from '@/features/serverState/queryClient';
 import KnowledgeBlockEditView from '@/views/catalogs/KnowledgeBlockEditView.vue';
@@ -86,16 +87,36 @@ const providerTypes = [
 
 const toolTypes = [
   {
-    type: 'test-tool',
-    title: 'Test tool',
+    type: 'mcp-http',
+    title: 'MCP HTTP',
     description: '',
     functions_mode: 'fixed',
     supports_discovery: false,
     supports_artifacts: false,
     supports_handoff: false,
-    config_schema: { type: 'object', properties: {} },
-    secrets_schema: null,
-    default_config: {},
+    config_schema: {
+      type: 'object',
+      properties: {
+        server_url: { type: 'string', title: 'Server URL' },
+        open_headers: { type: 'object', 'x-ui': { widget: 'hidden' } },
+        secret_header_names: { type: 'array', 'x-ui': { widget: 'hidden' } },
+      },
+    },
+    secrets_schema: {
+      type: 'object',
+      properties: {
+        bearer_token: {
+          type: 'string',
+          title: 'Bearer token',
+        },
+        secret_headers: {
+          type: 'object',
+          title: 'Secret headers',
+          'x-ui': { widget: 'hidden' },
+        },
+      },
+    },
+    default_config: { server_url: '', open_headers: {}, secret_header_names: [] },
     fixed_functions: [],
   },
 ];
@@ -110,6 +131,33 @@ function readonlyDocument(type: string, attributes: Record<string, unknown>) {
         can_edit: false,
         shared_incoming: true,
         shared_outgoing: false,
+      },
+      relationships: {
+        functions: { data: [] },
+        tag_bindings: { data: [] },
+      },
+    },
+    included: [],
+  };
+}
+
+function editableToolDocument(attributes: Record<string, unknown>) {
+  return {
+    data: {
+      id: '27',
+      type: 'tool-instances',
+      attributes: {
+        name: 'MCP tool',
+        description: '',
+        alias: 'mcp_tool',
+        type: 'mcp-http',
+        max_output_tokens: 20_000,
+        rps_limit: null,
+        secrets_present: ['secret_headers'],
+        can_edit: true,
+        shared_incoming: false,
+        shared_outgoing: false,
+        ...attributes,
       },
       relationships: {
         functions: { data: [] },
@@ -210,16 +258,37 @@ describe('shared read-only editor tabs', () => {
         name: 'Shared tool',
         description: 'Description',
         alias: 'shared_tool',
-        type: 'test-tool',
-        config: {},
+        type: 'mcp-http',
+        config: {
+          server_url: 'https://mcp.example.com',
+          open_headers: { 'X-Tenant-ID': 'tenant-42' },
+          secret_header_names: ['X-API-Key'],
+        },
         max_output_tokens: 20_000,
         rps_limit: null,
-        secrets_present: [],
+        secrets_present: ['secret_headers'],
       })
     );
 
     const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
     await vi.waitFor(() => expect(view.text()).toContain('This tool is read-only.'));
+
+    const openHeaders = view.get('[data-testid="open-headers-editor"]');
+    const openHeaderInputs = openHeaders.findAll<HTMLInputElement>('input');
+    expect(openHeaderInputs.map((input) => input.element.value)).toEqual(['X-Tenant-ID', 'tenant-42']);
+    expect(openHeaders.element.closest('fieldset[disabled]')).not.toBeNull();
+
+    const credentialsTab = tabByText(view, 'Credentials');
+    credentialsTab.element.click();
+    await nextTick();
+
+    const secretHeaders = view.get('[data-testid="secret-headers-editor"]');
+    const secretHeaderInputs = secretHeaders.findAll<HTMLInputElement>('input');
+    expect(secretHeaderInputs[0]?.element.value).toBe('X-API-Key');
+    expect(secretHeaderInputs[1]?.element.value).toBe('');
+    expect(secretHeaderInputs[1]?.attributes('type')).toBe('password');
+    expect(secretHeaders.element.closest('fieldset[disabled]')).not.toBeNull();
+    expect(secretHeaders.text()).toContain('stored');
 
     const descriptionTab = tabByText(view, 'Description');
     expect(descriptionTab.element.closest('fieldset[disabled]')).toBeNull();
@@ -228,6 +297,55 @@ describe('shared read-only editor tabs', () => {
     descriptionTab.element.click();
     await nextTick();
     expect(tabByText(view, 'Description').classes()).toContain('active');
+  });
+
+  it('saves MCP open headers and patches secret header values separately', async () => {
+    const originalConfig = {
+      server_url: 'https://mcp.example.com',
+      open_headers: { 'X-Tenant-ID': 'tenant-42' },
+      secret_header_names: ['X-Keep', 'X-Remove'],
+    };
+    jsonApiMocks.get.mockResolvedValue(editableToolDocument({ config: originalConfig }));
+    jsonApiMocks.update.mockImplementation(async (_path, _type, _id, attributes) =>
+      editableToolDocument(attributes)
+    );
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'Settings').trigger('click');
+    await vi.waitFor(() => expect(view.find('[data-testid="open-headers-editor"]').exists()).toBe(true));
+
+    const openInputs = view.get('[data-testid="open-headers-editor"]').findAll<HTMLInputElement>('input');
+    await openInputs[1]?.setValue('tenant-84');
+
+    await tabByText(view, 'Credentials').trigger('click');
+    let secretEditor = view.get('[data-testid="secret-headers-editor"]');
+    const initialSecretRows = secretEditor.findAll('.mcp-header-row');
+    await initialSecretRows[1]?.get('button.danger').trigger('click');
+    await secretEditor.get('button.mcp-add-header').trigger('click');
+
+    secretEditor = view.get('[data-testid="secret-headers-editor"]');
+    const secretInputs = secretEditor.findAll<HTMLInputElement>('input');
+    await secretInputs[2]?.setValue('X-New');
+    await secretInputs[3]?.setValue('new-secret');
+
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await vi.waitFor(() => expect(jsonApiMocks.update).toHaveBeenCalledTimes(1));
+
+    const attributes = jsonApiMocks.update.mock.calls[0]?.[3];
+    expect(attributes).toMatchObject({
+      config: {
+        server_url: 'https://mcp.example.com',
+        open_headers: { 'X-Tenant-ID': 'tenant-84' },
+        secret_header_names: ['X-Keep', 'X-New'],
+      },
+      secrets: {
+        secret_headers: {
+          'X-Remove': '',
+          'X-New': 'new-secret',
+        },
+      },
+    });
+    expect(attributes.secrets.secret_headers).not.toHaveProperty('X-Keep');
   });
 
   it('switches knowledge block tabs while keeping its fields disabled', async () => {

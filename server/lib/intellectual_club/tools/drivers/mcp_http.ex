@@ -10,6 +10,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   alias IntellectualClub.Tools.ToolInstance
 
   @protocol_version "2024-11-05"
+  @header_name_regex ~r/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 
   @impl true
   def type, do: "mcp-http"
@@ -31,7 +32,11 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
 
   @impl true
   def default_config do
-    %{"server_url" => ""}
+    %{
+      "server_url" => "",
+      "open_headers" => %{},
+      "secret_header_names" => []
+    }
   end
 
   @impl true
@@ -44,7 +49,20 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
           "title" => "Server URL",
           "description" => "MCP server URL.",
           "format" => "uri",
-          "x-ui" => %{"placeholder" => "https://mcp.example.com"}
+          "x-ui" => %{"order" => 10, "placeholder" => "https://mcp.example.com"}
+        },
+        "open_headers" => %{
+          "type" => "object",
+          "title" => "Open headers",
+          "description" => "HTTP headers whose names and values may be displayed.",
+          "additionalProperties" => %{"type" => "string"},
+          "x-ui" => %{"widget" => "hidden"}
+        },
+        "secret_header_names" => %{
+          "type" => "array",
+          "title" => "Secret header names",
+          "items" => %{"type" => "string"},
+          "x-ui" => %{"widget" => "hidden"}
         }
       },
       "required" => ["server_url"],
@@ -62,23 +80,46 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
           "title" => "Bearer token",
           "description" => "Bearer token (optional).",
           "x-aliases" => ["token"],
-          "x-ui" => %{"placeholder" => "Bearer …"}
+          "x-ui" => %{"order" => 10, "placeholder" => "Bearer …"}
+        },
+        "secret_headers" => %{
+          "type" => "object",
+          "title" => "Secret headers",
+          "description" => "HTTP header names are displayed, while values remain write-only.",
+          "additionalProperties" => %{"type" => "string"},
+          "x-ui" => %{"widget" => "hidden"}
         }
       }
     }
   end
 
   @impl true
+  def validate_config(%ToolInstance{} = tool_instance, _config, _actor) do
+    case configured_headers(tool_instance) do
+      {:ok, _headers} -> :ok
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  @impl true
   def discover(%ToolInstance{} = tool_instance) do
     with {:ok, server_url} <- server_url(tool_instance),
          bearer_token <- bearer_token(tool_instance),
-         {:ok, {session_id, init_result}} <- initialize(server_url, bearer_token: bearer_token) do
+         {:ok, configured_headers} <- configured_headers(tool_instance),
+         {:ok, {session_id, init_result}} <-
+           initialize(server_url,
+             bearer_token: bearer_token,
+             configured_headers: configured_headers
+           ) do
       case discover_tools_from_init(init_result) do
         {:ok, tools} ->
           {:ok, tools}
 
         {:fallback, :list_tools} ->
-          list_tools(server_url, session_id, bearer_token: bearer_token)
+          list_tools(server_url, session_id,
+            bearer_token: bearer_token,
+            configured_headers: configured_headers
+          )
       end
     end
   end
@@ -88,9 +129,17 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
       when is_binary(function_name) and is_map(args) do
     with {:ok, server_url} <- server_url(tool_instance),
          bearer_token <- bearer_token(tool_instance),
-         {:ok, {session_id, _init_result}} <- initialize(server_url, bearer_token: bearer_token),
+         {:ok, configured_headers} <- configured_headers(tool_instance),
+         {:ok, {session_id, _init_result}} <-
+           initialize(server_url,
+             bearer_token: bearer_token,
+             configured_headers: configured_headers
+           ),
          {:ok, result} <-
-           call_tool(server_url, session_id, function_name, args, bearer_token: bearer_token) do
+           call_tool(server_url, session_id, function_name, args,
+             bearer_token: bearer_token,
+             configured_headers: configured_headers
+           ) do
       {:ok, result}
     end
   end
@@ -128,6 +177,169 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     end
   end
 
+  defp configured_headers(%ToolInstance{} = tool_instance) do
+    config = Map.get(tool_instance, :config) || %{}
+    config = if is_map(config), do: config, else: %{}
+    secrets = Map.get(tool_instance, :secrets) || %{}
+    secrets = if is_map(secrets), do: secrets, else: %{}
+
+    with {:ok, open_headers} <-
+           parse_header_map(Map.get(config, "open_headers"), "Open headers", allow_empty?: true),
+         {:ok, secret_header_names} <-
+           parse_header_names(Map.get(config, "secret_header_names")),
+         {:ok, stored_secret_headers} <-
+           parse_header_map(Map.get(secrets, "secret_headers"), "Secret headers",
+             allow_empty?: false
+           ),
+         {:ok, secret_headers} <-
+           select_secret_headers(secret_header_names, stored_secret_headers),
+         :ok <- reject_header_name_conflicts(open_headers, secret_headers) do
+      headers =
+        Enum.reduce(open_headers ++ secret_headers, [], fn {name, value}, headers ->
+          put_header(headers, name, value)
+        end)
+
+      {:ok, headers}
+    end
+  end
+
+  defp parse_header_map(nil, _label, _opts), do: {:ok, []}
+
+  defp parse_header_map(value, label, opts) when is_map(value) do
+    allow_empty? = Keyword.fetch!(opts, :allow_empty?)
+
+    value
+    |> Enum.reduce_while({:ok, []}, fn {raw_name, raw_value}, {:ok, headers} ->
+      with {:ok, name} <- validate_header_name(raw_name, label),
+           {:ok, header_value} <- validate_header_value(raw_value, name, label, allow_empty?) do
+        {:cont, {:ok, [{name, header_value} | headers]}}
+      else
+        {:error, _message} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, headers} -> reject_duplicate_header_names(Enum.reverse(headers), label)
+      {:error, _message} = error -> error
+    end
+  end
+
+  defp parse_header_map(_value, label, _opts),
+    do: {:error, "#{label} must be a JSON object with header-name keys and string values."}
+
+  defp parse_header_names(nil), do: {:ok, []}
+
+  defp parse_header_names(value) when is_list(value) do
+    value
+    |> Enum.reduce_while({:ok, []}, fn raw_name, {:ok, names} ->
+      case validate_header_name(raw_name, "Secret headers") do
+        {:ok, name} -> {:cont, {:ok, [name | names]}}
+        {:error, _message} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, names} -> reject_duplicate_names(Enum.reverse(names), "Secret headers")
+      {:error, _message} = error -> error
+    end
+  end
+
+  defp parse_header_names(_value),
+    do: {:error, "Secret header names must be a JSON array of strings."}
+
+  defp validate_header_name(raw_name, label) when is_binary(raw_name) do
+    name = String.trim(raw_name)
+
+    if Regex.match?(@header_name_regex, name) do
+      {:ok, name}
+    else
+      {:error, "#{label} contains an invalid header name: #{inspect(raw_name)}."}
+    end
+  end
+
+  defp validate_header_name(raw_name, label),
+    do: {:error, "#{label} contains a non-string header name: #{inspect(raw_name)}."}
+
+  defp validate_header_value(raw_value, name, label, allow_empty?) when is_binary(raw_value) do
+    value = String.trim(raw_value)
+
+    cond do
+      not valid_header_value?(value) ->
+        {:error, "#{label} contains an invalid value for #{name}."}
+
+      value == "" and not allow_empty? ->
+        {:error, "#{label} is missing a value for #{name}."}
+
+      true ->
+        {:ok, value}
+    end
+  end
+
+  defp validate_header_value(_raw_value, name, label, _allow_empty?),
+    do: {:error, "#{label} value for #{name} must be a string."}
+
+  defp reject_duplicate_header_names(headers, label) do
+    case duplicate_name(Enum.map(headers, &elem(&1, 0))) do
+      nil -> {:ok, headers}
+      name -> {:error, "#{label} contains the duplicate header name #{name}."}
+    end
+  end
+
+  defp reject_duplicate_names(names, label) do
+    case duplicate_name(names) do
+      nil -> {:ok, names}
+      name -> {:error, "#{label} contains the duplicate header name #{name}."}
+    end
+  end
+
+  defp duplicate_name(names) do
+    names
+    |> Enum.reduce_while(MapSet.new(), fn name, seen ->
+      normalized = String.downcase(name)
+
+      if MapSet.member?(seen, normalized) do
+        {:halt, name}
+      else
+        {:cont, MapSet.put(seen, normalized)}
+      end
+    end)
+    |> case do
+      %MapSet{} -> nil
+      name -> name
+    end
+  end
+
+  defp select_secret_headers(names, stored_headers) do
+    stored_by_name = Map.new(stored_headers)
+
+    names
+    |> Enum.reduce_while({:ok, []}, fn name, {:ok, selected} ->
+      case Map.fetch(stored_by_name, name) do
+        {:ok, value} -> {:cont, {:ok, [{name, value} | selected]}}
+        :error -> {:halt, {:error, "Secret headers is missing a stored value for #{name}."}}
+      end
+    end)
+    |> case do
+      {:ok, selected} -> {:ok, Enum.reverse(selected)}
+      {:error, _message} = error -> error
+    end
+  end
+
+  defp reject_header_name_conflicts(open_headers, secret_headers) do
+    open_names = MapSet.new(open_headers, fn {name, _value} -> String.downcase(name) end)
+
+    case Enum.find(secret_headers, fn {name, _value} ->
+           MapSet.member?(open_names, String.downcase(name))
+         end) do
+      nil -> :ok
+      {name, _value} -> {:error, "Header #{name} cannot be both open and secret."}
+    end
+  end
+
+  defp valid_header_value?(value) when is_binary(value) do
+    value
+    |> :binary.bin_to_list()
+    |> Enum.all?(fn byte -> byte == 9 or (byte >= 32 and byte != 127) end)
+  end
+
   defp initialize(server_url, opts) when is_binary(server_url) and is_list(opts) do
     payload = %{
       "jsonrpc" => "2.0",
@@ -141,8 +353,12 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     }
 
     bearer_token = Keyword.get(opts, :bearer_token)
+    configured_headers = Keyword.get(opts, :configured_headers, [])
 
-    case post_jsonrpc(server_url, payload, bearer_token: bearer_token) do
+    case post_jsonrpc(server_url, payload,
+           bearer_token: bearer_token,
+           configured_headers: configured_headers
+         ) do
       {:ok, %{session_id: session_id, messages: [%{"result" => %{} = result} | _]}} ->
         {:ok, {session_id, result}}
 
@@ -202,9 +418,14 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     }
 
     bearer_token = Keyword.get(opts, :bearer_token)
+    configured_headers = Keyword.get(opts, :configured_headers, [])
 
     with {:ok, %{messages: [%{"result" => %{} = result} | _]}} <-
-           post_jsonrpc(server_url, payload, bearer_token: bearer_token, session_id: session_id),
+           post_jsonrpc(server_url, payload,
+             bearer_token: bearer_token,
+             configured_headers: configured_headers,
+             session_id: session_id
+           ),
          %{"tools" => tools} <- result,
          true <- is_list(tools) do
       parsed =
@@ -257,9 +478,11 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     }
 
     bearer_token = Keyword.get(opts, :bearer_token)
+    configured_headers = Keyword.get(opts, :configured_headers, [])
 
     case post_jsonrpc(server_url, payload,
            bearer_token: bearer_token,
+           configured_headers: configured_headers,
            session_id: session_id,
            timeout_ms: 60_000
          ) do
@@ -306,11 +529,12 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   defp post_jsonrpc(server_url, payload, opts)
        when is_binary(server_url) and is_map(payload) and is_list(opts) do
     bearer_token = Keyword.get(opts, :bearer_token)
+    configured_headers = Keyword.get(opts, :configured_headers, [])
     session_id = Keyword.get(opts, :session_id)
     timeout_ms = Keyword.get(opts, :timeout_ms, 30_000)
 
     headers =
-      []
+      configured_headers
       |> put_header("content-type", "application/json")
       |> put_header("accept", "application/json, text/event-stream")
       |> maybe_put_bearer(bearer_token)
@@ -419,6 +643,17 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
   end
 
   defp put_header(headers, name, value) when is_list(headers) do
+    normalized_name = String.downcase(name)
+
+    headers =
+      Enum.reject(headers, fn
+        {existing_name, _existing_value} when is_binary(existing_name) ->
+          String.downcase(existing_name) == normalized_name
+
+        _other ->
+          false
+      end)
+
     [{name, value} | headers]
   end
 

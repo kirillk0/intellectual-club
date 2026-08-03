@@ -94,8 +94,17 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
       id: Map.get(data, :id),
       type: type,
       owner_id: owner_id_for_validation(changeset),
-      config: config
+      config: config,
+      secrets: tool_secrets(changeset)
     }
+  end
+
+  defp tool_secrets(changeset) do
+    Changeset.get_attribute(changeset, :secrets) ||
+      case changeset.data do
+        %{secrets: %{} = secrets} -> secrets
+        _other -> %{}
+      end
   end
 
   defp owner_id_for_validation(changeset) do
