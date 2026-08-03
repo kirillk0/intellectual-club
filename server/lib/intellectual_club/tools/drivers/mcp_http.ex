@@ -1,6 +1,6 @@
 defmodule IntellectualClub.Tools.Drivers.McpHttp do
   @moduledoc """
-  MCP server driver over HTTP (JSON-RPC with SSE responses).
+  MCP server driver over HTTP (JSON-RPC with JSON or SSE responses).
 
   This matches the `mcp-http` tool type.
   """
@@ -147,7 +147,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
         {:ok, {session_id, result}}
 
       {:ok, %{messages: []}} ->
-        {:error, "MCP server returned no SSE messages for initialize()."}
+        {:error, "MCP server returned no messages for initialize()."}
 
       {:ok, %{messages: [%{} = first | _]}} ->
         {:error, "MCP initialize() response missing result (first=#{inspect(first)})."}
@@ -242,7 +242,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
       end
     else
       _ ->
-        {:error, "MCP server returned no SSE messages for tools/list."}
+        {:error, "MCP server returned no messages for tools/list."}
     end
   end
 
@@ -277,7 +277,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
         {:ok, {text, raw_result}}
 
       {:ok, %{messages: []}} ->
-        {:error, "MCP server returned no SSE messages for tools/call."}
+        {:error, "MCP server returned no messages for tools/call."}
 
       {:error, _} = error ->
         error
@@ -329,8 +329,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
     if resp.status >= 400 do
       {:error, "MCP HTTP error (status=#{resp.status})"}
     else
-      body_text = body_to_string(resp.body)
-      messages = extract_sse_messages(body_text)
+      messages = extract_messages(resp.body)
 
       {:ok,
        %{
@@ -347,10 +346,30 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
       {:error, Exception.format_exit(reason)}
   end
 
-  defp body_to_string(nil), do: ""
-  defp body_to_string(body) when is_binary(body), do: body
-  defp body_to_string(body) when is_list(body), do: IO.iodata_to_binary(body)
-  defp body_to_string(other), do: to_string(other)
+  defp extract_messages(%{} = message), do: [message]
+  defp extract_messages([]), do: []
+
+  defp extract_messages([%{} | _] = messages) do
+    Enum.filter(messages, &is_map/1)
+  end
+
+  defp extract_messages(body) when is_list(body) do
+    body
+    |> IO.iodata_to_binary()
+    |> extract_messages()
+  rescue
+    ArgumentError -> []
+  end
+
+  defp extract_messages(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{} = message} -> [message]
+      {:ok, messages} when is_list(messages) -> Enum.filter(messages, &is_map/1)
+      _ -> extract_sse_messages(body)
+    end
+  end
+
+  defp extract_messages(_other), do: []
 
   defp extract_sse_messages(body_text) when is_binary(body_text) do
     body_text
@@ -370,8 +389,6 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
       end
     end)
   end
-
-  defp extract_sse_messages(_other), do: []
 
   defp get_header(headers, key) when is_binary(key) do
     wanted = String.downcase(key)
