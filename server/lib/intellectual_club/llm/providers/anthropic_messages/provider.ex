@@ -12,6 +12,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.HostedWebSearch
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
 
@@ -37,7 +38,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       ],
       base_url_options: [@anthropic_base_url, @deepseek_anthropic_base_url],
       default_base_url: @anthropic_base_url,
-      supports_model_discovery: true
+      supports_model_discovery: true,
+      supports_hosted_web_search: true
     }
   end
 
@@ -60,6 +62,11 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
     parameters
     |> maybe_put_temperature(Map.get(settings, :temperature))
     |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+    |> HostedWebSearch.maybe_put_tool(
+      Map.get(settings, :web_search_enabled, false),
+      %{"type" => "web_search_20250305", "name" => "web_search"},
+      "name"
+    )
   end
 
   @impl true

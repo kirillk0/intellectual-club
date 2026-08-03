@@ -244,6 +244,7 @@ type ProviderTypeMetadata = {
   base_url_options: string[];
   default_base_url?: string | null;
   supports_model_discovery: boolean;
+  supports_hosted_web_search: boolean;
   missing?: boolean;
 };
 
@@ -384,6 +385,7 @@ const providerTypeOptions = computed(() => {
       base_url_options: [],
       default_base_url: null,
       supports_model_discovery: false,
+      supports_hosted_web_search: false,
       missing: true,
     });
   }

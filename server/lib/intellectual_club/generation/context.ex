@@ -461,7 +461,8 @@ defmodule IntellectualClub.Generation.Context do
           parameters =
             adapter_module.apply_standard_parameters(raw_parameters, %{
               temperature: Map.get(configuration, :temperature),
-              reasoning_effort: Map.get(configuration, :reasoning_effort)
+              reasoning_effort: Map.get(configuration, :reasoning_effort),
+              web_search_enabled: Map.get(configuration, :web_search_enabled, false)
             })
 
           timeout_ms = max(1, configuration.timeout_seconds || 120) * 1000

@@ -34,7 +34,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RegistryTest do
         auth_methods: [],
         base_url_options: [],
         default_base_url: nil,
-        supports_model_discovery: false
+        supports_model_discovery: false,
+        supports_hosted_web_search: false
       }
     end
   end

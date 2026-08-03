@@ -336,7 +336,8 @@ defmodule IntellectualClub.Generation.ContextTest do
             "max_tokens" => 64
           },
           temperature: 0.2,
-          reasoning_effort: :minimal
+          reasoning_effort: :minimal,
+          web_search_enabled: true
         },
         actor: actor
       )
@@ -358,7 +359,8 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.parameters == %{
              "temperature" => 0.2,
              "reasoning" => %{"effort" => "minimal", "summary" => "auto"},
-             "max_tokens" => 64
+             "max_tokens" => 64,
+             "tools" => [%{"type" => "web_search"}]
            }
 
     assert context.request_payload["temperature"] == 0.2
@@ -369,6 +371,7 @@ defmodule IntellectualClub.Generation.ContextTest do
            }
 
     assert context.request_payload["max_output_tokens"] == 64
+    assert context.request_payload["tools"] == [%{"type" => "web_search"}]
 
     step = Ash.get!(ChatMessageStep, context.step_id, actor: actor)
     assert step.raw_request == context.request_payload

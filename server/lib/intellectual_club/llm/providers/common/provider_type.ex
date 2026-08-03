@@ -36,7 +36,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
           required(:auth_methods) => [auth_method_metadata()],
           required(:base_url_options) => [String.t()],
           required(:default_base_url) => String.t() | nil,
-          required(:supports_model_discovery) => boolean()
+          required(:supports_model_discovery) => boolean(),
+          required(:supports_hosted_web_search) => boolean()
         }
 
   @type model_option :: %{
@@ -50,7 +51,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
 
   @type standard_parameter_settings :: %{
           required(:temperature) => number() | nil,
-          required(:reasoning_effort) => reasoning_effort() | nil
+          required(:reasoning_effort) => reasoning_effort() | nil,
+          required(:web_search_enabled) => boolean()
         }
 
   @callback type() :: String.t()

@@ -28,15 +28,18 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
            ]
 
     assert anthropic["supports_model_discovery"] == true
+    assert anthropic["supports_hosted_web_search"] == true
 
     assert openrouter["default_auth_method"] == "api_key"
     assert openrouter["base_url_options"] == ["https://openrouter.ai/api/v1"]
     assert openrouter["supports_model_discovery"] == true
+    assert openrouter["supports_hosted_web_search"] == true
 
     assert nvidia["label"] == "NVIDIA Build Chat Completions"
     assert nvidia["default_auth_method"] == "api_key"
     assert nvidia["base_url_options"] == ["https://integrate.api.nvidia.com/v1"]
     assert nvidia["supports_model_discovery"] == true
+    assert nvidia["supports_hosted_web_search"] == false
 
     assert Enum.any?(responses["auth_methods"], fn method ->
              method["value"] == "openai_oauth_refresh_token" and
@@ -49,6 +52,10 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     assert responses_wss["base_url_options"] == responses["base_url_options"]
     assert responses_wss["default_base_url"] == responses["default_base_url"]
     assert responses_wss["supports_model_discovery"] == responses["supports_model_discovery"]
+    assert responses["supports_hosted_web_search"] == true
+
+    assert responses_wss["supports_hosted_web_search"] ==
+             responses["supports_hosted_web_search"]
 
     assert google["label"] == "Google Interactions API"
     assert google["default_auth_method"] == "api_key"
@@ -59,6 +66,10 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
            ]
 
     assert google["supports_model_discovery"] == true
+    assert google["supports_hosted_web_search"] == true
+
+    demo = Enum.find(types, &(&1["type"] == "demo"))
+    assert demo["supports_hosted_web_search"] == false
   end
 
   test "GET /api/bff/llm-providers/:id/models loads the sparse NVIDIA catalog", %{conn: conn} do

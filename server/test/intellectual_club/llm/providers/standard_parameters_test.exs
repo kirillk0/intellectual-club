@@ -37,6 +37,59 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
     end
   end
 
+  test "hosted web search uses each provider wire format and preserves manual configuration" do
+    settings = %{temperature: nil, reasoning_effort: nil, web_search_enabled: true}
+
+    assert Responses.apply_standard_parameters(%{}, settings)["tools"] == [
+             %{"type" => "web_search"}
+           ]
+
+    assert ResponsesWss.apply_standard_parameters(%{}, settings)["tools"] == [
+             %{"type" => "web_search"}
+           ]
+
+    assert OpenRouterChatCompletion.apply_standard_parameters(%{}, settings)["tools"] == [
+             %{"type" => "openrouter:web_search"}
+           ]
+
+    assert GoogleInteractions.apply_standard_parameters(%{}, settings)["tools"] == [
+             %{"type" => "google_search"}
+           ]
+
+    assert AnthropicMessages.apply_standard_parameters(%{}, settings)["tools"] == [
+             %{"type" => "web_search_20250305", "name" => "web_search"}
+           ]
+
+    manual_responses_tool = %{
+      "type" => "web_search",
+      "filters" => %{"allowed_domains" => ["openai.com"]}
+    }
+
+    assert Responses.apply_standard_parameters(%{"tools" => [manual_responses_tool]}, settings)[
+             "tools"
+           ] == [manual_responses_tool]
+
+    manual_anthropic_tool = %{
+      "type" => "web_search_20250305",
+      "name" => "web_search",
+      "max_uses" => 3
+    }
+
+    assert AnthropicMessages.apply_standard_parameters(
+             %{"tools" => [manual_anthropic_tool]},
+             settings
+           )["tools"] == [manual_anthropic_tool]
+  end
+
+  test "unsupported providers ignore hosted web search" do
+    parameters = %{"custom" => true}
+    settings = %{temperature: nil, reasoning_effort: nil, web_search_enabled: true}
+
+    for provider <- [NvidiaBuildChatCompletion, Demo, MissingProvider, SelfContainedTestProvider] do
+      assert provider.apply_standard_parameters(parameters, settings) == parameters
+    end
+  end
+
   test "NVIDIA Build writes top-level reasoning effort and removes OpenRouter reasoning" do
     parameters = %{
       "temperature" => 1.5,

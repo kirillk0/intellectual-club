@@ -26,7 +26,10 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   def build_messages_payload(model_name, parameters, messages, opts \\ [])
       when is_list(messages) and is_list(opts) do
     system = Keyword.get(opts, :system)
-    tools = Keyword.get(opts, :tools, [])
+
+    configured_tools = configured_tools(parameters)
+
+    tools = configured_tools ++ anthropic_tools(Keyword.get(opts, :tools, []))
 
     parameters
     |> normalize_parameters()
@@ -122,8 +125,18 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
   def anthropic_tools(_tools), do: []
 
+  defp configured_tools(%{} = parameters) do
+    parameters
+    |> stringify_keys()
+    |> Map.get("tools")
+    |> anthropic_tools()
+  end
+
+  defp configured_tools(_parameters), do: []
+
   defp native_tool(%{"name" => name} = tool) when is_binary(name) do
     name = String.trim(name)
+    type = tool |> Map.get("type") |> to_string() |> String.trim()
 
     cond do
       name == "" ->
@@ -139,6 +152,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
           |> Map.put("input_schema", Map.get(tool, "inputSchema"))
           |> Map.delete("inputSchema")
         ]
+
+      type != "" ->
+        [tool |> Map.put("name", name) |> Map.put("type", type)]
 
       true ->
         []
@@ -251,7 +267,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   defp maybe_put_system(payload, system), do: Map.put(payload, "system", system)
 
   defp maybe_put_tools(payload, tools) do
-    tools = anthropic_tools(tools)
+    tools = tools |> anthropic_tools() |> dedupe_tools_by_name()
 
     if tools == [] do
       payload

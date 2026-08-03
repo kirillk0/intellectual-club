@@ -11,12 +11,17 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Generation.RuntimeTrace
 
   test "openrouter provider builds initial request and snapshot from canonical chat history" do
+    hosted_tool = %{
+      "type" => "openrouter:web_search",
+      "max_results" => 7
+    }
+
     result =
       OpenRouterChatCompletion.build_initial_request(%{
         history: [%{role: :user, content: "Hello"}],
         system_prompt: "Be careful.",
         model_name: "openai/gpt-5-mini",
-        parameters: %{"temperature" => 0.1},
+        parameters: %{"temperature" => 0.1, "tools" => [hosted_tool]},
         chat_id: 123,
         conversation_affinity_id: 77,
         tools: [
@@ -39,7 +44,21 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.raw_request["model"] == "openai/gpt-5-mini"
     assert result.raw_request["temperature"] == 0.1
     assert result.raw_request["session_id"] == "intellectual-club:chat:77"
-    assert is_list(result.raw_request["tools"])
+
+    assert result.raw_request["tools"] == [
+             hosted_tool,
+             %{
+               "type" => "function",
+               "function" => %{
+                 "name" => "weather__get",
+                 "description" => "Get weather",
+                 "parameters" => %{
+                   "type" => "object",
+                   "properties" => %{"city" => %{"type" => "string"}}
+                 }
+               }
+             }
+           ]
 
     [system_message, user_message] = result.raw_request["messages"]
 
@@ -227,7 +246,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "gemini-2.5-flash-lite",
-        parameters: %{"temperature" => 0.1, "max_tokens" => 64},
+        parameters: %{
+          "temperature" => 0.1,
+          "max_tokens" => 64,
+          "tools" => [%{"type" => "google_search"}]
+        },
         tools: [
           %{
             "type" => "function",
@@ -262,6 +285,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            ]
 
     assert result.raw_request["tools"] == [
+             %{"type" => "google_search"},
              %{
                "type" => "function",
                "name" => "weather__get",
@@ -293,6 +317,18 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         raw_request: initial.raw_request,
         raw_response: %{
           "steps" => [
+            %{
+              "type" => "google_search_call",
+              "id" => "search_1",
+              "signature" => "search_call_sig",
+              "queries" => ["weather Paris"]
+            },
+            %{
+              "type" => "google_search_result",
+              "id" => "search_1",
+              "signature" => "search_result_sig",
+              "result" => [%{"title" => "Weather", "url" => "https://example.com"}]
+            },
             %{
               "type" => "thought",
               "signature" => "thought_sig_1",
@@ -347,6 +383,18 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
              %{
                "type" => "user_input",
                "content" => [%{"type" => "text", "text" => "Weather in Paris?"}]
+             },
+             %{
+               "type" => "google_search_call",
+               "id" => "search_1",
+               "signature" => "search_call_sig",
+               "queries" => ["weather Paris"]
+             },
+             %{
+               "type" => "google_search_result",
+               "id" => "search_1",
+               "signature" => "search_result_sig",
+               "result" => [%{"title" => "Weather", "url" => "https://example.com"}]
              },
              %{
                "type" => "thought",
@@ -477,7 +525,17 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         history: [%{role: :user, content: "Hello"}],
         system_prompt: "Use tools when needed.",
         model_name: "claude-sonnet-4-20250514",
-        parameters: %{"max_tokens" => 200, "temperature" => 0.1},
+        parameters: %{
+          "max_tokens" => 200,
+          "temperature" => 0.1,
+          "tools" => [
+            %{
+              "type" => "web_search_20250305",
+              "name" => "web_search",
+              "max_uses" => 3
+            }
+          ]
+        },
         tools: [
           %{
             "type" => "function",
@@ -505,6 +563,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            ]
 
     assert result.raw_request["tools"] == [
+             %{
+               "type" => "web_search_20250305",
+               "name" => "web_search",
+               "max_uses" => 3
+             },
              %{
                "name" => "weather__get",
                "description" => "Get weather",
@@ -601,7 +664,10 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     raw_request =
       RequestBuilder.build_chat_completions_payload(
         "openai/gpt-5-mini",
-        %{"temperature" => 0},
+        %{
+          "temperature" => 0,
+          "tools" => [%{"type" => "openrouter:web_search", "max_results" => 5}]
+        },
         previous_messages,
         tools: []
       )
@@ -651,7 +717,16 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         },
         runtime_step: runtime_step,
         results: results,
-        tools: []
+        tools: [
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => "weather__get",
+              "description" => "Get weather",
+              "parameters" => %{"type" => "object", "properties" => %{}}
+            }
+          }
+        ]
       })
 
     messages = followup.raw_request["messages"]
@@ -659,6 +734,13 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     new_tool_message = List.last(messages)
 
     assert followup.raw_request["session_id"] == "intellectual-club:chat:77"
+
+    assert Enum.at(followup.raw_request["tools"], 0) == %{
+             "type" => "openrouter:web_search",
+             "max_results" => 5
+           }
+
+    assert Enum.at(followup.raw_request["tools"], 1)["function"]["name"] == "weather__get"
     assert old_tool_message["tool_call_id"] == "call_old"
 
     assert Enum.all?(old_tool_message["content"], fn part ->
@@ -1130,6 +1212,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
   test "anthropic provider preserves provider-native tools from previous raw request on followup" do
     native_tools = [
+      %{
+        "type" => "web_search_20250305",
+        "name" => "web_search",
+        "max_uses" => 3
+      },
       %{
         "name" => "weather__get",
         "description" => "Get weather",

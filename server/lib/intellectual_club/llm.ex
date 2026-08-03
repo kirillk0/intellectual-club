@@ -76,6 +76,7 @@ defmodule IntellectualClub.Llm do
             :parameters,
             :temperature,
             :reasoning_effort,
+            :web_search_enabled,
             :enabled,
             :timeout_seconds,
             :context_length,

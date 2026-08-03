@@ -179,21 +179,101 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   defp normalize_include(_include), do: []
 
   defp maybe_put_tools(payload, tools) when is_map(payload) and is_list(tools) do
-    tools =
-      tools
-      |> Enum.filter(&is_map/1)
-      |> Enum.map(&stringify_keys/1)
+    {payload, configured_tools} = pop_chat_completions_tools(payload)
+    requested_tools = normalize_chat_completions_tools(tools)
+    tools = merge_chat_completions_tools(configured_tools, requested_tools)
 
     if tools == [] do
       payload
     else
       payload
       |> Map.put("tools", tools)
-      |> Map.put("tool_choice", "auto")
+      |> Map.put_new("tool_choice", "auto")
     end
   end
 
   defp maybe_put_tools(payload, _other), do: payload
+
+  defp pop_chat_completions_tools(payload) do
+    tools = normalize_chat_completions_tools(Map.get(payload, "tools"))
+    {Map.delete(payload, "tools"), tools}
+  end
+
+  defp normalize_chat_completions_tools(tools) when is_list(tools) do
+    tools
+    |> Enum.filter(&is_map/1)
+    |> Enum.flat_map(&normalize_chat_completions_tool/1)
+  end
+
+  defp normalize_chat_completions_tools(_tools), do: []
+
+  defp normalize_chat_completions_tool(tool) do
+    tool = stringify_keys(tool)
+    type = tool |> Map.get("type") |> to_string() |> String.trim()
+
+    cond do
+      type == "function" and is_map(Map.get(tool, "function")) ->
+        function = Map.get(tool, "function")
+        name = function |> Map.get("name") |> to_string() |> String.trim()
+
+        if name == "" do
+          []
+        else
+          [Map.put(tool, "function", Map.put(function, "name", name))]
+        end
+
+      type == "" ->
+        []
+
+      true ->
+        [Map.put(tool, "type", type)]
+    end
+  end
+
+  defp merge_chat_completions_tools(configured_tools, requested_tools) do
+    requested_function_names =
+      requested_tools
+      |> Enum.map(&chat_completions_function_name/1)
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    configured_tools =
+      Enum.reject(configured_tools, fn tool ->
+        name = chat_completions_function_name(tool)
+        name != "" and MapSet.member?(requested_function_names, name)
+      end)
+
+    {tools, _function_names, _provider_tools} =
+      Enum.reduce(configured_tools ++ requested_tools, {[], MapSet.new(), MapSet.new()}, fn
+        tool, {acc, function_names, provider_tools} ->
+          function_name = chat_completions_function_name(tool)
+
+          cond do
+            function_name != "" and MapSet.member?(function_names, function_name) ->
+              {acc, function_names, provider_tools}
+
+            function_name != "" ->
+              {acc ++ [tool], MapSet.put(function_names, function_name), provider_tools}
+
+            MapSet.member?(provider_tools, tool) ->
+              {acc, function_names, provider_tools}
+
+            true ->
+              {acc ++ [tool], function_names, MapSet.put(provider_tools, tool)}
+          end
+      end)
+
+    tools
+  end
+
+  defp chat_completions_function_name(%{"type" => "function", "function" => %{} = function}) do
+    function
+    |> Map.get("name")
+    |> to_string()
+    |> String.trim()
+  end
+
+  defp chat_completions_function_name(_tool), do: ""
 
   defp maybe_put_instructions(payload, instructions) when is_map(payload) do
     instructions =

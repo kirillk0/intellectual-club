@@ -42,7 +42,9 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
                 "model_output",
                 "thought",
                 "function_call",
-                "function_result"
+                "function_result",
+                "google_search_call",
+                "google_search_result"
               ])
 
   @spec build_interaction_payload(String.t() | nil, map(), list(), keyword()) :: map()

@@ -13,6 +13,7 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
 
     assert is_nil(configuration.temperature)
     assert is_nil(configuration.reasoning_effort)
+    assert configuration.web_search_enabled == false
   end
 
   test "standard parameters persist, accept all effort levels, and can be reset" do
@@ -20,10 +21,15 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
     provider = create_provider!(actor)
 
     configuration =
-      create_configuration!(actor, provider, %{temperature: 0, reasoning_effort: :minimal})
+      create_configuration!(actor, provider, %{
+        temperature: 0,
+        reasoning_effort: :minimal,
+        web_search_enabled: true
+      })
 
     assert configuration.temperature == 0.0
     assert configuration.reasoning_effort == :minimal
+    assert configuration.web_search_enabled == true
 
     configuration =
       Enum.reduce(@reasoning_efforts, configuration, fn reasoning_effort, current ->
@@ -31,7 +37,11 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
           current
           |> Ash.Changeset.for_update(
             :update,
-            %{temperature: 2, reasoning_effort: reasoning_effort},
+            %{
+              temperature: 2,
+              reasoning_effort: reasoning_effort,
+              web_search_enabled: true
+            },
             actor: actor
           )
           |> Ash.update!(actor: actor)
@@ -39,6 +49,7 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
         reloaded = Ash.get!(LlmConfiguration, updated.id, actor: actor)
         assert reloaded.temperature == 2.0
         assert reloaded.reasoning_effort == reasoning_effort
+        assert reloaded.web_search_enabled == true
         reloaded
       end)
 
@@ -46,13 +57,14 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
       configuration
       |> Ash.Changeset.for_update(
         :update,
-        %{temperature: nil, reasoning_effort: nil},
+        %{temperature: nil, reasoning_effort: nil, web_search_enabled: false},
         actor: actor
       )
       |> Ash.update!(actor: actor)
 
     assert is_nil(reset.temperature)
     assert is_nil(reset.reasoning_effort)
+    assert reset.web_search_enabled == false
   end
 
   test "standard parameter constraints reject invalid values" do

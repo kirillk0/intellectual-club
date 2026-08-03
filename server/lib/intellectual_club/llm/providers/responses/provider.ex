@@ -12,6 +12,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.HostedWebSearch
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Responses.Api
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
@@ -44,7 +45,8 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       ],
       base_url_options: ["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"],
       default_base_url: "https://api.openai.com/v1",
-      supports_model_discovery: true
+      supports_model_discovery: true,
+      supports_hosted_web_search: true
     }
   end
 
@@ -67,6 +69,11 @@ defmodule IntellectualClub.Llm.Providers.Responses do
     parameters
     |> maybe_put_temperature(Map.get(settings, :temperature))
     |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+    |> HostedWebSearch.maybe_put_tool(
+      Map.get(settings, :web_search_enabled, false),
+      %{"type" => "web_search"},
+      "type"
+    )
   end
 
   @impl true

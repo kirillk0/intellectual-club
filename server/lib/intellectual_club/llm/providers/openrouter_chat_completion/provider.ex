@@ -9,6 +9,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
   alias IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers
+  alias IntellectualClub.Llm.Providers.Common.HostedWebSearch
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ModelDiscovery
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace
@@ -34,7 +35,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
       ],
       base_url_options: ["https://openrouter.ai/api/v1"],
       default_base_url: "https://openrouter.ai/api/v1",
-      supports_model_discovery: true
+      supports_model_discovery: true,
+      supports_hosted_web_search: true
     }
   end
 
@@ -57,6 +59,11 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
     parameters
     |> maybe_put_temperature(Map.get(settings, :temperature))
     |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+    |> HostedWebSearch.maybe_put_tool(
+      Map.get(settings, :web_search_enabled, false),
+      %{"type" => "openrouter:web_search"},
+      "type"
+    )
   end
 
   @impl true
@@ -105,7 +112,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
           model_name:
             RequestPayload.model_name(previous_raw_request, Map.get(context, :model_name))
         ),
-        tools: Map.get(opts, :tools, [])
+        tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
       |> put_session_id(context)
 
@@ -164,6 +171,23 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
     parameters
     |> Map.delete("reasoning_effort")
     |> Map.put("reasoning", reasoning)
+  end
+
+  defp followup_tools_from_request(previous_raw_request, tools) do
+    hosted_tools =
+      previous_raw_request
+      |> RequestPayload.tools()
+      |> Enum.filter(fn
+        %{} = tool ->
+          tool = RequestPayload.stringify_keys(tool)
+          type = tool |> Map.get("type") |> to_string() |> String.trim()
+          type != "" and type != "function"
+
+        _other ->
+          false
+      end)
+
+    hosted_tools ++ if(is_list(tools), do: tools, else: [])
   end
 
   @impl true

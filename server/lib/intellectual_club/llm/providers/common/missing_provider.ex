@@ -20,7 +20,8 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
       auth_methods: [],
       base_url_options: [],
       default_base_url: nil,
-      supports_model_discovery: false
+      supports_model_discovery: false,
+      supports_hosted_web_search: false
     }
   end
 

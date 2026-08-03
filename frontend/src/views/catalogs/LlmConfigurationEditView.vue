@@ -156,6 +156,22 @@
           </div>
           <div class="muted small-text">Available reasoning effort levels depend on the selected model.</div>
 
+          <div class="stack" style="gap: 4px">
+            <label style="display: flex; align-items: center; gap: 10px">
+              <input
+                id="llm-configuration-web-search-enabled"
+                v-model="form.web_search_enabled"
+                type="checkbox"
+                :disabled="webSearchDisabled"
+              />
+              Hosted web search
+            </label>
+            <div class="muted small-text">Uses the provider's hosted web search tool.</div>
+            <div v-if="selectedProviderType && !hostedWebSearchSupported" class="muted small-text">
+              Hosted web search is not available for this provider type.
+            </div>
+          </div>
+
           <label :class="{ 'field-error': errors.hasField('timeout_seconds') }">
             Timeout (seconds)
             <input
@@ -386,6 +402,7 @@ type ConfigurationForm = {
   parameters: Record<string, unknown>;
   temperature: number | null;
   reasoning_effort: ReasoningEffort | null;
+  web_search_enabled: boolean;
   enabled: boolean;
   timeout_seconds: number;
   context_length: number | null;
@@ -401,7 +418,9 @@ type ConfigurationForm = {
 type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 type TemperatureMode = 'default' | 'custom';
 
-type ProviderOption = { id: number; name: string };
+type ProviderOption = { id: number; name: string; type: string };
+type ProviderTypeMetadata = { type: string; supports_hosted_web_search: boolean };
+type ProviderTypesResponse = { types?: ProviderTypeMetadata[] };
 type ProviderModelOption = {
   id: string;
   label: string;
@@ -471,6 +490,7 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
     parameters,
     temperature: normalizeTemperature(attrs.temperature),
     reasoning_effort: normalizeReasoningEffort(attrs.reasoning_effort),
+    web_search_enabled: Boolean(attrs.web_search_enabled),
     enabled: typeof attrs.enabled === 'boolean' ? attrs.enabled : Boolean(attrs.enabled),
     timeout_seconds: typeof attrs.timeout_seconds === 'number' ? attrs.timeout_seconds : Number(attrs.timeout_seconds || 120),
     context_length:
@@ -488,6 +508,7 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
 function configurationDocumentQuery() {
   const qs = new URLSearchParams();
   qs.set('include', CONFIGURATION_DOCUMENT_INCLUDE);
+  qs.set('fields[llm-providers]', 'name,type');
   return qs;
 }
 
@@ -496,7 +517,7 @@ function parseProviderOption(resource: JsonApiResource | null | undefined): Prov
   const id = toIntId(resource.id);
   if (!id) return null;
   const attrs = (resource.attributes || {}) as Record<string, unknown>;
-  return { id, name: String(attrs.name || '').trim() };
+  return { id, name: String(attrs.name || '').trim(), type: String(attrs.type || '').trim() };
 }
 
 function parseConfigurationTagRow(resource: JsonApiResource | null | undefined): ConfigurationTagRow | null {
@@ -580,6 +601,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     parameters: defaultParameters(),
     temperature: null,
     reasoning_effort: null,
+    web_search_enabled: false,
     enabled: true,
     timeout_seconds: 120,
     context_length: null,
@@ -599,6 +621,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     parameters: form.parameters || {},
     temperature: form.temperature,
     reasoning_effort: form.reasoning_effort,
+    web_search_enabled: form.web_search_enabled,
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
@@ -616,6 +639,7 @@ const editor = useCrudEditor<ConfigurationForm>({
     parameters: form.parameters,
     temperature: form.temperature,
     reasoning_effort: form.reasoning_effort,
+    web_search_enabled: form.web_search_enabled,
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
@@ -800,12 +824,20 @@ const cancelChanges = () => {
 
 const includedProviderOptions = ref<ProviderOption[]>([]);
 
+const providerTypesQuery = useQuery<ProviderTypeMetadata[]>({
+  queryKey: serverStateKeys.reference('llm-provider-types', 'metadata'),
+  queryFn: async ({ signal }) => {
+    const payload = await api.get<ProviderTypesResponse>('/api/bff/llm-provider-types', { signal });
+    return Array.isArray(payload.types) ? payload.types : [];
+  },
+});
+
 const providersQuery = useQuery<ProviderOption[]>({
   queryKey: serverStateKeys.reference('llm-providers', 'configuration-editor'),
   queryFn: async ({ signal }) => {
     const params = new URLSearchParams();
     params.set('sort', 'name');
-    params.set('fields[llm-providers]', 'name');
+    params.set('fields[llm-providers]', 'name,type');
     const payload = await jsonApiList('/api/ash/llm-providers', params, { signal });
     return (payload.data || [])
       .map((resource) => parseProviderOption(resource))
@@ -819,6 +851,19 @@ const providerOptions = computed(() => {
   for (const option of providersQuery.data.value || []) byId.set(option.id, option);
   return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
 });
+
+const selectedProviderType = computed(() => {
+  if (!form.provider_id) return '';
+  return providerOptions.value.find((provider) => provider.id === form.provider_id)?.type || '';
+});
+
+const hostedWebSearchSupported = computed(() => {
+  if (!selectedProviderType.value) return false;
+  const metadata = providerTypesQuery.data.value?.find((item) => item.type === selectedProviderType.value);
+  return metadata?.supports_hosted_web_search === true;
+});
+
+const webSearchDisabled = computed(() => sharedReadonly.value || !hostedWebSearchSupported.value);
 
 function mergeProviderOptions(options: ProviderOption[]) {
   const byId = new Map<number, ProviderOption>();

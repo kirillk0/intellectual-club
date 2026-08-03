@@ -80,6 +80,7 @@ const providerTypes = [
     base_url_options: [],
     default_base_url: null,
     supports_model_discovery: false,
+    supports_hosted_web_search: false,
   },
 ];
 

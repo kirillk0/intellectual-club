@@ -8,6 +8,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
+  alias IntellectualClub.Llm.Providers.Common.HostedWebSearch
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Api
@@ -36,7 +37,8 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
       ],
       base_url_options: [@google_v1_base_url, @google_v1beta_base_url],
       default_base_url: @google_v1_base_url,
-      supports_model_discovery: true
+      supports_model_discovery: true,
+      supports_hosted_web_search: true
     }
   end
 
@@ -59,6 +61,11 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
     parameters
     |> maybe_put_temperature(Map.get(settings, :temperature))
     |> maybe_put_reasoning_effort(Map.get(settings, :reasoning_effort))
+    |> HostedWebSearch.maybe_put_tool(
+      Map.get(settings, :web_search_enabled, false),
+      %{"type" => "google_search"},
+      "type"
+    )
   end
 
   @impl true

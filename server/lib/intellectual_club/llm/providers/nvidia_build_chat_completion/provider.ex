@@ -34,7 +34,8 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
       ],
       base_url_options: ["https://integrate.api.nvidia.com/v1"],
       default_base_url: "https://integrate.api.nvidia.com/v1",
-      supports_model_discovery: true
+      supports_model_discovery: true,
+      supports_hosted_web_search: false
     }
   end
 

@@ -101,6 +101,12 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       constraints(one_of: [:none, :minimal, :low, :medium, :high, :xhigh, :max])
     end
 
+    attribute :web_search_enabled, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
+    end
+
     attribute :enabled, :boolean do
       allow_nil?(false)
       public?(true)
@@ -236,6 +242,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :parameters,
         :temperature,
         :reasoning_effort,
+        :web_search_enabled,
         :enabled,
         :timeout_seconds,
         :context_length,
@@ -309,6 +316,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
           parameters: source.parameters,
           temperature: source.temperature,
           reasoning_effort: source.reasoning_effort,
+          web_search_enabled: source.web_search_enabled,
           enabled: source.enabled,
           timeout_seconds: source.timeout_seconds,
           context_length: source.context_length,
@@ -348,6 +356,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :parameters,
         :temperature,
         :reasoning_effort,
+        :web_search_enabled,
         :enabled,
         :timeout_seconds,
         :context_length,

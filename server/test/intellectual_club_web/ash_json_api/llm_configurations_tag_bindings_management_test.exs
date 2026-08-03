@@ -109,6 +109,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "parameters" => %{},
             "temperature" => 0.7,
             "reasoning_effort" => "minimal",
+            "web_search_enabled" => true,
             "enabled" => true,
             "timeout_seconds" => 300,
             "supports_steering" => false,
@@ -127,6 +128,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(create_response, ["data", "attributes", "reasoning_effort"]) ==
              "minimal"
 
+    assert get_in(create_response, ["data", "attributes", "web_search_enabled"]) == true
+
     get_response =
       conn
       |> json_api_get("/api/ash/llm-configurations/#{configuration_id}")
@@ -136,6 +139,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(get_response, ["data", "attributes", "fix_role_alteration"]) == true
     assert get_in(get_response, ["data", "attributes", "temperature"]) == 0.7
     assert get_in(get_response, ["data", "attributes", "reasoning_effort"]) == "minimal"
+    assert get_in(get_response, ["data", "attributes", "web_search_enabled"]) == true
 
     patch_response =
       conn
@@ -147,7 +151,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "supports_steering" => true,
             "fix_role_alteration" => false,
             "temperature" => 0,
-            "reasoning_effort" => "max"
+            "reasoning_effort" => "max",
+            "web_search_enabled" => false
           }
         }
       })
@@ -157,12 +162,14 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(patch_response, ["data", "attributes", "fix_role_alteration"]) == false
     assert get_in(patch_response, ["data", "attributes", "temperature"]) == 0.0
     assert get_in(patch_response, ["data", "attributes", "reasoning_effort"]) == "max"
+    assert get_in(patch_response, ["data", "attributes", "web_search_enabled"]) == false
 
     configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
     assert configuration.supports_steering == true
     assert configuration.fix_role_alteration == false
     assert configuration.temperature == 0.0
     assert configuration.reasoning_effort == :max
+    assert configuration.web_search_enabled == false
 
     reset_response =
       conn

@@ -53,6 +53,7 @@ type ConfigurationAttributes = {
   parameters: Record<string, unknown>;
   temperature: number | null;
   reasoning_effort: string | null;
+  web_search_enabled: boolean;
   enabled: boolean;
   timeout_seconds: number;
   context_length: number | null;
@@ -72,6 +73,7 @@ const defaultAttributes: ConfigurationAttributes = {
   parameters: { native_setting: 'kept' },
   temperature: null,
   reasoning_effort: null,
+  web_search_enabled: false,
   enabled: true,
   timeout_seconds: 300,
   context_length: null,
@@ -96,7 +98,13 @@ function configurationDocument(overrides: Partial<ConfigurationAttributes> = {})
         tag_bindings: { data: [] },
       },
     },
-    included: [{ id: '4', type: 'llm-providers', attributes: { name: 'Test provider' } }],
+    included: [
+      {
+        id: '4',
+        type: 'llm-providers',
+        attributes: { name: 'OpenRouter provider', type: 'openrouter_chat_completion' },
+      },
+    ],
   };
 }
 
@@ -133,10 +141,66 @@ describe('LlmConfigurationEditView standard parameters', () => {
     useNavigationStack().reset();
     jsonApiMocks.create.mockReset();
     jsonApiMocks.get.mockReset();
-    jsonApiMocks.list.mockReset().mockResolvedValue({ data: [] });
+    jsonApiMocks.list.mockReset().mockImplementation(async (path: string) => {
+      if (path === '/api/ash/llm-providers') {
+        return {
+          data: [
+            {
+              id: '4',
+              type: 'llm-providers',
+              attributes: { name: 'OpenRouter provider', type: 'openrouter_chat_completion' },
+            },
+            {
+              id: '5',
+              type: 'llm-providers',
+              attributes: { name: 'NVIDIA provider', type: 'nvidia_build_chat_completion' },
+            },
+            {
+              id: '6',
+              type: 'llm-providers',
+              attributes: { name: 'Responses provider', type: 'responses' },
+            },
+            {
+              id: '7',
+              type: 'llm-providers',
+              attributes: { name: 'Responses WSS provider', type: 'responses_wss' },
+            },
+            {
+              id: '8',
+              type: 'llm-providers',
+              attributes: { name: 'Google provider', type: 'google_interactions' },
+            },
+            {
+              id: '9',
+              type: 'llm-providers',
+              attributes: { name: 'Anthropic provider', type: 'anthropic_messages' },
+            },
+            {
+              id: '10',
+              type: 'llm-providers',
+              attributes: { name: 'Demo provider', type: 'demo' },
+            },
+          ],
+        };
+      }
+      return { data: [] };
+    });
     jsonApiMocks.update.mockReset();
     clientMocks.get.mockReset().mockImplementation(async (path: string) => {
       if (path === '/api/bff/me/groups') return { groups: [] };
+      if (path === '/api/bff/llm-provider-types') {
+        return {
+          types: [
+            { type: 'responses', supports_hosted_web_search: true },
+            { type: 'responses_wss', supports_hosted_web_search: true },
+            { type: 'openrouter_chat_completion', supports_hosted_web_search: true },
+            { type: 'google_interactions', supports_hosted_web_search: true },
+            { type: 'anthropic_messages', supports_hosted_web_search: true },
+            { type: 'nvidia_build_chat_completion', supports_hosted_web_search: false },
+            { type: 'demo', supports_hosted_web_search: false },
+          ],
+        };
+      }
       if (path.endsWith('/shares')) return { group_ids: [] };
       if (path.endsWith('/models')) return { models: [] };
       throw new Error(`Unexpected GET request: ${path}`);
@@ -224,7 +288,7 @@ describe('LlmConfigurationEditView standard parameters', () => {
 
   it('loads persisted values and sends explicit values or null in the update payload', async () => {
     jsonApiMocks.get.mockResolvedValue(
-      configurationDocument({ temperature: 0.7, reasoning_effort: 'high' })
+      configurationDocument({ temperature: 0.7, reasoning_effort: 'high', web_search_enabled: true })
     );
     jsonApiMocks.update.mockImplementation(
       async (_basePath: string, _type: string, _id: number, attributes: ConfigurationAttributes) =>
@@ -245,6 +309,7 @@ describe('LlmConfigurationEditView standard parameters', () => {
       parameters: { native_setting: 'kept' },
       temperature: 0,
       reasoning_effort: 'max',
+      web_search_enabled: true,
     });
 
     await view.get('#llm-configuration-temperature-mode').setValue('default');
@@ -270,6 +335,37 @@ describe('LlmConfigurationEditView standard parameters', () => {
     expect(view.get('#llm-configuration-temperature-mode').attributes('disabled')).toBeDefined();
     expect(view.get('input[aria-label="Temperature"]').attributes('disabled')).toBeDefined();
     expect(view.get('#llm-configuration-reasoning-effort').attributes('disabled')).toBeDefined();
+    expect(view.get('#llm-configuration-web-search-enabled').attributes('disabled')).toBeDefined();
+  });
+
+  it('enables hosted web search by provider type and preserves the value across unsupported types', async () => {
+    const view = await mountView('/catalogs/llm-configurations/new');
+    const provider = view.get<HTMLSelectElement>('select.full');
+    const webSearch = view.get<HTMLInputElement>('#llm-configuration-web-search-enabled');
+
+    expect(webSearch.attributes('disabled')).toBeDefined();
+
+    for (const providerId of ['4', '6', '7', '8', '9']) {
+      await provider.setValue(providerId);
+      await flushPromises();
+      expect(webSearch.attributes('disabled')).toBeUndefined();
+    }
+
+    await webSearch.setValue(true);
+    expect(webSearch.element.checked).toBe(true);
+    expect(header(view).props('dirty')).toBe(true);
+
+    for (const providerId of ['5', '10']) {
+      await provider.setValue(providerId);
+      await flushPromises();
+      expect(webSearch.attributes('disabled')).toBeDefined();
+      expect(webSearch.element.checked).toBe(true);
+    }
+
+    await provider.setValue('4');
+    await flushPromises();
+    expect(webSearch.attributes('disabled')).toBeUndefined();
+    expect(webSearch.element.checked).toBe(true);
   });
 
   it('shows and clears field-specific API errors', async () => {
@@ -316,6 +412,8 @@ describe('LlmConfigurationEditView standard parameters', () => {
       'Default',
       'Default leaves the corresponding request parameter unset, so values from Advanced JSON remain unchanged.',
       'High',
+      'Hosted web search',
+      'Hosted web search is not available for this provider type.',
       'Low',
       'Max',
       'Medium',
@@ -324,6 +422,7 @@ describe('LlmConfigurationEditView standard parameters', () => {
       'Reasoning effort',
       'Temperature',
       'XHigh',
+      "Uses the provider's hosted web search tool.",
     ];
 
     expect(keys.every((key) => Boolean(ruMessages[key]))).toBe(true);
