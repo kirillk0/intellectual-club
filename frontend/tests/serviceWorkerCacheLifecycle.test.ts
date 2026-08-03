@@ -494,28 +494,33 @@ describe('service worker cache lifecycle', () => {
     expect(worker.claim).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the cached app shell immediately while navigation runs in the background', async () => {
+  it('returns fresh network navigation instead of the cached app shell', async () => {
     const storage = new MemoryCacheStorage();
     const currentManifest = manifest('current-revision');
     await markComplete(storage, currentManifest.revision, currentManifest.assets);
     await writeMetadata(storage, currentManifest.revision, null);
-    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html>fresh navigation</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
     const worker = createWorker(currentManifest, storage, fetchMock);
 
     const response = await worker.runFetch(navigationRequest('/chats/42'));
 
-    expect(await response.text()).toContain('data-session-bootstrap="required"');
+    expect(await response.text()).toBe('<html>fresh navigation</html>');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the previous revision app shell when the current cache has none', async () => {
+  it('falls back to the previous revision app shell when network navigation fails', async () => {
     const storage = new MemoryCacheStorage();
     const currentManifest = manifest('current-revision');
     const currentCache = await storage.open(cacheName(currentManifest.revision));
     await currentCache.put(currentManifest.offlineUrl, new Response('offline'));
     await markComplete(storage, 'previous-revision', currentManifest.assets);
     await writeMetadata(storage, currentManifest.revision, 'previous-revision');
-    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('offline'));
     const worker = createWorker(currentManifest, storage, fetchMock);
 
     const response = await worker.runFetch(navigationRequest('/bookmarks'));

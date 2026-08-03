@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
 
 describe('PWA static recovery assets', () => {
-  it('serves cached app-shell navigation while activating upgrades only on request', () => {
+  it('serves fresh network navigation with cached recovery while activating upgrades only on request', () => {
     const source = fs.readFileSync(
       path.join(repositoryRoot, 'server/priv/static/service-worker.js'),
       'utf8'
@@ -32,6 +32,9 @@ describe('PWA static recovery assets', () => {
     expect(navigationHandler).toContain('return await networkResponse');
     expect(navigationHandler).toContain('matchActiveCaches(OFFLINE_URL)');
     expect(navigationHandler).not.toContain('cache.put');
+    expect(navigationHandler.indexOf('return await networkResponse')).toBeLessThan(
+      navigationHandler.indexOf('matchActiveCaches(APP_SHELL_URL)')
+    );
     expect(source).not.toContain('NAVIGATION_TIMEOUT_MS');
     expect(installHandler).not.toContain('skipWaiting');
   });

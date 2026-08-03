@@ -452,12 +452,12 @@ const fetchNavigation = async (request) => {
 };
 
 const handleNavigation = async (request, networkResponse) => {
-  const appShell = await matchActiveCaches(APP_SHELL_URL);
-  if (appShell) return appShell;
-
   try {
     return await networkResponse;
   } catch (_error) {
+    const appShell = await matchActiveCaches(APP_SHELL_URL);
+    if (appShell) return appShell;
+
     const fallback = await matchActiveCaches(OFFLINE_URL);
     if (fallback) return fallback;
 
