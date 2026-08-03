@@ -75,16 +75,7 @@
             type="button"
             @click="toolTab = 'settings'"
           >
-            Settings
-          </button>
-          <button
-            class="tab"
-            :class="{ active: toolTab === 'description' }"
-            type="button"
-            @click="toolTab = 'description'"
-          >
-            Description
-            <span v-if="descriptionHasText" class="tool-tab-indicator" aria-hidden="true"></span>
+            General
           </button>
           <button
             class="tab"
@@ -100,7 +91,23 @@
             type="button"
             @click="toolTab = 'functions'"
           >
+            <span
+              v-if="needsFunctionDiscovery"
+              class="tool-discovery-warning"
+              role="img"
+              :aria-label="translate('Discovery required: this tool has no functions.')"
+              :title="translate('Discovery required: this tool has no functions.')"
+            >!</span>
             Functions ({{ functionsTabCount }})
+          </button>
+          <button
+            class="tab"
+            :class="{ active: toolTab === 'description' }"
+            type="button"
+            @click="toolTab = 'description'"
+          >
+            Description
+            <span v-if="descriptionHasText" class="tool-tab-indicator" aria-hidden="true"></span>
           </button>
         </div>
 
@@ -495,6 +502,13 @@
               "
             >
               <SvgIcon name="tool-search" size="16" />
+              <span
+                v-if="needsFunctionDiscovery"
+                class="tool-discovery-warning"
+                role="img"
+                :aria-label="translate('Discovery required: this tool has no functions.')"
+                :title="translate('Discovery required: this tool has no functions.')"
+              >!</span>
               <span class="icon-button__label">{{ discovering ? 'Discovering…' : 'Discover' }}</span>
             </button>
           </div>
@@ -1718,6 +1732,15 @@ const functions = ref<ToolFunctionRow[]>([]);
 const persistedFunctionRows = ref<ToolFunctionRow[]>([]);
 const savingFunctionIds = ref(new Set<string>());
 const openFunctionSchemaKeys = ref(new Set<string>());
+const needsFunctionDiscovery = computed(
+  () =>
+    loaded.value &&
+    !isNew.value &&
+    supportsDiscovery.value &&
+    !functionsLoading.value &&
+    !functionsError.value &&
+    functions.value.length === 0
+);
 
 function isFunctionSchemaOpen(functionKey: string): boolean {
   return openFunctionSchemaKeys.value.has(functionKey);
@@ -2069,6 +2092,21 @@ watch(
 
 .tool-discover-button :deep(.svg-icon) {
   stroke-width: 1.35;
+}
+
+.tool-discovery-warning {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  color: var(--color-danger);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.tool-discover-button .tool-discovery-warning {
+  margin-right: 0;
 }
 
 .tool-function-schema-code {

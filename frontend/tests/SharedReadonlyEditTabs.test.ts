@@ -314,7 +314,7 @@ describe('shared read-only editor tabs', () => {
     );
 
     const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
-    await tabByText(view, 'Settings').trigger('click');
+    await tabByText(view, 'General').trigger('click');
     await vi.waitFor(() => expect(view.find('[data-testid="open-headers-editor"]').exists()).toBe(true));
 
     const openInputs = view.get('[data-testid="open-headers-editor"]').findAll<HTMLInputElement>('input');
@@ -382,10 +382,32 @@ describe('shared read-only editor tabs', () => {
     await vi.waitFor(() => expect(clientMocks.post).toHaveBeenCalledTimes(1));
     await flushPromises();
 
-    await tabByText(view, 'Settings').trigger('click');
+    await tabByText(view, 'General').trigger('click');
     expect(view.get<HTMLInputElement>('input.full').element.value).toBe('MCP tool');
     expect(view.get<HTMLInputElement>('input[type="url"]').element.value).toBe('https://mcp.example.com');
     expect(view.get<HTMLInputElement>('[data-testid="open-headers-editor"] input').element.value).toBe('X-Tenant-ID');
+  });
+
+  it('marks the functions tab and discovery button when a saved tool has no functions', async () => {
+    activeToolTypes = toolTypes.map((toolType) => ({
+      ...toolType,
+      functions_mode: 'stored',
+      supports_discovery: true,
+    }));
+    jsonApiMocks.get.mockResolvedValue(editableToolDocument({ config: {} }));
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await vi.waitFor(() => expect(tabByText(view, 'Functions').find('.tool-discovery-warning').exists()).toBe(true));
+    expect(view.findAll('.tab').map((tab) => tab.text())).toEqual([
+      'General',
+      'Credentials',
+      '! Functions (0)',
+      'Description',
+    ]);
+
+    await tabByText(view, 'Functions').trigger('click');
+    expect(view.get('.tool-discover-button').find('.tool-discovery-warning').exists()).toBe(true);
+    expect(view.findAll('.tool-discovery-warning')).toHaveLength(2);
   });
 
   it('switches knowledge block tabs while keeping its fields disabled', async () => {
