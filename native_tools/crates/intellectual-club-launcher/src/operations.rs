@@ -19,7 +19,8 @@ use tracing::{info, warn};
 
 use crate::cli::LogSource;
 use crate::config::{
-    resolve_app_dir, AppPaths, LauncherConfig, APP_NAME, CONFIG_VERSION, PG_VERSION,
+    bundled_postgres_dir, resolve_app_dir, AppPaths, LauncherConfig, APP_NAME, CONFIG_VERSION,
+    PG_VERSION,
 };
 use crate::fs_utils::{
     append_log_line, atomic_write, copy_dir_all, is_empty_dir, open_log_file, open_path, open_url,
@@ -634,35 +635,54 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
         &format!("[{}] daemon starting", timestamp()),
     )?;
 
-    let mut pg = postgres_from_config(&paths, &config)?;
-    if let Err(error) = pg
-        .setup()
-        .await
-        .context("failed to setup embedded postgres")
-    {
-        append_log_line(
-            &paths.launcher_log_path,
-            &format!("[{}] daemon error: {error:#}", timestamp()),
-        )
-        .ok();
-        return Err(error);
-    }
-    if let Err(error) = pg
-        .start()
-        .await
-        .context("failed to start embedded postgres")
-    {
-        append_log_line(
-            &paths.launcher_log_path,
-            &format!("[{}] daemon error: {error:#}", timestamp()),
-        )
-        .ok();
-        return Err(error);
-    }
-    ensure_database(&pg, &config).await?;
+    let pg = postgres_from_config(&paths, &config)?;
     let database_url = config.database_url(pg.settings());
+    write_status(
+        &paths.status_path,
+        &RuntimeStatus {
+            version: CONFIG_VERSION,
+            daemon_pid: std::process::id(),
+            app_pid: None,
+            app_url: config.app_url(),
+            database_url: database_url.clone(),
+            postgres_data_dir: config.postgres_data_dir.clone(),
+            files_data_dir: config.files_data_dir.clone(),
+            started_at: timestamp(),
+            updated_at: timestamp(),
+            state: "starting".to_string(),
+            last_error: None,
+        },
+    )?;
 
-    let mut app = Some(start_app(&config, &database_url, &paths.app_log_path).await?);
+    let result = run_daemon(&paths, &config, open, pg, database_url).await;
+    if let Err(error) = &result {
+        let detail = format!("{error:#}");
+        write_status_state(&paths.status_path, "error", Some(detail.clone())).ok();
+        append_log_line(
+            &paths.launcher_log_path,
+            &format!("[{}] daemon error: {detail}", timestamp()),
+        )
+        .ok();
+    }
+    result
+}
+
+async fn run_daemon(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    open: bool,
+    mut pg: PostgreSQL,
+    database_url: String,
+) -> Result<()> {
+    pg.setup()
+        .await
+        .context("failed to setup embedded postgres")?;
+    pg.start()
+        .await
+        .context("failed to start embedded postgres")?;
+    ensure_database(&pg, config).await?;
+
+    let mut app = Some(start_app(config, &database_url, &paths.app_log_path).await?);
     let app_pid = app.as_ref().and_then(|child| child.id());
     write_status(
         &paths.status_path,
@@ -691,7 +711,7 @@ pub async fn daemon_command(paths: AppPaths, config: LauncherConfig, open: bool)
         &format!("[{}] daemon running", timestamp()),
     )?;
 
-    let exit_result = daemon_loop(&paths, &config, &database_url, &mut app).await;
+    let exit_result = daemon_loop(paths, config, &database_url, &mut app).await;
     let app_stop = stop_app_child(&mut app).await;
     let pg_stop = pg.stop().await.map_err(|error| anyhow!(error.to_string()));
     remove_file_if_exists(&paths.status_path)?;
@@ -861,9 +881,20 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
 }
 
 pub fn postgres_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result<PostgreSQL> {
+    Ok(PostgreSQL::new(postgres_settings_from_config(
+        paths, config,
+    )?))
+}
+
+fn postgres_settings_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result<Settings> {
     let mut settings = Settings::default();
     settings.version = postgresql_embedded::VersionReq::parse(PG_VERSION)?;
-    settings.installation_dir = paths.installations_dir.clone();
+    if let Some(installation_dir) = bundled_postgres_dir() {
+        settings.installation_dir = installation_dir;
+        settings.trust_installation_dir = true;
+    } else {
+        settings.installation_dir = paths.installations_dir.clone();
+    }
     settings.data_dir = config.postgres_data_dir.clone();
     settings.password_file = paths.runtime_dir.join("pgpass");
     settings.host = "127.0.0.1".to_string();
@@ -878,7 +909,7 @@ pub fn postgres_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result
     settings
         .configuration
         .insert("max_connections".to_string(), "100".to_string());
-    Ok(PostgreSQL::new(settings))
+    Ok(settings)
 }
 
 struct AdminPostgres {
@@ -994,12 +1025,6 @@ async fn wait_for_status(
 ) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if let Some(status) = daemon
-            .try_wait()
-            .context("failed to inspect launcher daemon")?
-        {
-            bail!("launcher daemon exited before becoming ready: {status}");
-        }
         if let Ok(status) = read_status(&paths.status_path) {
             if status.state == "running" {
                 return Ok(());
@@ -1012,6 +1037,12 @@ async fn wait_for_status(
                         .unwrap_or_else(|| "unknown error".to_string())
                 );
             }
+        }
+        if let Some(status) = daemon
+            .try_wait()
+            .context("failed to inspect launcher daemon")?
+        {
+            bail!("launcher daemon exited before becoming ready: {status}");
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -1130,6 +1161,8 @@ pub async fn build_status_payload(paths: &AppPaths, config: &LauncherConfig) -> 
     let runtime_state = status.as_ref().map(|status| status.state.as_str());
     let app_state = if app_healthy {
         ServiceState::Running
+    } else if matches!(runtime_state, Some("error")) {
+        ServiceState::Error
     } else if matches!(runtime_state, Some("app_stopped")) {
         ServiceState::Stopped
     } else if app_process_alive || daemon_alive {
@@ -1158,16 +1191,19 @@ pub async fn build_status_payload(paths: &AppPaths, config: &LauncherConfig) -> 
         read_postgres_pid(&config.postgres_data_dir).filter(|pid| process_alive(*pid));
     let postgres_process_alive = postgres_pid.is_some();
     let postgres_tcp_open = tcp_port_open(("127.0.0.1", config.postgres_port));
+    let postgres_installed = postgres_settings_from_config(paths, config)
+        .map(|settings| postgres_installation_ready(&settings))
+        .unwrap_or(false);
     let postgres_state = if postgres_process_alive && postgres_tcp_open {
         ServiceState::Running
     } else if postgres_process_alive {
         ServiceState::Starting
+    } else if !postgres_installed {
+        ServiceState::NotInstalled
     } else if config.postgres_data_dir.join("postgresql.conf").exists() {
         ServiceState::Stopped
-    } else if paths.installations_dir.exists() {
-        ServiceState::Installed
     } else {
-        ServiceState::NotInstalled
+        ServiceState::Installed
     };
     let postgres_healthy = matches!(postgres_state, ServiceState::Running);
 
@@ -1191,13 +1227,27 @@ pub async fn build_status_payload(paths: &AppPaths, config: &LauncherConfig) -> 
     }
 }
 
+fn postgres_installation_ready(settings: &Settings) -> bool {
+    let binary_dir = settings.binary_dir();
+    binary_dir.join("postgres").is_file()
+        && binary_dir.join("initdb").is_file()
+        && settings
+            .installation_dir
+            .join("lib")
+            .join("libpq.5.dylib")
+            .is_file()
+}
+
 pub fn paths_payload(paths: &AppPaths, config: &LauncherConfig) -> PathsPayload {
+    let postgres_installation_dir = postgres_settings_from_config(paths, config)
+        .map(|settings| settings.installation_dir)
+        .unwrap_or_else(|_| paths.installations_dir.clone());
     PathsPayload {
         config_path: paths.config_path.clone(),
         postgres_data_dir: config.postgres_data_dir.clone(),
         files_data_dir: config.files_data_dir.clone(),
         backups_dir: paths.backups_dir.clone(),
-        installations_dir: paths.installations_dir.clone(),
+        installations_dir: postgres_installation_dir,
         runtime_dir: paths.runtime_dir.clone(),
         log_path: paths.launcher_log_path.clone(),
         launcher_log_path: paths.launcher_log_path.clone(),
@@ -1380,6 +1430,82 @@ mod tests {
             files_backup_path_for(Path::new("/tmp/intellectual-club.dump")),
             PathBuf::from("/tmp/intellectual-club.files")
         );
+    }
+
+    #[test]
+    fn empty_postgres_directory_is_not_an_installation() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-empty-postgres-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut settings = Settings::default();
+        settings.installation_dir = root.clone();
+        settings.trust_installation_dir = true;
+        assert!(!postgres_installation_ready(&settings));
+
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("bin").join("postgres"), b"postgres").unwrap();
+        fs::write(root.join("bin").join("initdb"), b"initdb").unwrap();
+        fs::write(root.join("lib").join("libpq.5.dylib"), b"libpq").unwrap();
+        assert!(postgres_installation_ready(&settings));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_daemon_status_is_reported_to_the_interface() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-error-status-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let runtime_dir = root.join("runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        let paths = AppPaths {
+            config_path: root.join("launcher.json"),
+            default_data_dir: root.join("postgres").join("data"),
+            default_files_data_dir: root.join("files"),
+            backups_dir: root.join("backups"),
+            installations_dir: root.join("installations"),
+            runtime_dir: runtime_dir.clone(),
+            status_path: runtime_dir.join("status.json"),
+            stop_request_path: runtime_dir.join("stop-request"),
+            app_request_path: runtime_dir.join("app-request"),
+            launcher_log_path: runtime_dir.join("launcher.log"),
+            app_log_path: runtime_dir.join("app.log"),
+        };
+        let mut config = LauncherConfig::default_for(&paths);
+        config.app_port = 1;
+        config.postgres_port = 1;
+        let error = "failed to setup embedded postgres: Library not loaded";
+        write_status(
+            &paths.status_path,
+            &RuntimeStatus {
+                version: CONFIG_VERSION,
+                daemon_pid: u32::MAX,
+                app_pid: None,
+                app_url: config.app_url(),
+                database_url: "postgresql://localhost/postgres".to_string(),
+                postgres_data_dir: config.postgres_data_dir.clone(),
+                files_data_dir: config.files_data_dir.clone(),
+                started_at: timestamp(),
+                updated_at: timestamp(),
+                state: "error".to_string(),
+                last_error: Some(error.to_string()),
+            },
+        )
+        .unwrap();
+
+        let payload = build_status_payload(&paths, &config).await;
+        assert_eq!(payload.app.state, ServiceState::Error);
+        assert_eq!(payload.app.detail.as_deref(), Some(error));
+        assert_eq!(payload.daemon.detail.as_deref(), Some(error));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

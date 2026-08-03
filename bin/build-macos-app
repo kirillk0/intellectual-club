@@ -64,6 +64,7 @@ BUNDLE_NAME="Intellectual Club.app"
 BUNDLE_IDENTIFIER="org.intellectualclub.desktop"
 BUNDLE_EXECUTABLE="intellectual-club-launcher"
 RELEASE_NAME="intellectual_club"
+POSTGRES_TARGET="aarch64-apple-darwin"
 MINIMUM_MACOS_VERSION="15.0"
 
 if [[ "${OUTPUT_DIR}" != /* ]]; then
@@ -73,11 +74,20 @@ fi
 APP_VERSION="$({
   sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' "${SERVER_DIR}/mix.exs"
 } | head -n 1)"
+POSTGRES_VERSION="$({
+  sed -nE 's/^pub const PG_VERSION: &str = "=([^"]+)";/\1/p' \
+    "${NATIVE_DIR}/crates/intellectual-club-launcher/src/config.rs"
+} | head -n 1)"
 BUILD_VERSION="${IC_BUNDLE_BUILD_VERSION:-$(date -u +%s)}"
 BUILD_ID="${IC_BUNDLE_BUILD_ID:-dev-${BUILD_VERSION}}"
 
 if [[ -z "${APP_VERSION}" ]]; then
   echo "Could not read the application version from server/mix.exs" >&2
+  exit 1
+fi
+
+if [[ -z "${POSTGRES_VERSION}" ]]; then
+  echo "Could not read the PostgreSQL version from launcher config" >&2
   exit 1
 fi
 
@@ -94,6 +104,7 @@ APP_DIR="${STAGING_DIR}/${BUNDLE_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 RELEASE_DEST="${RESOURCES_DIR}/${RELEASE_NAME}"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 ICONSET_DIR="${STAGING_DIR}/AppIcon.iconset"
@@ -140,9 +151,81 @@ if [[ ! -x "${LAUNCHER_SOURCE}" ]]; then
   exit 1
 fi
 
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${ICONSET_DIR}"
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${FRAMEWORKS_DIR}" "${ICONSET_DIR}"
 install -m 755 "${LAUNCHER_SOURCE}" "${MACOS_DIR}/${BUNDLE_EXECUTABLE}"
 cp -R "${RELEASE_SOURCE}" "${RELEASE_DEST}"
+
+POSTGRES_ARCHIVE="${STAGING_DIR}/postgresql-${POSTGRES_VERSION}.tar.gz"
+POSTGRES_EXTRACT_DIR="${STAGING_DIR}/postgresql-extract"
+POSTGRES_ARCHIVE_ROOT="postgresql-${POSTGRES_VERSION}-${POSTGRES_TARGET}"
+POSTGRES_DEST="${RESOURCES_DIR}/postgresql"
+POSTGRES_URL="https://github.com/theseus-rs/postgresql-binaries/releases/download/${POSTGRES_VERSION}/${POSTGRES_ARCHIVE_ROOT}.tar.gz"
+OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+
+curl --fail --location --silent --show-error "${POSTGRES_URL}" --output "${POSTGRES_ARCHIVE}"
+mkdir -p "${POSTGRES_EXTRACT_DIR}"
+tar -xzf "${POSTGRES_ARCHIVE}" -C "${POSTGRES_EXTRACT_DIR}"
+mv "${POSTGRES_EXTRACT_DIR}/${POSTGRES_ARCHIVE_ROOT}" "${POSTGRES_DEST}"
+
+install -m 644 "${OPENSSL_PREFIX}/lib/libssl.3.dylib" "${FRAMEWORKS_DIR}/libssl.3.dylib"
+install -m 644 "${OPENSSL_PREFIX}/lib/libcrypto.3.dylib" "${FRAMEWORKS_DIR}/libcrypto.3.dylib"
+mkdir -p "${RESOURCES_DIR}/licenses"
+install -m 644 "${OPENSSL_PREFIX}/LICENSE.txt" "${RESOURCES_DIR}/licenses/OPENSSL-LICENSE.txt"
+
+relink_openssl() {
+  local binary="$1"
+  local library_dir="$2"
+
+  while IFS= read -r dependency; do
+    case "${dependency}" in
+      /opt/homebrew/*/libssl.3.dylib)
+        install_name_tool \
+          -change "${dependency}" "${library_dir}/libssl.3.dylib" \
+          "${binary}"
+        ;;
+      /opt/homebrew/*/libcrypto.3.dylib)
+        install_name_tool \
+          -change "${dependency}" "${library_dir}/libcrypto.3.dylib" \
+          "${binary}"
+        ;;
+    esac
+  done < <(otool -L "${binary}" | tail -n +2 | awk '{print $1}')
+
+  case "$(basename "${binary}")" in
+    libssl.3.dylib)
+      install_name_tool -id '@rpath/libssl.3.dylib' "${binary}"
+      ;;
+    libcrypto.3.dylib)
+      install_name_tool -id '@rpath/libcrypto.3.dylib' "${binary}"
+      ;;
+  esac
+
+  codesign --force --sign - --timestamp=none "${binary}"
+
+  if otool -L "${binary}" | grep -q '/opt/homebrew/'; then
+    echo "Bundled binary still references Homebrew: ${binary}" >&2
+    exit 1
+  fi
+}
+
+relink_openssl "${FRAMEWORKS_DIR}/libssl.3.dylib" '@loader_path'
+relink_openssl "${FRAMEWORKS_DIR}/libcrypto.3.dylib" '@loader_path'
+
+while IFS= read -r -d '' binary; do
+  if file "${binary}" | grep -q 'Mach-O'; then
+    relink_openssl "${binary}" '@loader_path/../../../Frameworks'
+  fi
+done < <(find "${POSTGRES_DEST}" -type f -print0)
+
+while IFS= read -r -d '' binary; do
+  if file "${binary}" | grep -q 'Mach-O'; then
+    relink_openssl "${binary}" '@executable_path/../../../../Frameworks'
+  fi
+done < <(
+  find "${RELEASE_DEST}" -type f \
+    \( -perm -111 -o -name '*.so' -o -name '*.dylib' \) \
+    -print0
+)
 
 create_icon() {
   local size="$1"

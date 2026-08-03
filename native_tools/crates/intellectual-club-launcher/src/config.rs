@@ -8,6 +8,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 pub const APP_NAME: &str = "intellectual_club";
+pub const BUNDLED_POSTGRES_DIR_NAME: &str = "postgresql";
 pub const DATABASE_NAME: &str = "intellectual_club";
 pub const PG_VERSION: &str = "=16.13.0";
 pub const DEFAULT_PORT: u16 = 4000;
@@ -235,7 +236,7 @@ impl Locale {
             (Self::Ru, TextKey::ConfigPath) => "Конфиг",
             (Self::Ru, TextKey::BackupsDir) => "Бэкапы",
             (Self::Ru, TextKey::RuntimeDir) => "Runtime",
-            (Self::Ru, TextKey::InstallationsDir) => "Кэш Postgres",
+            (Self::Ru, TextKey::InstallationsDir) => "Бинарники Postgres",
             (Self::Ru, TextKey::LauncherLog) => "Лог лончера",
             (Self::Ru, TextKey::AppLog) => "Лог приложения",
             (Self::Ru, TextKey::PostgresLog) => "Лог Postgres",
@@ -298,7 +299,7 @@ impl Locale {
             (Self::En, TextKey::ConfigPath) => "Config",
             (Self::En, TextKey::BackupsDir) => "Backups",
             (Self::En, TextKey::RuntimeDir) => "Runtime",
-            (Self::En, TextKey::InstallationsDir) => "Postgres cache",
+            (Self::En, TextKey::InstallationsDir) => "Postgres binaries",
             (Self::En, TextKey::LauncherLog) => "Launcher log",
             (Self::En, TextKey::AppLog) => "App log",
             (Self::En, TextKey::PostgresLog) => "Postgres log",
@@ -389,6 +390,11 @@ pub fn bundled_app_dir() -> Option<PathBuf> {
     bundled_app_dir_from_executable(&exe)
 }
 
+pub fn bundled_postgres_dir() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    bundled_postgres_dir_from_executable(&exe)
+}
+
 pub fn select_app_dir(explicit: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
     let bundled = bundled_app_dir();
     let fallback = default_app_dir();
@@ -433,6 +439,16 @@ fn default_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
 }
 
 fn bundled_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    let resources_dir = bundled_resources_dir_from_executable(executable)?;
+    existing_release_dir(resources_dir.join(APP_NAME))
+}
+
+fn bundled_postgres_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    let resources_dir = bundled_resources_dir_from_executable(executable)?;
+    existing_postgres_dir(resources_dir.join(BUNDLED_POSTGRES_DIR_NAME))
+}
+
+fn bundled_resources_dir_from_executable(executable: &Path) -> Option<PathBuf> {
     let macos_dir = executable.parent()?;
     if macos_dir.file_name()? != "MacOS" {
         return None;
@@ -443,7 +459,7 @@ fn bundled_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    existing_release_dir(contents_dir.join("Resources").join(APP_NAME))
+    Some(contents_dir.join("Resources"))
 }
 
 fn legacy_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
@@ -454,6 +470,17 @@ fn legacy_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
 
 fn existing_release_dir(path: PathBuf) -> Option<PathBuf> {
     if path.join("bin").join(APP_NAME).is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn existing_postgres_dir(path: PathBuf) -> Option<PathBuf> {
+    if path.join("bin").join("postgres").is_file()
+        && path.join("bin").join("initdb").is_file()
+        && path.join("lib").join("libpq.5.dylib").is_file()
+    {
         Some(path)
     } else {
         None
@@ -503,6 +530,33 @@ mod tests {
             Some(release.clone())
         );
         assert_eq!(default_app_dir_from_executable(&executable), Some(release));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_postgres_is_discovered_from_macos_executable() {
+        let root = unique_temp_dir("bundled-postgres-dir");
+        let executable = root
+            .join("Intellectual Club.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("intellectual-club-launcher");
+        let postgres = root
+            .join("Intellectual Club.app")
+            .join("Contents")
+            .join("Resources")
+            .join(BUNDLED_POSTGRES_DIR_NAME);
+        fs::create_dir_all(postgres.join("bin")).unwrap();
+        fs::create_dir_all(postgres.join("lib")).unwrap();
+        fs::write(postgres.join("bin").join("postgres"), "postgres").unwrap();
+        fs::write(postgres.join("bin").join("initdb"), "initdb").unwrap();
+        fs::write(postgres.join("lib").join("libpq.5.dylib"), "libpq").unwrap();
+
+        assert_eq!(
+            bundled_postgres_dir_from_executable(&executable),
+            Some(postgres)
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

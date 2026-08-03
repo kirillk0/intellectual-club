@@ -120,6 +120,9 @@ jobs:
           workspaces: native_tools -> target
           key: aarch64-apple-darwin-intellectual-club-launcher
 
+      - name: Install packaging dependencies
+        run: brew install openssl@3
+
       - name: Build application bundle
         env:
           IC_BUNDLE_BUILD_ID: ${{ needs.prepare.outputs.release_id }}
@@ -154,6 +157,9 @@ jobs:
           test "$(uname -m)" = "arm64"
           test -x "${launcher}"
           test -x "${release}/bin/intellectual_club"
+          test -x "${app}/Contents/Resources/postgresql/bin/postgres"
+          test -f "${app}/Contents/Frameworks/libssl.3.dylib"
+          test -f "${app}/Contents/Frameworks/libcrypto.3.dylib"
           test -s "${app}/Contents/Resources/AppIcon.icns"
           test -d "${app}/Contents/_CodeSignature"
           test "${#beam[@]}" -eq 1
@@ -172,8 +178,16 @@ jobs:
           while IFS= read -r -d '' binary; do
             if file "${binary}" | grep -q 'Mach-O'; then
               test "$(lipo -archs "${binary}")" = "arm64"
+              if otool -L "${binary}" | grep -q '/opt/homebrew/'; then
+                echo "Homebrew dependency found in ${binary}" >&2
+                exit 1
+              fi
             fi
-          done < <(find "${release}" -type f -print0)
+          done < <(
+            find "${app}/Contents" -type f \
+              \( -perm -111 -o -name '*.so' -o -name '*.dylib' \) \
+              -print0
+          )
 
       - name: Smoke test bundled release
         shell: bash

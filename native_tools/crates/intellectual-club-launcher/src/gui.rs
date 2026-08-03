@@ -168,7 +168,7 @@ impl LauncherGui {
                     let _ = tx.send(GuiEvent::Info(message));
                 }
                 Err(error) => {
-                    let _ = tx.send(GuiEvent::Error(error.to_string()));
+                    let _ = tx.send(GuiEvent::Error(format!("{error:#}")));
                 }
             }
         });
@@ -188,7 +188,7 @@ impl LauncherGui {
                     let _ = tx.send(GuiEvent::AdminCreated(username));
                 }
                 Err(error) => {
-                    let _ = tx.send(GuiEvent::AdminCreateFailed(error.to_string()));
+                    let _ = tx.send(GuiEvent::AdminCreateFailed(format!("{error:#}")));
                 }
             }
         });
@@ -830,6 +830,12 @@ impl LauncherGui {
         ui.heading(locale.text(TextKey::Paths));
         ui.add_space(8.0);
 
+        let postgres_installation_dir = self
+            .status
+            .as_ref()
+            .map(|status| status.paths.installations_dir.clone())
+            .unwrap_or_else(|| self.paths.installations_dir.clone());
+
         let rows = vec![
             (
                 locale.text(TextKey::ConfigPath),
@@ -850,7 +856,7 @@ impl LauncherGui {
             ),
             (
                 locale.text(TextKey::InstallationsDir),
-                Some(self.paths.installations_dir.clone()),
+                Some(postgres_installation_dir),
             ),
             (
                 locale.text(TextKey::RuntimeDir),
@@ -969,11 +975,21 @@ impl LauncherGui {
                 self.last_message
             ));
         }
-        if !self.last_error.is_empty() {
+        let runtime_error = self
+            .status
+            .as_ref()
+            .and_then(|status| status.daemon.detail.as_deref())
+            .unwrap_or_default();
+        let error = if self.last_error.is_empty() {
+            runtime_error
+        } else {
+            &self.last_error
+        };
+        if !error.is_empty() {
             ui.add_space(10.0);
             ui.colored_label(
                 egui::Color32::from_rgb(176, 43, 43),
-                format!("{}: {}", locale.text(TextKey::LastError), self.last_error),
+                format!("{}: {error}", locale.text(TextKey::LastError)),
             );
         }
     }

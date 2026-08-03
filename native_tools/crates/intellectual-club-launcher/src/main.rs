@@ -107,6 +107,14 @@ mod tests {
         assert_eq!(Locale::En.text(TextKey::MoveFilesData), "Move files");
         assert_eq!(Locale::Ru.text(TextKey::Administrators), "Администраторы");
         assert_eq!(
+            Locale::Ru.text(TextKey::InstallationsDir),
+            "Бинарники Postgres"
+        );
+        assert_eq!(
+            Locale::En.text(TextKey::InstallationsDir),
+            "Postgres binaries"
+        );
+        assert_eq!(
             Locale::En.text(TextKey::CreateAdministrator),
             "Create administrator"
         );
