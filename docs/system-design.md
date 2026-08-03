@@ -110,7 +110,7 @@ Consequence: fields such as `reasoning_deltas` or `content_deltas` are only spec
 | Frontend build | Vite (build-only) | Outputs to `priv/static`, Phoenix serves in dev and prod |
 | Streaming (browser) | HTTP polling | Predictable UX, mobile-friendly, reconnect via snapshots |
 | Database | PostgreSQL via AshPostgres | Production and desktop runtime storage, concurrent access |
-| Background jobs | Oban | PostgreSQL-backed scheduler, no Redis |
+| Background execution | OTP supervisors + Ash/PostgreSQL | Supervised workers with durable lifecycle state and startup recovery; no separate job system |
 | HTTP client | Req / Finch | LLM provider streaming, tool execution |
 | Auth | ash_authentication | Session-based auth, local-mode auto-login |
 | Token counting | Custom heuristic | `ceil(byte_size(text) / 3.5)` is good enough for rough estimates |
