@@ -121,6 +121,8 @@ const toolTypes = [
   },
 ];
 
+let activeToolTypes = toolTypes;
+
 function readonlyDocument(type: string, attributes: Record<string, unknown>) {
   return {
     data: {
@@ -199,6 +201,7 @@ function tabByText(view: VueWrapper, text: string) {
 
 describe('shared read-only editor tabs', () => {
   beforeEach(() => {
+    activeToolTypes = toolTypes;
     serverStateQueryClient.clear();
     useNavigationStack().reset();
     jsonApiMocks.create.mockReset();
@@ -212,7 +215,7 @@ describe('shared read-only editor tabs', () => {
     knowledgeBlockFileMocks.upload.mockReset();
     clientMocks.get.mockReset().mockImplementation(async (path: string) => {
       if (path === '/api/bff/llm-provider-types') return { types: providerTypes };
-      if (path === '/api/bff/tools/types') return { types: toolTypes };
+      if (path === '/api/bff/tools/types') return { types: activeToolTypes };
       if (path === '/api/bff/me/groups') return { groups: [] };
       if (path.endsWith('/shares')) return { group_ids: [] };
       throw new Error(`Unexpected GET request: ${path}`);
@@ -346,6 +349,43 @@ describe('shared read-only editor tabs', () => {
       },
     });
     expect(attributes.secrets.secret_headers).not.toHaveProperty('X-Keep');
+  });
+
+  it('keeps the MCP form populated after discovery when the detail document is unchanged', async () => {
+    activeToolTypes = toolTypes.map((toolType) => ({
+      ...toolType,
+      functions_mode: 'stored',
+      supports_discovery: true,
+    }));
+    const document = editableToolDocument({
+      description: 'Discovery regression fixture',
+      config: {
+        server_url: 'https://mcp.example.com',
+        open_headers: { 'X-Tenant-ID': 'tenant-42' },
+        secret_header_names: ['X-API-Key'],
+      },
+    });
+    jsonApiMocks.get.mockResolvedValue(document);
+    clientMocks.post.mockResolvedValue({
+      tool_instance_id: 27,
+      created: 0,
+      updated: 1,
+      deleted: 0,
+      total: 1,
+      functions: [{ id: 101 }],
+    });
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await vi.waitFor(() => expect(view.get<HTMLInputElement>('input.full').element.value).toBe('MCP tool'));
+    await tabByText(view, 'Functions').trigger('click');
+    await view.get('.tool-discover-button').trigger('click');
+    await vi.waitFor(() => expect(clientMocks.post).toHaveBeenCalledTimes(1));
+    await flushPromises();
+
+    await tabByText(view, 'Settings').trigger('click');
+    expect(view.get<HTMLInputElement>('input.full').element.value).toBe('MCP tool');
+    expect(view.get<HTMLInputElement>('input[type="url"]').element.value).toBe('https://mcp.example.com');
+    expect(view.get<HTMLInputElement>('[data-testid="open-headers-editor"] input').element.value).toBe('X-Tenant-ID');
   });
 
   it('switches knowledge block tabs while keeping its fields disabled', async () => {

@@ -1855,7 +1855,7 @@ async function runDiscover() {
       total: Number(payload.total || 0),
     };
 
-    await editor.load();
+    await editor.reloadRemoteDocument();
   } catch (e) {
     console.error(e);
     const message =
