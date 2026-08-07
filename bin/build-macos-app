@@ -125,6 +125,7 @@ if [[ "${MODE}" == "prod" ]]; then
 else
   IC_DEV_RELEASE=1 MIX_ENV=dev mix assets.build
 fi
+rm -rf "_build/${MODE}/rel/${RELEASE_NAME}"
 IC_DEV_RELEASE=1 MIX_ENV="${MODE}" mix release --overwrite
 if [[ "${MODE}" == "prod" ]]; then
   MIX_ENV=prod mix phx.digest.clean --all --no-compile
