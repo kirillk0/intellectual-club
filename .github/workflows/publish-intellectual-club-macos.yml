@@ -147,7 +147,7 @@ jobs:
         env:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           app="build/release/Intellectual Club.app"
           launcher="${app}/Contents/MacOS/intellectual-club-launcher"
