@@ -147,7 +147,8 @@ jobs:
         env:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          shopt -s nullglob
 
           app="build/release/Intellectual Club.app"
           launcher="${app}/Contents/MacOS/intellectual-club-launcher"
@@ -163,7 +164,11 @@ jobs:
           test -f "${app}/Contents/Frameworks/libcrypto.3.dylib"
           test -s "${app}/Contents/Resources/AppIcon.icns"
           test -d "${app}/Contents/_CodeSignature"
-          test "${#beam[@]}" -eq 1
+          if [ "${#beam[@]}" -ne 1 ]; then
+            echo "Expected one beam.smp binary, found ${#beam[@]}:" >&2
+            printf '  %s\n' "${beam[@]}" >&2
+            exit 1
+          fi
           plutil -lint "${plist}"
           test "$(plutil -extract CFBundleIdentifier raw "${plist}")" = "org.intellectualclub.desktop"
           test "$(plutil -extract CFBundleShortVersionString raw "${plist}")" = "${APP_VERSION}"
