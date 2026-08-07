@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/build-macos-dmg --app <path-to-app> --output <path-to-dmg>
+
+Creates a compressed macOS disk image with an Applications shortcut and
+first-launch Gatekeeper instructions.
+EOF
+}
+
+APP_PATH=""
+OUTPUT_PATH=""
+VOLUME_NAME="Intellectual Club"
+README_NAME="First Launch.txt"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app)
+      APP_PATH="${2:-}"
+      shift 2
+      ;;
+    --output)
+      OUTPUT_PATH="${2:-}"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "DMG images must be built on macOS" >&2
+  exit 1
+fi
+
+if [[ -z "${APP_PATH}" || -z "${OUTPUT_PATH}" ]]; then
+  echo "--app and --output are required" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ "${APP_PATH}" != /* ]]; then
+  APP_PATH="${PWD}/${APP_PATH}"
+fi
+
+if [[ "${OUTPUT_PATH}" != /* ]]; then
+  OUTPUT_PATH="${PWD}/${OUTPUT_PATH}"
+fi
+
+APP_NAME="$(basename -- "${APP_PATH}")"
+if [[ ! -d "${APP_PATH}" || "${APP_NAME}" != *.app ]]; then
+  echo "Application bundle not found: ${APP_PATH}" >&2
+  exit 1
+fi
+
+if [[ "${OUTPUT_PATH}" != *.dmg ]]; then
+  echo "Output path must end with .dmg" >&2
+  exit 1
+fi
+
+OUTPUT_DIR="$(dirname -- "${OUTPUT_PATH}")"
+mkdir -p "${OUTPUT_DIR}"
+
+WORK_DIR="$(mktemp -d "${OUTPUT_DIR}/.intellectual-club-dmg.XXXXXX")"
+SOURCE_DIR="${WORK_DIR}/source"
+RW_DMG="${WORK_DIR}/installer-rw.dmg"
+COMPRESSED_DMG="${WORK_DIR}/installer.dmg"
+DEVICE=""
+
+cleanup() {
+  if [[ -n "${DEVICE}" ]]; then
+    hdiutil detach "${DEVICE}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${WORK_DIR}"
+}
+trap cleanup EXIT
+
+if [[ -e "/Volumes/${VOLUME_NAME}" ]]; then
+  echo "A volume named ${VOLUME_NAME} is already mounted" >&2
+  exit 1
+fi
+
+mkdir -p "${SOURCE_DIR}"
+ditto "${APP_PATH}" "${SOURCE_DIR}/${APP_NAME}"
+ln -s /Applications "${SOURCE_DIR}/Applications"
+
+cat >"${SOURCE_DIR}/${README_NAME}" <<'EOF'
+INSTALLATION
+
+Drag Intellectual Club.app onto the Applications shortcut.
+
+This build is signed but not notarized. If macOS blocks the first launch,
+open System Settings → Privacy & Security, find the Intellectual Club warning,
+click Open Anyway, and confirm the launch. Only do this for a disk image
+downloaded from the official project page.
+
+УСТАНОВКА
+
+Перетащите Intellectual Club.app на ярлык Applications.
+
+Сборка подписана, но не нотарифицирована Apple. Если macOS заблокирует первый
+запуск, откройте «Системные настройки» → «Конфиденциальность и безопасность»,
+найдите предупреждение об Intellectual Club, нажмите «Всё равно открыть» и
+подтвердите запуск. Делайте это только для образа, загруженного с официальной
+страницы проекта.
+EOF
+
+hdiutil create \
+  -quiet \
+  -srcfolder "${SOURCE_DIR}" \
+  -volname "${VOLUME_NAME}" \
+  -fs HFS+ \
+  -format UDRW \
+  "${RW_DMG}"
+
+attach_output="$({
+  hdiutil attach \
+    -readwrite \
+    -noverify \
+    -noautoopen \
+    "${RW_DMG}"
+})"
+DEVICE="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
+
+if [[ -z "${DEVICE}" ]]; then
+  echo "Could not determine the mounted disk image device" >&2
+  exit 1
+fi
+
+finder_ready="false"
+for attempt in {1..20}; do
+  finder_ready="$(osascript - "${VOLUME_NAME}" <<'APPLESCRIPT'
+on run arguments
+  set volumeName to item 1 of arguments
+  tell application "Finder" to return exists disk volumeName
+end run
+APPLESCRIPT
+)"
+  if [[ "${finder_ready}" == "true" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ "${finder_ready}" != "true" ]]; then
+  echo "Finder did not discover the mounted ${VOLUME_NAME} volume" >&2
+  exit 1
+fi
+
+osascript - "${VOLUME_NAME}" "${APP_NAME}" "${README_NAME}" <<'APPLESCRIPT'
+on run arguments
+  set volumeName to item 1 of arguments
+  set appName to item 2 of arguments
+  set readmeName to item 3 of arguments
+
+  tell application "Finder"
+    set targetDisk to disk volumeName
+    tell targetDisk
+      open
+      set current view of container window to icon view
+      set toolbar visible of container window to false
+      set statusbar visible of container window to false
+      set pathbar visible of container window to false
+      set bounds of container window to {180, 140, 900, 620}
+
+      set viewOptions to icon view options of container window
+      set arrangement of viewOptions to not arranged
+      set icon size of viewOptions to 112
+      set text size of viewOptions to 14
+      set background color of viewOptions to {60138, 61937, 65535}
+
+      set position of item appName of container window to {185, 190}
+      set position of item "Applications" of container window to {535, 190}
+      set position of item readmeName of container window to {360, 310}
+
+      update without registering applications
+      delay 2
+      close
+    end tell
+  end tell
+end run
+APPLESCRIPT
+
+sync
+for attempt in 1 2 3; do
+  if hdiutil detach "${DEVICE}" >/dev/null; then
+    DEVICE=""
+    break
+  fi
+  if [[ "${attempt}" -eq 3 ]]; then
+    echo "Could not detach ${DEVICE}" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+hdiutil convert \
+  -quiet \
+  "${RW_DMG}" \
+  -format UDZO \
+  -imagekey zlib-level=9 \
+  -o "${COMPRESSED_DMG}"
+hdiutil verify "${COMPRESSED_DMG}" >/dev/null
+
+rm -f "${OUTPUT_PATH}"
+mv "${COMPRESSED_DMG}" "${OUTPUT_PATH}"
+
+printf 'Built macOS disk image at %s\n' "${OUTPUT_PATH}"

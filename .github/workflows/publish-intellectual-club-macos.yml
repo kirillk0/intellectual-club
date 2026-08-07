@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/publish-intellectual-club-macos.yml
       - bin/build-macos-app
+      - bin/build-macos-dmg
       - frontend/**
       - native_tools/Cargo.lock
       - native_tools/Cargo.toml
@@ -226,32 +227,58 @@ jobs:
           set -euo pipefail
 
           mkdir -p dist
-          archive="dist/intellectual-club-${RELEASE_ID}-macos-arm64.zip"
-          ditto \
-            -c -k --sequesterRsrc --keepParent \
-            "build/release/Intellectual Club.app" \
-            "${archive}"
+          image="dist/intellectual-club-${RELEASE_ID}-macos-arm64.dmg"
+          ./bin/build-macos-dmg \
+            --app "build/release/Intellectual Club.app" \
+            --output "${image}"
 
-          unpacked="${RUNNER_TEMP}/intellectual-club-unpacked"
-          rm -rf "${unpacked}"
-          mkdir -p "${unpacked}"
-          ditto -x -k "${archive}" "${unpacked}"
-          test -x "${unpacked}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
-          test -x "${unpacked}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
-          plutil -lint "${unpacked}/Intellectual Club.app/Contents/Info.plist"
-          codesign --verify --deep --strict --verbose=2 "${unpacked}/Intellectual Club.app"
+          mount_dir="${RUNNER_TEMP}/intellectual-club-dmg"
+          rm -rf "${mount_dir}"
+          mkdir -p "${mount_dir}"
+          device=""
+
+          cleanup() {
+            if [ -n "${device}" ]; then
+              hdiutil detach "${device}" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          attach_output="$(
+            hdiutil attach \
+              -readonly \
+              -noverify \
+              -nobrowse \
+              -mountpoint "${mount_dir}" \
+              "${image}"
+          )"
+          device="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
+
+          test -n "${device}"
+          test -x "${mount_dir}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
+          test -x "${mount_dir}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
+          test "$(readlink "${mount_dir}/Applications")" = /Applications
+          grep -q 'Privacy & Security' "${mount_dir}/First Launch.txt"
+          grep -q 'Конфиденциальность и безопасность' "${mount_dir}/First Launch.txt"
+          plutil -lint "${mount_dir}/Intellectual Club.app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "${mount_dir}/Intellectual Club.app"
+
+          hdiutil detach "${device}"
+          device=""
+          trap - EXIT
 
       - name: Upload packaged application
         uses: actions/upload-artifact@v4
         with:
           name: intellectual-club-macos-arm64
-          path: dist/*.zip
+          path: dist/*.dmg
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
   release:
     name: Publish GitHub Release
+    if: github.ref == 'refs/heads/main'
     needs:
       - prepare
       - build
@@ -280,7 +307,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          assets=(dist/*.zip)
+          assets=(dist/*.dmg)
           if [ "${#assets[@]}" -ne 1 ]; then
             echo "Expected one release archive, found ${#assets[@]}" >&2
             exit 1
@@ -288,7 +315,7 @@ jobs:
 
           (
             cd dist
-            sha256sum -- *.zip >SHA256SUMS.txt
+            sha256sum -- *.dmg >SHA256SUMS.txt
           )
 
           tagged_sha="$({
