@@ -8,13 +8,20 @@ defmodule IntellectualClub.Chat.Revisions do
 
   @spec chat_list_revision(map(), term(), map(), [Chat.t()]) :: String.t()
   def chat_list_revision(pagination, bot_filter, page, chats) when is_list(chats) do
+    chat_list_revision(pagination, bot_filter, page, chats, %{})
+  end
+
+  @spec chat_list_revision(map(), term(), map(), [Chat.t()], map()) :: String.t()
+  def chat_list_revision(pagination, bot_filter, page, chats, lifecycle_states)
+      when is_list(chats) and is_map(lifecycle_states) do
     revision_parts = [
       :chat_list,
       Map.get(pagination, :page),
       Map.get(pagination, :per_page),
       normalize_bot_filter(bot_filter),
       Map.get(page, :count, length(chats)),
-      Enum.map(chats, &chat_list_revision_row/1)
+      Enum.map(chats, &chat_list_revision_row/1),
+      lifecycle_revision_rows(lifecycle_states)
     ]
 
     hash(revision_parts)
@@ -33,6 +40,12 @@ defmodule IntellectualClub.Chat.Revisions do
   @spec chat_revision(Chat.t(), [Chat.t()], [map()]) :: String.t()
   def chat_revision(%Chat{} = chat, related_chats, queued_messages)
       when is_list(related_chats) and is_list(queued_messages) do
+    chat_revision(chat, related_chats, queued_messages, %{})
+  end
+
+  @spec chat_revision(Chat.t(), [Chat.t()], [map()], map()) :: String.t()
+  def chat_revision(%Chat{} = chat, related_chats, queued_messages, lifecycle_states)
+      when is_list(related_chats) and is_list(queued_messages) and is_map(lifecycle_states) do
     last_message = loaded_last_message(chat)
 
     [
@@ -44,6 +57,7 @@ defmodule IntellectualClub.Chat.Revisions do
       message_status_revision_value(last_message),
       datetime_revision_value(Map.get(last_message || %{}, :updated_at)),
       relation_revision_rows(related_chats),
+      lifecycle_revision_rows(lifecycle_states),
       queue_revision_rows(queued_messages)
     ]
     |> hash()
@@ -59,7 +73,24 @@ defmodule IntellectualClub.Chat.Revisions do
 
   @spec visible_active_generation_message_id([Chat.t()]) :: integer() | nil
   def visible_active_generation_message_id(chats) when is_list(chats) do
+    visible_active_generation_message_id(chats, %{})
+  end
+
+  @spec visible_active_generation_message_id([Chat.t()], map()) :: integer() | nil
+  def visible_active_generation_message_id(chats, lifecycle_states)
+      when is_list(chats) and is_map(lifecycle_states) do
     Enum.find_value(chats, &active_generation_message_id/1)
+    |> case do
+      id when is_integer(id) ->
+        id
+
+      _other ->
+        lifecycle_states
+        |> Enum.sort_by(fn {chat_id, _state} -> chat_id end)
+        |> Enum.find_value(fn {_chat_id, state} ->
+          Map.get(state, :active_generation_message_id)
+        end)
+    end
   end
 
   @spec client_revision_matches?(map(), String.t()) :: boolean()
@@ -101,6 +132,21 @@ defmodule IntellectualClub.Chat.Revisions do
         active_generation_message_id(chat),
         message_status_revision_value(last_message),
         datetime_revision_value(Map.get(last_message || %{}, :updated_at))
+      ]
+    end)
+  end
+
+  defp lifecycle_revision_rows(states) when is_map(states) do
+    states
+    |> Enum.sort_by(fn {chat_id, _state} -> chat_id end)
+    |> Enum.map(fn {chat_id, state} ->
+      [
+        chat_id,
+        Map.get(state, :chat_id),
+        Map.get(state, :message_id),
+        Map.get(state, :active_generation_message_id),
+        Map.get(state, :last_message_status),
+        datetime_revision_value(Map.get(state, :updated_at))
       ]
     end)
   end

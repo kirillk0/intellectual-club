@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.QueuedMessages
+  alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Generation.Context, as: GenerationContext
@@ -29,17 +30,19 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     chat = Ash.load!(chat, [:last_message], actor: actor)
     {messages, branch_meta_by_id} = load_branch(chat, actor)
     child_relations = Relations.child_relation_chats(chat.id, actor)
+    lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
     relations = Relations.relations(chat, messages, actor, child_relations)
     queued_messages = active_queue(chat.id, actor)
 
     %{
       chat: Serializer.chat_detail(chat),
       branch: serialize_branch(messages, branch_meta_by_id, actor),
-      relations: serialize_relations(relations),
+      relations: serialize_relations(relations, lifecycle_states),
       continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
       queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages),
       active_generation_message_id: active_generation_message_id(messages),
-      idle_revision: Revisions.chat_revision(chat, child_relations, queued_messages)
+      idle_revision:
+        Revisions.chat_revision(chat, child_relations, queued_messages, lifecycle_states)
     }
   end
 
@@ -149,40 +152,59 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     end)
   end
 
-  def serialize_relations(%{} = relations) do
+  def serialize_relations(%{} = relations), do: serialize_relations(relations, %{})
+
+  def serialize_relations(%{} = relations, lifecycle_states) when is_map(lifecycle_states) do
     %{
-      parent: serialize_relation_entry(Map.get(relations, :parent)),
+      parent: serialize_relation_entry(Map.get(relations, :parent), %{}),
       children_by_message_id:
         relations
         |> Map.get(:children_by_message_id, %{})
         |> Map.new(fn {message_id, entries} ->
-          {message_id, Enum.map(entries, &serialize_relation_entry/1)}
+          {message_id, Enum.map(entries, &serialize_relation_entry(&1, lifecycle_states))}
         end),
       children_without_message:
         relations
         |> Map.get(:children_without_message, [])
-        |> Enum.map(&serialize_relation_entry/1)
+        |> Enum.map(&serialize_relation_entry(&1, lifecycle_states))
     }
   end
 
-  defp serialize_relation_entry(%{chat: %Chat{} = chat} = entry) do
-    Serializer.chat_relation_summary(chat,
-      kind: Map.get(entry, :kind),
-      message_id: Map.get(entry, :message_id),
-      parent_tool_call_item_id: Map.get(entry, :parent_tool_call_item_id),
-      parent_step_id: Map.get(entry, :parent_step_id),
-      parent_step_sequence: Map.get(entry, :parent_step_sequence),
-      parent_item_sequence: Map.get(entry, :parent_item_sequence),
-      anchor_message_id: Map.get(entry, :anchor_message_id),
-      anchor_tool_call_item_id: Map.get(entry, :anchor_tool_call_item_id),
-      anchor_step_id: Map.get(entry, :anchor_step_id),
-      anchor_step_sequence: Map.get(entry, :anchor_step_sequence),
-      anchor_item_sequence: Map.get(entry, :anchor_item_sequence),
-      background_task: Map.get(entry, :background_task, false)
-    )
+  defp serialize_relation_entry(%{chat: %Chat{} = chat} = entry, lifecycle_states) do
+    opts =
+      [
+        kind: Map.get(entry, :kind),
+        message_id: Map.get(entry, :message_id),
+        parent_tool_call_item_id: Map.get(entry, :parent_tool_call_item_id),
+        parent_step_id: Map.get(entry, :parent_step_id),
+        parent_step_sequence: Map.get(entry, :parent_step_sequence),
+        parent_item_sequence: Map.get(entry, :parent_item_sequence),
+        anchor_message_id: Map.get(entry, :anchor_message_id),
+        anchor_tool_call_item_id: Map.get(entry, :anchor_tool_call_item_id),
+        anchor_step_id: Map.get(entry, :anchor_step_id),
+        anchor_step_sequence: Map.get(entry, :anchor_step_sequence),
+        anchor_item_sequence: Map.get(entry, :anchor_item_sequence),
+        background_task: Map.get(entry, :background_task, false)
+      ]
+      |> Keyword.merge(lifecycle_serializer_opts(chat, lifecycle_states))
+
+    Serializer.chat_relation_summary(chat, opts)
   end
 
-  defp serialize_relation_entry(_entry), do: nil
+  defp serialize_relation_entry(_entry, _lifecycle_states), do: nil
+
+  defp lifecycle_serializer_opts(%Chat{id: chat_id}, lifecycle_states) do
+    case Map.get(lifecycle_states, chat_id) do
+      %{last_message_status: status} = state ->
+        [
+          active_generation_message_id: Map.get(state, :active_generation_message_id),
+          last_message_status: Atom.to_string(status)
+        ]
+
+      _other ->
+        []
+    end
+  end
 
   def serialize_continuation_nav(entries) when is_list(entries) do
     Enum.map(entries, &Serializer.chat_continuation_nav_item/1)

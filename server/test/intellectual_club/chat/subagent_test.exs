@@ -1,8 +1,15 @@
 defmodule IntellectualClub.Chat.SubagentTest do
   use IntellectualClub.DataCase, async: false
 
+  require Ash.Query
+
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ToolInstance
 
@@ -123,6 +130,138 @@ defmodule IntellectualClub.Chat.SubagentTest do
     end
   end
 
+  test "lifecycle states follow nested persisted handoffs without resuming generation" do
+    %{user: actor} = user_fixture()
+    parent = create_chat!(actor, nil, nil, false)
+    root = create_chat!(actor, parent, :fork, true)
+    root_message = create_generation_message!(root, actor)
+    child = create_chat!(actor, root, :handoff, true)
+    child_message = create_generation_message!(child, actor)
+    terminal = create_chat!(actor, child, :handoff, true)
+    terminal_message = create_generation_message!(terminal, actor)
+
+    persist_handoff_result!(root_message, child, child_message, actor)
+    set_message_status!(root_message, :done, actor)
+    persist_handoff_result!(child_message, terminal, terminal_message, actor)
+    set_message_status!(child_message, :done, actor)
+
+    root = Ash.load!(root, [:last_message], actor: actor)
+    terminal_id = terminal.id
+    terminal_message_id = terminal_message.id
+
+    assert %{
+             active_generation_message_id: ^terminal_message_id,
+             chat_id: ^terminal_id,
+             last_message_status: :generating,
+             message_id: ^terminal_message_id
+           } = Subagent.lifecycle_states([root], actor)[root.id]
+
+    assert :not_found ==
+             IntellectualClub.Generation.Supervisor.get_generation_state(terminal_message.id)
+
+    set_message_status!(terminal_message, :error, actor)
+
+    assert %{
+             active_generation_message_id: nil,
+             last_message_status: :error,
+             message_id: ^terminal_message_id
+           } = Subagent.lifecycle_states([root], actor)[root.id]
+  end
+
+  test "lifecycle states expose direct generation and terminal statuses" do
+    %{user: actor} = user_fixture()
+    parent = create_chat!(actor, nil, nil, false)
+
+    roots =
+      for status <- [:generating, :done, :error, :canceled] do
+        root = create_chat!(actor, parent, :fork, true)
+        message = create_generation_message!(root, actor)
+
+        if status != :generating do
+          set_message_status!(message, status, actor)
+        end
+
+        {status, root, message}
+      end
+
+    states =
+      roots
+      |> Enum.map(fn {_status, root, _message} -> root end)
+      |> Ash.load!([:last_message], actor: actor)
+      |> Subagent.lifecycle_states(actor)
+
+    for {status, root, message} <- roots do
+      expected_active_id = if status == :generating, do: message.id, else: nil
+
+      assert %{
+               active_generation_message_id: ^expected_active_id,
+               last_message_status: ^status,
+               message_id: message_id
+             } = states[root.id]
+
+      assert message_id == message.id
+    end
+  end
+
+  test "lifecycle states ignore unrelated handoff chats without a persisted tool result" do
+    %{user: actor} = user_fixture()
+    parent = create_chat!(actor, nil, nil, false)
+    root = create_chat!(actor, parent, :spawn, true)
+    root_message = create_generation_message!(root, actor)
+    set_message_status!(root_message, :done, actor)
+
+    manual_child = create_chat!(actor, root, :handoff, true)
+    _manual_message = create_generation_message!(manual_child, actor)
+    root = Ash.load!(root, [:last_message], actor: actor)
+    root_id = root.id
+    root_message_id = root_message.id
+
+    assert %{
+             active_generation_message_id: nil,
+             chat_id: ^root_id,
+             last_message_status: :done,
+             message_id: ^root_message_id
+           } = Subagent.lifecycle_states([root], actor)[root.id]
+  end
+
+  test "lifecycle states fail closed for cycles and excessive handoff depth" do
+    %{user: actor} = user_fixture()
+    parent = create_chat!(actor, nil, nil, false)
+
+    cycle_root = create_chat!(actor, parent, :fork, true)
+    cycle_root_message = create_generation_message!(cycle_root, actor)
+    cycle_child = create_chat!(actor, cycle_root, :handoff, true)
+    cycle_child_message = create_generation_message!(cycle_child, actor)
+
+    persist_handoff_result!(cycle_root_message, cycle_child, cycle_child_message, actor)
+    set_message_status!(cycle_root_message, :done, actor)
+    persist_handoff_result!(cycle_child_message, cycle_root, cycle_root_message, actor)
+    set_message_status!(cycle_child_message, :done, actor)
+
+    depth_root = create_chat!(actor, parent, :spawn, true)
+    depth_root_message = create_generation_message!(depth_root, actor)
+
+    {_last_chat, _last_message} =
+      Enum.reduce(1..64, {depth_root, depth_root_message}, fn _index,
+                                                              {source_chat, source_message} ->
+        child = create_chat!(actor, source_chat, :handoff, true)
+        child_message = create_generation_message!(child, actor)
+        persist_handoff_result!(source_message, child, child_message, actor)
+        set_message_status!(source_message, :done, actor)
+        {child, child_message}
+      end)
+
+    states =
+      [cycle_root, depth_root]
+      |> Ash.load!([:last_message], actor: actor)
+      |> Subagent.lifecycle_states(actor)
+
+    for chat <- [cycle_root, depth_root] do
+      assert %{active_generation_message_id: nil, last_message_status: :error} =
+               states[chat.id]
+    end
+  end
+
   test "nested limit does not truncate creation depth after 64 ancestors" do
     %{user: actor} = user_fixture()
     root = create_chat!(actor, nil, nil, false)
@@ -182,5 +321,91 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
   defp context(chat, actor) do
     %ExecutionContext{owner_id: actor.id, chat_id: chat.id}
+  end
+
+  defp create_generation_message!(chat, actor) do
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Work", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageStep
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_message_id: message.id, sequence: 1, status: :waiting_provider},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    message
+  end
+
+  defp set_message_status!(message, status, actor) do
+    message
+    |> Ash.Changeset.for_update(
+      :set_generation_state,
+      %{status: status, error_detail: if(status == :error, do: "Failed", else: nil)},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+  end
+
+  defp persist_handoff_result!(source_message, child_chat, child_message, actor) do
+    step =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^source_message.id)
+      |> Ash.Query.sort(sequence: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.read_one!(actor: actor)
+
+    call_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: 1, type: :tool_call},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    result_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_step_id: step.id,
+          sequence: 2,
+          type: :tool_result,
+          tool_call_item_id: call_item.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: result_item.id,
+        sequence: 1,
+        kind: :opaque,
+        content_text: "",
+        content_json: %{
+          "raw" => %{
+            "handoff" => %{
+              "chat_id" => child_chat.id,
+              "generation_message_id" => child_message.id
+            }
+          }
+        }
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
   end
 end

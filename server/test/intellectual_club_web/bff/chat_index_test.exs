@@ -5,10 +5,15 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  require Ash.Query
+
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Knowledge.KnowledgeBlock
@@ -600,6 +605,59 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
            ]
   end
 
+  test "GET /api/bff/chat-list keeps a subchat active through a persisted handoff", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    parent = create_chat!(actor, "Parent")
+    {:ok, parent_message} = Threads.add_message_to_end(parent, :user, "Delegate", actor: actor)
+
+    subchat =
+      create_chat!(actor, "Subchat", %{
+        parent_chat_id: parent.id,
+        parent_message_id: parent_message.id,
+        parent_relation_kind: :fork,
+        subagent: true
+      })
+
+    source_message = create_generation_message!(subchat, actor)
+
+    continuation =
+      create_chat!(actor, "Continuation", %{
+        parent_chat_id: subchat.id,
+        parent_message_id: source_message.id,
+        parent_relation_kind: :handoff,
+        subagent: true
+      })
+
+    continuation_message = create_generation_message!(continuation, actor)
+    persist_handoff_result!(source_message, continuation, continuation_message, actor)
+    set_message_status!(source_message, :done, actor)
+
+    payload = conn |> get(~p"/api/bff/chat-list") |> json_response(200)
+    parent_payload = chat_payload(payload, parent.id)
+    subchat_payload = Enum.find(parent_payload["subchats"], &(&1["id"] == subchat.id))
+
+    assert subchat_payload["active_generation_message_id"] == continuation_message.id
+
+    summary =
+      conn
+      |> get(~p"/api/bff/chat-list/#{subchat.id}/summary")
+      |> json_response(200)
+
+    assert summary["chat"]["active_generation_message_id"] == continuation_message.id
+
+    set_message_status!(continuation_message, :done, actor)
+
+    settled_payload = conn |> get(~p"/api/bff/chat-list") |> json_response(200)
+    settled_parent = chat_payload(settled_payload, parent.id)
+    settled_subchat = Enum.find(settled_parent["subchats"], &(&1["id"] == subchat.id))
+
+    assert settled_subchat["active_generation_message_id"] == nil
+  end
+
   defp chat_ids(payload) do
     payload
     |> Map.get("chats", [])
@@ -726,6 +784,88 @@ defmodule IntellectualClubWeb.Bff.ChatIndexTest do
     |> Ash.Changeset.for_create(
       :create,
       %{chat_id: chat.id, tool_instance_id: tool.id, enabled: true, sequence: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_generation_message!(chat, actor) do
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Work", actor: actor)
+
+    message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{chat_id: chat.id, parent_id: user_message.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageStep
+    |> Ash.Changeset.for_create(
+      :create,
+      %{chat_message_id: message.id, sequence: 1, status: :waiting_provider},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    message
+  end
+
+  defp set_message_status!(message, status, actor) do
+    message
+    |> Ash.Changeset.for_update(:set_generation_state, %{status: status}, actor: actor)
+    |> Ash.update!(actor: actor)
+  end
+
+  defp persist_handoff_result!(source_message, child_chat, child_message, actor) do
+    step =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^source_message.id)
+      |> Ash.Query.sort(sequence: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.read_one!(actor: actor)
+
+    call_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: 1, type: :tool_call},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    result_item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_step_id: step.id,
+          sequence: 2,
+          type: :tool_result,
+          tool_call_item_id: call_item.id
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: result_item.id,
+        sequence: 1,
+        kind: :opaque,
+        content_text: "",
+        content_json: %{
+          "raw" => %{
+            "handoff" => %{
+              "chat_id" => child_chat.id,
+              "generation_message_id" => child_message.id
+            }
+          }
+        }
+      },
       actor: actor
     )
     |> Ash.create!(actor: actor)

@@ -74,4 +74,14 @@ describe('chat relation positioning', () => {
       childRelationGenerationState({ chat_id: 20, last_message_status: 'canceled' })
     ).toBe('canceled');
   });
+
+  it('keeps a handed-off child generating when its source message is done', () => {
+    expect(
+      childRelationGenerationState({
+        chat_id: 20,
+        active_generation_message_id: 42,
+        last_message_status: 'done',
+      })
+    ).toBe('generating');
+  });
 });

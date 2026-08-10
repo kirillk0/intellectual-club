@@ -109,7 +109,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       bot_name: chat_bot_name(chat),
       llm_configuration_id: chat.llm_configuration_id,
       llm_configuration_label: chat_llm_configuration_label(chat),
-      active_generation_message_id: active_generation_message_id(chat),
+      active_generation_message_id:
+        Keyword.get(opts, :active_generation_message_id, active_generation_message_id(chat)),
       parent_chat_id: chat.parent_chat_id,
       parent_message_id: chat.parent_message_id,
       parent_relation_kind: relation_kind_string(chat.parent_relation_kind),
@@ -193,8 +194,9 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       bot_id: chat.bot_id,
       bot_name: chat_bot_name(chat),
       subagent: chat.subagent == true,
-      active_generation_message_id: active_generation_message_id(chat),
-      last_message_status: last_message_status(chat),
+      active_generation_message_id:
+        Keyword.get(opts, :active_generation_message_id, active_generation_message_id(chat)),
+      last_message_status: Keyword.get(opts, :last_message_status, last_message_status(chat)),
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at)
     }
