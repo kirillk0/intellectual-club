@@ -783,6 +783,7 @@ defmodule IntellectualClub.Chat.Fork do
     step =
       ChatMessageStep
       |> Ash.Query.filter(chat_message_id == ^message_id)
+      |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
       |> Ash.Query.sort(sequence: :desc, id: :desc)
       |> Ash.Query.limit(1)
       |> Ash.read_one!(actor: actor)
@@ -1135,6 +1136,8 @@ defmodule IntellectualClub.Chat.Fork do
       load: [
         steps: [
           :sequence,
+          :raw_request,
+          :raw_response,
           items: [
             :sequence,
             :type,

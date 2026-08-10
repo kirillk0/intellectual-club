@@ -220,7 +220,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     message =
       Ash.get!(ChatMessage, context.message_id,
         actor: actor,
-        load: [:chat, :steps]
+        load: [:chat, steps: [:raw_request]]
       )
 
     steps = Enum.sort_by(message.steps || [], & &1.sequence)
@@ -373,7 +373,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.request_payload["max_output_tokens"] == 64
     assert context.request_payload["tools"] == [%{"type" => "web_search"}]
 
-    step = Ash.get!(ChatMessageStep, context.step_id, actor: actor)
+    step = Ash.get!(ChatMessageStep, context.step_id, actor: actor, load: [:raw_request])
     assert step.raw_request == context.request_payload
   end
 

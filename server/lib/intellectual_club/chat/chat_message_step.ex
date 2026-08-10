@@ -38,10 +38,12 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     attribute :raw_request, :map do
       allow_nil?(false)
       default(%{})
+      select_by_default?(false)
     end
 
     attribute :raw_response, :map do
       allow_nil?(true)
+      select_by_default?(false)
     end
 
     attribute :response_final, :boolean do

@@ -241,7 +241,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       message =
         Ash.get!(ChatMessage, assistant_message.id,
           actor: actor,
-          load: [steps: [items: [:contents]]]
+          load: [steps: [:raw_response, items: [:contents]]]
         )
 
       assert message.status == expected_status
@@ -336,7 +336,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_response, items: [:contents]]]
       )
 
     assert message.status == :done
@@ -451,7 +451,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
     message =
       Ash.get!(ChatMessage, message_id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_response, items: [:contents]]]
       )
 
     if length(message.steps) >= count do

@@ -28,6 +28,7 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.BackgroundTasks.Reaper, []},
       {Registry, keys: :unique, name: IntellectualClub.Generation.Registry},
       {IntellectualClub.Generation.Supervisor, []},
+      {IntellectualClub.Generation.Recovery, []},
       {IntellectualClub.Generation.QueueDispatcher, []},
       # Start a worker by calling: IntellectualClub.Worker.start_link(arg)
       # {IntellectualClub.Worker, arg},

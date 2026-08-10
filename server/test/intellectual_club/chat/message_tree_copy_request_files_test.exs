@@ -39,10 +39,17 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     source_bindings = request_bindings(source_step.id)
 
     assert length(source_bindings) == 1,
-           inspect(Ash.get!(ChatMessageStep, source_step.id, actor: actor).raw_request)
+           inspect(
+             Ash.get!(ChatMessageStep, source_step.id,
+               actor: actor,
+               load: [:raw_request]
+             ).raw_request
+           )
 
     [source_binding] = source_bindings
-    compact_source_step = Ash.get!(ChatMessageStep, source_step.id, actor: actor)
+
+    compact_source_step =
+      Ash.get!(ChatMessageStep, source_step.id, actor: actor, load: [:raw_request])
 
     assert compact_source_step.raw_request == source_step.raw_request
     assert source_binding.reference_key == canonical_file.external_id
@@ -90,7 +97,12 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     source_bindings = request_bindings(source_step.id)
 
     assert length(source_bindings) == 1,
-           inspect(Ash.get!(ChatMessageStep, source_step.id, actor: actor).raw_request)
+           inspect(
+             Ash.get!(ChatMessageStep, source_step.id,
+               actor: actor,
+               load: [:raw_request]
+             ).raw_request
+           )
 
     [source_binding] = source_bindings
     rendition_file = Ash.get!(StoredFile, source_binding.file_id, authorize?: false)
@@ -157,7 +169,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
              BranchMove.move_branch_to_new_chat(source.id, moved.id, actor)
 
     [moved_binding] = request_bindings(moved_step.id)
-    moved_step = Ash.get!(ChatMessageStep, moved_step.id, actor: actor)
+    moved_step = Ash.get!(ChatMessageStep, moved_step.id, actor: actor, load: [:raw_request])
 
     assert Ash.get!(ChatMessage, moved.id, actor: actor).chat_id == target.id
     assert moved_binding.source_file_external_id == canonical_file.external_id
@@ -208,6 +220,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     step
     |> Ash.Changeset.for_update(:update, %{raw_request: raw_request}, actor: actor)
     |> Ash.update!(actor: actor)
+    |> Ash.load!([:raw_request], actor: actor)
   end
 
   defp create_empty_chat!(actor) do

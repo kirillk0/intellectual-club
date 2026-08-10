@@ -953,8 +953,7 @@ defmodule IntellectualClub.Generation.Persistence do
           if message.status == :generating and
                fence_token_matches?(message.generation_fence_token, expected_fence_token) do
             message_id
-            |> steps_for_message(actor)
-            |> Enum.filter(&(&1.status in [:waiting_provider, :waiting_tools]))
+            |> steps_for_message(actor, statuses: [:waiting_provider, :waiting_tools])
             |> Enum.each(fn step ->
               update_step!(step, %{status: :canceled, finished_at: now}, actor)
             end)
@@ -1005,8 +1004,7 @@ defmodule IntellectualClub.Generation.Persistence do
     transaction!(fn ->
       steps =
         message_id
-        |> steps_for_message(actor)
-        |> Enum.filter(&(&1.sequence >= from_sequence))
+        |> steps_for_message(actor, from_sequence: from_sequence)
         |> Enum.sort_by(& &1.sequence, :desc)
 
       if steps == [] do
@@ -1042,8 +1040,7 @@ defmodule IntellectualClub.Generation.Persistence do
     transaction!(fn ->
       steps =
         message_id
-        |> steps_for_message(actor)
-        |> Enum.filter(&(&1.sequence >= from_sequence))
+        |> steps_for_message(actor, from_sequence: from_sequence)
         |> Enum.sort_by(& &1.sequence, :desc)
 
       source_step = Enum.find(steps, &(&1.sequence == from_sequence))
@@ -1824,6 +1821,8 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Ash.get!(step_id,
       actor: actor,
       load: [
+        :raw_request,
+        :raw_response,
         items: [
           :tool_call_item_id,
           contents: [
@@ -1856,12 +1855,30 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Ash.read_one!(actor: actor)
   end
 
-  defp steps_for_message(message_id, actor) do
-    ChatMessageStep
-    |> Ash.Query.filter(chat_message_id == ^message_id)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.read!(actor: actor)
+  defp steps_for_message(message_id, actor, opts) do
+    query =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^message_id)
+      |> Ash.Query.select([:id, :owner_id, :chat_message_id, :sequence, :status])
+      |> maybe_filter_steps_from_sequence(Keyword.get(opts, :from_sequence))
+      |> maybe_filter_step_statuses(Keyword.get(opts, :statuses))
+      |> Ash.Query.sort(sequence: :asc, id: :asc)
+
+    Ash.read!(query, actor: actor)
   end
+
+  defp maybe_filter_steps_from_sequence(query, sequence)
+       when is_integer(sequence) and sequence > 0 do
+    Ash.Query.filter(query, sequence >= ^sequence)
+  end
+
+  defp maybe_filter_steps_from_sequence(query, _sequence), do: query
+
+  defp maybe_filter_step_statuses(query, statuses) when is_list(statuses) and statuses != [] do
+    Ash.Query.filter(query, status in ^statuses)
+  end
+
+  defp maybe_filter_step_statuses(query, _statuses), do: query
 
   defp list_tool_calls_for_step!(step_id) when is_integer(step_id) do
     actor = actor_for_step!(step_id)

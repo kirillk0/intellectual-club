@@ -468,7 +468,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     parent_message =
       Ash.get!(ChatMessage, parent.message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
@@ -505,7 +505,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     child_message =
       Ash.get!(ChatMessage, reference.generation_message_id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     [copied_step, followup_step] = Enum.sort_by(child_message.steps, & &1.sequence)

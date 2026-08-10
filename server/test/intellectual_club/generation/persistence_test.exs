@@ -71,7 +71,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     assert message.status == :generating
@@ -267,7 +267,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     assert message.token_count > 0
@@ -595,7 +595,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     assert message.status == :canceled
@@ -645,7 +645,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     assert message.status == :error
@@ -706,7 +706,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     assert message.status == :canceled
@@ -881,7 +881,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     [source_step, next_step] = Enum.sort_by(message.steps, & &1.sequence)
@@ -1026,7 +1026,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     message =
       Ash.get!(ChatMessage, message_id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     if message.status == status do

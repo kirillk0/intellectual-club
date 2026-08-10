@@ -36,7 +36,12 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert to_string(binding.reference_key) == to_string(fixture.file.external_id)
     assert count_files() == file_count_before + 1
 
-    persisted_step = Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false)
+    persisted_step =
+      Ash.get!(ChatMessageStep, fixture.target_step.id,
+        authorize?: false,
+        load: [:raw_request]
+      )
+
     assert persisted_step.raw_request == compact_request
 
     Process.sleep(2)
@@ -219,7 +224,10 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
 
     assert empty_request == %{"input" => []}
 
-    assert Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false).raw_request ==
+    assert Ash.get!(ChatMessageStep, fixture.target_step.id,
+             authorize?: false,
+             load: [:raw_request]
+           ).raw_request ==
              empty_request
 
     assert [] == bindings_for_step(fixture.target_step.id)

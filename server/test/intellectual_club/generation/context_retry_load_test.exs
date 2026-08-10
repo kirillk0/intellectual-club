@@ -5,11 +5,14 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
 
   use IntellectualClub.DataCase, async: false
 
+  require Ash.Query
+
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.Persistence
 
   test "prepare_retry/2 loads only the last step raw request for retry-last-step" do
     %{user: actor} = user_fixture()
@@ -58,6 +61,48 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
              "hello step 2"
 
     assert_single_retry_step_query(queries)
+  end
+
+  test "replace_steps_for_retry!/4 filters the retry range in SQL without loading raw payloads" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor, "Retry replacement load")
+
+    {message, [_step_1, _step_2, step_3]} =
+      create_retryable_assistant_message_with_steps!(chat, actor, :error, 3)
+
+    step_3 =
+      ChatMessageStep
+      |> Ash.Query.filter(id == ^step_3.id)
+      |> Ash.Query.select([:id, :raw_request])
+      |> Ash.read_one!(actor: actor)
+
+    {new_step_id, queries} =
+      capture_repo_queries(fn ->
+        Persistence.replace_steps_for_retry!(message.id, 3, step_3.raw_request)
+      end)
+
+    assert is_integer(new_step_id)
+
+    step_select_query =
+      Enum.find(queries, fn query ->
+        String.starts_with?(query, "SELECT") and
+          String.contains?(query, ~s(FROM "chat_message_steps")) and
+          String.contains?(query, ~s("sequence" >=))
+      end)
+
+    assert is_binary(step_select_query)
+    refute step_select_query =~ ~s("raw_request")
+    refute step_select_query =~ ~s("raw_response")
+
+    replacement =
+      ChatMessageStep
+      |> Ash.Query.filter(id == ^new_step_id)
+      |> Ash.Query.select([:id, :sequence, :status, :raw_request])
+      |> Ash.read_one!(actor: actor)
+
+    assert replacement.sequence == 3
+    assert replacement.status == :waiting_provider
+    assert replacement.raw_request == step_3.raw_request
   end
 
   defp create_chat!(actor, _title) do

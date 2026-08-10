@@ -152,7 +152,11 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
     source_step =
       Ash.get!(ChatMessageStep, step.id,
         actor: actor,
-        load: [request_files: [:reference_key, :source_file_external_id]]
+        load: [
+          :raw_request,
+          :raw_response,
+          request_files: [:reference_key, :source_file_external_id]
+        ]
       )
 
     ensure_request_markers_bound!(source_step)
@@ -256,7 +260,11 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
 
   defp materialize_authorized_step(%ChatMessageStep{id: step_id}, message_id, actor)
        when is_integer(step_id) do
-    with {:ok, %ChatMessageStep{} = step} <- Ash.get(ChatMessageStep, step_id, actor: actor),
+    with {:ok, %ChatMessageStep{} = step} <-
+           ChatMessageStep
+           |> Ash.Query.filter(id == ^step_id)
+           |> Ash.Query.select([:id, :chat_message_id, :raw_request])
+           |> Ash.read_one(actor: actor),
          true <- step.chat_message_id == message_id,
          {:ok, _compact_request} <-
            RequestImages.materialize_and_persist(step.raw_request || %{}, step.id) do

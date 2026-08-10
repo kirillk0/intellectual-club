@@ -438,7 +438,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     message =
       Ash.get!(ChatMessage, message_id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     if message.status in wanted do
@@ -466,7 +466,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     message =
       Ash.get!(ChatMessage, message_id,
         actor: actor,
-        load: [steps: [items: [:contents]]]
+        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
     steps = ordered_steps(message)

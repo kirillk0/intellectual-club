@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   use IntellectualClubWeb, :controller
 
+  require Ash.Query
   require Logger
 
   alias IntellectualClub.Chat.ContentFiles
@@ -373,7 +374,17 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       step_id = String.to_integer(step_id)
       kind = Map.get(params, "kind", "both")
 
-      step = Ash.get!(IntellectualClub.Chat.ChatMessageStep, step_id, actor: actor)
+      step =
+        IntellectualClub.Chat.ChatMessageStep
+        |> Ash.Query.filter(id == ^step_id)
+        |> Ash.Query.select([
+          :id,
+          :chat_message_id,
+          :sequence,
+          :raw_request,
+          :raw_response
+        ])
+        |> Ash.read_one!(actor: actor)
 
       if step.chat_message_id != message_id do
         conn

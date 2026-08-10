@@ -236,7 +236,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000
 
-    persisted_step = Ash.get!(ChatMessageStep, step_id, actor: actor)
+    persisted_step = load_step_raw!(step_id, actor)
     assert compact_image_url(persisted_step.raw_request) == compact_image_url(raw_request)
     refute inspect(persisted_step.raw_request) =~ ";base64,"
   end
@@ -272,7 +272,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     assert first_binding.file.sha256 == second_binding.file.sha256
 
     assert Enum.all?([first_step_id, second_step_id], fn id ->
-             step = Ash.get!(ChatMessageStep, id, actor: actor)
+             step = load_step_raw!(id, actor)
              compact_image_url(step.raw_request) == compact_image_url(raw_request)
            end)
   end
@@ -338,7 +338,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     assert new_binding.file.sha256 == rendition_sha
     assert FilesystemStorage.exists?(rendition_sha)
 
-    replacement = Ash.get!(ChatMessageStep, new_step_id, actor: actor)
+    replacement = load_step_raw!(new_step_id, actor)
     assert replacement.sequence == 1
     assert replacement.status == :waiting_provider
     assert replacement.raw_request == compact_request
@@ -456,6 +456,13 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.load(:file)
     |> Ash.read!(authorize?: false)
+  end
+
+  defp load_step_raw!(step_id, actor) do
+    ChatMessageStep
+    |> Ash.Query.filter(id == ^step_id)
+    |> Ash.Query.select([:id, :sequence, :status, :raw_request, :raw_response])
+    |> Ash.read_one!(actor: actor)
   end
 
   defp count_files_for_sha(sha256) do

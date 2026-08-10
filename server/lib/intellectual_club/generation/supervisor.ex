@@ -15,6 +15,7 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.QueueCoordinator
+  alias IntellectualClub.Generation.Recovery
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
 
@@ -226,21 +227,7 @@ defmodule IntellectualClub.Generation.Supervisor do
   end
 
   def recover_orphaned_generations_async do
-    Task.start(fn ->
-      try do
-        recover_orphaned_generations()
-      rescue
-        exception ->
-          Logger.warning(
-            "Failed to run orphaned generation recovery on startup: #{Exception.message(exception)}"
-          )
-      catch
-        :exit, reason ->
-          Logger.warning("Orphaned generation recovery exited on startup: #{inspect(reason)}")
-      end
-    end)
-
-    :ok
+    Recovery.request()
   end
 
   def recover_orphaned_generations do
@@ -383,6 +370,7 @@ defmodule IntellectualClub.Generation.Supervisor do
        }} ->
         ChatMessageStep
         |> Ash.Query.filter(chat_message_id == ^message_id)
+        |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
         |> Ash.Query.sort(sequence: :desc, id: :desc)
         |> Ash.Query.limit(1)
         |> Ash.read_one(actor: actor)
