@@ -12,15 +12,21 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
 
   @max_claim_retry_ms 5_000
   @max_persist_retry_ms 5_000
+  @max_wait_retry_ms 5_000
 
   defstruct [
     :task_id,
     :task,
     :execution_task,
+    :generation_monitor_ref,
+    :generation_pid,
+    :generation_message_id,
     :pending_result,
     :reply_to,
     claim_attempts: 0,
-    persist_attempts: 0
+    persist_attempts: 0,
+    wait_attempts: 0,
+    waiting?: false
   ]
 
   def start_link(opts) when is_list(opts) do
@@ -62,17 +68,25 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
 
   defp handle_cancel_without_successful_result(from, state) do
     with {:ok, %BackgroundTask{} = task} <- BackgroundTasks.fetch_internal(state.task_id) do
-      case cancel_adapter(task) do
-        :ok ->
-          shutdown_result = shutdown_execution_task(state.execution_task)
-          finish_cancel_after_shutdown(state, task, from, shutdown_result)
+      case completed_wait_result(state, task) do
+        {:ok, result} ->
+          state = clear_generation_monitor(state)
+          _ = shutdown_execution_task(state.execution_task)
+          persist_or_retry(%{state | execution_task: nil, reply_to: from}, result)
 
-        {:error, reason} ->
-          finish_cancel_adapter_error(state, task, from, reason, state.pending_result)
+        :not_completed ->
+          case cancel_adapter(task) do
+            :ok ->
+              shutdown_result = shutdown_execution_task(state.execution_task)
+              finish_cancel_after_shutdown(state, task, from, shutdown_result)
 
-        _other ->
-          shutdown_result = shutdown_execution_task(state.execution_task)
-          finish_cancel_after_shutdown(state, task, from, shutdown_result)
+            {:error, reason} ->
+              finish_cancel_adapter_error(state, task, from, reason, state.pending_result)
+
+            _other ->
+              shutdown_result = shutdown_execution_task(state.execution_task)
+              finish_cancel_after_shutdown(state, task, from, shutdown_result)
+          end
       end
     else
       {:error, reason} -> {:stop, :normal, {:error, reason}, state}
@@ -82,6 +96,18 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
   @impl true
   def handle_info(:retry_claim, state) do
     attempt_claim(state)
+  end
+
+  def handle_info(
+        {ref, {:waiting, _runtime_reference}},
+        %{execution_task: %Task{ref: ref}} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+
+    state
+    |> Map.put(:execution_task, nil)
+    |> Map.put(:waiting?, true)
+    |> reconcile_wait()
   end
 
   def handle_info({ref, result}, %{execution_task: %Task{ref: ref}} = state) do
@@ -101,6 +127,23 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
     else
       {:stop, :normal, %{state | execution_task: nil}}
     end
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, pid, _reason},
+        %{generation_monitor_ref: ref, generation_pid: pid} = state
+      ) do
+    state
+    |> clear_generation_monitor(flush?: false)
+    |> reconcile_wait()
+  end
+
+  def handle_info(:reconcile_wait, %{waiting?: true, generation_monitor_ref: nil} = state) do
+    reconcile_wait(state)
+  end
+
+  def handle_info({:cancel_wait_runtime, result}, state) do
+    cancel_wait_runtime_before_failure(state, result)
   end
 
   def handle_info(:persist_result, %{pending_result: result} = state) when not is_nil(result) do
@@ -218,6 +261,265 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
     kind, reason -> {:error, {kind, reason}}
   end
 
+  defp reconcile_adapter(%BackgroundTask{} = task) do
+    with {:ok, module} <- AdapterRegistry.fetch(task.adapter),
+         true <- function_exported?(module, :reconcile_background, 1) do
+      apply(module, :reconcile_background, [task])
+    else
+      false -> {:error, {:adapter_callback_missing, :reconcile_background, task.adapter}}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp reconcile_adapter_read_only(%BackgroundTask{} = task) do
+    with {:ok, module} <- AdapterRegistry.fetch(task.adapter),
+         true <- function_exported?(module, :reconcile_background_read_only, 1) do
+      apply(module, :reconcile_background_read_only, [task])
+    else
+      false ->
+        {:retry, {:adapter_callback_missing, :reconcile_background_read_only, task.adapter}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp reconcile_wait(state) do
+    case BackgroundTasks.fetch_internal(state.task_id) do
+      {:ok, %BackgroundTask{status: status}} when status in [:completed, :failed, :canceled] ->
+        {:stop, :normal, clear_generation_monitor(state)}
+
+      {:ok, %BackgroundTask{cancel_requested: true} = task} ->
+        reconcile_requested_cancel(state, task)
+
+      {:ok, %BackgroundTask{} = task} ->
+        handle_reconcile_result(state, task, reconcile_adapter(task))
+
+      {:error, :not_found} ->
+        {:stop, :normal, clear_generation_monitor(state)}
+
+      {:error, reason} ->
+        retry_wait(state, reason)
+    end
+  rescue
+    exception -> retry_wait(state, {:exception, Exception.message(exception)})
+  catch
+    kind, reason -> retry_wait(state, {kind, reason})
+  end
+
+  defp handle_reconcile_result(state, _task, result) do
+    cond do
+      successful_execution_result?(result) ->
+        state
+        |> clear_generation_monitor()
+        |> Map.put(:waiting?, false)
+        |> persist_or_retry(result)
+
+      true ->
+        do_handle_reconcile_result(state, result)
+    end
+  end
+
+  defp do_handle_reconcile_result(
+         state,
+         {:waiting, %{generation_message_id: message_id, pid: pid}}
+       )
+       when is_integer(message_id) and is_pid(pid) do
+    monitor_generation(state, message_id, pid)
+  end
+
+  defp do_handle_reconcile_result(state, {:retry, reason}) do
+    retry_wait(clear_generation_monitor(state), reason)
+  end
+
+  defp do_handle_reconcile_result(state, result)
+       when result == :canceled or (is_tuple(result) and elem(result, 0) == :failed) do
+    state
+    |> clear_generation_monitor()
+    |> Map.put(:waiting?, false)
+    |> persist_or_retry(result)
+  end
+
+  defp do_handle_reconcile_result(state, {:error, _reason} = error) do
+    state
+    |> clear_generation_monitor()
+    |> cancel_wait_runtime_before_failure(error)
+  end
+
+  defp do_handle_reconcile_result(state, result) do
+    state
+    |> clear_generation_monitor()
+    |> cancel_wait_runtime_before_failure({:error, {:invalid_reconcile_result, result}})
+  end
+
+  defp monitor_generation(state, message_id, pid) do
+    state = clear_generation_monitor(state)
+    monitor_ref = Process.monitor(pid)
+
+    state = %{
+      state
+      | generation_monitor_ref: monitor_ref,
+        generation_pid: pid,
+        generation_message_id: message_id,
+        wait_attempts: 0,
+        waiting?: true
+    }
+
+    case BackgroundTasks.fetch_internal(state.task_id) do
+      {:ok, %BackgroundTask{cancel_requested: true} = task} ->
+        state
+        |> clear_generation_monitor()
+        |> reconcile_requested_cancel(task)
+
+      {:ok, %BackgroundTask{} = task} ->
+        case reconcile_adapter(task) do
+          {:waiting, %{generation_message_id: ^message_id, pid: ^pid}} ->
+            {:noreply, state}
+
+          result ->
+            state
+            |> clear_generation_monitor()
+            |> handle_reconcile_result(task, result)
+        end
+
+      {:error, :not_found} ->
+        {:stop, :normal, clear_generation_monitor(state)}
+
+      {:error, reason} ->
+        state
+        |> clear_generation_monitor()
+        |> retry_wait(reason)
+    end
+  end
+
+  defp retry_wait(state, reason) do
+    attempts = state.wait_attempts + 1
+    delay_ms = retry_delay(attempts, @max_wait_retry_ms)
+
+    Logger.debug(
+      "Background task generation wait deferred task_id=#{state.task_id} " <>
+        "attempt=#{attempts}: #{inspect(reason)}"
+    )
+
+    Process.send_after(self(), :reconcile_wait, delay_ms)
+    {:noreply, %{state | wait_attempts: attempts, waiting?: true}}
+  end
+
+  defp reconcile_requested_cancel(state, task) do
+    case cancel_adapter(task) do
+      {:error, reason} ->
+        retry_wait(clear_generation_monitor(state), {:cancel_failed, reason})
+
+      _other ->
+        handle_requested_cancel_reconcile_result(
+          clear_generation_monitor(state),
+          reconcile_adapter_read_only(task)
+        )
+    end
+  end
+
+  defp handle_requested_cancel_reconcile_result(state, result)
+       when result == :canceled or
+              (is_tuple(result) and elem(result, 0) in [:completed, :failed]) do
+    state
+    |> Map.put(:waiting?, false)
+    |> persist_or_retry(result)
+  end
+
+  defp handle_requested_cancel_reconcile_result(state, {:error, reason}) do
+    retry_wait(state, {:read_only_reconcile_failed, reason})
+  end
+
+  defp handle_requested_cancel_reconcile_result(state, {:retry, reason}) do
+    retry_wait(state, reason)
+  end
+
+  defp handle_requested_cancel_reconcile_result(state, {:waiting, reference}) do
+    retry_wait(state, {:cancel_not_terminal, reference})
+  end
+
+  defp handle_requested_cancel_reconcile_result(state, result) do
+    retry_wait(state, {:invalid_read_only_reconcile_result, result})
+  end
+
+  defp cancel_wait_runtime_before_failure(state, result) do
+    case BackgroundTasks.fetch_internal(state.task_id) do
+      {:ok, %BackgroundTask{status: status}} when status in [:completed, :failed, :canceled] ->
+        {:stop, :normal, clear_generation_monitor(state)}
+
+      {:ok, %BackgroundTask{} = task} ->
+        case cancel_adapter(task) do
+          {:error, reason} ->
+            retry_wait_runtime_cancel(clear_generation_monitor(state), result, reason)
+
+          _other ->
+            state
+            |> clear_generation_monitor()
+            |> Map.put(:waiting?, false)
+            |> persist_or_retry(result)
+        end
+
+      {:error, :not_found} ->
+        {:stop, :normal, clear_generation_monitor(state)}
+
+      {:error, reason} ->
+        retry_wait_runtime_cancel(clear_generation_monitor(state), result, reason)
+    end
+  rescue
+    exception ->
+      retry_wait_runtime_cancel(
+        clear_generation_monitor(state),
+        result,
+        {:exception, Exception.message(exception)}
+      )
+  catch
+    kind, reason ->
+      retry_wait_runtime_cancel(clear_generation_monitor(state), result, {kind, reason})
+  end
+
+  defp retry_wait_runtime_cancel(state, result, reason) do
+    attempts = state.wait_attempts + 1
+    delay_ms = retry_delay(attempts, @max_wait_retry_ms)
+
+    Logger.warning(
+      "Background task wait failure cleanup deferred task_id=#{state.task_id} " <>
+        "attempt=#{attempts}: #{inspect(reason)}"
+    )
+
+    Process.send_after(self(), {:cancel_wait_runtime, result}, delay_ms)
+    {:noreply, %{state | wait_attempts: attempts, waiting?: true}}
+  end
+
+  defp completed_wait_result(_state, %BackgroundTask{} = task) do
+    result = reconcile_adapter_read_only(task)
+    if successful_execution_result?(result), do: {:ok, result}, else: :not_completed
+  end
+
+  defp clear_generation_monitor(state, opts \\ []) do
+    case state.generation_monitor_ref do
+      ref when is_reference(ref) ->
+        if Keyword.get(opts, :flush?, true), do: Process.demonitor(ref, [:flush])
+
+      _other ->
+        :ok
+    end
+
+    %{
+      state
+      | generation_monitor_ref: nil,
+        generation_pid: nil,
+        generation_message_id: nil
+    }
+  end
+
   defp persist_execution_result(task, {:ok, %ExecutionResult{} = result}) do
     BackgroundTasks.mark_completed(task, result)
   end
@@ -315,6 +617,7 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
   defp successful_execution_result?(_result), do: false
 
   defp retry_persistence(state, result, reason) do
+    state = clear_generation_monitor(state)
     attempts = state.persist_attempts + 1
     delay_ms = retry_delay(attempts, @max_persist_retry_ms)
 
@@ -325,16 +628,32 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
 
     Process.send_after(self(), :persist_result, delay_ms)
 
-    {:noreply, %{state | pending_result: result, persist_attempts: attempts, execution_task: nil}}
+    {:noreply,
+     %{
+       state
+       | pending_result: result,
+         persist_attempts: attempts,
+         execution_task: nil,
+         waiting?: false
+     }}
   end
 
   defp finish_persistence(state) do
+    state = clear_generation_monitor(state)
+
     if not is_nil(state.reply_to) do
       GenServer.reply(state.reply_to, :ok)
     end
 
     {:stop, :normal,
-     %{state | pending_result: nil, reply_to: nil, persist_attempts: 0, execution_task: nil}}
+     %{
+       state
+       | pending_result: nil,
+         reply_to: nil,
+         persist_attempts: 0,
+         execution_task: nil,
+         waiting?: false
+     }}
   end
 
   defp retry_delay(attempts, maximum_ms) do

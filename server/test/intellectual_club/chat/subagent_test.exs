@@ -10,6 +10,7 @@ defmodule IntellectualClub.Chat.SubagentTest do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Worker, as: GenerationWorker
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ToolInstance
 
@@ -67,6 +68,77 @@ defmodule IntellectualClub.Chat.SubagentTest do
     assert_receive {:phase, :reference, ^reference}
     assert_receive {:phase, :cancel, ^reference}
     refute_receive {:phase, :provider, ^reference}, 10
+  end
+
+  test "await snapshot does not materialize snapshots while the generation process is alive" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor, nil, nil, true)
+    message = create_generation_message!(chat, actor)
+    test_process = self()
+
+    generation_pid =
+      spawn(fn ->
+        :yes = :global.register_name(GenerationWorker.global_name(message.id), self())
+        send(test_process, {:generation_registered, self()})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(generation_pid), do: Process.exit(generation_pid, :kill)
+    end)
+
+    assert_receive {:generation_registered, ^generation_pid}
+
+    reference = %{
+      primitive: :spawn,
+      chat_id: chat.id,
+      message_id: message.id,
+      generation_message_id: message.id,
+      url: "/chats/#{chat.id}"
+    }
+
+    snapshot_fun = fn ^reference, ^actor, nil ->
+      send(test_process, :snapshot_materialized)
+      {:ok, %{status: :completed, result: %{text: "done", raw: %{}}}}
+    end
+
+    waiter = Task.async(fn -> Subagent.await_snapshot(reference, actor, snapshot_fun) end)
+
+    refute_receive :snapshot_materialized, 250
+    set_message_status!(message, :done, actor)
+    send(generation_pid, :stop)
+
+    assert {:ok, %{status: :completed}} = Task.await(waiter, 2_000)
+    assert_receive :snapshot_materialized
+    refute_receive :snapshot_materialized, 50
+  end
+
+  test "read-only background reconciliation never resumes an orphaned generation" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor, nil, nil, true)
+    message = create_generation_message!(chat, actor)
+
+    reference = %{
+      primitive: :spawn,
+      chat_id: chat.id,
+      message_id: message.id,
+      generation_message_id: message.id,
+      url: "/chats/#{chat.id}"
+    }
+
+    snapshot_fun = fn _reference, _actor, _cursor ->
+      flunk("a non-terminal read-only reconciliation must not materialize a snapshot")
+    end
+
+    assert {:retry, {:generation_worker_not_ready, message_id}} =
+             Subagent.reconcile_background_wait_read_only(reference, actor, snapshot_fun)
+
+    assert message_id == message.id
+    assert :not_found == IntellectualClub.Generation.Supervisor.get_generation_state(message.id)
+    assert {:ok, %{status: :generating}} = Ash.get(ChatMessage, message.id, actor: actor)
   end
 
   test "nested limit counts mixed spawn-fork and spawn-handoff-spawn creation edges" do

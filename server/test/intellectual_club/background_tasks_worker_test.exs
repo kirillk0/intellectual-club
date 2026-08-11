@@ -8,6 +8,10 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Tools.Drivers.Outlet
+  alias IntellectualClub.Tools.Drivers.Ssh
+  alias IntellectualClub.Tools.ToolInstance
 
   test "worker retries an initial database claim failure" do
     %{user: actor} = user_fixture()
@@ -82,6 +86,165 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
     assert {:ok, %{status: :canceled}} = BackgroundTasks.fetch_internal(task.id)
   end
 
+  test "reconciliation errors cancel the adapter runtime before failing the task" do
+    %{user: actor} = user_fixture()
+
+    task =
+      create_background_task!(actor, %{
+        status: :running,
+        started_at: DateTime.utc_now()
+      })
+
+    test_process = self()
+
+    assert :ok =
+             Ssh.register_background_cancel_ref(
+               task.id,
+               make_ref(),
+               1,
+               fn _cancel_ref -> send(test_process, :adapter_runtime_canceled) end
+             )
+
+    on_exit(fn ->
+      Registry.unregister(
+        IntellectualClub.BackgroundTasks.ProcessRegistry,
+        {:ssh_background_command, task.id}
+      )
+    end)
+
+    state = %Worker{task_id: task.id, task: task, waiting?: true}
+
+    assert {:stop, :normal, %Worker{waiting?: false}} =
+             Worker.handle_info(:reconcile_wait, state)
+
+    assert_receive :adapter_runtime_canceled
+    assert {:ok, %{status: :failed}} = BackgroundTasks.fetch_internal(task.id)
+  end
+
+  test "a requested cancel does not resume an orphaned subagent generation" do
+    %{user: actor} = user_fixture()
+    source = create_source_message!(actor)
+    target = create_source_message!(actor)
+
+    task =
+      create_background_task!(actor, %{
+        adapter: "spawn",
+        kind: "spawn",
+        function_name: "spawn",
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now(),
+        source_chat_id: source.chat.id,
+        source_message_id: source.message.id,
+        target_chat_id: target.chat.id,
+        runner_ref: spawn_runner_ref(target)
+      })
+
+    state = %Worker{task_id: task.id, task: task, waiting?: true}
+
+    assert {:stop, :normal, %Worker{waiting?: false}} =
+             Worker.handle_info(:reconcile_wait, state)
+
+    assert :not_found == GenerationSupervisor.get_generation_state(target.message.id)
+    assert {:ok, %{status: :canceled}} = Ash.get(ChatMessage, target.message.id, actor: actor)
+    assert {:ok, %{status: :canceled}} = BackgroundTasks.fetch_internal(task.id)
+  end
+
+  test "durable subagent completion wins cancel before the waiting reply is handled" do
+    %{user: actor} = user_fixture()
+    source = create_source_message!(actor)
+    target = create_source_message!(actor)
+
+    _done =
+      target.message
+      |> Ash.Changeset.for_update(
+        :set_generation_state,
+        %{status: :done, finished_at: DateTime.utc_now()},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    task =
+      create_background_task!(actor, %{
+        adapter: "spawn",
+        kind: "spawn",
+        function_name: "spawn",
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now(),
+        source_chat_id: source.chat.id,
+        source_message_id: source.message.id,
+        target_chat_id: target.chat.id,
+        runner_ref: spawn_runner_ref(target)
+      })
+
+    execution_task =
+      Task.Supervisor.async_nolink(
+        IntellectualClub.BackgroundTasks.ExecutionSupervisor,
+        fn -> Process.sleep(:infinity) end
+      )
+
+    reply_tag = make_ref()
+
+    state = %Worker{
+      task_id: task.id,
+      task: task,
+      execution_task: execution_task,
+      waiting?: false
+    }
+
+    assert {:stop, :normal, %Worker{waiting?: false}} =
+             Worker.handle_call(:cancel, {self(), reply_tag}, state)
+
+    assert_receive {^reply_tag, :ok}
+
+    assert {:ok, %{status: :completed, cancel_requested: true}} =
+             BackgroundTasks.fetch_internal(task.id)
+  end
+
+  test "adapter cancel errors during reconciliation return a valid retry tuple" do
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "outlet",
+          name: "Offline outlet #{System.unique_integer([:positive])}",
+          alias: "offline_outlet_#{System.unique_integer([:positive])}",
+          config: Outlet.default_config(),
+          secrets: %{"token" => Ecto.UUID.generate()}
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    task =
+      create_background_task!(actor, %{
+        adapter: "outlet",
+        kind: "outlet_function",
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now(),
+        tool_instance_id: tool_instance.id,
+        runner_ref: %{
+          "runner_id" => "offline-runner",
+          "runner_session_id" => "offline-session"
+        }
+      })
+
+    state = %Worker{task_id: task.id, task: task, waiting?: true}
+
+    assert {:noreply, %Worker{waiting?: true, wait_attempts: 1}} =
+             Worker.handle_info(:reconcile_wait, state)
+
+    assert_receive :reconcile_wait, 250
+
+    assert {:ok, %{status: :running, cancel_requested: true}} =
+             BackgroundTasks.fetch_internal(task.id)
+  end
+
   defp create_background_task!(actor, attrs) do
     {cancel_requested, attrs} = Map.pop(attrs, :cancel_requested, false)
 
@@ -127,6 +290,15 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
       |> Ash.create!(actor: actor)
 
     %{chat: chat, message: message}
+  end
+
+  defp spawn_runner_ref(%{message: %ChatMessage{} = message}) do
+    %{
+      "spawn_prompt_message_id" => message.parent_id,
+      "spawn_message_id" => message.id,
+      "spawn_generation_message_id" => message.id,
+      "spawn_url" => "/chats/#{message.chat_id}"
+    }
   end
 
   defp wait_until(fun, timeout_ms \\ 2_000) when is_function(fun, 0) do

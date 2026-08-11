@@ -1106,6 +1106,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   test "background spawn persists spawn refs and completes through its adapter" do
+    use_delayed_demo_stream!()
     %{user: actor} = user_fixture()
     brief = "Background spawn"
     prompt = "Complete independently."
@@ -1114,6 +1115,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     assert {:ok, launch} =
              BackgroundTasks.start_spawn(parent.tool_instance, brief, prompt, context)
+
+    assert_event_driven_background_wait!(launch.raw["background_task_id"])
 
     snapshot =
       wait_for_background_status!(launch.raw["background_task_id"], actor.id, "completed", 6_000)
@@ -1380,6 +1383,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   test "background fork completes through the durable task adapter" do
+    use_delayed_demo_stream!()
     %{user: actor} = user_fixture()
     task = "Complete in the background"
     parent = create_parent_fork_call!(actor, task)
@@ -1388,6 +1392,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert {:ok, launch} = BackgroundTasks.start_fork(parent.tool_instance, task, context)
     task_id = launch.raw["background_task_id"]
     assert is_binary(task_id)
+
+    assert_event_driven_background_wait!(task_id)
 
     snapshot = wait_for_background_status!(task_id, actor.id, "completed", 6_000)
 
@@ -2068,6 +2074,70 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp assert_event_driven_background_wait!(task_id) when is_binary(task_id) do
+    assert :ok =
+             wait_until(
+               fn ->
+                 case Registry.lookup(
+                        IntellectualClub.BackgroundTasks.ProcessRegistry,
+                        task_id
+                      ) do
+                   [{worker_pid, _value}] ->
+                     case safe_worker_state(worker_pid) do
+                       %{} = state ->
+                         execution_children =
+                           Task.Supervisor.children(
+                             IntellectualClub.BackgroundTasks.ExecutionSupervisor
+                           )
+
+                         state.waiting? == true and is_nil(state.execution_task) and
+                           is_pid(state.generation_pid) and
+                           is_reference(state.generation_monitor_ref) and
+                           worker_pid not in execution_children
+
+                       nil ->
+                         false
+                     end
+
+                   [] ->
+                     false
+                 end
+               end,
+               5_000
+             )
+  end
+
+  defp safe_worker_state(worker_pid) when is_pid(worker_pid) do
+    :sys.get_state(worker_pid)
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp use_delayed_demo_stream! do
+    previous = Application.get_env(:intellectual_club, :demo_chunk_delay_ms)
+    Application.put_env(:intellectual_club, :demo_chunk_delay_ms, 10)
+
+    on_exit(fn -> restore_env(:demo_chunk_delay_ms, previous) end)
+  end
+
+  defp wait_until(fun, timeout_ms) when is_function(fun, 0) and is_integer(timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        do_wait_until(fun, deadline)
+      else
+        :timeout
+      end
+    end
   end
 
   defp create_fork_background_task!(actor, parent, task, status) do

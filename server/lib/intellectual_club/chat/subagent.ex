@@ -25,7 +25,7 @@ defmodule IntellectualClub.Chat.Subagent do
 
   @creation_relation_kinds [:fork, :spawn]
   @max_parent_hops 64
-  @poll_interval_ms 100
+  @max_wait_retry_ms 5_000
   @progress_page_max_bytes 48_000
   @parent_tool_result_unique_constraint "chat_message_items_unique_step_sequence_index"
   @parent_tool_result_race_retries 1
@@ -208,17 +208,8 @@ defmodule IntellectualClub.Chat.Subagent do
           {:ok, map()} | {:error, term()}
   def await_snapshot(reference, actor, snapshot_fun)
       when is_map(reference) and is_function(snapshot_fun, 3) do
-    case snapshot_fun.(reference, actor, nil) do
-      {:ok, %{status: :running}} ->
-        Process.sleep(@poll_interval_ms)
-        await_snapshot(reference, actor, snapshot_fun)
-
-      {:ok, %{status: status} = snapshot}
-      when status in [:completed, :failed, :canceled] ->
-        {:ok, snapshot}
-
-      {:error, _reason} = error ->
-        error
+    with {:ok, normalized_reference} <- normalize_reference(reference, actor) do
+      do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, 0)
     end
   end
 
@@ -226,6 +217,65 @@ defmodule IntellectualClub.Chat.Subagent do
   @spec await_snapshot(map(), User.t()) :: {:ok, map()} | {:error, term()}
   def await_snapshot(reference, %User{} = actor) when is_map(reference) do
     await_snapshot(reference, actor, &snapshot/3)
+  end
+
+  @doc false
+  @spec reconcile_background_wait(map(), User.t(), (map(), User.t(), nil -> term())) ::
+          {:waiting, %{generation_message_id: pos_integer(), pid: pid()}}
+          | {:retry, term()}
+          | {:completed, ExecutionResult.t()}
+          | {:failed, term()}
+          | :canceled
+          | {:error, term()}
+  def reconcile_background_wait(reference, actor, snapshot_fun \\ &snapshot/3)
+
+  def reconcile_background_wait(reference, %User{} = actor, snapshot_fun)
+      when is_map(reference) and is_function(snapshot_fun, 3) do
+    do_reconcile_background_wait(reference, actor, snapshot_fun, resume?: true)
+  end
+
+  @doc false
+  @spec reconcile_background_wait_read_only(
+          map(),
+          User.t(),
+          (map(), User.t(), nil -> term())
+        ) ::
+          {:waiting, %{generation_message_id: pos_integer(), pid: pid()}}
+          | {:retry, term()}
+          | {:completed, ExecutionResult.t()}
+          | {:failed, term()}
+          | :canceled
+          | {:error, term()}
+  def reconcile_background_wait_read_only(reference, actor, snapshot_fun \\ &snapshot/3)
+
+  def reconcile_background_wait_read_only(reference, %User{} = actor, snapshot_fun)
+      when is_map(reference) and is_function(snapshot_fun, 3) do
+    do_reconcile_background_wait(reference, actor, snapshot_fun, resume?: false)
+  end
+
+  defp do_reconcile_background_wait(reference, actor, snapshot_fun, opts) do
+    with {:ok, normalized_reference} <- normalize_reference(reference, actor),
+         {:ok, state} <-
+           resolve_wait_chain(normalized_reference.generation_message_id, actor, opts) do
+      case state do
+        %{status: :running, generation_message_id: message_id, pid: pid}
+        when is_integer(message_id) and is_pid(pid) ->
+          {:waiting, %{generation_message_id: message_id, pid: pid}}
+
+        %{status: :retry, generation_message_id: message_id} ->
+          {:retry, {:generation_worker_not_ready, message_id}}
+
+        %{status: status} when status in [:completed, :failed, :canceled] ->
+          case snapshot_fun.(reference, actor, nil) do
+            {:ok, terminal} -> background_execution_result(terminal)
+            {:error, _reason} = error -> error
+          end
+      end
+    end
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc false
@@ -326,9 +376,13 @@ defmodule IntellectualClub.Chat.Subagent do
   def resume_generation_if_needed(message_id, %User{} = actor) when is_integer(message_id) do
     message = Ash.get!(ChatMessage, message_id, actor: actor)
 
+    resume_loaded_generation_if_needed(message, actor)
+  end
+
+  defp resume_loaded_generation_if_needed(%ChatMessage{} = message, actor) do
     if message.status == :generating and
-         GenerationSupervisor.get_generation_state(message_id) == :not_found do
-      case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
+         is_nil(GenerationSupervisor.generation_worker_pid(message.id)) do
+      case GenerationSupervisor.resume_orphaned_message(message.id, actor: actor) do
         {:ok, _context} ->
           :ok
 
@@ -336,7 +390,7 @@ defmodule IntellectualClub.Chat.Subagent do
           :ok
 
         {:error, :no_steps_to_retry} ->
-          case QueueCoordinator.cancel_generation(message_id,
+          case QueueCoordinator.cancel_generation(message.id,
                  error_detail: "Orphaned generation (worker not found)"
                ) do
             result when result in [:canceled, :not_generating, :not_found] -> :ok
@@ -475,6 +529,227 @@ defmodule IntellectualClub.Chat.Subagent do
       {:error, _reason} = error -> error
       _other -> {:error, :invalid_subagent_reference}
     end
+  end
+
+  defp do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, retry_attempt) do
+    case resolve_wait_chain(normalized_reference.generation_message_id, actor) do
+      {:ok, %{status: :running, pid: pid} = state} when is_pid(pid) ->
+        await_generation_process(
+          reference,
+          normalized_reference,
+          actor,
+          snapshot_fun,
+          state,
+          retry_attempt
+        )
+
+      {:ok, %{status: :retry}} ->
+        receive do
+        after
+          wait_retry_delay(retry_attempt) ->
+            do_await_snapshot(
+              reference,
+              normalized_reference,
+              actor,
+              snapshot_fun,
+              retry_attempt + 1
+            )
+        end
+
+      {:ok, %{status: status}} when status in [:completed, :failed, :canceled] ->
+        case snapshot_fun.(reference, actor, nil) do
+          {:ok, %{status: :running}} ->
+            do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, 0)
+
+          {:ok, %{status: terminal_status} = snapshot}
+          when terminal_status in [:completed, :failed, :canceled] ->
+            {:ok, snapshot}
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp await_generation_process(
+         reference,
+         normalized_reference,
+         actor,
+         snapshot_fun,
+         %{generation_message_id: message_id, pid: pid},
+         retry_attempt
+       ) do
+    monitor_ref = Process.monitor(pid)
+
+    case resolve_wait_chain(normalized_reference.generation_message_id, actor) do
+      {:ok, %{status: :running, generation_message_id: ^message_id, pid: ^pid}} ->
+        receive do
+          {:DOWN, ^monitor_ref, :process, ^pid, _reason} ->
+            do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, 0)
+        end
+
+      other ->
+        Process.demonitor(monitor_ref, [:flush])
+
+        continue_await_after_observation(
+          other,
+          reference,
+          normalized_reference,
+          actor,
+          snapshot_fun,
+          retry_attempt
+        )
+    end
+  end
+
+  defp continue_await_after_observation(
+         {:ok, %{status: status}},
+         reference,
+         normalized_reference,
+         actor,
+         snapshot_fun,
+         retry_attempt
+       )
+       when status in [:running, :retry, :completed, :failed, :canceled] do
+    do_await_snapshot(
+      reference,
+      normalized_reference,
+      actor,
+      snapshot_fun,
+      retry_attempt
+    )
+  end
+
+  defp continue_await_after_observation(
+         {:error, _reason} = error,
+         _reference,
+         _normalized_reference,
+         _actor,
+         _snapshot_fun,
+         _retry_attempt
+       ),
+       do: error
+
+  defp wait_retry_delay(attempt) when is_integer(attempt) and attempt >= 0 do
+    min(@max_wait_retry_ms, trunc(:math.pow(2, min(attempt, 8))) * 25)
+  end
+
+  defp resolve_wait_chain(message_id, actor, opts \\ []) when is_integer(message_id) do
+    do_resolve_wait_chain(message_id, actor, MapSet.new(), 0, opts)
+  end
+
+  defp do_resolve_wait_chain(_message_id, _actor, _visited, depth, _opts)
+       when depth >= @max_parent_hops do
+    {:ok, %{status: :failed, error: "Subagent handoff chain exceeded the supported depth."}}
+  end
+
+  defp do_resolve_wait_chain(message_id, actor, visited, depth, opts)
+       when is_integer(message_id) do
+    if MapSet.member?(visited, message_id) do
+      {:ok, %{status: :failed, error: "Subagent handoff chain contains a cycle."}}
+    else
+      case load_wait_message(message_id, actor) do
+        {:ok, %ChatMessage{} = message} ->
+          resolve_wait_message(message, actor, visited, depth, opts)
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp resolve_wait_message(
+         %ChatMessage{status: :generating} = message,
+         actor,
+         visited,
+         depth,
+         opts
+       ) do
+    case GenerationSupervisor.generation_worker_pid(message.id) do
+      pid when is_pid(pid) ->
+        {:ok, %{status: :running, generation_message_id: message.id, pid: pid}}
+
+      nil ->
+        if Keyword.get(opts, :resume?, true) do
+          with :ok <- resume_loaded_generation_if_needed(message, actor) do
+            case GenerationSupervisor.generation_worker_pid(message.id) do
+              pid when is_pid(pid) ->
+                {:ok, %{status: :running, generation_message_id: message.id, pid: pid}}
+
+              nil ->
+                case load_wait_message(message.id, actor) do
+                  {:ok, %ChatMessage{status: :generating}} ->
+                    {:ok, %{status: :retry, generation_message_id: message.id}}
+
+                  {:ok, %ChatMessage{} = refreshed} ->
+                    resolve_wait_message(refreshed, actor, visited, depth, opts)
+
+                  {:error, _reason} = error ->
+                    error
+                end
+            end
+          end
+        else
+          {:ok, %{status: :retry, generation_message_id: message.id}}
+        end
+    end
+  end
+
+  defp resolve_wait_message(%ChatMessage{status: :done} = message, actor, visited, depth, opts) do
+    case Ash.load(message, lifecycle_message_load(), actor: actor, strict?: true) do
+      {:ok, %ChatMessage{} = loaded} ->
+        case handoff_generation_message_id(loaded) do
+          id when is_integer(id) and id > 0 ->
+            do_resolve_wait_chain(id, actor, MapSet.put(visited, loaded.id), depth + 1, opts)
+
+          _other ->
+            {:ok, %{status: :completed, generation_message_id: loaded.id}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp resolve_wait_message(
+         %ChatMessage{status: :error} = message,
+         _actor,
+         _visited,
+         _depth,
+         _opts
+       ) do
+    {:ok,
+     %{
+       status: :failed,
+       generation_message_id: message.id,
+       error: message.error_detail || "Subagent generation failed."
+     }}
+  end
+
+  defp resolve_wait_message(
+         %ChatMessage{status: :canceled} = message,
+         _actor,
+         _visited,
+         _depth,
+         _opts
+       ) do
+    {:ok, %{status: :canceled, generation_message_id: message.id}}
+  end
+
+  defp resolve_wait_message(%ChatMessage{} = message, _actor, _visited, _depth, _opts) do
+    {:ok,
+     %{
+       status: :failed,
+       generation_message_id: message.id,
+       error: "Subagent generation has an invalid status."
+     }}
+  end
+
+  defp load_wait_message(message_id, actor) when is_integer(message_id) do
+    Ash.get(ChatMessage, message_id, actor: actor)
   end
 
   defp resolve_snapshot_chain(message_id, actor) when is_integer(message_id) do

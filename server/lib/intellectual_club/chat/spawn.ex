@@ -117,7 +117,7 @@ defmodule IntellectualClub.Chat.Spawn do
              background_task_authority: task_record,
              on_reference: &set_background_reference(task_record, &1)
            ) do
-      Subagent.await_background_snapshot(reference, actor)
+      {:waiting, reference}
     else
       nil -> {:error, "Background task context is invalid."}
       {:error, _reason} = error -> error
@@ -131,14 +131,40 @@ defmodule IntellectualClub.Chat.Spawn do
 
   @doc false
   @impl true
+  def reconcile_background(task_record) do
+    case background_reference(task_record) do
+      {:ok, reference, actor} ->
+        Subagent.reconcile_background_wait(reference, actor)
+
+      {:error, :target_not_ready} ->
+        {:retry, :target_not_ready}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @impl true
+  def reconcile_background_read_only(task_record) do
+    case background_reference(task_record) do
+      {:ok, reference, actor} ->
+        Subagent.reconcile_background_wait_read_only(reference, actor)
+
+      {:error, :target_not_ready} ->
+        {:retry, :target_not_ready}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @impl true
   def snapshot_background(task_record, cursor) do
     case background_reference(task_record) do
       {:ok, reference, actor} ->
-        if background_execution_owns_recovery?(task_record, reference) do
-          :default
-        else
-          Subagent.snapshot(reference, actor, cursor)
-        end
+        Subagent.snapshot(reference, actor, cursor)
 
       {:error, :target_not_ready} ->
         :default
@@ -490,15 +516,6 @@ defmodule IntellectualClub.Chat.Spawn do
     else
       _other -> {:error, :target_not_ready}
     end
-  end
-
-  defp background_execution_owns_recovery?(task_record, reference) do
-    task_id = task_record_value(task_record, :id)
-    generation_message_id = Map.get(reference, :generation_message_id)
-
-    is_binary(task_id) and IntellectualClub.BackgroundTasks.worker_active?(task_id) and
-      is_integer(generation_message_id) and
-      GenerationSupervisor.get_generation_state(generation_message_id) == :not_found
   end
 
   defp cancel_reference_generation(reference, actor) when is_map(reference) do

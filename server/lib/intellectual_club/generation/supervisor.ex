@@ -347,7 +347,9 @@ defmodule IntellectualClub.Generation.Supervisor do
     end)
   end
 
-  defp generation_worker_pid(message_id) when is_integer(message_id) do
+  @doc false
+  @spec generation_worker_pid(integer()) :: pid() | nil
+  def generation_worker_pid(message_id) when is_integer(message_id) do
     case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
       [{pid, _metadata}] when is_pid(pid) ->
         pid
