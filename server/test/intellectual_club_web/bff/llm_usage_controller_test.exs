@@ -30,6 +30,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       input_tokens: 100,
       cached_input_tokens: 90,
       output_tokens: 10,
+      reasoning_tokens: 4,
       cost: 0.01
     })
 
@@ -45,6 +46,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       input_tokens: 100,
       cached_input_tokens: 20,
       output_tokens: 20,
+      reasoning_tokens: 5,
       cost: 0.02
     })
 
@@ -60,6 +62,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
       input_tokens: 300,
       cached_input_tokens: 90,
       output_tokens: 30,
+      reasoning_tokens: 6,
       cost: 0.03
     })
 
@@ -96,6 +99,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     assert recipient_cell["input_tokens"] == 500
     assert recipient_cell["cached_input_tokens"] == 200
     assert recipient_cell["output_tokens"] == 60
+    assert recipient_cell["reasoning_tokens"] == 15
     assert_in_delta recipient_cell["cache_hit_percent"], 27.5, 0.0001
     assert_in_delta recipient_cell["cost"], 0.06, 0.0001
     assert other_cell["message_count"] == 1
@@ -199,6 +203,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
         input_tokens: Map.get(attrs, :input_tokens, 10),
         cached_input_tokens: Map.get(attrs, :cached_input_tokens, 0),
         output_tokens: Map.get(attrs, :output_tokens, 5),
+        reasoning_tokens: Map.get(attrs, :reasoning_tokens, 0),
         cost: Map.fetch!(attrs, :cost)
       },
       authorize?: false

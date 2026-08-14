@@ -95,9 +95,30 @@
               <td v-for="user in users" :key="`${row.key}-${user.id}`">
                 <div class="usage-cell">
                   <template v-if="hasCellUsage(cellFor(row, user.id))">
-                    <span v-for="metric in visibleUsageMetrics" :key="metric.id" class="usage-cell__metric">
-                      <span class="usage-cell__metric-label">{{ metric.cellLabel }}</span>
-                      <span class="usage-cell__metric-value">{{ formatMetricValue(metric.id, cellFor(row, user.id)) }}</span>
+                    <span
+                      v-for="metric in visibleUsageMetrics"
+                      :key="metric.id"
+                      class="usage-cell__metric"
+                      :class="{ 'usage-cell__metric--tokens': isTokenMetric(metric.id) }"
+                    >
+                      <span class="usage-cell__metric-main">
+                        <span class="usage-cell__metric-label">{{ metric.cellLabel }}</span>
+                        <span class="usage-cell__metric-value">{{ formatMetricValue(metric.id, cellFor(row, user.id)) }}</span>
+                      </span>
+                      <span
+                        v-if="isTokenMetric(metric.id)"
+                        class="usage-cell__breakdown"
+                        :aria-label="tokenBreakdownLabel(metric.id)"
+                      >
+                        <span
+                          v-for="part in tokenMetricParts(metric.id, cellFor(row, user.id))"
+                          :key="part.label"
+                          class="usage-cell__metric-part"
+                        >
+                          <span>{{ part.label }}</span>
+                          <span>{{ part.value }}</span>
+                        </span>
+                      </span>
                     </span>
                   </template>
                   <span v-else class="usage-cell__empty" :aria-label="translate('No usage')">-</span>
@@ -120,6 +141,7 @@ import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { translate } from '@/i18n';
+import { subtractIncludedTokens } from '@/utils/stepStats';
 
 type Period = 'day' | 'week' | 'month' | 'custom';
 type UsageMetricId =
@@ -128,7 +150,6 @@ type UsageMetricId =
   | 'cost'
   | 'cache_hit'
   | 'input_tokens_m'
-  | 'cached_input_tokens_m'
   | 'output_tokens_m';
 
 type UsageUser = {
@@ -142,6 +163,7 @@ type UsageCell = {
   input_tokens: number;
   cached_input_tokens: number;
   output_tokens: number;
+  reasoning_tokens: number;
   cache_hit_percent?: number | null;
   cost: number;
 };
@@ -174,7 +196,6 @@ const usageMetricIds: UsageMetricId[] = [
   'cost',
   'cache_hit',
   'input_tokens_m',
-  'cached_input_tokens_m',
   'output_tokens_m',
 ];
 const defaultVisibleMetricIds: UsageMetricId[] = ['messages', 'steps', 'cost'];
@@ -193,9 +214,8 @@ const usageMetricDefinitions: { id: UsageMetricId; labelKey: string; cellLabelKe
   { id: 'steps', labelKey: 'Steps', cellLabelKey: 'Steps' },
   { id: 'cost', labelKey: 'Cost', cellLabelKey: 'Cost' },
   { id: 'cache_hit', labelKey: 'Cache hit %', cellLabelKey: 'Cache hit %' },
-  { id: 'input_tokens_m', labelKey: 'Input tok.', cellLabelKey: 'Input' },
-  { id: 'cached_input_tokens_m', labelKey: 'Cached input tok.', cellLabelKey: 'Cached input' },
-  { id: 'output_tokens_m', labelKey: 'Output tok.', cellLabelKey: 'Output' },
+  { id: 'input_tokens_m', labelKey: 'Input tok.', cellLabelKey: 'Input tokens (total)' },
+  { id: 'output_tokens_m', labelKey: 'Output tok.', cellLabelKey: 'Output tokens (total, incl. reasoning)' },
 ];
 
 const restoredPeriodState = loadUsagePeriodState();
@@ -217,6 +237,7 @@ const emptyCell: UsageCell = {
   input_tokens: 0,
   cached_input_tokens: 0,
   output_tokens: 0,
+  reasoning_tokens: 0,
   cache_hit_percent: null,
   cost: 0,
 };
@@ -450,6 +471,7 @@ function hasCellUsage(cell: UsageCell | undefined) {
     Number(cell.input_tokens) > 0 ||
     Number(cell.cached_input_tokens) > 0 ||
     Number(cell.output_tokens) > 0 ||
+    Number(cell.reasoning_tokens) > 0 ||
     Number(cell.cost) > 0
   );
 }
@@ -474,6 +496,7 @@ function formatMillionTokens(value: unknown) {
 
   const millions = tokens / 1_000_000;
   if (millions < 0.001) return '<0.001M';
+  if (millions < 0.01) return `${millions.toFixed(4)}M`;
   if (millions < 10) return `${millions.toFixed(3)}M`;
   if (millions < 100) return `${millions.toFixed(2)}M`;
   return `${millions.toFixed(1)}M`;
@@ -491,8 +514,35 @@ function formatMetricValue(metricId: UsageMetricId, cell: UsageCell) {
   if (metricId === 'cost') return formatCost(cell.cost);
   if (metricId === 'cache_hit') return cell.cache_hit_percent == null ? '-' : formatPercent(cell.cache_hit_percent);
   if (metricId === 'input_tokens_m') return formatMillionTokens(cell.input_tokens);
-  if (metricId === 'cached_input_tokens_m') return formatMillionTokens(cell.cached_input_tokens);
   return formatMillionTokens(cell.output_tokens);
+}
+
+function isTokenMetric(metricId: UsageMetricId) {
+  return metricId === 'input_tokens_m' || metricId === 'output_tokens_m';
+}
+
+function tokenBreakdownLabel(metricId: UsageMetricId) {
+  return translate(metricId === 'input_tokens_m' ? 'Input token breakdown' : 'Output token breakdown');
+}
+
+function tokenMetricParts(metricId: UsageMetricId, cell: UsageCell) {
+  if (metricId === 'input_tokens_m') {
+    return [
+      {
+        label: translate('Cold input'),
+        value: formatMillionTokens(subtractIncludedTokens(cell.input_tokens, cell.cached_input_tokens)),
+      },
+      { label: translate('Cached input'), value: formatMillionTokens(cell.cached_input_tokens) },
+    ];
+  }
+
+  return [
+    {
+      label: translate('Non-reasoning'),
+      value: formatMillionTokens(subtractIncludedTokens(cell.output_tokens, cell.reasoning_tokens)),
+    },
+    { label: translate('Reasoning'), value: formatMillionTokens(cell.reasoning_tokens) },
+  ];
 }
 
 function goBack() {
@@ -729,6 +779,38 @@ onMounted(() => {
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+}
+
+.usage-cell__metric--tokens {
+  display: block;
+  padding: 3px 0;
+}
+
+.usage-cell__metric-main,
+.usage-cell__metric-part {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.usage-cell__metric-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.usage-cell__breakdown {
+  display: grid;
+  gap: 1px;
+  border-left: 2px solid var(--color-border-strong);
+  margin: 3px 0 0 4px;
+  padding-left: 8px;
+  font-size: 0.86em;
+}
+
+.usage-cell__metric-part > span:last-child {
+  color: var(--color-text);
+  white-space: nowrap;
 }
 
 .usage-cell__metric-label {

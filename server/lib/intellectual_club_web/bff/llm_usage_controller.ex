@@ -70,6 +70,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
       :input_tokens,
       :cached_input_tokens,
       :output_tokens,
+      :reasoning_tokens,
       :cost,
       :occurred_at
     ])
@@ -138,6 +139,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
           input_tokens: 0,
           cached_input_tokens: 0,
           output_tokens: 0,
+          reasoning_tokens: 0,
           cache_hit_input_tokens: 0,
           cache_hit_cached_input_tokens: 0,
           cost: 0.0
@@ -146,6 +148,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
       input_tokens = numeric_tokens(record.input_tokens)
       cached_input_tokens = numeric_tokens(record.cached_input_tokens)
       output_tokens = numeric_tokens(record.output_tokens)
+      reasoning_tokens = numeric_tokens(record.reasoning_tokens)
       cache_hit_candidate? = record.step_sequence > 1 and input_tokens > 0
 
       cell = %{
@@ -155,6 +158,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
           input_tokens: cell.input_tokens + input_tokens,
           cached_input_tokens: cell.cached_input_tokens + cached_input_tokens,
           output_tokens: cell.output_tokens + output_tokens,
+          reasoning_tokens: cell.reasoning_tokens + reasoning_tokens,
           cache_hit_input_tokens:
             cell.cache_hit_input_tokens + if(cache_hit_candidate?, do: input_tokens, else: 0),
           cache_hit_cached_input_tokens:
@@ -192,6 +196,7 @@ defmodule IntellectualClubWeb.Bff.LlmUsageController do
            input_tokens: cell.input_tokens,
            cached_input_tokens: cell.cached_input_tokens,
            output_tokens: cell.output_tokens,
+           reasoning_tokens: cell.reasoning_tokens,
            cache_hit_percent: cache_hit_percent(cell),
            cost: cell.cost
          }}

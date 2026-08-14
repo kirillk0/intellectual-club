@@ -3,6 +3,11 @@ import { formatTokenCount } from '@/utils/tokens';
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
+export const subtractIncludedTokens = (total: unknown, included: unknown): number | null => {
+  if (!isFiniteNumber(total) || !isFiniteNumber(included)) return null;
+  return Math.max(total - included, 0);
+};
+
 export const formatStepMetric = (value: unknown): string => {
   if (value == null || value === '') return '—';
   const num = typeof value === 'number' ? value : Number(value);
