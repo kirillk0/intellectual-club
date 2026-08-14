@@ -11,6 +11,7 @@ defmodule IntellectualClub.Application do
       IntellectualClubWeb.Telemetry,
       IntellectualClub.Repo,
       {Ecto.Migrator, repos: [IntellectualClub.Repo], skip: skip_migrations?()},
+      {IntellectualClub.Llm.Providers.Responses.HttpPool, []},
       IntellectualClub.Llm.Auth.OpenAIOAuthCache,
       {IntellectualClub.Files.GarbageCollector, []},
       {IntellectualClub.Generation.Lease, []},

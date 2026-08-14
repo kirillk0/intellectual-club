@@ -10,6 +10,7 @@ import Config
 config :intellectual_club,
   ecto_repos: [IntellectualClub.Repo],
   generators: [timestamp_type: :utc_datetime],
+  responses_http_pool: [size: 500, connect_timeout_ms: 10_000],
   ash_domains: [
     IntellectualClub.Accounts,
     IntellectualClub.BackgroundTasks,

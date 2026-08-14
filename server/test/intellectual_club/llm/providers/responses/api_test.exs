@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
 
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Responses.Api
+  alias IntellectualClub.Llm.Providers.Responses.HttpPool
 
   @base_opts %{
     base_url: "http://127.0.0.1:9",
@@ -13,6 +14,42 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     timeout_ms: 200,
     connect_timeout_ms: 200
   }
+
+  test "uses the dedicated Finch pool with the default connection timeout" do
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp_pool",
+               "object" => "response",
+               "model" => "gpt-4.1",
+               "status" => "completed",
+               "output" => []
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    pool = Finch.Pool.new(base_url)
+    assert Finch.find_pool(HttpPool, pool) == :error
+
+    events =
+      run_and_capture_events!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{"model" => "gpt-4.1", "input" => []},
+        timeout_ms: 1_000
+      })
+
+    assert Enum.any?(events, &match?({:response_complete, _meta}, &1))
+    assert {:ok, pool_pid} = Finch.find_pool(HttpPool, pool)
+    assert is_pid(pool_pid)
+  end
 
   test "passes request payload through unchanged" do
     payload = %{

@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   """
 
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
+  alias IntellectualClub.Llm.Providers.Responses.HttpPool
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
   alias Req.Response
 
@@ -56,16 +57,16 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           {"accept", "text/event-stream"}
         ]
 
-        request_opts = [
-          url: url,
-          method: :post,
-          headers: headers,
-          json: wire_request,
-          connect_options: [timeout: connect_timeout_ms],
-          receive_timeout: timeout_ms,
-          into: :self,
-          retry: false
-        ]
+        request_opts =
+          [
+            url: url,
+            method: :post,
+            headers: headers,
+            json: wire_request,
+            receive_timeout: timeout_ms,
+            into: :self,
+            retry: false
+          ] ++ HttpPool.req_options(connect_timeout_ms)
 
         try do
           response = Req.request!(request_opts)
