@@ -43,14 +43,29 @@ describe('ChatAttachmentPreviewModal', () => {
 
     const iframe = wrapper.get('iframe').element as HTMLIFrameElement;
 
-    expect(iframe.srcdoc).toBe(html);
-    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe.srcdoc).toContain('<!doctype html><script>document.addEventListener("click"');
+    expect(iframe.srcdoc).toContain('event.preventDefault();');
+    expect(iframe.srcdoc).toContain('target.scrollIntoView({block:"start"});');
+    expect(iframe.srcdoc).toContain(
+      '<style>body{color:red}</style><script>document.body.dataset.ready="yes"</script>'
+    );
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts allow-modals');
     expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(iframe.getAttribute('allow')).toBe(
       "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
     );
     expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer');
     expect(iframe.title).toBe('preview.html');
+  });
+
+  it('installs the fragment navigation guard first in a complete HTML document head', () => {
+    const html = '<!doctype html><html><head><title>Preview</title></head><body><a href="#target">Target</a><h2 id="target">Section</h2></body></html>';
+    const wrapper = mountPreview('html', html);
+    wrappers.push(wrapper);
+
+    expect((wrapper.get('iframe').element as HTMLIFrameElement).srcdoc).toMatch(
+      /^<!doctype html><html><head><script>document\.addEventListener\("click".*<\/script><title>Preview<\/title>/u
+    );
   });
 
   it('recreates the iframe when switching attachments', async () => {

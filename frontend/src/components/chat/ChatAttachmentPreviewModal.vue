@@ -112,9 +112,9 @@
         v-else-if="kind === 'html'"
         :key="url || title"
         class="attachment-preview-html"
-        :srcdoc="textValue"
+        :srcdoc="htmlValue"
         :title="title"
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-modals"
         allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
         referrerpolicy="no-referrer"
       ></iframe>
@@ -157,10 +157,45 @@ const emit = defineEmits<{
 
 const errorText = computed(() => (props.error || '').trim());
 const textValue = computed(() => props.text ?? '');
+const htmlValue = computed(() => addHtmlPreviewNavigationGuard(textValue.value));
 const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { highlightCode: true }));
 const markdownEl = ref<HTMLElement | null>(null);
 const fullscreen = ref(false);
 let enhanceMarkdownToken = 0;
+
+const htmlPreviewNavigationGuard = [
+  '<script>',
+  'document.addEventListener("click",function(event){',
+  'var anchor=event.target instanceof Element?event.target.closest("a[href]"):null;',
+  'if(!anchor)return;',
+  'var href=anchor.getAttribute("href");',
+  'if(!href||href.charAt(0)!=="#")return;',
+  'var fragment=href.slice(1);',
+  'var id;',
+  'try{id=decodeURIComponent(fragment);}catch(_error){id=fragment;}',
+  'var target=id?(document.getElementById(id)||document.getElementsByName(id)[0]):document.documentElement;',
+  'if(!target)return;',
+  'event.preventDefault();',
+  'target.scrollIntoView({block:"start"});',
+  '},true);',
+  '</scr' + 'ipt>',
+].join('');
+
+function addHtmlPreviewNavigationGuard(html: string): string {
+  const headMatch = /<head(?:\s[^>]*)?>/iu.exec(html);
+  if (headMatch?.index !== undefined) {
+    const insertAt = headMatch.index + headMatch[0].length;
+    return `${html.slice(0, insertAt)}${htmlPreviewNavigationGuard}${html.slice(insertAt)}`;
+  }
+
+  const doctypeMatch = /^\s*<!doctype[^>]*>/iu.exec(html);
+  if (doctypeMatch) {
+    const insertAt = doctypeMatch[0].length;
+    return `${html.slice(0, insertAt)}${htmlPreviewNavigationGuard}${html.slice(insertAt)}`;
+  }
+
+  return `${htmlPreviewNavigationGuard}${html}`;
+}
 
 const scheduleEnhanceMarkdownHtml = () => {
   const token = ++enhanceMarkdownToken;
