@@ -239,6 +239,7 @@ import {
 } from '@/features/chat/model/chatListRelations';
 import { parseImageAsset } from '@/features/media/image';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
+import { useStackLayer } from '@/features/stack/useStackLayer';
 import { serverStateKeys } from '@/features/serverState/queryClient';
 import { translate } from '@/i18n';
 import type { Bot, ChatSummary, ImageAsset } from '@/types/api';
@@ -294,6 +295,11 @@ type ChatListIdleStatePayload = {
   active_generation_message_id?: number | null;
 };
 
+type ChatListGenerationStatePayload = {
+  chat_generations?: Array<{ chat_id?: number; message_id?: number }>;
+  active_message_ids?: number[];
+};
+
 type ChatListPayload = {
   chats: ChatSummary[];
   page?: {
@@ -318,6 +324,7 @@ const CHAT_SEARCH_MIN_LENGTH = 2;
 
 const route = useRoute();
 const stackNav = useStackNavigation();
+const layer = useStackLayer();
 
 const openBookmarks = () => stackNav.open({ path: '/bookmarks' });
 
@@ -1259,15 +1266,110 @@ function stopChatListIdlePolling() {
   }
 }
 
-async function refreshVisibleChatsForGeneration(signal: AbortSignal) {
-  if (hasChatSearch.value) {
-    const term = chatSearchTerm.value.trim();
-    if (!term) return;
-    await runChatSearch(term, { silent: true, showErrorBanner: false, signal, rethrowSilent: true });
-    return;
+function nextActiveGenerationMessageId(
+  chat: ChatSummary,
+  activeByChatId: Map<number, number>,
+  activeMessageIds: Set<number>
+) {
+  const directMessageId = activeByChatId.get(chat.id);
+  if (directMessageId) return directMessageId;
+
+  const currentMessageId = Number(chat.active_generation_message_id);
+  if (Number.isInteger(currentMessageId) && activeMessageIds.has(currentMessageId)) {
+    return currentMessageId;
   }
 
-  await loadChats({ silent: true, showErrorBanner: false, signal, rethrowSilent: true });
+  return null;
+}
+
+function applyGenerationStatesToRows<T extends ChatSummary>(
+  items: T[],
+  activeByChatId: Map<number, number>,
+  activeMessageIds: Set<number>
+): T[] {
+  let changed = false;
+
+  const next = items.map((chat) => {
+    const subchats = directSubchats(chat);
+    const nextSubchats = subchats.map((subchat) => {
+      const activeGenerationMessageId = nextActiveGenerationMessageId(
+        subchat,
+        activeByChatId,
+        activeMessageIds
+      );
+
+      if ((subchat.active_generation_message_id || null) === activeGenerationMessageId) {
+        return subchat;
+      }
+
+      changed = true;
+      return { ...subchat, active_generation_message_id: activeGenerationMessageId };
+    });
+
+    const activeGenerationMessageId = nextActiveGenerationMessageId(
+      chat,
+      activeByChatId,
+      activeMessageIds
+    );
+    const subchatsChanged = nextSubchats.some((subchat, index) => subchat !== subchats[index]);
+    const chatChanged = (chat.active_generation_message_id || null) !== activeGenerationMessageId;
+
+    if (!subchatsChanged && !chatChanged) return chat;
+
+    changed = true;
+    return {
+      ...chat,
+      active_generation_message_id: activeGenerationMessageId,
+      subchats: nextSubchats,
+    };
+  });
+
+  return changed ? (next as T[]) : items;
+}
+
+async function refreshVisibleChatGenerationStates(signal: AbortSignal) {
+  const visibleChats = visibleGenerationChats.value;
+  if (!visibleChats.length) return;
+
+  const chatIds = Array.from(new Set(visibleChats.map((chat) => chat.id)));
+  const messageIds = Array.from(
+    new Set(
+      visibleChats
+        .map((chat) => Number(chat.active_generation_message_id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    )
+  );
+  const params = new URLSearchParams();
+  params.set('chat_ids', chatIds.join(','));
+  if (messageIds.length) params.set('message_ids', messageIds.join(','));
+
+  const payload = await api.get<ChatListGenerationStatePayload>(
+    `/api/bff/chat-list/generation-state?${params.toString()}`,
+    { signal, showErrorBanner: false }
+  );
+  const activeByChatId = new Map<number, number>();
+
+  for (const entry of payload.chat_generations || []) {
+    const chatId = Number(entry.chat_id);
+    const messageId = Number(entry.message_id);
+    if (Number.isInteger(chatId) && chatId > 0 && Number.isInteger(messageId) && messageId > 0) {
+      activeByChatId.set(chatId, messageId);
+    }
+  }
+
+  const activeMessageIds = new Set(
+    (payload.active_message_ids || [])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+  );
+
+  chats.value = applyGenerationStatesToRows(chats.value, activeByChatId, activeMessageIds);
+  chatSearchResults.value = applyGenerationStatesToRows(
+    chatSearchResults.value,
+    activeByChatId,
+    activeMessageIds
+  );
+  syncVisibleGenerationState(visibleGenerationChats.value);
 }
 
 function chatListIdleProbeParams() {
@@ -1282,6 +1384,7 @@ function chatListIdleProbeParams() {
 
 function canRunChatListIdleProbe() {
   return (
+    layer.active.value &&
     document.visibilityState === 'visible' &&
     !loading.value &&
     !chatSearchLoading.value &&
@@ -1317,7 +1420,7 @@ async function runChatListIdleProbe(signal: AbortSignal) {
 }
 
 function startChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
-  if (chatListIdlePollingActive) return;
+  if (chatListIdlePollingActive || !layer.active.value) return;
 
   chatListIdlePollingActive = true;
   const token = ++chatListIdlePollToken;
@@ -1369,7 +1472,7 @@ function restartChatListIdlePolling(opts: { immediate?: boolean; throttle?: bool
 }
 
 function startChatListPolling(opts: { immediate?: boolean } = {}) {
-  if (chatListPollingActive || !hasVisibleGeneratingChat.value) return;
+  if (chatListPollingActive || !layer.active.value || !hasVisibleGeneratingChat.value) return;
 
   chatListPollingActive = true;
   const token = ++chatListPollToken;
@@ -1388,7 +1491,7 @@ function startChatListPolling(opts: { immediate?: boolean } = {}) {
     chatListPollAbortController = controller;
 
     try {
-      await refreshVisibleChatsForGeneration(controller.signal);
+      await refreshVisibleChatGenerationStates(controller.signal);
       if (!chatListPollingActive || chatListPollToken !== token) return;
       chatListGenerationPollReconnecting.value = false;
 
@@ -1425,7 +1528,7 @@ function restartChatListPolling(opts: { immediate?: boolean } = {}) {
 }
 
 function handleChatListVisibilityChange() {
-  if (document.visibilityState !== 'visible') {
+  if (document.visibilityState !== 'visible' || !layer.active.value) {
     stopChatListPolling();
     stopChatListIdlePolling();
     return;
@@ -1439,6 +1542,7 @@ function handleChatListVisibilityChange() {
 }
 
 function handleChatListPageShow() {
+  if (!layer.active.value) return;
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
   }
@@ -1447,7 +1551,7 @@ function handleChatListPageShow() {
 }
 
 function handleChatListFocus() {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible' || !layer.active.value) return;
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
   }
@@ -1499,12 +1603,29 @@ watch(
 watch(
   () => hasVisibleGeneratingChat.value,
   (hasGenerating) => {
-    if (hasGenerating) {
+    if (hasGenerating && layer.active.value) {
       startChatListPolling();
       return;
     }
 
     stopChatListPolling();
+  }
+);
+
+watch(
+  () => layer.active.value,
+  (active, wasActive) => {
+    if (!active) {
+      stopChatListPolling();
+      stopChatListIdlePolling();
+      return;
+    }
+
+    if (hasVisibleGeneratingChat.value) {
+      restartChatListPolling({ immediate: wasActive === false });
+    }
+
+    restartChatListIdlePolling({ immediate: wasActive === false, throttle: true });
   }
 );
 

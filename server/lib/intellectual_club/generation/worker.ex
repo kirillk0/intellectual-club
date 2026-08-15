@@ -136,8 +136,14 @@ defmodule IntellectualClub.Generation.Worker do
     lease_owner = Map.get(opts, :lease_owner)
 
     with :ok <- adopt_generation_lease(lease, lease_owner) do
-      register_generation_key!({:message, context.message_id}, %{chat_id: context.chat_id})
-      register_generation_key!({:chat, context.chat_id}, %{message_id: context.message_id})
+      generation_identity = %{
+        chat_id: context.chat_id,
+        message_id: context.message_id,
+        owner_id: context.owner_id
+      }
+
+      register_generation_key!({:message, context.message_id}, generation_identity)
+      register_generation_key!({:chat, context.chat_id}, generation_identity)
       register_global_generation_key!(context.message_id)
 
       state = %__MODULE__{

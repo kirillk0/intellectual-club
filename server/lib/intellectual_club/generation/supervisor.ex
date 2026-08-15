@@ -362,6 +362,58 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
+  @doc false
+  @spec active_generation_candidates([integer()], [integer()]) :: %{
+          chat_generations: [map()],
+          message_generations: [map()]
+        }
+  def active_generation_candidates(chat_ids, message_ids)
+      when is_list(chat_ids) and is_list(message_ids) do
+    chat_generations =
+      chat_ids
+      |> normalize_generation_ids()
+      |> Enum.flat_map(fn chat_id ->
+        case Registry.lookup(IntellectualClub.Generation.Registry, {:chat, chat_id}) do
+          [
+            {pid,
+             %{
+               chat_id: ^chat_id,
+               message_id: message_id,
+               owner_id: owner_id
+             }}
+          ]
+          when is_pid(pid) and is_integer(message_id) and is_integer(owner_id) ->
+            [%{chat_id: chat_id, message_id: message_id, owner_id: owner_id}]
+
+          _other ->
+            []
+        end
+      end)
+
+    message_generations =
+      message_ids
+      |> normalize_generation_ids()
+      |> Enum.flat_map(fn message_id ->
+        case Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id}) do
+          [{pid, %{chat_id: chat_id, owner_id: owner_id}}]
+          when is_pid(pid) and is_integer(chat_id) and is_integer(owner_id) ->
+            [%{chat_id: chat_id, message_id: message_id, owner_id: owner_id}]
+
+          _other ->
+            []
+        end
+      end)
+
+    %{
+      chat_generations: chat_generations,
+      message_generations: message_generations
+    }
+  end
+
+  def active_generation_candidates(_chat_ids, _message_ids) do
+    %{chat_generations: [], message_generations: []}
+  end
+
   defp canonical_prepared_step(chat_id, message_id, actor) do
     case Ash.get(ChatMessage, message_id, actor: actor) do
       {:ok,
@@ -391,6 +443,12 @@ defmodule IntellectualClub.Generation.Supervisor do
       {:error, _reason} ->
         {:error, :not_found}
     end
+  end
+
+  defp normalize_generation_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.filter(&(is_integer(&1) and &1 > 0))
+    |> Enum.uniq()
   end
 
   defp generation_worker_active?(message_id) when is_integer(message_id) do

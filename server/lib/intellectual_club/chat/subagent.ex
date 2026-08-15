@@ -371,6 +371,38 @@ defmodule IntellectualClub.Chat.Subagent do
 
   def lifecycle_states(_chats, _actor), do: %{}
 
+  @doc """
+  Resolves lifecycle states while avoiding trace loads for chats that cannot
+  continue through a handoff.
+  """
+  @spec lifecycle_states([Chat.t()], User.t(), map()) :: %{optional(pos_integer()) => map()}
+  def lifecycle_states(chats, %User{} = actor, child_handoff_counts)
+      when is_list(chats) and is_map(child_handoff_counts) do
+    {direct_chats, chained_chats} =
+      Enum.split_with(chats, fn
+        %Chat{
+          id: chat_id,
+          subagent: true,
+          parent_relation_kind: relation_kind,
+          last_message: %ChatMessage{status: status}
+        }
+        when is_integer(chat_id) and relation_kind in @creation_relation_kinds ->
+          status != :done or Map.get(child_handoff_counts, chat_id, 0) == 0
+
+        _chat ->
+          false
+      end)
+
+    direct_states =
+      Map.new(direct_chats, fn %Chat{id: chat_id, last_message: message} ->
+        {chat_id, lifecycle_state(message, message.status)}
+      end)
+
+    Map.merge(direct_states, lifecycle_states(chained_chats, actor))
+  end
+
+  def lifecycle_states(chats, actor, _child_handoff_counts), do: lifecycle_states(chats, actor)
+
   @doc false
   @spec resume_generation_if_needed(pos_integer(), User.t()) :: :ok | {:error, term()}
   def resume_generation_if_needed(message_id, %User{} = actor) when is_integer(message_id) do

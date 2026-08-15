@@ -66,6 +66,18 @@ defmodule IntellectualClubWeb.Bff.ChatParams do
     end
   end
 
+  def resource_ids(params, key, limit \\ 100)
+      when is_map(params) and is_binary(key) and is_integer(limit) and limit > 0 do
+    params
+    |> Map.get(key, "")
+    |> List.wrap()
+    |> Enum.flat_map(&String.split(to_string(&1), ",", trim: true))
+    |> Enum.map(&Helpers.parse_optional_integer/1)
+    |> Enum.filter(&(is_integer(&1) and &1 > 0))
+    |> Enum.uniq()
+    |> Enum.take(limit)
+  end
+
   def group_ids(params) do
     case Map.get(params, "group_ids", []) do
       ids when is_list(ids) ->

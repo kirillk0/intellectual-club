@@ -5,17 +5,21 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   use IntellectualClubWeb, :controller
 
+  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
+
+  require Ash.Query
 
   def index(conn, _params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
@@ -252,6 +256,58 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     end
   end
 
+  def generation_state(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn) do
+      chat_ids = ChatParams.resource_ids(params, "chat_ids")
+      message_ids = ChatParams.resource_ids(params, "message_ids")
+      candidates = GenerationSupervisor.active_generation_candidates(chat_ids, message_ids)
+      foreign_chat_ids = foreign_generation_chat_ids(candidates, actor.id)
+      readable_foreign_chat_ids = readable_chat_ids(foreign_chat_ids, actor)
+
+      chat_generations =
+        candidates.chat_generations
+        |> Enum.filter(&generation_readable?(&1, actor.id, readable_foreign_chat_ids))
+        |> Enum.map(&Map.take(&1, [:chat_id, :message_id]))
+
+      active_message_ids =
+        candidates.message_generations
+        |> Enum.filter(&generation_readable?(&1, actor.id, readable_foreign_chat_ids))
+        |> Enum.map(& &1.message_id)
+
+      json(conn, %{
+        chat_generations: chat_generations,
+        active_message_ids: active_message_ids
+      })
+    end
+  end
+
+  defp foreign_generation_chat_ids(candidates, owner_id) do
+    candidates
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.reject(&(&1.owner_id == owner_id))
+    |> Enum.map(& &1.chat_id)
+    |> Enum.uniq()
+  end
+
+  defp readable_chat_ids([], _actor), do: MapSet.new()
+
+  defp readable_chat_ids(chat_ids, actor) do
+    Chat
+    |> Ash.Query.filter(id in ^chat_ids)
+    |> Ash.Query.select([:id])
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, chats} -> MapSet.new(chats, & &1.id)
+      {:error, _error} -> MapSet.new()
+    end
+  end
+
+  defp generation_readable?(generation, owner_id, readable_foreign_chat_ids) do
+    generation.owner_id == owner_id or
+      MapSet.member?(readable_foreign_chat_ids, generation.chat_id)
+  end
+
   defp direct_subchat_summaries(chats, actor, preview_len) when is_list(chats) do
     parent_ids = Enum.map(chats, & &1.id)
 
@@ -273,13 +329,13 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Map.values()
       |> List.flatten()
 
-    lifecycle_states = Subagent.lifecycle_states(subchats, actor)
+    child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
+    lifecycle_states = Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
     active_branch_summaries = Listing.active_branch_summaries(subchats, actor)
 
     first_message_previews =
       Listing.active_root_message_previews(subchats, active_branch_summaries, preview_len, actor)
 
-    child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
     child_subchat_counts = Listing.child_subchat_counts(Enum.map(subchats, & &1.id), actor)
 
     Map.new(subchats_by_parent, fn {parent_id, children} ->
@@ -316,12 +372,15 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   defp direct_subchat_summaries(_chats, _actor, _preview_len), do: {%{}, %{}}
 
   defp direct_subchat_lifecycle_states(chats, actor) when is_list(chats) do
-    chats
-    |> Enum.map(& &1.id)
-    |> Listing.direct_subchats(actor, [:last_message])
-    |> Map.values()
-    |> List.flatten()
-    |> Subagent.lifecycle_states(actor)
+    subchats =
+      chats
+      |> Enum.map(& &1.id)
+      |> Listing.direct_subchats(actor, [:last_message])
+      |> Map.values()
+      |> List.flatten()
+
+    child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
+    Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
   end
 
   defp summary_opts(chat, lifecycle_states, opts) do

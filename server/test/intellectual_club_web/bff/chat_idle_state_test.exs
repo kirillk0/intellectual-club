@@ -58,6 +58,70 @@ defmodule IntellectualClubWeb.Bff.ChatIdleStateTest do
     assert changed_payload["active_generation_message_id"] == generating_message.id
   end
 
+  test "GET /api/bff/chat-list/generation-state reads owned workers from memory", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    %{user: other_actor} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    chat = create_chat!(actor, "Active generation")
+    message = create_generating_message!(chat, actor)
+    other_chat = create_chat!(other_actor, "Private generation")
+    other_message = create_generating_message!(other_chat, other_actor)
+
+    {:ok, _owner} =
+      Registry.register(
+        IntellectualClub.Generation.Registry,
+        {:chat, chat.id},
+        %{chat_id: chat.id, message_id: message.id, owner_id: actor.id}
+      )
+
+    {:ok, _owner} =
+      Registry.register(
+        IntellectualClub.Generation.Registry,
+        {:message, message.id},
+        %{chat_id: chat.id, message_id: message.id, owner_id: actor.id}
+      )
+
+    {:ok, _owner} =
+      Registry.register(
+        IntellectualClub.Generation.Registry,
+        {:chat, other_chat.id},
+        %{
+          chat_id: other_chat.id,
+          message_id: other_message.id,
+          owner_id: other_actor.id
+        }
+      )
+
+    {:ok, _owner} =
+      Registry.register(
+        IntellectualClub.Generation.Registry,
+        {:message, other_message.id},
+        %{
+          chat_id: other_chat.id,
+          message_id: other_message.id,
+          owner_id: other_actor.id
+        }
+      )
+
+    payload =
+      conn
+      |> get(
+        ~p"/api/bff/chat-list/generation-state",
+        %{
+          "chat_ids" => "#{chat.id},#{other_chat.id}",
+          "message_ids" => "#{message.id},#{other_message.id}"
+        }
+      )
+      |> json_response(200)
+
+    assert payload["chat_generations"] == [
+             %{"chat_id" => chat.id, "message_id" => message.id}
+           ]
+
+    assert payload["active_message_ids"] == [message.id]
+  end
+
   test "GET /api/bff/chat-state/:id/idle-state returns 204 for unchanged state and changes after generation starts",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
