@@ -245,6 +245,7 @@ type ProviderTypeMetadata = {
   default_base_url?: string | null;
   supports_model_discovery: boolean;
   supports_hosted_web_search: boolean;
+  selectable?: boolean;
   missing?: boolean;
 };
 
@@ -373,8 +374,10 @@ const currentProviderTypeMissing = computed(
   () => loaded.value && providerTypesLoaded.value && Boolean(form.type) && !currentProviderType.value
 );
 const providerTypeOptions = computed(() => {
-  const options = [...providerTypes.value];
   const type = String(form.type || '').trim();
+  const options = providerTypes.value.filter(
+    (providerType) => providerType.selectable !== false || providerType.type === type
+  );
 
   if (type && !providerTypesByType.value.has(type)) {
     options.push({

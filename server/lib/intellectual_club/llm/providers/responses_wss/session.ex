@@ -6,9 +6,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   use GenServer
 
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
+  alias IntellectualClub.Llm.Providers.Responses.Endpoint
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
 
-  @default_base_url "https://api.openai.com/v1"
   @openai_beta_header "responses_websockets=2026-02-06"
   @retryable_http_status_codes MapSet.new([429, 502, 503])
 
@@ -23,7 +23,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
           context: map(),
           connection: map() | nil,
           last_request: map() | nil,
-          last_response: map() | nil
+          last_response: map() | nil,
+          transport: :websocket | :http
         }
 
   @spec start(map()) :: GenServer.on_start()
@@ -52,7 +53,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     :ok
   end
 
-  @spec stream_generate(pid(), map(), (event() -> any())) :: :ok
+  @spec stream_generate(pid(), map(), (event() -> any())) ::
+          :ok | {:fallback_to_http, map()}
   def stream_generate(pid, opts, emit)
       when is_pid(pid) and is_map(opts) and is_function(emit, 1) do
     GenServer.call(pid, {:stream_generate, opts, emit}, :infinity)
@@ -65,11 +67,23 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
        context: context,
        connection: nil,
        last_request: nil,
-       last_response: nil
+       last_response: nil,
+       transport: :websocket
      }}
   end
 
   @impl true
+  def handle_call({:stream_generate, _opts, _emit}, _from, %{transport: :http} = state) do
+    {:reply,
+     {:fallback_to_http,
+      %{
+        switched: false,
+        failure_phase: "session",
+        request_sent: false,
+        response_started: false
+      }}, state}
+  end
+
   def handle_call({:stream_generate, opts, emit}, _from, state) do
     provider =
       Map.get(opts, :provider) || Map.get(state.context, :provider_type) || :responses_wss
@@ -95,24 +109,31 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
           {:reply, :ok, remember_completed_response(state, connection, logical_request, response)}
 
         {:error, connection, error_meta} ->
-          state = reset_transport_state(%{state | connection: connection})
-          maybe_emit_response_error(emit, provider, logical_request, error_meta)
-          {:reply, :ok, state}
+          error_reply(
+            %{state | connection: connection},
+            provider,
+            logical_request,
+            error_meta,
+            emit
+          )
       end
     else
       {:error, %{error_kind: "request_hydration"} = error_meta} ->
+        error_meta = failure_context(error_meta, "hydration", false, false)
         maybe_emit_response_error(emit, provider, logical_request, error_meta)
         {:reply, :ok, state}
 
       {:error, error_meta} when is_map(error_meta) ->
-        state = reset_transport_state(state)
-        maybe_emit_response_error(emit, provider, logical_request, error_meta)
-        {:reply, :ok, state}
+        error_reply(state, provider, logical_request, error_meta, emit)
 
       {:error, connection, error_meta} when is_map(error_meta) ->
-        state = reset_transport_state(%{state | connection: connection})
-        maybe_emit_response_error(emit, provider, logical_request, error_meta)
-        {:reply, :ok, state}
+        error_reply(
+          %{state | connection: connection},
+          provider,
+          logical_request,
+          error_meta,
+          emit
+        )
     end
   end
 
@@ -125,10 +146,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   @doc false
   @spec websocket_url(String.t() | nil) :: {:ok, map()} | {:error, map()}
   def websocket_url(base_url) do
-    base_url
-    |> default_base_url()
-    |> URI.parse()
-    |> normalize_websocket_uri()
+    case Endpoint.resolve(base_url, force_websocket?: true) do
+      {:ok, endpoint} -> endpoint.websocket_base_url |> URI.parse() |> normalize_websocket_uri()
+      {:error, :invalid_base_url} -> normalize_websocket_uri(%URI{})
+    end
   end
 
   @doc false
@@ -142,10 +163,6 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
     {:ok, maybe_put_continuation(full_payload, state)}
   end
-
-  defp default_base_url(nil), do: @default_base_url
-  defp default_base_url(""), do: @default_base_url
-  defp default_base_url(value), do: to_string(value)
 
   defp normalize_websocket_uri(%URI{scheme: scheme, host: host} = uri)
        when scheme in ["http", "https", "ws", "wss"] and is_binary(host) do
@@ -184,7 +201,12 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
        retryable: false,
        error_kind: "transport",
        error_text: "Invalid Responses WSS base URL",
-       raw_response: nil
+       raw_response: nil,
+       fallback_safe: false,
+       failure_phase: "endpoint",
+       request_sent: false,
+       response_started: false,
+       websocket_close_code: nil
      }}
   end
 
@@ -227,7 +249,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
         {:ok, connection, %{state | connection: connection}}
 
       {:error, error_meta} ->
-        {:error, error_meta}
+        {:error,
+         Map.merge(error_meta, %{
+           fallback_safe: true,
+           failure_phase: "handshake",
+           request_sent: false,
+           response_started: false,
+           websocket_close_code: nil
+         })}
     end
   end
 
@@ -321,16 +350,23 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
               {:error, conn, error} ->
                 {:error, %{connection | conn: conn, websocket: websocket},
-                 send_error_meta(error, Map.get(connection, :url))}
+                 error
+                 |> send_error_meta(Map.get(connection, :url))
+                 |> failure_context("send", true, false)}
             end
 
           {:error, websocket, error} ->
             {:error, %{connection | websocket: websocket},
-             send_error_meta(error, Map.get(connection, :url))}
+             error
+             |> send_error_meta(Map.get(connection, :url))
+             |> failure_context("send", false, false)}
         end
 
       {:error, error} ->
-        {:error, connection, send_error_meta(error, Map.get(connection, :url))}
+        {:error, connection,
+         error
+         |> send_error_meta(Map.get(connection, :url))
+         |> failure_context("encode", false, false)}
     end
   end
 
@@ -357,6 +393,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
               meta
               |> Map.put_new(:retryable, retryable_terminal_error?(meta))
               |> Map.put(:already_emitted, true)
+              |> failure_context("response", true, true)
 
             {:error, connection, meta}
 
@@ -368,7 +405,12 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
                retryable: true,
                error_kind: "network",
                error_text: "WebSocket stream ended without a terminal event",
-               raw_response: nil
+               raw_response: nil,
+               fallback_safe: false,
+               failure_phase: "response",
+               request_sent: true,
+               response_started: false,
+               websocket_close_code: nil
              }}
         end
 
@@ -423,7 +465,17 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
       {:error, conn, reason, _responses} ->
         connection = %{connection | conn: conn, websocket: websocket}
-        {:error, connection, receive_error_meta(reason, Map.get(connection, :url))}
+
+        error_meta =
+          reason
+          |> receive_error_meta(Map.get(connection, :url))
+          |> failure_context(
+            "response",
+            true,
+            Map.get(stream_state, :response_started?, false)
+          )
+
+        {:error, connection, error_meta}
     end
   end
 
@@ -441,7 +493,17 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
           {:error, websocket, error} ->
             connection = %{connection | websocket: websocket}
-            {:halt, {:error, connection, frame_error_meta(error, Map.get(connection, :url))}}
+
+            error_meta =
+              error
+              |> frame_error_meta(Map.get(connection, :url))
+              |> failure_context(
+                "response",
+                true,
+                Map.get(stream_state, :response_started?, false)
+              )
+
+            {:halt, {:error, connection, error_meta}}
         end
 
       _other, acc ->
@@ -462,7 +524,11 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   defp handle_frame(connection, {:text, text}, stream_state, logical_request, emit) do
     case Jason.decode(text) do
       {:ok, %{} = event} ->
-        stream_state = StreamEvents.handle_event(stream_state, event, logical_request, emit)
+        stream_state =
+          stream_state
+          |> Map.put(:response_started?, true)
+          |> StreamEvents.handle_event(event, logical_request, emit)
+
         {:ok, connection, stream_state}
 
       {:ok, _other} ->
@@ -484,7 +550,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     {:ok, connection, stream_state}
   end
 
-  defp handle_frame(connection, {:close, code, reason}, _stream_state, _logical_request, _emit) do
+  defp handle_frame(connection, {:close, code, reason}, stream_state, _logical_request, _emit) do
+    response_started? = Map.get(stream_state, :response_started?, false)
+
     {:error, connection,
      %{
        status_code: nil,
@@ -492,24 +560,39 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
        retryable: true,
        error_kind: "network",
        error_text: "WebSocket closed before response.completed: #{inspect({code, reason})}",
-       raw_response: nil
+       raw_response: nil,
+       fallback_safe: code == 1009 and not response_started?,
+       failure_phase: "response",
+       request_sent: true,
+       response_started: response_started?,
+       websocket_close_code: code
      }}
   end
 
-  defp handle_frame(connection, {:binary, _data}, _stream_state, _logical_request, _emit) do
+  defp handle_frame(connection, {:binary, _data}, stream_state, _logical_request, _emit) do
     {:error, connection,
-     %{
-       status_code: nil,
-       url: url_string(Map.get(connection, :url)),
-       retryable: true,
-       error_kind: "transport",
-       error_text: "Unexpected binary WebSocket frame",
-       raw_response: nil
-     }}
+     failure_context(
+       %{
+         status_code: nil,
+         url: url_string(Map.get(connection, :url)),
+         retryable: true,
+         error_kind: "transport",
+         error_text: "Unexpected binary WebSocket frame",
+         raw_response: nil
+       },
+       "response",
+       true,
+       Map.get(stream_state, :response_started?, false)
+     )}
   end
 
-  defp handle_frame(connection, {:error, error}, _stream_state, _logical_request, _emit) do
-    {:error, connection, frame_error_meta(error, Map.get(connection, :url))}
+  defp handle_frame(connection, {:error, error}, stream_state, _logical_request, _emit) do
+    error_meta =
+      error
+      |> frame_error_meta(Map.get(connection, :url))
+      |> failure_context("response", true, Map.get(stream_state, :response_started?, false))
+
+    {:error, connection, error_meta}
   end
 
   defp send_control_frame(%{conn: conn, websocket: websocket, ref: ref} = connection, frame) do
@@ -521,12 +604,16 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
           {:error, conn, error} ->
             {:error, %{connection | conn: conn, websocket: websocket},
-             send_error_meta(error, Map.get(connection, :url))}
+             error
+             |> send_error_meta(Map.get(connection, :url))
+             |> failure_context("control", true, true)}
         end
 
       {:error, websocket, error} ->
         {:error, %{connection | websocket: websocket},
-         send_error_meta(error, Map.get(connection, :url))}
+         error
+         |> send_error_meta(Map.get(connection, :url))
+         |> failure_context("control", true, true)}
     end
   end
 
@@ -638,6 +725,24 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
+  defp error_reply(state, provider, logical_request, error_meta, emit) do
+    state = reset_transport_state(state)
+    error_meta = failure_context(error_meta, "unknown", false, false)
+
+    if Map.get(error_meta, :fallback_safe) == true do
+      fallback_meta =
+        error_meta
+        |> Map.put(:switched, true)
+        |> Map.put(:raw_request, logical_request)
+        |> Map.put_new(:raw_response, nil)
+
+      {:reply, {:fallback_to_http, fallback_meta}, %{state | transport: :http}}
+    else
+      maybe_emit_response_error(emit, provider, logical_request, error_meta)
+      {:reply, :ok, state}
+    end
+  end
+
   defp connection_error_meta(%Mint.WebSocket.UpgradeFailureError{} = error, url) do
     %{
       status_code: error.status_code,
@@ -720,6 +825,15 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
   defp retryable_terminal_error?(meta) when is_map(meta) do
     Map.get(meta, :retryable) == true
+  end
+
+  defp failure_context(meta, phase, request_sent?, response_started?) when is_map(meta) do
+    meta
+    |> Map.put_new(:fallback_safe, false)
+    |> Map.put_new(:failure_phase, phase)
+    |> Map.put_new(:request_sent, request_sent?)
+    |> Map.put_new(:response_started, response_started?)
+    |> Map.put_new(:websocket_close_code, nil)
   end
 
   defp retryable_transport_error?(%Mint.TransportError{}), do: true

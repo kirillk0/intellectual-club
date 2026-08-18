@@ -27,11 +27,14 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
             optional(:timeout_ms) => non_neg_integer(),
-            optional(:connect_timeout_ms) => non_neg_integer()
+            optional(:connect_timeout_ms) => non_neg_integer(),
+            optional(:provider) => String.t() | atom()
           },
           (event() -> any())
         ) :: :ok
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
+    emit = rewrite_provider_emit(emit, Map.get(opts, :provider, :responses))
+
     base_url =
       opts
       |> Map.get(:base_url)
@@ -143,6 +146,19 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   defp default_base_url(nil), do: "https://api.openai.com/v1"
   defp default_base_url(""), do: "https://api.openai.com/v1"
   defp default_base_url(value), do: to_string(value)
+
+  defp rewrite_provider_emit(emit, provider) when is_function(emit, 1) do
+    fn
+      {:response_complete, meta} when is_map(meta) ->
+        emit.({:response_complete, Map.put(meta, :provider, provider)})
+
+      {:response_error, meta} when is_map(meta) ->
+        emit.({:response_error, Map.put(meta, :provider, provider)})
+
+      event ->
+        emit.(event)
+    end
+  end
 
   defp stream_responses(%Response{} = response, raw_request, emit) do
     state = StreamEvents.new_state()

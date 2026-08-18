@@ -83,6 +83,27 @@ const providerTypes = [
     supports_model_discovery: false,
     supports_hosted_web_search: false,
   },
+  {
+    type: 'responses',
+    label: 'Responses API',
+    default_auth_method: 'api_key',
+    auth_methods: [{ value: 'api_key', label: 'API key', credential: 'api_key' }],
+    base_url_options: ['https://api.openai.com/v1', 'wss://api.openai.com/v1'],
+    default_base_url: 'https://api.openai.com/v1',
+    supports_model_discovery: true,
+    supports_hosted_web_search: true,
+  },
+  {
+    type: 'responses_wss',
+    label: 'Responses API (WSS)',
+    default_auth_method: 'api_key',
+    auth_methods: [{ value: 'api_key', label: 'API key', credential: 'api_key' }],
+    base_url_options: ['https://api.openai.com/v1', 'wss://api.openai.com/v1'],
+    default_base_url: 'https://api.openai.com/v1',
+    supports_model_discovery: true,
+    supports_hosted_web_search: true,
+    selectable: false,
+  },
 ];
 
 const toolTypes = [
@@ -253,6 +274,46 @@ describe('shared read-only editor tabs', () => {
     credentialsTab.element.click();
     await nextTick();
     expect(tabByText(view, 'Credentials').classes()).toContain('active');
+  });
+
+  it('hides a non-selectable provider type for other provider records', async () => {
+    jsonApiMocks.get.mockResolvedValue(
+      readonlyDocument('llm-providers', {
+        name: 'Responses provider',
+        type: 'responses',
+        auth_method: 'api_key',
+        base_url: 'wss://api.openai.com/v1',
+        credentials_present: ['api_key'],
+      })
+    );
+
+    const view = await mountView(LlmProviderEditView, '/catalogs/llm-providers/27');
+    await tabByText(view, 'Settings').trigger('click');
+    await vi.waitFor(() => expect(view.text()).toContain('Responses API'));
+
+    const optionLabels = view.findAll('option').map((option) => option.text());
+    expect(optionLabels).toContain('Responses API');
+    expect(optionLabels).not.toContain('Responses API (WSS)');
+  });
+
+  it('keeps the current legacy non-selectable provider type editable', async () => {
+    jsonApiMocks.get.mockResolvedValue(
+      readonlyDocument('llm-providers', {
+        name: 'Legacy Responses provider',
+        type: 'responses_wss',
+        auth_method: 'api_key',
+        base_url: 'https://api.openai.com/v1',
+        credentials_present: ['api_key'],
+      })
+    );
+
+    const view = await mountView(LlmProviderEditView, '/catalogs/llm-providers/27');
+    await tabByText(view, 'Settings').trigger('click');
+    await vi.waitFor(() => expect(view.text()).toContain('Responses API (WSS)'));
+
+    const optionLabels = view.findAll('option').map((option) => option.text());
+    expect(optionLabels).toContain('Responses API');
+    expect(optionLabels).toContain('Responses API (WSS)');
   });
 
   it('switches tool tabs while keeping its fields disabled', async () => {

@@ -327,6 +327,115 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert error.error_kind in ["network", "timeout", "transport"]
   end
 
+  test "close code 1009 before the first response event requests HTTP fallback and locks it" do
+    {base_url, agent} = start_scripted_server!([{:close, 1009, "message too big"}])
+    parent = self()
+    {:ok, session} = Session.start(%{provider_type: "responses"})
+    on_exit(fn -> Session.stop(session) end)
+
+    opts = %{
+      base_url: base_url,
+      api_key: "test-key",
+      request_payload: %{"model" => "gpt-4.1", "input" => []},
+      timeout_ms: 1_000,
+      connect_timeout_ms: 1_000,
+      provider: "responses"
+    }
+
+    assert {:fallback_to_http, fallback} =
+             Session.stream_generate(session, opts, fn event ->
+               send(parent, {:provider_event, event})
+             end)
+
+    assert fallback.switched == true
+    assert fallback.failure_phase == "response"
+    assert fallback.request_sent == true
+    assert fallback.response_started == false
+    assert fallback.websocket_close_code == 1009
+    refute_receive {:provider_event, {:response_error, _meta}}
+
+    assert {:fallback_to_http, locked} =
+             Session.stream_generate(session, opts, fn _event -> :ok end)
+
+    assert locked.switched == false
+    assert length(requests_for(agent)) == 1
+  end
+
+  test "handshake failure before sending requests immediate HTTP fallback" do
+    port = free_port()
+    parent = self()
+    {:ok, session} = Session.start(%{provider_type: "responses"})
+    on_exit(fn -> Session.stop(session) end)
+
+    opts = %{
+      base_url: "ws://127.0.0.1:#{port}",
+      api_key: "test-key",
+      request_payload: %{"model" => "gpt-4.1", "input" => []},
+      timeout_ms: 200,
+      connect_timeout_ms: 200,
+      provider: "responses"
+    }
+
+    assert {:fallback_to_http, fallback} =
+             Session.stream_generate(session, opts, fn event ->
+               send(parent, {:provider_event, event})
+             end)
+
+    assert fallback.switched == true
+    assert fallback.failure_phase == "handshake"
+    assert fallback.request_sent == false
+    assert fallback.response_started == false
+    refute_receive {:provider_event, {:response_error, _meta}}
+
+    assert {:fallback_to_http, %{switched: false}} =
+             Session.stream_generate(session, opts, fn _event -> :ok end)
+  end
+
+  test "close code 1009 after a response event stays on the common retry path" do
+    scripts = [
+      {:frames_then_close,
+       [
+         %{
+           "type" => "response.output_item.added",
+           "output_index" => 0,
+           "item" => %{
+             "id" => "msg_1",
+             "type" => "message",
+             "role" => "assistant",
+             "status" => "in_progress",
+             "content" => []
+           }
+         }
+       ], 1009, "message too big"}
+    ]
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+    parent = self()
+    {:ok, session} = Session.start(%{provider_type: "responses"})
+    on_exit(fn -> Session.stop(session) end)
+
+    result =
+      Session.stream_generate(
+        session,
+        %{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{"model" => "gpt-4.1", "input" => []},
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000,
+          provider: "responses"
+        },
+        fn event -> send(parent, {:provider_event, event}) end
+      )
+
+    assert result == :ok
+
+    assert_receive {:provider_event, {:response_error, error}}
+    assert error.retryable == true
+    assert error.websocket_close_code == 1009
+    assert error.response_started == true
+  end
+
   defp base_session_state do
     %{
       context: %{},
@@ -482,6 +591,13 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
         case reply do
           :close ->
             {:stop, :normal, state}
+
+          {:close, code, reason} ->
+            {:stop, :normal, {code, reason}, state}
+
+          {:frames_then_close, frames, code, reason} ->
+            messages = Enum.map(frames, fn frame -> {:text, Jason.encode!(frame)} end)
+            {:stop, :normal, {code, reason}, messages, state}
 
           frames when is_list(frames) ->
             {:push, Enum.map(frames, fn frame -> {:text, Jason.encode!(frame)} end), state}

@@ -149,6 +149,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert responses_wss_metadata.type == "responses_wss"
     assert responses_wss_metadata.label == "Responses API (WSS)"
+    assert responses_wss_metadata.selectable == false
     assert responses_wss_metadata.default_auth_method == responses_metadata.default_auth_method
     assert responses_wss_metadata.auth_methods == responses_metadata.auth_methods
     assert responses_wss_metadata.base_url_options == responses_metadata.base_url_options
@@ -156,6 +157,13 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert responses_wss_metadata.supports_model_discovery ==
              responses_metadata.supports_model_discovery
+
+    assert responses_metadata.base_url_options == [
+             "https://api.openai.com/v1",
+             "wss://api.openai.com/v1",
+             "https://chatgpt.com/backend-api/codex",
+             "wss://chatgpt.com/backend-api/codex"
+           ]
 
     opts = %{
       history: [%{role: :user, content: "Hello"}],

@@ -5,19 +5,32 @@ defmodule IntellectualClub.Llm.Providers.Responses.ModelDiscovery do
 
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.ModelDiscovery, as: CommonModelDiscovery
+  alias IntellectualClub.Llm.Providers.Responses.Endpoint
 
   @type model_option :: CommonModelDiscovery.model_option()
 
   @spec list_models(map()) :: {:ok, [model_option()]} | {:error, String.t()}
   def list_models(provider) when is_map(provider) do
-    with {:ok, token} <- bearer_token(provider),
-         {:ok, url} <- CommonModelDiscovery.models_url(provider, %{"client_version" => "1.0.0"}),
+    with {:ok, endpoint} <- resolve_endpoint(provider),
+         {:ok, token} <- bearer_token(provider),
+         {:ok, url} <-
+           CommonModelDiscovery.models_url(
+             Map.put(provider, :base_url, endpoint.http_base_url),
+             %{"client_version" => "1.0.0"}
+           ),
          {:ok, body} <-
            CommonModelDiscovery.request_json(url, [
              {"authorization", "Bearer " <> token},
              {"accept", "application/json"}
            ]) do
       parse_models(body)
+    end
+  end
+
+  defp resolve_endpoint(provider) do
+    case Endpoint.resolve(Map.get(provider, :base_url)) do
+      {:ok, endpoint} -> {:ok, endpoint}
+      {:error, :invalid_base_url} -> {:error, "Provider base URL is invalid."}
     end
   end
 

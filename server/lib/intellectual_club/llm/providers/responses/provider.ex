@@ -5,6 +5,8 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  require Logger
+
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
@@ -15,8 +17,10 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   alias IntellectualClub.Llm.Providers.Common.HostedWebSearch
   alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.Llm.Providers.Responses.Api
+  alias IntellectualClub.Llm.Providers.Responses.Endpoint
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Llm.Providers.Responses.ModelDiscovery
+  alias IntellectualClub.Llm.Providers.ResponsesWss.Session
 
   @type_id "responses"
   @opaque_sequence 10_000
@@ -43,7 +47,12 @@ defmodule IntellectualClub.Llm.Providers.Responses do
           required: true
         }
       ],
-      base_url_options: ["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"],
+      base_url_options: [
+        "https://api.openai.com/v1",
+        "wss://api.openai.com/v1",
+        "https://chatgpt.com/backend-api/codex",
+        "wss://chatgpt.com/backend-api/codex"
+      ],
       default_base_url: "https://api.openai.com/v1",
       supports_model_discovery: true,
       supports_hosted_web_search: true
@@ -210,6 +219,20 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
+  def start_session(context) when is_map(context) do
+    with {:ok, endpoint} <- endpoint_for_context(context) do
+      if endpoint.transport == :websocket do
+        Session.start(context)
+      else
+        :ignore
+      end
+    end
+  end
+
+  @impl true
+  def stop_session(session), do: Session.stop(session)
+
+  @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
@@ -229,16 +252,16 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
     case token_result do
       {:ok, token} ->
-        Api.stream_generate(
-          %{
-            base_url: Map.get(context, :provider_base_url),
-            api_key: token,
-            request_payload: request_payload,
-            request_step_id: Map.get(opts, :request_step_id),
-            timeout_ms: Map.get(opts, :timeout_ms, 300_000)
-          },
-          emit
-        )
+        case endpoint_for_context(context) do
+          {:ok, %{transport: :http} = endpoint} ->
+            stream_http(endpoint, token, request_payload, opts, context, emit)
+
+          {:ok, %{transport: :websocket} = endpoint} ->
+            stream_websocket(endpoint, token, request_payload, opts, context, emit)
+
+          {:error, :invalid_base_url} ->
+            emit_invalid_base_url_error(context, request_payload, emit)
+        end
 
       {:error, error_text, error_meta} ->
         error_meta = if is_map(error_meta), do: error_meta, else: %{}
@@ -271,6 +294,135 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
         :ok
     end
+  end
+
+  defp endpoint_for_context(context) when is_map(context) do
+    Endpoint.resolve(Map.get(context, :provider_base_url),
+      force_websocket?: legacy_wss_provider?(context)
+    )
+  end
+
+  defp legacy_wss_provider?(context) when is_map(context) do
+    to_string(Map.get(context, :provider_type) || "") == "responses_wss"
+  end
+
+  defp stream_websocket(endpoint, token, request_payload, opts, context, emit) do
+    case session_from_opts(opts, context) do
+      {:ok, session, stop_after?} ->
+        try do
+          case Session.stream_generate(
+                 session,
+                 %{
+                   base_url: endpoint.websocket_base_url,
+                   api_key: token,
+                   request_payload: request_payload,
+                   request_step_id: Map.get(opts, :request_step_id),
+                   timeout_ms: Map.get(opts, :timeout_ms, 300_000),
+                   connect_timeout_ms: Map.get(opts, :connect_timeout_ms, 10_000),
+                   provider: Map.get(context, :provider_type, type())
+                 },
+                 emit
+               ) do
+            :ok ->
+              :ok
+
+            {:fallback_to_http, fallback_meta} ->
+              maybe_log_transport_fallback(fallback_meta, opts, context)
+              stream_http(endpoint, token, request_payload, opts, context, emit)
+          end
+        after
+          if stop_after?, do: Session.stop(session)
+        end
+
+      {:error, error_text} ->
+        emit_unavailable_error(context, request_payload, error_text, emit)
+    end
+  end
+
+  defp stream_http(endpoint, token, request_payload, opts, context, emit) do
+    Api.stream_generate(
+      %{
+        base_url: endpoint.http_base_url,
+        api_key: token,
+        request_payload: request_payload,
+        request_step_id: Map.get(opts, :request_step_id),
+        timeout_ms: Map.get(opts, :timeout_ms, 300_000),
+        connect_timeout_ms: Map.get(opts, :connect_timeout_ms, 10_000),
+        provider: Map.get(context, :provider_type, type())
+      },
+      emit
+    )
+  end
+
+  defp session_from_opts(opts, context) do
+    case Map.get(opts, :provider_session) do
+      pid when is_pid(pid) ->
+        {:ok, pid, false}
+
+      _other ->
+        case Session.start(context) do
+          {:ok, pid} ->
+            {:ok, pid, true}
+
+          :ignore ->
+            {:error, "Responses WebSocket session is not available."}
+
+          {:error, reason} ->
+            {:error, "Failed to start Responses WebSocket session: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  defp maybe_log_transport_fallback(%{switched: true} = meta, opts, context) do
+    Logger.warning(
+      "Responses WebSocket transport fell back to HTTP",
+      provider: Map.get(context, :provider_type, type()),
+      message_id: Map.get(context, :message_id),
+      request_step_id: Map.get(opts, :request_step_id),
+      source_transport: :websocket,
+      target_transport: :http,
+      fallback_reason: fallback_reason(meta),
+      failure_phase: Map.get(meta, :failure_phase),
+      websocket_close_code: Map.get(meta, :websocket_close_code)
+    )
+  end
+
+  defp maybe_log_transport_fallback(_meta, _opts, _context), do: :ok
+
+  defp fallback_reason(%{websocket_close_code: 1009}), do: :websocket_close_1009
+  defp fallback_reason(%{failure_phase: "handshake"}), do: :websocket_handshake_failed
+  defp fallback_reason(_meta), do: :websocket_transport_failed
+
+  defp emit_invalid_base_url_error(context, request_payload, emit) do
+    emit.(
+      {:response_error,
+       %{
+         provider: Map.get(context, :provider_type, type()),
+         error_text: "Invalid Responses API base URL",
+         retryable: false,
+         error_kind: "transport",
+         raw_request: request_payload,
+         raw_response: nil
+       }}
+    )
+
+    :ok
+  end
+
+  defp emit_unavailable_error(context, request_payload, error_text, emit) do
+    emit.(
+      {:response_error,
+       %{
+         provider: Map.get(context, :provider_type, type()),
+         error_text: error_text,
+         retryable: false,
+         error_kind: "transport",
+         raw_request: request_payload,
+         raw_response: nil
+       }}
+    )
+
+    :ok
   end
 
   @doc false

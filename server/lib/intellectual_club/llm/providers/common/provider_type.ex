@@ -37,7 +37,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
           required(:base_url_options) => [String.t()],
           required(:default_base_url) => String.t() | nil,
           required(:supports_model_discovery) => boolean(),
-          required(:supports_hosted_web_search) => boolean()
+          required(:supports_hosted_web_search) => boolean(),
+          optional(:selectable) => boolean()
         }
 
   @type model_option :: %{

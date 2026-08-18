@@ -37,6 +37,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
       output_items: %{},
       output_item_updates: MapSet.new(),
       tool_calls: %{},
+      response_started?: false,
       done?: false
     }
   end

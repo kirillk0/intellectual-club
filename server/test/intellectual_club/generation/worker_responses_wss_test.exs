@@ -130,6 +130,228 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     assert next_message_request["reasoning"] == %{"effort" => "low", "summary" => "auto"}
   end
 
+  test "responses provider falls back from close 1009 to HTTP for the whole tool loop" do
+    %{user: actor} = user_fixture()
+
+    {base_url, agent} =
+      start_scripted_server!(fn base_url ->
+        tool_url = base_url <> "/page"
+
+        %{
+          websocket: [{:close, 1009, "message too big"}],
+          http: [
+            [
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "id" => "resp_http_tool",
+                  "object" => "response",
+                  "model" => "test-model",
+                  "status" => "completed",
+                  "output" => [
+                    %{
+                      "id" => "fc_http_1",
+                      "type" => "function_call",
+                      "call_id" => "call_http_1",
+                      "name" => "web__read_url",
+                      "arguments" => Jason.encode!(%{"url" => tool_url})
+                    }
+                  ]
+                }
+              }
+            ],
+            [
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "id" => "resp_http_final",
+                  "object" => "response",
+                  "model" => "test-model",
+                  "status" => "completed",
+                  "output" => [assistant_message("Final after HTTP fallback.")]
+                }
+              }
+            ]
+          ]
+        }
+      end)
+
+    websocket_base_url = String.replace_prefix(base_url, "http://", "ws://")
+    chat = create_chat_with_web_tool!(actor, websocket_base_url, :responses)
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Use the local page", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert_receive {:done, message_id}, 10_000
+    assert message_id == context.message_id
+
+    message =
+      wait_for_message!(message_id, actor, fn message ->
+        message.status == :done and
+          message_answer_text(message) == "Final after HTTP fallback."
+      end)
+
+    assert message.steps |> Enum.sort_by(& &1.sequence) |> Enum.map(& &1.status) == [:done, :done]
+
+    [websocket_request] = requests_for(agent)
+    [first_http_request, tool_http_request] = http_requests_for(agent)
+
+    assert websocket_request["type"] == "response.create"
+    refute Map.has_key?(websocket_request, "stream")
+
+    assert first_http_request["stream"] == true
+    refute Map.has_key?(first_http_request, "type")
+    refute Map.has_key?(first_http_request, "previous_response_id")
+    assert is_list(first_http_request["input"])
+
+    assert tool_http_request["stream"] == true
+    refute Map.has_key?(tool_http_request, "type")
+    refute Map.has_key?(tool_http_request, "previous_response_id")
+    assert length(tool_http_request["input"]) > length(first_http_request["input"])
+    assert Enum.any?(tool_http_request["input"], &(&1["type"] == "function_call"))
+
+    assert Enum.any?(
+             tool_http_request["input"],
+             &(&1["type"] == "function_call_output" and &1["call_id"] == "call_http_1")
+           )
+
+    assert Enum.all?(websocket_headers_for(agent), fn headers ->
+             {"authorization", "Bearer test-key"} in headers
+           end)
+
+    assert Enum.all?(http_headers_for(agent), fn headers ->
+             {"authorization", "Bearer test-key"} in headers
+           end)
+  end
+
+  test "responses provider keeps HTTP selected for common retries after fallback" do
+    previous_backoff =
+      Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
+
+    previous_jitter =
+      Application.get_env(:intellectual_club, :generation_auto_retry_jitter_ratio)
+
+    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0])
+    Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
+
+    on_exit(fn ->
+      restore_env(:generation_auto_retry_backoff_ms, previous_backoff)
+      restore_env(:generation_auto_retry_jitter_ratio, previous_jitter)
+    end)
+
+    %{user: actor} = user_fixture()
+
+    {base_url, agent} =
+      start_scripted_server!(fn _base_url ->
+        %{
+          websocket: [{:close, 1009, "message too big"}],
+          http: [
+            [
+              %{
+                "type" => "error",
+                "error" => %{
+                  "code" => "server_is_overloaded",
+                  "type" => "service_unavailable_error",
+                  "message" => "Retry over HTTP"
+                }
+              }
+            ],
+            [
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "id" => "resp_http_retry",
+                  "object" => "response",
+                  "model" => "test-model",
+                  "status" => "completed",
+                  "output" => [assistant_message("Recovered over HTTP.")]
+                }
+              }
+            ]
+          ]
+        }
+      end)
+
+    websocket_base_url = String.replace_prefix(base_url, "http://", "ws://")
+    chat = create_chat_with_web_tool!(actor, websocket_base_url, :responses)
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Retry if needed", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert_receive {:done, message_id}, 10_000
+    assert message_id == context.message_id
+
+    message =
+      wait_for_message!(message_id, actor, fn message ->
+        message.status == :done and message_answer_text(message) == "Recovered over HTTP."
+      end)
+
+    assert message.steps |> Enum.sort_by(& &1.sequence) |> Enum.map(& &1.status) == [
+             :error,
+             :done
+           ]
+
+    assert length(requests_for(agent)) == 1
+    assert length(http_requests_for(agent)) == 2
+  end
+
+  test "responses provider falls back to HTTP when WebSocket upgrade fails" do
+    %{user: actor} = user_fixture()
+
+    {base_url, agent} =
+      start_scripted_server!(fn _base_url ->
+        %{
+          websocket: :reject_upgrade,
+          http: [
+            [
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "id" => "resp_http_handshake",
+                  "object" => "response",
+                  "model" => "test-model",
+                  "status" => "completed",
+                  "output" => [assistant_message("Recovered after failed upgrade.")]
+                }
+              }
+            ]
+          ]
+        }
+      end)
+
+    websocket_base_url = String.replace_prefix(base_url, "http://", "ws://")
+    chat = create_chat_with_web_tool!(actor, websocket_base_url, :responses)
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Handle the failed upgrade", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    assert_receive {:done, message_id}, 10_000
+    assert message_id == context.message_id
+
+    message =
+      wait_for_message!(message_id, actor, fn message ->
+        message.status == :done and
+          message_answer_text(message) == "Recovered after failed upgrade."
+      end)
+
+    assert message.steps |> Enum.map(& &1.status) == [:done]
+    assert requests_for(agent) == []
+    assert length(websocket_headers_for(agent)) == 1
+    assert length(http_requests_for(agent)) == 1
+  end
+
   defp assistant_message(text) when is_binary(text) do
     %{
       "id" => "msg_" <> Integer.to_string(System.unique_integer([:positive, :monotonic])),
@@ -140,14 +362,14 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     }
   end
 
-  defp create_chat_with_web_tool!(actor, base_url) do
+  defp create_chat_with_web_tool!(actor, base_url, provider_type \\ :responses_wss) do
     provider =
       LlmProvider
       |> Ash.Changeset.for_create(
         :create,
         %{
           name: "WSS provider #{System.unique_integer([:positive])}",
-          type: :responses_wss,
+          type: provider_type,
           auth_method: :api_key,
           base_url: base_url,
           api_key: "test-key"
@@ -235,13 +457,30 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     port = free_port()
     base_url = "http://127.0.0.1:#{port}"
 
+    {websocket_scripts, http_scripts, reject_upgrade?} =
+      case scripts_fun.(base_url) do
+        %{websocket: :reject_upgrade, http: http_scripts} ->
+          {[], http_scripts, true}
+
+        %{websocket: websocket_scripts, http: http_scripts} ->
+          {websocket_scripts, http_scripts, false}
+
+        websocket_scripts when is_list(websocket_scripts) ->
+          {websocket_scripts, [], false}
+      end
+
     {:ok, agent} =
       start_supervised(
         {Agent,
          fn ->
            %{
-             scripts: scripts_fun.(base_url),
-             requests: []
+             scripts: websocket_scripts,
+             http_scripts: http_scripts,
+             requests: [],
+             http_requests: [],
+             websocket_headers: [],
+             http_headers: [],
+             reject_upgrade?: reject_upgrade?
            }
          end}
       )
@@ -257,6 +496,18 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
 
   defp requests_for(agent) do
     Agent.get(agent, & &1.requests)
+  end
+
+  defp http_requests_for(agent) do
+    Agent.get(agent, & &1.http_requests)
+  end
+
+  defp websocket_headers_for(agent) do
+    Agent.get(agent, & &1.websocket_headers)
+  end
+
+  defp http_headers_for(agent) do
+    Agent.get(agent, & &1.http_headers)
   end
 
   defp free_port do
@@ -342,17 +593,62 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     |> Enum.map_join("", fn content -> content.content_text || "" end)
   end
 
+  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
+  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
+
   defmodule ScriptedPlug do
     import Plug.Conn
 
     def init(opts), do: opts
 
+    def call(%{request_path: "/responses", method: "POST"} = conn, opts) do
+      agent = Keyword.fetch!(opts, :agent)
+      {:ok, body, conn} = read_body(conn)
+      request = Jason.decode!(body)
+
+      frames =
+        Agent.get_and_update(agent, fn state ->
+          {script, rest} =
+            case state.http_scripts do
+              [next | rest] -> {next, rest}
+              [] -> {[%{"type" => "error", "error" => %{"message" => "No HTTP script"}}], []}
+            end
+
+          next_state = %{
+            state
+            | http_scripts: rest,
+              http_requests: state.http_requests ++ [request],
+              http_headers: state.http_headers ++ [conn.req_headers]
+          }
+
+          {script, next_state}
+        end)
+
+      conn =
+        conn
+        |> put_resp_content_type("text/event-stream")
+        |> send_chunked(200)
+
+      Enum.reduce(frames, conn, fn frame, conn ->
+        {:ok, conn} = chunk(conn, "data: " <> Jason.encode!(frame) <> "\n\n")
+        conn
+      end)
+    end
+
     def call(%{request_path: "/responses"} = conn, opts) do
       agent = Keyword.fetch!(opts, :agent)
 
-      conn
-      |> WebSockAdapter.upgrade(__MODULE__.ScriptedSocket, %{agent: agent}, timeout: 60_000)
-      |> halt()
+      Agent.update(agent, fn state ->
+        %{state | websocket_headers: state.websocket_headers ++ [conn.req_headers]}
+      end)
+
+      if Agent.get(agent, & &1.reject_upgrade?) do
+        send_resp(conn, 426, "upgrade rejected")
+      else
+        conn
+        |> WebSockAdapter.upgrade(__MODULE__.ScriptedSocket, %{agent: agent}, timeout: 60_000)
+        |> halt()
+      end
     end
 
     def call(%{request_path: "/page"} = conn, _opts) do
@@ -380,7 +676,7 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
       def handle_in({payload, [opcode: :text]}, %{agent: agent} = state) do
         request = Jason.decode!(payload)
 
-        frames =
+        reply =
           Agent.get_and_update(agent, fn state ->
             {script, rest} =
               case state.scripts do
@@ -394,7 +690,13 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
             {script, %{state | scripts: rest, requests: state.requests ++ [request]}}
           end)
 
-        {:push, Enum.map(frames, fn frame -> {:text, Jason.encode!(frame)} end), state}
+        case reply do
+          {:close, code, reason} ->
+            {:stop, :normal, {code, reason}, state}
+
+          frames when is_list(frames) ->
+            {:push, Enum.map(frames, fn frame -> {:text, Jason.encode!(frame)} end), state}
+        end
       end
 
       @impl true

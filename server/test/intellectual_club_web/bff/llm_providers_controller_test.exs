@@ -47,6 +47,7 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
            end)
 
     assert responses_wss["label"] == "Responses API (WSS)"
+    assert responses_wss["selectable"] == false
     assert responses_wss["default_auth_method"] == responses["default_auth_method"]
     assert responses_wss["auth_methods"] == responses["auth_methods"]
     assert responses_wss["base_url_options"] == responses["base_url_options"]
@@ -56,6 +57,13 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
 
     assert responses_wss["supports_hosted_web_search"] ==
              responses["supports_hosted_web_search"]
+
+    assert responses["base_url_options"] == [
+             "https://api.openai.com/v1",
+             "wss://api.openai.com/v1",
+             "https://chatgpt.com/backend-api/codex",
+             "wss://chatgpt.com/backend-api/codex"
+           ]
 
     assert google["label"] == "Google Interactions API"
     assert google["default_auth_method"] == "api_key"
@@ -342,7 +350,8 @@ defmodule IntellectualClubWeb.Bff.LlmProvidersControllerTest do
     }
 
     {base_url, agent} = start_scripted_server!(scripts)
-    provider = create_provider!(actor, base_url, :responses_wss)
+    websocket_base_url = String.replace_prefix(base_url, "http://", "ws://")
+    provider = create_provider!(actor, websocket_base_url, :responses_wss)
 
     response =
       conn
