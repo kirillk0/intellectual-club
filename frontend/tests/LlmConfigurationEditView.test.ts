@@ -57,6 +57,9 @@ type ConfigurationAttributes = {
   enabled: boolean;
   timeout_seconds: number;
   context_length: number | null;
+  cold_input_price_per_million_tokens: number | null;
+  cached_input_price_per_million_tokens: number | null;
+  output_price_per_million_tokens: number | null;
   supports_cache_control: boolean;
   supports_image_input: boolean;
   supports_steering: boolean;
@@ -77,6 +80,9 @@ const defaultAttributes: ConfigurationAttributes = {
   enabled: true,
   timeout_seconds: 300,
   context_length: null,
+  cold_input_price_per_million_tokens: null,
+  cached_input_price_per_million_tokens: null,
+  output_price_per_million_tokens: null,
   supports_cache_control: false,
   supports_image_input: false,
   supports_steering: true,
@@ -286,9 +292,67 @@ describe('LlmConfigurationEditView standard parameters', () => {
     expect(view.getComponent(LlmConfigurationTagsPickerModal).props('selectedTagIds')).toEqual([9]);
   });
 
+  it('requires a complete manual pricing set and saves zero as a configured price', async () => {
+    jsonApiMocks.create.mockResolvedValue(
+      configurationDocument({
+        cold_input_price_per_million_tokens: 1.25,
+        cached_input_price_per_million_tokens: 0,
+        output_price_per_million_tokens: 8.5,
+      })
+    );
+
+    const view = await mountView('/catalogs/llm-configurations/new');
+    const coldInput = view.get<HTMLInputElement>('#llm-configuration-cold-input-price');
+    const cachedInput = view.get<HTMLInputElement>('#llm-configuration-cached-input-price');
+    const output = view.get<HTMLInputElement>('#llm-configuration-output-price');
+
+    expect(coldInput.element.value).toBe('');
+    expect(cachedInput.element.value).toBe('');
+    expect(output.element.value).toBe('');
+    expect(coldInput.attributes()).toMatchObject({ min: '0', step: 'any' });
+
+    await coldInput.setValue('1.25');
+    header(view).vm.$emit('save');
+    await nextTick();
+
+    expect(view.text()).toContain('Fill all three prices or leave all three empty.');
+    expect(jsonApiMocks.create).not.toHaveBeenCalled();
+
+    await cachedInput.setValue('0');
+    await output.setValue('8.5');
+    header(view).vm.$emit('save');
+
+    await vi.waitFor(() => expect(jsonApiMocks.create).toHaveBeenCalledTimes(1));
+    expect(jsonApiMocks.create.mock.calls[0]?.[2]).toMatchObject({
+      cold_input_price_per_million_tokens: 1.25,
+      cached_input_price_per_million_tokens: 0,
+      output_price_per_million_tokens: 8.5,
+    });
+  });
+
+  it('rejects negative manual prices before saving', async () => {
+    const view = await mountView('/catalogs/llm-configurations/new');
+
+    await view.get('#llm-configuration-cold-input-price').setValue('-0.01');
+    await view.get('#llm-configuration-cached-input-price').setValue('0');
+    await view.get('#llm-configuration-output-price').setValue('1');
+    header(view).vm.$emit('save');
+    await nextTick();
+
+    expect(view.text()).toContain('Manual prices must be non-negative.');
+    expect(jsonApiMocks.create).not.toHaveBeenCalled();
+  });
+
   it('loads persisted values and sends explicit values or null in the update payload', async () => {
     jsonApiMocks.get.mockResolvedValue(
-      configurationDocument({ temperature: 0.7, reasoning_effort: 'high', web_search_enabled: true })
+      configurationDocument({
+        temperature: 0.7,
+        reasoning_effort: 'high',
+        web_search_enabled: true,
+        cold_input_price_per_million_tokens: 1.25,
+        cached_input_price_per_million_tokens: 0.25,
+        output_price_per_million_tokens: 8.5,
+      })
     );
     jsonApiMocks.update.mockImplementation(
       async (_basePath: string, _type: string, _id: number, attributes: ConfigurationAttributes) =>
@@ -310,6 +374,9 @@ describe('LlmConfigurationEditView standard parameters', () => {
       temperature: 0,
       reasoning_effort: 'max',
       web_search_enabled: true,
+      cold_input_price_per_million_tokens: 1.25,
+      cached_input_price_per_million_tokens: 0.25,
+      output_price_per_million_tokens: 8.5,
     });
 
     await view.get('#llm-configuration-temperature-mode').setValue('default');
@@ -336,6 +403,9 @@ describe('LlmConfigurationEditView standard parameters', () => {
     expect(view.get('input[aria-label="Temperature"]').attributes('disabled')).toBeDefined();
     expect(view.get('#llm-configuration-reasoning-effort').attributes('disabled')).toBeDefined();
     expect(view.get('#llm-configuration-web-search-enabled').attributes('disabled')).toBeDefined();
+    expect(view.get('#llm-configuration-cold-input-price').attributes('disabled')).toBeDefined();
+    expect(view.get('#llm-configuration-cached-input-price').attributes('disabled')).toBeDefined();
+    expect(view.get('#llm-configuration-output-price').attributes('disabled')).toBeDefined();
   });
 
   it('enables hosted web search by provider type and preserves the value across unsupported types', async () => {
@@ -409,19 +479,26 @@ describe('LlmConfigurationEditView standard parameters', () => {
   it('has Russian translations for every new label and explanation', () => {
     const keys = [
       'Available reasoning effort levels depend on the selected model.',
+      'Cached input (USD / 1M tokens)',
+      'Cold input (USD / 1M tokens)',
       'Default',
       'Default leaves the corresponding request parameter unset, so values from Advanced JSON remain unchanged.',
       'High',
       'Hosted web search',
       'Hosted web search is not available for this provider type.',
       'Low',
+      'Manual prices must be non-negative.',
+      'Manual pricing',
       'Max',
       'Medium',
       'Minimal',
       'None',
+      'Output (USD / 1M tokens)',
       'Reasoning effort',
       'Temperature',
       'XHigh',
+      'Fill all three prices or leave all three empty.',
+      'USD per 1M tokens. Used only when the provider does not report cost.',
       "Uses the provider's hosted web search tool.",
     ];
 

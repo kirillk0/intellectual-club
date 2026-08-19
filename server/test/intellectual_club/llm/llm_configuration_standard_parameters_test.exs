@@ -14,6 +14,77 @@ defmodule IntellectualClub.Llm.LlmConfigurationStandardParametersTest do
     assert is_nil(configuration.temperature)
     assert is_nil(configuration.reasoning_effort)
     assert configuration.web_search_enabled == false
+    assert is_nil(configuration.cold_input_price_per_million_tokens)
+    assert is_nil(configuration.cached_input_price_per_million_tokens)
+    assert is_nil(configuration.output_price_per_million_tokens)
+  end
+
+  test "manual pricing persists as a complete set and can be cleared" do
+    %{user: actor} = user_fixture()
+    provider = create_provider!(actor)
+
+    configuration =
+      create_configuration!(actor, provider, %{
+        cold_input_price_per_million_tokens: 1.25,
+        cached_input_price_per_million_tokens: 0,
+        output_price_per_million_tokens: 8.5
+      })
+
+    assert configuration.cold_input_price_per_million_tokens == 1.25
+    assert configuration.cached_input_price_per_million_tokens == 0.0
+    assert configuration.output_price_per_million_tokens == 8.5
+
+    cleared =
+      configuration
+      |> Ash.Changeset.for_update(
+        :update,
+        %{
+          cold_input_price_per_million_tokens: nil,
+          cached_input_price_per_million_tokens: nil,
+          output_price_per_million_tokens: nil
+        },
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+    assert is_nil(cleared.cold_input_price_per_million_tokens)
+    assert is_nil(cleared.cached_input_price_per_million_tokens)
+    assert is_nil(cleared.output_price_per_million_tokens)
+  end
+
+  test "manual pricing rejects partial and negative values" do
+    %{user: actor} = user_fixture()
+    provider = create_provider!(actor)
+
+    assert {:error, %Ash.Error.Invalid{}} =
+             LlmConfiguration
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 provider_id: provider.id,
+                 model_name: "partial-pricing-model",
+                 parameters: %{},
+                 cold_input_price_per_million_tokens: 1.0
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+
+    assert {:error, %Ash.Error.Invalid{}} =
+             LlmConfiguration
+             |> Ash.Changeset.for_create(
+               :create,
+               %{
+                 provider_id: provider.id,
+                 model_name: "negative-pricing-model",
+                 parameters: %{},
+                 cold_input_price_per_million_tokens: -0.01,
+                 cached_input_price_per_million_tokens: 0.5,
+                 output_price_per_million_tokens: 2.0
+               },
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
   end
 
   test "standard parameters persist, accept all effort levels, and can be reset" do

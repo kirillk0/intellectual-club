@@ -337,7 +337,10 @@ defmodule IntellectualClub.Generation.ContextTest do
           },
           temperature: 0.2,
           reasoning_effort: :minimal,
-          web_search_enabled: true
+          web_search_enabled: true,
+          cold_input_price_per_million_tokens: 1.25,
+          cached_input_price_per_million_tokens: 0.25,
+          output_price_per_million_tokens: 5.0
         },
         actor: actor
       )
@@ -372,6 +375,9 @@ defmodule IntellectualClub.Generation.ContextTest do
 
     assert context.request_payload["max_output_tokens"] == 64
     assert context.request_payload["tools"] == [%{"type" => "web_search"}]
+    assert context.cold_input_price_per_million_tokens == 1.25
+    assert context.cached_input_price_per_million_tokens == 0.25
+    assert context.output_price_per_million_tokens == 5.0
 
     step = Ash.get!(ChatMessageStep, context.step_id, actor: actor, load: [:raw_request])
     assert step.raw_request == context.request_payload

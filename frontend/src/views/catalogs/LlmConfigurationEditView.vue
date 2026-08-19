@@ -203,6 +203,70 @@
             </div>
           </label>
 
+          <div class="stack manual-pricing-section">
+            <div>
+              <strong>Manual pricing</strong>
+              <div class="muted small-text">USD per 1M tokens. Used only when the provider does not report cost.</div>
+              <div class="muted small-text">Fill all three prices or leave all three empty.</div>
+            </div>
+
+            <label :class="{ 'field-error': errors.hasField('cold_input_price_per_million_tokens') }">
+              Cold input (USD / 1M tokens)
+              <input
+                id="llm-configuration-cold-input-price"
+                v-model.number="coldInputPriceModel"
+                type="number"
+                min="0"
+                step="any"
+                class="full"
+                placeholder="Optional"
+                :disabled="sharedReadonly"
+                @input="clearManualPricingError('cold_input_price_per_million_tokens')"
+              />
+              <div v-if="errors.hasField('cold_input_price_per_million_tokens')" class="error-text">
+                {{ errors.messageFor('cold_input_price_per_million_tokens') }}
+              </div>
+            </label>
+
+            <label :class="{ 'field-error': errors.hasField('cached_input_price_per_million_tokens') }">
+              Cached input (USD / 1M tokens)
+              <input
+                id="llm-configuration-cached-input-price"
+                v-model.number="cachedInputPriceModel"
+                type="number"
+                min="0"
+                step="any"
+                class="full"
+                placeholder="Optional"
+                :disabled="sharedReadonly"
+                @input="clearManualPricingError('cached_input_price_per_million_tokens')"
+              />
+              <div v-if="errors.hasField('cached_input_price_per_million_tokens')" class="error-text">
+                {{ errors.messageFor('cached_input_price_per_million_tokens') }}
+              </div>
+            </label>
+
+            <label :class="{ 'field-error': errors.hasField('output_price_per_million_tokens') }">
+              Output (USD / 1M tokens)
+              <input
+                id="llm-configuration-output-price"
+                v-model.number="outputPriceModel"
+                type="number"
+                min="0"
+                step="any"
+                class="full"
+                placeholder="Optional"
+                :disabled="sharedReadonly"
+                @input="clearManualPricingError('output_price_per_million_tokens')"
+              />
+              <div v-if="errors.hasField('output_price_per_million_tokens')" class="error-text">
+                {{ errors.messageFor('output_price_per_million_tokens') }}
+              </div>
+            </label>
+
+            <div v-if="manualPricingError" class="error-text">{{ manualPricingError }}</div>
+          </div>
+
           <label style="display: flex; align-items: center; gap: 10px">
             <input v-model="form.enabled" type="checkbox" :disabled="sharedReadonly" />
             Enabled
@@ -406,6 +470,9 @@ type ConfigurationForm = {
   enabled: boolean;
   timeout_seconds: number;
   context_length: number | null;
+  cold_input_price_per_million_tokens: number | null;
+  cached_input_price_per_million_tokens: number | null;
+  output_price_per_million_tokens: number | null;
   supports_cache_control: boolean;
   supports_image_input: boolean;
   supports_steering: boolean;
@@ -495,6 +562,9 @@ function fromApi(resource: JsonApiResource): Partial<ConfigurationForm> {
     timeout_seconds: typeof attrs.timeout_seconds === 'number' ? attrs.timeout_seconds : Number(attrs.timeout_seconds || 120),
     context_length:
       typeof attrs.context_length === 'number' ? attrs.context_length : toIntId(attrs.context_length as any),
+    cold_input_price_per_million_tokens: normalizeTemperature(attrs.cold_input_price_per_million_tokens),
+    cached_input_price_per_million_tokens: normalizeTemperature(attrs.cached_input_price_per_million_tokens),
+    output_price_per_million_tokens: normalizeTemperature(attrs.output_price_per_million_tokens),
     supports_cache_control: Boolean(attrs.supports_cache_control),
     supports_image_input: Boolean(attrs.supports_image_input),
     supports_steering: attrs.supports_steering !== false,
@@ -605,6 +675,9 @@ const editor = useCrudEditor<ConfigurationForm>({
     enabled: true,
     timeout_seconds: 120,
     context_length: null,
+    cold_input_price_per_million_tokens: null,
+    cached_input_price_per_million_tokens: null,
+    output_price_per_million_tokens: null,
     supports_cache_control: false,
     supports_image_input: false,
     supports_steering: true,
@@ -625,6 +698,9 @@ const editor = useCrudEditor<ConfigurationForm>({
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
+    cold_input_price_per_million_tokens: form.cold_input_price_per_million_tokens,
+    cached_input_price_per_million_tokens: form.cached_input_price_per_million_tokens,
+    output_price_per_million_tokens: form.output_price_per_million_tokens,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
     supports_steering: form.supports_steering,
@@ -643,6 +719,9 @@ const editor = useCrudEditor<ConfigurationForm>({
     enabled: form.enabled,
     timeout_seconds: form.timeout_seconds,
     context_length: form.context_length,
+    cold_input_price_per_million_tokens: form.cold_input_price_per_million_tokens,
+    cached_input_price_per_million_tokens: form.cached_input_price_per_million_tokens,
+    output_price_per_million_tokens: form.output_price_per_million_tokens,
     supports_cache_control: form.supports_cache_control,
     supports_image_input: form.supports_image_input,
     supports_steering: form.supports_steering,
@@ -819,6 +898,7 @@ const cancelChanges = () => {
   editor.reset();
   bindings.reset();
   resetTagBindingsToLoaded(currentTagBindings.value.map((binding) => ({ ...binding })));
+  manualPricingError.value = null;
   resetParametersText();
 };
 
@@ -967,6 +1047,57 @@ const contextLengthModel = computed({
     form.context_length = typeof value === 'number' && Number.isFinite(value) ? value : null;
   },
 });
+
+type ManualPricingField =
+  | 'cold_input_price_per_million_tokens'
+  | 'cached_input_price_per_million_tokens'
+  | 'output_price_per_million_tokens';
+
+const manualPricingError = ref<string | null>(null);
+
+function manualPriceModel(field: ManualPricingField) {
+  return computed<number | undefined>({
+    get: () => (typeof form[field] === 'number' ? (form[field] ?? undefined) : undefined),
+    set: (value) => {
+      form[field] = typeof value === 'number' && Number.isFinite(value) ? value : null;
+    },
+  });
+}
+
+const coldInputPriceModel = manualPriceModel('cold_input_price_per_million_tokens');
+const cachedInputPriceModel = manualPriceModel('cached_input_price_per_million_tokens');
+const outputPriceModel = manualPriceModel('output_price_per_million_tokens');
+
+function clearManualPricingError(field: ManualPricingField) {
+  manualPricingError.value = null;
+  errors.clearField(field);
+}
+
+function validateManualPricing() {
+  const values = [
+    form.cold_input_price_per_million_tokens,
+    form.cached_input_price_per_million_tokens,
+    form.output_price_per_million_tokens,
+  ];
+
+  if (values.every((value) => value === null)) {
+    manualPricingError.value = null;
+    return true;
+  }
+
+  if (values.some((value) => value === null)) {
+    manualPricingError.value = 'Fill all three prices or leave all three empty.';
+    return false;
+  }
+
+  if (values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+    manualPricingError.value = 'Manual prices must be non-negative.';
+    return false;
+  }
+
+  manualPricingError.value = null;
+  return true;
+}
 
 const includedKnowledgeBlocks = ref<KnowledgeBlock[]>([]);
 
@@ -1150,6 +1281,7 @@ const saveWithValidation = async () => {
     alert('Fix JSON errors before saving.');
     return;
   }
+  if (!validateManualPricing()) return;
   await save();
   resetParametersText();
 };
@@ -1158,6 +1290,7 @@ watch(
   () => editor.loading.value,
   (isLoading, wasLoading) => {
     if (!wasLoading || isLoading) return;
+    manualPricingError.value = null;
     resetParametersText();
   }
 );

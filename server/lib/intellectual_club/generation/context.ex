@@ -51,6 +51,9 @@ defmodule IntellectualClub.Generation.Context do
     :parameters,
     :timeout_ms,
     :context_length,
+    :cold_input_price_per_million_tokens,
+    :cached_input_price_per_million_tokens,
+    :output_price_per_million_tokens,
     :supports_image_input,
     :supports_steering,
     :fix_role_alteration,
@@ -222,6 +225,12 @@ defmodule IntellectualClub.Generation.Context do
         parameters: payload_parameters(request_payload, llm_configuration),
         timeout_ms: configuration_timeout_ms(llm_configuration),
         context_length: configuration_context_length(llm_configuration),
+        cold_input_price_per_million_tokens:
+          configuration_price(llm_configuration, :cold_input_price_per_million_tokens),
+        cached_input_price_per_million_tokens:
+          configuration_price(llm_configuration, :cached_input_price_per_million_tokens),
+        output_price_per_million_tokens:
+          configuration_price(llm_configuration, :output_price_per_million_tokens),
         supports_image_input:
           ash_boolean_true?(llm_configuration && llm_configuration.supports_image_input),
         supports_steering: configuration_supports_steering?(llm_configuration),
@@ -330,6 +339,12 @@ defmodule IntellectualClub.Generation.Context do
       parameters: payload_parameters(request_payload, llm_configuration),
       timeout_ms: configuration_timeout_ms(llm_configuration),
       context_length: configuration_context_length(llm_configuration),
+      cold_input_price_per_million_tokens:
+        configuration_price(llm_configuration, :cold_input_price_per_million_tokens),
+      cached_input_price_per_million_tokens:
+        configuration_price(llm_configuration, :cached_input_price_per_million_tokens),
+      output_price_per_million_tokens:
+        configuration_price(llm_configuration, :output_price_per_million_tokens),
       supports_image_input:
         ash_boolean_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
       supports_steering: configuration_supports_steering?(llm_configuration),
@@ -533,6 +548,18 @@ defmodule IntellectualClub.Generation.Context do
       parameters: parameters,
       timeout_ms: timeout_ms,
       context_length: configuration_context_length(chat.llm_configuration),
+      cold_input_price_per_million_tokens:
+        configuration_price(
+          chat.llm_configuration,
+          :cold_input_price_per_million_tokens
+        ),
+      cached_input_price_per_million_tokens:
+        configuration_price(
+          chat.llm_configuration,
+          :cached_input_price_per_million_tokens
+        ),
+      output_price_per_million_tokens:
+        configuration_price(chat.llm_configuration, :output_price_per_million_tokens),
       supports_image_input: supports_image_input,
       supports_steering: configuration_supports_steering?(chat.llm_configuration),
       fix_role_alteration: fix_role_alteration,
@@ -904,6 +931,16 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp configuration_context_length(_other), do: nil
+
+  defp configuration_price(%{} = llm_configuration, field) when is_atom(field) do
+    case Map.get(llm_configuration, field) do
+      value when is_integer(value) and value >= 0 -> value * 1.0
+      value when is_float(value) and value >= 0.0 -> value
+      _other -> nil
+    end
+  end
+
+  defp configuration_price(_llm_configuration, _field), do: nil
 
   defp maybe_disable_tools_for_retry(request_payload, tools_payload)
        when is_map(request_payload) and is_list(tools_payload) do

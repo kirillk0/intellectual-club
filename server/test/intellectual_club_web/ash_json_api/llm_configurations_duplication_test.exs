@@ -88,6 +88,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
           enabled: true,
           timeout_seconds: 45,
           context_length: 16_384,
+          cold_input_price_per_million_tokens: 1.25,
+          cached_input_price_per_million_tokens: 0.25,
+          output_price_per_million_tokens: 5.0,
           supports_cache_control: true,
           supports_image_input: false,
           supports_steering: false,
@@ -127,6 +130,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsDuplicationTest do
     assert duplicated_configuration.temperature == 0.7
     assert duplicated_configuration.reasoning_effort == :minimal
     assert duplicated_configuration.web_search_enabled == true
+    assert duplicated_configuration.cold_input_price_per_million_tokens == 1.25
+    assert duplicated_configuration.cached_input_price_per_million_tokens == 0.25
+    assert duplicated_configuration.output_price_per_million_tokens == 5.0
 
     duplicated_bindings =
       LlmConfigurationKnowledgeBlock

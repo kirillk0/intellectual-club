@@ -317,6 +317,9 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       request_payload: raw_request,
       timeout_ms: 1_000,
       chunk_delay_ms: 0,
+      cold_input_price_per_million_tokens: 2.0,
+      cached_input_price_per_million_tokens: 0.5,
+      output_price_per_million_tokens: 4.0,
       attempts: attempts
     }
 
@@ -330,6 +333,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     assert message.error_detail == nil
     assert Enum.map(steps, & &1.sequence) == [1, 2]
     assert Enum.map(steps, & &1.status) == [:error, :done]
+    assert_in_delta Enum.at(steps, 1).cost, 0.000036, 1.0e-12
 
     assert Enum.at(steps, 0).raw_response == %{
              "error" => %{

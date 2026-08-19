@@ -112,6 +112,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "web_search_enabled" => true,
             "enabled" => true,
             "timeout_seconds" => 300,
+            "cold_input_price_per_million_tokens" => 1.25,
+            "cached_input_price_per_million_tokens" => 0.25,
+            "output_price_per_million_tokens" => 5.0,
             "supports_steering" => false,
             "fix_role_alteration" => true
           }
@@ -130,6 +133,21 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     assert get_in(create_response, ["data", "attributes", "web_search_enabled"]) == true
 
+    assert get_in(create_response, [
+             "data",
+             "attributes",
+             "cold_input_price_per_million_tokens"
+           ]) == 1.25
+
+    assert get_in(create_response, [
+             "data",
+             "attributes",
+             "cached_input_price_per_million_tokens"
+           ]) == 0.25
+
+    assert get_in(create_response, ["data", "attributes", "output_price_per_million_tokens"]) ==
+             5.0
+
     get_response =
       conn
       |> json_api_get("/api/ash/llm-configurations/#{configuration_id}")
@@ -140,6 +158,9 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(get_response, ["data", "attributes", "temperature"]) == 0.7
     assert get_in(get_response, ["data", "attributes", "reasoning_effort"]) == "minimal"
     assert get_in(get_response, ["data", "attributes", "web_search_enabled"]) == true
+
+    assert get_in(get_response, ["data", "attributes", "cold_input_price_per_million_tokens"]) ==
+             1.25
 
     patch_response =
       conn
@@ -152,7 +173,10 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "fix_role_alteration" => false,
             "temperature" => 0,
             "reasoning_effort" => "max",
-            "web_search_enabled" => false
+            "web_search_enabled" => false,
+            "cold_input_price_per_million_tokens" => 2.0,
+            "cached_input_price_per_million_tokens" => 0.5,
+            "output_price_per_million_tokens" => 8.0
           }
         }
       })
@@ -164,12 +188,18 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(patch_response, ["data", "attributes", "reasoning_effort"]) == "max"
     assert get_in(patch_response, ["data", "attributes", "web_search_enabled"]) == false
 
+    assert get_in(patch_response, ["data", "attributes", "cold_input_price_per_million_tokens"]) ==
+             2.0
+
     configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
     assert configuration.supports_steering == true
     assert configuration.fix_role_alteration == false
     assert configuration.temperature == 0.0
     assert configuration.reasoning_effort == :max
     assert configuration.web_search_enabled == false
+    assert configuration.cold_input_price_per_million_tokens == 2.0
+    assert configuration.cached_input_price_per_million_tokens == 0.5
+    assert configuration.output_price_per_million_tokens == 8.0
 
     reset_response =
       conn
@@ -179,7 +209,10 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
           "id" => configuration_id,
           "attributes" => %{
             "temperature" => nil,
-            "reasoning_effort" => nil
+            "reasoning_effort" => nil,
+            "cold_input_price_per_million_tokens" => nil,
+            "cached_input_price_per_million_tokens" => nil,
+            "output_price_per_million_tokens" => nil
           }
         }
       })
@@ -188,11 +221,20 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
     assert get_in(reset_response, ["data", "attributes", "temperature"]) == nil
     assert get_in(reset_response, ["data", "attributes", "reasoning_effort"]) == nil
 
+    assert get_in(reset_response, [
+             "data",
+             "attributes",
+             "cold_input_price_per_million_tokens"
+           ]) == nil
+
     reset_configuration =
       Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
 
     assert reset_configuration.temperature == nil
     assert reset_configuration.reasoning_effort == nil
+    assert reset_configuration.cold_input_price_per_million_tokens == nil
+    assert reset_configuration.cached_input_price_per_million_tokens == nil
+    assert reset_configuration.output_price_per_million_tokens == nil
   end
 
   test "GET /api/ash/llm-configurations/:id includes provider, tags, and knowledge blocks", %{

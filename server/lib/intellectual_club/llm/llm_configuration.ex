@@ -11,6 +11,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
   alias IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
+  alias IntellectualClub.Llm.Validations.CompleteManualPricing
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
 
   require Ash.Query
@@ -124,6 +125,24 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       allow_nil?(true)
       public?(true)
       constraints(min: 1)
+    end
+
+    attribute :cold_input_price_per_million_tokens, :float do
+      allow_nil?(true)
+      public?(true)
+      constraints(min: 0.0)
+    end
+
+    attribute :cached_input_price_per_million_tokens, :float do
+      allow_nil?(true)
+      public?(true)
+      constraints(min: 0.0)
+    end
+
+    attribute :output_price_per_million_tokens, :float do
+      allow_nil?(true)
+      public?(true)
+      constraints(min: 0.0)
     end
 
     attribute :supports_cache_control, :boolean do
@@ -246,6 +265,9 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :enabled,
         :timeout_seconds,
         :context_length,
+        :cold_input_price_per_million_tokens,
+        :cached_input_price_per_million_tokens,
+        :output_price_per_million_tokens,
         :supports_cache_control,
         :supports_image_input,
         :supports_steering,
@@ -264,6 +286,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
 
       change(relate_actor(:owner))
       change({RequireRelatedAccessByActor, relationships: [:provider], access: :writable})
+      validate({CompleteManualPricing, []})
       change(&maybe_manage_tag_bindings/2)
       change(&maybe_manage_knowledge_block_bindings/2)
     end
@@ -320,6 +343,9 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
           enabled: source.enabled,
           timeout_seconds: source.timeout_seconds,
           context_length: source.context_length,
+          cold_input_price_per_million_tokens: source.cold_input_price_per_million_tokens,
+          cached_input_price_per_million_tokens: source.cached_input_price_per_million_tokens,
+          output_price_per_million_tokens: source.output_price_per_million_tokens,
           supports_cache_control: source.supports_cache_control,
           supports_image_input: source.supports_image_input,
           supports_steering: source.supports_steering,
@@ -346,6 +372,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       end
 
       change({RequireRelatedAccessByActor, relationships: [:provider], access: :writable})
+      validate({CompleteManualPricing, []})
     end
 
     update :update do
@@ -360,6 +387,9 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
         :enabled,
         :timeout_seconds,
         :context_length,
+        :cold_input_price_per_million_tokens,
+        :cached_input_price_per_million_tokens,
+        :output_price_per_million_tokens,
         :supports_cache_control,
         :supports_image_input,
         :supports_steering,
@@ -368,6 +398,7 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
 
       require_atomic?(false)
       change({RequireRelatedAccessByActor, relationships: [:provider], access: :writable})
+      validate({CompleteManualPricing, []})
 
       argument :knowledge_block_bindings, {:array, :map} do
         allow_nil?(true)

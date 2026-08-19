@@ -22,6 +22,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Generation.UsageCost
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Notifications
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
@@ -373,7 +374,7 @@ defmodule IntellectualClub.Generation.Worker do
         %{stream_ref: stream_ref} = state
       ) do
     trace_event = semantic_trace_event(state, trace_event)
-    runtime_step = RuntimeTrace.apply_event(state.runtime_step, trace_event)
+    runtime_step = apply_trace_event(state.runtime_step, trace_event, state.context)
     maybe_broadcast_text_delta(state, trace_event)
     {:noreply, %{state | runtime_step: runtime_step}}
   end
@@ -385,7 +386,7 @@ defmodule IntellectualClub.Generation.Worker do
       ) do
     runtime_step =
       state.runtime_step
-      |> apply_trace_meta(meta)
+      |> apply_trace_meta(meta, state.context)
       |> RuntimeTrace.apply_event({:set_step_response_final, true})
 
     state = %{state | runtime_step: runtime_step}
@@ -1298,7 +1299,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp finalize_error(state, error_text, meta) do
     runtime_step =
       state.runtime_step
-      |> apply_trace_meta(meta)
+      |> apply_trace_meta(meta, state.context)
       |> RuntimeTrace.apply_event({:set_step_response_final, false})
       |> RuntimeTrace.apply_event({:ensure_item, "error", :error, nil})
       |> RuntimeTrace.apply_event({:set_text, "error", :error, 1, to_string(error_text || "")})
@@ -2440,14 +2441,14 @@ defmodule IntellectualClub.Generation.Worker do
   defp provider_error_value?(value) when is_binary(value), do: String.trim(value) != ""
   defp provider_error_value?(_other), do: true
 
-  defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, meta) when is_map(meta) do
+  defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, meta, context) when is_map(meta) do
     runtime_step
     |> maybe_apply_raw_request(meta)
     |> maybe_apply_raw_response(meta)
-    |> maybe_apply_usage(meta)
+    |> maybe_apply_usage(meta, context)
   end
 
-  defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, _meta), do: runtime_step
+  defp apply_trace_meta(%RuntimeTrace.Step{} = runtime_step, _meta, _context), do: runtime_step
 
   defp maybe_apply_raw_request(runtime_step, meta) do
     raw_request = Map.get(meta, :raw_request)
@@ -2469,13 +2470,27 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp maybe_apply_usage(runtime_step, meta) do
+  defp maybe_apply_usage(runtime_step, meta, context) do
     usage = Map.get(meta, :usage)
 
     if is_map(usage) do
-      RuntimeTrace.apply_event(runtime_step, {:set_step_usage, usage})
+      apply_trace_event(runtime_step, {:set_step_usage, usage}, context)
     else
       runtime_step
     end
+  end
+
+  defp apply_trace_event(
+         %RuntimeTrace.Step{} = runtime_step,
+         {:set_step_usage, usage} = trace_event,
+         context
+       )
+       when is_map(usage) and is_map(context) do
+    runtime_step = RuntimeTrace.apply_event(runtime_step, trace_event)
+    %{runtime_step | cost: UsageCost.resolve(usage, context)}
+  end
+
+  defp apply_trace_event(%RuntimeTrace.Step{} = runtime_step, trace_event, _context) do
+    RuntimeTrace.apply_event(runtime_step, trace_event)
   end
 end
