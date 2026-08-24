@@ -25,15 +25,24 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 const CONFIG_VERSION: u32 = 1;
+const APP_DISPLAY_NAME: &str = "IC Shell Outlet";
 
 fn main() -> eframe::Result<()> {
     init_logging();
-    let options = eframe::NativeOptions::default();
+    let options = native_options();
     eframe::run_native(
-        "Outlet Shell",
+        APP_DISPLAY_NAME,
         options,
         Box::new(|_cc| Ok(Box::new(OutletDesktopApp::new()))),
     )
+}
+
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        // Preserve the application bundle icon instead of replacing it with eframe's default.
+        viewport: egui::ViewportBuilder::default().with_icon(egui::IconData::default()),
+        ..Default::default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -643,7 +652,7 @@ impl eframe::App for OutletDesktopApp {
         self.process_events();
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Outlet Shell");
+            ui.heading(APP_DISPLAY_NAME);
             ui.label("Manage shell outlet connections for Intellectual Club instances.");
 
             if !self.last_error.trim().is_empty() {
@@ -879,4 +888,14 @@ fn first_non_empty(values: &[&str]) -> String {
         .find(|value| !value.is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_options_preserve_the_bundle_icon() {
+        assert!(native_options().viewport.icon.is_some());
+    }
 }

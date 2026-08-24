@@ -4,22 +4,33 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bin/build-macos-dmg --app <path-to-app> --output <path-to-dmg>
+Usage: bin/build-macos-dmg [--app <path-to-app>]... [--binary <path>]...
+                           --volume-name <name> --output <path-to-dmg>
 
-Creates a compressed macOS disk image with an Applications shortcut and
-first-launch Gatekeeper instructions.
+Creates a compressed macOS disk image containing one or more application
+bundles or terminal executables, an Applications shortcut, and first-launch
+Gatekeeper instructions.
 EOF
 }
 
-APP_PATH=""
+APP_PATHS=()
+BINARY_PATHS=()
 OUTPUT_PATH=""
-VOLUME_NAME="Intellectual Club"
+VOLUME_NAME=""
 README_NAME="First Launch.txt"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)
-      APP_PATH="${2:-}"
+      APP_PATHS+=("${2:-}")
+      shift 2
+      ;;
+    --binary)
+      BINARY_PATHS+=("${2:-}")
+      shift 2
+      ;;
+    --volume-name)
+      VOLUME_NAME="${2:-}"
       shift 2
       ;;
     --output)
@@ -43,29 +54,86 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-if [[ -z "${APP_PATH}" || -z "${OUTPUT_PATH}" ]]; then
-  echo "--app and --output are required" >&2
+if [[ -z "${OUTPUT_PATH}" || -z "${VOLUME_NAME}" ]]; then
+  echo "--volume-name and --output are required" >&2
   usage >&2
   exit 2
 fi
 
-if [[ "${APP_PATH}" != /* ]]; then
-  APP_PATH="${PWD}/${APP_PATH}"
+if [[ "${#APP_PATHS[@]}" -eq 0 && "${#BINARY_PATHS[@]}" -eq 0 ]]; then
+  echo "At least one --app or --binary is required" >&2
+  usage >&2
+  exit 2
 fi
 
 if [[ "${OUTPUT_PATH}" != /* ]]; then
   OUTPUT_PATH="${PWD}/${OUTPUT_PATH}"
 fi
 
-APP_NAME="$(basename -- "${APP_PATH}")"
-if [[ ! -d "${APP_PATH}" || "${APP_NAME}" != *.app ]]; then
-  echo "Application bundle not found: ${APP_PATH}" >&2
-  exit 1
-fi
-
 if [[ "${OUTPUT_PATH}" != *.dmg ]]; then
   echo "Output path must end with .dmg" >&2
   exit 1
+fi
+
+PAYLOAD_PATHS=()
+PAYLOAD_NAMES=()
+APP_NAMES=()
+BINARY_NAMES=()
+
+add_payload() {
+  local path="$1"
+  local kind="$2"
+  local name
+  local existing
+
+  if [[ "${path}" != /* ]]; then
+    path="${PWD}/${path}"
+  fi
+  name="$(basename -- "${path}")"
+
+  if [[ "${kind}" == "app" ]]; then
+    if [[ ! -d "${path}" || "${name}" != *.app ]]; then
+      echo "Application bundle not found: ${path}" >&2
+      exit 1
+    fi
+  elif [[ ! -f "${path}" || ! -x "${path}" ]]; then
+    echo "Executable binary not found: ${path}" >&2
+    exit 1
+  fi
+
+  if [[ "${name}" == "Applications" || "${name}" == "${README_NAME}" ]]; then
+    echo "Payload name is reserved: ${name}" >&2
+    exit 1
+  fi
+
+  if [[ "${#PAYLOAD_NAMES[@]}" -gt 0 ]]; then
+    for existing in "${PAYLOAD_NAMES[@]}"; do
+      if [[ "${existing}" == "${name}" ]]; then
+        echo "Duplicate payload name: ${name}" >&2
+        exit 1
+      fi
+    done
+  fi
+
+  PAYLOAD_PATHS+=("${path}")
+  PAYLOAD_NAMES+=("${name}")
+  if [[ "${kind}" == "app" ]]; then
+    APP_NAMES+=("${name}")
+  else
+    BINARY_NAMES+=("${name}")
+  fi
+}
+
+if [[ "${#APP_PATHS[@]}" -gt 0 ]]; then
+  for app_path in "${APP_PATHS[@]}"; do
+    add_payload "${app_path}" app
+  done
+fi
+
+if [[ "${#BINARY_PATHS[@]}" -gt 0 ]]; then
+  for binary_path in "${BINARY_PATHS[@]}"; do
+    add_payload "${binary_path}" binary
+  done
 fi
 
 OUTPUT_DIR="$(dirname -- "${OUTPUT_PATH}")"
@@ -91,29 +159,48 @@ if [[ -e "/Volumes/${VOLUME_NAME}" ]]; then
 fi
 
 mkdir -p "${SOURCE_DIR}"
-ditto "${APP_PATH}" "${SOURCE_DIR}/${APP_NAME}"
+for payload_index in "${!PAYLOAD_PATHS[@]}"; do
+  ditto \
+    "${PAYLOAD_PATHS[${payload_index}]}" \
+    "${SOURCE_DIR}/${PAYLOAD_NAMES[${payload_index}]}"
+done
 ln -s /Applications "${SOURCE_DIR}/Applications"
 
-cat >"${SOURCE_DIR}/${README_NAME}" <<'EOF'
+{
+  cat <<'EOF'
 INSTALLATION
 
-Drag Intellectual Club.app onto the Applications shortcut.
+Drag the application bundles listed below onto the Applications shortcut:
+EOF
+  if [[ "${#APP_NAMES[@]}" -gt 0 ]]; then
+    for app_name in "${APP_NAMES[@]}"; do
+      printf '  - %s\n' "${app_name}"
+    done
+  fi
+
+  if [[ "${#BINARY_NAMES[@]}" -gt 0 ]]; then
+    cat <<'EOF'
+
+Terminal tools included in this image:
+EOF
+    for binary_name in "${BINARY_NAMES[@]}"; do
+      printf '  - %s\n' "${binary_name}"
+    done
+    cat <<'EOF'
+
+Copy terminal tools to a directory on PATH, such as /usr/local/bin, or run
+them directly from this disk image.
+EOF
+  fi
+
+  cat <<'EOF'
 
 This build is signed but not notarized. If macOS blocks the first launch,
-open System Settings → Privacy & Security, find the Intellectual Club warning,
-click Open Anyway, and confirm the launch. Only do this for a disk image
-downloaded from the official project page.
-
-УСТАНОВКА
-
-Перетащите Intellectual Club.app на ярлык Applications.
-
-Сборка подписана, но не нотарифицирована Apple. Если macOS заблокирует первый
-запуск, откройте «Системные настройки» → «Конфиденциальность и безопасность»,
-найдите предупреждение об Intellectual Club, нажмите «Всё равно открыть» и
-подтвердите запуск. Делайте это только для образа, загруженного с официальной
-страницы проекта.
+open System Settings → Privacy & Security, find the application warning, click
+Open Anyway, and confirm the launch. Only do this for a disk image downloaded
+from the official project page.
 EOF
+} >"${SOURCE_DIR}/${README_NAME}"
 
 hdiutil create \
   -quiet \
@@ -157,11 +244,15 @@ if [[ "${finder_ready}" != "true" ]]; then
   exit 1
 fi
 
-osascript - "${VOLUME_NAME}" "${APP_NAME}" "${README_NAME}" <<'APPLESCRIPT'
+osascript - \
+  "${VOLUME_NAME}" \
+  "${README_NAME}" \
+  "${PAYLOAD_NAMES[@]}" <<'APPLESCRIPT'
 on run arguments
   set volumeName to item 1 of arguments
-  set appName to item 2 of arguments
-  set readmeName to item 3 of arguments
+  set readmeName to item 2 of arguments
+  set itemNames to items 3 thru (count arguments) of arguments
+  set displayNames to itemNames & {"Applications", readmeName}
 
   tell application "Finder"
     set targetDisk to disk volumeName
@@ -171,7 +262,7 @@ on run arguments
       set toolbar visible of container window to false
       set statusbar visible of container window to false
       set pathbar visible of container window to false
-      set bounds of container window to {180, 140, 900, 620}
+      set bounds of container window to {180, 140, 980, 660}
 
       set viewOptions to icon view options of container window
       set arrangement of viewOptions to not arranged
@@ -179,9 +270,13 @@ on run arguments
       set text size of viewOptions to 14
       set background color of viewOptions to {60138, 61937, 65535}
 
-      set position of item appName of container window to {185, 190}
-      set position of item "Applications" of container window to {535, 190}
-      set position of item readmeName of container window to {360, 310}
+      repeat with itemIndex from 1 to count displayNames
+        set columnIndex to (itemIndex - 1) mod 3
+        set rowIndex to (itemIndex - 1) div 3
+        set itemName to item itemIndex of displayNames
+        set position of item itemName of container window to ¬
+          {170 + (columnIndex * 260), 170 + (rowIndex * 180)}
+      end repeat
 
       update without registering applications
       delay 2

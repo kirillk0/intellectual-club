@@ -31,13 +31,37 @@ Run the desktop app:
 cargo run --manifest-path native_tools/Cargo.toml -p outlet-shell-desktop
 ```
 
-## Desktop Shell Releases
+## macOS Releases
 
-The `Publish Outlet Shell Desktop` GitHub Actions workflow builds and publishes:
+Build the Apple Silicon native tools payload locally:
 
-- a macOS arm64 application bundle;
-- a Windows x64 executable;
-- SHA-256 checksums for both archives.
+```bash
+./bin/build-macos-native-tools --output build/native-tools
+```
+
+This creates `IC Shell Outlet.app` and the `openai-oauth` terminal executable. The
+`Publish Intellectual Club macOS` workflow publishes two ad-hoc-signed,
+non-notarized disk images:
+
+- `intellectual-club-native-tools-<release-id>-macos-arm64.dmg` contains
+  `IC Shell Outlet.app` and `openai-oauth`;
+- `intellectual-club-<release-id>-macos-arm64.dmg` additionally contains the
+  full `Intellectual Club.app` launcher and server bundle.
+
+Run the OAuth helper from Terminal after copying it to a directory on `PATH`:
+
+```bash
+openai-oauth
+openai-oauth --refresh '<refresh_token>'
+```
+
+`Intellectual Club.app` supports macOS 15 and newer. The native tools are built
+with a macOS 11 deployment target.
+
+## Desktop Shell Windows Releases
+
+The `Publish Outlet Shell Desktop Windows` workflow publishes a Windows x64
+executable and SHA-256 checksums.
 
 Every push to `main` that changes the desktop app, its local dependencies, the
 Cargo workspace manifests, or the release workflow builds and publishes a new
@@ -50,7 +74,7 @@ outlet-shell-desktop-20260711T074742Z-45940cc0a1a8
 Re-running the workflow for the same commit reuses the existing release without
 requiring a version or a manually created tag.
 
-Run OpenAI OAuth:
+Run OpenAI OAuth from the Rust workspace during development:
 
 ```bash
 cargo run --manifest-path native_tools/Cargo.toml -p openai-oauth
@@ -79,9 +103,6 @@ CLI to manage them:
 "build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" move-files --to /path/to/files
 "build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher" stop
 ```
-
-The ad-hoc-signed, non-notarized Apple Silicon production bundle is published
-automatically in GitHub Releases. It supports macOS 15 and newer.
 
 The launcher stores config, PostgreSQL data, file storage, backups, runtime status, and
 cached PostgreSQL installations in OS-specific app data directories via

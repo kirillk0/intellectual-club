@@ -8,10 +8,15 @@ on:
       - .github/workflows/publish-intellectual-club-macos.yml
       - bin/build-macos-app
       - bin/build-macos-dmg
+      - bin/build-macos-native-tools
       - frontend/**
       - native_tools/Cargo.lock
       - native_tools/Cargo.toml
       - native_tools/crates/intellectual-club-launcher/**
+      - native_tools/crates/openai-oauth/**
+      - native_tools/crates/outlet-core/**
+      - native_tools/crates/outlet-shell/**
+      - native_tools/crates/outlet-shell-desktop/**
       - server/**
   workflow_dispatch:
 
@@ -31,6 +36,7 @@ jobs:
       app_version: ${{ steps.release.outputs.app_version }}
       commit_epoch: ${{ steps.release.outputs.commit_epoch }}
       commit_sha: ${{ steps.release.outputs.commit_sha }}
+      outlet_version: ${{ steps.release.outputs.outlet_version }}
       release_id: ${{ steps.release.outputs.release_id }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_timestamp: ${{ steps.release.outputs.release_timestamp }}
@@ -57,9 +63,13 @@ jobs:
           app_version="$({
             sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' server/mix.exs
           } | head -n 1)"
+          outlet_version="$({
+            sed -nE 's/^version = "([^"]+)"$/\1/p' \
+              native_tools/crates/outlet-shell-desktop/Cargo.toml
+          } | head -n 1)"
 
-          if [ -z "${app_version}" ]; then
-            echo "Could not read the application version" >&2
+          if [ -z "${app_version}" ] || [ -z "${outlet_version}" ]; then
+            echo "Could not read the application versions" >&2
             exit 1
           fi
 
@@ -67,6 +77,7 @@ jobs:
             echo "app_version=${app_version}"
             echo "commit_epoch=${commit_epoch}"
             echo "commit_sha=${commit_sha}"
+            echo "outlet_version=${outlet_version}"
             echo "release_id=${release_id}"
             echo "release_tag=${release_tag}"
             echo "release_timestamp=${release_timestamp}"
@@ -119,7 +130,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native_tools -> target
-          key: aarch64-apple-darwin-intellectual-club-launcher
+          key: aarch64-apple-darwin-intellectual-club-macos
 
       - name: Install packaging dependencies
         run: brew install openssl@3
@@ -130,11 +141,28 @@ jobs:
           IC_BUNDLE_BUILD_VERSION: ${{ needs.prepare.outputs.commit_epoch }}
         run: ./bin/build-macos-app --mode prod --output build/release
 
-      - name: Ad-hoc sign application bundle
+      - name: Build native tools
+        env:
+          IC_BUNDLE_BUILD_ID: ${{ needs.prepare.outputs.release_id }}
+          IC_BUNDLE_BUILD_VERSION: ${{ needs.prepare.outputs.commit_epoch }}
+        run: ./bin/build-macos-native-tools --output build/release-native-tools
+
+      - name: Ad-hoc sign release payloads
         shell: bash
         run: |
           set -euo pipefail
 
+          codesign \
+            --force \
+            --sign - \
+            --timestamp=none \
+            "build/release-native-tools/openai-oauth"
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            --timestamp=none \
+            "build/release-native-tools/IC Shell Outlet.app"
           codesign \
             --force \
             --deep \
@@ -146,6 +174,7 @@ jobs:
         shell: bash
         env:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          OUTLET_VERSION: ${{ needs.prepare.outputs.outlet_version }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -155,6 +184,10 @@ jobs:
           release="${app}/Contents/Resources/intellectual_club"
           plist="${app}/Contents/Info.plist"
           beam=("${release}"/erts-*/bin/beam.smp)
+          outlet_app="build/release-native-tools/IC Shell Outlet.app"
+          outlet_executable="${outlet_app}/Contents/MacOS/outlet-shell-desktop"
+          outlet_plist="${outlet_app}/Contents/Info.plist"
+          oauth="build/release-native-tools/openai-oauth"
 
           test "$(uname -m)" = "arm64"
           test -x "${launcher}"
@@ -175,11 +208,35 @@ jobs:
           test "$(plutil -extract LSMinimumSystemVersion raw "${plist}")" = "15.0"
           test "$(lipo -archs "${launcher}")" = "arm64"
           test "$(lipo -archs "${beam[0]}")" = "arm64"
+          test -x "${outlet_executable}"
+          test -x "${oauth}"
+          test -s "${outlet_app}/Contents/Resources/AppIcon.icns"
+          test -d "${outlet_app}/Contents/_CodeSignature"
+          plutil -lint "${outlet_plist}"
+          test "$(plutil -extract CFBundleDisplayName raw "${outlet_plist}")" = "IC Shell Outlet"
+          test "$(plutil -extract CFBundleIdentifier raw "${outlet_plist}")" = "org.intellectualclub.outlet-shell"
+          test "$(plutil -extract CFBundleName raw "${outlet_plist}")" = "IC Shell Outlet"
+          test "$(plutil -extract CFBundleShortVersionString raw "${outlet_plist}")" = "${OUTLET_VERSION}"
+          test "$(plutil -extract LSMinimumSystemVersion raw "${outlet_plist}")" = "11.0"
+          test "$(lipo -archs "${outlet_executable}")" = "arm64"
+          test "$(lipo -archs "${oauth}")" = "arm64"
 
           codesign --verify --deep --strict --verbose=2 "${app}"
+          codesign --verify --deep --strict --verbose=2 "${outlet_app}"
+          codesign --verify --strict --verbose=2 "${oauth}"
           signature_info="$(codesign --display --verbose=4 "${app}" 2>&1)"
           grep -q '^Signature=adhoc$' <<<"${signature_info}"
           grep -q '^TeamIdentifier=not set$' <<<"${signature_info}"
+
+          for payload in "${outlet_executable}" "${oauth}"; do
+            signature_info="$(codesign --display --verbose=4 "${payload}" 2>&1)"
+            grep -q '^Signature=adhoc$' <<<"${signature_info}"
+            grep -q '^TeamIdentifier=not set$' <<<"${signature_info}"
+            if otool -L "${payload}" | grep -q '/opt/homebrew/'; then
+              echo "Homebrew dependency found in ${payload}" >&2
+              exit 1
+            fi
+          done
 
           while IFS= read -r -d '' binary; do
             if file "${binary}" | grep -q 'Mach-O'; then
@@ -224,7 +281,7 @@ jobs:
           "${launcher}" stop
           trap - EXIT
 
-      - name: Package application bundle
+      - name: Package release disk images
         shell: bash
         env:
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
@@ -232,14 +289,21 @@ jobs:
           set -euo pipefail
 
           mkdir -p dist
-          image="dist/intellectual-club-${RELEASE_ID}-macos-arm64.dmg"
+          full_image="dist/intellectual-club-${RELEASE_ID}-macos-arm64.dmg"
+          native_tools_image="dist/intellectual-club-native-tools-${RELEASE_ID}-macos-arm64.dmg"
+
+          ./bin/build-macos-dmg \
+            --app "build/release-native-tools/IC Shell Outlet.app" \
+            --binary "build/release-native-tools/openai-oauth" \
+            --volume-name "Intellectual Club Native Tools" \
+            --output "${native_tools_image}"
           ./bin/build-macos-dmg \
             --app "build/release/Intellectual Club.app" \
-            --output "${image}"
+            --app "build/release-native-tools/IC Shell Outlet.app" \
+            --binary "build/release-native-tools/openai-oauth" \
+            --volume-name "Intellectual Club" \
+            --output "${full_image}"
 
-          mount_dir="${RUNNER_TEMP}/intellectual-club-dmg"
-          rm -rf "${mount_dir}"
-          mkdir -p "${mount_dir}"
           device=""
 
           cleanup() {
@@ -249,27 +313,69 @@ jobs:
           }
           trap cleanup EXIT
 
-          attach_output="$(
-            hdiutil attach \
-              -readonly \
-              -noverify \
-              -nobrowse \
-              -mountpoint "${mount_dir}" \
-              "${image}"
-          )"
-          device="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
+          validate_image() {
+            local image="$1"
+            local mount_dir="$2"
+            local includes_full_app="$3"
+            local attach_output
+            local actual_items
+            local expected_items
 
-          test -n "${device}"
-          test -x "${mount_dir}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
-          test -x "${mount_dir}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
-          test "$(readlink "${mount_dir}/Applications")" = /Applications
-          grep -q 'Privacy & Security' "${mount_dir}/First Launch.txt"
-          grep -q 'Конфиденциальность и безопасность' "${mount_dir}/First Launch.txt"
-          plutil -lint "${mount_dir}/Intellectual Club.app/Contents/Info.plist"
-          codesign --verify --deep --strict --verbose=2 "${mount_dir}/Intellectual Club.app"
+            rm -rf "${mount_dir}"
+            mkdir -p "${mount_dir}"
+            attach_output="$(
+              hdiutil attach \
+                -readonly \
+                -noverify \
+                -nobrowse \
+                -mountpoint "${mount_dir}" \
+                "${image}"
+            )"
+            device="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
 
-          hdiutil detach "${device}"
-          device=""
+            test -n "${device}"
+            if [ "${includes_full_app}" = true ]; then
+              expected_items=$'Applications\nFirst Launch.txt\nIC Shell Outlet.app\nIntellectual Club.app\nopenai-oauth'
+            else
+              expected_items=$'Applications\nFirst Launch.txt\nIC Shell Outlet.app\nopenai-oauth'
+            fi
+            actual_items="$(LC_ALL=C ls -1 "${mount_dir}")"
+            test "${actual_items}" = "${expected_items}"
+            test -x "${mount_dir}/IC Shell Outlet.app/Contents/MacOS/outlet-shell-desktop"
+            test -x "${mount_dir}/openai-oauth"
+            test "$(readlink "${mount_dir}/Applications")" = /Applications
+            grep -q 'Privacy & Security' "${mount_dir}/First Launch.txt"
+            grep -q 'openai-oauth' "${mount_dir}/First Launch.txt"
+            if grep -q 'УСТАНОВКА\|Перетащите\|Терминальные утилиты' \
+              "${mount_dir}/First Launch.txt"; then
+              echo "First Launch.txt must contain English instructions only" >&2
+              exit 1
+            fi
+            plutil -lint "${mount_dir}/IC Shell Outlet.app/Contents/Info.plist"
+            codesign --verify --deep --strict --verbose=2 "${mount_dir}/IC Shell Outlet.app"
+            codesign --verify --strict --verbose=2 "${mount_dir}/openai-oauth"
+
+            if [ "${includes_full_app}" = true ]; then
+              test -x "${mount_dir}/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
+              test -x "${mount_dir}/Intellectual Club.app/Contents/Resources/intellectual_club/bin/intellectual_club"
+              plutil -lint "${mount_dir}/Intellectual Club.app/Contents/Info.plist"
+              codesign --verify --deep --strict --verbose=2 "${mount_dir}/Intellectual Club.app"
+            else
+              test ! -e "${mount_dir}/Intellectual Club.app"
+            fi
+
+            hdiutil detach "${device}"
+            device=""
+          }
+
+          validate_image \
+            "${native_tools_image}" \
+            "${RUNNER_TEMP}/intellectual-club-native-tools-dmg" \
+            false
+          validate_image \
+            "${full_image}" \
+            "${RUNNER_TEMP}/intellectual-club-full-dmg" \
+            true
           trap - EXIT
 
       - name: Upload packaged application
@@ -313,8 +419,8 @@ jobs:
           shopt -s nullglob
 
           assets=(dist/*.dmg)
-          if [ "${#assets[@]}" -ne 1 ]; then
-            echo "Expected one release archive, found ${#assets[@]}" >&2
+          if [ "${#assets[@]}" -ne 2 ]; then
+            echo "Expected two release archives, found ${#assets[@]}" >&2
             exit 1
           fi
 
@@ -335,17 +441,24 @@ jobs:
             gh release view "${RELEASE_TAG}" --json assets,isDraft 2>/dev/null
           })" || release_json=""
           if [ -n "${release_json}" ]; then
-            archive_name="$(basename "${assets[0]}")"
-            archive_present="$(
-              jq -r --arg name "${archive_name}" 'any(.assets[]; .name == $name)' \
-                <<<"${release_json}"
-            )"
-            checksums_present="$(
-              jq -r 'any(.assets[]; .name == "SHA256SUMS.txt")' <<<"${release_json}"
-            )"
+            expected_assets=()
+            for asset in "${assets[@]}"; do
+              expected_assets+=("$(basename "${asset}")")
+            done
+            expected_assets+=("SHA256SUMS.txt")
+
+            all_assets_present=true
+            for expected_asset in "${expected_assets[@]}"; do
+              if ! jq -e --arg name "${expected_asset}" \
+                'any(.assets[]; .name == $name)' \
+                <<<"${release_json}" >/dev/null; then
+                all_assets_present=false
+                break
+              fi
+            done
             is_draft="$(jq -r .isDraft <<<"${release_json}")"
 
-            if [ "${archive_present}" = true ] && [ "${checksums_present}" = true ]; then
+            if [ "${all_assets_present}" = true ]; then
               if [ "${is_draft}" = true ]; then
                 gh release edit "${RELEASE_TAG}" --draft=false
               fi

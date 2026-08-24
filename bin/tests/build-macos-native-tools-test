@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "This test requires Apple Silicon macOS" >&2
+  exit 77
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+TEST_ROOT="$(mktemp -d "${REPO_ROOT}/build/.native-tools-test.XXXXXX")"
+trap 'rm -rf "${TEST_ROOT}"' EXIT
+
+OUTPUT_DIR="${TEST_ROOT}/output"
+BUILD_VERSION="1234567890"
+BUILD_ID="test-native-tools"
+
+mkdir -p "${OUTPUT_DIR}/Outlet Shell.app"
+
+IC_BUNDLE_BUILD_ID="${BUILD_ID}" \
+IC_BUNDLE_BUILD_VERSION="${BUILD_VERSION}" \
+  "${REPO_ROOT}/bin/build-macos-native-tools" --output "${OUTPUT_DIR}"
+
+APP="${OUTPUT_DIR}/IC Shell Outlet.app"
+EXECUTABLE="${APP}/Contents/MacOS/outlet-shell-desktop"
+PLIST="${APP}/Contents/Info.plist"
+OAUTH="${OUTPUT_DIR}/openai-oauth"
+
+test -x "${EXECUTABLE}"
+test -x "${OAUTH}"
+test ! -e "${OUTPUT_DIR}/Outlet Shell.app"
+test -s "${APP}/Contents/Resources/AppIcon.icns"
+plutil -lint "${PLIST}" >/dev/null
+test "$(plutil -extract CFBundleDisplayName raw "${PLIST}")" = "IC Shell Outlet"
+test "$(plutil -extract CFBundleExecutable raw "${PLIST}")" = "outlet-shell-desktop"
+test "$(plutil -extract CFBundleIdentifier raw "${PLIST}")" = "org.intellectualclub.outlet-shell"
+test "$(plutil -extract CFBundleShortVersionString raw "${PLIST}")" = "0.1.0"
+test "$(plutil -extract CFBundleVersion raw "${PLIST}")" = "${BUILD_VERSION}"
+test "$(plutil -extract CFBundleGetInfoString raw "${PLIST}")" = "IC Shell Outlet ${BUILD_ID}"
+test "$(plutil -extract CFBundleIconFile raw "${PLIST}")" = "AppIcon"
+test "$(plutil -extract LSMinimumSystemVersion raw "${PLIST}")" = "11.0"
+test "$(lipo -archs "${EXECUTABLE}")" = "arm64"
+test "$(lipo -archs "${OAUTH}")" = "arm64"
+
+printf 'Native tools bundle test passed\n'

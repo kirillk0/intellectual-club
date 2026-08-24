@@ -1,4 +1,4 @@
-name: Publish Outlet Shell Desktop
+name: Publish Outlet Shell Desktop Windows
 
 on:
   push:
@@ -25,9 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      commit_epoch: ${{ steps.release.outputs.commit_epoch }}
       commit_sha: ${{ steps.release.outputs.commit_sha }}
-      package_version: ${{ steps.release.outputs.package_version }}
       release_id: ${{ steps.release.outputs.release_id }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_timestamp: ${{ steps.release.outputs.release_timestamp }}
@@ -51,20 +49,9 @@ jobs:
           release_timestamp="$(date -u --date="@${commit_epoch}" '+%Y%m%dT%H%M%SZ')"
           release_id="${release_timestamp}-${short_sha}"
           release_tag="outlet-shell-desktop-${release_id}"
-          package_version="$({
-            sed -nE 's/^version = "([^"]+)"$/\1/p' \
-              native_tools/crates/outlet-shell-desktop/Cargo.toml
-          } | head -n 1)"
-
-          if [ -z "${package_version}" ]; then
-            echo "Could not read the desktop package version" >&2
-            exit 1
-          fi
 
           {
-            echo "commit_epoch=${commit_epoch}"
             echo "commit_sha=${commit_sha}"
-            echo "package_version=${package_version}"
             echo "release_id=${release_id}"
             echo "release_tag=${release_tag}"
             echo "release_timestamp=${release_timestamp}"
@@ -72,22 +59,10 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
 
   build:
-    name: Build ${{ matrix.platform_name }}
+    name: Build Windows x64
     needs: prepare
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-2025
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform_name: macOS arm64
-            platform_key: macos-arm64
-            runner: macos-15
-            target: aarch64-apple-darwin
-          - platform_name: Windows x64
-            platform_key: windows-x64
-            runner: windows-2025
-            target: x86_64-pc-windows-msvc
 
     env:
       CARGO_TERM_COLOR: always
@@ -101,56 +76,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.92.0
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native_tools -> target
-          key: ${{ matrix.target }}
+          key: x86_64-pc-windows-msvc
 
       - name: Build release binary
-        run: cargo build --manifest-path native_tools/Cargo.toml --locked --release --package outlet-shell-desktop --target ${{ matrix.target }}
-
-      - name: Package macOS application
-        if: matrix.platform_key == 'macos-arm64'
-        shell: bash
-        env:
-          COMMIT_EPOCH: ${{ needs.prepare.outputs.commit_epoch }}
-          PACKAGE_VERSION: ${{ needs.prepare.outputs.package_version }}
-          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
-        run: |
-          set -euo pipefail
-
-          binary="native_tools/target/aarch64-apple-darwin/release/outlet-shell-desktop"
-          app="dist/Outlet Shell.app"
-          executable="${app}/Contents/MacOS/outlet-shell-desktop"
-          archive="dist/outlet-shell-desktop-${RELEASE_ID}-macos-arm64.zip"
-          bundle_version="${PACKAGE_VERSION%%[-+]*}"
-
-          test "$(lipo -archs "${binary}")" = "arm64"
-          mkdir -p "${app}/Contents/MacOS"
-          install -m 755 "${binary}" "${executable}"
-
-          plutil -create xml1 "${app}/Contents/Info.plist"
-          plutil -insert CFBundleDisplayName -string "Outlet Shell" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleExecutable -string "outlet-shell-desktop" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleIdentifier -string "org.intellectualclub.outlet-shell" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleName -string "Outlet Shell" "${app}/Contents/Info.plist"
-          plutil -insert CFBundlePackageType -string "APPL" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleShortVersionString -string "${bundle_version}" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleVersion -string "${COMMIT_EPOCH}" "${app}/Contents/Info.plist"
-          plutil -insert CFBundleGetInfoString -string "Outlet Shell ${RELEASE_ID}" "${app}/Contents/Info.plist"
-          plutil -insert LSApplicationCategoryType -string "public.app-category.utilities" "${app}/Contents/Info.plist"
-          plutil -insert LSMinimumSystemVersion -string "11.0" "${app}/Contents/Info.plist"
-          plutil -insert NSHighResolutionCapable -bool true "${app}/Contents/Info.plist"
-
-          codesign --force --deep --sign - "${app}"
-          codesign --verify --deep --strict "${app}"
-          ditto -c -k --sequesterRsrc --keepParent "${app}" "${archive}"
+        run: cargo build --manifest-path native_tools/Cargo.toml --locked --release --package outlet-shell-desktop --target x86_64-pc-windows-msvc
 
       - name: Package Windows application
-        if: matrix.platform_key == 'windows-x64'
         shell: pwsh
         env:
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
@@ -173,7 +110,7 @@ jobs:
       - name: Upload packaged application
         uses: actions/upload-artifact@v4
         with:
-          name: outlet-shell-desktop-${{ matrix.platform_key }}
+          name: outlet-shell-desktop-windows-x64
           path: dist/*.zip
           if-no-files-found: error
           compression-level: 0
@@ -190,12 +127,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Download packaged applications
+      - name: Download packaged application
         uses: actions/download-artifact@v4
         with:
-          pattern: outlet-shell-desktop-*
+          name: outlet-shell-desktop-windows-x64
           path: dist
-          merge-multiple: true
 
       - name: Publish release
         shell: bash
@@ -211,8 +147,8 @@ jobs:
           shopt -s nullglob
 
           assets=(dist/*.zip)
-          if [ "${#assets[@]}" -ne 2 ]; then
-            echo "Expected two release archives, found ${#assets[@]}" >&2
+          if [ "${#assets[@]}" -ne 1 ]; then
+            echo "Expected one release archive, found ${#assets[@]}" >&2
             exit 1
           fi
 
@@ -274,6 +210,6 @@ jobs:
             gh release create "${RELEASE_TAG}" \
               "${assets[@]}" dist/SHA256SUMS.txt \
               "${tag_flag[@]}" \
-              --notes "Automated build from commit ${COMMIT_SHA}." \
-              --title "Outlet Shell Desktop ${RELEASE_TIMESTAMP} (${SHORT_SHA})"
+              --notes "Automated Windows x64 build from commit ${COMMIT_SHA}." \
+              --title "Outlet Shell Desktop Windows ${RELEASE_TIMESTAMP} (${SHORT_SHA})"
           fi

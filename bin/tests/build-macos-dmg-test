@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "This test requires macOS" >&2
+  exit 77
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+TEST_ROOT="$(mktemp -d "${REPO_ROOT}/build/.dmg-test.XXXXXX")"
+SOURCE_ROOT="${TEST_ROOT}/payload"
+MOUNT_DIR="${TEST_ROOT}/mount"
+IMAGE="${TEST_ROOT}/multi-payload.dmg"
+SINGLE_IMAGE="${TEST_ROOT}/single-app.dmg"
+VOLUME_NAME="IC Package Test $$"
+DEVICE=""
+
+cleanup() {
+  if [[ -n "${DEVICE}" ]]; then
+    hdiutil detach "${DEVICE}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${TEST_ROOT}"
+}
+trap cleanup EXIT
+
+mkdir -p \
+  "${SOURCE_ROOT}/First.app/Contents/MacOS" \
+  "${SOURCE_ROOT}/Second.app/Contents/MacOS"
+touch "${SOURCE_ROOT}/First.app/Contents/MacOS/first"
+touch "${SOURCE_ROOT}/Second.app/Contents/MacOS/second"
+chmod 755 \
+  "${SOURCE_ROOT}/First.app/Contents/MacOS/first" \
+  "${SOURCE_ROOT}/Second.app/Contents/MacOS/second"
+printf '#!/usr/bin/env bash\nprintf "tool\\n"\n' >"${SOURCE_ROOT}/oauth-tool"
+chmod 755 "${SOURCE_ROOT}/oauth-tool"
+
+"${REPO_ROOT}/bin/build-macos-dmg" \
+  --app "${SOURCE_ROOT}/First.app" \
+  --app "${SOURCE_ROOT}/Second.app" \
+  --binary "${SOURCE_ROOT}/oauth-tool" \
+  --volume-name "${VOLUME_NAME}" \
+  --output "${IMAGE}"
+
+mkdir -p "${MOUNT_DIR}"
+attach_output="$(
+  hdiutil attach \
+    -readonly \
+    -noverify \
+    -nobrowse \
+    -mountpoint "${MOUNT_DIR}" \
+    "${IMAGE}"
+)"
+DEVICE="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
+
+test -n "${DEVICE}"
+test -x "${MOUNT_DIR}/First.app/Contents/MacOS/first"
+test -x "${MOUNT_DIR}/Second.app/Contents/MacOS/second"
+test -x "${MOUNT_DIR}/oauth-tool"
+test "$(readlink "${MOUNT_DIR}/Applications")" = "/Applications"
+grep -q 'Drag the application bundles' "${MOUNT_DIR}/First Launch.txt"
+grep -q 'oauth-tool' "${MOUNT_DIR}/First Launch.txt"
+test "$(grep -c '^INSTALLATION$' "${MOUNT_DIR}/First Launch.txt")" = "1"
+if grep -q 'УСТАНОВКА\|Перетащите\|Терминальные утилиты' \
+  "${MOUNT_DIR}/First Launch.txt"; then
+  echo "First Launch.txt must contain English instructions only" >&2
+  exit 1
+fi
+
+hdiutil detach "${DEVICE}" >/dev/null
+DEVICE=""
+
+"${REPO_ROOT}/bin/build-macos-dmg" \
+  --app "${SOURCE_ROOT}/First.app" \
+  --volume-name "${VOLUME_NAME} Single" \
+  --output "${SINGLE_IMAGE}"
+
+attach_output="$(
+  hdiutil attach \
+    -readonly \
+    -noverify \
+    -nobrowse \
+    -mountpoint "${MOUNT_DIR}" \
+    "${SINGLE_IMAGE}"
+)"
+DEVICE="$(awk 'NF >= 3 { device = $1 } END { print device }' <<<"${attach_output}")"
+
+test -n "${DEVICE}"
+test -x "${MOUNT_DIR}/First.app/Contents/MacOS/first"
+test ! -e "${MOUNT_DIR}/Second.app"
+test ! -e "${MOUNT_DIR}/oauth-tool"
+test "$(readlink "${MOUNT_DIR}/Applications")" = "/Applications"
+
+hdiutil detach "${DEVICE}" >/dev/null
+DEVICE=""
+
+printf 'DMG packaging tests passed\n'

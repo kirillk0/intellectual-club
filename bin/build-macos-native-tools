@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/build-macos-native-tools --output <directory>
+
+Builds the Apple Silicon IC Shell Outlet application bundle and OpenAI OAuth CLI.
+
+Environment variables:
+  IC_BUNDLE_BUILD_ID       Human-readable build identifier stored in Info.plist
+  IC_BUNDLE_BUILD_VERSION  Numeric CFBundleVersion value (defaults to Unix time)
+EOF
+}
+
+OUTPUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      OUTPUT_DIR="${2:-}"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  echo "--output is required" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "The macOS native tools must be built on Apple Silicon" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+NATIVE_DIR="${REPO_ROOT}/native_tools"
+ICON_SOURCE="${REPO_ROOT}/frontend/src/assets/icon_outlet_full.png"
+PACKAGE_MANIFEST="${NATIVE_DIR}/crates/outlet-shell-desktop/Cargo.toml"
+BUNDLE_NAME="IC Shell Outlet.app"
+LEGACY_BUNDLE_NAME="Outlet Shell.app"
+BUNDLE_IDENTIFIER="org.intellectualclub.outlet-shell"
+BUNDLE_EXECUTABLE="outlet-shell-desktop"
+OAUTH_EXECUTABLE="openai-oauth"
+MINIMUM_MACOS_VERSION="11.0"
+
+if [[ "${OUTPUT_DIR}" != /* ]]; then
+  OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
+fi
+
+PACKAGE_VERSION="$({
+  sed -nE 's/^version = "([^"]+)"$/\1/p' "${PACKAGE_MANIFEST}"
+} | head -n 1)"
+BUNDLE_VERSION="${PACKAGE_VERSION%%[-+]*}"
+BUILD_VERSION="${IC_BUNDLE_BUILD_VERSION:-$(date -u +%s)}"
+BUILD_ID="${IC_BUNDLE_BUILD_ID:-dev-${BUILD_VERSION}}"
+
+if [[ -z "${PACKAGE_VERSION}" ]]; then
+  echo "Could not read the outlet desktop version" >&2
+  exit 1
+fi
+
+if [[ ! -f "${ICON_SOURCE}" ]]; then
+  echo "Outlet icon not found: ${ICON_SOURCE}" >&2
+  exit 1
+fi
+
+if [[ ! "${BUILD_VERSION}" =~ ^[0-9]+$ ]]; then
+  echo "IC_BUNDLE_BUILD_VERSION must contain only digits" >&2
+  exit 1
+fi
+
+mkdir -p "${OUTPUT_DIR}"
+STAGING_DIR="$(mktemp -d "${OUTPUT_DIR}/.native-tools.XXXXXX")"
+trap 'rm -rf "${STAGING_DIR}"' EXIT
+
+APP_DIR="${STAGING_DIR}/${BUNDLE_NAME}"
+CONTENTS_DIR="${APP_DIR}/Contents"
+MACOS_DIR="${CONTENTS_DIR}/MacOS"
+RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+PLIST_PATH="${CONTENTS_DIR}/Info.plist"
+ICONSET_DIR="${STAGING_DIR}/AppIcon.iconset"
+
+MACOSX_DEPLOYMENT_TARGET="${MINIMUM_MACOS_VERSION}" \
+  cargo build \
+    --manifest-path "${NATIVE_DIR}/Cargo.toml" \
+    --release \
+    --locked \
+    --package outlet-shell-desktop \
+    --package openai-oauth
+
+OUTLET_SOURCE="${NATIVE_DIR}/target/release/${BUNDLE_EXECUTABLE}"
+OAUTH_SOURCE="${NATIVE_DIR}/target/release/${OAUTH_EXECUTABLE}"
+
+if [[ ! -x "${OUTLET_SOURCE}" ]]; then
+  echo "Outlet desktop executable was not created at ${OUTLET_SOURCE}" >&2
+  exit 1
+fi
+
+if [[ ! -x "${OAUTH_SOURCE}" ]]; then
+  echo "OpenAI OAuth executable was not created at ${OAUTH_SOURCE}" >&2
+  exit 1
+fi
+
+if [[ "$(lipo -archs "${OUTLET_SOURCE}")" != "arm64" ]]; then
+  echo "Outlet desktop executable is not arm64" >&2
+  exit 1
+fi
+
+if [[ "$(lipo -archs "${OAUTH_SOURCE}")" != "arm64" ]]; then
+  echo "OpenAI OAuth executable is not arm64" >&2
+  exit 1
+fi
+
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${ICONSET_DIR}"
+install -m 755 "${OUTLET_SOURCE}" "${MACOS_DIR}/${BUNDLE_EXECUTABLE}"
+install -m 755 "${OAUTH_SOURCE}" "${STAGING_DIR}/${OAUTH_EXECUTABLE}"
+
+create_icon() {
+  local size="$1"
+  local scale="$2"
+  local pixels=$((size * scale))
+  local suffix=""
+
+  if [[ "${scale}" -eq 2 ]]; then
+    suffix="@2x"
+  fi
+
+  sips \
+    --resampleHeightWidth "${pixels}" "${pixels}" \
+    "${ICON_SOURCE}" \
+    --out "${ICONSET_DIR}/icon_${size}x${size}${suffix}.png" \
+    >/dev/null
+}
+
+for size in 16 32 128 256 512; do
+  create_icon "${size}" 1
+  create_icon "${size}" 2
+done
+iconutil --convert icns "${ICONSET_DIR}" --output "${RESOURCES_DIR}/AppIcon.icns"
+
+plutil -create xml1 "${PLIST_PATH}"
+plutil -insert CFBundleDisplayName -string "IC Shell Outlet" "${PLIST_PATH}"
+plutil -insert CFBundleExecutable -string "${BUNDLE_EXECUTABLE}" "${PLIST_PATH}"
+plutil -insert CFBundleIdentifier -string "${BUNDLE_IDENTIFIER}" "${PLIST_PATH}"
+plutil -insert CFBundleName -string "IC Shell Outlet" "${PLIST_PATH}"
+plutil -insert CFBundlePackageType -string "APPL" "${PLIST_PATH}"
+plutil -insert CFBundleShortVersionString -string "${BUNDLE_VERSION}" "${PLIST_PATH}"
+plutil -insert CFBundleVersion -string "${BUILD_VERSION}" "${PLIST_PATH}"
+plutil -insert CFBundleGetInfoString -string "IC Shell Outlet ${BUILD_ID}" "${PLIST_PATH}"
+plutil -insert CFBundleIconFile -string "AppIcon" "${PLIST_PATH}"
+plutil -insert CFBundleIconName -string "AppIcon" "${PLIST_PATH}"
+plutil -insert LSApplicationCategoryType -string "public.app-category.utilities" "${PLIST_PATH}"
+plutil -insert LSMinimumSystemVersion -string "${MINIMUM_MACOS_VERSION}" "${PLIST_PATH}"
+plutil -insert NSHighResolutionCapable -bool true "${PLIST_PATH}"
+plutil -lint "${PLIST_PATH}" >/dev/null
+
+FINAL_APP_DIR="${OUTPUT_DIR}/${BUNDLE_NAME}"
+LEGACY_APP_DIR="${OUTPUT_DIR}/${LEGACY_BUNDLE_NAME}"
+FINAL_OAUTH_PATH="${OUTPUT_DIR}/${OAUTH_EXECUTABLE}"
+rm -rf "${FINAL_APP_DIR}"
+rm -rf "${LEGACY_APP_DIR}"
+rm -f "${FINAL_OAUTH_PATH}"
+mv "${APP_DIR}" "${FINAL_APP_DIR}"
+mv "${STAGING_DIR}/${OAUTH_EXECUTABLE}" "${FINAL_OAUTH_PATH}"
+
+printf 'Built macOS native tools at %s\n' "${OUTPUT_DIR}"
