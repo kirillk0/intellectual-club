@@ -16,6 +16,8 @@ defmodule IntellectualClub.Notifications.WebPushTest do
   alias IntellectualClub.Notifications
   alias IntellectualClub.Notifications.ActiveWebPushClients
   alias IntellectualClub.Notifications.WebPushGenerationEvent
+  alias IntellectualClub.Notifications.WebPushSender
+  alias IntellectualClub.Notifications.WebPushSettings
   alias IntellectualClub.Notifications.WebPushSubscription
 
   require Ash.Query
@@ -81,6 +83,43 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert regenerated.key_revision == old_revision + 1
     assert regenerated.vapid_public_key != old_public_key
     refute Map.has_key?(regenerated, :vapid_private_key)
+  end
+
+  test "sender encodes a four-digit chat topic as base64url" do
+    old_req_defaults = Req.default_options()
+    test_pid = self()
+    request_stub = {__MODULE__, :web_push_topic}
+
+    Req.default_options(
+      Keyword.merge(old_req_defaults, plug: {Req.Test, request_stub}, retry: false)
+    )
+
+    on_exit(fn -> Req.default_options(old_req_defaults) end)
+
+    Req.Test.expect(request_stub, fn conn ->
+      Kernel.send(test_pid, {:web_push_topic, Plug.Conn.get_req_header(conn, "topic")})
+      Plug.Conn.send_resp(conn, 201, "")
+    end)
+
+    {vapid_public_key, vapid_private_key} = :crypto.generate_key(:ecdh, :prime256v1)
+
+    {subscriber_public_key, _subscriber_private_key} =
+      :crypto.generate_key(:ecdh, :prime256v1)
+
+    settings = %WebPushSettings{
+      vapid_public_key: Base.url_encode64(vapid_public_key, padding: false),
+      vapid_private_key: Base.url_encode64(vapid_private_key, padding: false),
+      vapid_subject: "mailto:admin@example.com"
+    }
+
+    subscription = %WebPushSubscription{
+      endpoint: "https://web.push.apple.com/test",
+      p256dh: Base.url_encode64(subscriber_public_key, padding: false),
+      auth: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    }
+
+    assert :ok = WebPushSender.send(subscription, %{chat_id: 1000}, settings)
+    assert_receive {:web_push_topic, ["Y2hhdDoxMDAw"]}
   end
 
   test "users can upsert and delete their own subscriptions" do
