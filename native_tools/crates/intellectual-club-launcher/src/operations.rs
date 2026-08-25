@@ -1022,8 +1022,25 @@ fn postgres_ascii_drive_alias(target: &Path) -> Result<PathBuf> {
         DefineDosDeviceW, DDD_NO_BROADCAST_SYSTEM, DDD_RAW_TARGET_PATH,
     };
 
-    let target = windows_dos_device_target(target)?;
-    let target_text = OsString::from_wide(&target[..target.len() - 1]);
+    let canonical = fs::canonicalize(target)
+        .with_context(|| format!("failed to canonicalize {}", target.display()))?;
+    let leaf = canonical
+        .file_name()
+        .filter(|value| value.to_string_lossy().is_ascii())
+        .ok_or_else(|| {
+            anyhow!(
+                "PostgreSQL requires an ASCII final path component: {}",
+                canonical.display()
+            )
+        })?;
+    let parent = canonical.parent().ok_or_else(|| {
+        anyhow!(
+            "PostgreSQL cannot use a drive root as its runtime directory: {}",
+            canonical.display()
+        )
+    })?;
+    let device_target = windows_dos_device_target(parent)?;
+    let target_text = OsString::from_wide(&device_target[..device_target.len() - 1]);
     let mut available = None;
     for letter in ('D'..='Z').rev() {
         let device = format!("{letter}:");
@@ -1033,7 +1050,7 @@ fn postgres_ascii_drive_alias(target: &Path) -> Result<PathBuf> {
                     .iter()
                     .any(|existing| windows_paths_equal(existing, &target_text))
                 {
-                    return Ok(PathBuf::from(format!("{device}\\")));
+                    return Ok(PathBuf::from(format!("{device}\\")).join(leaf));
                 }
             }
             None if available.is_none() => available = Some((letter, device)),
@@ -1052,7 +1069,7 @@ fn postgres_ascii_drive_alias(target: &Path) -> Result<PathBuf> {
         DefineDosDeviceW(
             DDD_RAW_TARGET_PATH | DDD_NO_BROADCAST_SYSTEM,
             device_wide.as_ptr(),
-            target.as_ptr(),
+            device_target.as_ptr(),
         )
     };
     if defined == 0 {
@@ -1070,13 +1087,13 @@ fn postgres_ascii_drive_alias(target: &Path) -> Result<PathBuf> {
             .any(|value| windows_paths_equal(value, &target_text))
     });
     if !mapped {
-        remove_windows_dos_device(letter, target.as_slice())?;
+        remove_windows_dos_device(letter, device_target.as_slice())?;
         bail!(
             "PostgreSQL drive alias {device} did not resolve to {}",
             target_text.to_string_lossy()
         );
     }
-    Ok(PathBuf::from(format!("{device}\\")))
+    Ok(PathBuf::from(format!("{device}\\")).join(leaf))
 }
 
 #[cfg(windows)]
@@ -1947,6 +1964,7 @@ mod tests {
 
         let alias = postgres_ascii_drive_alias(&target).unwrap();
         assert!(alias.to_string_lossy().is_ascii());
+        assert_eq!(alias.file_name(), Some(OsStr::new("postgres")));
         fs::write(target.join("probe.txt"), "drive alias").unwrap();
         assert_eq!(
             fs::read_to_string(alias.join("probe.txt")).unwrap(),
@@ -1954,7 +1972,7 @@ mod tests {
         );
         assert_eq!(postgres_ascii_drive_alias(&target).unwrap(), alias);
 
-        let target_device = windows_dos_device_target(&target).unwrap();
+        let target_device = windows_dos_device_target(target.parent().unwrap()).unwrap();
         let letter = alias.to_string_lossy().chars().next().unwrap();
         remove_windows_dos_device(letter, &target_device).unwrap();
         fs::remove_dir_all(root).unwrap();
