@@ -1267,6 +1267,7 @@ async fn prepare_postgres_cluster(settings: &Settings) -> Result<()> {
         return Ok(());
     }
 
+    prepare_postgres_data_directory_for_initdb(&settings.data_dir)?;
     if let Some(parent) = settings.password_file.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1282,6 +1283,41 @@ async fn prepare_postgres_cluster(settings: &Settings) -> Result<()> {
     execute_pg_command(&mut command, settings.timeout)
         .await
         .context("failed to initialize PostgreSQL with the ICU locale")
+}
+
+#[cfg(windows)]
+fn prepare_postgres_data_directory_for_initdb(path: &Path) -> Result<()> {
+    let mut entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect PostgreSQL data directory {}",
+                    path.display()
+                )
+            });
+        }
+    };
+
+    match entries.next() {
+        None => fs::remove_dir(path).with_context(|| {
+            format!(
+                "failed to remove empty PostgreSQL data directory {} before initialization",
+                path.display()
+            )
+        })?,
+        Some(Ok(_)) => {}
+        Some(Err(error)) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect PostgreSQL data directory {}",
+                    path.display()
+                )
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -1929,6 +1965,32 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--pgdata" && pair[1] == settings.data_dir.to_string_lossy()
         }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn initdb_preparation_removes_only_an_empty_aliased_data_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-initdb-directory-test-{}",
+            std::process::id()
+        ));
+        let target = root.join("кириллица").join("data");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&target).unwrap();
+        let alias = postgres_ascii_drive_alias(&target).unwrap();
+
+        prepare_postgres_data_directory_for_initdb(&alias).unwrap();
+        assert!(!target.exists());
+
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("PG_VERSION"), "16").unwrap();
+        prepare_postgres_data_directory_for_initdb(&alias).unwrap();
+        assert!(target.join("PG_VERSION").is_file());
+
+        let target_device = windows_dos_device_target(target.parent().unwrap()).unwrap();
+        let letter = alias.to_string_lossy().chars().next().unwrap();
+        remove_windows_dos_device(letter, &target_device).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]
