@@ -40,6 +40,7 @@ fn main() -> eframe::Result<()> {
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_icon(app_icon()),
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     }
 }
@@ -903,7 +904,9 @@ mod tests {
 
     #[test]
     fn native_options_use_embedded_outlet_icon_pixels() {
-        let icon = native_options().viewport.icon.expect("window icon");
+        let options = native_options();
+        assert_eq!(options.renderer, eframe::Renderer::Wgpu);
+        let icon = options.viewport.icon.expect("window icon");
         assert!(icon.width >= 256);
         assert!(icon.height >= 256);
         assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
