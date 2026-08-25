@@ -395,18 +395,44 @@ function Invoke-WithTestPostgres {
   }
 }
 
-function Get-VcRuntimeDirectory {
-  $candidate = if ($env:VCToolsRedistDir) { Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT' } else { $null }
-  if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+function Find-VcRuntimeDirectory {
+  param([Parameter(Mandatory = $true)][string]$RedistRoot)
 
-  $redistRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC'
-  $candidate = Get-ChildItem -LiteralPath $redistRoot -Directory -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending |
-    ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
-    Where-Object { Test-Path -LiteralPath $_ } |
-    Select-Object -First 1
-  if (-not $candidate) { throw 'The Visual C++ x64 redistributable directory was not found.' }
-  $candidate
+  if (-not (Test-Path -LiteralPath $RedistRoot -PathType Container)) { return $null }
+  if ((Split-Path -Leaf $RedistRoot) -match '^Microsoft\.VC\d+\.CRT$') { return $RedistRoot }
+
+  $toolsetRoots = @($RedistRoot)
+  $toolsetRoots += @(Get-ChildItem -LiteralPath $RedistRoot -Directory -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending |
+      Select-Object -ExpandProperty FullName)
+  foreach ($toolsetRoot in $toolsetRoots) {
+    $x64Root = Join-Path $toolsetRoot 'x64'
+    $candidate = Get-ChildItem -LiteralPath $x64Root -Directory -ErrorAction SilentlyContinue |
+      Where-Object Name -Match '^Microsoft\.VC\d+\.CRT$' |
+      Sort-Object Name -Descending |
+      Select-Object -First 1 -ExpandProperty FullName
+    if ($candidate) { return $candidate }
+  }
+  $null
+}
+
+function Get-VcRuntimeDirectory {
+  $redistRoots = @()
+  if ($env:VCToolsRedistDir) { $redistRoots += $env:VCToolsRedistDir }
+
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+    $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+      Select-Object -First 1
+    if ($installation) { $redistRoots += Join-Path $installation 'VC\Redist\MSVC' }
+  }
+  $redistRoots += Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC'
+
+  foreach ($redistRoot in ($redistRoots | Select-Object -Unique)) {
+    $candidate = Find-VcRuntimeDirectory $redistRoot
+    if ($candidate) { return $candidate }
+  }
+  throw 'The Visual C++ x64 redistributable directory was not found.'
 }
 
 function Copy-VcRuntime {
@@ -937,6 +963,21 @@ function Invoke-PackagingSelfTest {
       $env:USERPROFILE = $previousUserProfile
       $env:Path = $previousPath
       $env:ERLANG_HOME = $previousErlangHome
+    }
+
+    $previousVcToolsRedistDir = $env:VCToolsRedistDir
+    $testRedistRoot = Join-Path $root 'vc-redist'
+    $expectedCrtDirectory = Join-Path $testRedistRoot 'x64\Microsoft.VC145.CRT'
+    New-Item -ItemType Directory -Force -Path $expectedCrtDirectory | Out-Null
+    try {
+      $env:VCToolsRedistDir = $testRedistRoot
+      $actualCrtDirectory = Get-VcRuntimeDirectory
+      if ($actualCrtDirectory -ne $expectedCrtDirectory) {
+        throw "VC runtime discovery ignored the active toolset: expected '$expectedCrtDirectory', found '$actualCrtDirectory'"
+      }
+    }
+    finally {
+      $env:VCToolsRedistDir = $previousVcToolsRedistDir
     }
 
     $sources = Join-Path $root 'sources'
