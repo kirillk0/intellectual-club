@@ -954,18 +954,46 @@ fn postgres_settings_from_config(paths: &AppPaths, config: &LauncherConfig) -> R
 
 #[cfg(windows)]
 fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
-    use std::ffi::OsString;
-    use std::iter;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
-
     fs::create_dir_all(path).with_context(|| {
         format!(
             "failed to create PostgreSQL data directory {}",
             path.display()
         )
     })?;
+
+    let short_path = windows_short_path(path)?;
+    if short_path.to_string_lossy().is_ascii() {
+        return Ok(short_path);
+    }
+
+    // GetShortPathNameW returns the original Unicode path on volumes where
+    // 8.3 names are disabled. PostgreSQL 16 still needs an ASCII path on
+    // Windows, so use an unprivileged NTFS junction as the fallback alias.
+    let program_data = env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("the Windows ProgramData directory is unavailable"))?;
+    let alias_root = program_data
+        .join("IntellectualClub")
+        .join("postgres-path-aliases");
+    fs::create_dir_all(&alias_root)
+        .with_context(|| format!("failed to create {}", alias_root.display()))?;
+    let alias_root = windows_short_path(&alias_root)?;
+    if !alias_root.to_string_lossy().is_ascii() {
+        bail!(
+            "PostgreSQL requires an ASCII runtime path, but neither 8.3 names nor the ProgramData alias root are ASCII: {}",
+            path.display()
+        );
+    }
+    postgres_ascii_junction(path, &alias_root)
+}
+
+#[cfg(windows)]
+fn windows_short_path(path: &Path) -> Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::iter;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
 
     let wide = path
         .as_os_str()
@@ -976,7 +1004,7 @@ fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
     if required == 0 {
         return Err(std::io::Error::last_os_error()).with_context(|| {
             format!(
-                "failed to resolve the Windows short path for PostgreSQL data directory {}",
+                "failed to resolve the Windows short path for {}",
                 path.display()
             )
         });
@@ -988,7 +1016,7 @@ fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
     if written == 0 || written as usize >= buffer.len() {
         return Err(std::io::Error::last_os_error()).with_context(|| {
             format!(
-                "failed to resolve the Windows short path for PostgreSQL data directory {}",
+                "failed to resolve the Windows short path for {}",
                 path.display()
             )
         });
@@ -996,6 +1024,65 @@ fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
 
     buffer.truncate(written as usize);
     Ok(PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+#[cfg(windows)]
+fn postgres_ascii_junction(target: &Path, alias_root: &Path) -> Result<PathBuf> {
+    let target = fs::canonicalize(target)
+        .with_context(|| format!("failed to canonicalize {}", target.display()))?;
+    let alias = alias_root.join(format!("path-{:016x}", windows_path_hash(&target)));
+
+    match junction::exists(&alias) {
+        Ok(true) => {
+            if fs::canonicalize(&alias)? == target {
+                return Ok(alias);
+            }
+            bail!(
+                "PostgreSQL ASCII alias already exists with an unexpected target: {}",
+                alias.display()
+            );
+        }
+        Ok(false) => {}
+        Err(_) if fs::symlink_metadata(&alias).is_ok() => {
+            bail!(
+                "PostgreSQL ASCII alias path is occupied by a non-junction entry: {}",
+                alias.display()
+            );
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect PostgreSQL alias {}", alias.display())
+            });
+        }
+    }
+
+    if let Err(error) = junction::create(&target, &alias) {
+        if junction::exists(&alias)? && fs::canonicalize(&alias)? == target {
+            return Ok(alias);
+        }
+        return Err(error).with_context(|| {
+            format!(
+                "failed to create PostgreSQL ASCII alias {} for {}",
+                alias.display(),
+                target.display()
+            )
+        });
+    }
+    Ok(alias)
+}
+
+#[cfg(windows)]
+fn windows_path_hash(path: &Path) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .fold(FNV_OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+        })
 }
 
 #[cfg(not(windows))]
@@ -1754,7 +1841,41 @@ mod tests {
             fs::canonicalize(&data_dir).unwrap()
         );
 
+        if junction::exists(&runtime_dir).unwrap_or(false) {
+            junction::delete(&runtime_dir).unwrap();
+        }
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn postgres_ascii_junction_is_stable_and_resolves_to_its_target() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-junction-test-{}",
+            std::process::id()
+        ));
+        let target = root.join("кириллица").join("postgres");
+        let alias_root = root.join("aliases");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&alias_root).unwrap();
+
+        let alias = postgres_ascii_junction(&target, &alias_root).unwrap();
+        assert!(alias.to_string_lossy().is_ascii());
+        assert!(junction::exists(&alias).unwrap());
+        assert_eq!(
+            fs::canonicalize(&alias).unwrap(),
+            fs::canonicalize(&target).unwrap()
+        );
+        assert_eq!(
+            postgres_ascii_junction(&target, &alias_root).unwrap(),
+            alias
+        );
+
+        junction::delete(&alias).unwrap();
+        let error = postgres_ascii_junction(&target, &alias_root).unwrap_err();
+        assert!(error.to_string().contains("occupied by a non-junction"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

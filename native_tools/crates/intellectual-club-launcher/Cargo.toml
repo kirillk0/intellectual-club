@@ -25,6 +25,7 @@ url.workspace = true
 webbrowser.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+junction.workspace = true
 windows-sys.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]
