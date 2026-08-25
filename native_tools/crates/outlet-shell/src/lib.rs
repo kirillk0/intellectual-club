@@ -1541,16 +1541,30 @@ mod tests {
         task_id: &str,
         expected: BackgroundStatus,
     ) -> ToolResult {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
             let result = pool.background_status(task_id, "0").await.unwrap();
             let status: BackgroundStatus =
                 serde_json::from_value(result.raw["status"].clone()).unwrap();
             if status == expected {
                 return result;
             }
+            if matches!(
+                status,
+                BackgroundStatus::Completed | BackgroundStatus::Failed | BackgroundStatus::Canceled
+            ) {
+                panic!(
+                    "shell background task reached {status:?} instead of {expected:?}: {}",
+                    result.raw
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "shell background task did not reach {expected:?} within 15 seconds; last status was {status:?}"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("shell background task did not reach {expected:?}");
     }
 
     #[cfg(unix)]
