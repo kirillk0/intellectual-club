@@ -456,11 +456,12 @@ pub async fn backup_command(
             files_backup_path.display()
         );
     }
+    let command_backup_path = postgres_command_file_path(&backup_path)?;
 
     let mut command = PgDumpBuilder::from(&settings)
         .dbname(&config.database_name)
         .format("custom")
-        .file(backup_path.as_os_str())
+        .file(command_backup_path.as_os_str())
         .no_owner()
         .build_tokio();
     execute_pg_command(&mut command, settings.timeout).await?;
@@ -510,7 +511,8 @@ pub async fn restore_command(
             .exit_on_error()
             .no_owner()
             .build_tokio();
-        command.arg(dump_path.as_os_str());
+        let command_dump_path = postgres_command_file_path(dump_path)?;
+        command.arg(command_dump_path.as_os_str());
         execute_pg_command(&mut command, settings.timeout).await?;
         admin.finish().await;
     }
@@ -975,6 +977,29 @@ fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
+fn postgres_command_file_path(path: &Path) -> Result<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        anyhow!(
+            "PostgreSQL command file path has no file name: {}",
+            path.display()
+        )
+    })?;
+    if !file_name.to_string_lossy().is_ascii() {
+        bail!(
+            "PostgreSQL command file name must contain only ASCII characters: {}",
+            path.display()
+        );
+    }
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "PostgreSQL command file path has no parent directory: {}",
+            path.display()
+        )
+    })?;
+    Ok(postgres_runtime_directory(parent)?.join(file_name))
+}
+
+#[cfg(windows)]
 fn windows_short_path(path: &Path) -> Result<PathBuf> {
     use std::ffi::OsString;
     use std::iter;
@@ -1194,6 +1219,11 @@ fn wide_null(value: &OsStr) -> Result<Vec<u16>> {
 
 #[cfg(not(windows))]
 fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
+    Ok(path.to_path_buf())
+}
+
+#[cfg(not(windows))]
+fn postgres_command_file_path(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
@@ -1910,6 +1940,40 @@ mod tests {
             files_backup_path_for(Path::new("/tmp/intellectual-club.dump")),
             PathBuf::from("/tmp/intellectual-club.files")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn postgres_command_file_path_aliases_its_unicode_parent() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-backup-Путь с пробелами-{}",
+            std::process::id()
+        ));
+        let parent = root.join("backups");
+        let path = parent.join("smoke-backup.dump");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&parent).unwrap();
+
+        let alias = postgres_command_file_path(&path).unwrap();
+        assert!(alias.to_string_lossy().is_ascii());
+        assert_eq!(alias.file_name(), path.file_name());
+        fs::write(&alias, "backup").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "backup");
+
+        let alias_letter = alias.to_string_lossy().chars().next().unwrap();
+        let target = windows_dos_device_target(parent.parent().unwrap()).unwrap();
+        let target_text = OsString::from_wide(&target[..target.len() - 1]);
+        let owns_alias = query_windows_dos_device(&format!("{alias_letter}:"))
+            .unwrap()
+            .unwrap()
+            .iter()
+            .any(|value| windows_paths_equal(value, &target_text));
+        if owns_alias {
+            remove_windows_dos_device(alias_letter, &target).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
