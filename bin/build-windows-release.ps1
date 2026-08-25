@@ -790,7 +790,7 @@ function Wait-ForManagedDistributionProcessesToExit {
   )
 
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-  $managedNames = @('erl', 'postgres', 'intellectual-club-launcher', 'intellectual-club-launcher-cli')
+  $managedNames = @('epmd', 'erl', 'postgres', 'intellectual-club-launcher', 'intellectual-club-launcher-cli')
   do {
     $remaining = @(Get-Process -Name $managedNames -ErrorAction SilentlyContinue | Where-Object {
         try {

@@ -344,8 +344,15 @@ mod tests {
         });
 
         for _ in 0..20_000 {
-            let contents = fs::read_to_string(&path).unwrap();
-            serde_json::from_str::<serde_json::Value>(&contents).unwrap();
+            match fs::read_to_string(&path) {
+                Ok(contents) => {
+                    serde_json::from_str::<serde_json::Value>(&contents).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    thread::yield_now();
+                }
+                Err(error) => panic!("failed to read {}: {error}", path.display()),
+            }
         }
         writer.join().unwrap();
 

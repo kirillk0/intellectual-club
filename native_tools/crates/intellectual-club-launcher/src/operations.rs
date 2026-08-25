@@ -746,6 +746,10 @@ async fn run_daemon(
 
     let exit_result = daemon_loop(paths, config, &database_url, &mut app).await;
     let app_stop = stop_release_app(config, &mut app).await;
+    #[cfg(windows)]
+    if let Err(error) = stop_bundled_epmd(config).await {
+        warn!("failed to stop the bundled EPMD process: {error:#}");
+    }
     let pg_stop = pg.stop().await.map_err(|error| anyhow!(error.to_string()));
     remove_file_if_exists(&paths.status_path)?;
     remove_file_if_exists(&paths.stop_request_path)?;
@@ -1805,6 +1809,50 @@ async fn request_windows_release_stop(config: &LauncherConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn bundled_epmd_path(app_dir: &Path) -> Result<PathBuf> {
+    let mut candidates = fs::read_dir(app_dir)
+        .with_context(|| format!("failed to inspect BEAM release {}", app_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+                && entry.file_name().to_string_lossy().starts_with("erts-")
+        })
+        .map(|entry| entry.path().join("bin").join("epmd.exe"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .pop()
+        .ok_or_else(|| anyhow!("bundled epmd.exe was not found in {}", app_dir.display()))
+}
+
+#[cfg(windows)]
+async fn stop_bundled_epmd(config: &LauncherConfig) -> Result<()> {
+    let app_dir = resolve_app_dir(config)?;
+    let epmd_path = bundled_epmd_path(&app_dir)?;
+    let mut command = Command::new(&epmd_path);
+    command
+        .arg("-kill")
+        .current_dir(&app_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_background_release_process(&mut command);
+
+    let status = tokio::time::timeout(Duration::from_secs(10), command.status())
+        .await
+        .context("timed out while stopping the bundled EPMD process")?
+        .with_context(|| format!("failed to execute {} -kill", epmd_path.display()))?;
+    if !status.success() {
+        bail!("{} -kill exited with status {status}", epmd_path.display());
+    }
+    Ok(())
+}
+
 async fn stop_child(child: &mut Child) -> Result<()> {
     if child.try_wait()?.is_some() {
         return Ok(());
@@ -1907,6 +1955,16 @@ mod tests {
     use super::*;
     use crate::config::Locale;
 
+    #[cfg(windows)]
+    static WINDOWS_DOS_DEVICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(windows)]
+    fn lock_windows_dos_device_tests() -> std::sync::MutexGuard<'static, ()> {
+        WINDOWS_DOS_DEVICE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[cfg(unix)]
     #[test]
     fn process_probe_treats_permission_denied_as_alive() {
@@ -1934,6 +1992,23 @@ mod tests {
         assert!(!process_alive(u32::MAX));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn bundled_epmd_path_discovers_release_erts_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-epmd-path-{}",
+            std::process::id()
+        ));
+        let epmd = root.join("erts-17.0.5").join("bin").join("epmd.exe");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(epmd.parent().unwrap()).unwrap();
+        fs::write(&epmd, b"epmd").unwrap();
+
+        assert_eq!(bundled_epmd_path(&root).unwrap(), epmd);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn files_backup_path_replaces_dump_extension() {
         assert_eq!(
@@ -1946,6 +2021,8 @@ mod tests {
     #[test]
     fn postgres_command_file_path_aliases_its_unicode_parent() {
         use std::os::windows::ffi::OsStringExt;
+
+        let _guard = lock_windows_dos_device_tests();
 
         let root = std::env::temp_dir().join(format!(
             "intellectual-club-launcher-backup-Путь с пробелами-{}",
@@ -2034,6 +2111,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn initdb_preparation_removes_only_an_empty_aliased_data_directory() {
+        let _guard = lock_windows_dos_device_tests();
+
         let root = std::env::temp_dir().join(format!(
             "intellectual-club-launcher-initdb-directory-test-{}",
             std::process::id()
@@ -2060,6 +2139,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn postgres_runtime_directory_uses_an_ascii_alias_for_unicode_paths() {
+        let _guard = lock_windows_dos_device_tests();
+
         let root = std::env::temp_dir().join(format!(
             "intellectual-club-launcher-кириллица-{}",
             std::process::id()
@@ -2080,6 +2161,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn postgres_ascii_drive_alias_is_stable_and_resolves_to_its_target() {
+        let _guard = lock_windows_dos_device_tests();
+
         let root = std::env::temp_dir().join(format!(
             "intellectual-club-launcher-drive-alias-test-{}",
             std::process::id()
