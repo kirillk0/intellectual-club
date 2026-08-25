@@ -1,4 +1,6 @@
 use std::env;
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -968,23 +970,8 @@ fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
 
     // GetShortPathNameW returns the original Unicode path on volumes where
     // 8.3 names are disabled. PostgreSQL 16 still needs an ASCII path on
-    // Windows, so use an unprivileged NTFS junction as the fallback alias.
-    let program_data = env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("the Windows ProgramData directory is unavailable"))?;
-    let alias_root = program_data
-        .join("IntellectualClub")
-        .join("postgres-path-aliases");
-    fs::create_dir_all(&alias_root)
-        .with_context(|| format!("failed to create {}", alias_root.display()))?;
-    let alias_root = windows_short_path(&alias_root)?;
-    if !alias_root.to_string_lossy().is_ascii() {
-        bail!(
-            "PostgreSQL requires an ASCII runtime path, but neither 8.3 names nor the ProgramData alias root are ASCII: {}",
-            path.display()
-        );
-    }
-    postgres_ascii_junction(path, &alias_root)
+    // Windows, so use a session-scoped DOS drive alias as the fallback.
+    postgres_ascii_drive_alias(path)
 }
 
 #[cfg(windows)]
@@ -1027,62 +1014,165 @@ fn windows_short_path(path: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn postgres_ascii_junction(target: &Path, alias_root: &Path) -> Result<PathBuf> {
-    let target = fs::canonicalize(target)
-        .with_context(|| format!("failed to canonicalize {}", target.display()))?;
-    let alias = alias_root.join(format!("path-{:016x}", windows_path_hash(&target)));
+fn postgres_ascii_drive_alias(target: &Path) -> Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
 
-    match junction::exists(&alias) {
-        Ok(true) => {
-            if fs::canonicalize(&alias)? == target {
-                return Ok(alias);
+    use windows_sys::Win32::Storage::FileSystem::{
+        DefineDosDeviceW, DDD_NO_BROADCAST_SYSTEM, DDD_RAW_TARGET_PATH,
+    };
+
+    let target = windows_dos_device_target(target)?;
+    let target_text = OsString::from_wide(&target[..target.len() - 1]);
+    let mut available = None;
+    for letter in ('D'..='Z').rev() {
+        let device = format!("{letter}:");
+        match query_windows_dos_device(&device)? {
+            Some(targets) => {
+                if targets
+                    .iter()
+                    .any(|existing| windows_paths_equal(existing, &target_text))
+                {
+                    return Ok(PathBuf::from(format!("{device}\\")));
+                }
             }
-            bail!(
-                "PostgreSQL ASCII alias already exists with an unexpected target: {}",
-                alias.display()
-            );
-        }
-        Ok(false) => {}
-        Err(_) if fs::symlink_metadata(&alias).is_ok() => {
-            bail!(
-                "PostgreSQL ASCII alias path is occupied by a non-junction entry: {}",
-                alias.display()
-            );
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("failed to inspect PostgreSQL alias {}", alias.display())
-            });
+            None if available.is_none() => available = Some((letter, device)),
+            None => {}
         }
     }
 
-    if let Err(error) = junction::create(&target, &alias) {
-        if junction::exists(&alias)? && fs::canonicalize(&alias)? == target {
-            return Ok(alias);
-        }
-        return Err(error).with_context(|| {
+    let (letter, device) = available.ok_or_else(|| {
+        anyhow!(
+            "PostgreSQL requires an ASCII path, but no drive letter is available for {}",
+            target_text.to_string_lossy()
+        )
+    })?;
+    let device_wide = wide_null(OsStr::new(&device))?;
+    let defined = unsafe {
+        DefineDosDeviceW(
+            DDD_RAW_TARGET_PATH | DDD_NO_BROADCAST_SYSTEM,
+            device_wide.as_ptr(),
+            target.as_ptr(),
+        )
+    };
+    if defined == 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
             format!(
-                "failed to create PostgreSQL ASCII alias {} for {}",
-                alias.display(),
-                target.display()
+                "failed to create PostgreSQL drive alias {device} for {}",
+                target_text.to_string_lossy()
             )
         });
     }
-    Ok(alias)
+
+    let mapped = query_windows_dos_device(&device)?.is_some_and(|targets| {
+        targets
+            .iter()
+            .any(|value| windows_paths_equal(value, &target_text))
+    });
+    if !mapped {
+        remove_windows_dos_device(letter, target.as_slice())?;
+        bail!(
+            "PostgreSQL drive alias {device} did not resolve to {}",
+            target_text.to_string_lossy()
+        );
+    }
+    Ok(PathBuf::from(format!("{device}\\")))
 }
 
 #[cfg(windows)]
-fn windows_path_hash(path: &Path) -> u64 {
+fn windows_dos_device_target(path: &Path) -> Result<Vec<u16>> {
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
+    let canonical = canonical.to_string_lossy();
+    let target = if let Some(path) = canonical.strip_prefix(r"\\?\UNC\") {
+        format!(r"\??\UNC\{path}")
+    } else if let Some(path) = canonical.strip_prefix(r"\\?\") {
+        format!(r"\??\{path}")
+    } else if let Some(path) = canonical.strip_prefix(r"\\") {
+        format!(r"\??\UNC\{path}")
+    } else {
+        format!(r"\??\{canonical}")
+    };
+    wide_null(OsStr::new(&target))
+}
+
+#[cfg(windows)]
+fn query_windows_dos_device(device: &str) -> Result<Option<Vec<OsString>>> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+
+    let device_wide = wide_null(OsStr::new(device))?;
+    let mut buffer = vec![0_u16; 32_768];
+    let written = unsafe {
+        QueryDosDeviceW(
+            device_wide.as_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    };
+    if written == 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) {
+            return Ok(None);
+        }
+        return Err(error)
+            .with_context(|| format!("failed to inspect Windows DOS device {device}"));
+    }
+    buffer.truncate(written as usize);
+    Ok(Some(
+        buffer
+            .split(|unit| *unit == 0)
+            .filter(|value| !value.is_empty())
+            .map(OsString::from_wide)
+            .collect(),
+    ))
+}
+
+#[cfg(windows)]
+fn remove_windows_dos_device(letter: char, target: &[u16]) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        DefineDosDeviceW, DDD_EXACT_MATCH_ON_REMOVE, DDD_NO_BROADCAST_SYSTEM, DDD_RAW_TARGET_PATH,
+        DDD_REMOVE_DEFINITION,
+    };
+
+    let device = format!("{letter}:");
+    let device_wide = wide_null(OsStr::new(&device))?;
+    let removed = unsafe {
+        DefineDosDeviceW(
+            DDD_RAW_TARGET_PATH
+                | DDD_REMOVE_DEFINITION
+                | DDD_EXACT_MATCH_ON_REMOVE
+                | DDD_NO_BROADCAST_SYSTEM,
+            device_wide.as_ptr(),
+            target.as_ptr(),
+        )
+    };
+    if removed == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to remove Windows DOS device {device}"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_paths_equal(left: &OsStr, right: &OsStr) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(windows)]
+fn wide_null(value: &OsStr) -> Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
 
-    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    path.as_os_str()
-        .encode_wide()
-        .flat_map(u16::to_le_bytes)
-        .fold(FNV_OFFSET_BASIS, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
-        })
+    let mut wide = value.encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        bail!("Windows path contains a NUL character");
+    }
+    wide.push(0);
+    Ok(wide)
 }
 
 #[cfg(not(windows))]
@@ -1841,40 +1931,32 @@ mod tests {
             fs::canonicalize(&data_dir).unwrap()
         );
 
-        if junction::exists(&runtime_dir).unwrap_or(false) {
-            junction::delete(&runtime_dir).unwrap();
-        }
         let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(windows)]
     #[test]
-    fn postgres_ascii_junction_is_stable_and_resolves_to_its_target() {
+    fn postgres_ascii_drive_alias_is_stable_and_resolves_to_its_target() {
         let root = std::env::temp_dir().join(format!(
-            "intellectual-club-launcher-junction-test-{}",
+            "intellectual-club-launcher-drive-alias-test-{}",
             std::process::id()
         ));
         let target = root.join("кириллица").join("postgres");
-        let alias_root = root.join("aliases");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&target).unwrap();
-        fs::create_dir_all(&alias_root).unwrap();
 
-        let alias = postgres_ascii_junction(&target, &alias_root).unwrap();
+        let alias = postgres_ascii_drive_alias(&target).unwrap();
         assert!(alias.to_string_lossy().is_ascii());
-        assert!(junction::exists(&alias).unwrap());
+        fs::write(target.join("probe.txt"), "drive alias").unwrap();
         assert_eq!(
-            fs::canonicalize(&alias).unwrap(),
-            fs::canonicalize(&target).unwrap()
+            fs::read_to_string(alias.join("probe.txt")).unwrap(),
+            "drive alias"
         );
-        assert_eq!(
-            postgres_ascii_junction(&target, &alias_root).unwrap(),
-            alias
-        );
+        assert_eq!(postgres_ascii_drive_alias(&target).unwrap(), alias);
 
-        junction::delete(&alias).unwrap();
-        let error = postgres_ascii_junction(&target, &alias_root).unwrap_err();
-        assert!(error.to_string().contains("occupied by a non-junction"));
+        let target_device = windows_dos_device_target(&target).unwrap();
+        let letter = alias.to_string_lossy().chars().next().unwrap();
+        remove_windows_dos_device(letter, &target_device).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
