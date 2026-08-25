@@ -15,6 +15,22 @@ pub const DEFAULT_PORT: u16 = 4000;
 pub const DEFAULT_POSTGRES_PORT: u16 = 55432;
 pub const CONFIG_VERSION: u32 = 2;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BundlePlatform {
+    Unix,
+    Windows,
+}
+
+impl BundlePlatform {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AppPaths {
     pub config_path: PathBuf,
@@ -32,27 +48,40 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn discover() -> Result<Self> {
+        #[cfg(windows)]
+        if let (Some(roaming), Some(local)) = (
+            absolute_env_path("APPDATA"),
+            absolute_env_path("LOCALAPPDATA"),
+        ) {
+            let (config_dir, data_dir, cache_dir) = windows_project_dirs(&roaming, &local);
+            return Ok(Self::from_platform_dirs(config_dir, data_dir, cache_dir));
+        }
+
         let project_dirs = ProjectDirs::from("org", "IntellectualClub", "Intellectual Club")
             .ok_or_else(|| anyhow!("failed to resolve platform app directories"))?;
-        let config_path = project_dirs.config_dir().join("launcher.json");
-        let data_dir = project_dirs.data_dir();
+        Ok(Self::from_platform_dirs(
+            project_dirs.config_dir().to_path_buf(),
+            project_dirs.data_dir().to_path_buf(),
+            project_dirs.cache_dir().to_path_buf(),
+        ))
+    }
+
+    fn from_platform_dirs(config_dir: PathBuf, data_dir: PathBuf, cache_dir: PathBuf) -> Self {
+        let config_path = config_dir.join("launcher.json");
         let runtime_dir = data_dir.join("runtime");
-        Ok(Self {
+        Self {
             config_path,
             default_data_dir: data_dir.join("postgres").join("data"),
             default_files_data_dir: data_dir.join("files"),
             backups_dir: data_dir.join("backups"),
-            installations_dir: project_dirs
-                .cache_dir()
-                .join("postgres")
-                .join("installations"),
+            installations_dir: cache_dir.join("postgres").join("installations"),
             status_path: runtime_dir.join("status.json"),
             stop_request_path: runtime_dir.join("stop-request"),
             app_request_path: runtime_dir.join("app-request"),
             launcher_log_path: runtime_dir.join("launcher.log"),
             app_log_path: runtime_dir.join("app.log"),
             runtime_dir,
-        })
+        }
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
@@ -72,6 +101,23 @@ impl AppPaths {
         }
         Ok(())
     }
+}
+
+fn absolute_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn windows_project_dirs(roaming: &Path, local: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let project_path = Path::new("IntellectualClub").join("Intellectual Club");
+    let roaming_project = roaming.join(&project_path);
+    let local_project = local.join(project_path);
+    (
+        roaming_project.join("config"),
+        roaming_project.join("data"),
+        local_project.join("cache"),
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -434,53 +480,130 @@ pub fn random_secret(prefix: &str) -> String {
 }
 
 fn default_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
-    bundled_app_dir_from_executable(executable)
-        .or_else(|| legacy_app_dir_from_executable(executable))
+    default_app_dir_from_executable_for(executable, BundlePlatform::current())
 }
 
 fn bundled_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
-    let resources_dir = bundled_resources_dir_from_executable(executable)?;
-    existing_release_dir(resources_dir.join(APP_NAME))
+    bundled_app_dir_from_executable_for(executable, BundlePlatform::current())
 }
 
 fn bundled_postgres_dir_from_executable(executable: &Path) -> Option<PathBuf> {
-    let resources_dir = bundled_resources_dir_from_executable(executable)?;
-    existing_postgres_dir(resources_dir.join(BUNDLED_POSTGRES_DIR_NAME))
+    bundled_postgres_dir_from_executable_for(executable, BundlePlatform::current())
 }
 
-fn bundled_resources_dir_from_executable(executable: &Path) -> Option<PathBuf> {
-    let macos_dir = executable.parent()?;
-    if macos_dir.file_name()? != "MacOS" {
-        return None;
-    }
-
-    let contents_dir = macos_dir.parent()?;
-    if contents_dir.file_name()? != "Contents" {
-        return None;
-    }
-
-    Some(contents_dir.join("Resources"))
+fn default_app_dir_from_executable_for(
+    executable: &Path,
+    platform: BundlePlatform,
+) -> Option<PathBuf> {
+    bundled_app_dir_from_executable_for(executable, platform)
+        .or_else(|| legacy_app_dir_from_executable_for(executable, platform))
 }
 
-fn legacy_app_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+fn bundled_app_dir_from_executable_for(
+    executable: &Path,
+    platform: BundlePlatform,
+) -> Option<PathBuf> {
+    let resources_dir = bundled_resources_dir_from_executable_for(executable, platform)?;
+    existing_release_dir_for(resources_dir.join(APP_NAME), platform)
+}
+
+fn bundled_postgres_dir_from_executable_for(
+    executable: &Path,
+    platform: BundlePlatform,
+) -> Option<PathBuf> {
+    let resources_dir = bundled_resources_dir_from_executable_for(executable, platform)?;
+    existing_postgres_dir_for(resources_dir.join(BUNDLED_POSTGRES_DIR_NAME), platform)
+}
+
+fn bundled_resources_dir_from_executable_for(
+    executable: &Path,
+    platform: BundlePlatform,
+) -> Option<PathBuf> {
+    match platform {
+        BundlePlatform::Windows => Some(executable.parent()?.join("resources")),
+        BundlePlatform::Unix => {
+            let macos_dir = executable.parent()?;
+            if macos_dir.file_name()? != "MacOS" {
+                return None;
+            }
+
+            let contents_dir = macos_dir.parent()?;
+            if contents_dir.file_name()? != "Contents" {
+                return None;
+            }
+
+            Some(contents_dir.join("Resources"))
+        }
+    }
+}
+
+fn legacy_app_dir_from_executable_for(
+    executable: &Path,
+    platform: BundlePlatform,
+) -> Option<PathBuf> {
     let bin_dir = executable.parent()?;
     let build_dir = bin_dir.parent()?;
-    existing_release_dir(build_dir.join(APP_NAME))
+    existing_release_dir_for(build_dir.join(APP_NAME), platform)
 }
 
-fn existing_release_dir(path: PathBuf) -> Option<PathBuf> {
-    if path.join("bin").join(APP_NAME).is_file() {
+fn release_command_name(platform: BundlePlatform) -> &'static str {
+    match platform {
+        BundlePlatform::Unix => APP_NAME,
+        BundlePlatform::Windows => "intellectual_club.bat",
+    }
+}
+
+fn create_admin_command_name(platform: BundlePlatform) -> &'static str {
+    match platform {
+        BundlePlatform::Unix => "create-admin",
+        BundlePlatform::Windows => "create-admin.bat",
+    }
+}
+
+pub(crate) fn release_command_path(app_dir: &Path) -> PathBuf {
+    app_dir
+        .join("bin")
+        .join(release_command_name(BundlePlatform::current()))
+}
+
+pub(crate) fn create_admin_command_path(app_dir: &Path) -> PathBuf {
+    app_dir
+        .join("bin")
+        .join(create_admin_command_name(BundlePlatform::current()))
+}
+
+fn existing_release_dir_for(path: PathBuf, platform: BundlePlatform) -> Option<PathBuf> {
+    if path
+        .join("bin")
+        .join(release_command_name(platform))
+        .is_file()
+    {
         Some(path)
     } else {
         None
     }
 }
 
-fn existing_postgres_dir(path: PathBuf) -> Option<PathBuf> {
-    if path.join("bin").join("postgres").is_file()
-        && path.join("bin").join("initdb").is_file()
-        && path.join("lib").join("libpq.5.dylib").is_file()
-    {
+fn existing_postgres_dir_for(path: PathBuf, platform: BundlePlatform) -> Option<PathBuf> {
+    let required_files: &[&[&str]] = match platform {
+        BundlePlatform::Unix => &[
+            &["bin", "postgres"],
+            &["bin", "initdb"],
+            &["lib", "libpq.5.dylib"],
+        ],
+        BundlePlatform::Windows => &[
+            &["bin", "postgres.exe"],
+            &["bin", "initdb.exe"],
+            &["bin", "libpq.dll"],
+        ],
+    };
+
+    if required_files.iter().all(|segments| {
+        segments
+            .iter()
+            .fold(path.clone(), |current, segment| current.join(segment))
+            .is_file()
+    }) {
         Some(path)
     } else {
         None
@@ -496,12 +619,12 @@ fn select_app_dir_with_discovery(
     explicit.or(bundled).or(configured).or(fallback)
 }
 
-fn restrict_file_permissions(path: &Path) -> Result<()> {
+fn restrict_file_permissions(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to chmod 0600 {}", path.display()))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to chmod 0600 {}", _path.display()))?;
     }
     Ok(())
 }
@@ -509,6 +632,26 @@ fn restrict_file_permissions(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_environment_roots_preserve_the_project_layout() {
+        let roaming = Path::new(r"C:\isolated-profile\AppData\Roaming");
+        let local = Path::new(r"C:\isolated-profile\AppData\Local");
+        let (config_dir, data_dir, cache_dir) = windows_project_dirs(roaming, local);
+
+        assert_eq!(
+            config_dir,
+            roaming.join(r"IntellectualClub\Intellectual Club\config")
+        );
+        assert_eq!(
+            data_dir,
+            roaming.join(r"IntellectualClub\Intellectual Club\data")
+        );
+        assert_eq!(
+            cache_dir,
+            local.join(r"IntellectualClub\Intellectual Club\cache")
+        );
+    }
 
     #[test]
     fn bundled_release_is_discovered_from_macos_executable() {
@@ -526,10 +669,13 @@ mod tests {
         create_release(&release);
 
         assert_eq!(
-            bundled_app_dir_from_executable(&executable),
+            bundled_app_dir_from_executable_for(&executable, BundlePlatform::Unix),
             Some(release.clone())
         );
-        assert_eq!(default_app_dir_from_executable(&executable), Some(release));
+        assert_eq!(
+            default_app_dir_from_executable_for(&executable, BundlePlatform::Unix),
+            Some(release)
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -554,8 +700,56 @@ mod tests {
         fs::write(postgres.join("lib").join("libpq.5.dylib"), "libpq").unwrap();
 
         assert_eq!(
-            bundled_postgres_dir_from_executable(&executable),
+            bundled_postgres_dir_from_executable_for(&executable, BundlePlatform::Unix),
             Some(postgres)
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_release_is_discovered_next_to_windows_executable() {
+        let root = unique_temp_dir("bundled-windows-app-dir-кириллица");
+        let executable = root
+            .join("Intellectual Club")
+            .join("intellectual-club-launcher.exe");
+        let release = root
+            .join("Intellectual Club")
+            .join("resources")
+            .join(APP_NAME);
+        create_release_for(&release, BundlePlatform::Windows);
+
+        assert_eq!(
+            bundled_app_dir_from_executable_for(&executable, BundlePlatform::Windows),
+            Some(release.clone())
+        );
+        assert_eq!(
+            default_app_dir_from_executable_for(&executable, BundlePlatform::Windows),
+            Some(release)
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_postgres_is_discovered_next_to_windows_executable() {
+        let root = unique_temp_dir("bundled-windows-postgres-dir");
+        let executable = root.join("intellectual-club-launcher.exe");
+        let postgres = root.join("resources").join(BUNDLED_POSTGRES_DIR_NAME);
+        fs::create_dir_all(postgres.join("bin")).unwrap();
+        fs::write(postgres.join("bin").join("postgres.exe"), "postgres").unwrap();
+        fs::write(postgres.join("bin").join("initdb.exe"), "initdb").unwrap();
+        fs::write(postgres.join("bin").join("libpq.dll"), "libpq").unwrap();
+
+        assert_eq!(
+            bundled_postgres_dir_from_executable_for(&executable, BundlePlatform::Windows),
+            Some(postgres.clone())
+        );
+
+        fs::remove_file(postgres.join("bin").join("libpq.dll")).unwrap();
+        assert_eq!(
+            bundled_postgres_dir_from_executable_for(&executable, BundlePlatform::Windows),
+            None
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -568,7 +762,10 @@ mod tests {
         let release = root.join(APP_NAME);
         create_release(&release);
 
-        assert_eq!(default_app_dir_from_executable(&executable), Some(release));
+        assert_eq!(
+            default_app_dir_from_executable_for(&executable, BundlePlatform::Unix),
+            Some(release)
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -604,10 +801,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn platform_command_names_use_windows_extensions() {
+        assert_eq!(
+            release_command_name(BundlePlatform::Windows),
+            "intellectual_club.bat"
+        );
+        assert_eq!(
+            create_admin_command_name(BundlePlatform::Windows),
+            "create-admin.bat"
+        );
+        assert_eq!(release_command_name(BundlePlatform::Unix), APP_NAME);
+        assert_eq!(
+            create_admin_command_name(BundlePlatform::Unix),
+            "create-admin"
+        );
+    }
+
     fn create_release(path: &Path) {
+        create_release_for(path, BundlePlatform::Unix);
+    }
+
+    fn create_release_for(path: &Path, platform: BundlePlatform) {
         let bin_dir = path.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join(APP_NAME), "release").unwrap();
+        fs::write(bin_dir.join(release_command_name(platform)), "release").unwrap();
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {

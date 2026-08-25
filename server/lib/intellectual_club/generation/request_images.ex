@@ -595,11 +595,8 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   defp resize_image_payload(payload, mime_type) do
     try do
-      with {:ok, suffix} <- image_suffix(mime_type),
-           {:ok, image} <- Image.from_binary(payload),
-           {:ok, resized_image} <- Image.thumbnail(image, @max_edge_px, resize: :down),
-           {:ok, resized_payload} when is_binary(resized_payload) <-
-             Image.write(resized_image, :memory, suffix: suffix),
+      with {:ok, resized_payload, _backend_mime_type} <-
+             IntellectualClub.ImageProcessor.resize_down(payload, mime_type, @max_edge_px),
            {resized_mime_type, width, height, _variant}
            when is_integer(width) and is_integer(height) <- ExImageInfo.info(resized_payload),
            true <- max(width, height) <= @max_edge_px do

@@ -261,9 +261,8 @@
     <% else %>
       <meta name="theme-color" content="#ffffff" />
     <% end %>
-    <.live_title default="Intellectual Club">
-      {assigns[:page_title]}
-    </.live_title>
+
+    <.live_title default="Intellectual Club">{assigns[:page_title]}</.live_title>
     <link rel="icon" type="image/png" sizes="128x128" href={~p"/favicon.png"} />
     <link phx-track-static rel="stylesheet" href={tracked_asset_path(~p"/assets/css/app.css")} />
     <%= if assigns[:spa] do %>
@@ -273,6 +272,7 @@
         href={tracked_asset_path(~p"/assets/css/spa.css")}
       />
     <% end %>
+
     <%= unless assigns[:spa] do %>
       <script
         defer
@@ -282,6 +282,7 @@
       >
       </script>
     <% end %>
+
     <%= if assigns[:spa] do %>
       <script phx-no-curly-interpolation>
         (() => {
@@ -608,6 +609,7 @@
           dispatch();
         })();
       </script>
+
       <script
         phx-track-static
         type="module"
@@ -616,6 +618,7 @@
       </script>
     <% end %>
   </head>
+
   <body class={unless assigns[:spa], do: "min-h-screen bg-zinc-50 text-zinc-900 antialiased"}>
     {@inner_content}
   </body>

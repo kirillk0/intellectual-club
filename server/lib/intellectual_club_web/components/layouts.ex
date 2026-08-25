@@ -95,6 +95,7 @@ defmodule IntellectualClubWeb.Layouts do
                 >
                   {@current_scope.user.username}
                 </div>
+
                 <.link
                   :if={@current_scope && @current_scope.user}
                   href={~p"/sign-out"}
@@ -113,9 +114,7 @@ defmodule IntellectualClubWeb.Layouts do
             </nav>
           </details>
 
-          <div :if={@header != []} class="min-w-0 flex-1">
-            {render_slot(@header)}
-          </div>
+          <div :if={@header != []} class="min-w-0 flex-1">{render_slot(@header)}</div>
 
           <div
             :if={@header_actions != []}
@@ -135,7 +134,6 @@ defmodule IntellectualClubWeb.Layouts do
       ]}>
         {render_slot(@inner_block)}
       </main>
-
       <.flash_group flash={@flash} />
     </div>
     """
@@ -155,7 +153,6 @@ defmodule IntellectualClubWeb.Layouts do
     ~H"""
     <div id={@id} aria-live="polite">
       <.flash kind={:error} flash={@flash} />
-
       <.flash
         id="client-error"
         kind={:error}

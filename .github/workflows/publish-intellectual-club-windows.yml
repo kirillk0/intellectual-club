@@ -1,0 +1,202 @@
+name: Publish Intellectual Club Windows
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-intellectual-club-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_timestamp: ${{ steps.release.outputs.release_timestamp }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Generate deterministic release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit_sha="$(git rev-parse HEAD)"
+          short_sha="${commit_sha:0:12}"
+          commit_epoch="$(git show -s --format=%ct "${commit_sha}")"
+          release_timestamp="$(date -u --date="@${commit_epoch}" '+%Y%m%dT%H%M%SZ')"
+          release_id="${release_timestamp}-${short_sha}"
+          release_tag="intellectual-club-windows-${release_id}"
+
+          {
+            echo "commit_sha=${commit_sha}"
+            echo "release_id=${release_id}"
+            echo "release_tag=${release_tag}"
+            echo "release_timestamp=${release_timestamp}"
+            echo "short_sha=${short_sha}"
+          } >>"${GITHUB_OUTPUT}"
+
+  build:
+    name: Build and smoke test Windows x64
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: 29.0
+          elixir-version: 1.20.2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native_tools -> target
+          key: intellectual-club-windows-x64-static-crt
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+            build/windows/dependencies/rustler-precompiled-cache
+          key: windows-x64-elixir-1.20.2-otp-29.0-${{ hashFiles('server/mix.lock') }}
+          restore-keys: |
+            windows-x64-elixir-1.20.2-otp-29.0-
+
+      - name: Test packaging contract
+        shell: pwsh
+        run: ./bin/tests/build-windows-release-test.ps1
+
+      - name: Build, test, validate, and package
+        shell: pwsh
+        env:
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          ./bin/build-windows-release.ps1 `
+            -ReleaseId $env:RELEASE_ID `
+            -OutputDirectory "dist\windows\$env:RELEASE_ID"
+
+      - name: Upload four release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: intellectual-club-windows-${{ needs.prepare.outputs.release_id }}
+          path: dist/windows/${{ needs.prepare.outputs.release_id }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: intellectual-club-windows-${{ needs.prepare.outputs.release_id }}
+          path: dist
+
+      - name: Validate and publish exactly four assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TIMESTAMP: ${{ needs.prepare.outputs.release_timestamp }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+
+          expected=(
+            "outlet-shell-desktop-${RELEASE_ID}-windows-x64.exe"
+            "openai-oauth-${RELEASE_ID}-windows-x64.exe"
+            "intellectual-club-${RELEASE_ID}-windows-x64.zip"
+            "SHA256SUMS.txt"
+          )
+          mapfile -t actual < <(find dist -maxdepth 1 -type f -printf '%f\n' | sort)
+          mapfile -t sorted_expected < <(printf '%s\n' "${expected[@]}" | sort)
+          if [ "$(printf '%s\n' "${actual[@]}")" != "$(printf '%s\n' "${sorted_expected[@]}")" ]; then
+            echo "Expected exactly four Windows release assets" >&2
+            printf '  expected: %s\n' "${sorted_expected[@]}" >&2
+            printf '  actual:   %s\n' "${actual[@]}" >&2
+            exit 1
+          fi
+
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+
+          tagged_sha="$(gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null)" || tagged_sha=""
+          if [ -n "${tagged_sha}" ] && [ "${tagged_sha}" != "${COMMIT_SHA}" ]; then
+            echo "Tag ${RELEASE_TAG} points to ${tagged_sha}, expected ${COMMIT_SHA}" >&2
+            exit 1
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            mapfile -t existing < <(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name')
+            for asset in "${existing[@]}"; do
+              keep=false
+              for expected_asset in "${expected[@]}"; do
+                if [ "${asset}" = "${expected_asset}" ]; then keep=true; break; fi
+              done
+              if [ "${keep}" = false ]; then
+                gh release delete-asset "${RELEASE_TAG}" "${asset}" --yes
+              fi
+            done
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+            gh release edit "${RELEASE_TAG}" --draft=false
+          else
+            tag_flag=(--target "${COMMIT_SHA}")
+            if [ -n "${tagged_sha}" ]; then tag_flag=(--verify-tag); fi
+            gh release create "${RELEASE_TAG}" dist/* \
+              "${tag_flag[@]}" \
+              --title "Intellectual Club Windows ${RELEASE_TIMESTAMP} (${SHORT_SHA})" \
+              --notes "Unsigned portable Windows 11 x64 build from commit ${COMMIT_SHA}. Verify downloads with SHA256SUMS.txt."
+          fi

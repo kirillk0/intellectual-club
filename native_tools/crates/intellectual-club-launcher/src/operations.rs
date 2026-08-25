@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{SecondsFormat, Utc};
+#[cfg(any(windows, test))]
+use postgresql_commands::initdb::InitDbBuilder;
 use postgresql_commands::pg_dump::PgDumpBuilder;
 use postgresql_commands::pg_restore::PgRestoreBuilder;
 use postgresql_commands::psql::PsqlBuilder;
@@ -19,8 +21,8 @@ use tracing::{info, warn};
 
 use crate::cli::LogSource;
 use crate::config::{
-    bundled_postgres_dir, resolve_app_dir, AppPaths, LauncherConfig, APP_NAME, CONFIG_VERSION,
-    PG_VERSION,
+    bundled_postgres_dir, create_admin_command_path, release_command_path, resolve_app_dir,
+    AppPaths, LauncherConfig, CONFIG_VERSION, PG_VERSION,
 };
 use crate::fs_utils::{
     append_log_line, atomic_write, copy_dir_all, is_empty_dir, open_log_file, open_path, open_url,
@@ -29,6 +31,19 @@ use crate::fs_utils::{
 use crate::status::{PathsPayload, RuntimeStatus, ServiceState, ServiceStatus, StatusPayload};
 
 const LOCAL_RESPONSES_HTTP_POOL_SIZE: &str = "500";
+
+#[cfg(windows)]
+const POSTGRES_SERVER_FILE: &str = "postgres.exe";
+#[cfg(not(windows))]
+const POSTGRES_SERVER_FILE: &str = "postgres";
+#[cfg(windows)]
+const INITDB_FILE: &str = "initdb.exe";
+#[cfg(not(windows))]
+const INITDB_FILE: &str = "initdb";
+#[cfg(windows)]
+const LIBPQ_SEGMENTS: &[&str] = &["bin", "libpq.dll"];
+#[cfg(not(windows))]
+const LIBPQ_SEGMENTS: &[&str] = &["lib", "libpq.5.dylib"];
 
 #[derive(Clone, Copy, Debug)]
 enum AppRequest {
@@ -105,6 +120,16 @@ fn configure_daemon_process(cmd: &mut std::process::Command) {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+}
+
+fn configure_background_release_process(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     }
 }
 
@@ -321,7 +346,7 @@ pub async fn create_admin_with_credentials(
 
 fn create_admin_release_command(config: &LauncherConfig, database_url: &str) -> Result<Command> {
     let app_dir = resolve_app_dir(config)?;
-    let command_path = app_dir.join("bin").join("create-admin");
+    let command_path = create_admin_command_path(&app_dir);
     if !command_path.exists() {
         bail!(
             "create-admin release command not found: {}",
@@ -339,6 +364,7 @@ fn create_admin_release_command(config: &LauncherConfig, database_url: &str) -> 
         .env("RESPONSES_HTTP_POOL_SIZE", LOCAL_RESPONSES_HTTP_POOL_SIZE)
         .env("SECRET_KEY_BASE", &config.secret_key_base)
         .env("TOKEN_SIGNING_SECRET", &config.token_signing_secret);
+    configure_background_release_process(&mut command);
     Ok(command)
 }
 
@@ -677,7 +703,7 @@ async fn run_daemon(
     mut pg: PostgreSQL,
     database_url: String,
 ) -> Result<()> {
-    pg.setup()
+    setup_postgres(&mut pg)
         .await
         .context("failed to setup embedded postgres")?;
     pg.start()
@@ -715,7 +741,7 @@ async fn run_daemon(
     )?;
 
     let exit_result = daemon_loop(paths, config, &database_url, &mut app).await;
-    let app_stop = stop_app_child(&mut app).await;
+    let app_stop = stop_release_app(config, &mut app).await;
     let pg_stop = pg.stop().await.map_err(|error| anyhow!(error.to_string()));
     remove_file_if_exists(&paths.status_path)?;
     remove_file_if_exists(&paths.stop_request_path)?;
@@ -773,9 +799,9 @@ async fn handle_app_request(
 
     match request.trim() {
         "start" => start_daemon_app(paths, config, database_url, app).await,
-        "stop" => stop_daemon_app(paths, app).await,
+        "stop" => stop_daemon_app(paths, config, app).await,
         "restart" => {
-            stop_daemon_app(paths, app).await?;
+            stop_daemon_app(paths, config, app).await?;
             start_daemon_app(paths, config, database_url, app).await
         }
         value => {
@@ -826,10 +852,14 @@ async fn start_daemon_app(
     Ok(())
 }
 
-async fn stop_daemon_app(paths: &AppPaths, app: &mut Option<Child>) -> Result<()> {
+async fn stop_daemon_app(
+    paths: &AppPaths,
+    config: &LauncherConfig,
+    app: &mut Option<Child>,
+) -> Result<()> {
     let app_pid = app.as_ref().and_then(|child| child.id());
     write_status_app(&paths.status_path, app_pid, "app_stopping", None).ok();
-    stop_app_child(app).await?;
+    stop_release_app(config, app).await?;
     write_status_app(&paths.status_path, None, "app_stopped", None)?;
     append_log_line(
         &paths.launcher_log_path,
@@ -852,7 +882,7 @@ fn poll_app_exit(app: &mut Option<Child>) -> Result<Option<std::process::ExitSta
 
 async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path) -> Result<Child> {
     let app_dir = resolve_app_dir(config)?;
-    let bin_path = app_dir.join("bin").join(APP_NAME);
+    let bin_path = release_command_path(&app_dir);
     if !bin_path.exists() {
         bail!("Phoenix release binary not found: {}", bin_path.display());
     }
@@ -867,6 +897,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
     cmd.arg("start")
         .current_dir(&app_dir)
         .env("PHX_SERVER", "true")
+        .env("PHX_IP", "127.0.0.1")
         .env("DATABASE_URL", database_url)
         .env("FILE_STORAGE_PATH", &config.files_data_dir)
         .env("PORT", config.app_port.to_string())
@@ -880,6 +911,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
+    configure_background_release_process(&mut cmd);
 
     cmd.spawn().context("failed to start Phoenix release")
 }
@@ -893,14 +925,18 @@ pub fn postgres_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result
 fn postgres_settings_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result<Settings> {
     let mut settings = Settings::default();
     settings.version = postgresql_embedded::VersionReq::parse(PG_VERSION)?;
-    if let Some(installation_dir) = bundled_postgres_dir() {
-        settings.installation_dir = installation_dir;
+    let (installation_dir, trust_installation_dir) =
+        if let Some(installation_dir) = bundled_postgres_dir() {
+            (installation_dir, true)
+        } else {
+            (paths.installations_dir.clone(), false)
+        };
+    settings.installation_dir = postgres_runtime_directory(&installation_dir)?;
+    if trust_installation_dir {
         settings.trust_installation_dir = true;
-    } else {
-        settings.installation_dir = paths.installations_dir.clone();
     }
-    settings.data_dir = config.postgres_data_dir.clone();
-    settings.password_file = paths.runtime_dir.join("pgpass");
+    settings.data_dir = postgres_runtime_directory(&config.postgres_data_dir)?;
+    settings.password_file = postgres_runtime_directory(&paths.runtime_dir)?.join("pgpass");
     settings.host = "127.0.0.1".to_string();
     settings.port = config.postgres_port;
     settings.username = config.postgres_user.clone();
@@ -909,11 +945,62 @@ fn postgres_settings_from_config(paths: &AppPaths, config: &LauncherConfig) -> R
     settings.timeout = Some(Duration::from_secs(120));
     settings
         .configuration
-        .insert("listen_addresses".to_string(), "'127.0.0.1'".to_string());
+        .insert("listen_addresses".to_string(), "127.0.0.1".to_string());
     settings
         .configuration
         .insert("max_connections".to_string(), "100".to_string());
     Ok(settings)
+}
+
+#[cfg(windows)]
+fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::iter;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    fs::create_dir_all(path).with_context(|| {
+        format!(
+            "failed to create PostgreSQL data directory {}",
+            path.display()
+        )
+    })?;
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let required = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if required == 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "failed to resolve the Windows short path for PostgreSQL data directory {}",
+                path.display()
+            )
+        });
+    }
+
+    let mut buffer = vec![0_u16; required as usize];
+    let written =
+        unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) };
+    if written == 0 || written as usize >= buffer.len() {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "failed to resolve the Windows short path for PostgreSQL data directory {}",
+                path.display()
+            )
+        });
+    }
+
+    buffer.truncate(written as usize);
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+#[cfg(not(windows))]
+fn postgres_runtime_directory(path: &Path) -> Result<PathBuf> {
+    Ok(path.to_path_buf())
 }
 
 struct AdminPostgres {
@@ -956,11 +1043,11 @@ async fn ensure_postgres_for_admin(
     config: &LauncherConfig,
 ) -> Result<AdminPostgres> {
     let mut pg = postgres_from_config(paths, config)?;
-    if let Err(error) = pg.setup().await {
+    if let Err(error) = setup_postgres(&mut pg).await {
         if pg.status() == PostgresStatus::Started {
             std::mem::forget(pg);
         }
-        return Err(anyhow!(error.to_string())).context("failed to setup embedded postgres");
+        return Err(error).context("failed to setup embedded postgres");
     }
     let started_here = pg.status() != PostgresStatus::Started;
     if pg.status() != PostgresStatus::Started {
@@ -970,6 +1057,56 @@ async fn ensure_postgres_for_admin(
         postgres: Some(pg),
         started_here,
     })
+}
+
+async fn setup_postgres(postgres: &mut PostgreSQL) -> Result<()> {
+    prepare_postgres_cluster(postgres.settings()).await?;
+    postgres
+        .setup()
+        .await
+        .map_err(|error| anyhow!(error.to_string()))
+}
+
+#[cfg(windows)]
+async fn prepare_postgres_cluster(settings: &Settings) -> Result<()> {
+    if !settings.trust_installation_dir || settings.data_dir.join("postgresql.conf").is_file() {
+        return Ok(());
+    }
+
+    if let Some(parent) = settings.password_file.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&settings.password_file, settings.password.as_bytes()).with_context(|| {
+        format!(
+            "failed to write PostgreSQL password file {}",
+            settings.password_file.display()
+        )
+    })?;
+
+    let mut command = windows_initdb_command(settings);
+    execute_pg_command(&mut command, settings.timeout)
+        .await
+        .context("failed to initialize PostgreSQL with the ICU locale")
+}
+
+#[cfg(not(windows))]
+async fn prepare_postgres_cluster(_settings: &Settings) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn windows_initdb_command(settings: &Settings) -> Command {
+    InitDbBuilder::from(settings)
+        .pgdata(&settings.data_dir)
+        .username("postgres")
+        .auth("password")
+        .pwfile(&settings.password_file)
+        .encoding("UTF8")
+        .locale("C")
+        .locale_provider("icu")
+        .icu_locale("en-US")
+        .build_tokio()
 }
 
 async fn ensure_database(pg: &PostgreSQL, config: &LauncherConfig) -> Result<()> {
@@ -1233,19 +1370,19 @@ pub async fn build_status_payload(paths: &AppPaths, config: &LauncherConfig) -> 
 
 fn postgres_installation_ready(settings: &Settings) -> bool {
     let binary_dir = settings.binary_dir();
-    binary_dir.join("postgres").is_file()
-        && binary_dir.join("initdb").is_file()
-        && settings
-            .installation_dir
-            .join("lib")
-            .join("libpq.5.dylib")
+    binary_dir.join(POSTGRES_SERVER_FILE).is_file()
+        && binary_dir.join(INITDB_FILE).is_file()
+        && LIBPQ_SEGMENTS
+            .iter()
+            .fold(settings.installation_dir.clone(), |path, segment| {
+                path.join(segment)
+            })
             .is_file()
 }
 
 pub fn paths_payload(paths: &AppPaths, config: &LauncherConfig) -> PathsPayload {
-    let postgres_installation_dir = postgres_settings_from_config(paths, config)
-        .map(|settings| settings.installation_dir)
-        .unwrap_or_else(|_| paths.installations_dir.clone());
+    let postgres_installation_dir =
+        bundled_postgres_dir().unwrap_or_else(|| paths.installations_dir.clone());
     PathsPayload {
         config_path: paths.config_path.clone(),
         postgres_data_dir: config.postgres_data_dir.clone(),
@@ -1354,10 +1491,85 @@ async fn stop_app_child(app: &mut Option<Child>) -> Result<()> {
     Ok(())
 }
 
+async fn stop_release_app(config: &LauncherConfig, app: &mut Option<Child>) -> Result<()> {
+    #[cfg(not(windows))]
+    let _ = config;
+
+    let Some(child) = app.as_mut() else {
+        return Ok(());
+    };
+    if child.try_wait()?.is_some() {
+        *app = None;
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        if let Err(error) = request_windows_release_stop(config).await {
+            warn!("graceful Windows release stop failed: {error:#}");
+        } else {
+            let stopped = tokio::time::timeout(Duration::from_secs(15), child.wait())
+                .await
+                .is_ok();
+            if stopped {
+                *app = None;
+                return Ok(());
+            }
+            warn!("Windows release did not exit after its stop command; killing its process tree");
+        }
+    }
+
+    stop_app_child(app).await
+}
+
+#[cfg(windows)]
+async fn request_windows_release_stop(config: &LauncherConfig) -> Result<()> {
+    let app_dir = resolve_app_dir(config)?;
+    let bin_path = release_command_path(&app_dir);
+    let mut command = Command::new(&bin_path);
+    command
+        .arg("stop")
+        .current_dir(&app_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_background_release_process(&mut command);
+
+    let status = tokio::time::timeout(Duration::from_secs(15), command.status())
+        .await
+        .context("timed out while stopping the Windows BEAM release")?
+        .with_context(|| format!("failed to execute {} stop", bin_path.display()))?;
+    if !status.success() {
+        bail!("{} stop exited with status {status}", bin_path.display());
+    }
+    Ok(())
+}
+
 async fn stop_child(child: &mut Child) -> Result<()> {
     if child.try_wait()?.is_some() {
         return Ok(());
     }
+
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let taskkill = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if let Err(error) = taskkill {
+            warn!("failed to invoke taskkill for application process tree {pid}: {error}");
+        }
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
     child.start_kill().context("failed to stop app process")?;
     let _ = child.wait().await;
     Ok(())
@@ -1372,9 +1584,24 @@ pub fn process_alive(pid: u32) -> bool {
             .flatten();
         process_alive_from_kill_result(result, errno)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        pid > 0
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+
+        let mut exit_code = 0u32;
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        unsafe {
+            CloseHandle(handle);
+        }
+        queried && exit_code == STILL_ACTIVE as u32
     }
 }
 
@@ -1428,6 +1655,25 @@ mod tests {
         assert!(!process_alive_from_kill_result(-1, Some(libc::ESRCH)));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn process_probe_tracks_windows_process_lifecycle() {
+        let mut child = std::process::Command::new("ping.exe")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        assert!(process_alive(pid));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!process_alive(pid));
+        assert!(!process_alive(u32::MAX));
+    }
+
     #[test]
     fn files_backup_path_replaces_dump_extension() {
         assert_eq!(
@@ -1451,11 +1697,62 @@ mod tests {
         assert!(!postgres_installation_ready(&settings));
 
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::create_dir_all(root.join("lib")).unwrap();
-        fs::write(root.join("bin").join("postgres"), b"postgres").unwrap();
-        fs::write(root.join("bin").join("initdb"), b"initdb").unwrap();
-        fs::write(root.join("lib").join("libpq.5.dylib"), b"libpq").unwrap();
+        let libpq_path = LIBPQ_SEGMENTS
+            .iter()
+            .fold(root.clone(), |path, segment| path.join(segment));
+        fs::create_dir_all(libpq_path.parent().unwrap()).unwrap();
+        fs::write(root.join("bin").join(POSTGRES_SERVER_FILE), b"postgres").unwrap();
+        fs::write(root.join("bin").join(INITDB_FILE), b"initdb").unwrap();
+        fs::write(libpq_path, b"libpq").unwrap();
         assert!(postgres_installation_ready(&settings));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_initdb_command_uses_utf8_and_icu() {
+        let mut settings = Settings::default();
+        settings.installation_dir = PathBuf::from(r"C:\portable\postgresql");
+        settings.data_dir = PathBuf::from(r"C:\profile with spaces\postgres\data");
+        settings.password_file = PathBuf::from(r"C:\profile with spaces\runtime\pgpass");
+
+        let command = windows_initdb_command(&settings);
+        let command = command.as_std();
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.get_program(), settings.binary_dir().join("initdb"));
+        assert!(args.windows(2).any(|pair| pair == ["--encoding", "UTF8"]));
+        assert!(args.windows(2).any(|pair| pair == ["--locale", "C"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--locale-provider", "icu"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--icu-locale", "en-US"]));
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--pgdata" && pair[1] == settings.data_dir.to_string_lossy()
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn postgres_runtime_directory_uses_an_ascii_alias_for_unicode_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "intellectual-club-launcher-кириллица-{}",
+            std::process::id()
+        ));
+        let data_dir = root.join("postgres").join("data");
+        let _ = fs::remove_dir_all(&root);
+
+        let runtime_dir = postgres_runtime_directory(&data_dir).unwrap();
+        assert!(runtime_dir.to_string_lossy().is_ascii());
+        assert_eq!(
+            fs::canonicalize(&runtime_dir).unwrap(),
+            fs::canonicalize(&data_dir).unwrap()
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1520,7 +1817,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin").join("create-admin"), b"#!/bin/sh\n").unwrap();
+        let create_admin_path = create_admin_command_path(&root);
+        fs::write(&create_admin_path, b"release command\n").unwrap();
 
         let config = LauncherConfig {
             version: CONFIG_VERSION,
@@ -1540,7 +1838,7 @@ mod tests {
 
         let command = create_admin_release_command(&config, database_url).unwrap();
         let command = command.as_std();
-        assert_eq!(command.get_program(), root.join("bin").join("create-admin"));
+        assert_eq!(command.get_program(), create_admin_path);
         assert_eq!(command.get_current_dir(), Some(root.as_path()));
         assert!(command.get_envs().any(|(key, value)| {
             key == "DATABASE_URL" && value == Some(std::ffi::OsStr::new(database_url))

@@ -38,6 +38,7 @@ config :intellectual_club, IntellectualClubWeb.Endpoint,
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
+  path: System.get_env("MIX_ESBUILD_PATH"),
   intellectual_club: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
@@ -48,6 +49,7 @@ config :esbuild,
 # Configure tailwind (the version is required)
 config :tailwind,
   version: "4.1.12",
+  path: System.get_env("MIX_TAILWIND_PATH"),
   intellectual_club: [
     args: ~w(
       --input=assets/css/app.css
@@ -77,6 +79,10 @@ config :intellectual_club, :openai_oauth,
   request_timeout_ms: 30_000,
   lock_timeout_ms: 15_000,
   lock_stale_after_ms: 60_000
+
+if match?({:win32, _name}, :os.type()) do
+  config :phoenix_live_view, :colocated_js, disable_symlink_warning: true
+end
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

@@ -72,6 +72,7 @@ defmodule IntellectualClubWeb.CoreComponents do
 
         <div class="min-w-0 flex-1">
           <p :if={@title} class="text-sm font-semibold">{@title}</p>
+
           <p class="text-sm leading-6 text-zinc-700">{msg}</p>
         </div>
 
@@ -124,15 +125,11 @@ defmodule IntellectualClubWeb.CoreComponents do
 
     if rest[:href] || rest[:navigate] || rest[:patch] do
       ~H"""
-      <.link class={@class} {@rest}>
-        {render_slot(@inner_block)}
-      </.link>
+      <.link class={@class} {@rest}>{render_slot(@inner_block)}</.link>
       """
     else
       ~H"""
-      <button class={@class} {@rest}>
-        {render_slot(@inner_block)}
-      </button>
+      <button class={@class} {@rest}>{render_slot(@inner_block)}</button>
       """
     end
   end
@@ -368,8 +365,7 @@ defmodule IntellectualClubWeb.CoreComponents do
   defp error(assigns) do
     ~H"""
     <p class="mt-1.5 flex items-center gap-2 text-sm text-red-600">
-      <.icon name="hero-exclamation-circle" class="size-5" />
-      {render_slot(@inner_block)}
+      <.icon name="hero-exclamation-circle" class="size-5" /> {render_slot(@inner_block)}
     </p>
     """
   end
@@ -388,13 +384,11 @@ defmodule IntellectualClubWeb.CoreComponents do
       "pb-4"
     ]}>
       <div>
-        <h1 class="text-lg font-semibold leading-7 tracking-tight">
-          {render_slot(@inner_block)}
-        </h1>
-        <p :if={@subtitle != []} class="text-sm text-zinc-600">
-          {render_slot(@subtitle)}
-        </p>
+        <h1 class="text-lg font-semibold leading-7 tracking-tight">{render_slot(@inner_block)}</h1>
+
+        <p :if={@subtitle != []} class="text-sm text-zinc-600">{render_slot(@subtitle)}</p>
       </div>
+
       <div class={["flex-none", @actions != [] && "w-full sm:w-auto"]}>{render_slot(@actions)}</div>
     </header>
     """
@@ -439,11 +433,13 @@ defmodule IntellectualClubWeb.CoreComponents do
             <th :for={col <- @col} scope="col" class="px-4 py-3 font-medium text-zinc-700">
               {col[:label]}
             </th>
+
             <th :if={@action != []} scope="col" class="px-4 py-3">
               <span class="sr-only">{gettext("Actions")}</span>
             </th>
           </tr>
         </thead>
+
         <tbody
           id={@id}
           phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}
@@ -457,6 +453,7 @@ defmodule IntellectualClubWeb.CoreComponents do
             >
               {render_slot(col, @row_item.(row))}
             </td>
+
             <td :if={@action != []} class="whitespace-nowrap px-4 py-3 text-right">
               <div class="flex items-center justify-end gap-2">
                 <%= for action <- @action do %>
@@ -490,6 +487,7 @@ defmodule IntellectualClubWeb.CoreComponents do
     <ul class="divide-y divide-zinc-200 rounded-lg border border-zinc-200 bg-white shadow-sm">
       <li :for={item <- @item} class="px-4 py-3">
         <div class="text-xs font-medium uppercase tracking-wide text-zinc-500">{item.title}</div>
+
         <div class="mt-1 text-sm text-zinc-800">{render_slot(item)}</div>
       </li>
     </ul>

@@ -39,10 +39,16 @@ fn main() -> eframe::Result<()> {
 
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        // Preserve the application bundle icon instead of replacing it with eframe's default.
-        viewport: egui::ViewportBuilder::default().with_icon(egui::IconData::default()),
+        viewport: egui::ViewportBuilder::default().with_icon(app_icon()),
         ..Default::default()
     }
+}
+
+fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../../frontend/src/assets/icon_outlet_full.png"
+    ))
+    .expect("embedded outlet icon must be a valid PNG")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -850,9 +856,10 @@ fn save_config(path: &PathBuf, config: &DesktopConfig) -> Result<()> {
     Ok(())
 }
 
-fn restrict_file_permissions(path: &PathBuf) -> Result<()> {
+fn restrict_file_permissions(_path: &PathBuf) -> Result<()> {
     #[cfg(unix)]
     {
+        let path = _path;
         use std::os::unix::fs::PermissionsExt;
         let permissions = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, permissions)
@@ -895,7 +902,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_options_preserve_the_bundle_icon() {
-        assert!(native_options().viewport.icon.is_some());
+    fn native_options_use_embedded_outlet_icon_pixels() {
+        let icon = native_options().viewport.icon.expect("window icon");
+        assert!(icon.width >= 256);
+        assert!(icon.height >= 256);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+        assert!(icon.rgba.iter().any(|byte| *byte != 0));
     }
 }

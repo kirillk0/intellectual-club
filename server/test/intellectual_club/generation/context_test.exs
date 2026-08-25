@@ -3609,12 +3609,12 @@ defmodule IntellectualClub.Generation.ContextTest do
   end
 
   defp canceled_turn_aborted_marker do
-    """
-    <turn_aborted>
-    The user interrupted the previous turn on purpose
-    </turn_aborted>
-    """
-    |> String.trim()
+    [
+      "<turn_aborted>",
+      "The user interrupted the previous turn on purpose",
+      "</turn_aborted>"
+    ]
+    |> Enum.join("\n")
   end
 
   defp error_turn_aborted_marker(error_text) do

@@ -1019,10 +1019,9 @@ impl eframe::App for LauncherGui {
 
 pub fn run_gui(paths: AppPaths, config: LauncherConfig) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        // Preserve the application bundle icon instead of replacing it with eframe's default.
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 720.0])
-            .with_icon(egui::IconData::default()),
+            .with_icon(app_icon()),
         run_and_return: false,
         ..Default::default()
     };
@@ -1034,6 +1033,13 @@ pub fn run_gui(paths: AppPaths, config: LauncherConfig) -> eframe::Result<()> {
             Ok(Box::new(LauncherGui::new(paths, config)))
         }),
     )
+}
+
+fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../../frontend/src/assets/icon_full_size.png"
+    ))
+    .expect("embedded launcher icon must be a valid PNG")
 }
 
 fn configure_style(ctx: &egui::Context) {
@@ -1177,7 +1183,16 @@ fn log_viewport_is_at_bottom(
 
 #[cfg(test)]
 mod tests {
-    use super::log_viewport_is_at_bottom;
+    use super::{app_icon, log_viewport_is_at_bottom};
+
+    #[test]
+    fn launcher_window_uses_embedded_icon_pixels() {
+        let icon = app_icon();
+        assert!(icon.width >= 256);
+        assert!(icon.height >= 256);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+        assert!(icon.rgba.iter().any(|byte| *byte != 0));
+    }
 
     #[test]
     fn log_viewport_only_follows_tail_at_the_bottom() {
