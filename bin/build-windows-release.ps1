@@ -143,12 +143,13 @@ function Invoke-VitestShard {
 
 function Add-LocalToolchainsToPath {
   $root = Join-Path $env:LOCALAPPDATA 'IntellectualClubDev\toolchains'
-  $paths = @(
+  $candidates = @(
     (Join-Path $root 'node-v24.16.0-win-x64'),
     (Join-Path $root 'elixir-1.20.2-otp-29\bin'),
     (Join-Path $root 'erl-29.0\bin'),
     (Join-Path $env:USERPROFILE '.cargo\bin')
-  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+  )
+  $paths = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
 
   if (Test-Path -LiteralPath (Join-Path $root 'erl-29.0')) {
     $env:ERLANG_HOME = Join-Path $root 'erl-29.0'
@@ -895,6 +896,49 @@ function Invoke-PackagingSelfTest {
   $root = Join-Path $parent "run-$PID-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $root | Out-Null
   try {
+    $previousLocalAppData = $env:LOCALAPPDATA
+    $previousUserProfile = $env:USERPROFILE
+    $previousPath = $env:Path
+    $previousErlangHome = $env:ERLANG_HOME
+    try {
+      foreach ($case in @(
+          @{ Name = 'none'; Directories = @(); Expected = @() },
+          @{ Name = 'one'; Directories = @('profile\.cargo\bin'); Expected = @('profile\.cargo\bin') },
+          @{
+            Name = 'multiple'
+            Directories = @('local\IntellectualClubDev\toolchains\node-v24.16.0-win-x64', 'profile\.cargo\bin')
+            Expected = @('local\IntellectualClubDev\toolchains\node-v24.16.0-win-x64', 'profile\.cargo\bin')
+          }
+        )) {
+        $caseRoot = Join-Path $root "toolchain-path-$($case.Name)"
+        $env:LOCALAPPDATA = Join-Path $caseRoot 'local'
+        $env:USERPROFILE = Join-Path $caseRoot 'profile'
+        foreach ($relative in $case.Directories) {
+          New-Item -ItemType Directory -Force -Path (Join-Path $caseRoot $relative) | Out-Null
+        }
+        $env:Path = 'existing-path'
+
+        Add-LocalToolchainsToPath
+
+        $expectedPaths = @($case.Expected | ForEach-Object { Join-Path $caseRoot $_ })
+        $expectedPath = if ($expectedPaths.Count -gt 0) {
+          ($expectedPaths -join ';') + ';existing-path'
+        }
+        else {
+          'existing-path'
+        }
+        if ($env:Path -ne $expectedPath) {
+          throw "Local toolchain path discovery failed for $($case.Name): expected '$expectedPath', found '$env:Path'"
+        }
+      }
+    }
+    finally {
+      $env:LOCALAPPDATA = $previousLocalAppData
+      $env:USERPROFILE = $previousUserProfile
+      $env:Path = $previousPath
+      $env:ERLANG_HOME = $previousErlangHome
+    }
+
     $sources = Join-Path $root 'sources'
     $beam = Join-Path $sources 'beam'
     $postgres = Join-Path $sources 'postgres'
