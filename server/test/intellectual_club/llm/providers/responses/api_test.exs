@@ -229,6 +229,143 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
            ]
   end
 
+  test "merges stream output with terminal output by item id when indexes diverge" do
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.output_item.added",
+             "output_index" => 2,
+             "item" => %{
+               "id" => "rs_1",
+               "type" => "reasoning",
+               "summary" => []
+             }
+           },
+           %{
+             "type" => "response.reasoning_summary_text.done",
+             "item_id" => "rs_1",
+             "output_index" => 2,
+             "summary_index" => 0,
+             "text" => "Checked the sources."
+           },
+           %{
+             "type" => "response.output_item.added",
+             "output_index" => 3,
+             "item" => %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "in_progress",
+               "content" => []
+             }
+           },
+           %{
+             "type" => "response.output_text.done",
+             "item_id" => "msg_1",
+             "output_index" => 3,
+             "content_index" => 0,
+             "text" => "I found the relevant documentation."
+           },
+           %{
+             "type" => "response.output_item.added",
+             "output_index" => 4,
+             "item" => %{
+               "id" => "fc_1",
+               "type" => "function_call",
+               "call_id" => "call_1",
+               "name" => "web__read_url",
+               "arguments" => ""
+             }
+           },
+           %{
+             "type" => "response.function_call_arguments.done",
+             "item_id" => "fc_1",
+             "output_index" => 4,
+             "arguments" => ~s({"url":"https://example.com"})
+           },
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp_shifted",
+               "object" => "response",
+               "model" => "gpt-4.1",
+               "status" => "completed",
+               "output" => [
+                 %{
+                   "id" => "rs_1",
+                   "type" => "reasoning",
+                   "summary" => []
+                 },
+                 %{
+                   "id" => "msg_1",
+                   "type" => "message",
+                   "role" => "assistant",
+                   "status" => "completed",
+                   "content" => []
+                 },
+                 %{
+                   "id" => "fc_1",
+                   "type" => "function_call",
+                   "call_id" => "call_1",
+                   "name" => "web__read_url",
+                   "arguments" => ~s({"url":"https://example.com"})
+                 }
+               ]
+             }
+           }
+         ])}
+      ]
+    }
+
+    {base_url, _agent} = start_scripted_server!(scripts)
+
+    events =
+      run_and_capture_events!(%{
+        base_url: base_url,
+        api_key: "test-key",
+        request_payload: %{"model" => "gpt-4.1", "input" => []},
+        timeout_ms: 1_000,
+        connect_timeout_ms: 1_000
+      })
+
+    meta =
+      Enum.find_value(events, fn
+        {:response_complete, meta} -> meta
+        _other -> nil
+      end)
+
+    assert meta.raw_response["output"] == [
+             %{
+               "id" => "rs_1",
+               "type" => "reasoning",
+               "summary" => [
+                 %{"type" => "summary_text", "text" => "Checked the sources."}
+               ]
+             },
+             %{
+               "id" => "msg_1",
+               "type" => "message",
+               "role" => "assistant",
+               "status" => "completed",
+               "content" => [
+                 %{
+                   "type" => "output_text",
+                   "text" => "I found the relevant documentation."
+                 }
+               ]
+             },
+             %{
+               "id" => "fc_1",
+               "type" => "function_call",
+               "call_id" => "call_1",
+               "name" => "web__read_url",
+               "arguments" => ~s({"url":"https://example.com"})
+             }
+           ]
+  end
+
   test "prefers assembled stream output when terminal response output is partial" do
     scripts = %{
       "/responses" => [

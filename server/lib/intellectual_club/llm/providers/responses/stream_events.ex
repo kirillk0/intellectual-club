@@ -685,56 +685,69 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
   end
 
   defp merge_completed_output(existing_output, state) when is_map(state) do
-    stream_items_by_index =
+    stream_item_entries =
       state
       |> assembled_output_item_entries()
-      |> Map.new()
 
-    existing_items_by_index =
+    existing_items =
       case existing_output do
         items when is_list(items) ->
-          items
-          |> Enum.with_index()
-          |> Map.new(fn {item, index} -> {index, item} end)
+          Enum.filter(items, &is_map/1)
 
         _other ->
-          %{}
+          []
       end
 
     updated_indexes = Map.get(state, :output_item_updates, MapSet.new())
 
-    max_index =
-      [
-        stream_items_by_index |> Map.keys() |> Enum.max(fn -> -1 end),
-        existing_items_by_index |> Map.keys() |> Enum.max(fn -> -1 end)
-      ]
-      |> Enum.max()
-
-    if max_index < 0 do
-      []
-    else
-      0..max_index
-      |> Enum.map(fn index ->
-        stream_item = Map.get(stream_items_by_index, index)
-        existing_item = Map.get(existing_items_by_index, index)
-
-        cond do
-          MapSet.member?(updated_indexes, index) and is_map(stream_item) ->
-            merge_output_item_preserving_accumulated(stream_item, existing_item)
-
-          is_map(existing_item) ->
-            Map.new(existing_item)
-
-          is_map(stream_item) ->
-            stream_item
-
-          true ->
-            nil
+    updated_stream_items_by_id =
+      stream_item_entries
+      |> Enum.filter(fn {index, _item} -> MapSet.member?(updated_indexes, index) end)
+      |> Enum.reduce(%{}, fn {_index, item}, acc ->
+        case output_item_id(item) do
+          nil -> acc
+          id -> Map.put(acc, id, item)
         end
       end)
-      |> Enum.filter(&is_map/1)
-    end
+
+    {merged_existing_items, seen_ids} =
+      Enum.map_reduce(existing_items, MapSet.new(), fn item, seen_ids ->
+        id = output_item_id(item)
+        stream_item = if is_binary(id), do: Map.get(updated_stream_items_by_id, id)
+
+        merged_item =
+          if is_map(stream_item) do
+            merge_output_item_preserving_accumulated(stream_item, item)
+          else
+            Map.new(item)
+          end
+
+        {merged_item, maybe_put_output_item_id(seen_ids, id)}
+      end)
+
+    {stream_only_items, _seen_ids} =
+      Enum.reduce(stream_item_entries, {[], seen_ids}, fn {_index, item}, {items, seen_ids} ->
+        case output_item_id(item) do
+          nil ->
+            {[item | items], seen_ids}
+
+          id ->
+            if MapSet.member?(seen_ids, id) do
+              {items, seen_ids}
+            else
+              {[item | items], MapSet.put(seen_ids, id)}
+            end
+        end
+      end)
+
+    merged_existing_items ++ Enum.reverse(stream_only_items)
   end
+
+  defp output_item_id(%{"id" => id}) when is_binary(id) and id != "", do: id
+  defp output_item_id(_item), do: nil
+
+  defp maybe_put_output_item_id(ids, id) when is_binary(id), do: MapSet.put(ids, id)
+  defp maybe_put_output_item_id(ids, _id), do: ids
 
   defp finalize_output_item(%{} = item, tool_calls) when is_map(tool_calls) do
     case {Map.get(item, "type"), Map.get(item, "id")} do
