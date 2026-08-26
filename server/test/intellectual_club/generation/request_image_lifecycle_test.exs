@@ -485,9 +485,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   end
 
   defp oversized_image_payload do
-    assert {:ok, image} = Image.new(2_100, 10)
-    assert {:ok, payload} = Image.write(image, :memory, suffix: ".png")
-    payload
+    IntellectualClub.ImageFixtures.png(2_100, 10)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)

@@ -15,8 +15,7 @@
   <div id="spa-bootstrap-shell" class="spa-bootstrap-shell">
     <header class="spa-bootstrap-header" aria-hidden="true">
       <span class="spa-bootstrap-brand">
-        <img src={~p"/favicon.png"} alt="" />
-        <span>Intellectual Club</span>
+        <img src={~p"/favicon.png"} alt="" /> <span>Intellectual Club</span>
       </span>
       <span class="spa-bootstrap-header-spacer"></span>
     </header>
@@ -36,6 +35,7 @@
         <span class="spa-bootstrap-status-dot" aria-hidden="true"></span>
         <span data-bootstrap-message>{gettext("Preparing the interface…")}</span>
       </div>
+
       <div
         class="spa-bootstrap-steps"
         role="progressbar"
@@ -47,17 +47,17 @@
         <span class="spa-bootstrap-step is-active" data-bootstrap-step="runtime">
           {gettext("Interface")}
         </span>
-        <span class="spa-bootstrap-step" data-bootstrap-step="route">
-          {gettext("Section")}
-        </span>
+        <span class="spa-bootstrap-step" data-bootstrap-step="route">{gettext("Section")}</span>
         <span class="spa-bootstrap-step" data-bootstrap-step="data">{gettext("Data")}</span>
       </div>
     </section>
 
     <main class="spa-bootstrap-main" aria-hidden="true">
       <aside class="spa-bootstrap-panel spa-bootstrap-sidebar"></aside>
+
       <section class="spa-bootstrap-panel spa-bootstrap-content">
         <div class="spa-bootstrap-toolbar"></div>
+
         <div class="spa-bootstrap-content-body"></div>
       </section>
     </main>

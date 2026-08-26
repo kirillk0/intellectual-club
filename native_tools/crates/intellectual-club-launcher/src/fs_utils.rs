@@ -75,6 +75,7 @@ fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
+    use std::time::Duration;
 
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
@@ -88,28 +89,65 @@ fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
         ) -> i32;
     }
 
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let target = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    fn verbatim_wide(path: &Path) -> std::io::Result<Vec<u16>> {
+        const BACKSLASH: u16 = b'\\' as u16;
+        const VERBATIM_PREFIX: &[u16] = &[BACKSLASH, BACKSLASH, b'?' as u16, BACKSLASH];
+        const UNC_PREFIX: &[u16] = &[
+            BACKSLASH,
+            BACKSLASH,
+            b'?' as u16,
+            BACKSLASH,
+            b'U' as u16,
+            b'N' as u16,
+            b'C' as u16,
+            BACKSLASH,
+        ];
+
+        let absolute = std::path::absolute(path)?;
+        let wide = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+        let mut result = if wide.starts_with(VERBATIM_PREFIX) {
+            wide
+        } else if wide.starts_with(&[BACKSLASH, BACKSLASH]) {
+            UNC_PREFIX
+                .iter()
+                .copied()
+                .chain(wide[2..].iter().copied())
+                .collect()
+        } else {
+            VERBATIM_PREFIX.iter().copied().chain(wide).collect()
+        };
+        result.push(0);
+        Ok(result)
     }
+
+    let source = verbatim_wide(source)?;
+    let target = verbatim_wide(target)?;
+    for attempt in 0..=250 {
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        let retryable = matches!(error.raw_os_error(), Some(5 | 32));
+        if !retryable || attempt == 250 {
+            return Err(error);
+        }
+
+        if attempt < 10 {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    unreachable!("bounded replacement loop always returns")
 }
 
 pub fn is_empty_dir(path: &Path) -> Result<bool> {
@@ -279,6 +317,8 @@ pub fn append_log_line(path: &Path, line: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStrExt;
     use std::thread;
 
     #[test]
@@ -304,13 +344,44 @@ mod tests {
         });
 
         for _ in 0..20_000 {
-            let contents = fs::read_to_string(&path).unwrap();
-            serde_json::from_str::<serde_json::Value>(&contents).unwrap();
+            match fs::read_to_string(&path) {
+                Ok(contents) => {
+                    serde_json::from_str::<serde_json::Value>(&contents).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    thread::yield_now();
+                }
+                Err(error) => panic!("failed to read {}: {error}", path.display()),
+            }
         }
         writer.join().unwrap();
 
         let entries = fs::read_dir(&root).unwrap().count();
         assert_eq!(entries, 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_supports_long_unicode_windows_paths() {
+        let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let mut root = std::env::temp_dir().join(format!(
+            "intellectual-club-long-unicode-{}-{sequence}",
+            std::process::id()
+        ));
+        for index in 0..10 {
+            root.push(format!("кириллический-каталог-{index:02}"));
+        }
+        let path = root.join("status.json");
+        assert!(path.as_os_str().encode_wide().count() > 260);
+
+        atomic_write(&path, br#"{"state":"starting"}"#).unwrap();
+        atomic_write(&path, br#"{"state":"running"}"#).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), br#"{"state":"running"}"#);
+
+        let _ = fs::remove_dir_all(std::env::temp_dir().join(format!(
+            "intellectual-club-long-unicode-{}-{sequence}",
+            std::process::id()
+        )));
     }
 }

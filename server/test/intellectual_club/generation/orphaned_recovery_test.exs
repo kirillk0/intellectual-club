@@ -2406,9 +2406,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   defp oversized_png_payload do
-    assert {:ok, image} = Image.new(3_000, 1_500)
-    assert {:ok, payload} = Image.write(image, :memory, suffix: ".png")
-    payload
+    IntellectualClub.ImageFixtures.png(3_000, 1_500)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)

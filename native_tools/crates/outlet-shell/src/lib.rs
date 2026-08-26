@@ -1031,7 +1031,6 @@ fn configure_process_isolation(command: &mut Command) {
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
@@ -1265,12 +1264,32 @@ mod tests {
     use super::*;
     use outlet_core::{BackgroundPool, BackgroundStatus};
 
+    #[cfg(unix)]
+    fn platform_test_argv(unix_script: &str, _windows_script: &str) -> Vec<String> {
+        vec!["sh".into(), "-c".into(), unix_script.into()]
+    }
+
+    #[cfg(windows)]
+    fn platform_test_argv(_unix_script: &str, windows_script: &str) -> Vec<String> {
+        vec![
+            "powershell.exe".into(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            windows_script.into(),
+        ]
+    }
+
     #[tokio::test]
     async fn run_command_executes_argv_without_shell_metadata() {
         let outlet = ShellOutlet::new();
         let result = outlet
             .run_command_from_value(json!({
-                "argv": ["sh", "-c", "printf direct"]
+                "argv": platform_test_argv(
+                    "printf direct",
+                    "[Console]::Out.Write('direct')"
+                )
             }))
             .await
             .unwrap();
@@ -1285,7 +1304,10 @@ mod tests {
         let outlet = ShellOutlet::new();
         let result = outlet
             .run_command_from_value(json!({
-                "argv": ["sh", "-c", "printf '\\377hello'"]
+                "argv": platform_test_argv(
+                    "printf '\\377hello'",
+                    "$s = [Console]::OpenStandardOutput(); $b = [byte[]](255, 104, 101, 108, 108, 111); $s.Write($b, 0, $b.Length)"
+                )
             }))
             .await
             .unwrap();
@@ -1302,7 +1324,7 @@ mod tests {
         let outlet = ShellOutlet::new();
         let result = outlet
             .run_command_from_value(json!({
-                "argv": ["sh", "-c", "sleep 3"],
+                "argv": platform_test_argv("sleep 3", "Start-Sleep -Seconds 3"),
                 "timeout_seconds": 1
             }))
             .await
@@ -1325,7 +1347,10 @@ mod tests {
         pool.start_background(
             "shell-progress",
             "run_command",
-            json!({"argv": ["sh", "-c", "printf first; sleep 0.1; printf second"]}),
+            json!({"argv": platform_test_argv(
+                "printf first; sleep 0.1; printf second",
+                "[Console]::Out.Write('first'); Start-Sleep -Milliseconds 100; [Console]::Out.Write('second')"
+            )}),
             None,
         )
         .await
@@ -1516,16 +1541,30 @@ mod tests {
         task_id: &str,
         expected: BackgroundStatus,
     ) -> ToolResult {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
             let result = pool.background_status(task_id, "0").await.unwrap();
             let status: BackgroundStatus =
                 serde_json::from_value(result.raw["status"].clone()).unwrap();
             if status == expected {
                 return result;
             }
+            if matches!(
+                status,
+                BackgroundStatus::Completed | BackgroundStatus::Failed | BackgroundStatus::Canceled
+            ) {
+                panic!(
+                    "shell background task reached {status:?} instead of {expected:?}: {}",
+                    result.raw
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "shell background task did not reach {expected:?} within 15 seconds; last status was {status:?}"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("shell background task did not reach {expected:?}");
     }
 
     #[cfg(unix)]

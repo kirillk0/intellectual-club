@@ -5,7 +5,7 @@ This directory contains native helper tools for Intellectual Club.
 The Rust workspace builds all native binaries together:
 
 - `openai-oauth` — OpenAI OAuth PKCE helper with token refresh support
-- `intellectual-club-launcher` — desktop/CLI launcher that runs embedded PostgreSQL and the Phoenix release
+- `intellectual-club-launcher` — launcher core; Windows builds separate GUI and CLI EXEs, while macOS keeps one combined executable
 - `outlet-core` — shared HTTP transport, pairing, file helpers, runner loop, and provider interfaces
 - `outlet-shell` — reusable shell outlet tools
 - `outlet-shell-daemon` — headless binary for containers and server environments
@@ -58,21 +58,79 @@ openai-oauth --refresh '<refresh_token>'
 `Intellectual Club.app` supports macOS 15 and newer. The native tools are built
 with a macOS 11 deployment target.
 
-## Desktop Shell Windows Releases
+## Windows Releases
 
-The `Publish Outlet Shell Desktop Windows` workflow publishes a Windows x64
-executable and SHA-256 checksums.
+Windows releases are built and tested on Windows 11 x64 with VS 2022 Build
+Tools (C++ and Windows SDK), Rust 1.92.0 MSVC, Erlang/OTP 29.0, Elixir 1.20.2,
+and Node.js 24.16.0. Install those tools, then run the same script used by CI:
 
-Every push to `main` that changes the desktop app, its local dependencies, the
-Cargo workspace manifests, or the release workflow builds and publishes a new
-release automatically. The tag combines the commit UTC timestamp and short SHA:
-
-```text
-outlet-shell-desktop-20260711T074742Z-45940cc0a1a8
+```powershell
+pwsh -NoProfile -File .\bin\build-windows-release.ps1
 ```
 
-Re-running the workflow for the same commit reuses the existing release without
-requiring a version or a manually created tag.
+The script downloads checksum-pinned PostgreSQL 16.13.0, libvips 8.18.2, and
+the Windows PDF NIF into `build\windows`; it does not install PostgreSQL or
+libvips system-wide. It runs frontend, Rust, and Elixir checks and tests before
+building the release. `-SkipTests` is available for an incremental packaging
+iteration after a successful full run. The packaging contract has a fast,
+standalone test:
+
+```powershell
+pwsh -NoProfile -File .\bin\tests\build-windows-release-test.ps1
+pwsh -NoProfile -File .\bin\tests\windows-launcher-subsystems-test.ps1
+```
+
+`Publish Intellectual Club Windows` runs on pull requests, pushes to `main`,
+and manual dispatches. Publishing is restricted to `main`. Its deterministic
+tag combines the commit UTC timestamp and short SHA:
+
+```text
+intellectual-club-windows-20260711T074742Z-45940cc0a1a8
+```
+
+Each published release contains exactly four assets:
+
+- `outlet-shell-desktop-<id>-windows-x64.exe` — standalone GUI outlet with an
+  embedded PE/window icon;
+- `openai-oauth-<id>-windows-x64.exe` — standalone console OAuth helper;
+- `intellectual-club-<id>-windows-x64.zip` — complete portable distribution;
+- `SHA256SUMS.txt` — SHA-256 for the three payloads above.
+
+The ZIP root is stable:
+
+```text
+intellectual-club-launcher.exe
+intellectual-club-launcher-cli.exe
+outlet-shell-desktop.exe
+openai-oauth.exe
+First Launch.txt
+resources/
+  intellectual_club/
+  postgresql/
+```
+
+The launcher discovers both bundled directories relative to its own EXE, so a
+fully extracted directory can be moved as a unit and opened by double-clicking
+`intellectual-club-launcher.exe`. That file uses the Windows GUI PE subsystem,
+so Explorer does not allocate a terminal window. Use
+`intellectual-club-launcher-cli.exe` for CLI commands and `--app-dir`; it uses
+the console subsystem and preserves normal stdout, stderr, exit codes, and help.
+Closing the GUI launcher does not stop PostgreSQL or the BEAM application.
+Configuration, databases, uploaded files, backups, and runtime state are stored
+in the Windows user profile, never beside the extracted EXEs.
+
+For example, from the extracted directory:
+
+```powershell
+.\intellectual-club-launcher-cli.exe doctor
+.\intellectual-club-launcher-cli.exe status --json
+.\intellectual-club-launcher-cli.exe stop
+```
+
+The archive is unsigned and may trigger SmartScreen; verify `SHA256SUMS.txt`
+before running it. Windows 11 x64 is the tested and guaranteed platform.
+Windows 10 is best-effort, and Windows ARM64, MSI/MSIX, code signing,
+auto-update, and an independent installer flow are not provided.
 
 Run OpenAI OAuth from the Rust workspace during development:
 

@@ -45,7 +45,16 @@ defmodule IntellectualClub.Files.UploadStagingTest do
              Path.join([staging_path, "chat", "upload-id.part"])
 
     assert {:ok, outlet_path} = UploadStaging.new_temp_path(:outlet)
-    assert Path.dirname(outlet_path) == Path.join(staging_path, "outlet")
+
+    normalize_path = fn path ->
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+    end
+
+    assert normalize_path.(Path.dirname(outlet_path)) ==
+             normalize_path.(Path.join(staging_path, "outlet"))
+
     assert File.dir?(Path.dirname(outlet_path))
     refute File.exists?(outlet_path)
   end

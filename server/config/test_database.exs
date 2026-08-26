@@ -78,6 +78,8 @@ config :intellectual_club,
 config :intellectual_club, IntellectualClub.Repo,
   url: database_url,
   pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+  queue_target: String.to_integer(System.get_env("DB_QUEUE_TARGET") || "5000"),
+  queue_interval: String.to_integer(System.get_env("DB_QUEUE_INTERVAL") || "5000"),
   priv: "priv/repo",
   pool: Ecto.Adapters.SQL.Sandbox,
   show_sensitive_data_on_connection_error: true

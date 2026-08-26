@@ -8,6 +8,7 @@ __pycache__/
 
 /assets/
 /build/
+/dist/
 /server/_build/
 /server/.elixir_ls/
 /server/deps/

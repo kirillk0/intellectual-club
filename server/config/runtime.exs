@@ -22,7 +22,28 @@ end
 
 endpoint_http_port = String.to_integer(System.get_env("PORT", "4000"))
 
-config :intellectual_club, IntellectualClubWeb.Endpoint, http: [port: endpoint_http_port]
+endpoint_http_ip =
+  case System.get_env("PHX_IP") |> to_string() |> String.trim() do
+    "" ->
+      nil
+
+    value ->
+      case :inet.parse_address(String.to_charlist(value)) do
+        {:ok, address} ->
+          address
+
+        {:error, _reason} ->
+          raise "PHX_IP must be an IPv4 or IPv6 address, got: #{inspect(value)}"
+      end
+  end
+
+endpoint_http_options =
+  [port: endpoint_http_port]
+  |> then(fn options ->
+    if endpoint_http_ip, do: Keyword.put(options, :ip, endpoint_http_ip), else: options
+  end)
+
+config :intellectual_club, IntellectualClubWeb.Endpoint, http: endpoint_http_options
 
 if demo_chunk_delay_ms = System.get_env("DEMO_CHUNK_DELAY_MS") do
   config :intellectual_club, :demo_chunk_delay_ms, String.to_integer(demo_chunk_delay_ms)
@@ -211,11 +232,12 @@ if config_env() == :prod do
   config :intellectual_club, IntellectualClubWeb.Endpoint,
     url: [host: host, port: String.to_integer(port), scheme: scheme],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # Enable IPv6 and bind on all interfaces unless PHX_IP explicitly
+      # selects a local address (the desktop launcher uses 127.0.0.1).
       # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
+      ip: endpoint_http_ip || {0, 0, 0, 0, 0, 0, 0, 0},
+      port: endpoint_http_port
     ],
     secret_key_base: secret_key_base
 

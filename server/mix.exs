@@ -79,11 +79,14 @@ defmodule IntellectualClub.MixProject do
       {:web_push_elixir, "~> 0.8.0"},
       {:mint_web_socket, "~> 1.0"},
       {:ex_image_info, "~> 1.0"},
-      {:image, "~> 0.69.0"},
       {:pdf_elixide, "~> 0.4.0"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
-    ]
+    ] ++ image_dependencies()
+  end
+
+  defp image_dependencies do
+    if windows?(), do: [], else: [{:image, "~> 0.69.0"}]
   end
 
   # Aliases are shortcuts or tasks specific to the current project.
@@ -111,10 +114,10 @@ defmodule IntellectualClub.MixProject do
         "ecto.migrate --quiet",
         "test"
       ],
-      "spa.setup": ["cmd --cd ../frontend npm install"],
-      "spa.build": ["cmd --cd ../frontend npm run build"],
-      "pwa.finalize.dev": ["cmd --cd ../frontend npm run pwa:finalize:dev"],
-      "pwa.finalize.prod": ["cmd --cd ../frontend npm run pwa:finalize:prod"],
+      "spa.setup": [frontend_command("install")],
+      "spa.build": [frontend_command("run build")],
+      "pwa.finalize.dev": [frontend_command("run pwa:finalize:dev")],
+      "pwa.finalize.prod": [frontend_command("run pwa:finalize:prod")],
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",
@@ -135,13 +138,25 @@ defmodule IntellectualClub.MixProject do
         "pwa.finalize.prod"
       ],
       "picosat.sync": &sync_picosat/1,
-      precommit: [
-        "compile",
-        "deps.unlock --unused",
-        "format",
-        "cmd mix test"
-      ]
+      precommit:
+        ["compile"] ++
+          unused_dependency_check() ++
+          ["format", "cmd mix test"]
     ]
+  end
+
+  defp unused_dependency_check do
+    if windows?(), do: [], else: ["deps.unlock --unused"]
+  end
+
+  defp windows?, do: match?({:win32, _name}, :os.type())
+
+  defp frontend_command(arguments) do
+    if windows?() do
+      "cmd --cd ../frontend cmd.exe /d /c npm.cmd #{arguments}"
+    else
+      "cmd --cd ../frontend npm #{arguments}"
+    end
   end
 
   defp releases do
