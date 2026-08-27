@@ -438,7 +438,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
         StepMetrics.tokens_per_second(
           step.output_tokens,
           Map.get(step, :first_token_at),
-          Map.get(step, :finished_at)
+          Map.get(step, :last_token_at)
         ),
       finished_at: datetime_iso(Map.get(step, :finished_at)),
       status: Atom.to_string(step.status),
@@ -492,7 +492,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
         StepMetrics.tokens_per_second(
           step.output_tokens,
           Map.get(step, :first_token_at),
-          Map.get(step, :finished_at)
+          Map.get(step, :last_token_at)
         ),
       finished_at: datetime_iso(Map.get(step, :finished_at)),
       status: Atom.to_string(step.status),
@@ -779,20 +779,21 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp total_tokens_per_second(summaries) when is_list(summaries) do
-    {output_tokens, output_seconds} =
+    {subsequent_output_tokens, output_seconds} =
       Enum.reduce(summaries, {0, 0.0}, fn summary, {total_tokens, total_seconds} ->
-        with tokens when is_integer(tokens) and tokens > 0 <-
+        with tokens when is_integer(tokens) and tokens > 1 <-
                integer_value(Map.get(summary, :output_tokens)),
              speed when is_number(speed) and speed > 0 <-
                numeric_value(Map.get(summary, :tokens_per_second)) do
-          {total_tokens + tokens, total_seconds + tokens / speed}
+          subsequent_tokens = tokens - 1
+          {total_tokens + subsequent_tokens, total_seconds + subsequent_tokens / speed}
         else
           _other -> {total_tokens, total_seconds}
         end
       end)
 
-    if output_tokens > 0 and output_seconds > 0 do
-      output_tokens / output_seconds
+    if subsequent_output_tokens > 0 and output_seconds > 0 do
+      subsequent_output_tokens / output_seconds
     else
       nil
     end

@@ -123,6 +123,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
         :cached_input_tokens,
         :reasoning_tokens,
         :first_token_at,
+        :last_token_at,
         :cost
       ])
       |> Ash.read!(actor: actor)
@@ -503,6 +504,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       :cached_input_tokens,
       :reasoning_tokens,
       :first_token_at,
+      :last_token_at,
       :cost
     ])
     |> Ash.Query.load(

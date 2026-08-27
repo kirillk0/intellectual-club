@@ -623,6 +623,7 @@ defmodule IntellectualClub.Generation.Context do
                  reasoning_tokens: nil,
                  cost: nil,
                  first_token_at: nil,
+                 last_token_at: nil,
                  finished_at: nil
                },
                actor: actor

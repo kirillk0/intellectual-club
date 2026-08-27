@@ -178,7 +178,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert Enum.all?(finished_steps, &match?(%DateTime{}, &1.finished_at))
   end
 
-  test "persist_completed! stores first_token_at for the step" do
+  test "persist_completed! stores provider token boundaries for the step" do
     %{user: actor} = user_fixture()
 
     chat =
@@ -203,6 +203,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
 
     started_at = ~U[2026-04-16 10:00:00.000000Z]
     first_token_at = ~U[2026-04-16 10:00:00.250000Z]
+    last_token_at = ~U[2026-04-16 10:00:02.250000Z]
 
     step_id =
       Persistence.ensure_step_started!(
@@ -221,22 +222,28 @@ defmodule IntellectualClub.Generation.PersistenceTest do
         sequence: 1,
         started_at: started_at,
         raw_request: %{"model" => "demo-model"},
-        first_token_at: first_token_at,
         output_tokens: 12
       )
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
       |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Final answer"})
+
+    runtime_step = %{
+      runtime_step
+      | first_token_at: first_token_at,
+        last_token_at: last_token_at
+    }
 
     :ok = Persistence.persist_completed!(assistant_message.id, runtime_step)
 
     message =
       Ash.get!(ChatMessage, assistant_message.id,
         actor: actor,
-        load: [steps: [:first_token_at, :finished_at]]
+        load: [steps: [:first_token_at, :last_token_at, :finished_at]]
       )
 
     [step] = Enum.sort_by(message.steps || [], & &1.sequence)
     assert step.first_token_at == first_token_at
+    assert step.last_token_at == last_token_at
     assert %DateTime{} = step.finished_at
   end
 

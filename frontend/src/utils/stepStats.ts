@@ -24,6 +24,7 @@ export const formatStepCost = (value: unknown): string => {
 };
 
 export const formatStepDurationMs = (value: unknown): string => {
+  if (value == null || value === '') return '—';
   const num = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(num) || num < 0) return '—';
 
@@ -37,6 +38,7 @@ export const formatStepDurationMs = (value: unknown): string => {
 };
 
 export const formatTokensPerSecond = (value: unknown): string => {
+  if (value == null || value === '') return '—';
   const num = typeof value === 'number' ? value : Number(value);
   if (!isFiniteNumber(num) || num < 0) return '—';
 

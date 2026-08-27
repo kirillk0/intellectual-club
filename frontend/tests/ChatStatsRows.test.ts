@@ -2,7 +2,11 @@ import { mount } from '@vue/test-utils';
 
 import ChatStatsRows from '@/components/chat/ChatStatsRows.vue';
 import { setPreferredLocale } from '@/i18n';
-import { subtractIncludedTokens } from '@/utils/stepStats';
+import {
+  formatStepDurationMs,
+  formatTokensPerSecond,
+  subtractIncludedTokens,
+} from '@/utils/stepStats';
 
 describe('ChatStatsRows token breakdowns', () => {
   beforeEach(() => {
@@ -82,5 +86,10 @@ describe('ChatStatsRows token breakdowns', () => {
   it('clamps inconsistent included counts instead of showing negative tokens', () => {
     expect(subtractIncludedTokens(10, 12)).toBe(0);
     expect(subtractIncludedTokens(10, null)).toBeNull();
+  });
+
+  it('renders unavailable latency and throughput as unknown', () => {
+    expect(formatStepDurationMs(null)).toBe('—');
+    expect(formatTokensPerSecond(null)).toBe('—');
   });
 });

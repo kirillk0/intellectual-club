@@ -930,6 +930,7 @@ defmodule IntellectualClub.Chat.Fork do
         reasoning_tokens: source_step.reasoning_tokens,
         cost: source_step.cost,
         first_token_at: source_step.first_token_at,
+        last_token_at: source_step.last_token_at,
         finished_at: nil
       },
       actor: actor

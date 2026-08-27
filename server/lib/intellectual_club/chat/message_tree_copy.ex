@@ -85,6 +85,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
         :reasoning_tokens,
         :cost,
         :first_token_at,
+        :last_token_at,
         request_files: [
           :reference_key,
           :source_file_external_id,
@@ -177,7 +178,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
           cached_input_tokens: source_step.cached_input_tokens,
           reasoning_tokens: source_step.reasoning_tokens,
           cost: source_step.cost,
-          first_token_at: source_step.first_token_at
+          first_token_at: source_step.first_token_at,
+          last_token_at: source_step.last_token_at
         },
         actor: actor
       )

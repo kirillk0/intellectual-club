@@ -95,7 +95,8 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   test "step serializes time to first token and tps" do
     started_at = ~U[2026-04-16 10:00:00.000000Z]
     first_token_at = ~U[2026-04-16 10:00:00.250000Z]
-    finished_at = ~U[2026-04-16 10:00:02.250000Z]
+    last_token_at = ~U[2026-04-16 10:00:02.250000Z]
+    finished_at = ~U[2026-04-16 10:01:00.000000Z]
 
     serialized =
       Serializer.step(%ChatMessageStep{
@@ -103,9 +104,10 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
         sequence: 1,
         created_at: started_at,
         first_token_at: first_token_at,
+        last_token_at: last_token_at,
         finished_at: finished_at,
         status: :done,
-        output_tokens: 20,
+        output_tokens: 21,
         items: []
       })
 
@@ -402,7 +404,7 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert usage.total.cached_input_tokens == 20
     assert usage.total.reasoning_tokens == 6
     assert usage.total.time_to_first_token_ms == 400
-    assert_in_delta usage.total.tokens_per_second, 7.5, 0.0001
+    assert_in_delta usage.total.tokens_per_second, 28 / 3.7, 0.0001
     assert usage.total.cost == 0.03
     assert usage.total_cost == 0.03
   end

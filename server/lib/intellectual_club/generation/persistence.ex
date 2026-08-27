@@ -66,6 +66,7 @@ defmodule IntellectualClub.Generation.Persistence do
         reasoning_tokens: nil,
         cost: nil,
         first_token_at: nil,
+        last_token_at: nil,
         finished_at: nil
       }
 
@@ -347,6 +348,7 @@ defmodule IntellectualClub.Generation.Persistence do
             reasoning_tokens: nil,
             cost: nil,
             first_token_at: nil,
+            last_token_at: nil,
             finished_at: now
           },
           actor
@@ -377,6 +379,7 @@ defmodule IntellectualClub.Generation.Persistence do
                 reasoning_tokens: nil,
                 cost: nil,
                 first_token_at: nil,
+                last_token_at: nil,
                 finished_at: nil
               },
               actor
@@ -398,6 +401,7 @@ defmodule IntellectualClub.Generation.Persistence do
                 reasoning_tokens: nil,
                 cost: nil,
                 first_token_at: nil,
+                last_token_at: nil,
                 finished_at: nil
               },
               actor
@@ -487,6 +491,7 @@ defmodule IntellectualClub.Generation.Persistence do
             reasoning_tokens: nil,
             cost: nil,
             first_token_at: nil,
+            last_token_at: nil,
             finished_at: nil
           },
           actor
@@ -573,6 +578,7 @@ defmodule IntellectualClub.Generation.Persistence do
               reasoning_tokens: nil,
               cost: nil,
               first_token_at: nil,
+              last_token_at: nil,
               finished_at: nil
             },
             actor
@@ -675,6 +681,7 @@ defmodule IntellectualClub.Generation.Persistence do
                 reasoning_tokens: nil,
                 cost: nil,
                 first_token_at: nil,
+                last_token_at: nil,
                 finished_at: nil
               },
               actor
@@ -694,6 +701,7 @@ defmodule IntellectualClub.Generation.Persistence do
                 reasoning_tokens: nil,
                 cost: nil,
                 first_token_at: nil,
+                last_token_at: nil,
                 finished_at: nil
               },
               actor
@@ -1083,6 +1091,7 @@ defmodule IntellectualClub.Generation.Persistence do
             reasoning_tokens: nil,
             cost: nil,
             first_token_at: nil,
+            last_token_at: nil,
             finished_at: nil
           },
           actor
@@ -1128,6 +1137,7 @@ defmodule IntellectualClub.Generation.Persistence do
       reasoning_tokens: Map.get(persistable, :reasoning_tokens),
       cost: Map.get(persistable, :cost),
       first_token_at: Map.get(persistable, :first_token_at),
+      last_token_at: Map.get(persistable, :last_token_at),
       finished_at: finished_at
     }
 
@@ -1624,6 +1634,7 @@ defmodule IntellectualClub.Generation.Persistence do
       reasoning_tokens: nil,
       cost: nil,
       first_token_at: nil,
+      last_token_at: nil,
       finished_at: nil
     }
 
@@ -2050,7 +2061,9 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp runtime_step_from_persisted_step(%ChatMessageStep{} = step, include_item?) do
-    Enum.reduce(ordered_items(step), persisted_step_header(step), fn item, runtime_step ->
+    step
+    |> ordered_items()
+    |> Enum.reduce(persisted_step_header(step), fn item, runtime_step ->
       if include_item?.(item) do
         key = "db:#{item.id}"
 
@@ -2089,6 +2102,8 @@ defmodule IntellectualClub.Generation.Persistence do
         runtime_step
       end
     end)
+    |> Map.put(:first_token_at, step.first_token_at)
+    |> Map.put(:last_token_at, step.last_token_at)
   end
 
   defp persisted_step_header(%ChatMessageStep{} = step) do
@@ -2105,7 +2120,8 @@ defmodule IntellectualClub.Generation.Persistence do
       cached_input_tokens: step.cached_input_tokens,
       reasoning_tokens: step.reasoning_tokens,
       cost: step.cost,
-      first_token_at: step.first_token_at
+      first_token_at: step.first_token_at,
+      last_token_at: step.last_token_at
     )
   end
 

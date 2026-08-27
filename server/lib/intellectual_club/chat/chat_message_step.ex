@@ -86,6 +86,10 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       allow_nil?(true)
     end
 
+    attribute :last_token_at, :utc_datetime_usec do
+      allow_nil?(true)
+    end
+
     attribute :finished_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -144,6 +148,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :reasoning_tokens,
         :cost,
         :first_token_at,
+        :last_token_at,
         :finished_at
       ])
 
@@ -165,6 +170,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
         :reasoning_tokens,
         :cost,
         :first_token_at,
+        :last_token_at,
         :finished_at
       ])
 

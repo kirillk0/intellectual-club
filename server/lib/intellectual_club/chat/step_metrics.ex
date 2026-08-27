@@ -15,16 +15,16 @@ defmodule IntellectualClub.Chat.StepMetrics do
 
   @spec tokens_per_second(integer() | nil, DateTime.t() | nil, DateTime.t() | nil) ::
           float() | nil
-  def tokens_per_second(output_tokens, %DateTime{} = first_token_at, %DateTime{} = finished_at)
-      when is_integer(output_tokens) and output_tokens >= 0 do
-    case DateTime.diff(finished_at, first_token_at, :microsecond) do
+  def tokens_per_second(output_tokens, %DateTime{} = first_token_at, %DateTime{} = last_token_at)
+      when is_integer(output_tokens) and output_tokens > 1 do
+    case DateTime.diff(last_token_at, first_token_at, :microsecond) do
       diff_us when diff_us > 0 ->
-        output_tokens / (diff_us / 1_000_000)
+        (output_tokens - 1) / (diff_us / 1_000_000)
 
       _other ->
         nil
     end
   end
 
-  def tokens_per_second(_output_tokens, _first_token_at, _finished_at), do: nil
+  def tokens_per_second(_output_tokens, _first_token_at, _last_token_at), do: nil
 end
