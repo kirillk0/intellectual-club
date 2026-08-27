@@ -11,6 +11,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Generation.Context, as: GenerationContext
@@ -29,6 +30,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   def state(%Chat{} = chat, actor) do
     chat = Ash.load!(chat, [:last_message], actor: actor)
     {messages, branch_meta_by_id} = load_branch(chat, actor)
+    subchat_cost_summary = SubchatCosts.summary(chat.id, actor)
     child_relations = Relations.child_relation_chats(chat.id, actor)
     lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
     relations = Relations.relations(chat, messages, actor, child_relations)
@@ -36,13 +38,22 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
 
     %{
       chat: Serializer.chat_detail(chat),
-      branch: serialize_branch(messages, branch_meta_by_id, actor),
+      branch:
+        serialize_branch(messages, branch_meta_by_id, actor,
+          subchat_costs_by_message_id: subchat_cost_summary.costs_by_message_id
+        ),
       relations: serialize_relations(relations, lifecycle_states),
       continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
       queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages),
       active_generation_message_id: active_generation_message_id(messages),
       idle_revision:
-        Revisions.chat_revision(chat, child_relations, queued_messages, lifecycle_states)
+        Revisions.chat_revision(
+          chat,
+          child_relations,
+          queued_messages,
+          lifecycle_states,
+          subchat_cost_summary.revision
+        )
     }
   end
 
@@ -121,8 +132,8 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     {messages, branch_meta_by_id}
   end
 
-  def serialize_branch(messages, branch_meta_by_id, actor) do
-    ChatBranchPayload.branch(messages, branch_meta_by_id, actor)
+  def serialize_branch(messages, branch_meta_by_id, actor, opts \\ []) do
+    ChatBranchPayload.branch(messages, branch_meta_by_id, actor, opts)
   end
 
   def branch_payload(chat_or_id, actor) do

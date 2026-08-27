@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClubWeb.Bff.Serializer
 
   require Ash.Query
@@ -28,6 +29,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   def branch(messages, branch_meta_by_id, actor, opts \\ []) when is_list(messages) do
     runtime_steps_by_message_id = Keyword.get(opts, :runtime_steps_by_message_id, %{})
+    subchat_costs_by_message_id = subchat_costs_by_message_id(messages, actor, opts)
     message_ids = messages |> Enum.map(& &1.id) |> Enum.filter(&is_integer/1) |> Enum.uniq()
 
     steps = read_steps_for_messages(message_ids, actor)
@@ -46,7 +48,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
           Map.get(steps_by_message_id, message.id, []),
           display,
           Map.get(retry_errors_by_message_id, message.id, []),
-          runtime_step
+          runtime_step,
+          Map.get(subchat_costs_by_message_id, message.id)
         )
 
       Serializer.branch_message_light(message, branch_meta_by_id, bookmarked_message_ids, extras)
@@ -82,7 +85,14 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
     end
   end
 
-  defp extras_for_message(%ChatMessage{} = message, steps, display, retry_errors, runtime_step) do
+  defp extras_for_message(
+         %ChatMessage{} = message,
+         steps,
+         display,
+         retry_errors,
+         runtime_step,
+         subchat_cost
+       ) do
     steps = sort_by_sequence(steps)
     persisted_summaries = Enum.map(steps, &Serializer.working_step_summary/1)
 
@@ -97,9 +107,27 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
     %{
       content: content,
-      usage: Serializer.usage_summary(summaries),
+      usage: Serializer.usage_summary(summaries, subchat_cost: subchat_cost),
       working: Serializer.working_summary(summaries, retry_errors)
     }
+  end
+
+  defp subchat_costs_by_message_id(messages, actor, opts) do
+    case Keyword.fetch(opts, :subchat_costs_by_message_id) do
+      {:ok, costs} when is_map(costs) ->
+        costs
+
+      _other ->
+        messages
+        |> Enum.find_value(&Map.get(&1, :chat_id))
+        |> case do
+          chat_id when is_integer(chat_id) ->
+            SubchatCosts.summary(chat_id, actor).costs_by_message_id
+
+          _other ->
+            %{}
+        end
+    end
   end
 
   defp read_steps_for_messages([], _actor), do: []

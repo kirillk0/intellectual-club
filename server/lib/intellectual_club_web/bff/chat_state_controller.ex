@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
@@ -71,11 +72,18 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
          {:ok, chat_id} <- ChatParams.resource_id(id),
          {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat_for_idle(chat_id, actor) do
       child_relations = Relations.child_relation_chats(chat.id, actor)
+      subchat_cost_summary = SubchatCosts.summary(chat.id, actor)
       lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
       queued_messages = active_queue(chat.id, actor)
 
       revision =
-        Revisions.chat_revision(chat, child_relations, queued_messages, lifecycle_states)
+        Revisions.chat_revision(
+          chat,
+          child_relations,
+          queued_messages,
+          lifecycle_states,
+          subchat_cost_summary.revision
+        )
 
       if Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")

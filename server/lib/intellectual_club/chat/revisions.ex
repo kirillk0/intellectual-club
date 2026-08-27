@@ -46,6 +46,18 @@ defmodule IntellectualClub.Chat.Revisions do
   @spec chat_revision(Chat.t(), [Chat.t()], [map()], map()) :: String.t()
   def chat_revision(%Chat{} = chat, related_chats, queued_messages, lifecycle_states)
       when is_list(related_chats) and is_list(queued_messages) and is_map(lifecycle_states) do
+    chat_revision(chat, related_chats, queued_messages, lifecycle_states, nil)
+  end
+
+  @spec chat_revision(Chat.t(), [Chat.t()], [map()], map(), String.t() | nil) :: String.t()
+  def chat_revision(
+        %Chat{} = chat,
+        related_chats,
+        queued_messages,
+        lifecycle_states,
+        subchat_cost_revision
+      )
+      when is_list(related_chats) and is_list(queued_messages) and is_map(lifecycle_states) do
     last_message = loaded_last_message(chat)
 
     [
@@ -58,7 +70,8 @@ defmodule IntellectualClub.Chat.Revisions do
       datetime_revision_value(Map.get(last_message || %{}, :updated_at)),
       relation_revision_rows(related_chats),
       lifecycle_revision_rows(lifecycle_states),
-      queue_revision_rows(queued_messages)
+      queue_revision_rows(queued_messages),
+      subchat_cost_revision
     ]
     |> hash()
   end

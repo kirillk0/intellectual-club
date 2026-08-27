@@ -359,6 +359,102 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert usage.raw_usage["responses"] == %{"total_tokens" => 18}
   end
 
+  test "status-only transitions update provider usage without accounting copied step usage" do
+    %{user: actor} = user_fixture()
+    provider = create_provider!(actor, "Usage lifecycle provider")
+    configuration = create_configuration!(actor, provider, "usage-lifecycle-model")
+
+    chat =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create,
+        %{llm_configuration_id: configuration.id, note: ""},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Hello", actor: actor)
+
+    assistant_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{
+          chat_id: chat.id,
+          parent_id: user_message.id,
+          llm_configuration_id: configuration.id,
+          token_count: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    copied_step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        1,
+        %{"model" => "usage-lifecycle-model"},
+        []
+      )
+
+    ChatMessageStep
+    |> Ash.get!(copied_step_id, actor: actor)
+    |> Ash.Changeset.for_update(
+      :update,
+      %{input_tokens: 10, output_tokens: 5, cost: 0.02, status: :waiting_tools},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    :ok = Persistence.mark_step_done!(copied_step_id)
+
+    assert [] ==
+             LlmUsageRecord
+             |> Ash.Query.filter(chat_message_step_id_snapshot == ^copied_step_id)
+             |> Ash.read!(actor: actor)
+
+    provider_step_id =
+      Persistence.ensure_step_started!(
+        assistant_message.id,
+        2,
+        %{"model" => "usage-lifecycle-model"},
+        []
+      )
+
+    runtime_step =
+      RuntimeTrace.new_step(
+        id: provider_step_id,
+        sequence: 2,
+        raw_request: %{"model" => "usage-lifecycle-model"}
+      )
+      |> RuntimeTrace.apply_event(
+        {:set_step_usage, %{input_tokens: 12, output_tokens: 6, cost: 0.03}}
+      )
+      |> add_tool_call_to_runtime_step("usage_call", "demo__echo", %{"value" => "ok"}, 1)
+
+    %{tool_calls: [_call]} =
+      Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
+
+    [waiting_usage] =
+      LlmUsageRecord
+      |> Ash.Query.filter(chat_message_step_id_snapshot == ^provider_step_id)
+      |> Ash.read!(actor: actor)
+
+    assert waiting_usage.status == :waiting_tools
+    assert waiting_usage.cost == 0.03
+
+    :ok = Persistence.mark_step_done!(provider_step_id)
+
+    [done_usage] =
+      LlmUsageRecord
+      |> Ash.Query.filter(chat_message_step_id_snapshot == ^provider_step_id)
+      |> Ash.read!(actor: actor)
+
+    assert done_usage.id == waiting_usage.id
+    assert done_usage.status == :done
+    assert done_usage.cost == 0.03
+  end
+
   test "persist_step_trace_only! does not create usage records for user messages" do
     %{user: actor} = user_fixture()
     provider = create_provider!(actor, "User usage provider")

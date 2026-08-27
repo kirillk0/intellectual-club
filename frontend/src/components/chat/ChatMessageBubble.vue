@@ -989,7 +989,7 @@ onBeforeUnmount(() => {
 });
 
 const totalCostLabel = computed(() => {
-  const rawTotal = msg.value.usage?.total_cost;
+  const rawTotal = msg.value.usage?.combined_total_cost ?? msg.value.usage?.total_cost;
   if (rawTotal == null) return null;
   const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal);
   if (!Number.isFinite(total)) return null;

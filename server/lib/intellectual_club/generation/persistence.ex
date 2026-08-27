@@ -169,7 +169,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor)
+      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -231,7 +231,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :canceled, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :canceled, now, actor)
+      persist_usage_record!(step.id, nil, :canceled, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -301,7 +301,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :error, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :error, now, actor)
+      persist_usage_record!(step.id, nil, :error, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -453,7 +453,7 @@ defmodule IntellectualClub.Generation.Persistence do
     transaction!(fn ->
       step = load_step!(step_id, actor)
       update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor)
+      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -620,7 +620,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
       with :ok <- validate_queued_steering_specs(queued_messages, specs) do
         step = update_step!(step, %{status: :done, finished_at: now}, actor)
-        persist_usage_record!(step.id, nil, :done, now, actor)
+        persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
 
         next_step = upsert_waiting_provider_step!(message_id, next_sequence, raw_request, actor)
 
@@ -662,7 +662,7 @@ defmodule IntellectualClub.Generation.Persistence do
       step = load_step_with_items!(step_id, actor)
       ensure_step_belongs_to_message!(step, message_id)
       step = update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor)
+      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
 
       next_step =
         case get_step_by_sequence(message_id, next_sequence, actor) do
@@ -1719,8 +1719,8 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Ash.update!(actor: actor)
   end
 
-  defp persist_usage_record!(step_id, raw_usage, step_status, occurred_at, actor)
-       when is_integer(step_id) do
+  defp persist_usage_record!(step_id, raw_usage, step_status, occurred_at, actor, opts \\ [])
+       when is_integer(step_id) and is_list(opts) do
     step =
       ChatMessageStep
       |> Ash.get!(step_id,
@@ -1770,8 +1770,10 @@ defmodule IntellectualClub.Generation.Persistence do
       }
 
       if usage_present?(attrs) do
+        create_if_missing? = Keyword.get(opts, :create_if_missing?, true)
+
         case existing do
-          nil ->
+          nil when create_if_missing? ->
             LlmUsageRecord
             |> Ash.Changeset.for_create(
               :create,
@@ -1784,6 +1786,9 @@ defmodule IntellectualClub.Generation.Persistence do
             record
             |> Ash.Changeset.for_update(:update, attrs, actor: actor)
             |> Ash.update!(actor: actor)
+
+          nil ->
+            :ok
         end
       end
     end

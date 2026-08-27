@@ -52,6 +52,37 @@ describe('ChatMessageBubble fork timeline', () => {
     document.body.innerHTML = '';
   });
 
+  it('shows combined subchat cost and falls back to the message-only total', async () => {
+    const wrapper = mount(ChatMessageBubble, {
+      props: {
+        message: {
+          id: 10,
+          role: 'assistant',
+          status: 'done',
+          usage: {
+            total_cost: 0.01,
+            subchat_cost: 0.02,
+            combined_total_cost: 0.03,
+          },
+        },
+        index: 0,
+      },
+    });
+
+    expect(wrapper.get('.message-meta').text()).toContain('$0.03');
+
+    await wrapper.setProps({
+      message: {
+        id: 10,
+        role: 'assistant',
+        status: 'done',
+        usage: { total_cost: 0.004 },
+      },
+    });
+
+    expect(wrapper.get('.message-meta').text()).toContain('$0.004');
+  });
+
   it('renders a fork between answer items at the originating tool call position', () => {
     const message: ChatBranchMessage = {
       id: 10,

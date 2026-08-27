@@ -407,6 +407,21 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
     assert_in_delta usage.total.tokens_per_second, 28 / 3.7, 0.0001
     assert usage.total.cost == 0.03
     assert usage.total_cost == 0.03
+    assert usage.subchat_cost == nil
+    assert usage.combined_total_cost == 0.03
+  end
+
+  test "usage summary keeps message and subchat costs separate while exposing their total" do
+    usage =
+      Serializer.usage_summary(
+        [%{id: 101, sequence: 1, status: "done", cost: 0.03}],
+        subchat_cost: 0.07
+      )
+
+    assert usage.total.cost == 0.03
+    assert usage.total_cost == 0.03
+    assert usage.subchat_cost == 0.07
+    assert_in_delta usage.combined_total_cost, 0.1, 0.0001
   end
 
   test "usage summary falls back to latest step when no token usage exists" do

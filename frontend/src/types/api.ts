@@ -342,6 +342,8 @@ export type ChatMessageUsage = {
   latest_step?: Omit<ChatMessageStep, 'items'> | null;
   total?: ChatUsageStats | null;
   total_cost?: number | null;
+  subchat_cost?: number | null;
+  combined_total_cost?: number | null;
 };
 
 export type ChatMessageWorkingSummary = {

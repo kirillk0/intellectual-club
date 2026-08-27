@@ -469,13 +469,17 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
-  def usage_summary(steps) when is_list(steps) do
+  def usage_summary(steps, opts \\ []) when is_list(steps) and is_list(opts) do
     summaries = Enum.map(steps, &working_step_summary/1)
+    total_cost = total_step_cost(summaries)
+    subchat_cost = numeric_value(Keyword.get(opts, :subchat_cost))
 
     %{
       latest_step: latest_step_with_usage_summary(summaries),
       total: total_step_usage_summary(summaries),
-      total_cost: total_step_cost(summaries)
+      total_cost: total_cost,
+      subchat_cost: subchat_cost,
+      combined_total_cost: combined_cost(total_cost, subchat_cost)
     }
   end
 
@@ -810,6 +814,14 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     if count == 0, do: nil, else: total
   end
+
+  defp combined_cost(nil, nil), do: nil
+  defp combined_cost(cost, nil) when is_number(cost), do: cost
+  defp combined_cost(nil, subchat_cost) when is_number(subchat_cost), do: subchat_cost
+
+  defp combined_cost(cost, subchat_cost)
+       when is_number(cost) and is_number(subchat_cost),
+       do: cost + subchat_cost
 
   defp numeric_value(value) when is_integer(value), do: value * 1.0
   defp numeric_value(value) when is_float(value), do: value
