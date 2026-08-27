@@ -1621,6 +1621,10 @@ watch(
       return;
     }
 
+    if (wasActive === false) {
+      void refreshChatIndex();
+    }
+
     if (hasVisibleGeneratingChat.value) {
       restartChatListPolling({ immediate: wasActive === false });
     }
