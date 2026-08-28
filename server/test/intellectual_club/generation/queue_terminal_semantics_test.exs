@@ -611,8 +611,7 @@ defmodule IntellectualClub.Generation.QueueTerminalSemanticsTest do
         note: "",
         parameters: %{},
         enabled: true,
-        timeout_seconds: 30,
-        supports_steering: true
+        timeout_seconds: 30
       },
       actor: actor
     )

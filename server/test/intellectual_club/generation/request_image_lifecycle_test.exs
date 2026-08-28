@@ -202,10 +202,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
 
     context =
-      worker_context(actor, message, step_id, raw_request, SteeringAdapter,
-        attempts: attempts,
-        supports_steering: true
-      )
+      worker_context(actor, message, step_id, raw_request, SteeringAdapter, attempts: attempts)
 
     pid = start_supervised!({Worker, %{context: context}})
     monitor_ref = Process.monitor(pid)
@@ -424,7 +421,6 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       request_payload: raw_request,
       timeout_ms: 5_000,
       chunk_delay_ms: 0,
-      supports_steering: Keyword.get(opts, :supports_steering, false),
       attempts: Keyword.fetch!(opts, :attempts),
       test_pid: self(),
       max_tool_rounds: Keyword.get(opts, :max_tool_rounds, 8),

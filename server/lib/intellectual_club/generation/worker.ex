@@ -641,9 +641,6 @@ defmodule IntellectualClub.Generation.Worker do
       text == "" ->
         {:reply, {:error, :empty_steering}, state}
 
-      Map.get(state.context, :supports_steering) != true ->
-        {:reply, {:error, :steering_not_supported}, state}
-
       state.status != :generating ->
         {:reply, {:error, :generation_not_active}, state}
 
@@ -734,8 +731,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp consume_queued_steers_waiting_provider(state) do
-    with true <- Map.get(state.context, :supports_steering) == true,
-         {:ok, queued_messages} <-
+    with {:ok, queued_messages} <-
            QueuedMessages.list_pending_steers(state.context.message_id),
          specs when specs != [] <- queued_steering_specs(queued_messages),
          steering_items <-
@@ -930,7 +926,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp normalize_steering_error(reason)
        when reason in [
               :empty_steering,
-              :steering_not_supported,
               :generation_not_active,
               :terminal_handoff_in_progress
             ],

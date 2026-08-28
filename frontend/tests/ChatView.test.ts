@@ -118,7 +118,6 @@ describe('ChatView loading state', () => {
       cancelingGenerationId: ref(null),
       steeringGenerationId: ref(null),
       canSteerGeneration: ref(true),
-      supportsActiveGenerationSteering: ref(true),
       hasSendPayload: ref(true),
       hasFollowUpBacklog: ref(false),
       sending: ref(false),

@@ -305,7 +305,6 @@ defmodule IntellectualClub.Catalogs.CrudTest do
 
     assert config.timeout_seconds == 120
     assert is_nil(config.context_length)
-    assert config.supports_steering == true
     assert config.fix_role_alteration == false
   end
 

@@ -55,7 +55,6 @@ defmodule IntellectualClub.Generation.Context do
     :cached_input_price_per_million_tokens,
     :output_price_per_million_tokens,
     :supports_image_input,
-    :supports_steering,
     :fix_role_alteration,
     :messages,
     :request_payload,
@@ -233,7 +232,6 @@ defmodule IntellectualClub.Generation.Context do
           configuration_price(llm_configuration, :output_price_per_million_tokens),
         supports_image_input:
           ash_boolean_true?(llm_configuration && llm_configuration.supports_image_input),
-        supports_steering: configuration_supports_steering?(llm_configuration),
         fix_role_alteration:
           ash_boolean_true?(llm_configuration && llm_configuration.fix_role_alteration),
         messages: request_snapshot.model_input,
@@ -347,7 +345,6 @@ defmodule IntellectualClub.Generation.Context do
         configuration_price(llm_configuration, :output_price_per_million_tokens),
       supports_image_input:
         ash_boolean_true?(llm_configuration && Map.get(llm_configuration, :supports_image_input)),
-      supports_steering: configuration_supports_steering?(llm_configuration),
       fix_role_alteration:
         ash_boolean_true?(llm_configuration && Map.get(llm_configuration, :fix_role_alteration)),
       messages: Map.get(request_snapshot, :model_input, []),
@@ -561,7 +558,6 @@ defmodule IntellectualClub.Generation.Context do
       output_price_per_million_tokens:
         configuration_price(chat.llm_configuration, :output_price_per_million_tokens),
       supports_image_input: supports_image_input,
-      supports_steering: configuration_supports_steering?(chat.llm_configuration),
       fix_role_alteration: fix_role_alteration,
       messages: messages,
       request_payload: request_payload,
@@ -709,12 +705,6 @@ defmodule IntellectualClub.Generation.Context do
   defp sort_seq(_other), do: 0
 
   defp ash_boolean_true?(value), do: value == true
-
-  defp configuration_supports_steering?(%{} = configuration) do
-    Map.get(configuration, :supports_steering, true) != false
-  end
-
-  defp configuration_supports_steering?(_configuration), do: false
 
   defp load_retry_message(message_id, actor) when is_integer(message_id) do
     load = [

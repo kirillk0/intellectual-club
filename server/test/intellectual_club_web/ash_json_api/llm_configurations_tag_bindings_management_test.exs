@@ -73,7 +73,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
   defp ids_from_included(_resp, _type), do: []
 
-  test "POST GET and PATCH expose mutable configuration capabilities", %{
+  test "POST GET and PATCH expose mutable configuration settings", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -115,7 +115,6 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
             "cold_input_price_per_million_tokens" => 1.25,
             "cached_input_price_per_million_tokens" => 0.25,
             "output_price_per_million_tokens" => 5.0,
-            "supports_steering" => false,
             "fix_role_alteration" => true
           }
         }
@@ -124,7 +123,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
 
     configuration_id = create_response["data"]["id"]
 
-    assert get_in(create_response, ["data", "attributes", "supports_steering"]) == false
+    refute Map.has_key?(get_in(create_response, ["data", "attributes"]), "supports_steering")
     assert get_in(create_response, ["data", "attributes", "fix_role_alteration"]) == true
     assert get_in(create_response, ["data", "attributes", "temperature"]) == 0.7
 
@@ -153,7 +152,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       |> json_api_get("/api/ash/llm-configurations/#{configuration_id}")
       |> json_response(200)
 
-    assert get_in(get_response, ["data", "attributes", "supports_steering"]) == false
+    refute Map.has_key?(get_in(get_response, ["data", "attributes"]), "supports_steering")
     assert get_in(get_response, ["data", "attributes", "fix_role_alteration"]) == true
     assert get_in(get_response, ["data", "attributes", "temperature"]) == 0.7
     assert get_in(get_response, ["data", "attributes", "reasoning_effort"]) == "minimal"
@@ -169,7 +168,6 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
           "type" => "llm-configurations",
           "id" => configuration_id,
           "attributes" => %{
-            "supports_steering" => true,
             "fix_role_alteration" => false,
             "temperature" => 0,
             "reasoning_effort" => "max",
@@ -182,7 +180,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
       })
       |> json_response(200)
 
-    assert get_in(patch_response, ["data", "attributes", "supports_steering"]) == true
+    refute Map.has_key?(get_in(patch_response, ["data", "attributes"]), "supports_steering")
     assert get_in(patch_response, ["data", "attributes", "fix_role_alteration"]) == false
     assert get_in(patch_response, ["data", "attributes", "temperature"]) == 0.0
     assert get_in(patch_response, ["data", "attributes", "reasoning_effort"]) == "max"
@@ -192,7 +190,6 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTagBindingsManagementT
              2.0
 
     configuration = Ash.get!(LlmConfiguration, String.to_integer(configuration_id), actor: actor)
-    assert configuration.supports_steering == true
     assert configuration.fix_role_alteration == false
     assert configuration.temperature == 0.0
     assert configuration.reasoning_effort == :max

@@ -8,7 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatSteerTest do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
 
-  test "steer validates content and requires an active generation", %{conn: conn} do
+  test "steer validates content and converts a late request to follow-up", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
@@ -35,7 +35,9 @@ defmodule IntellectualClubWeb.Bff.ChatSteerTest do
         "content" => "Change direction"
       })
 
-    assert %{"code" => "generation_not_active"} = json_response(inactive_conn, 409)
+    queued_message = json_response(inactive_conn, 201)["queued_message"]
+    assert queued_message["kind"] == "follow_up"
+    assert queued_message["anchor_message_id"] == assistant_message.id
   end
 
   test "steer persists outside the canonical trace until generation consumes it", %{conn: conn} do
@@ -114,8 +116,7 @@ defmodule IntellectualClubWeb.Bff.ChatSteerTest do
         note: "",
         parameters: %{},
         enabled: true,
-        timeout_seconds: 300,
-        supports_steering: true
+        timeout_seconds: 300
       },
       actor: actor
     )

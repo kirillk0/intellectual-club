@@ -349,11 +349,9 @@
                     vm.cancelingGenerationId === vm.activeGenerationId
                   "
                   :title="
-                    !vm.supportsActiveGenerationSteering
-                      ? translate('Steering is not supported by this configuration.')
-                      : !vm.draft
-                        ? translate('Type a text instruction to steer the active generation.')
-                        : undefined
+                    !vm.draft
+                      ? translate('Type a text instruction to steer the active generation.')
+                      : undefined
                   "
                   @click="vm.steerGeneration"
                 >

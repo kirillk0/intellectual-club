@@ -62,7 +62,6 @@ type ConfigurationAttributes = {
   output_price_per_million_tokens: number | null;
   supports_cache_control: boolean;
   supports_image_input: boolean;
-  supports_steering: boolean;
   fix_role_alteration: boolean;
   can_edit: boolean;
   shared_incoming: boolean;
@@ -85,7 +84,6 @@ const defaultAttributes: ConfigurationAttributes = {
   output_price_per_million_tokens: null,
   supports_cache_control: false,
   supports_image_input: false,
-  supports_steering: true,
   fix_role_alteration: false,
   can_edit: true,
   shared_incoming: false,

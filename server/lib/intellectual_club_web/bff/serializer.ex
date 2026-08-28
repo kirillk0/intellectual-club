@@ -81,7 +81,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       tag_names: loaded_names(Map.get(configuration, :tags)),
       context_length: configuration.context_length,
       supports_image_input: configuration.supports_image_input,
-      supports_steering: configuration.supports_steering,
       can_edit: loaded_value(Map.get(configuration, :can_edit)),
       shared_incoming: loaded_value(Map.get(configuration, :shared_incoming)),
       shared_outgoing: loaded_value(Map.get(configuration, :shared_outgoing))

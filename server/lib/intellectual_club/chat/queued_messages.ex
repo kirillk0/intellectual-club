@@ -60,12 +60,12 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     with {:ok, content, []} <- normalize_contents(Map.put(attrs, :file_ids, [])),
          :ok <- validate_nonempty(content, []),
          {:ok, %ChatMessage{} = preliminary} <- fetch_owned_generation(message_id, actor),
-         :ok <- validate_steering_capability(preliminary) do
+         :ok <- validate_steering_target_state(preliminary) do
       transact(fn ->
         with {:ok, %Chat{} = chat} <- lock_owned_chat(preliminary.chat_id, actor),
              {:ok, %ChatMessage{} = message} <- lock_owned_generation(message_id, actor),
              :ok <- ensure_message_chat(message, chat),
-             :ok <- validate_steering_capability(message) do
+             :ok <- validate_steering_target_state(message) do
           enqueue_steer_for_generation_state!(message, content, actor)
         end
       end)
@@ -532,7 +532,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   end
 
   defp fetch_owned_generation(message_id, actor) do
-    case Ash.get(ChatMessage, message_id, actor: actor, load: [:llm_configuration]) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
       {:ok, %ChatMessage{owner_id: owner_id} = message} when owner_id == actor.id ->
         {:ok, message}
 
@@ -552,7 +552,6 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     |> Ash.Query.filter(id == ^message_id)
     |> Ash.Query.limit(1)
     |> Ash.Query.lock(:for_update)
-    |> Ash.Query.load(:llm_configuration)
     |> Ash.read_one(actor: actor)
     |> case do
       {:ok, %ChatMessage{owner_id: owner_id} = message} when owner_id == actor.id ->
@@ -569,16 +568,11 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
-  defp validate_steering_capability(%ChatMessage{role: :assistant, status: status} = message)
-       when status in [:generating, :done, :error, :canceled] do
-    case Map.get(message, :llm_configuration) do
-      %{supports_steering: value} when value != false -> :ok
-      _other when status != :generating -> {:error, :generation_not_active}
-      _other -> {:error, :steering_not_supported}
-    end
-  end
+  defp validate_steering_target_state(%ChatMessage{role: :assistant, status: status})
+       when status in [:generating, :done, :error, :canceled],
+       do: :ok
 
-  defp validate_steering_capability(%ChatMessage{}), do: {:error, :generation_not_active}
+  defp validate_steering_target_state(%ChatMessage{}), do: {:error, :generation_not_active}
 
   defp enqueue_steer_for_generation_state!(
          %ChatMessage{role: :assistant, status: :generating} = message,

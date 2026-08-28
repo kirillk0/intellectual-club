@@ -359,18 +359,6 @@ export function useChatViewModel() {
 
   let getOpenWorkingPollRequest: (messageId: number) => string | null = () => null;
   let applyWorkingPoll: Parameters<typeof useChatComposerRuntime>[0]['applyWorkingPoll'] = () => {};
-  const activeGenerationSupportsSteering = computed(() => {
-    const messageId = activeGenerationId.value;
-    if (!messageId) return false;
-
-    const message = branch.value.find((item) => item.id === messageId && item.role === 'assistant');
-    const configurationId = message?.llm_configuration_id;
-    if (typeof configurationId !== 'number' || !Number.isFinite(configurationId)) return false;
-
-    const configuration = llmConfigurations.value.find((item) => item.id === configurationId);
-    return configuration?.supports_steering === true;
-  });
-
   const replaceQueuedMessages = (messages: ChatQueuedMessage[]) => {
     queuedMessages.value = Array.isArray(messages) ? messages : [];
   };
@@ -397,7 +385,6 @@ export function useChatViewModel() {
     activeGenerationId,
     cancelingGenerationId,
     queuedMessages,
-    supportsSteering: activeGenerationSupportsSteering,
     draftReady: computed(() => loaded.value && Boolean(chat.value)),
     autoScrollEnabled: computed(() => layer.active.value),
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
@@ -1218,7 +1205,6 @@ export function useChatViewModel() {
     hasSendPayload: composerRuntime.hasSendPayload,
     hasFollowUpBacklog: composerRuntime.hasFollowUpBacklog,
     canSteerGeneration: composerRuntime.canSteerGeneration,
-    supportsActiveGenerationSteering: activeGenerationSupportsSteering,
     sendButtonLabel: composerRuntime.sendButtonLabel,
     queueButtonLabel: composerRuntime.queueButtonLabel,
     cancelButtonLabel: composerRuntime.cancelButtonLabel,

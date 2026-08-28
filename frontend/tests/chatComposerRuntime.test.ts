@@ -66,7 +66,6 @@ const queuedSteer = (id = 72): ChatQueuedMessage => ({
 
 const createRuntime = (
   activeMessageId: number | null,
-  supportsSteering = true,
   autoScrollEnabled = false,
   initialQueue: ChatQueuedMessage[] = []
 ) => {
@@ -96,7 +95,6 @@ const createRuntime = (
     activeGenerationId,
     cancelingGenerationId: ref(null),
     queuedMessages,
-    supportsSteering: computed(() => supportsSteering),
     autoScrollEnabled: computed(() => autoScrollEnabled),
     scrollToLastMessage: vi.fn(),
     onQueuedMessageCreated,
@@ -254,7 +252,7 @@ describe('chat composer runtime', () => {
 
   it('appends composer submissions to an existing follow-up backlog', async () => {
     apiMocks.post.mockResolvedValueOnce({ queued_message: queuedMessage(71) });
-    const { runtime } = createRuntime(null, true, false, [queuedMessage()]);
+    const { runtime } = createRuntime(null, false, [queuedMessage()]);
     runtime.draft.value = 'tail';
 
     await runtime.submitComposer();
@@ -335,11 +333,11 @@ describe('chat composer runtime', () => {
     });
   });
 
-  it('hides steering when the active configuration does not support it', () => {
-    const { runtime } = createRuntime(31, false);
+  it('allows steering without configuration capability metadata', () => {
+    const { runtime } = createRuntime(31);
     runtime.draft.value = 'stop';
 
-    expect(runtime.canSteerGeneration.value).toBe(false);
+    expect(runtime.canSteerGeneration.value).toBe(true);
   });
 
   it('restores a focused composer covered by the keyboard while polling', async () => {
@@ -377,7 +375,7 @@ describe('chat composer runtime', () => {
     document.body.append(composer);
     textarea.focus();
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
-    const { runtime } = createRuntime(31, true, true);
+    const { runtime } = createRuntime(31, true);
 
     await runtime.startPolling(31);
     await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
@@ -405,7 +403,7 @@ describe('chat composer runtime', () => {
     vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
     const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
-    const { runtime } = createRuntime(31, true, true);
+    const { runtime } = createRuntime(31, true);
 
     await runtime.startPolling(31);
     await nextTick();
@@ -431,7 +429,7 @@ describe('chat composer runtime', () => {
     );
     const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
-    const { runtime } = createRuntime(31, true, true);
+    const { runtime } = createRuntime(31, true);
 
     await runtime.startPolling(31);
     await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));
@@ -455,7 +453,7 @@ describe('chat composer runtime', () => {
     );
     const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
-    const { runtime } = createRuntime(31, true, true);
+    const { runtime } = createRuntime(31, true);
 
     await runtime.startPolling(31);
     await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));

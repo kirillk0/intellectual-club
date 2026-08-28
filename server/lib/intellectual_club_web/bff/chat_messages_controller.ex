@@ -136,9 +136,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
           {:error, :empty_message} ->
             render_steering_error(conn, :unprocessable_entity, :empty_steering)
 
-          {:error, :steering_not_supported} ->
-            render_steering_error(conn, :unprocessable_entity, :steering_not_supported)
-
           {:error, :generation_not_active} ->
             render_steering_error(conn, :conflict, :generation_not_active)
 
@@ -1138,7 +1135,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp steering_error_message(:empty_steering), do: "Steering content must not be empty."
-  defp steering_error_message(:steering_not_supported), do: "Steering is not supported."
   defp steering_error_message(:generation_not_active), do: "Generation is not active."
 
   defp steering_error_message(:terminal_handoff_in_progress),

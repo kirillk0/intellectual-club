@@ -124,8 +124,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
       :note,
       :enabled,
       :context_length,
-      :supports_image_input,
-      :supports_steering
+      :supports_image_input
     ]
   end
 

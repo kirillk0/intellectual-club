@@ -214,7 +214,6 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
         request_payload: raw_request,
         timeout_ms: 5_000,
         chunk_delay_ms: 0,
-        supports_steering: true,
         terminal_mode: terminal_mode,
         test_pid: self()
       }
@@ -298,7 +297,6 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       request_payload: raw_request,
       timeout_ms: 5_000,
       chunk_delay_ms: 0,
-      supports_steering: true,
       attempts: attempts,
       test_pid: self()
     }
@@ -402,7 +400,6 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       request_payload: raw_request,
       timeout_ms: 5_000,
       chunk_delay_ms: 0,
-      supports_steering: true,
       attempts: attempts,
       test_pid: self()
     }

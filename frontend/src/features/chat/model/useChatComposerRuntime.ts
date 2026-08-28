@@ -42,7 +42,6 @@ type Params = {
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
   queuedMessages?: Ref<ChatQueuedMessage[]>;
-  supportsSteering: ComputedRef<boolean>;
   draftReady?: ComputedRef<boolean>;
   autoScrollEnabled?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
@@ -96,7 +95,7 @@ export function useChatComposerRuntime(params: Params) {
     )
   );
   const canSteerGeneration = computed(
-    () => Boolean(params.activeGenerationId.value) && params.supportsSteering.value && hasDraftText.value
+    () => Boolean(params.activeGenerationId.value) && hasDraftText.value
   );
 
   const sendButtonLabel = computed(() => {
@@ -141,7 +140,6 @@ export function useChatComposerRuntime(params: Params) {
       const code = (error.bodyJson as { code?: unknown }).code;
       const messageByCode: Record<string, string> = {
         empty_steering: 'Steering content must not be empty.',
-        steering_not_supported: 'Steering is not supported by this configuration.',
         generation_not_active: 'Generation is no longer active.',
         terminal_handoff_in_progress: 'Steering is unavailable during a terminal handoff.',
       };

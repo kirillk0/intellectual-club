@@ -366,7 +366,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
              )
 
     assert cfg_payload["context_length"] == 8192
-    assert cfg_payload["supports_steering"] == true
+    refute Map.has_key?(cfg_payload, "supports_steering")
   end
 
   test "GET /api/bff/chat-state/:id/settings includes configuration and bot tag metadata in options",
