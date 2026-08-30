@@ -24,6 +24,7 @@ const props = defineProps<{
   modelValue: KnowledgeBlockTab;
   tagsCount: number;
   filesCount: number;
+  secretsCount: number;
 }>();
 
 const emit = defineEmits<{
@@ -34,7 +35,7 @@ const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => 
   { value: 'code', label: translate('Code') },
   { value: 'tags', label: `${translate('Tags')} (${props.tagsCount})` },
   { value: 'files', label: `${translate('Files')} (${props.filesCount})` },
-  { value: 'secrets', label: translate('Secrets') },
+  { value: 'secrets', label: `${translate('Secrets')} (${props.secretsCount})` },
   { value: 'details', label: translate('Details') },
 ]);
 </script>

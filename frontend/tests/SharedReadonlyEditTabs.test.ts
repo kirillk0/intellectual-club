@@ -65,6 +65,7 @@ vi.mock('@/api/knowledgeBlockFiles', async () => {
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
+import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { serverStateQueryClient } from '@/features/serverState/queryClient';
@@ -239,6 +240,14 @@ describe('shared read-only editor tabs', () => {
       if (path === '/api/bff/tools/types') return { types: activeToolTypes };
       if (path === '/api/bff/me/groups') return { groups: [] };
       if (path.endsWith('/shares')) return { group_ids: [] };
+      if (path.endsWith('/secrets')) {
+        return {
+          secrets: [
+            { id: 1, external_id: 'secret-1', name: 'First', description: '', env_name: 'FIRST' },
+            { id: 2, external_id: 'secret-2', name: 'Second', description: '', env_name: 'SECOND' },
+          ],
+        };
+      }
       throw new Error(`Unexpected GET request: ${path}`);
     });
     clientMocks.patch.mockReset();
@@ -471,6 +480,36 @@ describe('shared read-only editor tabs', () => {
     expect(view.findAll('.tool-discovery-warning')).toHaveLength(2);
   });
 
+  it('loads the managed secrets count before opening the tool tab', async () => {
+    activeToolTypes = [
+      {
+        ...toolTypes[0],
+        type: 'ssh',
+        title: 'SSH',
+        config_schema: { type: 'object', properties: {} },
+        secrets_schema: null,
+        default_config: {},
+      } as any,
+    ];
+    jsonApiMocks.get.mockResolvedValue(
+      readonlyDocument('tool-instances', {
+        name: 'Shared SSH tool',
+        description: '',
+        alias: 'shared_ssh',
+        type: 'ssh',
+        config: {},
+        max_output_tokens: 20_000,
+        rps_limit: null,
+        secrets_present: [],
+      })
+    );
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+
+    await vi.waitFor(() => expect(tabByText(view, 'Secrets').text()).toBe('Secrets (2)'));
+    expect(view.findComponent(ManagedSecretsSection).exists()).toBe(false);
+  });
+
   it('switches knowledge block tabs while keeping its fields disabled', async () => {
     jsonApiMocks.get.mockResolvedValue(
       readonlyDocument('knowledge-blocks', {
@@ -487,6 +526,7 @@ describe('shared read-only editor tabs', () => {
     await vi.waitFor(() => expect(view.findComponent(KnowledgeBlockTabsNav).exists()).toBe(true));
 
     const tabs = view.getComponent(KnowledgeBlockTabsNav);
+    await vi.waitFor(() => expect(tabs.props('secretsCount')).toBe(2));
     expect(tabs.element.closest('fieldset[disabled]')).toBeNull();
     expect(view.getComponent(KnowledgeBlockMainFields).element.closest('fieldset[disabled]')).not.toBeNull();
 

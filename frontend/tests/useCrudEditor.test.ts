@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 
 const jsonApiMocks = vi.hoisted(() => ({
   get: vi.fn(),
+  update: vi.fn(),
   remove: vi.fn(),
 }));
 
@@ -13,6 +14,7 @@ vi.mock('@/api/jsonApi', async () => {
   return {
     ...actual,
     jsonApiGet: jsonApiMocks.get,
+    jsonApiUpdate: jsonApiMocks.update,
     jsonApiDelete: jsonApiMocks.remove,
   };
 });
@@ -100,6 +102,7 @@ async function mountEditor(path = '/items/1', stackedFrom?: string) {
 describe('useCrudEditor canonical documents', () => {
   beforeEach(() => {
     jsonApiMocks.get.mockReset();
+    jsonApiMocks.update.mockReset();
     jsonApiMocks.remove.mockReset();
   });
 
@@ -251,6 +254,45 @@ describe('useCrudEditor canonical documents', () => {
     expect(editor.form.name).toBe('Updated remotely');
     expect(editor.base.value.name).toBe('Updated remotely');
     expect(editor.dirty.value).toBe(false);
+    expect(editor.remoteUpdateAvailable.value).toBe(false);
+  });
+
+  it('keeps the complete refreshed document as canonical after saving', async () => {
+    const initial = document(1, 'Initial');
+    const refreshed = {
+      ...document(1, 'Saved'),
+      meta: { server_revision: 2 },
+    };
+    const mutationResponse = document(1, 'Saved');
+    jsonApiMocks.get.mockResolvedValue(initial);
+    jsonApiMocks.update.mockImplementation(async () => {
+      serverStateQueryClient.setQueryData(
+        serverStateKeys.detail('test-items', 1, 'editor-document'),
+        refreshed
+      );
+      await flushPromises();
+      return mutationResponse;
+    });
+
+    const { editor } = await mountEditor();
+    await vi.waitFor(() => expect(editor.loaded.value).toBe(true));
+    const externalDirty = ref(true);
+    editor.registerDirtySource(() => externalDirty.value);
+    editor.form.name = 'Saved';
+
+    await expect(editor.save()).resolves.toBe(true);
+    await flushPromises();
+
+    expect(editor.form.name).toBe('Saved');
+    expect(editor.dirty.value).toBe(false);
+    expect(editor.remoteUpdateAvailable.value).toBe(false);
+
+    serverStateQueryClient.setQueryData(
+      serverStateKeys.detail('test-items', 1, 'editor-document'),
+      refreshed
+    );
+    await flushPromises();
+
     expect(editor.remoteUpdateAvailable.value).toBe(false);
   });
 

@@ -48,7 +48,12 @@
       </fieldset>
 
       <div class="card stack">
-        <KnowledgeBlockTabsNav v-model="blockTab" :tags-count="tagsTabCount" :files-count="filesTabCount" />
+        <KnowledgeBlockTabsNav
+          v-model="blockTab"
+          :tags-count="tagsTabCount"
+          :files-count="filesTabCount"
+          :secrets-count="secretsTabCount"
+        />
 
         <fieldset :disabled="sharedReadonly">
           <KnowledgeBlockCodeEditor
@@ -96,7 +101,11 @@
             v-else-if="blockTab === 'secrets'"
             parent="knowledge-blocks"
             :parent-id="numericId"
+            :secrets="managedSecretAttachments"
+            :loading="managedSecretsLoading"
+            :load-error="managedSecretsError"
             :readonly="sharedReadonly"
+            @update:secrets="replaceManagedSecrets"
           />
 
           <KnowledgeBlockDetailsSection
@@ -161,6 +170,7 @@ import {
   type KnowledgeBlockFileDraftItem,
 } from '@/features/catalogs/model/useKnowledgeBlockFileBindingsDraft';
 import { useKnowledgeBlockTagsDraft } from '@/features/catalogs/model/useKnowledgeBlockTagsDraft';
+import { useManagedSecretsState } from '@/features/catalogs/model/useManagedSecretsState';
 import { useResourceGroupSharing } from '@/features/catalogs/model/useResourceGroupSharing';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
@@ -379,6 +389,16 @@ const sharing = useResourceGroupSharing({
   fallbackShared: computed(() => form.shared_outgoing),
 });
 
+const managedSecrets = useManagedSecretsState({
+  parent: 'knowledge-blocks',
+  parentId: numericId,
+  enabled: computed(() => !editor.deleting.value),
+});
+const managedSecretAttachments = managedSecrets.secrets;
+const managedSecretsLoading = managedSecrets.loading;
+const managedSecretsError = managedSecrets.error;
+const replaceManagedSecrets = managedSecrets.replaceSecrets;
+
 const fileBindings = useKnowledgeBlockFileBindingsDraft({
   enabled: computed(() => !editor.deleting.value),
 });
@@ -414,6 +434,7 @@ const codeEditorRef = ref<KnowledgeBlockCodeEditorExpose | null>(null);
 
 const tagsTabCount = computed(() => attachedTagIds.value.length);
 const filesTabCount = computed(() => fileAttachments.value.length);
+const secretsTabCount = computed(() => managedSecretAttachments.value.length);
 const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
 const filesActionDisabled = computed(
   () =>

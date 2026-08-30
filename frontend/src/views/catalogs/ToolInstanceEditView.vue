@@ -92,7 +92,7 @@
             type="button"
             @click="toolTab = 'secrets'"
           >
-            {{ translate('Secrets') }}
+            {{ translate('Secrets') }} ({{ secretsTabCount }})
           </button>
           <button
             class="tab"
@@ -494,7 +494,11 @@
             v-else-if="toolTab === 'secrets'"
             parent="tool-instances"
             :parent-id="managedSecretsParentId"
+            :secrets="managedSecretAttachments"
+            :loading="managedSecretsLoading"
+            :load-error="managedSecretsError"
             :readonly="sharedReadonly"
+            @update:secrets="replaceManagedSecrets"
           />
 
           <div v-else class="stack">
@@ -651,6 +655,7 @@ import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
 import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
+import { useManagedSecretsState } from '@/features/catalogs/model/useManagedSecretsState';
 
 const MarkdownEditor = defineAsyncComponent({
   loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
@@ -1148,6 +1153,16 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
 const isMcpHttp = computed(() => String(form.type || '').trim() === 'mcp-http');
 const supportsManagedSecrets = computed(() => ['ssh', 'outlet'].includes(String(form.type || '').trim()));
 const managedSecretsParentId = editor.numericId;
+const managedSecrets = useManagedSecretsState({
+  parent: 'tool-instances',
+  parentId: managedSecretsParentId,
+  enabled: computed(() => supportsManagedSecrets.value && !editor.deleting.value),
+});
+const managedSecretAttachments = managedSecrets.secrets;
+const managedSecretsLoading = managedSecrets.loading;
+const managedSecretsError = managedSecrets.error;
+const replaceManagedSecrets = managedSecrets.replaceSecrets;
+const secretsTabCount = computed(() => managedSecretAttachments.value.length);
 watch(supportsManagedSecrets, (supported) => {
   if (!supported && toolTab.value === 'secrets') toolTab.value = 'settings';
 });

@@ -24,7 +24,7 @@
 
     <p v-if="isNew" class="muted">{{ translate('Save this item before creating secrets.') }}</p>
     <p v-else-if="loading" class="muted">{{ translate('Loading managed secrets…') }}</p>
-    <p v-if="error" class="error-text">{{ error }}</p>
+    <p v-if="loadError || actionError" class="error-text">{{ loadError || actionError }}</p>
 
     <div v-if="!isNew && !loading" class="managed-secrets__table-wrap">
       <table v-if="secrets.length" class="managed-secrets__table">
@@ -84,7 +84,6 @@ import { getApiErrorMessage } from '@/api/client';
 import {
   createManagedSecret,
   deleteManagedSecret,
-  listManagedSecrets,
   updateManagedSecret,
   type ManagedSecretAttachment,
   type ManagedSecretInput,
@@ -97,39 +96,36 @@ import { translate } from '@/i18n';
 const props = defineProps<{
   parent: SecretAttachmentParent;
   parentId: number | null | undefined;
+  secrets: ManagedSecretAttachment[];
+  loading: boolean;
+  loadError: string | null;
   readonly?: boolean;
 }>();
 
-const loading = ref(false);
+const emit = defineEmits<{
+  (event: 'update:secrets', secrets: ManagedSecretAttachment[]): void;
+}>();
+
 const busy = ref(false);
 const savingModal = ref(false);
-const error = ref<string | null>(null);
+const actionError = ref<string | null>(null);
 const modalError = ref<string | null>(null);
-const secrets = ref<ManagedSecretAttachment[]>([]);
 const modalOpen = ref(false);
 const editingSecret = ref<ManagedSecretAttachment | null>(null);
 
 const isNew = computed(() => !props.parentId || props.parentId <= 0);
 
-async function load() {
-  if (isNew.value) {
-    secrets.value = [];
-    return;
-  }
-
-  loading.value = true;
-  error.value = null;
-  try {
-    const response = await listManagedSecrets(props.parent, props.parentId!);
-    secrets.value = response.secrets || [];
-  } catch (cause) {
-    error.value = getApiErrorMessage(cause, translate('Failed to load managed secrets.'));
-  } finally {
-    loading.value = false;
-  }
+function replaceSecrets(nextSecrets: ManagedSecretAttachment[]) {
+  emit('update:secrets', nextSecrets);
 }
 
-watch(() => [props.parent, props.parentId] as const, load, { immediate: true });
+watch(
+  () => [props.parent, props.parentId] as const,
+  () => {
+    actionError.value = null;
+    modalError.value = null;
+  }
+);
 
 function openCreate() {
   editingSecret.value = null;
@@ -161,7 +157,7 @@ async function saveModal(input: ManagedSecretInput) {
           value: input.value || '',
         });
 
-    secrets.value = response.secrets || [];
+    replaceSecrets(response.secrets || []);
     modalOpen.value = false;
     editingSecret.value = null;
   } catch (cause) {
@@ -176,12 +172,12 @@ async function remove(secret: ManagedSecretAttachment) {
   if (!window.confirm(translate('Delete secret “{name}”?', { name: secret.name }))) return;
 
   busy.value = true;
-  error.value = null;
+  actionError.value = null;
   try {
     const response = await deleteManagedSecret(props.parent, props.parentId, secret.id);
-    secrets.value = response.secrets || [];
+    replaceSecrets(response.secrets || []);
   } catch (cause) {
-    error.value = getApiErrorMessage(cause, translate('Failed to delete managed secret.'));
+    actionError.value = getApiErrorMessage(cause, translate('Failed to delete managed secret.'));
   } finally {
     busy.value = false;
   }

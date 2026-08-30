@@ -220,6 +220,30 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
     loaded.value = true;
   };
 
+  const readCanonicalDocument = async (
+    id: number,
+    fallback: JsonApiSingleResponse
+  ): Promise<JsonApiSingleResponse> => {
+    try {
+      const refreshed = await jsonApiGet(`${options.basePath}/${id}`, documentQuery('load'));
+      return refreshed?.data && toIntId(refreshed.data.id) === id ? refreshed : fallback;
+    } catch (error) {
+      // The mutation already succeeded. Keep the mutation response as a fallback;
+      // a later query refresh can still replace it with the complete document.
+      console.warn('Failed to refresh the saved record.', error);
+      return fallback;
+    }
+  };
+
+  const refreshedUpdateDocument = (
+    id: number,
+    fallback: JsonApiSingleResponse
+  ): JsonApiSingleResponse => {
+    if (detailQuery.error.value) return fallback;
+    const refreshed = detailQuery.data.value;
+    return refreshed && toIntId(refreshed.data.id) === id ? refreshed : fallback;
+  };
+
   const startSession = () => {
     sessionVersion += 1;
     errors.clear();
@@ -344,14 +368,16 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         const created = await jsonApiCreate(options.basePath, options.type, attrs, documentQuery('save'));
         if (sessionVersion !== writeSession) return false;
         const newId = toIntId(created.data.id);
+        const canonical = newId ? await readCanonicalDocument(newId, created) : created;
+        if (sessionVersion !== writeSession) return false;
         if (newId) {
           serverStateQueryClient.setQueryData(
             serverStateKeys.detail(options.type, newId, 'editor-document'),
-            created
+            canonical
           );
           recordLayerChange({ type: options.type, id: newId, operation: 'upsert' });
         }
-        applyCanonicalDocument(created, 'save');
+        applyCanonicalDocument(canonical, 'save');
 
         if (newId) {
           if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
@@ -367,8 +393,9 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
           documentQuery('save')
         );
         if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
-        serverStateQueryClient.setQueryData(detailQueryKey.value, updated);
-        applyCanonicalDocument(updated, 'save');
+        const canonical = refreshedUpdateDocument(writeId, updated);
+        serverStateQueryClient.setQueryData(detailQueryKey.value, canonical);
+        applyCanonicalDocument(canonical, 'save');
         recordLayerChange({ type: options.type, id: writeId, operation: 'upsert' });
       }
 
@@ -437,14 +464,16 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       );
       if (sessionVersion !== duplicateSession || numericId.value !== sourceId) return;
       const newId = toIntId(duplicated.data?.id);
+      const canonical = newId ? await readCanonicalDocument(newId, duplicated) : duplicated;
+      if (sessionVersion !== duplicateSession || numericId.value !== sourceId) return;
       if (newId) {
         serverStateQueryClient.setQueryData(
           serverStateKeys.detail(options.type, newId, 'editor-document'),
-          duplicated
+          canonical
         );
         recordLayerChange({ type: options.type, id: newId, operation: 'upsert' });
       }
-      applyCanonicalDocument(duplicated, 'duplicate');
+      applyCanonicalDocument(canonical, 'duplicate');
 
       if (newId) {
         if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);

@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const secretApi = vi.hoisted(() => ({
   create: vi.fn(),
   delete: vi.fn(),
-  list: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -14,7 +13,6 @@ vi.mock('@/api/managedSecrets', async () => {
     ...actual,
     createManagedSecret: secretApi.create,
     deleteManagedSecret: secretApi.delete,
-    listManagedSecrets: secretApi.list,
     updateManagedSecret: secretApi.update,
   };
 });
@@ -37,15 +35,18 @@ describe('ManagedSecretsSection', () => {
   });
 
   it('renders a resource-owned table and uses the same modal for create and edit', async () => {
-    secretApi.list.mockResolvedValue({ secrets: [storedSecret] });
-
     const wrapper = mount(ManagedSecretsSection, {
-      props: { parent: 'knowledge-blocks', parentId: 42 },
+      props: {
+        parent: 'knowledge-blocks',
+        parentId: 42,
+        secrets: [storedSecret],
+        loading: false,
+        loadError: null,
+      },
       attachTo: document.body,
     });
     await flushPromises();
 
-    expect(secretApi.list).toHaveBeenCalledWith('knowledge-blocks', 42);
     expect(wrapper.get('table').text()).toContain('GitLab token');
     expect(wrapper.get('table').text()).toContain('GITLAB_TOKEN');
     expect(wrapper.find('select').exists()).toBe(false);
@@ -65,5 +66,33 @@ describe('ManagedSecretsSection', () => {
     modal = wrapper.getComponent(ManagedSecretModal);
     expect(modal.props('open')).toBe(true);
     expect(modal.props('secret')).toEqual(storedSecret);
+  });
+
+  it('emits the updated secrets after creating a secret', async () => {
+    const createdSecret = { ...storedSecret, id: 8, name: 'Deploy token', env_name: 'DEPLOY_TOKEN' };
+    secretApi.create.mockResolvedValue({ secrets: [storedSecret, createdSecret] });
+
+    const wrapper = mount(ManagedSecretsSection, {
+      props: {
+        parent: 'tool-instances',
+        parentId: 42,
+        secrets: [storedSecret],
+        loading: false,
+        loadError: null,
+      },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    await wrapper.get('button[aria-label="Create secret"]').trigger('click');
+    wrapper.getComponent(ManagedSecretModal).vm.$emit('save', {
+      name: 'Deploy token',
+      description: '',
+      env_name: 'DEPLOY_TOKEN',
+      value: 'secret-value',
+    });
+    await flushPromises();
+
+    expect(wrapper.emitted('update:secrets')).toEqual([[[storedSecret, createdSecret]]]);
   });
 });
