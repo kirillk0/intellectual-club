@@ -1019,9 +1019,7 @@ impl eframe::App for LauncherGui {
 
 pub fn run_gui(paths: AppPaths, config: LauncherConfig) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 720.0])
-            .with_icon(app_icon()),
+        viewport: launcher_viewport(),
         run_and_return: false,
         ..Default::default()
     };
@@ -1035,6 +1033,21 @@ pub fn run_gui(paths: AppPaths, config: LauncherConfig) -> eframe::Result<()> {
     )
 }
 
+fn launcher_viewport() -> egui::ViewportBuilder {
+    let viewport = egui::ViewportBuilder::default().with_inner_size([1080.0, 720.0]);
+
+    #[cfg(target_os = "macos")]
+    {
+        viewport.with_icon(egui::IconData::default())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        viewport.with_icon(app_icon())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!(
         "../../../../frontend/src/assets/icon_full_size.png"
@@ -1183,8 +1196,19 @@ fn log_viewport_is_at_bottom(
 
 #[cfg(test)]
 mod tests {
-    use super::{app_icon, log_viewport_is_at_bottom};
+    use super::{launcher_viewport, log_viewport_is_at_bottom};
 
+    #[cfg(not(target_os = "macos"))]
+    use super::app_icon;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launcher_window_preserves_the_bundle_icon() {
+        let icon = launcher_viewport().icon.expect("window icon");
+        assert_eq!(icon.as_ref(), &eframe::egui::IconData::default());
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn launcher_window_uses_embedded_icon_pixels() {
         let icon = app_icon();

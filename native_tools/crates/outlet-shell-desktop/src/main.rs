@@ -38,13 +38,19 @@ fn main() -> eframe::Result<()> {
 }
 
 fn native_options() -> eframe::NativeOptions {
+    #[cfg(target_os = "macos")]
+    let viewport = egui::ViewportBuilder::default().with_icon(egui::IconData::default());
+    #[cfg(not(target_os = "macos"))]
+    let viewport = egui::ViewportBuilder::default().with_icon(app_icon());
+
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(app_icon()),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!(
         "../../../../frontend/src/assets/icon_outlet_full.png"
@@ -903,9 +909,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_options_use_embedded_outlet_icon_pixels() {
+    fn native_options_use_wgpu_renderer() {
         let options = native_options();
         assert_eq!(options.renderer, eframe::Renderer::Wgpu);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_options_preserve_the_bundle_icon() {
+        let icon = native_options().viewport.icon.expect("window icon");
+        assert_eq!(icon.as_ref(), &egui::IconData::default());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn native_options_use_embedded_outlet_icon_pixels() {
+        let options = native_options();
         let icon = options.viewport.icon.expect("window icon");
         assert!(icon.width >= 256);
         assert!(icon.height >= 256);
