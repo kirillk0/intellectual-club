@@ -24,6 +24,8 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Files
+  alias IntellectualClub.Secrets.Prompt, as: SecretPrompt
+  alias IntellectualClub.Secrets.Resolver, as: SecretResolver
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.Drivers.SshKeyCb
   alias IntellectualClub.Tools.ExecutionContext
@@ -53,6 +55,10 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
 
   @impl true
   def supports_artifacts?, do: true
+
+  @impl true
+  def instance_prompt_context(%ToolInstance{} = tool_instance),
+    do: SecretPrompt.instance_context(tool_instance)
 
   @impl true
   def default_config do
@@ -157,6 +163,12 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
           "description" => "Environment variables (optional).",
           "additionalProperties" => %{"type" => "string"}
         },
+        "use_secrets" => %{
+          "type" => "array",
+          "items" => %{"type" => "string"},
+          "description" =>
+            "Managed secret names to inject into this command environment. Available names are listed in knowledge blocks and the tool instance context."
+        },
         "stdin" => %{
           "type" => "string",
           "description" => "Standard input (optional)."
@@ -246,7 +258,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "run_command" -> run_command(tool_instance, args)
+      "run_command" -> run_command(tool_instance, args, nil, [], execution_context)
       "run_command_background" -> start_background_command(tool_instance, args, execution_context)
       "read_image" -> read_image(tool_instance, args)
       "download_file" -> download_file(tool_instance, args, execution_context)
@@ -258,17 +270,29 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   defp run_command(
          %ToolInstance{} = tool_instance,
          args,
-         progress_callback \\ nil,
-         collector_options \\ []
+         progress_callback,
+         collector_options,
+         execution_context
        )
        when is_map(args) do
     with {:ok, cfg} <- read_config(tool_instance),
          {:ok, auth} <- read_auth(tool_instance),
+         {:ok, requested_secrets} <- read_use_secrets(args),
+         {:ok, secret_env} <-
+           SecretResolver.resolve_selected(tool_instance, requested_secrets, execution_context),
+         args = without_secret_env_collisions(args, Map.keys(secret_env)),
          {:ok, request} <- read_request(args, cfg.default_timeout_seconds),
+         {:ok, request} <- inject_secret_env(request, secret_env),
          :ok <- ensure_ssh_started(),
          {:ok, result} <-
-           execute_request(cfg, auth, request, progress_callback, collector_options) do
-      {:ok, result}
+           execute_request(
+             cfg,
+             auth,
+             request,
+             redact_progress_callback(progress_callback, Map.values(secret_env)),
+             collector_options
+           ) do
+      {:ok, redact_value(result, Map.values(secret_env))}
     end
   end
 
@@ -290,7 +314,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
         %ToolInstance{} = tool_instance,
         "run_command",
         args,
-        %ExecutionContext{}
+        %ExecutionContext{} = execution_context
       )
       when is_map(args) do
     max_output_tokens = background_max_output_tokens(tool_instance)
@@ -318,10 +342,16 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
     end
 
     result =
-      case run_command(tool_instance, args, progress_callback,
-             capture_byte_limit: token_byte_limit(max_output_tokens),
-             stream_utf8: true,
-             background_task_id: task.id
+      case run_command(
+             tool_instance,
+             args,
+             progress_callback,
+             [
+               capture_byte_limit: token_byte_limit(max_output_tokens),
+               stream_utf8: true,
+               background_task_id: task.id
+             ],
+             execution_context
            ) do
         {:ok, value} ->
           {:ok,
@@ -773,6 +803,98 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
       nil -> :ok
       {bad, _} -> {:error, "Invalid environment variable name: #{inspect(bad)}"}
     end
+  end
+
+  defp without_secret_env_collisions(args, []), do: args
+
+  defp without_secret_env_collisions(args, secret_names) when is_map(args) do
+    case Map.get(args, "env") do
+      env when is_map(env) -> Map.put(args, "env", Map.drop(env, secret_names))
+      _other -> args
+    end
+  end
+
+  defp read_use_secrets(args) when is_map(args) do
+    case Map.get(args, "use_secrets") do
+      nil ->
+        {:ok, []}
+
+      names when is_list(names) ->
+        normalized = Enum.map(names, fn name -> name |> to_string() |> String.trim() end)
+
+        if Enum.any?(normalized, &(&1 == "" or not Regex.match?(@env_key_pattern, &1))) do
+          {:error, "Argument `use_secrets` must contain valid environment variable names."}
+        else
+          {:ok, Enum.uniq(normalized)}
+        end
+
+      _other ->
+        {:error, "Argument `use_secrets` must be an array of secret names."}
+    end
+  end
+
+  defp inject_secret_env(request, secret_env) when map_size(secret_env) == 0,
+    do: {:ok, request}
+
+  defp inject_secret_env(request, secret_env) when is_map(secret_env) do
+    entries = Enum.sort_by(secret_env, fn {name, _value} -> name end)
+
+    case Enum.find(entries, fn {_name, value} ->
+           String.contains?(value, ["\n", "\r", <<0>>])
+         end) do
+      {name, _value} ->
+        {:error,
+         "Secret `#{name}` cannot be injected over SSH because it contains a newline or NUL byte."}
+
+      nil ->
+        reads =
+          entries
+          |> Enum.with_index()
+          |> Enum.map_join("; ", fn {{name, _value}, index} ->
+            variable = "IC_MANAGED_SECRET_#{index}"
+
+            "IFS= read -r #{variable} || exit 125; export #{name}=\"$#{variable}\"; unset #{variable}"
+          end)
+
+        wrapper = reads <> "; exec sh -c \"$1\""
+
+        remote_command =
+          "sh -c " <> shell_escape(wrapper) <> " sh " <> shell_escape(request.remote_command)
+
+        prefix = entries |> Enum.map_join("\n", fn {_name, value} -> value end) |> Kernel.<>("\n")
+
+        {:ok, %{request | remote_command: remote_command, stdin: prefix <> request.stdin}}
+    end
+  end
+
+  defp redact_progress_callback(nil, _values), do: nil
+  defp redact_progress_callback(callback, []) when is_function(callback, 2), do: callback
+
+  # Exact redaction cannot safely cover a secret split across streamed chunks.
+  defp redact_progress_callback(_callback, _values), do: nil
+
+  defp redact_value(value, []), do: value
+  defp redact_value(value, values) when is_binary(value), do: redact_string(value, values)
+
+  defp redact_value(value, values) when is_list(value),
+    do: Enum.map(value, &redact_value(&1, values))
+
+  defp redact_value(value, values) when is_tuple(value),
+    do: value |> Tuple.to_list() |> redact_value(values) |> List.to_tuple()
+
+  defp redact_value(value, values) when is_map(value),
+    do: Map.new(value, fn {key, item} -> {key, redact_value(item, values)} end)
+
+  defp redact_value(value, _values), do: value
+
+  defp redact_string(value, values) when is_binary(value) do
+    Enum.reduce(values, value, fn
+      secret, acc when is_binary(secret) and byte_size(secret) > 0 ->
+        String.replace(acc, secret, "***")
+
+      _secret, acc ->
+        acc
+    end)
   end
 
   defp read_timeout_seconds(args, default_timeout_seconds) when is_map(args) do

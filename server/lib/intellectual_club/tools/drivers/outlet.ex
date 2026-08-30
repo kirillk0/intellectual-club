@@ -13,6 +13,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Outlets.Runtime
+  alias IntellectualClub.Secrets.Prompt, as: SecretPrompt
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -44,7 +45,8 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
     [
       metadata_line("Runner hostname", metadata_value(metadata, "hostname")),
       metadata_line("Runner platform", platform_summary(metadata)),
-      metadata_line("Runner shell", shell_summary(metadata))
+      metadata_line("Runner shell", shell_summary(metadata)),
+      SecretPrompt.instance_context(tool_instance) || ""
     ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n")

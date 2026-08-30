@@ -20,6 +20,7 @@ config :intellectual_club,
     IntellectualClub.Knowledge,
     IntellectualClub.Llm,
     IntellectualClub.Notifications,
+    IntellectualClub.Secrets,
     IntellectualClub.Tools,
     IntellectualClub.Outlets
   ]

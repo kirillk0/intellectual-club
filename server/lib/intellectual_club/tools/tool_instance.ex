@@ -118,6 +118,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
       public?(true)
     end
 
+    has_many :secret_bindings, IntellectualClub.Secrets.ToolInstanceSecret do
+      destination_attribute(:tool_instance_id)
+    end
+
     has_many :shares, IntellectualClub.Tools.ToolInstanceShare do
       destination_attribute(:tool_instance_id)
     end
@@ -221,6 +225,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
     destroy :destroy do
       primary?(true)
       require_atomic?(false)
+      change(cascade_destroy(:secret_bindings, after_action?: false))
       change({DeleteToolDependents, []})
     end
 
@@ -318,6 +323,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
               {:error, error} -> {:halt, {:error, error}}
             end
           end)
+          |> case do
+            {:ok, duplicated} -> duplicate_secret_bindings(source, duplicated, actor)
+            {:error, error} -> {:error, error}
+          end
         end)
       end
 
@@ -365,6 +374,48 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
     policy action_type([:update, :destroy]) do
       authorize_if relates_to_actor_via(:owner)
+    end
+  end
+
+  defp duplicate_secret_bindings(source, duplicated, actor) do
+    if Duplication.owned_by_actor?(source.owner_id, actor) do
+      IntellectualClub.Secrets.ToolInstanceSecret
+      |> Ash.Query.filter(tool_instance_id == ^source.id)
+      |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.read!(actor: actor)
+      |> Enum.reduce_while({:ok, duplicated}, fn binding, {:ok, duplicated} ->
+        case IntellectualClub.Secrets.duplicate_secret(binding.secret_id, actor) do
+          {:ok, duplicated_secret} ->
+            result =
+              IntellectualClub.Secrets.ToolInstanceSecret
+              |> Ash.Changeset.for_create(
+                :create,
+                %{
+                  tool_instance_id: duplicated.id,
+                  secret_id: duplicated_secret.id,
+                  env_name: binding.env_name,
+                  sequence: binding.sequence,
+                  enabled: binding.enabled
+                },
+                actor: actor
+              )
+              |> Ash.create(actor: actor)
+
+            case result do
+              {:ok, _binding} ->
+                {:cont, {:ok, duplicated}}
+
+              {:error, error} ->
+                _ = Ash.destroy(duplicated_secret, actor: actor)
+                {:halt, {:error, error}}
+            end
+
+          {:error, error} ->
+            {:halt, {:error, error}}
+        end
+      end)
+    else
+      {:ok, duplicated}
     end
   end
 

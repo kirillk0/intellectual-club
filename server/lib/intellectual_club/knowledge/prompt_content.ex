@@ -4,6 +4,7 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   """
 
   alias IntellectualClub.Chat.Media
+  alias IntellectualClub.Secrets.Prompt, as: SecretPrompt
 
   @comment_prefix "//// "
 
@@ -33,12 +34,14 @@ defmodule IntellectualClub.Knowledge.PromptContent do
       |> strip_comments()
 
     attachments = attachment_placeholders(block)
+    secrets = secret_placeholders(block)
 
     parts =
       []
       |> maybe_append("# #{title}", title != "")
       |> maybe_append(body, body != "")
       |> maybe_append(attachments, attachments != "")
+      |> maybe_append(secrets, secrets != "")
 
     case Enum.join(parts, "\n") do
       "" -> ""
@@ -60,6 +63,18 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   end
 
   def attachment_placeholders(_block), do: ""
+
+  @doc """
+  Returns model-visible managed secret names for knowledge block bindings.
+  """
+  def secret_placeholders(block) when is_map(block) do
+    case SecretPrompt.binding_lines(Map.get(block, :secret_bindings, [])) do
+      "" -> ""
+      lines -> "Available managed secrets (pass their names in `use_secrets`):\n" <> lines
+    end
+  end
+
+  def secret_placeholders(_block), do: ""
 
   defp comment_line?(line) when is_binary(line) do
     String.starts_with?(line, @comment_prefix)

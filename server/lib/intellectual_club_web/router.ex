@@ -97,6 +97,7 @@ defmodule IntellectualClubWeb.Router do
     post "/complete/", OutletController, :complete
     post "/calls/:call_id/files", OutletController, :upload_file
     get "/calls/:call_id/files/:file_id", OutletController, :download_file
+    get "/calls/:call_id/secrets/:name", OutletController, :fetch_secret
 
     post "/pair/start/", OutletController, :pair_start
     post "/pair/poll/", OutletController, :pair_poll
@@ -234,6 +235,18 @@ defmodule IntellectualClubWeb.Router do
     get "/knowledge-blocks/:id/files/:attachment_id", KnowledgeBlockFilesController, :show
     patch "/knowledge-blocks/:id/files/:attachment_id", KnowledgeBlockFilesController, :update
     delete "/knowledge-blocks/:id/files/:attachment_id", KnowledgeBlockFilesController, :delete
+    get "/knowledge-blocks/:id/secrets", ManagedSecretsController, :knowledge_index
+    post "/knowledge-blocks/:id/secrets", ManagedSecretsController, :knowledge_create
+    patch "/knowledge-blocks/:id/secrets/:secret_id", ManagedSecretsController, :knowledge_update
+
+    delete "/knowledge-blocks/:id/secrets/:secret_id",
+           ManagedSecretsController,
+           :knowledge_delete
+
+    get "/tool-instances/:id/secrets", ManagedSecretsController, :tool_index
+    post "/tool-instances/:id/secrets", ManagedSecretsController, :tool_create
+    patch "/tool-instances/:id/secrets/:secret_id", ManagedSecretsController, :tool_update
+    delete "/tool-instances/:id/secrets/:secret_id", ManagedSecretsController, :tool_delete
 
     post "/knowledge-blocks/markdown-export", KnowledgeBlocksMarkdownController, :export
   end

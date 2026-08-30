@@ -62,6 +62,7 @@ defmodule IntellectualClub.Generation.Context do
     :tools_payload,
     :tool_instances_by_alias,
     :available_file_external_ids,
+    :available_secret_binding_external_ids,
     :max_tool_rounds,
     :context_soft_limit_percent,
     :cache_control_enabled,
@@ -102,7 +103,8 @@ defmodule IntellectualClub.Generation.Context do
       prompt_sources: prompt_sources,
       prompt_blocks: prompt_blocks,
       system_prompt: system_prompt,
-      available_file_external_ids: available_file_external_ids(prompt_blocks, tool_resolution)
+      available_file_external_ids: available_file_external_ids(prompt_blocks, tool_resolution),
+      available_secret_binding_external_ids: available_secret_binding_external_ids(prompt_blocks)
     }
   end
 
@@ -160,6 +162,9 @@ defmodule IntellectualClub.Generation.Context do
 
       available_file_external_ids =
         available_file_external_ids_for_chat(chat, actor, tool_resolution)
+
+      available_secret_binding_external_ids =
+        available_secret_binding_external_ids_for_chat(chat, actor)
 
       provider = llm_configuration && Map.get(llm_configuration, :provider)
 
@@ -239,6 +244,7 @@ defmodule IntellectualClub.Generation.Context do
         tools_payload: tools_payload,
         tool_instances_by_alias: tool_instances_by_alias,
         available_file_external_ids: available_file_external_ids,
+        available_secret_binding_external_ids: available_secret_binding_external_ids,
         max_tool_rounds: max_tool_rounds_for_chat(chat),
         context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
         cache_control_enabled: cache_control_enabled,
@@ -315,6 +321,19 @@ defmodule IntellectualClub.Generation.Context do
           available_file_external_ids_for_chat(chat, actor, tool_resolution)
       end
 
+    available_secret_binding_external_ids =
+      case Keyword.get(opts, :available_secret_binding_external_ids) do
+        value when is_list(value) ->
+          value
+          |> Enum.map(&to_string/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        _other ->
+          available_secret_binding_external_ids_for_chat(chat, actor)
+      end
+
     %__MODULE__{
       owner_id: actor && actor.id,
       chat_id: chat.id,
@@ -352,6 +371,7 @@ defmodule IntellectualClub.Generation.Context do
       tools_payload: RequestPayload.tools(request_payload),
       tool_instances_by_alias: tool_resolution.tool_instances_by_alias,
       available_file_external_ids: available_file_external_ids,
+      available_secret_binding_external_ids: available_secret_binding_external_ids,
       max_tool_rounds: max_tool_rounds_for_chat(chat),
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
@@ -425,6 +445,9 @@ defmodule IntellectualClub.Generation.Context do
     prompt_snapshot = prompt_snapshot!(chat, actor: actor, tool_resolution: tool_resolution)
     system_prompt = prompt_snapshot.system_prompt
     available_file_external_ids = prompt_snapshot.available_file_external_ids
+
+    available_secret_binding_external_ids =
+      prompt_snapshot.available_secret_binding_external_ids
 
     supports_image_input =
       ash_boolean_true?(
@@ -564,6 +587,7 @@ defmodule IntellectualClub.Generation.Context do
       tools_payload: tools_payload,
       tool_instances_by_alias: tool_instances_by_alias,
       available_file_external_ids: available_file_external_ids,
+      available_secret_binding_external_ids: available_secret_binding_external_ids,
       max_tool_rounds: max_tool_rounds_for_chat(chat),
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
@@ -1306,6 +1330,14 @@ defmodule IntellectualClub.Generation.Context do
         :enabled,
         :file_id,
         file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
+      ],
+      secret_bindings: [
+        :id,
+        :external_id,
+        :env_name,
+        :sequence,
+        :enabled,
+        secret: [:id, :name, :description]
       ]
     ]
   end
@@ -1368,6 +1400,43 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp prompt_block_entries(_bindings, _source), do: []
+
+  defp available_secret_binding_external_ids_for_chat(chat, actor) do
+    chat
+    |> load_prompt_sources(actor)
+    |> ordered_prompt_blocks()
+    |> available_secret_binding_external_ids()
+  end
+
+  defp available_secret_binding_external_ids(prompt_blocks) when is_list(prompt_blocks) do
+    prompt_blocks
+    |> Enum.flat_map(fn
+      %{knowledge_block: block} -> block_secret_binding_external_ids(block)
+      _other -> []
+    end)
+    |> Enum.uniq()
+  end
+
+  defp available_secret_binding_external_ids(_prompt_blocks), do: []
+
+  defp block_secret_binding_external_ids(block) when is_map(block) do
+    block
+    |> Map.get(:secret_bindings, [])
+    |> case do
+      %Ash.NotLoaded{} -> []
+      bindings when is_list(bindings) -> bindings
+      _other -> []
+    end
+    |> Enum.filter(&(Map.get(&1, :enabled, true) != false))
+    |> Enum.flat_map(fn binding ->
+      case Map.get(binding, :external_id) do
+        value when is_binary(value) and value != "" -> [value]
+        _other -> []
+      end
+    end)
+  end
+
+  defp block_secret_binding_external_ids(_block), do: []
 
   defp available_file_external_ids_for_chat(chat, actor, tool_resolution) do
     chat

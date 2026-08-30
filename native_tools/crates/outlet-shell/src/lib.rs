@@ -78,6 +78,22 @@ impl ShellOutlet {
         args: RunCommandArgs,
         context: Option<&CallContext>,
     ) -> Result<(String, Value)> {
+        let secret_names = args
+            .use_secrets
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        let mut managed_secrets = HashMap::new();
+        if !secret_names.is_empty() {
+            let call_context = context
+                .ok_or_else(|| anyhow!("use_secrets requires an outlet call execution context"))?;
+            for name in &secret_names {
+                let value = call_context.fetch_call_secret(name).await?;
+                managed_secrets.insert(name.clone(), value);
+            }
+        }
+
         let argv = args
             .argv
             .unwrap_or_default()
@@ -108,6 +124,9 @@ impl ShellOutlet {
             for (key, value) in env_map {
                 merged_env.insert(key, json_value_to_env_string(value));
             }
+        }
+        for (key, value) in &managed_secrets {
+            merged_env.insert(key.clone(), value.clone());
         }
 
         let mut shell_encoding_bootstrap = String::new();
@@ -170,15 +189,20 @@ impl ShellOutlet {
         let mut stdin_task = write_stdin(child.stdin.take(), args.stdin.unwrap_or_default());
         let stdout_capture = PipeCapture::new(max_capture_bytes);
         let stderr_capture = PipeCapture::new(max_capture_bytes);
+        let progress_context = if managed_secrets.is_empty() {
+            context.cloned()
+        } else {
+            None
+        };
         let mut stdout_task = read_pipe(
             child.stdout.take(),
-            context.cloned(),
+            progress_context.clone(),
             "stdout",
             stdout_capture.clone(),
         );
         let mut stderr_task = read_pipe(
             child.stderr.take(),
-            context.cloned(),
+            progress_context,
             "stderr",
             stderr_capture.clone(),
         );
@@ -217,8 +241,11 @@ impl ShellOutlet {
         process_group.disarm();
 
         let exit_code = status.code().unwrap_or(if timed_out { -9 } else { -1 });
-        let (stdout_text, stdout_decode_error) = decode_utf8_output(&stdout.bytes);
-        let (stderr_text, stderr_decode_error) = decode_utf8_output(&stderr.bytes);
+        let (mut stdout_text, stdout_decode_error) = decode_utf8_output(&stdout.bytes);
+        let (mut stderr_text, stderr_decode_error) = decode_utf8_output(&stderr.bytes);
+        let secret_values = managed_secrets.values().cloned().collect::<Vec<_>>();
+        stdout_text = redact_secret_values(&stdout_text, &secret_values);
+        stderr_text = redact_secret_values(&stderr_text, &secret_values);
 
         let (stdout_text, stdout_chars_truncated) = truncate_text(&stdout_text, max_stream_chars);
         let (stderr_text, stderr_chars_truncated) = truncate_text(&stderr_text, max_stream_chars);
@@ -432,6 +459,8 @@ struct RunCommandArgs {
     #[serde(default)]
     env: Option<HashMap<String, Value>>,
     #[serde(default)]
+    use_secrets: Vec<String>,
+    #[serde(default)]
     stdin: Option<String>,
     #[serde(default)]
     timeout_seconds: Option<u64>,
@@ -470,6 +499,11 @@ fn run_command_schema() -> Value {
                 "type": "object",
                 "description": "Environment variables (optional).",
                 "additionalProperties": {"type": "string"}
+            },
+            "use_secrets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Managed secret names to inject into this command environment. Available names are listed in knowledge blocks and the tool instance context."
             },
             "stdin": {
                 "type": "string",
@@ -682,6 +716,16 @@ fn load_env_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn redact_secret_values(text: &str, values: &[String]) -> String {
+    values.iter().fold(text.to_string(), |redacted, value| {
+        if !value.is_empty() {
+            redacted.replace(value, "***")
+        } else {
+            redacted
+        }
+    })
 }
 
 fn json_value_to_env_string(value: Value) -> String {
@@ -1670,6 +1714,25 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[test]
+    fn run_command_schema_exposes_managed_secret_selection() {
+        let schema = run_command_schema();
+        assert_eq!(schema["properties"]["use_secrets"]["type"], "array");
+        assert_eq!(
+            schema["properties"]["use_secrets"]["items"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn managed_secret_values_are_redacted_from_command_output() {
+        let values = vec!["token-value".to_string(), "xy".to_string()];
+        assert_eq!(
+            redact_secret_values("token-value and xy", &values),
+            "*** and ***"
+        );
     }
 
     #[test]

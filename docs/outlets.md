@@ -307,3 +307,20 @@ jobs from the old process; unfinished envelopes fail with an unknown execution o
 Terminal runner results expire after a configurable retention period (24 hours by
 default). Runner-process recovery and an on-disk task spool are outside this protocol
 version.
+
+## Managed secret fetches
+
+A provider may explicitly request managed secret names in a tool argument such as `use_secrets`. The runner fetches each selected value only after receiving the call:
+
+`GET /api/outlet/calls/:call_id/secrets/:name`
+
+The request uses the normal outlet bearer token. The server authorizes the name against both the outlet tool instance and the immutable execution context of the call, then re-reads the parent-owned attachment so deleting it or its parent revokes the fetch immediately. A successful response is:
+
+```json
+{
+  "name": "GITLAB_TOKEN",
+  "value": "..."
+}
+```
+
+The value must remain in runner memory and must not be written to the runner profile, call arguments, logs, or completion payload. A shell provider injects it directly into the environment of the one child process. When managed secrets are used, providers should suppress raw progress streaming and redact exact secret values from the final output before posting completion.

@@ -317,7 +317,9 @@ defmodule IntellectualClub.Chat.Spawn do
            context.step_id,
            context.request_payload || %{},
            actor: actor,
-           available_file_external_ids: context.available_file_external_ids || []
+           available_file_external_ids: context.available_file_external_ids || [],
+           available_secret_binding_external_ids:
+             context.available_secret_binding_external_ids || []
          ) do
       {:ok, _context} -> :ok
       {:error, :already_running} -> :ok

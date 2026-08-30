@@ -525,6 +525,8 @@ defmodule IntellectualClub.BackgroundTasks do
       generation_fence_token: context_value(map, "generation_fence_token"),
       provider_type: context_value(map, "provider_type"),
       available_file_external_ids: context_value(map, "available_file_external_ids", []),
+      available_secret_binding_external_ids:
+        context_value(map, "available_secret_binding_external_ids", []),
       tool_call_item_id: context_value(map, "tool_call_item_id"),
       tool_call_created_at: map |> context_value("tool_call_created_at") |> parse_datetime()
     }

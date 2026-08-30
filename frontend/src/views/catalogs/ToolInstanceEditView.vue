@@ -86,6 +86,15 @@
             Credentials
           </button>
           <button
+            v-if="supportsManagedSecrets"
+            class="tab"
+            :class="{ active: toolTab === 'secrets' }"
+            type="button"
+            @click="toolTab = 'secrets'"
+          >
+            {{ translate('Secrets') }}
+          </button>
+          <button
             class="tab"
             :class="{ active: toolTab === 'functions' }"
             type="button"
@@ -481,6 +490,13 @@
           </template>
         </div>
 
+          <ManagedSecretsSection
+            v-else-if="toolTab === 'secrets'"
+            parent="tool-instances"
+            :parent-id="managedSecretsParentId"
+            :readonly="sharedReadonly"
+          />
+
           <div v-else class="stack">
           <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
             <strong>Functions</strong>
@@ -634,6 +650,7 @@ import { formatRelativeDateTime } from '@/utils/dates';
 import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
+import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 
 const MarkdownEditor = defineAsyncComponent({
   loader: () => import('@/features/catalogs/components/knowledge-block/KnowledgeBlockCodeEditor.vue'),
@@ -1106,7 +1123,7 @@ const createNew = () => {
 };
 const goList = editor.goList;
 
-const toolTab = useEditorTabState<'settings' | 'description' | 'credentials' | 'functions'>('tool-instance', 'settings');
+const toolTab = useEditorTabState<'settings' | 'description' | 'credentials' | 'secrets' | 'functions'>('tool-instance', 'settings');
 const descriptionHasText = computed(() => String(form.description || '').trim() !== '');
 const functionsTabCount = computed(() => functions.value.length);
 
@@ -1129,6 +1146,11 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
 });
 
 const isMcpHttp = computed(() => String(form.type || '').trim() === 'mcp-http');
+const supportsManagedSecrets = computed(() => ['ssh', 'outlet'].includes(String(form.type || '').trim()));
+const managedSecretsParentId = editor.numericId;
+watch(supportsManagedSecrets, (supported) => {
+  if (!supported && toolTab.value === 'secrets') toolTab.value = 'settings';
+});
 
 const functionsMode = computed(() => {
   const raw = currentToolType.value?.functions_mode;

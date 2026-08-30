@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.OutletController do
   alias IntellectualClub.Files
   alias IntellectualClub.Files.UploadStaging
   alias IntellectualClub.Outlets.{Auth, Pairing, Runtime}
+  alias IntellectualClub.Secrets.Resolver, as: SecretResolver
   alias IntellectualClub.Tools.Discovery
   alias IntellectualClub.Tools.Drivers.Outlet, as: OutletDriver
   alias IntellectualClubWeb.Bff.Helpers
@@ -287,6 +288,59 @@ defmodule IntellectualClubWeb.OutletController do
           |> json(%{error: "Outlet runtime failed."})
       end
     end
+  end
+
+  def fetch_secret(conn, %{"call_id" => call_id, "name" => name} = params) do
+    token = extract_token(conn, params)
+    tool_instance = Auth.tool_instance_for_token(token)
+
+    if tool_instance == nil do
+      conn
+      |> put_status(:unauthorized)
+      |> json(%{error: "Unauthorized."})
+    else
+      case outlet_call_context(tool_instance, call_id) do
+        {:ok, execution_context} ->
+          case SecretResolver.resolve_selected(tool_instance, [name], execution_context) do
+            {:ok, %{^name => value}} ->
+              json(conn, %{name: name, value: value})
+
+            {:ok, values} ->
+              normalized_name = name |> to_string() |> String.trim()
+
+              case Map.fetch(values, normalized_name) do
+                {:ok, value} -> json(conn, %{name: normalized_name, value: value})
+                :error -> render_secret_not_found(conn)
+              end
+
+            {:error, _message} ->
+              render_secret_not_found(conn)
+          end
+
+        {:error, :not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "Call not found."})
+
+        {:error, :runtime_unavailable} ->
+          conn
+          |> put_status(:service_unavailable)
+          |> json(%{error: "Outlet runtime is unavailable."})
+
+        {:error, {:runtime_timeout, _reason}} ->
+          conn |> put_status(:gateway_timeout) |> json(%{error: "Outlet runtime timed out."})
+
+        {:error, {:runtime_exit, _reason}} ->
+          conn |> put_status(:service_unavailable) |> json(%{error: "Outlet runtime failed."})
+
+        {:error, {:runtime_exception, _exception}} ->
+          conn |> put_status(:service_unavailable) |> json(%{error: "Outlet runtime failed."})
+      end
+    end
+  end
+
+  defp render_secret_not_found(conn) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "Secret not found."})
   end
 
   defp outlet_call_context(tool_instance, call_id) do

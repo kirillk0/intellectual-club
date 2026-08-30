@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.OutletControllerTest do
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Files
   alias IntellectualClub.Outlets.Runtime
+  alias IntellectualClub.Secrets.{Secret, ToolInstanceSecret}
   alias IntellectualClub.Tools.{ExecutionContext, ToolFunction, ToolInstance}
 
   require Ash.Query
@@ -443,6 +444,65 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     assert response["file"]["filename"] == filename
     assert response["file"]["mime_type"] == "text/plain"
     assert response["file"]["size_bytes"] == 7
+  end
+
+  test "GET /api/outlet/calls/:call_id/secrets/:name fetches only currently bound secrets" do
+    reset_runtime!()
+    %{user: actor} = user_fixture()
+
+    tool_instance =
+      create_outlet_tool_instance!(actor, %{
+        name: "Secret outlet",
+        secrets: %{"token" => "runner-secret-fetch"}
+      })
+
+    secret =
+      Secret
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "API token", description: "API token", value: "managed-secret-value"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    binding =
+      ToolInstanceSecret
+      |> Ash.Changeset.for_create(
+        :create,
+        %{tool_instance_id: tool_instance.id, secret_id: secret.id, env_name: "API_TOKEN"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    context = %ExecutionContext{owner_id: actor.id}
+    assert :ok = Runtime.enqueue_if_absent(tool_instance, "run_command", %{}, context)
+
+    poll_response =
+      poll_outlet("runner-secret-fetch", %{
+        "runner_id" => "runner-secret-fetch",
+        "runner_session_id" => "runner-secret-fetch-session",
+        "capacity" => 1,
+        "max_wait_seconds" => 0
+      })
+
+    [task] = poll_response["tasks"]
+
+    response =
+      build_conn()
+      |> put_req_header("authorization", "Bearer runner-secret-fetch")
+      |> get("/api/outlet/calls/#{task["call_id"]}/secrets/API_TOKEN")
+      |> json_response(200)
+
+    assert response == %{"name" => "API_TOKEN", "value" => "managed-secret-value"}
+
+    binding
+    |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
+    |> Ash.destroy!(actor: actor)
+
+    build_conn()
+    |> put_req_header("authorization", "Bearer runner-secret-fetch")
+    |> get("/api/outlet/calls/#{task["call_id"]}/secrets/API_TOKEN")
+    |> json_response(404)
   end
 
   test "GET /api/outlet/calls/:call_id/files/:file_id streams an available file" do

@@ -399,6 +399,34 @@ impl CallContext {
             .ok_or_else(|| anyhow!("outlet file upload response is invalid"))
     }
 
+    pub async fn fetch_call_secret(&self, name: &str) -> Result<String> {
+        let url = join_url(
+            &self.server_url,
+            &format!("/api/outlet/calls/{}/secrets/{}", self.call_id, name),
+        );
+
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(self.token.as_ref())
+            .send()
+            .await
+            .context("failed to fetch outlet call secret")?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow!("secret fetch failed: HTTP {status}: {body}"));
+        }
+
+        let payload: Value =
+            serde_json::from_str(&body).context("invalid secret fetch JSON response")?;
+        payload
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("outlet secret fetch response is invalid"))
+    }
+
     pub async fn download_call_file_to_path(
         &self,
         file_id: &str,

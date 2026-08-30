@@ -92,6 +92,13 @@
             @set-enabled="toggleAttachmentEnabled"
           />
 
+          <ManagedSecretsSection
+            v-else-if="blockTab === 'secrets'"
+            parent="knowledge-blocks"
+            :parent-id="numericId"
+            :readonly="sharedReadonly"
+          />
+
           <KnowledgeBlockDetailsSection
             v-else
             v-model:image="form.image"
@@ -137,6 +144,7 @@ import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import KnowledgeBlockDetailsSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockDetailsSection.vue';
 import KnowledgeBlockFilesSection from '@/features/catalogs/components/knowledge-block/KnowledgeBlockFilesSection.vue';
+import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-block/KnowledgeBlockMainFields.vue';
 import KnowledgeBlockReadonlyBanner from '@/features/catalogs/components/knowledge-block/KnowledgeBlockReadonlyBanner.vue';
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';

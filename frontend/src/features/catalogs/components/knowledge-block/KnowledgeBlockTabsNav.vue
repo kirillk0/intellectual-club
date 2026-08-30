@@ -16,6 +16,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import { translate } from '@/i18n';
+
 import type { KnowledgeBlockTab } from './types';
 
 const props = defineProps<{
@@ -29,9 +31,10 @@ const emit = defineEmits<{
 }>();
 
 const tabs = computed<Array<{ value: KnowledgeBlockTab; label: string }>>(() => [
-  { value: 'code', label: 'Code' },
-  { value: 'tags', label: `Tags (${props.tagsCount})` },
-  { value: 'files', label: `Files (${props.filesCount})` },
-  { value: 'details', label: 'Details' },
+  { value: 'code', label: translate('Code') },
+  { value: 'tags', label: `${translate('Tags')} (${props.tagsCount})` },
+  { value: 'files', label: `${translate('Files')} (${props.filesCount})` },
+  { value: 'secrets', label: translate('Secrets') },
+  { value: 'details', label: translate('Details') },
 ]);
 </script>

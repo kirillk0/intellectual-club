@@ -590,7 +590,9 @@ defmodule IntellectualClub.Chat.Fork do
             copied_step.id,
             copied_step.raw_request || %{},
             actor: actor,
-            available_file_external_ids: context.available_file_external_ids || []
+            available_file_external_ids: context.available_file_external_ids || [],
+            available_secret_binding_external_ids:
+              context.available_secret_binding_external_ids || []
           )
 
         tool_followup =
@@ -779,7 +781,9 @@ defmodule IntellectualClub.Chat.Fork do
            step_id,
            raw_request || %{},
            actor: actor,
-           available_file_external_ids: parent_context.available_file_external_ids || []
+           available_file_external_ids: parent_context.available_file_external_ids || [],
+           available_secret_binding_external_ids:
+             parent_context.available_secret_binding_external_ids || []
          ) do
       {:ok, _context} ->
         :ok

@@ -12,6 +12,7 @@ defmodule IntellectualClub.Tools.ExecutionContext do
     :generation_fence_token,
     :provider_type,
     :available_file_external_ids,
+    :available_secret_binding_external_ids,
     :tool_call_item_id,
     :tool_call_created_at
   ]

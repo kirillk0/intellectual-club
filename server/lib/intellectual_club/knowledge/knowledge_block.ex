@@ -89,6 +89,48 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
 
   defp duplicate_file_bindings(_source_id, duplicated, _actor), do: {:ok, duplicated}
 
+  defp duplicate_secret_bindings(source, duplicated, actor) do
+    if Duplication.owned_by_actor?(source.owner_id, actor) do
+      IntellectualClub.Secrets.KnowledgeBlockSecret
+      |> Ash.Query.filter(knowledge_block_id == ^source.id)
+      |> Ash.Query.sort(sequence: :asc, id: :asc)
+      |> Ash.read!(actor: actor)
+      |> Enum.reduce_while({:ok, duplicated}, fn binding, {:ok, duplicated} ->
+        case IntellectualClub.Secrets.duplicate_secret(binding.secret_id, actor) do
+          {:ok, duplicated_secret} ->
+            result =
+              IntellectualClub.Secrets.KnowledgeBlockSecret
+              |> Ash.Changeset.for_create(
+                :create,
+                %{
+                  knowledge_block_id: duplicated.id,
+                  secret_id: duplicated_secret.id,
+                  env_name: binding.env_name,
+                  sequence: binding.sequence,
+                  enabled: binding.enabled
+                },
+                actor: actor
+              )
+              |> Ash.create(actor: actor)
+
+            case result do
+              {:ok, _binding} ->
+                {:cont, {:ok, duplicated}}
+
+              {:error, error} ->
+                _ = Ash.destroy(duplicated_secret, actor: actor)
+                {:halt, {:error, error}}
+            end
+
+          {:error, error} ->
+            {:halt, {:error, error}}
+        end
+      end)
+    else
+      {:ok, duplicated}
+    end
+  end
+
   postgres do
     table("knowledge_blocks")
     repo(IntellectualClub.Repo)
@@ -169,6 +211,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
     has_many :file_bindings, IntellectualClub.Knowledge.KnowledgeBlockFile do
       destination_attribute(:knowledge_block_id)
       public?(true)
+    end
+
+    has_many :secret_bindings, IntellectualClub.Secrets.KnowledgeBlockSecret do
+      destination_attribute(:knowledge_block_id)
     end
 
     has_many :shares, IntellectualClub.Knowledge.KnowledgeBlockShare do
@@ -256,6 +302,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       change(cascade_destroy(:llm_configuration_bindings, after_action?: false))
       change(cascade_destroy(:chat_bindings, after_action?: false))
       change(cascade_destroy(:file_bindings, after_action?: false))
+      change(cascade_destroy(:secret_bindings, after_action?: false))
       change(cascade_destroy(:shares, after_action?: false))
       change({DeleteAssociatedFile, field: :image_file_id})
     end
@@ -360,6 +407,7 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
           |> case do
             {:ok, duplicated} ->
               with {:ok, duplicated} <- duplicate_file_bindings(source.id, duplicated, actor),
+                   {:ok, duplicated} <- duplicate_secret_bindings(source, duplicated, actor),
                    {:ok, duplicated} <-
                      maybe_attach_duplicated_image(
                        duplicated,

@@ -21,6 +21,7 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Outlets.Runtime
+  alias IntellectualClub.Secrets.{KnowledgeBlockSecret, Secret}
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.BotUserToolBinding
   alias IntellectualClub.Tools.BindingResolver
@@ -87,6 +88,32 @@ defmodule IntellectualClub.Generation.ContextTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+
+    prompt_secret =
+      Secret
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          name: "Prompt token",
+          description: "Token for the example API",
+          value: "never-in-prompt"
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    prompt_secret_binding =
+      KnowledgeBlockSecret
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          knowledge_block_id: first_block.id,
+          secret_id: prompt_secret.id,
+          env_name: "EXAMPLE_API_TOKEN"
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
 
     bot =
       Bot
@@ -165,6 +192,11 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert String.contains?(context.system_prompt, "Second content")
     assert first_block_file.external_id in context.available_file_external_ids
     refute disabled_block_file.external_id in context.available_file_external_ids
+    assert context.system_prompt =~ "`EXAMPLE_API_TOKEN`"
+    assert context.system_prompt =~ "Token for the example API"
+    refute context.system_prompt =~ "never-in-prompt"
+
+    assert prompt_secret_binding.external_id in context.available_secret_binding_external_ids
 
     assert Enum.at(context.messages, 0) == %{
              "role" => "system",

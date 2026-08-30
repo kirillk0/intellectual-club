@@ -2324,6 +2324,8 @@ defmodule IntellectualClub.Generation.Worker do
       step_id: Map.get(state.runtime_step, :id) || Map.get(state.context, :step_id),
       provider_type: Map.get(state.context, :provider_type),
       available_file_external_ids: Map.get(state.context, :available_file_external_ids, []),
+      available_secret_binding_external_ids:
+        Map.get(state.context, :available_secret_binding_external_ids, []),
       generation_fence_token:
         case state.lease do
           %Lease{fence_token: fence_token} -> fence_token

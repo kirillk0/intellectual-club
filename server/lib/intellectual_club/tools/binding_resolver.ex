@@ -526,7 +526,15 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :secrets,
           :max_output_tokens,
           :outlet_online,
-          :can_edit
+          :can_edit,
+          secret_bindings: [
+            :id,
+            :external_id,
+            :env_name,
+            :sequence,
+            :enabled,
+            secret: [:id, :name, :description]
+          ]
         ]
       ],
       strict?: true
@@ -553,7 +561,15 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :secrets,
           :max_output_tokens,
           :outlet_online,
-          :can_edit
+          :can_edit,
+          secret_bindings: [
+            :id,
+            :external_id,
+            :env_name,
+            :sequence,
+            :enabled,
+            secret: [:id, :name, :description]
+          ]
         ]
       ],
       strict?: true
@@ -580,7 +596,15 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :secrets,
           :max_output_tokens,
           :outlet_online,
-          :can_edit
+          :can_edit,
+          secret_bindings: [
+            :id,
+            :external_id,
+            :env_name,
+            :sequence,
+            :enabled,
+            secret: [:id, :name, :description]
+          ]
         ]
       ],
       strict?: true
