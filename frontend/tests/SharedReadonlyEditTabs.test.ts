@@ -12,6 +12,7 @@ const jsonApiMocks = vi.hoisted(() => ({
 }));
 
 const clientMocks = vi.hoisted(() => ({
+  del: vi.fn(),
   get: vi.fn(),
   patch: vi.fn(),
   post: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@/api/client', async () => {
     ...actual,
     api: {
       ...actual.api,
+      del: clientMocks.del,
       get: clientMocks.get,
       patch: clientMocks.patch,
       post: clientMocks.post,
@@ -250,6 +252,7 @@ describe('shared read-only editor tabs', () => {
       }
       throw new Error(`Unexpected GET request: ${path}`);
     });
+    clientMocks.del.mockReset();
     clientMocks.patch.mockReset();
     clientMocks.post.mockReset();
     clientMocks.put.mockReset();
@@ -508,6 +511,62 @@ describe('shared read-only editor tabs', () => {
 
     await vi.waitFor(() => expect(tabByText(view, 'Secrets').text()).toBe('Secrets (2)'));
     expect(view.findComponent(ManagedSecretsSection).exists()).toBe(false);
+  });
+
+  it('persists a managed secret draft only from the tool save action', async () => {
+    activeToolTypes = [
+      {
+        ...toolTypes[0],
+        type: 'ssh',
+        title: 'SSH',
+        config_schema: { type: 'object', properties: {} },
+        secrets_schema: null,
+        default_config: {},
+      } as any,
+    ];
+    const document = editableToolDocument({
+      type: 'ssh',
+      name: 'SSH tool',
+      alias: 'ssh_tool',
+      config: {},
+      secrets_present: [],
+    });
+    jsonApiMocks.get.mockResolvedValue(document);
+    jsonApiMocks.update.mockResolvedValue(document);
+    clientMocks.patch.mockResolvedValue({
+      secrets: [
+        { id: 1, external_id: 'secret-1', name: 'Updated', description: '', env_name: 'FIRST' },
+        { id: 2, external_id: 'secret-2', name: 'Second', description: '', env_name: 'SECOND' },
+      ],
+    });
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await vi.waitFor(() => expect(tabByText(view, 'Secrets').text()).toBe('Secrets (2)'));
+    await tabByText(view, 'Secrets').trigger('click');
+    const section = view.getComponent(ManagedSecretsSection);
+    section.vm.$emit('update:secrets', [
+      {
+        id: 1,
+        external_id: 'secret-1',
+        name: 'Updated',
+        description: '',
+        env_name: 'FIRST',
+        value: 'replacement',
+      },
+      { id: 2, external_id: 'secret-2', name: 'Second', description: '', env_name: 'SECOND' },
+    ]);
+    await nextTick();
+
+    expect(clientMocks.patch).not.toHaveBeenCalled();
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await vi.waitFor(() => expect(clientMocks.patch).toHaveBeenCalledTimes(1));
+
+    expect(clientMocks.patch).toHaveBeenCalledWith('/api/bff/tool-instances/27/secrets/1', {
+      name: 'Updated',
+      description: '',
+      env_name: 'FIRST',
+      value: 'replacement',
+    });
   });
 
   it('switches knowledge block tabs while keeping its fields disabled', async () => {

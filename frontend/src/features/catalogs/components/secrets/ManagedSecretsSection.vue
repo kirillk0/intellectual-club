@@ -12,9 +12,9 @@
         v-if="!readonly"
         class="primary managed-secrets__create"
         type="button"
-        :disabled="isNew || loading || busy"
+        :disabled="loading"
         :aria-label="translate('Create secret')"
-        :title="isNew ? translate('Save this item before creating secrets.') : translate('Create secret')"
+        :title="translate('Create secret')"
         @click="openCreate"
       >
         <SvgIcon name="plus" :size="18" />
@@ -22,11 +22,13 @@
       </button>
     </div>
 
-    <p v-if="isNew" class="muted">{{ translate('Save this item before creating secrets.') }}</p>
-    <p v-else-if="loading" class="muted">{{ translate('Loading managed secrets…') }}</p>
-    <p v-if="loadError || actionError" class="error-text">{{ loadError || actionError }}</p>
+    <p v-if="dirty" class="muted">
+      {{ translate('Secret changes will be saved when you save this item.') }}
+    </p>
+    <p v-if="loading" class="muted">{{ translate('Loading managed secrets…') }}</p>
+    <p v-if="loadError" class="error-text">{{ loadError }}</p>
 
-    <div v-if="!isNew && !loading" class="managed-secrets__table-wrap">
+    <div v-if="!loading" class="managed-secrets__table-wrap">
       <table v-if="secrets.length" class="managed-secrets__table">
         <thead>
           <tr>
@@ -43,7 +45,6 @@
               <button
                   class="icon-button managed-secrets__action"
                   type="button"
-                  :disabled="busy"
                   :aria-label="translate('Edit secret')"
                   :title="translate('Edit secret')"
                   @click="openEdit(secret)"
@@ -53,7 +54,6 @@
                 <button
                   class="icon-button danger managed-secrets__action"
                   type="button"
-                  :disabled="busy"
                   :aria-label="translate('Delete secret')"
                   :title="translate('Delete secret')"
                   @click="remove(secret)"
@@ -70,7 +70,7 @@
     <ManagedSecretModal
       v-model:open="modalOpen"
       :secret="editingSecret"
-      :saving="savingModal"
+      :saving="false"
       :error="modalError"
       @save="saveModal"
     />
@@ -78,54 +78,33 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { ref } from 'vue';
 
-import { getApiErrorMessage } from '@/api/client';
-import {
-  createManagedSecret,
-  deleteManagedSecret,
-  updateManagedSecret,
-  type ManagedSecretAttachment,
-  type ManagedSecretInput,
-  type SecretAttachmentParent,
-} from '@/api/managedSecrets';
+import type { ManagedSecretInput } from '@/api/managedSecrets';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import type { ManagedSecretDraftItem } from '@/features/catalogs/model/useManagedSecretsState';
 import ManagedSecretModal from './ManagedSecretModal.vue';
 import { translate } from '@/i18n';
 
 const props = defineProps<{
-  parent: SecretAttachmentParent;
-  parentId: number | null | undefined;
-  secrets: ManagedSecretAttachment[];
+  secrets: ManagedSecretDraftItem[];
   loading: boolean;
   loadError: string | null;
+  dirty?: boolean;
   readonly?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (event: 'update:secrets', secrets: ManagedSecretAttachment[]): void;
+  (event: 'update:secrets', secrets: ManagedSecretDraftItem[]): void;
 }>();
 
-const busy = ref(false);
-const savingModal = ref(false);
-const actionError = ref<string | null>(null);
 const modalError = ref<string | null>(null);
 const modalOpen = ref(false);
-const editingSecret = ref<ManagedSecretAttachment | null>(null);
+const editingSecret = ref<ManagedSecretDraftItem | null>(null);
 
-const isNew = computed(() => !props.parentId || props.parentId <= 0);
-
-function replaceSecrets(nextSecrets: ManagedSecretAttachment[]) {
+function replaceSecrets(nextSecrets: ManagedSecretDraftItem[]) {
   emit('update:secrets', nextSecrets);
 }
-
-watch(
-  () => [props.parent, props.parentId] as const,
-  () => {
-    actionError.value = null;
-    modalError.value = null;
-  }
-);
 
 function openCreate() {
   editingSecret.value = null;
@@ -133,54 +112,52 @@ function openCreate() {
   modalOpen.value = true;
 }
 
-function openEdit(secret: ManagedSecretAttachment) {
+function openEdit(secret: ManagedSecretDraftItem) {
   editingSecret.value = secret;
   modalError.value = null;
   modalOpen.value = true;
 }
 
-async function saveModal(input: ManagedSecretInput) {
-  if (!props.parentId) return;
-  savingModal.value = true;
+function saveModal(input: ManagedSecretInput) {
   modalError.value = null;
 
-  try {
-    const response = editingSecret.value
-      ? await updateManagedSecret(
-          props.parent,
-          props.parentId,
-          editingSecret.value.id,
-          input
-        )
-      : await createManagedSecret(props.parent, props.parentId, {
-          ...input,
-          value: input.value || '',
-        });
-
-    replaceSecrets(response.secrets || []);
-    modalOpen.value = false;
-    editingSecret.value = null;
-  } catch (cause) {
-    modalError.value = getApiErrorMessage(cause, translate('Failed to save managed secret.'));
-  } finally {
-    savingModal.value = false;
+  const duplicate = props.secrets.some(
+    (secret) =>
+      secret.id !== editingSecret.value?.id && secret.env_name === input.env_name
+  );
+  if (duplicate) {
+    modalError.value = translate('Environment variable name must be unique.');
+    return;
   }
+
+  if (editingSecret.value) {
+    replaceSecrets(
+      props.secrets.map((secret) =>
+        secret.id === editingSecret.value?.id ? { ...secret, ...input } : secret
+      )
+    );
+  } else {
+    const id = Math.min(0, ...props.secrets.map((secret) => secret.id)) - 1;
+    replaceSecrets([
+      ...props.secrets,
+      {
+        id,
+        external_id: `pending-${Math.abs(id)}`,
+        name: input.name,
+        description: input.description,
+        env_name: input.env_name,
+        value: input.value,
+      },
+    ]);
+  }
+
+  modalOpen.value = false;
+  editingSecret.value = null;
 }
 
-async function remove(secret: ManagedSecretAttachment) {
-  if (!props.parentId) return;
+function remove(secret: ManagedSecretDraftItem) {
   if (!window.confirm(translate('Delete secret “{name}”?', { name: secret.name }))) return;
-
-  busy.value = true;
-  actionError.value = null;
-  try {
-    const response = await deleteManagedSecret(props.parent, props.parentId, secret.id);
-    replaceSecrets(response.secrets || []);
-  } catch (cause) {
-    actionError.value = getApiErrorMessage(cause, translate('Failed to delete managed secret.'));
-  } finally {
-    busy.value = false;
-  }
+  replaceSecrets(props.secrets.filter((item) => item.id !== secret.id));
 }
 </script>
 

@@ -99,11 +99,10 @@
 
           <ManagedSecretsSection
             v-else-if="blockTab === 'secrets'"
-            parent="knowledge-blocks"
-            :parent-id="numericId"
             :secrets="managedSecretAttachments"
             :loading="managedSecretsLoading"
             :load-error="managedSecretsError"
+            :dirty="managedSecretsDirty"
             :readonly="sharedReadonly"
             @update:secrets="replaceManagedSecrets"
           />
@@ -174,6 +173,7 @@ import { useManagedSecretsState } from '@/features/catalogs/model/useManagedSecr
 import { useResourceGroupSharing } from '@/features/catalogs/model/useResourceGroupSharing';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
 import { parseImageAsset } from '@/features/media/image';
+import { translate } from '@/i18n';
 import type { ImageAsset } from '@/types/api';
 
 const KnowledgeBlockCodeEditor = defineAsyncComponent({
@@ -397,6 +397,7 @@ const managedSecrets = useManagedSecretsState({
 const managedSecretAttachments = managedSecrets.secrets;
 const managedSecretsLoading = managedSecrets.loading;
 const managedSecretsError = managedSecrets.error;
+const managedSecretsDirty = managedSecrets.dirty;
 const replaceManagedSecrets = managedSecrets.replaceSecrets;
 
 const fileBindings = useKnowledgeBlockFileBindingsDraft({
@@ -435,7 +436,13 @@ const codeEditorRef = ref<KnowledgeBlockCodeEditorExpose | null>(null);
 const tagsTabCount = computed(() => attachedTagIds.value.length);
 const filesTabCount = computed(() => fileAttachments.value.length);
 const secretsTabCount = computed(() => managedSecretAttachments.value.length);
-const saving = computed(() => editor.saving.value || linking.value || fileBindings.syncing.value);
+const saving = computed(
+  () =>
+    editor.saving.value ||
+    linking.value ||
+    fileBindings.syncing.value ||
+    managedSecrets.syncing.value
+);
 const filesActionDisabled = computed(
   () =>
     saving.value ||
@@ -496,8 +503,12 @@ const knowledgeBlockContentDraft = useLocalTextDraft({
   enabled: computed(() => loaded.value && !loading.value && !saving.value && !sharedReadonly.value),
   isDraft: computed(() => form.content !== editor.base.value.content && !sharedReadonly.value),
 });
-const dirty = computed(() => editor.dirty.value || tagsDirty.value || filesDirty.value);
-editor.registerDirtySource(() => tagsDirty.value || filesDirty.value);
+const dirty = computed(
+  () => editor.dirty.value || tagsDirty.value || filesDirty.value || managedSecretsDirty.value
+);
+editor.registerDirtySource(
+  () => tagsDirty.value || filesDirty.value || managedSecretsDirty.value
+);
 const guardDirty = computed(() => dirty.value && !saving.value);
 const headerDirty = computed(() => dirty.value && !loading.value && !loadError.value);
 useUnsavedChangesGuard(guardDirty);
@@ -513,6 +524,8 @@ const save = async () => {
   const wasNew = editor.isNew.value;
   const shouldLinkOwner = wasNew && Boolean(spec) && !linkedAfterCreate.value;
   const shouldSyncFiles = fileBindings.loaded.value && fileBindings.dirty.value && !sharedReadonly.value;
+  const shouldSyncSecrets =
+    managedSecrets.loaded.value && managedSecretsDirty.value && !sharedReadonly.value;
 
   if (shouldSyncFiles) suppressFilesAutoLoad.value = true;
 
@@ -542,6 +555,18 @@ const save = async () => {
   } finally {
     suppressFilesAutoLoad.value = false;
   }
+
+  try {
+    if (shouldSyncSecrets) {
+      const blockId = editor.numericId.value;
+      if (!blockId) throw new Error('Saved knowledge block id is missing.');
+      await managedSecrets.sync(blockId);
+    }
+  } catch (error) {
+    console.error(error);
+    blockTab.value = 'secrets';
+    alert(getApiErrorMessage(error, translate('Failed to save secret changes.')));
+  }
 };
 
 const cancelChanges = () => {
@@ -549,6 +574,7 @@ const cancelChanges = () => {
   editor.reset();
   tagsDraft.reset();
   fileBindings.reset();
+  managedSecrets.reset();
 };
 const remove = editor.remove;
 const duplicate = editor.duplicate;

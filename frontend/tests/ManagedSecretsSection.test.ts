@@ -1,21 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const secretApi = vi.hoisted(() => ({
-  create: vi.fn(),
-  delete: vi.fn(),
-  update: vi.fn(),
-}));
-
-vi.mock('@/api/managedSecrets', async () => {
-  const actual = await vi.importActual<typeof import('@/api/managedSecrets')>('@/api/managedSecrets');
-  return {
-    ...actual,
-    createManagedSecret: secretApi.create,
-    deleteManagedSecret: secretApi.delete,
-    updateManagedSecret: secretApi.update,
-  };
-});
+import { afterEach, describe, expect, it } from 'vitest';
 
 import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import ManagedSecretModal from '@/features/catalogs/components/secrets/ManagedSecretModal.vue';
@@ -37,8 +21,6 @@ describe('ManagedSecretsSection', () => {
   it('renders a resource-owned table and uses the same modal for create and edit', async () => {
     const wrapper = mount(ManagedSecretsSection, {
       props: {
-        parent: 'knowledge-blocks',
-        parentId: 42,
         secrets: [storedSecret],
         loading: false,
         loadError: null,
@@ -68,14 +50,9 @@ describe('ManagedSecretsSection', () => {
     expect(modal.props('secret')).toEqual(storedSecret);
   });
 
-  it('emits the updated secrets after creating a secret', async () => {
-    const createdSecret = { ...storedSecret, id: 8, name: 'Deploy token', env_name: 'DEPLOY_TOKEN' };
-    secretApi.create.mockResolvedValue({ secrets: [storedSecret, createdSecret] });
-
+  it('emits a client-only draft after creating a secret', async () => {
     const wrapper = mount(ManagedSecretsSection, {
       props: {
-        parent: 'tool-instances',
-        parentId: 42,
         secrets: [storedSecret],
         loading: false,
         loadError: null,
@@ -93,6 +70,33 @@ describe('ManagedSecretsSection', () => {
     });
     await flushPromises();
 
-    expect(wrapper.emitted('update:secrets')).toEqual([[[storedSecret, createdSecret]]]);
+    expect(wrapper.emitted('update:secrets')).toEqual([
+      [[
+        storedSecret,
+        {
+          id: -1,
+          external_id: 'pending-1',
+          name: 'Deploy token',
+          description: '',
+          env_name: 'DEPLOY_TOKEN',
+          value: 'secret-value',
+        },
+      ]],
+    ]);
+  });
+
+  it('allows secrets to be drafted before the parent is saved', async () => {
+    const wrapper = mount(ManagedSecretsSection, {
+      props: {
+        secrets: [],
+        loading: false,
+        loadError: null,
+        dirty: false,
+      },
+      attachTo: document.body,
+    });
+
+    expect(wrapper.get('button[aria-label="Create secret"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.text()).not.toContain('Save this item before creating secrets.');
   });
 });

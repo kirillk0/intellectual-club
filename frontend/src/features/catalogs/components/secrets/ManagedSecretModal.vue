@@ -79,12 +79,13 @@
 import { computed, reactive, watch } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
-import type { ManagedSecretAttachment, ManagedSecretInput } from '@/api/managedSecrets';
+import type { ManagedSecretInput } from '@/api/managedSecrets';
+import type { ManagedSecretDraftItem } from '@/features/catalogs/model/useManagedSecretsState';
 import { translate } from '@/i18n';
 
 const props = defineProps<{
   open: boolean;
-  secret: ManagedSecretAttachment | null;
+  secret: ManagedSecretDraftItem | null;
   saving: boolean;
   error: string | null;
 }>();

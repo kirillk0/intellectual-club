@@ -492,11 +492,10 @@
 
           <ManagedSecretsSection
             v-else-if="toolTab === 'secrets'"
-            parent="tool-instances"
-            :parent-id="managedSecretsParentId"
             :secrets="managedSecretAttachments"
             :loading="managedSecretsLoading"
             :load-error="managedSecretsError"
+            :dirty="managedSecretsDirty"
             :readonly="sharedReadonly"
             @update:secrets="replaceManagedSecrets"
           />
@@ -632,7 +631,7 @@ import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
-import { api, isHttpError } from '@/api/client';
+import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
   createJsonApiIncludedIndex,
   jsonApiList,
@@ -1052,8 +1051,6 @@ const editor = useCrudEditor<ToolInstanceForm>({
   },
 });
 
-useUnsavedChangesGuard(editor.dirty);
-
 const form = editor.form;
 const errors = editor.errors;
 const formErrors = computed(() => errors.formErrors.value);
@@ -1064,8 +1061,22 @@ const loadError = editor.loadError;
 const remoteUpdateAvailable = editor.remoteUpdateAvailable;
 const reloadRemoteDocument = editor.reloadRemoteDocument;
 const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
-const saving = editor.saving;
-const dirty = editor.dirty;
+const supportsManagedSecrets = computed(() => ['ssh', 'outlet'].includes(String(form.type || '').trim()));
+const managedSecretsParentId = editor.numericId;
+const managedSecrets = useManagedSecretsState({
+  parent: 'tool-instances',
+  parentId: managedSecretsParentId,
+  enabled: computed(() => supportsManagedSecrets.value && !editor.deleting.value),
+});
+const managedSecretAttachments = managedSecrets.secrets;
+const managedSecretsLoading = managedSecrets.loading;
+const managedSecretsError = managedSecrets.error;
+const managedSecretsDirty = managedSecrets.dirty;
+const replaceManagedSecrets = managedSecrets.replaceSecrets;
+const saving = computed(() => editor.saving.value || managedSecrets.syncing.value);
+const dirty = computed(() => editor.dirty.value || managedSecretsDirty.value);
+editor.registerDirtySource(() => managedSecretsDirty.value);
+useUnsavedChangesGuard(computed(() => dirty.value && !saving.value));
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const sharing = useResourceGroupSharing({
   resourceKey: 'tool-instance-shares',
@@ -1119,6 +1130,7 @@ const handleConfigInput = () => {
 
 const reset = () => {
   editor.reset();
+  managedSecrets.reset();
   aliasTouched.value = false;
   resetConfigText();
 };
@@ -1151,17 +1163,6 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
 });
 
 const isMcpHttp = computed(() => String(form.type || '').trim() === 'mcp-http');
-const supportsManagedSecrets = computed(() => ['ssh', 'outlet'].includes(String(form.type || '').trim()));
-const managedSecretsParentId = editor.numericId;
-const managedSecrets = useManagedSecretsState({
-  parent: 'tool-instances',
-  parentId: managedSecretsParentId,
-  enabled: computed(() => supportsManagedSecrets.value && !editor.deleting.value),
-});
-const managedSecretAttachments = managedSecrets.secrets;
-const managedSecretsLoading = managedSecrets.loading;
-const managedSecretsError = managedSecrets.error;
-const replaceManagedSecrets = managedSecrets.replaceSecrets;
 const secretsTabCount = computed(() => managedSecretAttachments.value.length);
 watch(supportsManagedSecrets, (supported) => {
   if (!supported && toolTab.value === 'secrets') toolTab.value = 'settings';
@@ -1986,8 +1987,23 @@ const saveWithValidation = async () => {
 
   syncMcpHeaderConfig();
 
+  const shouldSyncSecrets = managedSecrets.loaded.value && managedSecretsDirty.value;
   const saved = await editor.save();
   if (!saved) return;
+
+  try {
+    if (shouldSyncSecrets) {
+      const toolId = editor.numericId.value;
+      if (!toolId) throw new Error('Saved tool instance id is missing.');
+      await managedSecrets.sync(toolId);
+    }
+  } catch (error) {
+    console.error(error);
+    toolTab.value = 'secrets';
+    alert(getApiErrorMessage(error, translate('Failed to save secret changes.')));
+    return;
+  }
+
   await editor.reloadRemoteDocument();
   editor.base.value = JSON.parse(JSON.stringify(form)) as ToolInstanceForm;
   resetConfigText();
