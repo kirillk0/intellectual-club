@@ -321,14 +321,37 @@ defmodule IntellectualClub.Chat.Spawn do
            available_secret_binding_external_ids:
              context.available_secret_binding_external_ids || []
          ) do
-      {:ok, _context} -> :ok
-      {:error, :already_running} -> :ok
-      {:error, _reason} = error -> error
+      {:ok, _context} ->
+        :ok
+
+      {:error, :already_running} ->
+        :ok
+
+      {:error, :invalid_status} = error ->
+        if canonical_generation_started_or_terminal?(context.message_id, actor),
+          do: :ok,
+          else: error
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   defp start_or_resume_generation(%{generation_message_id: message_id}, actor) do
     Subagent.resume_generation_if_needed(message_id, actor)
+  end
+
+  defp canonical_generation_started_or_terminal?(message_id, actor) do
+    case Ash.get(ChatMessage, message_id, actor: actor) do
+      {:ok, %ChatMessage{status: status}} when status in [:done, :error] ->
+        true
+
+      {:ok, %ChatMessage{status: :generating}} ->
+        GenerationSupervisor.get_generation_state(message_id) != :not_found
+
+      _other ->
+        false
+    end
   end
 
   defp reference(prepared) do

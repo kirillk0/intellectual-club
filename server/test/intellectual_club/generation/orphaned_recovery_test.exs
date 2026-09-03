@@ -965,42 +965,54 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     context = fork_execution_context(parent, actor)
     test_process = self()
 
-    starters =
-      for label <- [:first, :second] do
-        Task.async(fn ->
-          Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
-            on_reference: fn reference ->
-              send(test_process, {:spawn_start_ready, label, self(), reference})
+    first_starter =
+      Task.async(fn ->
+        Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+          on_reference: fn reference ->
+            send(test_process, {:spawn_start_ready, :first, self(), reference})
 
-              receive do
-                {:continue_spawn_start, ^label} -> :ok
-              after
-                5_000 -> {:error, :start_barrier_timeout}
-              end
+            receive do
+              :continue_spawn_start -> :ok
+            after
+              15_000 -> {:error, :start_barrier_timeout}
             end
-          )
-        end)
-      end
+          end
+        )
+      end)
 
-    ready =
-      for _index <- 1..2 do
-        assert_receive {:spawn_start_ready, label, pid, reference}, 5_000
-        {label, pid, reference}
-      end
+    assert_receive {:spawn_start_ready, :first, first_pid, first_reference}, 5_000
 
-    Enum.each(ready, fn {label, pid, _reference} ->
-      send(pid, {:continue_spawn_start, label})
-    end)
+    second_starter =
+      Task.async(fn ->
+        Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor,
+          on_reference: fn reference ->
+            send(test_process, {:spawn_start_ready, :second, self(), reference})
 
-    results = Enum.map(starters, &Task.await(&1, 5_000))
-    assert Enum.all?(results, &match?({:ok, _reference}, &1))
+            receive do
+              :continue_spawn_start -> :ok
+            after
+              15_000 -> {:error, :start_barrier_timeout}
+            end
+          end
+        )
+      end)
 
-    references = Enum.map(results, fn {:ok, reference} -> reference end)
+    assert_receive {:spawn_start_ready, :second, second_pid, second_reference}, 5_000
+
+    send(second_pid, :continue_spawn_start)
+    assert {:ok, ^second_reference} = Task.await(second_starter, 5_000)
+
+    completed =
+      wait_for_status!(second_reference.generation_message_id, actor, [:done], 6_000)
+
+    send(first_pid, :continue_spawn_start)
+    assert {:ok, ^first_reference} = Task.await(first_starter, 5_000)
+
+    references = [first_reference, second_reference]
     assert references |> Enum.map(& &1.chat_id) |> Enum.uniq() |> length() == 1
     assert references |> Enum.map(& &1.generation_message_id) |> Enum.uniq() |> length() == 1
 
     [reference | _rest] = references
-    completed = wait_for_status!(reference.generation_message_id, actor, [:done], 6_000)
     assert completed.error_detail == nil
     assert fork_child_ids_for_call(actor, parent.call.item_id) == [reference.chat_id]
 
