@@ -60,7 +60,9 @@ defmodule IntellectualClub.Secrets.Resolver do
        when is_integer(tool_instance_id) do
     tool_bindings =
       ToolInstanceSecret
-      |> Ash.Query.filter(tool_instance_id == ^tool_instance_id and enabled == true)
+      |> Ash.Query.filter(
+        tool_instance_id == ^tool_instance_id and kind == :environment and enabled == true
+      )
       |> Ash.Query.sort(sequence: :asc, id: :asc)
       |> Ash.Query.load([secret: [:id, :name, :description, :encrypted_value]], strict?: true)
       |> Ash.read(actor: actor)

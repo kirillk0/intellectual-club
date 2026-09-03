@@ -2,9 +2,10 @@ defmodule IntellectualClub.Outlets.Auth do
   @moduledoc """
   Outlet runner authentication helpers.
 
-  Runners authenticate with a bearer token stored in `tool_instances.secrets`.
+  Runners authenticate with a bearer token stored as a managed driver secret.
   """
 
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -18,26 +19,47 @@ defmodule IntellectualClub.Outlets.Auth do
     else
       ToolInstance
       |> Ash.Query.filter(type == "outlet")
+      |> Ash.Query.load(
+        driver_secret_bindings: [
+          :env_name,
+          :enabled,
+          secret: [:encrypted_value]
+        ]
+      )
       |> Ash.read(actor: nil, authorize?: false)
       |> case do
-        {:ok, items} ->
-          Enum.find(items, fn item -> token_matches?(item, token) end)
-
-        _ ->
-          nil
+        {:ok, items} -> find_verified_match(items, token)
+        _other -> nil
       end
     end
   end
 
-  defp token_matches?(tool_instance, token) when is_map(tool_instance) and is_binary(token) do
-    secrets = Map.get(tool_instance, :secrets) || %{}
-    secrets = if is_map(secrets), do: secrets, else: %{}
+  defp find_verified_match(items, token) do
+    items
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, verified} ->
+      case DriverSecrets.values(item) do
+        {:ok, secrets} -> {:cont, {:ok, [{item, outlet_token(secrets)} | verified]}}
+        {:error, _message} -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, verified} ->
+        case Enum.filter(verified, fn {_item, stored_token} -> stored_token == token end) do
+          [{item, _token}] -> item
+          _none_or_ambiguous -> nil
+        end
 
+      :error ->
+        nil
+    end
+  end
+
+  defp outlet_token(secrets) do
     value =
       Map.get(secrets, "token") ||
         Map.get(secrets, "bearer_token") ||
         ""
 
-    is_binary(value) and String.trim(value) == token
+    if is_binary(value), do: String.trim(value), else: ""
   end
 end

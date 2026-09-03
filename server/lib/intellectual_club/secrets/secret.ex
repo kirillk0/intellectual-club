@@ -108,6 +108,10 @@ defmodule IntellectualClub.Secrets.Secret do
       change({EncryptValue, []})
     end
 
+    update :replace_encrypted do
+      accept([:encrypted_value])
+    end
+
     destroy :destroy do
       primary?(true)
     end
@@ -148,7 +152,7 @@ defmodule IntellectualClub.Secrets.Secret do
       authorize_if expr(
                      exists(
                        tool_instance_attachment,
-                       enabled == true and
+                       (enabled == true or kind == :driver) and
                          (tool_instance.owner_id == ^actor(:id) or
                             exists(
                               tool_instance.shares.user_group.memberships,

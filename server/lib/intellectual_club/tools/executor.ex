@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.Executor do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.RateLimiter
@@ -93,6 +94,18 @@ defmodule IntellectualClub.Tools.Executor do
   defp argument_key_to_string(key), do: inspect(key)
 
   defp execute_tool_instance(tool_instance, function_name, args, execution_context) do
+    case DriverSecrets.hydrate(tool_instance, query?: false) do
+      {:ok, hydrated} ->
+        do_execute_tool_instance(hydrated, function_name, args, execution_context)
+
+      {:error, message} ->
+        execution_error(message)
+        |> sanitize_execution_result()
+        |> limit_execution_result(20_000)
+    end
+  end
+
+  defp do_execute_tool_instance(tool_instance, function_name, args, execution_context) do
     result =
       case function_execution_spec(tool_instance, function_name, execution_context) do
         {:ok, execution_spec} ->

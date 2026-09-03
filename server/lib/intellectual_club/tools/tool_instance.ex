@@ -14,6 +14,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
   alias IntellectualClub.Duplication
   alias IntellectualClub.Outlets.Runtime
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.Registry
   alias IntellectualClub.Tools.Changes.DeleteToolDependents
   alias IntellectualClub.Tools.Changes.MergeSecretsPatch
@@ -65,6 +66,8 @@ defmodule IntellectualClub.Tools.ToolInstance do
       default(%{})
     end
 
+    # Transitional plaintext fallback for installations upgrading from the
+    # legacy driver-secret storage. New writes always persist an empty map.
     attribute :secrets, :map do
       allow_nil?(false)
       default(%{})
@@ -120,6 +123,12 @@ defmodule IntellectualClub.Tools.ToolInstance do
 
     has_many :secret_bindings, IntellectualClub.Secrets.ToolInstanceSecret do
       destination_attribute(:tool_instance_id)
+      filter(expr(kind == :environment))
+    end
+
+    has_many :driver_secret_bindings, IntellectualClub.Secrets.ToolInstanceSecret do
+      destination_attribute(:tool_instance_id)
+      filter(expr(kind == :driver))
     end
 
     has_many :shares, IntellectualClub.Tools.ToolInstanceShare do
@@ -130,13 +139,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   calculations do
     calculate :secrets_present, {:array, :string}, fn records, _context ->
       Enum.map(records, fn record ->
-        secrets =
-          record
-          |> Map.get(:secrets)
-          |> case do
-            %{} = secrets -> secrets
-            _ -> %{}
-          end
+        stored_keys = DriverSecrets.present_keys(record)
 
         tool_type =
           record
@@ -160,20 +163,14 @@ defmodule IntellectualClub.Tools.ToolInstance do
             []
           else
             candidate_keys = [key | secrets_schema_aliases(raw_spec)]
-
-            present? =
-              Enum.any?(candidate_keys, fn candidate ->
-                value = Map.get(secrets, candidate)
-                credential_present?(value)
-              end)
-
+            present? = Enum.any?(candidate_keys, &MapSet.member?(stored_keys, &1))
             if present?, do: [key], else: []
           end
         end)
       end)
     end do
       public? true
-      load [:type, :secrets]
+      load [:type, :secrets, driver_secret_bindings: [:env_name, :enabled]]
     end
 
     calculate :outlet_online, :boolean, fn records, _context ->
@@ -226,6 +223,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
       primary?(true)
       require_atomic?(false)
       change(cascade_destroy(:secret_bindings, after_action?: false))
+      change(cascade_destroy(:driver_secret_bindings, after_action?: false))
       change({DeleteToolDependents, []})
     end
 
@@ -251,11 +249,16 @@ defmodule IntellectualClub.Tools.ToolInstance do
         :rps_limit
       ])
 
+      argument :effective_driver_secrets, :map do
+        public?(false)
+        sensitive?(true)
+      end
+
       change(relate_actor(:owner))
+      change({MergeSecretsPatch, []})
       change({ValidateToolType, []})
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
-      change({MergeSecretsPatch, []})
       change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
@@ -263,6 +266,11 @@ defmodule IntellectualClub.Tools.ToolInstance do
     create :duplicate do
       argument :id, :integer do
         allow_nil?(false)
+      end
+
+      argument :effective_driver_secrets, :map do
+        public?(false)
+        sensitive?(true)
       end
 
       change(relate_actor(:owner))
@@ -279,71 +287,83 @@ defmodule IntellectualClub.Tools.ToolInstance do
           |> Ash.Query.sort(id: :asc)
           |> Ash.read!(actor: actor)
 
-        changeset
-        |> Ash.Changeset.change_attributes(%{
-          type: source.type,
-          name: Duplication.next_copy_label(source.name),
-          description: source.description,
-          alias: source.alias || source.name,
-          config: duplicate_config(source, preserve_secrets?),
-          secrets: duplicate_secrets(source, preserve_secrets?),
-          max_output_tokens: source.max_output_tokens,
-          rps_limit: source.rps_limit
-        })
-        |> Ash.Changeset.put_context(
-          :duplicate_function_specs,
-          Enum.map(functions, fn function ->
-            %{
-              name: function.name,
-              description: function.description,
-              parameters_schema: function.parameters_schema,
-              enabled: function.enabled,
-              discovery_available: function.discovery_available,
-              execution_mode: function.execution_mode,
-              target_function_name: function.target_function_name,
-              discovered_at: function.discovered_at
-            }
-          end)
-        )
-        |> Ash.Changeset.after_action(fn changeset, duplicated ->
-          actor = changeset.context[:private][:actor]
-
-          changeset.context[:duplicate_function_specs]
-          |> List.wrap()
-          |> Enum.reduce_while({:ok, duplicated}, fn spec, {:ok, duplicated} ->
-            ToolFunction
-            |> Ash.Changeset.for_create(
-              :create,
-              Map.put(spec, :tool_instance_id, duplicated.id),
-              actor: actor
+        case duplicate_secrets(source, preserve_secrets?) do
+          {:ok, driver_secrets} ->
+            changeset
+            |> Ash.Changeset.change_attributes(%{
+              type: source.type,
+              name: Duplication.next_copy_label(source.name),
+              description: source.description,
+              alias: source.alias || source.name,
+              config: duplicate_config(source, preserve_secrets?),
+              secrets: driver_secrets,
+              max_output_tokens: source.max_output_tokens,
+              rps_limit: source.rps_limit
+            })
+            |> Ash.Changeset.put_context(
+              :duplicate_function_specs,
+              Enum.map(functions, fn function ->
+                %{
+                  name: function.name,
+                  description: function.description,
+                  parameters_schema: function.parameters_schema,
+                  enabled: function.enabled,
+                  discovery_available: function.discovery_available,
+                  execution_mode: function.execution_mode,
+                  target_function_name: function.target_function_name,
+                  discovered_at: function.discovered_at
+                }
+              end)
             )
-            |> Ash.create()
-            |> case do
-              {:ok, _function} -> {:cont, {:ok, duplicated}}
-              {:error, error} -> {:halt, {:error, error}}
-            end
-          end)
-          |> case do
-            {:ok, duplicated} -> duplicate_secret_bindings(source, duplicated, actor)
-            {:error, error} -> {:error, error}
-          end
-        end)
+            |> Ash.Changeset.after_action(fn changeset, duplicated ->
+              actor = changeset.context[:private][:actor]
+
+              changeset.context[:duplicate_function_specs]
+              |> List.wrap()
+              |> Enum.reduce_while({:ok, duplicated}, fn spec, {:ok, duplicated} ->
+                ToolFunction
+                |> Ash.Changeset.for_create(
+                  :create,
+                  Map.put(spec, :tool_instance_id, duplicated.id),
+                  actor: actor
+                )
+                |> Ash.create()
+                |> case do
+                  {:ok, _function} -> {:cont, {:ok, duplicated}}
+                  {:error, error} -> {:halt, {:error, error}}
+                end
+              end)
+              |> case do
+                {:ok, duplicated} -> duplicate_secret_bindings(source, duplicated, actor)
+                {:error, error} -> {:error, error}
+              end
+            end)
+
+          {:error, message} ->
+            Ash.Changeset.add_error(changeset, field: :secrets, message: message)
+        end
       end
 
+      change({MergeSecretsPatch, []})
       change({ValidateToolType, []})
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
-      change({MergeSecretsPatch, []})
       change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
 
     update :update do
       accept([:name, :description, :alias, :config, :secrets, :max_output_tokens, :rps_limit])
+
+      argument :effective_driver_secrets, :map do
+        public?(false)
+        sensitive?(true)
+      end
+
       require_atomic?(false)
+      change({MergeSecretsPatch, []})
       change({ValidateToolAlias, []})
       change({ValidatePositiveRpsLimit, []})
-      change({MergeSecretsPatch, []})
       change({ValidateUniqueOutletToken, []})
       change({ValidateToolConfig, []})
     end
@@ -351,6 +371,11 @@ defmodule IntellectualClub.Tools.ToolInstance do
     update :update_discovery_metadata do
       accept([:last_discovered_at, :last_discovery_error])
       require_atomic?(false)
+    end
+
+    update :clear_legacy_driver_secrets do
+      accept([])
+      change(set_attribute(:secrets, %{}))
     end
   end
 
@@ -380,7 +405,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   defp duplicate_secret_bindings(source, duplicated, actor) do
     if Duplication.owned_by_actor?(source.owner_id, actor) do
       IntellectualClub.Secrets.ToolInstanceSecret
-      |> Ash.Query.filter(tool_instance_id == ^source.id)
+      |> Ash.Query.filter(tool_instance_id == ^source.id and kind == :environment)
       |> Ash.Query.sort(sequence: :asc, id: :asc)
       |> Ash.read!(actor: actor)
       |> Enum.reduce_while({:ok, duplicated}, fn binding, {:ok, duplicated} ->
@@ -394,6 +419,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
                   tool_instance_id: duplicated.id,
                   secret_id: duplicated_secret.id,
                   env_name: binding.env_name,
+                  kind: :environment,
                   sequence: binding.sequence,
                   enabled: binding.enabled
                 },
@@ -433,13 +459,6 @@ defmodule IntellectualClub.Tools.ToolInstance do
     end
   end
 
-  defp credential_present?(value) when is_binary(value), do: String.trim(value) != ""
-
-  defp credential_present?(%{} = value),
-    do: Enum.any?(value, fn {_key, item} -> credential_present?(item) end)
-
-  defp credential_present?(_value), do: false
-
   defp secrets_schema_properties(nil), do: %{}
 
   defp secrets_schema_properties(%{} = schema) do
@@ -470,7 +489,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
   defp duplicate_config(%{config: config}, _preserve_secrets?) when is_map(config), do: config
   defp duplicate_config(_source, _preserve_secrets?), do: %{}
 
-  defp duplicate_secrets(%{type: "outlet"}, _preserve_secrets?), do: %{}
-  defp duplicate_secrets(%{secrets: secrets}, true) when is_map(secrets), do: secrets
-  defp duplicate_secrets(_source, _preserve_secrets?), do: %{}
+  defp duplicate_secrets(%{type: "outlet"}, _preserve_secrets?), do: {:ok, %{}}
+  defp duplicate_secrets(source, true), do: DriverSecrets.values(source)
+  defp duplicate_secrets(_source, _preserve_secrets?), do: {:ok, %{}}
 end

@@ -1,110 +1,49 @@
 defmodule IntellectualClub.Tools.Changes.MergeSecretsPatch do
   @moduledoc """
-  Applies patch semantics to `secrets` without exposing existing values.
+  Applies write-only patch semantics to driver secrets and persists the result
+  through managed secret bindings.
 
-  Rules:
-  - Keys not present in the patch remain unchanged.
-  - `nil` or empty string values unset the key.
-  - Nested maps use the same patch semantics for their keys.
-  - Tool-specific aliases are normalized to canonical keys.
+  Keys omitted from a patch remain unchanged, empty values remove keys, and
+  aliases are normalized according to the selected driver's secret schema.
   """
 
   use Ash.Resource.Change
 
   alias Ash.Changeset
-
-  @canonical_key "bearer_token"
-  @alias_keys ["token"]
+  alias IntellectualClub.Secrets.DriverSecrets
 
   @impl true
   def change(changeset, _opts, _context) do
-    Changeset.before_action(changeset, fn changeset ->
-      if Changeset.changing_attribute?(changeset, :secrets) do
-        patch = Changeset.get_attribute(changeset, :secrets)
+    if Changeset.changing_attribute?(changeset, :secrets) do
+      patch = Changeset.get_attribute(changeset, :secrets)
+      tool_instance = tool_instance_for_patch(changeset)
 
-        current =
-          case changeset.data do
-            %{secrets: secrets} when is_map(secrets) -> secrets
-            _ -> %{}
-          end
+      case DriverSecrets.values(tool_instance) do
+        {:ok, current} ->
+          merged = DriverSecrets.apply_patch(tool_instance, current, patch)
 
-        merged = apply_patch(current, patch)
-        Changeset.force_change_attribute(changeset, :secrets, merged)
-      else
-        changeset
-      end
-    end)
-  end
+          changeset
+          |> Changeset.force_change_attribute(:secrets, %{})
+          |> Changeset.set_private_argument(:effective_driver_secrets, merged)
+          |> Changeset.after_action(fn changeset, tool_instance ->
+            actor = changeset.context[:private][:actor]
 
-  defp apply_patch(current, patch) when is_map(current) do
-    patch = if is_map(patch), do: patch, else: %{}
-
-    Enum.reduce(patch, Map.new(current), fn {raw_key, value}, merged ->
-      key = normalize_secret_key(raw_key)
-
-      cond do
-        key == nil ->
-          merged
-
-        empty_secret?(value) ->
-          merged =
-            merged
-            |> Map.delete(key)
-            |> delete_aliases_for(key)
-
-          if key in @alias_keys do
-            merged
-            |> Map.delete(@canonical_key)
-            |> delete_aliases_for(@canonical_key)
-          else
-            merged
-          end
-
-        key == @canonical_key ->
-          merged
-          |> Map.put(key, value)
-          |> delete_aliases_for(key)
-
-        key in @alias_keys ->
-          merged
-          |> Map.put(@canonical_key, value)
-          |> Map.delete(key)
-
-        is_map(value) ->
-          current_nested =
-            case Map.get(merged, key) do
-              %{} = nested -> nested
-              _other -> %{}
+            case DriverSecrets.sync(tool_instance, merged, actor) do
+              {:ok, _tool_instance} -> {:ok, %{tool_instance | secrets: merged}}
+              {:error, error} -> {:error, error}
             end
+          end)
 
-          case apply_patch(current_nested, value) do
-            nested when map_size(nested) == 0 -> Map.delete(merged, key)
-            nested -> Map.put(merged, key, nested)
-          end
-
-        true ->
-          Map.put(merged, key, value)
+        {:error, message} ->
+          Changeset.add_error(changeset, field: :secrets, message: message)
       end
-    end)
+    else
+      changeset
+    end
   end
 
-  defp normalize_secret_key(key) when is_atom(key),
-    do: key |> Atom.to_string() |> normalize_secret_key()
-
-  defp normalize_secret_key(key) when is_binary(key) do
-    key = String.trim(key)
-    if key == "", do: nil, else: key
+  defp tool_instance_for_patch(changeset) do
+    type = Changeset.get_attribute(changeset, :type) || Map.get(changeset.data, :type)
+    %{changeset.data | type: type}
   end
-
-  defp normalize_secret_key(_other), do: nil
-
-  defp empty_secret?(nil), do: true
-  defp empty_secret?(value) when is_binary(value), do: String.trim(value) == ""
-  defp empty_secret?(_other), do: false
-
-  defp delete_aliases_for(map, @canonical_key) when is_map(map) do
-    Enum.reduce(@alias_keys, map, fn alias_key, acc -> Map.delete(acc, alias_key) end)
-  end
-
-  defp delete_aliases_for(map, _key) when is_map(map), do: map
 end

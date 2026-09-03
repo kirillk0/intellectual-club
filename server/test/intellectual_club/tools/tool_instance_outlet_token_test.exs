@@ -2,7 +2,10 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
   use IntellectualClub.DataCase, async: false
 
   alias IntellectualClub.Outlets.Auth
+  alias IntellectualClub.Secrets.ToolInstanceSecret
   alias IntellectualClub.Tools.ToolInstance
+
+  require Ash.Query
 
   test "outlet token is unique globally on create" do
     %{user: owner} = user_fixture()
@@ -19,7 +22,7 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
     %{user: other_owner} = user_fixture()
 
     legacy = create_outlet!(owner, "legacy-token")
-    assert legacy.secrets == %{"bearer_token" => "legacy-token"}
+    assert legacy.secrets == %{"token" => "legacy-token"}
 
     write_legacy_token_secret!(legacy.id, "legacy-token")
 
@@ -79,6 +82,32 @@ defmodule IntellectualClub.Tools.ToolInstanceOutletTokenTest do
     outlet = create_outlet!(owner, "auth-token")
 
     assert Auth.tool_instance_for_token("auth-token").id == outlet.id
+  end
+
+  test "outlet auth and uniqueness fail closed when an existing token cannot be decrypted" do
+    %{user: owner} = user_fixture()
+    %{user: other_owner} = user_fixture()
+
+    existing = create_outlet!(owner, "possibly-duplicated-token")
+
+    binding =
+      ToolInstanceSecret
+      |> Ash.Query.filter(tool_instance_id == ^existing.id and kind == :driver)
+      |> Ash.Query.load(:secret)
+      |> Ash.read_one!(authorize?: false)
+
+    binding.secret
+    |> Ash.Changeset.for_update(
+      :replace_encrypted,
+      %{encrypted_value: <<1, 2, 3>>},
+      actor: owner
+    )
+    |> Ash.update!(actor: owner)
+
+    assert Auth.tool_instance_for_token("possibly-duplicated-token") == nil
+
+    assert {:error, error} = create_outlet(other_owner, "possibly-duplicated-token")
+    assert error_text(error) =~ "Existing outlet credentials could not be verified."
   end
 
   test "duplicating an outlet clears token secrets" do

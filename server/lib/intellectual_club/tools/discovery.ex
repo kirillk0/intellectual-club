@@ -7,6 +7,7 @@ defmodule IntellectualClub.Tools.Discovery do
   action to avoid long-running requests in AshJsonApi.
   """
 
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.{Registry, ToolFunction, ToolInstance}
 
   require Ash.Query
@@ -21,6 +22,7 @@ defmodule IntellectualClub.Tools.Discovery do
   @spec discover_and_sync!(ToolInstance.t(), actor :: any()) ::
           {discover_result(), list(ToolFunction.t())}
   def discover_and_sync!(%ToolInstance{} = tool_instance, actor) do
+    tool_instance = DriverSecrets.hydrate!(tool_instance)
     driver = Registry.driver_for_type!(to_string(tool_instance.type || ""))
 
     case driver.discover(tool_instance) do

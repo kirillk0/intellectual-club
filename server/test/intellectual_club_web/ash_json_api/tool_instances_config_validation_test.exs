@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesConfigValidationTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.ToolInstance
 
   defp json_api_post(conn, path, body) do
@@ -115,7 +116,10 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesConfigValidationTest do
              "secret_header_names" => ["X-API-Key"]
            }
 
-    assert tool_instance.secrets == %{
+    assert tool_instance.secrets == %{}
+    assert {:ok, stored_secrets} = DriverSecrets.values(tool_instance)
+
+    assert stored_secrets == %{
              "bearer_token" => "mcp-token",
              "secret_headers" => %{"X-API-Key" => "secret-value"}
            }
@@ -201,7 +205,10 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesConfigValidationTest do
 
     updated = Ash.get!(ToolInstance, tool.id, actor: actor)
 
-    assert updated.secrets == %{
+    assert updated.secrets == %{}
+    assert {:ok, stored_secrets} = DriverSecrets.values(updated)
+
+    assert stored_secrets == %{
              "secret_headers" => %{
                "X-Keep" => "keep-value",
                "X-New" => "new-value"

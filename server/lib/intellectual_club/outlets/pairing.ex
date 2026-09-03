@@ -6,6 +6,7 @@ defmodule IntellectualClub.Outlets.Pairing do
   """
 
   alias IntellectualClub.Outlets.PairingRequest
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -351,12 +352,15 @@ defmodule IntellectualClub.Outlets.Pairing do
   defp extract_token(nil), do: ""
 
   defp extract_token(tool_instance) when is_map(tool_instance) do
-    secrets = Map.get(tool_instance, :secrets) || %{}
-    secrets = if is_map(secrets), do: secrets, else: %{}
+    case DriverSecrets.values(tool_instance) do
+      {:ok, secrets} ->
+        (Map.get(secrets, "token") || Map.get(secrets, "bearer_token") || "")
+        |> to_string()
+        |> String.trim()
 
-    (Map.get(secrets, "token") || Map.get(secrets, "bearer_token") || "")
-    |> to_string()
-    |> String.trim()
+      {:error, _message} ->
+        ""
+    end
   end
 
   defp humanize_kind(kind) do

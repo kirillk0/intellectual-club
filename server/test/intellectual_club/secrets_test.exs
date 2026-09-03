@@ -137,6 +137,9 @@ defmodule IntellectualClub.SecretsTest do
     assert {:error, "Secret `BLOCK_TOKEN` is not available to this tool call."} =
              Resolver.resolve_selected(tool, ["BLOCK_TOKEN"], context_without_block)
 
+    assert {:error, "Secret `token` is not available to this tool call."} =
+             Resolver.resolve_selected(tool, ["token"], context)
+
     tool_binding
     |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
     |> Ash.destroy!(actor: actor)

@@ -20,6 +20,7 @@ defmodule IntellectualClub.BackgroundTasks do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Outlets.Runtime, as: OutletRuntime
   alias IntellectualClub.Repo
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -504,7 +505,7 @@ defmodule IntellectualClub.BackgroundTasks do
   def load_tool_instance(%BackgroundTask{tool_instance_id: tool_instance_id, owner_id: owner_id})
       when is_integer(tool_instance_id) and is_integer(owner_id) do
     case Ash.get(ToolInstance, tool_instance_id, actor: actor(owner_id)) do
-      {:ok, %ToolInstance{} = tool_instance} -> {:ok, tool_instance}
+      {:ok, %ToolInstance{} = tool_instance} -> DriverSecrets.hydrate(tool_instance)
       _other -> {:error, :tool_instance_not_found}
     end
   end

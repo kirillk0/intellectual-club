@@ -21,7 +21,7 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Outlets.Runtime
-  alias IntellectualClub.Secrets.{KnowledgeBlockSecret, Secret}
+  alias IntellectualClub.Secrets.{DriverSecrets, KnowledgeBlockSecret, Secret}
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.BotUserToolBinding
   alias IntellectualClub.Tools.BindingResolver
@@ -477,8 +477,11 @@ defmodule IntellectualClub.Generation.ContextTest do
     context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
     assert %{} = context.tool_instances_by_alias
-    assert context.tool_instances_by_alias["web"].id == tool_instance.id
-    assert context.tool_instances_by_alias["web"].secrets == %{"bearer_token" => "token-value"}
+    context_tool = context.tool_instances_by_alias["web"]
+    assert context_tool.id == tool_instance.id
+    assert context_tool.secrets == %{}
+    assert {:ok, hydrated_tool} = DriverSecrets.hydrate(context_tool, query?: false)
+    assert hydrated_tool.secrets == %{"token" => "token-value"}
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"

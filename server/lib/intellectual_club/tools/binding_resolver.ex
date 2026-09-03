@@ -527,6 +527,11 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :max_output_tokens,
           :outlet_online,
           :can_edit,
+          driver_secret_bindings: [
+            :env_name,
+            :enabled,
+            secret: [:encrypted_value]
+          ],
           secret_bindings: [
             :id,
             :external_id,
@@ -562,6 +567,11 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :max_output_tokens,
           :outlet_online,
           :can_edit,
+          driver_secret_bindings: [
+            :env_name,
+            :enabled,
+            secret: [:encrypted_value]
+          ],
           secret_bindings: [
             :id,
             :external_id,
@@ -597,6 +607,11 @@ defmodule IntellectualClub.Tools.BindingResolver do
           :max_output_tokens,
           :outlet_online,
           :can_edit,
+          driver_secret_bindings: [
+            :env_name,
+            :enabled,
+            secret: [:encrypted_value]
+          ],
           secret_bindings: [
             :id,
             :external_id,

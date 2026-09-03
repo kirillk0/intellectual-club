@@ -163,7 +163,7 @@ defmodule IntellectualClubWeb.Bff.ManagedSecretsController do
     do: Ash.Query.filter(query, knowledge_block_id == ^parent_id)
 
   defp filter_parent(query, :tool_instance, parent_id),
-    do: Ash.Query.filter(query, tool_instance_id == ^parent_id)
+    do: Ash.Query.filter(query, tool_instance_id == ^parent_id and kind == :environment)
 
   defp create_attachment(kind, parent_id, attrs, actor) do
     resource = attachment_resource(kind)
@@ -177,16 +177,20 @@ defmodule IntellectualClubWeb.Bff.ManagedSecretsController do
           {:error, error} -> Repo.rollback(error)
         end
 
-      resource
-      |> Ash.Changeset.for_create(
-        :create,
+      attachment_attrs =
         %{
           field => parent_id,
           secret_id: secret.id,
           env_name: attrs.env_name,
           enabled: true,
           sequence: sequence
-        },
+        }
+        |> maybe_put_attachment_kind(kind)
+
+      resource
+      |> Ash.Changeset.for_create(
+        :create,
+        attachment_attrs,
         actor: actor
       )
       |> Ash.create(actor: actor, load: [secret: [:id, :external_id, :name, :description]])
@@ -338,6 +342,9 @@ defmodule IntellectualClubWeb.Bff.ManagedSecretsController do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_attachment_kind(attrs, :tool_instance), do: Map.put(attrs, :kind, :environment)
+  defp maybe_put_attachment_kind(attrs, :knowledge_block), do: attrs
 
   defp serialize_attachment(attachment) do
     secret = Map.get(attachment, :secret)

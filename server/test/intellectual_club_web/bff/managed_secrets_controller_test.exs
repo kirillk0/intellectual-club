@@ -126,6 +126,14 @@ defmodule IntellectualClubWeb.Bff.ManagedSecretsControllerTest do
       |> json_response(200)
 
     attachment_id = response["secret"]["id"]
+    assert Enum.map(response["secrets"], & &1["env_name"]) == ["REMOTE_API_TOKEN"]
+
+    driver_attachment =
+      ToolInstanceSecret
+      |> Ash.Query.filter(tool_instance_id == ^tool.id and kind == :driver)
+      |> Ash.read_one!(authorize?: false)
+
+    driver_secret_id = driver_attachment.secret_id
 
     attachment =
       ToolInstanceSecret
@@ -140,6 +148,9 @@ defmodule IntellectualClubWeb.Bff.ManagedSecretsControllerTest do
 
     assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
              Ash.get(Secret, secret_id, authorize?: false)
+
+    assert {:error, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}} =
+             Ash.get(Secret, driver_secret_id, authorize?: false)
 
     conn
     |> recycle()

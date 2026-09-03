@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
   use Ash.Resource.Change
 
   alias Ash.Changeset
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.Registry
   alias IntellectualClub.Tools.ToolInstance
 
@@ -50,26 +51,31 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
 
   defp validate_driver_config(changeset, driver, type, config) do
     if function_exported?(driver, :validate_config, 3) do
-      tool_instance = tool_instance_for_validation(changeset, type, config)
-      actor = changeset.context[:private][:actor]
+      with {:ok, secrets} <- DriverSecrets.values_for_changeset(changeset) do
+        tool_instance = tool_instance_for_validation(changeset, type, config, secrets)
+        actor = changeset.context[:private][:actor]
 
-      case driver.validate_config(tool_instance, config, actor) do
-        :ok ->
-          changeset
+        case driver.validate_config(tool_instance, config, actor) do
+          :ok ->
+            changeset
 
-        {:error, message} when is_binary(message) ->
-          Changeset.add_error(changeset, field: :config, message: message)
+          {:error, message} when is_binary(message) ->
+            Changeset.add_error(changeset, field: :config, message: message)
 
-        {:error, opts} when is_list(opts) ->
-          field = Keyword.get(opts, :field, :config)
-          message = Keyword.get(opts, :message, "is invalid")
-          Changeset.add_error(changeset, field: field, message: message)
+          {:error, opts} when is_list(opts) ->
+            field = Keyword.get(opts, :field, :config)
+            message = Keyword.get(opts, :message, "is invalid")
+            Changeset.add_error(changeset, field: field, message: message)
 
-        {:error, other} ->
-          Changeset.add_error(changeset, field: :config, message: to_string(other))
+          {:error, other} ->
+            Changeset.add_error(changeset, field: :config, message: to_string(other))
 
-        _other ->
-          changeset
+          _other ->
+            changeset
+        end
+      else
+        {:error, message} ->
+          Changeset.add_error(changeset, field: :secrets, message: message)
       end
     else
       changeset
@@ -87,7 +93,7 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
     end
   end
 
-  defp tool_instance_for_validation(changeset, type, config) do
+  defp tool_instance_for_validation(changeset, type, config, secrets) do
     data = changeset.data || %{}
 
     %ToolInstance{
@@ -95,16 +101,8 @@ defmodule IntellectualClub.Tools.Changes.ValidateToolConfig do
       type: type,
       owner_id: owner_id_for_validation(changeset),
       config: config,
-      secrets: tool_secrets(changeset)
+      secrets: secrets
     }
-  end
-
-  defp tool_secrets(changeset) do
-    Changeset.get_attribute(changeset, :secrets) ||
-      case changeset.data do
-        %{secrets: %{} = secrets} -> secrets
-        _other -> %{}
-      end
   end
 
   defp owner_id_for_validation(changeset) do

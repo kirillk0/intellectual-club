@@ -7,6 +7,7 @@ defmodule IntellectualClub.Secrets.Prompt do
   def binding_lines(bindings) do
     bindings
     |> normalize_bindings()
+    |> Enum.reject(&(Map.get(&1, :kind) == :driver))
     |> Enum.filter(&(Map.get(&1, :enabled, true) != false))
     |> Enum.sort_by(&{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || 0})
     |> Enum.map(&binding_line/1)

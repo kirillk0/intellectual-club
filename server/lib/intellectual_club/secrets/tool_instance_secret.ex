@@ -36,6 +36,12 @@ defmodule IntellectualClub.Secrets.ToolInstanceSecret do
       constraints(trim?: true, allow_empty?: false, match: ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/)
     end
 
+    attribute :kind, :atom do
+      allow_nil?(false)
+      default(:environment)
+      constraints(one_of: [:environment, :driver])
+    end
+
     attribute :sequence, :integer do
       allow_nil?(false)
       public?(true)
@@ -70,7 +76,7 @@ defmodule IntellectualClub.Secrets.ToolInstanceSecret do
   identities do
     identity(:unique_external_id, [:external_id])
     identity(:unique_secret, [:secret_id])
-    identity(:unique_tool_env_name, [:tool_instance_id, :env_name])
+    identity(:unique_tool_kind_env_name, [:tool_instance_id, :kind, :env_name])
   end
 
   actions do
@@ -78,7 +84,7 @@ defmodule IntellectualClub.Secrets.ToolInstanceSecret do
 
     create :create do
       primary?(true)
-      accept([:tool_instance_id, :secret_id, :env_name, :sequence, :enabled])
+      accept([:tool_instance_id, :secret_id, :env_name, :kind, :sequence, :enabled])
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:tool_instance, :secret]})
       validate({RequireUnboundSecret, []})
@@ -99,15 +105,19 @@ defmodule IntellectualClub.Secrets.ToolInstanceSecret do
   policies do
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
-      authorize_if expr(enabled == true and tool_instance.owner_id == ^actor(:id))
 
       authorize_if expr(
-                     enabled == true and
+                     (enabled == true or kind == :driver) and
+                       tool_instance.owner_id == ^actor(:id)
+                   )
+
+      authorize_if expr(
+                     (enabled == true or kind == :driver) and
                        exists(tool_instance.shares.user_group.memberships, user_id == ^actor(:id))
                    )
 
       authorize_if expr(
-                     enabled == true and
+                     (enabled == true or kind == :driver) and
                        exists(
                          tool_instance.bot_bindings,
                          enabled == true and sharing_mode == :shared and

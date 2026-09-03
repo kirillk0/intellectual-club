@@ -6,6 +6,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDuplicationTest do
   use IntellectualClubWeb.ConnCase, async: false
 
   alias IntellectualClub.Bots.{Bot, BotShare}
+  alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.Tools.{BotToolBinding, ToolFunction, ToolInstance}
 
   require Ash.Query
@@ -115,7 +116,8 @@ defmodule IntellectualClubWeb.AshJsonApi.ToolInstancesDuplicationTest do
     assert duplicated.owner_id == actor.id
     assert duplicated.config == source.config
     assert duplicated.description == source.description
-    assert duplicated.secrets == source.secrets
+    assert {:ok, duplicated_secrets} = DriverSecrets.values(duplicated)
+    assert duplicated_secrets == source.secrets
     assert duplicated.max_output_tokens == source.max_output_tokens
     assert duplicated.rps_limit == source.rps_limit
     assert Enum.map(duplicated_functions, & &1.name) == [function.name]
