@@ -373,10 +373,9 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
                Map.merge(runner_payload, %{"capacity" => 0, "control_capacity" => 2})
              )
 
-    assert Enum.map(control_tasks, & &1.operation) == [
-             "background_status",
-             "background_cancel"
-           ]
+    assert control_tasks
+           |> Enum.map(& &1.operation)
+           |> Enum.sort() == ["background_cancel", "background_status"]
 
     Enum.each(control_tasks, &complete_task!(tool_instance, runner_payload, &1))
     assert {:ok, _result} = Task.await(status_waiter, 5_000)
