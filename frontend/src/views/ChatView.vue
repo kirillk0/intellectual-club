@@ -500,7 +500,19 @@
         :loading="vm.shareLoading"
         :saving="vm.shareSaving"
         @save="vm.saveShareGroups"
-      />
+      >
+        <template #additional-message>
+          <p v-if="vm.exportHtmlError" class="error-text" role="alert">
+            {{ vm.exportHtmlError }}
+          </p>
+        </template>
+        <template #additional-action>
+          <button type="button" :disabled="vm.exportHtmlSaving" @click="vm.exportChatHtml">
+            <SvgIcon name="export" size="16" />
+            {{ translate(vm.exportHtmlSaving ? 'Exporting…' : 'Export HTML') }}
+          </button>
+        </template>
+      </ShareWithGroupsModal>
     </Teleport>
 
     <Teleport to="body">

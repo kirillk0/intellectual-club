@@ -143,6 +143,7 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-list/:id/summary", ChatListController, :summary
 
     get "/chat-state/:id", ChatStateController, :state
+    get "/chat-state/:id/export", ChatStateController, :export
     get "/chat-state/:id/settings", ChatStateController, :settings
     get "/chat-state/:id/prompt-context", ChatStateController, :prompt_context
     get "/chat-state/:id/message-tree", ChatStateController, :message_tree

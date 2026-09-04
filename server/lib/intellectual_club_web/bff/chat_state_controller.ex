@@ -12,6 +12,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClubWeb.Bff.ChatAccess
+  alias IntellectualClubWeb.Bff.ChatExportPayload
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
   alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
@@ -22,6 +23,20 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
          {:ok, chat_id} <- ChatParams.resource_id(id),
          {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat(chat_id, actor) do
       json(conn, ChatPayloads.state(chat, actor))
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ChatAccess.render_error(conn, error)
+    end
+  end
+
+  def export(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- ChatParams.resource_id(id),
+         {:ok, %Chat{} = chat} <- ChatAccess.fetch_owned_chat(chat_id, actor) do
+      json(conn, ChatExportPayload.build(chat, actor))
     else
       {:error, %Plug.Conn{} = conn} ->
         conn

@@ -10,6 +10,11 @@ const apiMocks = vi.hoisted(() => ({
   del: vi.fn(),
 }));
 
+const exportMocks = vi.hoisted(() => ({
+  build: vi.fn(),
+  save: vi.fn(),
+}));
+
 vi.mock('@/api/client', () => ({
   api: apiMocks,
   getApiErrorMessage: (error: unknown, fallback: string) =>
@@ -17,6 +22,18 @@ vi.mock('@/api/client', () => ({
   isHttpError: (error: unknown) =>
     error instanceof Error && typeof (error as Error & { status?: unknown }).status === 'number',
 }));
+
+vi.mock('@/features/chat/chatHtmlExport', () => ({
+  buildChatHtmlExport: exportMocks.build,
+}));
+
+vi.mock('@/utils/download', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/utils/download')>();
+  return {
+    ...original,
+    saveBlobAsFile: exportMocks.save,
+  };
+});
 
 import type {
   ChatSettingsStatePayload,
@@ -116,6 +133,8 @@ describe('useChatViewModel loading', () => {
     apiMocks.put.mockResolvedValue(undefined);
     apiMocks.patch.mockResolvedValue(undefined);
     apiMocks.del.mockResolvedValue(undefined);
+    exportMocks.build.mockReset();
+    exportMocks.save.mockReset();
     vi.stubGlobal('matchMedia', () => ({
       matches: false,
       addEventListener: vi.fn(),
@@ -360,5 +379,57 @@ describe('useChatViewModel loading', () => {
 
     expect(viewModel.chat.value?.id).toBe(2);
     expect(viewModel.loaded.value).toBe(true);
+  });
+
+  it('exports HTML independently and treats a canceled file save as non-error', async () => {
+    const exportPayload = { schema_version: 1, selected_chat_id: 1, chats: [] };
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1/settings') return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1/export') return Promise.resolve(exportPayload);
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      return Promise.resolve(undefined);
+    });
+    exportMocks.build.mockResolvedValue({
+      html: '<!doctype html>',
+      blob: new Blob(['export']),
+      filename: 'chat-export.html',
+    });
+    exportMocks.save.mockRejectedValue(new DOMException('Canceled', 'AbortError'));
+
+    const { viewModel } = await mountViewModel();
+    await vi.waitFor(() => expect(viewModel.loaded.value).toBe(true));
+
+    await viewModel.exportChatHtml();
+
+    expect(apiMocks.get).toHaveBeenCalledWith('/api/bff/chat-state/1/export', { timeoutMs: null });
+    expect(exportMocks.build).toHaveBeenCalledWith(exportPayload);
+    expect(exportMocks.save).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'chat-export.html',
+      'text/html;charset=utf-8'
+    );
+    expect(viewModel.exportHtmlSaving.value).toBe(false);
+    expect(viewModel.exportHtmlError.value).toBe('');
+  });
+
+  it('shows a recoverable export error without closing sharing', async () => {
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1/settings') return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1/export') return Promise.reject(new Error('Export unavailable'));
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      return Promise.resolve(undefined);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const { viewModel } = await mountViewModel();
+    await vi.waitFor(() => expect(viewModel.loaded.value).toBe(true));
+    viewModel.shareModalOpen.value = true;
+
+    await viewModel.exportChatHtml();
+
+    expect(viewModel.exportHtmlError.value).toBe('Export unavailable');
+    expect(viewModel.exportHtmlSaving.value).toBe(false);
+    expect(viewModel.shareModalOpen.value).toBe(true);
+    expect(errorSpy).toHaveBeenCalledOnce();
   });
 });

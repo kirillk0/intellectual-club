@@ -38,10 +38,13 @@
       </label>
     </div>
 
+    <slot name="additional-message" />
+
     <div class="modal-actions">
       <button class="primary" type="button" :disabled="saving || loading" @click="emitSave">
         {{ saving ? 'Saving…' : 'Save' }}
       </button>
+      <slot name="additional-action" />
       <button type="button" :disabled="saving" @click="emitClose">Cancel</button>
     </div>
   </ModalWindow>

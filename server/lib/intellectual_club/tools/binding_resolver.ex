@@ -66,6 +66,38 @@ defmodule IntellectualClub.Tools.BindingResolver do
     }
   end
 
+  @doc false
+  def describe_tool_instance(%{} = tool_instance, actor) do
+    tool_type = tool_instance.type |> to_string() |> String.trim()
+    driver = Registry.driver_for_type!(tool_type)
+
+    %{
+      type_title: driver_title(driver, tool_type),
+      type_description: driver_description(driver),
+      functions:
+        tool_instance
+        |> list_model_functions(actor)
+        |> Enum.filter(& &1.enabled)
+        |> Enum.map(fn function ->
+          %{
+            name: function.name,
+            description: to_string(function.description || "")
+          }
+        end)
+    }
+  rescue
+    _exception ->
+      %{
+        type_title: tool_instance |> Map.get(:type, "") |> to_string(),
+        type_description: "",
+        functions: []
+      }
+  end
+
+  def describe_tool_instance(_tool_instance, _actor) do
+    %{type_title: "", type_description: "", functions: []}
+  end
+
   defp candidate_entries(bindings, source) when is_list(bindings) do
     bindings
     |> Enum.flat_map(fn binding ->

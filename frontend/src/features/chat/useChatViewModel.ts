@@ -3,6 +3,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import { continueChatRecord } from '@/features/chat/chatAshApi';
+import { buildChatHtmlExport } from '@/features/chat/chatHtmlExport';
 import { useChatContextPanel } from '@/features/chat/model/useChatContextPanel';
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import { useChatHeaderControls } from '@/features/chat/model/useChatHeaderControls';
@@ -39,6 +40,7 @@ import type {
   Chat,
   ChatBranchMessage,
   ChatContinuationNavItem,
+  ChatExportPayload,
   ChatRelationSummary,
   ChatRelations,
   Group,
@@ -46,6 +48,8 @@ import type {
   LlmConfiguration,
   ToolInstanceOption,
 } from '@/types/api';
+import { isFileSaveAbort, saveBlobAsFile } from '@/utils/download';
+import { translate } from '@/i18n';
 import {
   fallbackChildRelationsForBranch,
   hasPositionedForkAnchor,
@@ -262,6 +266,8 @@ export function useChatViewModel() {
   const shareDisabledGroupReasons = ref<Record<number, string>>({});
   const shareLoading = ref(false);
   const shareSaving = ref(false);
+  const exportHtmlSaving = ref(false);
+  const exportHtmlError = ref('');
 
   type TemplateRefValue = Element | ComponentPublicInstance | null;
 
@@ -897,6 +903,7 @@ export function useChatViewModel() {
   const openShareModal = async () => {
     if (!canEdit.value || !chatId.value || shareLoading.value) return;
     ui.closeMenu();
+    exportHtmlError.value = '';
     shareModalOpen.value = true;
     shareLoading.value = true;
     try {
@@ -911,6 +918,26 @@ export function useChatViewModel() {
       loadError.value = error instanceof Error ? error.message : 'Failed to load sharing settings.';
     } finally {
       shareLoading.value = false;
+    }
+  };
+
+  const exportChatHtml = async () => {
+    if (!canEdit.value || !chatId.value || exportHtmlSaving.value) return;
+    exportHtmlSaving.value = true;
+    exportHtmlError.value = '';
+    try {
+      const payload = await api.get<ChatExportPayload>(`/api/bff/chat-state/${chatId.value}/export`, {
+        timeoutMs: null,
+      });
+      const exported = await buildChatHtmlExport(payload);
+      await saveBlobAsFile(exported.blob, exported.filename, 'text/html;charset=utf-8');
+    } catch (error) {
+      if (!isFileSaveAbort(error)) {
+        console.error(error);
+        exportHtmlError.value = getApiErrorMessage(error, translate('Failed to export chat.'));
+      }
+    } finally {
+      exportHtmlSaving.value = false;
     }
   };
 
@@ -1129,6 +1156,9 @@ export function useChatViewModel() {
     shareLoading,
     shareSaving,
     saveShareGroups,
+    exportHtmlSaving,
+    exportHtmlError,
+    exportChatHtml,
     continuingConversation,
     continueConversation,
     handoffPending,

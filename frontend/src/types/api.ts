@@ -390,3 +390,131 @@ export type ChatMessageTreePayload = {
   messages: ChatBranchMessage[];
   active_message_ids: number[];
 };
+
+export type ChatExportAttachment = {
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  kind: string;
+  enabled: boolean;
+};
+
+export type ChatExportResourceRef = {
+  block_id?: number;
+  tool_instance_id?: number;
+  alias?: string;
+  source?: string | null;
+  selection?: string | null;
+  sequence: number;
+  order?: number;
+  enabled: boolean;
+  background_functions_unavailable?: boolean;
+};
+
+export type ChatExportContentItem = {
+  type: string;
+  step_sequence: number;
+  item_sequence: number;
+  created_at?: string | null;
+  parts: Array<{
+    text: string;
+    handoff_entry?: {
+      entry_kind?: string | null;
+      role?: string | null;
+      omitted_count?: number | null;
+      created_at?: string | null;
+    } | null;
+  }>;
+  attachments: ChatExportAttachment[];
+};
+
+export type ChatExportWorkingItem = {
+  type: string;
+  sequence: number;
+  created_at?: string | null;
+  text?: string;
+  truncated?: boolean;
+  name?: string;
+  arguments?: unknown;
+  attachments?: ChatExportAttachment[];
+};
+
+export type ChatExportWorkingStep = ChatUsageStats & {
+  id: number;
+  sequence: number;
+  created_at?: string | null;
+  finished_at?: string | null;
+  status?: string | null;
+  response_final?: boolean | null;
+  items: ChatExportWorkingItem[];
+};
+
+export type ChatExportMessage = {
+  id: number;
+  parent_id?: number | null;
+  role: string;
+  status: string;
+  error_detail?: string | null;
+  token_count?: number | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+  llm_configuration?: { label: string; tags: string[] } | null;
+  usage?: ChatMessageUsage | null;
+  content: ChatExportContentItem[];
+  working_steps: ChatExportWorkingStep[];
+};
+
+export type ChatExportChat = {
+  id: number;
+  title: string;
+  note: string;
+  subagent: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  relation?: {
+    parent_chat_id: number;
+    parent_message_id?: number | null;
+    kind?: string | null;
+  } | null;
+  bot?: { name: string; tags: string[] } | null;
+  llm_configuration?: { label: string; tags: string[] } | null;
+  active_generation: boolean;
+  messages: ChatExportMessage[];
+  context: { blocks: ChatExportResourceRef[]; tools: ChatExportResourceRef[] };
+  library: { blocks: ChatExportResourceRef[]; tools: ChatExportResourceRef[] };
+};
+
+export type ChatExportKnowledgeBlock = {
+  id: number;
+  name: string;
+  version?: number | string | null;
+  content: string;
+  token_count?: number | null;
+  tags: string[];
+  attachments: ChatExportAttachment[];
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ChatExportTool = {
+  id: number;
+  name: string;
+  alias: string;
+  type: string;
+  type_title?: string | null;
+  type_description?: string | null;
+  description?: string | null;
+  functions: Array<{ name: string; description: string }>;
+};
+
+export type ChatExportPayload = {
+  schema_version: 1;
+  exported_at: string;
+  selected_chat_id: number;
+  root_chat_id: number;
+  chats: ChatExportChat[];
+  resources: {
+    knowledge_blocks: ChatExportKnowledgeBlock[];
+    tools: ChatExportTool[];
+  };
+};
