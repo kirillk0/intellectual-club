@@ -25,6 +25,7 @@ export const ruMessages: Record<string, string> = {
 
   '. Use Advanced JSON editor below.': '. Используйте расширенный JSON-редактор ниже.',
   '(disabled)': '(отключено)',
+  '(incompatible)': '(несовместимо)',
   '(calculated on save)': '(рассчитывается при сохранении)',
   '(generated on save)': '(генерируется при сохранении)',
   '< previous': '< предыдущая',
@@ -698,6 +699,7 @@ export const ruMessages: Record<string, string> = {
   'Search bots': 'Поиск ботов',
   'Search chats': 'Поиск чатов',
   'Search configurations': 'Поиск конфигураций',
+  'Type to search all configurations': 'Начните печатать для поиска по всем конфигурациям',
   'Search groups': 'Поиск групп',
   'Search messages': 'Поиск сообщений',
   'Search providers': 'Поиск провайдеров',

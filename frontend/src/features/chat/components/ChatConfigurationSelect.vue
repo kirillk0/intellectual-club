@@ -4,7 +4,7 @@
     class="config-select"
     :class="{ 'config-select--disabled': disabled, 'config-select--open': configMenuOpen }"
     @click.stop
-    @keydown.esc="closeConfigMenu"
+    @keydown="handleMenuKeydown"
   >
     <button
       ref="configTriggerRef"
@@ -25,55 +25,97 @@
         ref="configDropdownRef"
         class="config-select__menu config-select__menu--floating"
         role="menu"
-        aria-label="Configuration"
+        :aria-label="t('Configuration')"
+        tabindex="-1"
         :style="configMenuStyle"
         @click.stop
-        @keydown.esc="closeConfigMenu"
+        @keydown="handleMenuKeydown"
       >
-        <button
-          v-if="defaultConfig"
-          class="config-select__item"
-          type="button"
-          role="menuitem"
-          :title="configLabel(defaultConfig)"
-          @click="selectConfig(defaultConfig.id)"
-        >
-          {{ configLabel(defaultConfig) }}
-        </button>
-        <div v-if="defaultConfig && (regularSelectableConfigs.length || moreMenuItems.length)" class="menu-divider"></div>
-        <button
-          v-for="cfg in regularSelectableConfigs"
-          :key="cfg.id"
-          class="config-select__item"
-          type="button"
-          role="menuitem"
-          :title="configLabel(cfg)"
-          @click="selectConfig(cfg.id)"
-        >
-          {{ configLabel(cfg) }}
-        </button>
-        <div
-          v-if="moreMenuItems.length"
-          class="config-select__submenu"
-          @mouseenter="scheduleOpenMoreConfigMenu"
-          @pointerenter="scheduleOpenMoreConfigMenu"
-          @mouseleave="scheduleCloseMoreConfigMenu"
-          @pointerleave="scheduleCloseMoreConfigMenu"
-        >
+        <template v-if="searchVisible">
+          <div class="config-select__search">
+            <input
+              ref="searchInputRef"
+              v-model="searchQuery"
+              type="search"
+              :placeholder="t('Search configurations')"
+              :aria-label="t('Search configurations')"
+              autocomplete="off"
+              autocapitalize="off"
+              :spellcheck="false"
+            />
+          </div>
           <button
-            ref="moreTriggerRef"
-            class="config-select__item config-select__submenu-trigger"
+            v-for="item in searchResults"
+            :key="item.key"
+            class="config-select__item"
             type="button"
             role="menuitem"
-            aria-haspopup="menu"
-            :aria-expanded="moreMenuOpen ? 'true' : 'false'"
-            @focus="openMoreConfigMenu"
-            @click.stop="openMoreConfigMenu"
+            :title="item.title"
+            @click="selectConfig(item.value)"
           >
-            <span class="config-select__submenu-label">More</span>
-            <span aria-hidden="true">‹</span>
+            {{ item.label }}
           </button>
-        </div>
+          <div v-if="!searchResults.length" class="config-select__empty" role="status">
+            {{ t('No configurations found.') }}
+          </div>
+        </template>
+        <template v-else>
+          <button
+            v-if="defaultConfig"
+            class="config-select__item"
+            type="button"
+            role="menuitem"
+            :title="configLabel(defaultConfig)"
+            @click="selectConfig(defaultConfig.id)"
+          >
+            {{ configLabel(defaultConfig) }}
+          </button>
+          <div v-if="defaultConfig && (regularSelectableConfigs.length || moreMenuItems.length)" class="menu-divider"></div>
+          <button
+            v-for="cfg in regularSelectableConfigs"
+            :key="cfg.id"
+            class="config-select__item"
+            type="button"
+            role="menuitem"
+            :title="configLabel(cfg)"
+            @click="selectConfig(cfg.id)"
+          >
+            {{ configLabel(cfg) }}
+          </button>
+          <div class="config-select__footer">
+            <div
+              v-if="moreMenuItems.length"
+              class="config-select__submenu"
+              @mouseenter="scheduleOpenMoreConfigMenu"
+              @pointerenter="scheduleOpenMoreConfigMenu"
+              @mouseleave="scheduleCloseMoreConfigMenu"
+              @pointerleave="scheduleCloseMoreConfigMenu"
+            >
+              <button
+                ref="moreTriggerRef"
+                class="config-select__item config-select__submenu-trigger"
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                :aria-expanded="moreMenuOpen ? 'true' : 'false'"
+                @focus="openMoreConfigMenu"
+                @click.stop="openMoreConfigMenu"
+              >
+                <span class="config-select__submenu-label">{{ t('More') }}</span>
+                <span aria-hidden="true">‹</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              class="config-select__search-toggle"
+              :aria-label="t('Search configurations')"
+              :title="t('Type to search all configurations')"
+              @click="showSearch()"
+            >
+              <SvgIcon name="tool-search" size="16" />
+            </button>
+          </div>
+        </template>
       </div>
     </Teleport>
 
@@ -83,14 +125,14 @@
         ref="moreDropdownRef"
         class="config-select__submenu-menu config-select__submenu-menu--floating"
         role="menu"
-        aria-label="More configurations"
+        :aria-label="t('More configurations')"
         :style="moreMenuStyle"
         @click.stop
         @mouseenter="cancelMoreConfigMenuClose"
         @pointerenter="cancelMoreConfigMenuClose"
         @mouseleave="scheduleCloseMoreConfigMenu"
         @pointerleave="scheduleCloseMoreConfigMenu"
-        @keydown.esc="closeConfigMenu"
+        @keydown="handleMenuKeydown"
       >
         <button
           v-for="item in moreMenuItems"
@@ -109,8 +151,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
+import SvgIcon from '@/components/icons/SvgIcon.vue';
+import { translate as t } from '@/i18n';
 import type { LlmConfiguration } from '@/types/api';
 
 type ConfigValue = number | '';
@@ -153,6 +197,9 @@ const configTriggerRef = ref<HTMLElement | null>(null);
 const configDropdownRef = ref<HTMLElement | null>(null);
 const moreTriggerRef = ref<HTMLElement | null>(null);
 const moreDropdownRef = ref<HTMLElement | null>(null);
+const searchInputRef = ref<HTMLInputElement | null>(null);
+const searchVisible = ref(false);
+const searchQuery = ref('');
 const configMenuOpen = ref(false);
 const moreMenuOpen = ref(false);
 const configMenuStyle = ref<Record<string, string>>({});
@@ -161,15 +208,15 @@ let moreMenuOpenTimer: number | null = null;
 let moreMenuCloseTimer: number | null = null;
 
 const moreConfigReason = (config: LlmConfiguration) => {
-  if (config.enabled === false) return ' (disabled)';
-  return ' (incompatible)';
+  if (config.enabled === false) return ` ${t('(disabled)')}`;
+  return ` ${t('(incompatible)')}`;
 };
 
 const moreMenuItems = computed<MoreMenuItem[]>(() => [
   {
     key: 'no-config',
-    label: 'No config',
-    title: 'No config',
+    label: t('No config'),
+    title: t('No config'),
     value: '',
   },
   ...props.moreConfigs.map((config) => {
@@ -182,6 +229,18 @@ const moreMenuItems = computed<MoreMenuItem[]>(() => [
     };
   }),
 ]);
+
+const searchResults = computed<MoreMenuItem[]>(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase();
+  const items = [
+    ...props.selectableConfigs.map((config) => {
+      const label = props.configLabel(config);
+      return { key: String(config.id), label, title: label, value: config.id };
+    }),
+    ...moreMenuItems.value,
+  ];
+  return items.filter((item) => item.label.toLocaleLowerCase().includes(query));
+});
 
 const currentConfigText = computed(() => {
   if (props.modelValue === '') return 'No config';
@@ -211,6 +270,8 @@ const closeConfigMenu = () => {
   cancelMoreConfigMenuClose();
   configMenuOpen.value = false;
   moreMenuOpen.value = false;
+  searchVisible.value = false;
+  searchQuery.value = '';
 };
 
 const updateConfigMenuPosition = () => {
@@ -283,7 +344,59 @@ const openConfigMenu = async () => {
   configMenuOpen.value = true;
   await nextTick();
   updateConfigMenuPosition();
+  configDropdownRef.value?.focus({ preventScroll: true });
 };
+
+const showSearch = async (query = searchQuery.value) => {
+  cancelMoreConfigMenuOpen();
+  cancelMoreConfigMenuClose();
+  moreMenuOpen.value = false;
+  searchQuery.value = query;
+  searchVisible.value = true;
+  await nextTick();
+  searchInputRef.value?.focus({ preventScroll: true });
+};
+
+const handleMenuKeydown = async (event: KeyboardEvent) => {
+  if (props.disabled || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === 'Escape' && configMenuOpen.value) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeConfigMenu();
+    configTriggerRef.value?.focus({ preventScroll: true });
+    return;
+  }
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (!configMenuOpen.value) await openConfigMenu();
+    const menu = moreDropdownRef.value?.contains(event.target as Node)
+      ? moreDropdownRef.value
+      : configDropdownRef.value;
+    const items = Array.from(menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+    if (!items.length) return;
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex = event.key === 'ArrowDown' ? index + 1 : (index < 0 ? 0 : index) - 1;
+    items[(nextIndex + items.length) % items.length]?.focus();
+    return;
+  }
+
+  if (event.target === searchInputRef.value) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const firstResult = searchResults.value[0];
+      if (firstResult) selectConfig(firstResult.value);
+    }
+    return;
+  }
+
+  if (event.key.length !== 1 || !event.key.trim()) return;
+  event.preventDefault();
+  if (!configMenuOpen.value) await openConfigMenu();
+  await showSearch(searchQuery.value + event.key);
+};
+
+watch([searchQuery, searchVisible], updateConfigMenuPosition, { flush: 'post' });
 
 const toggleConfigMenu = async () => {
   if (props.disabled) return;
@@ -309,7 +422,7 @@ const handleMenuReposition = () => {
 };
 
 const openMoreConfigMenu = async () => {
-  if (!configMenuOpen.value || !moreMenuItems.value.length) return;
+  if (!configMenuOpen.value || searchVisible.value || !moreMenuItems.value.length) return;
   cancelMoreConfigMenuOpen();
   cancelMoreConfigMenuClose();
   moreMenuOpen.value = true;
@@ -318,7 +431,7 @@ const openMoreConfigMenu = async () => {
 };
 
 const scheduleOpenMoreConfigMenu = () => {
-  if (!configMenuOpen.value || !moreMenuItems.value.length) return;
+  if (!configMenuOpen.value || searchVisible.value || !moreMenuItems.value.length) return;
   cancelMoreConfigMenuClose();
   if (moreMenuOpen.value) {
     updateMoreMenuPosition();
@@ -342,6 +455,7 @@ const scheduleCloseMoreConfigMenu = () => {
 const selectConfig = (value: ConfigValue) => {
   if (props.disabled) return;
   closeConfigMenu();
+  configTriggerRef.value?.focus({ preventScroll: true });
   if (props.modelValue === value) return;
   emit('update:modelValue', value);
   emit('change');
@@ -451,6 +565,48 @@ onBeforeUnmount(() => {
 
 .config-select__submenu {
   position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.config-select__footer {
+  display: flex;
+  align-items: stretch;
+}
+
+.config-select__search-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.config-select__search-toggle:hover,
+.config-select__search-toggle:focus-visible {
+  background: var(--color-surface-muted);
+}
+
+.config-select__search {
+  position: sticky;
+  top: -6px;
+  padding: 6px 10px;
+  background: var(--color-surface);
+}
+
+.config-select__search input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 16px;
+}
+
+.config-select__empty {
+  padding: 9px 12px;
+  color: var(--color-text-muted);
 }
 
 .config-select__submenu-menu {
