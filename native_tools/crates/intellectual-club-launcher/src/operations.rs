@@ -897,6 +897,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
     fs::create_dir_all(&config.files_data_dir)
         .with_context(|| format!("failed to create {}", config.files_data_dir.display()))?;
     let public_host = launcher_public_host();
+    let bind_address = config.app_bind_address();
 
     let log = open_log_file(log_path)?;
     let log_err = log.try_clone().context("failed to clone app log handle")?;
@@ -905,10 +906,10 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
     cmd.arg("start")
         .current_dir(&app_dir)
         .env("PHX_SERVER", "true")
-        .env("PHX_IP", "127.0.0.1")
+        .env("PHX_IP", bind_address.ip().to_string())
         .env("DATABASE_URL", database_url)
         .env("FILE_STORAGE_PATH", &config.files_data_dir)
-        .env("PORT", config.app_port.to_string())
+        .env("PORT", bind_address.port().to_string())
         .env("PHX_HOST", public_host)
         .env("PHX_SCHEME", "http")
         .env("PHX_PORT", config.app_port.to_string())
@@ -1456,13 +1457,11 @@ async fn wait_for_status(
 
 async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
     let target = url::Url::parse(url).context("invalid app url")?;
-    let host = target
-        .host_str()
-        .ok_or_else(|| anyhow!("missing app host"))?;
-    let port = target.port().ok_or_else(|| anyhow!("missing app port"))?;
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    let addresses = target
+        .socket_addrs(|| None)
+        .context("failed to resolve app address")?;
 
-    wait_for_tcp(addr, timeout)
+    wait_for_tcp(&addresses, timeout)
         .await
         .with_context(|| format!("application did not open {url} within {timeout:?}"))
 }
@@ -1522,10 +1521,12 @@ async fn wait_for_application_restart(
     bail!("application did not restart within {:?}", timeout)
 }
 
-async fn wait_for_tcp(addr: SocketAddr, timeout: Duration) -> Result<()> {
+async fn wait_for_tcp(addresses: &[SocketAddr], timeout: Duration) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+        if addresses.iter().any(|address| {
+            std::net::TcpStream::connect_timeout(address, Duration::from_millis(300)).is_ok()
+        }) {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2015,6 +2016,18 @@ mod tests {
             files_backup_path_for(Path::new("/tmp/intellectual-club.dump")),
             PathBuf::from("/tmp/intellectual-club.files")
         );
+    }
+
+    #[tokio::test]
+    async fn app_readiness_accepts_localhost_with_an_ipv4_listener() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        for host in ["localhost", "127.0.0.1"] {
+            wait_for_http(&format!("http://{host}:{port}"), Duration::from_millis(500))
+                .await
+                .unwrap();
+        }
     }
 
     #[cfg(windows)]

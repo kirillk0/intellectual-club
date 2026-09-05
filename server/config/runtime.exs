@@ -232,8 +232,8 @@ if config_env() == :prod do
   config :intellectual_club, IntellectualClubWeb.Endpoint,
     url: [host: host, port: String.to_integer(port), scheme: scheme],
     http: [
-      # Enable IPv6 and bind on all interfaces unless PHX_IP explicitly
-      # selects a local address (the desktop launcher uses 127.0.0.1).
+      # Bind on all IPv6 interfaces unless PHX_IP explicitly selects another
+      # address (the desktop launcher uses 0.0.0.0 for all IPv4 interfaces).
       # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: endpoint_http_ip || {0, 0, 0, 0, 0, 0, 0, 0},

@@ -143,7 +143,7 @@ mod tests {
         let paths = AppPaths::discover().unwrap();
         let mut config = LauncherConfig::default_for(&paths);
         config.app_port = 4999;
-        assert_eq!(config.app_url(), "http://127.0.0.1:4999");
+        assert_eq!(config.app_url(), "http://localhost:4999");
         assert_eq!(config.files_data_dir, paths.default_files_data_dir);
     }
 

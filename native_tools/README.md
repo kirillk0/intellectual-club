@@ -11,6 +11,11 @@ The Rust workspace builds all native binaries together:
 - `outlet-shell-daemon` — headless binary for containers and server environments
 - `outlet-shell-desktop` — desktop GUI for managing multiple shell outlet profiles
 
+The desktop launcher binds the application HTTP server to `0.0.0.0`, allowing
+connections from other devices at `http://<computer-ip>:<app-port>` (port `4000`
+by default). The launcher's browser link uses `localhost`, and the embedded
+PostgreSQL server listens only on `127.0.0.1`.
+
 Build all binaries:
 
 ```bash

@@ -11,9 +11,9 @@ use crate::config::{AppPaths, LauncherConfig, Locale, TextKey};
 use crate::fs_utils::{list_backups, open_path, BackupEntry};
 use crate::operations::{
     backup_command, build_status_payload, create_admin_with_credentials, log_path_for,
-    move_data_command, move_files_data_command, open_command, open_log, read_log,
-    restart_application_command, restore_command, start_application_command, start_command,
-    stop_application_command, stop_command,
+    move_data_command, move_files_data_command, open_log, read_log, restart_application_command,
+    restore_command, start_application_command, start_command, stop_application_command,
+    stop_command,
 };
 use crate::status::{ServiceState, ServiceStatus, StatusPayload};
 
@@ -326,22 +326,6 @@ impl LauncherGui {
                     self.log_scroll_to_bottom = true;
                     self.refresh_log();
                 }
-                ui.separator();
-                if ui
-                    .add_enabled(
-                        !self.is_busy(),
-                        egui::Button::new(locale.text(TextKey::OpenApp)),
-                    )
-                    .clicked()
-                {
-                    let paths = self.paths.clone();
-                    let config = self.config.clone();
-                    let label = locale.text(TextKey::OpenApp).to_string();
-                    self.run_task(label.clone(), async move {
-                        open_command(&paths, &config).await?;
-                        Ok(label)
-                    });
-                }
             });
     }
 
@@ -350,7 +334,7 @@ impl LauncherGui {
         ui: &mut egui::Ui,
         locale: Locale,
         status: &ServiceStatus,
-        rows: &[(&str, String)],
+        rows: &[(TextKey, String)],
     ) {
         service_card_with_controls(
             ui,
@@ -443,25 +427,25 @@ impl LauncherGui {
             .unwrap_or_else(|| ServiceStatus::new(ServiceState::Unknown));
 
         let app_rows = [
-            (locale.text(TextKey::Url), self.config.app_url()),
-            (locale.text(TextKey::Port), self.config.app_port.to_string()),
             (
-                locale.text(TextKey::FilesDataDir),
+                TextKey::ListenAddress,
+                self.config.app_bind_address().to_string(),
+            ),
+            (TextKey::BrowserUrl, self.config.app_url()),
+            (
+                TextKey::FilesDataDir,
                 self.config.files_data_dir.display().to_string(),
             ),
         ];
         let postgres_rows = [
             (
-                locale.text(TextKey::DataDir),
+                TextKey::DataDir,
                 self.config.postgres_data_dir.display().to_string(),
             ),
-            (
-                locale.text(TextKey::Port),
-                self.config.postgres_port.to_string(),
-            ),
+            (TextKey::Port, self.config.postgres_port.to_string()),
         ];
         let daemon_rows = [(
-            locale.text(TextKey::RuntimeDir),
+            TextKey::RuntimeDir,
             self.paths.runtime_dir.display().to_string(),
         )];
 
@@ -1082,7 +1066,7 @@ fn service_card(
     locale: Locale,
     title: &str,
     status: &ServiceStatus,
-    rows: &[(&str, String)],
+    rows: &[(TextKey, String)],
 ) {
     service_card_with_controls(ui, locale, title, status, rows, |_| {});
 }
@@ -1092,7 +1076,7 @@ fn service_card_with_controls(
     locale: Locale,
     title: &str,
     status: &ServiceStatus,
-    rows: &[(&str, String)],
+    rows: &[(TextKey, String)],
     controls: impl FnOnce(&mut egui::Ui),
 ) {
     let margin = egui::Margin::symmetric(12, 10);
@@ -1120,8 +1104,8 @@ fn service_card_with_controls(
                     locale.text(TextKey::Unhealthy)
                 });
             });
-            for (label, value) in rows {
-                detail_row(ui, label, value);
+            for (key, value) in rows {
+                detail_row(ui, locale, *key, value);
             }
             if let Some(detail) = &status.detail {
                 ui.colored_label(egui::Color32::from_rgb(176, 43, 43), detail);
@@ -1130,15 +1114,16 @@ fn service_card_with_controls(
         });
 }
 
-fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+fn detail_row(ui: &mut egui::Ui, locale: Locale, key: TextKey, value: &str) {
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.label(format!("{label}:"));
-        ui.add(
-            egui::Label::new(egui::RichText::new(value).monospace())
-                .wrap()
-                .selectable(true),
-        );
+        ui.label(format!("{}:", locale.text(key)));
+        let text = egui::RichText::new(value).monospace();
+        if matches!(key, TextKey::BrowserUrl) {
+            ui.hyperlink_to(text, value);
+        } else {
+            ui.add(egui::Label::new(text).wrap().selectable(true));
+        }
     });
 }
 

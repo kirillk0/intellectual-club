@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -204,7 +205,11 @@ impl LauncherConfig {
     }
 
     pub fn app_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.app_port)
+        format!("http://localhost:{}", self.app_port)
+    }
+
+    pub fn app_bind_address(&self) -> SocketAddr {
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, self.app_port))
     }
 
     pub fn database_url(&self, settings: &postgresql_embedded::Settings) -> String {
@@ -255,7 +260,6 @@ impl Locale {
             (Self::Ru, TextKey::Restart) => "Перезапустить",
             (Self::Ru, TextKey::Open) => "Открыть",
             (Self::Ru, TextKey::Copy) => "Копировать",
-            (Self::Ru, TextKey::OpenApp) => "Открыть приложение",
             (Self::Ru, TextKey::Refresh) => "Обновить",
             (Self::Ru, TextKey::BackupNow) => "Создать бэкап",
             (Self::Ru, TextKey::RestoreSelected) => "Восстановить выбранный",
@@ -273,7 +277,8 @@ impl Locale {
             (Self::Ru, TextKey::Unhealthy) => "Недоступно",
             (Self::Ru, TextKey::LastError) => "Последняя ошибка",
             (Self::Ru, TextKey::LastMessage) => "Последнее событие",
-            (Self::Ru, TextKey::Url) => "URL",
+            (Self::Ru, TextKey::ListenAddress) => "Адрес прослушивания",
+            (Self::Ru, TextKey::BrowserUrl) => "Адрес в браузере",
             (Self::Ru, TextKey::Pid) => "PID",
             (Self::Ru, TextKey::Port) => "Порт",
             (Self::Ru, TextKey::DataDir) => "Данные Postgres",
@@ -318,7 +323,6 @@ impl Locale {
             (Self::En, TextKey::Restart) => "Restart",
             (Self::En, TextKey::Open) => "Open",
             (Self::En, TextKey::Copy) => "Copy",
-            (Self::En, TextKey::OpenApp) => "Open app",
             (Self::En, TextKey::Refresh) => "Refresh",
             (Self::En, TextKey::BackupNow) => "Create backup",
             (Self::En, TextKey::RestoreSelected) => "Restore selected",
@@ -336,7 +340,8 @@ impl Locale {
             (Self::En, TextKey::Unhealthy) => "Unhealthy",
             (Self::En, TextKey::LastError) => "Last error",
             (Self::En, TextKey::LastMessage) => "Last event",
-            (Self::En, TextKey::Url) => "URL",
+            (Self::En, TextKey::ListenAddress) => "Listen address",
+            (Self::En, TextKey::BrowserUrl) => "Browser URL",
             (Self::En, TextKey::Pid) => "PID",
             (Self::En, TextKey::Port) => "Port",
             (Self::En, TextKey::DataDir) => "Postgres data",
@@ -385,7 +390,6 @@ pub enum TextKey {
     Restart,
     Open,
     Copy,
-    OpenApp,
     Refresh,
     BackupNow,
     RestoreSelected,
@@ -403,7 +407,8 @@ pub enum TextKey {
     Unhealthy,
     LastError,
     LastMessage,
-    Url,
+    ListenAddress,
+    BrowserUrl,
     Pid,
     Port,
     DataDir,
