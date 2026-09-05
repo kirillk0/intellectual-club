@@ -22,6 +22,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Generation.UsageCost
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Notifications
@@ -2347,35 +2348,10 @@ defmodule IntellectualClub.Generation.Worker do
   defp execution_context_for_tool_call(context, _call), do: context
 
   defp decorate_tool_result(call, %ExecutionResult{} = result) do
-    media_contents =
-      result.media
-      |> Enum.with_index(2)
-      |> Enum.flat_map(fn {media, idx} ->
-        case normalize_media_content(media, idx) do
-          nil -> []
-          content -> [content]
-        end
-      end)
-
-    artifact_contents =
-      result.artifacts
-      |> Enum.with_index(1)
-      |> Enum.flat_map(fn {artifact, idx} ->
-        case normalize_media_content(artifact, idx) do
-          nil -> []
-          content -> [content]
-        end
-      end)
-
     call
     |> tool_call_to_map()
-    |> Map.merge(%{
-      text: result.text,
-      result_raw: result.raw,
-      media_contents: media_contents,
-      artifact_contents: artifact_contents,
-      raw: Map.get(tool_call_to_map(call), :raw, %{})
-    })
+    |> Map.put_new(:raw, %{})
+    |> Map.merge(ToolResult.execution_payload(result))
   end
 
   defp tool_call_from_result(result) when is_map(result) do
@@ -2400,36 +2376,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp tool_call_to_map(%_struct{} = call), do: Map.from_struct(call)
   defp tool_call_to_map(%{} = call), do: Map.new(call)
   defp tool_call_to_map(_call), do: %{}
-
-  defp normalize_media_content(media, sequence) when is_map(media) and is_integer(sequence) do
-    file_id = Map.get(media, :file_id)
-    filename = Map.get(media, :filename)
-    mime_type = Map.get(media, :mime_type)
-    size_bytes = Map.get(media, :size_bytes)
-    sha256 = Map.get(media, :sha256)
-    file_external_id = Map.get(media, :file_external_id)
-
-    if is_integer(file_id) and is_binary(filename) and is_binary(mime_type) and is_binary(sha256) do
-      %{
-        external_id: Ash.UUID.generate(),
-        sequence: sequence,
-        kind: :media,
-        file_id: file_id,
-        file: %{
-          id: file_id,
-          external_id: file_external_id,
-          filename: filename,
-          mime_type: mime_type,
-          size_bytes: size_bytes || 0,
-          sha256: sha256
-        }
-      }
-    else
-      nil
-    end
-  end
-
-  defp normalize_media_content(_media, _sequence), do: nil
 
   defp provider_error_value?(nil), do: false
   defp provider_error_value?(false), do: false

@@ -1456,6 +1456,31 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     {:ok, child_message} =
       Threads.add_message_to_end(child_chat, :assistant, "Already done", actor: actor)
 
+    {:ok, file} = Files.create_from_binary("recovered.txt", "text/plain", "Recovered attachment")
+    child_step = last_step_for_message!(actor, child_message.id)
+
+    artifact =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          chat_message_step_id: child_step.id,
+          sequence: next_item_sequence(child_step.items),
+          type: :artifact
+        }, actor: actor)
+      |> Ash.create!(actor: actor)
+
+    IntellectualClub.Chat.ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: artifact.id,
+        sequence: 1,
+        kind: :media,
+        file_id: file.id
+      }, actor: actor)
+    |> Ash.create!(actor: actor)
+
     :ok = GenerationSupervisor.recover_orphaned_generations()
 
     parent_message = wait_for_status!(parent.message.id, actor, [:done], 6_000)
@@ -1465,6 +1490,14 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
     assert get_in(raw, ["fork", "chat_id"]) == child_chat.id
     assert get_in(raw, ["fork", "final_message_id"]) == child_message.id
+
+    assert {:ok, {_content, stored, "Recovered attachment"}} =
+             IntellectualClub.Chat.ContentFiles.load_payload_for_execution(
+               file.external_id,
+               fork_execution_context(parent, actor)
+             )
+
+    assert stored.id == file.id
   end
 
   test "recover_orphaned_generations repairs a completed fork child without terminal hook" do

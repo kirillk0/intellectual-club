@@ -11,12 +11,14 @@ defmodule IntellectualClub.Chat.Subagent do
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.Media
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
+  alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -304,7 +306,7 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   @doc """
-  Returns a non-blocking, answer-only snapshot for any subagent reference.
+  Returns answer progress and completed attachments for a subagent reference.
 
   Handoff targets are followed without changing creation depth. The cursor is
   opaque and falls back to a full replacement when the observed answer changes.
@@ -477,7 +479,7 @@ defmodule IntellectualClub.Chat.Subagent do
       text: to_string(Map.get(result, :text, "")),
       raw: Map.get(result, :raw, %{}),
       media: [],
-      artifacts: []
+      artifacts: Map.get(result, :artifacts, [])
     }
   end
 
@@ -507,8 +509,13 @@ defmodule IntellectualClub.Chat.Subagent do
           message
           |> History.project_text_for_item_types(History.assistant_answer_item_types())
           |> case do
-            value when is_binary(value) and value != "" -> final_text(%{text: value})
-            _other -> result.text
+            value when is_binary(value) and value != "" ->
+              value
+              |> then(&final_text(%{text: &1}))
+              |> with_attachment_manifest(result.artifacts)
+
+            _other ->
+              result.text
           end
 
         %{result | text: text}
@@ -785,10 +792,10 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   defp resolve_snapshot_chain(message_id, actor) when is_integer(message_id) do
-    do_resolve_snapshot_chain(message_id, actor, MapSet.new(), [], [])
+    do_resolve_snapshot_chain(message_id, actor, MapSet.new(), [], [], [])
   end
 
-  defp do_resolve_snapshot_chain(_message_id, _actor, _visited, chain, answers)
+  defp do_resolve_snapshot_chain(_message_id, _actor, _visited, chain, answers, _artifacts)
        when length(chain) >= @max_parent_hops do
     {:ok,
      %{
@@ -799,7 +806,7 @@ defmodule IntellectualClub.Chat.Subagent do
      }}
   end
 
-  defp do_resolve_snapshot_chain(message_id, actor, visited, chain, answers)
+  defp do_resolve_snapshot_chain(message_id, actor, visited, chain, answers, artifacts)
        when is_integer(message_id) do
     if MapSet.member?(visited, message_id) do
       {:ok,
@@ -814,6 +821,7 @@ defmodule IntellectualClub.Chat.Subagent do
         message = load_final_message!(message_id, actor)
         message_answer = message_answer_text(message)
         answers = append_answer(answers, message_answer)
+        artifacts = artifacts ++ message_artifacts(message)
 
         case lifecycle_transition(message) do
           {:terminal, :generating} ->
@@ -833,7 +841,8 @@ defmodule IntellectualClub.Chat.Subagent do
               actor,
               MapSet.put(visited, message_id),
               chain,
-              answers
+              answers,
+              artifacts
             )
 
           {:terminal, :done} ->
@@ -847,6 +856,7 @@ defmodule IntellectualClub.Chat.Subagent do
                  chat_id: message.chat_id,
                  message_id: message.id,
                  text: message_answer,
+                 artifacts: Enum.uniq_by(artifacts, & &1.file_external_id),
                  chain: chain
                },
                error: nil
@@ -1006,16 +1016,32 @@ defmodule IntellectualClub.Chat.Subagent do
       |> Enum.reject(&(is_integer(runtime_step_id) and &1.id == runtime_step_id))
 
     (persisted_steps ++ List.wrap(runtime_step))
-    |> Enum.filter(fn step ->
+    |> subagent_steps(fork_step_sequence)
+    |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
+    |> Enum.map(&answer_text_from_trace/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp message_artifacts(%ChatMessage{} = message) do
+    message.steps
+    |> List.wrap()
+    |> subagent_steps(fork_instruction_step_sequence(message))
+    |> Enum.sort_by(&sort_seq/1)
+    |> Enum.flat_map(&ordered_items/1)
+    |> Enum.filter(&(History.item_type(&1) == :artifact))
+    |> Enum.flat_map(&History.media_contents_for_item/1)
+    |> Enum.map(&Media.media_descriptor/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp subagent_steps(steps, fork_step_sequence) do
+    Enum.filter(steps, fn step ->
       sequence = trace_value(step, :sequence)
 
       not is_integer(fork_step_sequence) or
         (is_integer(sequence) and sequence > fork_step_sequence)
     end)
-    |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
-    |> Enum.map(&answer_text_from_trace/1)
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> Enum.join("\n\n")
   end
 
   defp fork_instruction_step_sequence(%ChatMessage{} = message) do
@@ -1131,7 +1157,7 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   defp snapshot_result(reference, %{status: :completed, final: final}) when is_map(final) do
-    text = final_text(final)
+    text = final |> final_text() |> with_attachment_manifest(final.artifacts)
     primitive = normalize_primitive(Map.get(reference, :primitive))
     primitive_key = Atom.to_string(primitive)
 
@@ -1154,6 +1180,7 @@ defmodule IntellectualClub.Chat.Subagent do
 
     %{
       text: text,
+      artifacts: final.artifacts,
       raw: %{
         primitive_key => payload
       }
@@ -1161,6 +1188,19 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   defp snapshot_result(_reference, _state), do: nil
+
+  defp with_attachment_manifest(text, []), do: text
+
+  defp with_attachment_manifest(text, artifacts) do
+    manifest =
+      Enum.map_join(artifacts, "\n", fn artifact ->
+        "[Attached file file_id=#{artifact.file_external_id} " <>
+          "filename=#{inspect(artifact.filename)} mime_type=#{inspect(artifact.mime_type)} " <>
+          "size_bytes=#{artifact.size_bytes}]"
+      end)
+
+    manifest <> "\n\n" <> text
+  end
 
   defp background_execution_result(%{status: :completed} = snapshot) do
     {:completed, execution_result_from_snapshot(snapshot)}
@@ -1191,10 +1231,15 @@ defmodule IntellectualClub.Chat.Subagent do
     }
   end
 
-  defp final_text(%{text: text}) when is_binary(text) do
+  defp final_text(%{text: text} = final) when is_binary(text) do
     case String.trim(text) do
-      "" -> "Subagent completed without a final answer."
-      value -> value
+      "" ->
+        if Map.get(final, :artifacts, []) == [],
+          do: "Subagent completed without a final answer.",
+          else: "Subagent completed with attachments."
+
+      value ->
+        value
     end
   end
 
@@ -1215,7 +1260,8 @@ defmodule IntellectualClub.Chat.Subagent do
               :kind,
               :content_text,
               :content_json,
-              :file_id
+              :file_id,
+              :file
             ]
           ]
         ]
@@ -1281,12 +1327,7 @@ defmodule IntellectualClub.Chat.Subagent do
         %ExecutionContext{} = parent_context,
         %ExecutionResult{} = result
       ) do
-    payload = %{
-      text: result.text,
-      result_raw: result.raw || %{},
-      media_contents: [],
-      artifact_contents: []
-    }
+    payload = ToolResult.execution_payload(result)
 
     do_persist_parent_tool_result(parent_context, payload, 0)
   end
