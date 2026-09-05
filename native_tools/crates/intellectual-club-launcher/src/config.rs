@@ -646,15 +646,24 @@ mod tests {
 
         assert_eq!(
             config_dir,
-            roaming.join(r"IntellectualClub\Intellectual Club\config")
+            roaming
+                .join("IntellectualClub")
+                .join("Intellectual Club")
+                .join("config")
         );
         assert_eq!(
             data_dir,
-            roaming.join(r"IntellectualClub\Intellectual Club\data")
+            roaming
+                .join("IntellectualClub")
+                .join("Intellectual Club")
+                .join("data")
         );
         assert_eq!(
             cache_dir,
-            local.join(r"IntellectualClub\Intellectual Club\cache")
+            local
+                .join("IntellectualClub")
+                .join("Intellectual Club")
+                .join("cache")
         );
     }
 
