@@ -216,7 +216,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
@@ -1054,7 +1054,7 @@ function syncVisibleGenerationState(nextChats: ChatSummary[]) {
 }
 
 async function loadChats(
-  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean } = {}
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean; scrollToTop?: boolean } = {}
 ) {
   const silent = Boolean(opts.silent);
   const seq = silent ? chatListLoadSeq : ++chatListLoadSeq;
@@ -1099,6 +1099,13 @@ async function loadChats(
     chatListStats.value = normalizeChatListStats(payload.stats);
     chatListIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
     startChatListIdlePolling();
+
+    if (opts.scrollToTop) {
+      await nextTick();
+      if (seq === chatListLoadSeq && layer.active.value && layer.presented.value) {
+        window.scrollTo({ top: 0, behavior: 'instant' });
+      }
+    }
   } catch (e) {
     if (isAbortError(e)) return;
     if (seq !== chatListLoadSeq) return;
@@ -1124,7 +1131,7 @@ function goToPreviousPage() {
 function goToNextPage() {
   if (loading.value || !hasNextPage.value) return;
   pageNumber.value += 1;
-  void loadChats();
+  void loadChats({ scrollToTop: true });
 }
 
 let chatSearchTimer: number | null = null;
