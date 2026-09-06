@@ -24,7 +24,7 @@
     </StackToolbarTeleport>
 
     <div class="split-wrapper">
-      <PullToRefresh :refresh="refreshChatIndex" :disabled="loading || chatSearchLoading || loadingBots || creating">
+      <PullToRefresh :refresh="refreshChatIndex" :disabled="creating">
         <div class="catalog-split">
           <aside class="catalog-split__sidebar">
             <ChatBotFiltersPanel
@@ -384,7 +384,6 @@ const botsQuery = useQuery<Bot[]>({
   },
 });
 const bots = computed(() => botsQuery.data.value ?? []);
-const loadingBots = computed(() => botsQuery.isFetching.value);
 const chatListStats = ref<ChatListStats>({
   total_chats: 0,
   no_bot_chat_count: 0,
@@ -1222,14 +1221,22 @@ async function runChatSearch(
 }
 
 async function refreshChatIndex() {
-  const botsRefresh = refreshBots({ showError: true });
-  if (hasChatSearch.value) {
-    const term = chatSearchTerm.value.trim();
-    await Promise.all([term ? runChatSearch(term) : Promise.resolve(), botsRefresh]);
-    return;
-  }
+  stopChatListIdlePolling();
+  if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+  chatSearchTimer = null;
 
-  await Promise.all([loadChats(), botsRefresh]);
+  // Reference data can keep retrying after wake without blocking the list gesture.
+  void refreshBots({ showError: true });
+
+  try {
+    if (hasChatSearch.value) {
+      await runChatSearch(chatSearchTerm.value.trim());
+    } else {
+      await loadChats();
+    }
+  } finally {
+    startChatListIdlePolling();
+  }
 }
 
 let chatListPollTimer: number | null = null;
@@ -1426,8 +1433,8 @@ async function runChatListIdleProbe(signal: AbortSignal) {
   await loadChats({ silent: true, showErrorBanner: false, signal });
 }
 
-function startChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
-  if (chatListIdlePollingActive || !layer.active.value) return;
+function startChatListIdlePolling(opts: { immediate?: boolean } = {}) {
+  if (chatListIdlePollingActive || !layer.active.value || document.visibilityState !== 'visible') return;
 
   chatListIdlePollingActive = true;
   const token = ++chatListIdlePollToken;
@@ -1462,18 +1469,25 @@ function startChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolea
   };
 
   if (opts.immediate) {
-    const now = Date.now();
-    if (!opts.throttle || now - chatListIdleLastImmediateAt >= CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS) {
-      chatListIdleLastImmediateAt = now;
-      void tick();
-      return;
-    }
+    chatListIdleLastImmediateAt = Date.now();
+    void tick();
+    return;
   }
 
   scheduleNext(CHAT_LIST_IDLE_POLL_DELAY_MS);
 }
 
 function restartChatListIdlePolling(opts: { immediate?: boolean; throttle?: boolean } = {}) {
+  // Coalesce wake events before aborting: they often arrive in one burst.
+  if (
+    opts.immediate &&
+    opts.throttle &&
+    chatListIdlePollingActive &&
+    Date.now() - chatListIdleLastImmediateAt < CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS
+  ) {
+    return;
+  }
+
   stopChatListIdlePolling();
   startChatListIdlePolling(opts);
 }
