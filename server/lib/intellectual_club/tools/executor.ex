@@ -849,6 +849,17 @@ defmodule IntellectualClub.Tools.Executor do
           out
       end
 
+    out =
+      if raw["operation"] in ["web_search", "web_fetch"] do
+        out
+        |> Map.put("operation", raw["operation"])
+        |> Map.put("warnings", Enum.take(List.wrap(raw["warnings"]), 40))
+        |> Map.put("attempts", Enum.take(List.wrap(raw["attempts"]), 30))
+        |> Map.put("errors", Enum.take(List.wrap(raw["errors"]), 10))
+      else
+        out
+      end
+
     case Map.get(raw, "isError") do
       value when is_boolean(value) -> Map.put(out, "isError", value)
       _ -> out

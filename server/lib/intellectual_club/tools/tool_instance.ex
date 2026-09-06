@@ -227,6 +227,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({DeleteToolDependents, []})
     end
 
+    read :read_legacy_web_search do
+      filter(expr(type == "native-brave-search"))
+    end
+
     read :primary_read do
       primary?(true)
     end
@@ -368,6 +372,20 @@ defmodule IntellectualClub.Tools.ToolInstance do
       change({ValidateToolConfig, []})
     end
 
+    update :migrate_brave_search do
+      accept([])
+      require_atomic?(false)
+
+      argument :effective_driver_secrets, :map do
+        public?(false)
+        sensitive?(true)
+      end
+
+      change(IntellectualClub.Tools.Changes.MigrateBraveSearch)
+      change(MergeSecretsPatch)
+      change(ValidateToolConfig)
+    end
+
     update :update_discovery_metadata do
       accept([:last_discovered_at, :last_discovery_error])
       require_atomic?(false)
@@ -380,6 +398,10 @@ defmodule IntellectualClub.Tools.ToolInstance do
   end
 
   policies do
+    bypass action(:read_legacy_web_search) do
+      authorize_if actor_attribute_equals(:web_search_migration?, true)
+    end
+
     policy action_type(:read) do
       authorize_if relates_to_actor_via(:owner)
       authorize_if expr(exists(shares.user_group.memberships, user_id == ^actor(:id)))

@@ -8,7 +8,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-brave-search", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, %{type: "native-web-search", config: %{}, secrets: %{}})
 
     functions = NativeBraveSearch.fixed_functions(tool_instance)
 
@@ -20,12 +20,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-brave-search", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, %{type: "native-web-search", config: %{}, secrets: %{}})
 
-    assert {:error, message} =
+    assert {:ok, result} =
              NativeBraveSearch.execute(tool_instance, "web_search", %{"query" => "elixir"})
 
-    assert String.contains?(String.downcase(message), "token")
+    assert result.raw["isError"]
+    assert result.text =~ "API key"
   end
 
   test "execute requires query for web_search" do
@@ -33,12 +34,12 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
 
     tool_instance =
       create_tool_instance!(actor, %{
-        type: "native-brave-search",
+        type: "native-web-search",
         config: %{},
         secrets: %{"token" => "brave-token"}
       })
 
-    assert tool_instance.secrets == %{"token" => "brave-token"}
+    assert tool_instance.secrets == %{"brave_api_key" => "brave-token"}
 
     assert {:error, message} = NativeBraveSearch.execute(tool_instance, "web_search", %{})
     assert String.contains?(message, "Argument `query` is required.")
@@ -48,7 +49,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-brave-search", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, %{type: "native-web-search", config: %{}, secrets: %{}})
 
     assert {:error, "Unknown function: unknown"} =
              NativeBraveSearch.execute(tool_instance, "unknown", %{})
@@ -60,7 +61,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBraveSearchTest do
       :create,
       Map.merge(
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Brave Search",
           config: %{},
           secrets: %{},

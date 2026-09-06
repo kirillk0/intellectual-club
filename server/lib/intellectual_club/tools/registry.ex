@@ -9,6 +9,7 @@ defmodule IntellectualClub.Tools.Registry do
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.Drivers.NativeArtifactReader
   alias IntellectualClub.Tools.Drivers.NativeBraveSearch
+  alias IntellectualClub.Tools.Drivers.NativeWebSearch
   alias IntellectualClub.Tools.Drivers.NativeGameTools
   alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
   alias IntellectualClub.Tools.Drivers.NativeWebReader
@@ -23,6 +24,7 @@ defmodule IntellectualClub.Tools.Registry do
       "native-agent-management" -> NativeAgentManagement
       "native-artifact-reader" -> NativeArtifactReader
       "native-brave-search" -> NativeBraveSearch
+      "native-web-search" -> NativeWebSearch
       "native-game-tools" -> NativeGameTools
       "native-knowledge-library" -> NativeKnowledgeLibrary
       "native-web-reader" -> NativeWebReader
@@ -75,7 +77,7 @@ defmodule IntellectualClub.Tools.Registry do
       "mcp-http",
       "native-agent-management",
       "native-artifact-reader",
-      "native-brave-search",
+      "native-web-search",
       "native-game-tools",
       "native-knowledge-library",
       "native-web-reader",

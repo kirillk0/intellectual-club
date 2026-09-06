@@ -812,7 +812,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        type: "native-brave-search",
+        type: "native-web-search",
         name: name,
         alias: alias_value,
         config: %{},

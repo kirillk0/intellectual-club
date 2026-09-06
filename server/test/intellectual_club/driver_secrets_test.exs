@@ -119,7 +119,7 @@ defmodule IntellectualClub.DriverSecretsTest do
 
     tool =
       create_tool!(actor, %{
-        type: "native-brave-search",
+        type: "native-web-search",
         name: "Brave",
         config: %{},
         secrets: %{"token" => "driver-token"}
@@ -134,7 +134,7 @@ defmodule IntellectualClub.DriverSecretsTest do
         %{
           tool_instance_id: tool.id,
           secret_id: environment_secret.id,
-          env_name: "token"
+          env_name: "brave_api_key"
         },
         actor: actor
       )

@@ -438,7 +438,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Brave Search",
           alias: "web",
           config: %{},
@@ -481,7 +481,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context_tool.id == tool_instance.id
     assert context_tool.secrets == %{}
     assert {:ok, hydrated_tool} = DriverSecrets.hydrate(context_tool, query?: false)
-    assert hydrated_tool.secrets == %{"token" => "token-value"}
+    assert hydrated_tool.secrets == %{"brave_api_key" => "token-value"}
 
     assert Enum.any?(context.tools_payload, fn item ->
              get_in(item, ["function", "name"]) == "web__web_search"
@@ -513,7 +513,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Production Search",
           description: "Search docs for production incidents only.",
           alias: "prod_web",
@@ -875,7 +875,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Bot Search",
           alias: "bot_web",
           config: %{},
@@ -890,7 +890,7 @@ defmodule IntellectualClub.Generation.ContextTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Chat Search",
           alias: "web",
           config: %{},
@@ -3412,7 +3412,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     |> Ash.Changeset.for_create(
       :create,
       %{
-        type: "native-brave-search",
+        type: "native-web-search",
         name: name,
         alias: alias_value,
         config: %{},

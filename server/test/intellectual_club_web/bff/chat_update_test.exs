@@ -41,7 +41,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Chat Tool",
           alias: "web",
           config: %{},
@@ -92,7 +92,7 @@ defmodule IntellectualClubWeb.Bff.ChatUpdateTest do
 
     assert tool_payload["id"] == chat_tool.id
     assert tool_payload["name"] == "Chat Tool"
-    assert tool_payload["type"] == "native-brave-search"
+    assert tool_payload["type"] == "native-web-search"
     assert hd(payload["active_tool_bindings"])["background_functions_unavailable"] == false
   end
 

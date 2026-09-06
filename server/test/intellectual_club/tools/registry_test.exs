@@ -32,7 +32,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     non_artifact_types = [
       "mcp-http",
       "native-agent-management",
-      "native-brave-search",
+      "native-web-search",
       "native-game-tools",
       "native-knowledge-library",
       "native-web-reader"
@@ -47,7 +47,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     non_handoff_types = [
       "mcp-http",
       "native-artifact-reader",
-      "native-brave-search",
+      "native-web-search",
       "native-game-tools",
       "native-knowledge-library",
       "native-web-reader",
@@ -69,7 +69,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     assert by_type["outlet"] == true
     assert by_type["mcp-http"] == false
     assert by_type["native-agent-management"] == false
-    assert by_type["native-brave-search"] == false
+    assert by_type["native-web-search"] == false
     assert by_type["native-game-tools"] == false
     assert by_type["native-knowledge-library"] == false
     assert by_type["native-web-reader"] == false

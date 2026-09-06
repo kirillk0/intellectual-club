@@ -71,7 +71,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Fixed function toggle",
           alias: "web",
           config: %{},
@@ -128,7 +128,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Fixed function unknown",
           alias: "web",
           config: %{},
@@ -173,7 +173,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       |> Ash.Changeset.for_create(
         :create,
         %{
-          type: "native-brave-search",
+          type: "native-web-search",
           name: "Shared fixed function toggle",
           alias: "web",
           config: %{},

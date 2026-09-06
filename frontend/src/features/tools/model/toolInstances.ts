@@ -6,7 +6,8 @@ import type { ToolInstanceOption } from '@/types/api';
 const TOOL_TYPE_LABELS: Record<string, string> = {
   'mcp-http': 'MCP HTTP',
   'native-artifact-reader': 'Artifact Reader',
-  'native-brave-search': 'Brave Search',
+  'native-brave-search': 'Web Search & Fetch',
+  'native-web-search': 'Web Search & Fetch',
   'native-knowledge-library': 'Knowledge Library',
   'native-web-reader': 'Web Reader',
   outlet: 'Outlet',
@@ -17,6 +18,7 @@ const TOOL_TYPE_ICONS: Record<string, string> = {
   'mcp-http': 'tool-plug',
   'native-artifact-reader': 'tool-artifact',
   'native-brave-search': 'tool-search',
+  'native-web-search': 'tool-search',
   'native-game-tools': 'tool-dice',
   'native-knowledge-library': 'tool-book',
   'native-web-reader': 'tool-globe',

@@ -169,6 +169,14 @@
             </div>
           </div>
 
+          <WebSearchProviderSettings
+            v-if="isWebSearch"
+            :model-value="form.config"
+            :provider-schemas="currentToolType?.config_schema.properties?.provider_options?.properties || {}"
+            @update:model-value="updateWebSearchConfig"
+          />
+          <div v-if="isWebSearch && errors.hasField('config')" class="error-text">{{ errors.messageFor('config') }}</div>
+
           <template v-if="configFields.length">
             <label
               v-for="field in configFields"
@@ -653,6 +661,7 @@ import { formatRelativeDateTime } from '@/utils/dates';
 import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
+import WebSearchProviderSettings from '@/features/tools/components/WebSearchProviderSettings.vue';
 import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import { useManagedSecretsState } from '@/features/catalogs/model/useManagedSecretsState';
 
@@ -1162,6 +1171,13 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
   return meta || null;
 });
 
+const isWebSearch = computed(() => form.type === 'native-web-search');
+function updateWebSearchConfig(config: Record<string, unknown>) {
+  form.config = config;
+  errors.clearField('config');
+  resetConfigText();
+}
+
 const isMcpHttp = computed(() => String(form.type || '').trim() === 'mcp-http');
 const secretsTabCount = computed(() => managedSecretAttachments.value.length);
 watch(supportsManagedSecrets, (supported) => {
@@ -1529,6 +1545,10 @@ const authMethod = ref<'password' | 'private_key'>('password');
 const authMethodTouched = ref(false);
 
 const visibleSecretsFields = computed(() => {
+  if (isWebSearch.value) {
+    const providers = Array.isArray(form.config.providers) ? form.config.providers : ['brave'];
+    return secretsFields.value.filter((field) => providers.some((provider) => field.key === `${provider}_api_key`));
+  }
   if (!hasAuthToggle.value) return secretsFields.value;
   return secretsFields.value.filter((f) => f.key === authMethod.value);
 });
