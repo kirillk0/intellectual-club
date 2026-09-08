@@ -357,6 +357,9 @@ const editor = useCrudEditor<UserForm>({
     params.set('include', 'groups');
     return params;
   },
+  onDocument: (_payload, { mode }) => {
+    if (mode === 'save') resetPasswordForm();
+  },
 });
 
 const form = editor.form;
@@ -500,7 +503,6 @@ async function save() {
   const saved = await editor.save();
   if (!saved) return;
 
-  resetPasswordForm();
   await syncCurrentSessionIfNeeded(currentId);
 }
 
