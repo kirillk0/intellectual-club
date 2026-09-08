@@ -188,6 +188,12 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   actions do
     defaults([:read])
 
+    read :by_file_external_id do
+      argument(:file_external_id, :uuid, allow_nil?: false)
+      filter(expr(kind == :media and file.external_id == ^arg(:file_external_id)))
+      prepare(build(sort: [id: :asc], limit: 1))
+    end
+
     destroy :destroy do
       primary?(true)
       require_atomic?(false)

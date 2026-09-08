@@ -201,6 +201,8 @@ defmodule IntellectualClubWeb.Router do
         ChatMessagesController,
         :content_file
 
+    get "/chat-files/:file_external_id", ChatFilesController, :show
+
     post "/knowledge-blocks/markdown-import/preview", KnowledgeBlocksMarkdownController, :preview
     post "/knowledge-blocks/markdown-import", KnowledgeBlocksMarkdownController, :import
 

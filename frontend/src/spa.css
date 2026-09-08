@@ -1713,6 +1713,11 @@ select.full {
   min-width: 0;
 }
 
+.chat-attachment-image {
+  max-width: 100%;
+  height: auto;
+}
+
 .message .bubble .message-content math.tml-display,
 .trace-item-body math.tml-display,
 .working-item-body math.tml-display,

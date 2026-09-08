@@ -560,7 +560,7 @@ const renderHtml = (text: string) => {
   const cached = renderCache.get(key);
   if (cached != null) return cached;
 
-  const html = renderMessage(text, { highlightCode });
+  const html = renderMessage(text, { highlightCode, attachmentLinks: true });
   if (renderCache.size > 100) renderCache.clear();
   renderCache.set(key, html);
   return html;

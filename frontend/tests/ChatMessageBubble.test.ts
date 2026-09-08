@@ -43,6 +43,28 @@ const handoffMessage = (
 });
 
 describe('ChatMessageBubble fork timeline', () => {
+  it('resolves attachment links as streamed Markdown becomes complete', async () => {
+    const fileId = 'c6012361-90b8-4f6b-afb0-35729ae584c6';
+    const message = (text: string): ChatBranchMessage => ({
+      id: 10,
+      role: 'assistant',
+      status: 'generating',
+      content: { items: [], parts: [{ content_id: 1, sequence: 1, text, item_type: 'answer' }], media: [] },
+    });
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message: message('[Download](file://c6012361'), index: 0 },
+    });
+
+    expect(wrapper.find('.message-content a[href]').exists()).toBe(false);
+    await wrapper.setProps({
+      message: message(`[Download](file://${fileId})\n\n![Signature](file://${fileId})`),
+    });
+    expect(wrapper.get('.message-content a').attributes('href')).toBe(`/api/bff/chat-files/${fileId}`);
+    expect(wrapper.get('.message-content a').attributes()).toHaveProperty('download');
+    expect(wrapper.get('.message-content img').attributes('src')).toBe(`/api/bff/chat-files/${fileId}?inline=1`);
+    wrapper.unmount();
+  });
+
   beforeEach(() => {
     setPreferredLocale('en');
   });

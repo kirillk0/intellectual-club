@@ -693,16 +693,46 @@ const addSafeExternalLinkTargets = (root: HTMLElement) => {
   });
 };
 
+const resolveAttachmentReferences = (root: HTMLElement) => {
+  const fileReference = /^file:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
+
+  root.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img[src]').forEach((element) => {
+    if (element.closest('pre, code, math')) return;
+
+    const isImage = element.tagName === 'IMG';
+    const attribute = isImage ? 'src' : 'href';
+    const match = fileReference.exec(element.getAttribute(attribute) || '');
+    if (!match) return;
+
+    const url = `/api/bff/chat-files/${match[1].toLowerCase()}`;
+    element.setAttribute(attribute, isImage ? `${url}?inline=1` : url);
+
+    if (isImage) {
+      element.classList.add('chat-attachment-image');
+    } else {
+      element.setAttribute('download', '');
+      element.removeAttribute('target');
+    }
+  });
+};
+
 export const renderChatMessageHtml = (
   content: string | null | undefined,
-  options?: { highlightCode?: boolean; codeCopyButtons?: boolean }
+  options?: { highlightCode?: boolean; codeCopyButtons?: boolean; attachmentLinks?: boolean }
 ) => {
   const raw = content == null || content === '' ? '…' : content;
   const prepared = prepareMarkdownMath(raw);
   const normalized = normalizeChatMarkdown(prepared.markdown);
   const html = marked.parse(normalized) as string;
+  const template = document.createElement('template');
   const wrapper = document.createElement('div');
+  // Keep parsing inert until file references are resolved and HTML is sanitized.
+  template.content.append(wrapper);
   wrapper.innerHTML = html;
+
+  if (options?.attachmentLinks) {
+    resolveAttachmentReferences(wrapper);
+  }
 
   restoreMathPlaceholders(wrapper, prepared.placeholders);
   highlightQuotes(wrapper);

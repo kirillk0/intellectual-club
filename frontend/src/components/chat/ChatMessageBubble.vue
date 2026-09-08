@@ -620,6 +620,7 @@ const structuredHandoffEntry = (
         : renderMessage(String(part.text ?? ''), {
             highlightCode: shouldHighlightCode.value,
             codeCopyButtons: true,
+            attachmentLinks: true,
           }),
     meta: entryKind === 'message' ? [role, timestamp].filter(Boolean).join(' · ') : '',
     entryKind,
@@ -663,7 +664,11 @@ const messageParts = computed<Array<MessagePart | HandoffPart>>(() => {
         typeof part.content_id === 'number' && part.content_id > 0
           ? `content-${part.content_id}`
           : `content-${part.step_sequence || 0}-${part.item_sequence || 0}-${part.sequence || index}`,
-      html: renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true }),
+      html: renderMessage(text, {
+        highlightCode: shouldHighlightCode.value,
+        codeCopyButtons: true,
+        attachmentLinks: true,
+      }),
       timestamp: formatTimeOfDay(part.created_at),
       showTimestamp: msg.value.role === 'assistant',
       steering,
@@ -692,7 +697,11 @@ const messageParts = computed<Array<MessagePart | HandoffPart>>(() => {
       kind: 'handoff',
       key: `handoff-${identity || index}`,
       html: text
-        ? renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true })
+        ? renderMessage(text, {
+            highlightCode: shouldHighlightCode.value,
+            codeCopyButtons: true,
+            attachmentLinks: true,
+          })
         : '',
       media: itemMedia,
       timestamp: formatTimeOfDay(firstPart?.created_at),
