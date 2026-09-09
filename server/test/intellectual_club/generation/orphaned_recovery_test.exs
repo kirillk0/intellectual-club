@@ -1467,7 +1467,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           chat_message_step_id: child_step.id,
           sequence: next_item_sequence(child_step.items),
           type: :artifact
-        }, actor: actor)
+        },
+        actor: actor
+      )
       |> Ash.create!(actor: actor)
 
     IntellectualClub.Chat.ChatMessageContent
@@ -1478,7 +1480,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         sequence: 1,
         kind: :media,
         file_id: file.id
-      }, actor: actor)
+      },
+      actor: actor
+    )
     |> Ash.create!(actor: actor)
 
     :ok = GenerationSupervisor.recover_orphaned_generations()
