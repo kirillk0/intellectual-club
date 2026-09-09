@@ -21,13 +21,18 @@ export function useStackNavigation() {
 
   const isStackActive = computed(() => stack.active.value);
 
+  const historyPosition = () => {
+    const position = router.options.history.state.position;
+    return typeof position === 'number' && Number.isInteger(position) ? position : undefined;
+  };
+
   const navigateToNewLayer = async (
     to: RouteLocationRaw,
     resultController?: StackResultController
   ): Promise<NavigationFailure | void> => {
     const scrollTop =
       document.scrollingElement?.scrollTop ?? document.documentElement.scrollTop ?? window.scrollY ?? 0;
-    const pendingPushId = stack.markPendingPush(scrollTop, resultController);
+    const pendingPushId = stack.markPendingPush(scrollTop, resultController, historyPosition());
     try {
       const failure = await router.push(withStackState(to));
       if (failure) stack.cancelPendingPush(pendingPushId);
@@ -60,7 +65,15 @@ export function useStackNavigation() {
     return router.replace(to);
   };
 
-  const close = () => router.back();
+  const close = () => {
+    const parentPosition = stack.top.value?.parentHistoryPosition;
+    const position = historyPosition();
+    if (parentPosition !== undefined && position !== undefined && parentPosition < position) {
+      // Closing a layer skips its internal navigation; browser Back still visits each entry.
+      return router.go(parentPosition - position);
+    }
+    return router.back();
+  };
 
   const reset = () => stack.reset();
   const setLayerResult = <T>(value: T) => stack.setLayerResult(value);

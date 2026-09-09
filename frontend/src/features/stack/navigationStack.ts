@@ -13,12 +13,14 @@ export type StackResultController = {
 type StackEntry = {
   route: RouteLocationNormalizedLoaded;
   scrollY: number;
+  parentHistoryPosition?: number;
   resultController?: StackResultController;
 };
 
 type PendingStackPush = {
   id: number;
   scrollY: number;
+  parentHistoryPosition?: number;
   resultController?: StackResultController;
 };
 
@@ -87,10 +89,14 @@ const cancelPendingPush = (id?: number) => {
   return true;
 };
 
-const markPendingPush = (scrollY: number, resultController?: StackResultController) => {
+const markPendingPush = (
+  scrollY: number,
+  resultController?: StackResultController,
+  parentHistoryPosition?: number
+) => {
   cancelPendingPush();
   const id = nextPendingPushId++;
-  pendingPush.value = { id, scrollY, resultController };
+  pendingPush.value = { id, scrollY, resultController, parentHistoryPosition };
   return id;
 };
 
@@ -101,6 +107,7 @@ const commitPendingPush = (route: RouteLocationNormalizedLoaded) => {
   stack.value.push({
     route: cloneRoute(route),
     scrollY: pending.scrollY,
+    parentHistoryPosition: pending.parentHistoryPosition,
     resultController: pending.resultController,
   });
   pendingPush.value = null;

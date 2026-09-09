@@ -4,6 +4,7 @@ const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
   back: vi.fn(),
+  options: { history: { state: {} } },
 }));
 
 vi.mock('vue-router', async () => {
