@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
   }
 
   alias IntellectualClub.Files
+  alias IntellectualClub.Chat.QueuedMessages
 
   setup %{conn: conn} do
     account = user_fixture()
@@ -109,7 +110,141 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
     assert conn |> get(file_url(file)) |> json_response(404) == %{"error" => "Not found"}
   end
 
+  test "serves previewable message and queue attachments inline, keeping HTML as a download", %{
+    conn: conn,
+    actor: actor
+  } do
+    for {name, mime, disposition} <- [
+          {"clip.mp4", "video/mp4", "inline"},
+          {"sound.mp3", "audio/mpeg", "inline"},
+          {"document.pdf", "application/pdf", "inline"},
+          {"page.html", "text/html", "attachment"}
+        ] do
+      item = attachment(actor, name, mime, "0123456789")
+
+      {:ok, queued} =
+        QueuedMessages.enqueue_follow_up(item.chat.id, %{file_ids: [item.file.id]}, actor)
+
+      content = Enum.find(queued.contents, &(&1.kind == :media))
+
+      for url <- [
+            content_url(item),
+            "/api/bff/chat-queued-messages/#{queued.id}/contents/#{content.id}/file"
+          ] do
+        preview = get(conn, url)
+        assert response(preview, 200) == "0123456789"
+
+        assert get_resp_header(preview, "content-disposition") == [
+                 ~s(#{disposition}; filename="#{name}")
+               ]
+
+        assert hd(get_resp_header(preview, "content-type")) =~ mime
+
+        partial = conn |> put_req_header("range", "bytes=2-4") |> get(url)
+        assert response(partial, 206) == "234"
+        assert get_resp_header(partial, "content-range") == ["bytes 2-4/10"]
+      end
+    end
+  end
+
+  test "serves single byte ranges and ignores malformed or multipart ranges", %{
+    conn: conn,
+    actor: actor
+  } do
+    item = attachment(actor, "clip.mp4", "video/mp4", "0123456789")
+
+    for {range, body, content_range} <- [
+          {"bytes=0-1", "01", "bytes 0-1/10"},
+          {"bytes=5-", "56789", "bytes 5-9/10"},
+          {"bytes=-3", "789", "bytes 7-9/10"},
+          {"bytes=8-100", "89", "bytes 8-9/10"},
+          {"bytes=-100", "0123456789", "bytes 0-9/10"},
+          {"bytes=0-9", "0123456789", "bytes 0-9/10"}
+        ] do
+      partial = conn |> put_req_header("range", range) |> get(content_url(item))
+      assert response(partial, 206) == body
+      assert get_resp_header(partial, "content-range") == [content_range]
+      assert get_resp_header(partial, "accept-ranges") == ["bytes"]
+    end
+
+    for range <- [
+          "bytes=",
+          "bytes=-",
+          "bytes=nope",
+          "bytes=3-1",
+          "bytes=30-20",
+          "bytes=0-1,5-6",
+          "items=0-1"
+        ] do
+      full = conn |> put_req_header("range", range) |> get(content_url(item))
+      assert response(full, 200) == "0123456789"
+      assert get_resp_header(full, "content-range") == []
+    end
+
+    for range <- ["bytes=10-", "bytes=100-200", "bytes=-0"] do
+      invalid = conn |> put_req_header("range", range) |> get(content_url(item))
+      assert response(invalid, 416) == ""
+      assert get_resp_header(invalid, "content-range") == ["bytes */10"]
+    end
+  end
+
+  test "honors validators and ignores Range on HEAD", %{conn: conn, actor: actor} do
+    item = attachment(actor, "clip.mp4", "video/mp4", "0123456789")
+    etag = ~s("#{item.file.sha256}")
+
+    for validator <- [etag, ~s("outdated"), "W/" <> etag, "Wed, 09 Sep 2026 00:00:00 GMT"] do
+      result =
+        conn
+        |> put_req_header("range", "bytes=2-4")
+        |> put_req_header("if-range", validator)
+        |> get(content_url(item))
+
+      if validator == etag,
+        do: assert(response(result, 206) == "234"),
+        else: assert(response(result, 200) == "0123456789")
+    end
+
+    cached =
+      conn
+      |> put_req_header("range", "bytes=2-4")
+      |> put_req_header("if-none-match", etag)
+      |> get(content_url(item))
+
+    assert response(cached, 304) == ""
+    assert get_resp_header(cached, "content-range") == []
+
+    result = conn |> put_req_header("range", "bytes=2-4") |> head(content_url(item))
+    assert result.status == 200
+    assert get_resp_header(result, "content-range") == []
+  end
+
+  test "range requests still require access to the message or queue", %{conn: conn, actor: actor} do
+    item = attachment(actor, "clip.mp4", "video/mp4", "0123456789")
+
+    {:ok, queued} =
+      QueuedMessages.enqueue_follow_up(item.chat.id, %{file_ids: [item.file.id]}, actor)
+
+    content = Enum.find(queued.contents, &(&1.kind == :media))
+    outsider = user_fixture()
+
+    for url <- [
+          content_url(item),
+          "/api/bff/chat-queued-messages/#{queued.id}/contents/#{content.id}/file"
+        ] do
+      unauthorized = build_conn() |> put_req_header("range", "bytes=0-1") |> get(url)
+      assert unauthorized.status == 401
+
+      forbidden =
+        conn |> sign_in_conn(outsider) |> put_req_header("range", "bytes=0-1") |> get(url)
+
+      assert forbidden.status in [403, 404]
+    end
+  end
+
   defp file_url(file), do: "/api/bff/chat-files/#{file.external_id}"
+
+  defp content_url(item),
+    do: "/api/bff/chat-messages/#{item.message.id}/contents/#{item.content.id}/file"
 
   defp attachment(actor, filename \\ "file.txt", mime_type \\ "text/plain", payload \\ "body") do
     chat =
@@ -155,6 +290,6 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
       )
       |> Ash.create!(actor: actor)
 
-    %{chat: chat, file: file, content: content}
+    %{chat: chat, message: message, file: file, content: content}
   end
 end

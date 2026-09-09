@@ -23,6 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.TokenCounter
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatBranchPayload
+  alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
@@ -441,35 +442,22 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   def content_file(conn, %{"message_id" => message_id, "content_id" => content_id}) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
-      message_id = String.to_integer(message_id)
-      content_id = String.to_integer(content_id)
+    load = [:file, chat_message_item: [chat_message_step: [:chat_message]]]
 
-      load = [:file, chat_message_item: [chat_message_step: [:chat_message]]]
-      content = Ash.get!(ChatMessageContent, content_id, actor: actor, load: load)
-
-      step =
-        content.chat_message_item &&
-          content.chat_message_item.chat_message_step
-
-      if is_nil(step) or step.chat_message_id != message_id or not Media.media_content?(content) do
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Content not found"})
-      else
-        case ContentFiles.load_path_for_content(content) do
-          {:ok, {_content, file, path}} ->
-            disposition =
-              if Media.image_mime_type?(file.mime_type), do: :inline, else: :attachment
-
-            ImageControllerHelpers.send_file_path(conn, file, path, disposition: disposition)
-
-          {:error, _reason} ->
-            conn
-            |> put_status(:not_found)
-            |> json(%{error: "Content not found"})
-        end
-      end
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, message_id} <- ChatParams.resource_id(message_id),
+         {:ok, content_id} <- ChatParams.resource_id(content_id),
+         {:ok, %ChatMessageContent{} = content} <-
+           Ash.get(ChatMessageContent, content_id, actor: actor, load: load),
+         %{chat_message_step: %{chat_message_id: ^message_id}} <- content.chat_message_item,
+         true <- Media.media_content?(content),
+         {:ok, {_content, file, path}} <- ContentFiles.load_path_for_content(content) do
+      ImageControllerHelpers.send_file_path(conn, file, path,
+        disposition: ImageControllerHelpers.preview_disposition(file.mime_type)
+      )
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      _other -> conn |> put_status(:not_found) |> json(%{error: "Content not found"})
     end
   end
 

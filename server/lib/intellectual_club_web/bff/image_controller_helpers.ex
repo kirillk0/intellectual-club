@@ -77,17 +77,74 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
 
   def send_stored_file(conn, _file_id, _opts), do: render_not_found(conn)
 
+  def preview_disposition(mime_type) do
+    mime_type =
+      mime_type
+      |> to_string()
+      |> String.split(";", parts: 2)
+      |> hd()
+      |> String.trim()
+      |> String.downcase()
+
+    if mime_type == "application/pdf" or
+         String.starts_with?(mime_type, ["image/", "audio/", "video/"]),
+       do: :inline,
+       else: :attachment
+  end
+
   def send_file_path(conn, file, path, opts \\ [])
 
   def send_file_path(conn, %StoredFile{} = file, path, opts)
       when is_binary(path) and is_list(opts) do
-    conn = prepare_file_response(conn, file, opts)
+    conn = conn |> prepare_file_response(file, opts) |> put_resp_header("accept-ranges", "bytes")
     etag = ~s("#{file.sha256}")
 
     if etag_matches?(conn, etag) do
       send_resp(conn, :not_modified, "")
     else
-      send_file(conn, :ok, path)
+      case requested_range(conn, file.size_bytes, etag) do
+        {first, last} ->
+          conn
+          |> put_resp_header("content-range", "bytes #{first}-#{last}/#{file.size_bytes}")
+          |> send_file(:partial_content, path, first, last - first + 1)
+
+        :unsatisfiable ->
+          conn
+          |> put_resp_header("content-range", "bytes */#{file.size_bytes}")
+          |> send_resp(:requested_range_not_satisfiable, "")
+
+        :full ->
+          send_file(conn, :ok, path)
+      end
+    end
+  end
+
+  defp requested_range(conn, size, etag) do
+    with "GET" <- Map.get(conn.private, :intellectual_club_request_method, conn.method),
+         true <- get_req_header(conn, "if-range") in [[], [etag]],
+         [range] <- get_req_header(conn, "range"),
+         [_, first, last] <- Regex.run(~r/^bytes=(\d*)-(\d*)$/, range),
+         false <- first == "" and last == "" do
+      byte_range(first, last, size)
+    else
+      _ -> :full
+    end
+  end
+
+  defp byte_range("", suffix, size) do
+    length = String.to_integer(suffix)
+    if length == 0 or size == 0, do: :unsatisfiable, else: {max(size - length, 0), size - 1}
+  end
+
+  defp byte_range(first, last, size) do
+    explicit_end? = last != ""
+    first = String.to_integer(first)
+    last = if last == "", do: size - 1, else: String.to_integer(last)
+
+    cond do
+      explicit_end? and last < first -> :full
+      first >= size -> :unsatisfiable
+      true -> {first, min(last, size - 1)}
     end
   end
 

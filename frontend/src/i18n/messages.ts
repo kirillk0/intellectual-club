@@ -437,6 +437,7 @@ export const ruMessages: Record<string, string> = {
   'LLM Providers': 'LLM-провайдеры',
   'LLM Usage': 'Использование LLM',
   'Loading attachment…': 'Загрузка вложения…',
+  'This browser cannot preview this file. Download it to open it in another application.': 'Браузер не может показать этот файл. Скачайте его, чтобы открыть в другом приложении.',
   'Loading bindings…': 'Загрузка привязок…',
   'Loading chat…': 'Загрузка чата…',
   'Loading configurations…': 'Загрузка конфигураций…',

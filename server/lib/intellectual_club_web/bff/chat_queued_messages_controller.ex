@@ -5,7 +5,6 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
 
   use IntellectualClubWeb, :controller
 
-  alias IntellectualClub.Chat.Media
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Files
@@ -107,9 +106,12 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
            Enum.find(queued_message.contents, &(&1.id == content_id)),
          true <- is_integer(file_id),
          {:ok, {file, path}} <- Files.load_path(file_id) do
-      disposition = if Media.image_mime_type?(file.mime_type), do: :inline, else: :attachment
+      disposition = ImageControllerHelpers.preview_disposition(file.mime_type)
       ImageControllerHelpers.send_file_path(conn, file, path, disposition: disposition)
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
       {:error, error} when error in [:forbidden, :not_found] ->
         render_error(conn, error)
 

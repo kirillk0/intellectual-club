@@ -637,10 +637,10 @@ export function useChatInspectors(params: Params) {
       attachmentPreviewTitle.value = name;
       attachmentPreviewUrl.value = url;
       attachmentPreviewKind.value = kind;
-      attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
+      attachmentPreviewLoading.value = ['html', 'markdown', 'text'].includes(kind);
       prepareAttachmentDownloadForFileShare(item, url, name, mimeType, token);
 
-      if (kind === 'image' || kind === 'binary' || !url) {
+      if (!attachmentPreviewLoading.value || !url) {
         attachmentPreviewLoading.value = false;
         if (!url) {
           attachmentPreviewError.value = 'Attachment is not available.';
@@ -683,12 +683,9 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewTitle.value = pending.name;
     attachmentPreviewUrl.value = objectUrl;
     attachmentPreviewKind.value = kind;
-    attachmentPreviewLoading.value = kind !== 'image' && kind !== 'binary';
+    attachmentPreviewLoading.value = ['html', 'markdown', 'text'].includes(kind);
 
-    if (kind === 'image' || kind === 'binary') {
-      attachmentPreviewLoading.value = false;
-      return;
-    }
+    if (!attachmentPreviewLoading.value) return;
 
     try {
       const text = await pending.file.text();

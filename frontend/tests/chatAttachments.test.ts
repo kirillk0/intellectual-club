@@ -18,6 +18,13 @@ describe('getAttachmentPreviewKind', () => {
     ['readme.markdown', 'application/octet-stream', false, 'markdown'],
     ['notes.txt', 'text/plain', false, 'text'],
     ['data.json', 'application/json', false, 'text'],
+    ['clip.mp4', 'video/mp4', false, 'video'],
+    ['clip.bin', 'Video/WebM; codecs=vp9', false, 'video'],
+    ['sound.mp3', 'audio/mpeg', false, 'audio'],
+    ['sound.bin', 'Audio/Ogg; codecs=opus', false, 'audio'],
+    ['document.pdf', 'application/pdf', false, 'pdf'],
+    ['document.bin', ' APPLICATION/PDF ; version=1.7', false, 'pdf'],
+    ['unknown.mp4', 'application/octet-stream', false, 'binary'],
     ['archive.zip', 'application/zip', false, 'binary'],
   ])('keeps %s classified as %s', (name, mimeType, isImage, expected) => {
     expect(getAttachmentPreviewKind(name, mimeType, isImage)).toBe(expected);

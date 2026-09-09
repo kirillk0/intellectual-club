@@ -81,6 +81,52 @@ describe('attachment preview', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    ['video', 'video/mp4'],
+    ['audio', 'audio/mpeg'],
+    ['pdf', 'application/pdf'],
+  ] as const)('passes saved, queued and pending %s files directly to the browser', async (kind, mimeType) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const attachment: ExistingChatAttachment = {
+      id: 18, messageId: 9, name: 'attachment', size: 3, mimeType, isImage: false,
+      content: {
+        id: 18, sequence: 1, kind: 'media',
+        media: { external_id: 'file-1', filename: 'attachment', mime_type: mimeType, size_bytes: 3, sha256: '', is_image: false },
+      },
+    };
+    const file = new File(['123'], 'attachment', { type: mimeType });
+    const readText = vi.fn();
+    Object.defineProperty(file, 'text', { value: readText });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:attachment'), revokeObjectURL });
+    const pending: PendingChatFile = {
+      id: 'pending', file, name: file.name, size: file.size, mimeType,
+      uploadId: null, uploadStatus: 'idle', uploadedBytes: 0, progress: 0, speedBps: 0,
+      etaSeconds: null, abortHandle: null, error: '',
+    };
+    const queued = { ...attachment, queuedMessageId: 9 };
+    const inspectors = createInspectors([queued], [pending]);
+
+    await inspectors.openAttachmentPreview({ messageId: 9, content: attachment.content });
+    expect(inspectors.attachmentPreviewUrl.value).toBe('/api/bff/chat-messages/9/contents/18/file');
+    expect(inspectors.attachmentPreviewKind.value).toBe(kind);
+    expect(inspectors.attachmentPreviewLoading.value).toBe(false);
+
+    await inspectors.openExistingAttachmentPreview(queued);
+    expect(inspectors.attachmentPreviewUrl.value).toBe('/api/bff/chat-queued-messages/9/contents/18/file');
+    expect(inspectors.attachmentPreviewLoading.value).toBe(false);
+
+    await inspectors.openPendingAttachmentPreview('pending');
+    expect(inspectors.attachmentPreviewUrl.value).toBe('blob:attachment');
+    expect(inspectors.attachmentPreviewLoading.value).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
+
+    inspectors.closeAttachmentPreview();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:attachment');
+  });
+
   it('uses the queued-content endpoint before canonical delivery', async () => {
     const html = '<style>body{color:red}</style><script>document.body.dataset.ready="yes"</script>';
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => html });

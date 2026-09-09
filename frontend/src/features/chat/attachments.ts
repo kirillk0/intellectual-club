@@ -38,7 +38,7 @@ const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd']);
 const HTML_EXTENSIONS = new Set(['html', 'htm', 'xhtml']);
 const DEFAULT_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 
-export type AttachmentPreviewKind = 'image' | 'html' | 'markdown' | 'text' | 'binary';
+export type AttachmentPreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'html' | 'markdown' | 'text' | 'binary';
 
 export const formatFileBytes = (value: number) => {
   if (!Number.isFinite(value) || value < 0) return '0 B';
@@ -280,6 +280,10 @@ export const getAttachmentPreviewKind = (
   isImage: boolean
 ): AttachmentPreviewKind => {
   if (isImage) return 'image';
+  const normalizedMimeType = normalizeAttachmentMimeType(mimeType);
+  if (normalizedMimeType.startsWith('video/')) return 'video';
+  if (normalizedMimeType.startsWith('audio/')) return 'audio';
+  if (normalizedMimeType === 'application/pdf') return 'pdf';
   if (isHtmlAttachment(name, mimeType)) return 'html';
   if (isMarkdownAttachment(name, mimeType)) return 'markdown';
   if (isTextAttachment(name, mimeType)) return 'text';

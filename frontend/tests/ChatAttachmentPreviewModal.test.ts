@@ -34,6 +34,42 @@ describe('ChatAttachmentPreviewModal', () => {
   afterEach(() => {
     for (const wrapper of wrappers) wrapper.unmount();
     wrappers = [];
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it.each(['video', 'audio'] as const)('renders native %s controls and recovers after switching a failed file', async (kind) => {
+    const wrapper = mountPreview(kind);
+    wrappers.push(wrapper);
+    const media = wrapper.get(kind);
+    expect(media.attributes()).toMatchObject({ src: '/attachment', controls: '', preload: 'metadata' });
+    expect(media.attributes('autoplay')).toBeUndefined();
+
+    await media.trigger('error');
+    expect(wrapper.text()).toContain('This browser cannot preview this file.');
+    await wrapper.get('button[aria-label="Download preview.html"]').trigger('click');
+    expect(wrapper.emitted('download')).toHaveLength(1);
+
+    await wrapper.setProps({ url: '/second' });
+    expect(wrapper.get(kind).attributes('src')).toBe('/second');
+    expect(wrapper.text()).not.toContain('This browser cannot preview this file.');
+  });
+
+  it('embeds PDF using the browser viewer', () => {
+    vi.stubGlobal('navigator', { pdfViewerEnabled: true });
+    const wrapper = mountPreview('pdf');
+    wrappers.push(wrapper);
+    expect(wrapper.get('object').attributes()).toMatchObject({ data: '/attachment', type: 'application/pdf' });
+  });
+
+  it('keeps downloading available when the PDF viewer is disabled', async () => {
+    vi.stubGlobal('navigator', { pdfViewerEnabled: false });
+    const wrapper = mountPreview('pdf');
+    wrappers.push(wrapper);
+    expect(wrapper.find('object').exists()).toBe(false);
+    expect(wrapper.text()).toContain('This browser cannot preview this file.');
+    await wrapper.get('button[aria-label="Download preview.html"]').trigger('click');
+    expect(wrapper.emitted('download')).toHaveLength(1);
   });
 
   it('renders HTML as an isolated script-enabled srcdoc document', () => {
@@ -78,7 +114,7 @@ describe('ChatAttachmentPreviewModal', () => {
     expect(wrapper.get('iframe').element).not.toBe(firstIframe);
   });
 
-  it.each(['image', 'html', 'markdown', 'text', 'binary'] as const)(
+  it.each(['image', 'video', 'audio', 'pdf', 'html', 'markdown', 'text', 'binary'] as const)(
     'opens the %s preview full-screen with only the collapse action remaining',
     async (kind) => {
       const wrapper = mountPreview(kind, '<p>content</p>');

@@ -92,6 +92,32 @@
         {{ translate('Loading attachment…') }}
       </div>
       <div v-else-if="errorText" class="error-text attachment-preview-state">{{ errorText }}</div>
+      <div v-else-if="mediaError || (kind === 'pdf' && !pdfViewerEnabled)" class="attachment-preview-state muted">
+        {{ translate('This browser cannot preview this file. Download it to open it in another application.') }}
+      </div>
+      <div v-else-if="kind === 'video' || kind === 'audio'" class="attachment-preview-media-wrap">
+        <component
+          :is="kind"
+          :key="url"
+          class="attachment-preview-media"
+          :src="url"
+          :aria-label="title"
+          controls
+          playsinline
+          preload="metadata"
+          @error="mediaError = true"
+        />
+      </div>
+      <object
+        v-else-if="kind === 'pdf'"
+        :key="url"
+        class="attachment-preview-pdf"
+        :data="url"
+        type="application/pdf"
+        :aria-label="title"
+      >
+        {{ translate('This browser cannot preview this file. Download it to open it in another application.') }}
+      </object>
       <div v-else-if="kind === 'image'" class="attachment-preview-image-wrap">
         <img
           class="attachment-preview-image"
@@ -127,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUpdated, ref } from 'vue';
+import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -161,6 +187,12 @@ const htmlValue = computed(() => addHtmlPreviewNavigationGuard(textValue.value))
 const markdownHtml = computed(() => renderChatMessageHtml(textValue.value, { highlightCode: true }));
 const markdownEl = ref<HTMLElement | null>(null);
 const fullscreen = ref(false);
+const mediaError = ref(false);
+const pdfViewerEnabled = navigator.pdfViewerEnabled !== false;
+watch(
+  () => [props.open, props.url, props.kind],
+  () => { mediaError.value = false; }
+);
 let enhanceMarkdownToken = 0;
 
 const htmlPreviewNavigationGuard = [
@@ -438,7 +470,31 @@ const handleCancel = () => {
     calc(20px + var(--app-safe-area-left));
 }
 
-.attachment-preview-html {
+.attachment-preview-media-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.attachment-preview-media {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+}
+
+.attachment-preview-content--fullscreen .attachment-preview-media-wrap {
+  height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.attachment-preview-content--fullscreen .attachment-preview-media {
+  max-height: 100%;
+}
+
+.attachment-preview-html,
+.attachment-preview-pdf {
   display: block;
   width: 100%;
   height: min(70vh, 720px);
@@ -448,7 +504,8 @@ const handleCancel = () => {
   background: #fff;
 }
 
-.attachment-preview-content--fullscreen .attachment-preview-html {
+.attachment-preview-content--fullscreen .attachment-preview-html,
+.attachment-preview-content--fullscreen .attachment-preview-pdf {
   height: 100%;
   min-height: 0;
   border: 0;
