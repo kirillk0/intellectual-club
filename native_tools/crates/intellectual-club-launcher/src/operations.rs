@@ -932,33 +932,35 @@ pub fn postgres_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result
 }
 
 fn postgres_settings_from_config(paths: &AppPaths, config: &LauncherConfig) -> Result<Settings> {
-    let mut settings = Settings::default();
-    settings.version = postgresql_embedded::VersionReq::parse(PG_VERSION)?;
     let (installation_dir, trust_installation_dir) =
         if let Some(installation_dir) = bundled_postgres_dir() {
             (installation_dir, true)
         } else {
             (paths.installations_dir.clone(), false)
         };
-    settings.installation_dir = postgres_runtime_directory(&installation_dir)?;
-    if trust_installation_dir {
-        settings.trust_installation_dir = true;
-    }
-    settings.data_dir = postgres_runtime_directory(&config.postgres_data_dir)?;
-    settings.password_file = postgres_runtime_directory(&paths.runtime_dir)?.join("pgpass");
-    settings.host = "127.0.0.1".to_string();
-    settings.port = config.postgres_port;
-    settings.username = config.postgres_user.clone();
-    settings.password = config.postgres_password.clone();
-    settings.temporary = false;
-    settings.timeout = Some(Duration::from_secs(120));
-    settings
-        .configuration
-        .insert("listen_addresses".to_string(), "127.0.0.1".to_string());
-    settings
-        .configuration
-        .insert("max_connections".to_string(), "100".to_string());
-    Ok(settings)
+
+    // Settings::default()/new() (including SettingsBuilder) creates and keeps
+    // two temporary directories before we replace their paths. Construct the
+    // settings directly: the GUI also calls this on every status refresh.
+    Ok(Settings {
+        releases_url: postgresql_archive::configuration::theseus::URL.to_string(),
+        version: postgresql_embedded::VersionReq::parse(PG_VERSION)?,
+        installation_dir: postgres_runtime_directory(&installation_dir)?,
+        data_dir: postgres_runtime_directory(&config.postgres_data_dir)?,
+        password_file: postgres_runtime_directory(&paths.runtime_dir)?.join("pgpass"),
+        host: "127.0.0.1".to_string(),
+        port: config.postgres_port,
+        username: config.postgres_user.clone(),
+        password: config.postgres_password.clone(),
+        temporary: false,
+        timeout: Some(Duration::from_secs(120)),
+        configuration: std::collections::HashMap::from([
+            ("listen_addresses".to_string(), "127.0.0.1".to_string()),
+            ("max_connections".to_string(), "100".to_string()),
+        ]),
+        trust_installation_dir,
+        socket_dir: None,
+    })
 }
 
 #[cfg(windows)]
@@ -2066,6 +2068,113 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn test_app_paths(root: &Path) -> AppPaths {
+        let runtime_dir = root.join("runtime");
+        AppPaths {
+            config_path: root.join("launcher.json"),
+            default_data_dir: root.join("postgres").join("data"),
+            default_files_data_dir: root.join("files"),
+            backups_dir: root.join("backups"),
+            installations_dir: root.join("installations"),
+            runtime_dir: runtime_dir.clone(),
+            status_path: runtime_dir.join("status.json"),
+            stop_request_path: runtime_dir.join("stop-request"),
+            app_request_path: runtime_dir.join("app-request"),
+            launcher_log_path: runtime_dir.join("launcher.log"),
+            app_log_path: runtime_dir.join("app.log"),
+        }
+    }
+
+    #[test]
+    fn repeated_postgres_status_checks_do_not_create_temporary_directories() {
+        const CHILD_ROOT: &str = "IC_POSTGRES_SETTINGS_TEST_ROOT";
+        if let Some(root) = env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let temp_dir = root.join("tmp");
+            assert_eq!(fs::canonicalize(env::temp_dir()).unwrap(), temp_dir);
+            let paths = test_app_paths(&root.join("app"));
+            let mut config = LauncherConfig::default_for(&paths);
+            config.app_port = 1;
+            config.postgres_port = 1;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                for _ in 0..8 {
+                    let settings = postgres_settings_from_config(&paths, &config).unwrap();
+                    assert_eq!(settings.version.to_string(), PG_VERSION);
+                    assert_eq!(
+                        settings.releases_url,
+                        postgresql_archive::configuration::theseus::URL
+                    );
+                    assert_eq!(settings.host, "127.0.0.1");
+                    assert_eq!(settings.port, config.postgres_port);
+                    assert_eq!(settings.username, config.postgres_user);
+                    assert_eq!(settings.password, config.postgres_password);
+                    assert!(!settings.temporary);
+                    assert!(settings.socket_dir.is_none());
+                    assert_eq!(settings.timeout, Some(Duration::from_secs(120)));
+                    assert_eq!(settings.configuration["listen_addresses"], "127.0.0.1");
+                    assert_eq!(settings.configuration["max_connections"], "100");
+                    assert_eq!(
+                        settings.data_dir,
+                        postgres_runtime_directory(&config.postgres_data_dir).unwrap()
+                    );
+                    assert_eq!(
+                        settings.password_file,
+                        postgres_runtime_directory(&paths.runtime_dir)
+                            .unwrap()
+                            .join("pgpass")
+                    );
+                    let payload = build_status_payload(&paths, &config).await;
+                    assert!(!payload.running);
+                }
+            });
+            let entries = fs::read_dir(&temp_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            assert!(entries.is_empty(), "temporary paths leaked: {entries:?}");
+            return;
+        }
+
+        // Only the child gets a private temporary directory; never mutate the
+        // environment of the parallel test harness or scan the system temp dir.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets")
+            .join(format!(
+                "postgres-settings-regression-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir_all(root.join("tmp")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let temp_dir = root.join("tmp");
+        let result = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "operations::tests::repeated_postgres_status_checks_do_not_create_temporary_directories",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, &root)
+            .env("TMPDIR", &temp_dir)
+            .env("TMP", &temp_dir)
+            .env("TEMP", &temp_dir)
+            .output();
+        fs::remove_dir_all(&root).unwrap();
+        let output = result.unwrap();
+        assert!(
+            output.status.success(),
+            "isolated regression test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn empty_postgres_directory_is_not_an_installation() {
         let root = std::env::temp_dir().join(format!(
@@ -2075,7 +2184,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
-        let mut settings = Settings::default();
+        let paths = test_app_paths(&root);
+        let config = LauncherConfig::default_for(&paths);
+        let mut settings = postgres_settings_from_config(&paths, &config).unwrap();
         settings.installation_dir = root.clone();
         settings.trust_installation_dir = true;
         assert!(!postgres_installation_ready(&settings));
@@ -2095,7 +2206,14 @@ mod tests {
 
     #[test]
     fn windows_initdb_command_uses_utf8_and_icu() {
-        let mut settings = Settings::default();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets")
+            .join(format!("initdb-command-settings-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_app_paths(&root);
+        let config = LauncherConfig::default_for(&paths);
+        let mut settings = postgres_settings_from_config(&paths, &config).unwrap();
+        fs::remove_dir_all(root).unwrap();
         settings.installation_dir = PathBuf::from(r"C:\portable\postgresql");
         settings.data_dir = PathBuf::from(r"C:\profile with spaces\postgres\data");
         settings.password_file = PathBuf::from(r"C:\profile with spaces\runtime\pgpass");
