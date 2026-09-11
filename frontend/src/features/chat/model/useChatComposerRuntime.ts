@@ -158,6 +158,7 @@ export function useChatComposerRuntime(params: Params) {
     });
 
   const canAutoScroll = () => params.autoScrollEnabled?.value ?? true;
+  const useLegacyAutoScroll = () => window.matchMedia('(max-width: 900px)').matches;
 
   const getPageScroller = () => document.scrollingElement || document.documentElement;
 
@@ -198,6 +199,7 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const shouldKeepFocusedComposerVisible = () => {
+    if (!canAutoScroll() || !useLegacyAutoScroll()) return false;
     const focusedComposer = getFocusedComposer();
     if (!focusedComposer) return false;
 
@@ -220,6 +222,13 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const restoreAutoScrollPosition = (allowPageFallback: boolean) => {
+    if (!useLegacyAutoScroll()) {
+      if (allowPageFallback) {
+        getPageScroller().scrollIntoView({ behavior: 'auto', block: 'end', inline: 'nearest' });
+      }
+      return;
+    }
+
     if (scrollFocusedComposerIntoView()) return;
     if (!allowPageFallback) return;
     window.scrollTo({ top: getMaxPageScrollTop(), left: window.scrollX, behavior: 'auto' });

@@ -119,7 +119,11 @@ const completedPoll = (messageId: number) => ({
 });
 
 describe('chat composer runtime', () => {
+  let viewportWidth = 390;
+
   beforeEach(() => {
+    viewportWidth = 390;
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: viewportWidth <= 900 })));
     window.localStorage.clear();
     apiMocks.get.mockReset();
     apiMocks.isHttpError.mockReset().mockReturnValue(false);
@@ -459,5 +463,110 @@ describe('chat composer runtime', () => {
     await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, left: 0, behavior: 'auto' });
+  });
+
+  describe('responsive autoscroll', () => {
+    const setupPage = (width: number, distance = 0, focused = true) => {
+      viewportWidth = width;
+      const scroller = {
+        scrollHeight: 2_000,
+        clientHeight: 800,
+        scrollTop: 1_200 - distance,
+        scrollIntoView: vi.fn(),
+      };
+      Object.defineProperty(document, 'scrollingElement', { configurable: true, value: scroller });
+      vi.stubGlobal('visualViewport', { pageTop: scroller.scrollTop, height: 800 });
+      const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+      vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+      const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+      const composer = document.createElement('div');
+      composer.className = 'chat-composer';
+      composer.scrollIntoView = vi.fn();
+      const textarea = document.createElement('textarea');
+      vi.spyOn(textarea, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 630 + distance, 100, 130));
+      composer.append(textarea);
+      document.body.append(composer);
+      if (focused) textarea.focus();
+      apiMocks.get.mockResolvedValue(completedPoll(31));
+      return { scroller, composer, textarea, scrollTo, requestAnimationFrame };
+    };
+
+    it.each([390, 900, 901, 1280])('uses legacy focus following only at narrow widths (%i px)', async (width) => {
+      const { scroller, composer, textarea, scrollTo, requestAnimationFrame } = setupPage(width, 100);
+      const { runtime } = createRuntime(31, true);
+
+      await runtime.startPolling(31);
+      if (width <= 900) {
+        await vi.waitFor(() => expect(composer.scrollIntoView).toHaveBeenCalledTimes(2));
+        expect(composer.scrollIntoView).toHaveBeenCalledWith({
+          behavior: 'auto', block: 'nearest', inline: 'nearest',
+        });
+      } else {
+        await nextTick();
+        expect(composer.scrollIntoView).not.toHaveBeenCalled();
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
+      }
+      expect(document.activeElement).toBe(textarea);
+      expect(scroller.scrollIntoView).not.toHaveBeenCalled();
+      expect(scrollTo).not.toHaveBeenCalled();
+    });
+
+    it.each([390, 900, 901, 1280])('keeps following at the bottom without composer focus (%i px)', async (width) => {
+      const { scroller, composer, scrollTo } = setupPage(width, 0, false);
+      const { runtime } = createRuntime(31, true);
+
+      await runtime.startPolling(31);
+      const scroll = width <= 900 ? scrollTo : scroller.scrollIntoView;
+      await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(2));
+      if (width <= 900) {
+        expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, left: 0, behavior: 'auto' });
+        expect(scroller.scrollIntoView).not.toHaveBeenCalled();
+      } else {
+        expect(scroller.scrollIntoView).toHaveBeenCalledWith({
+          behavior: 'auto', block: 'end', inline: 'nearest',
+        });
+        expect(scrollTo).not.toHaveBeenCalled();
+      }
+      expect(composer.scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { distance: 8, focused: true },
+      { distance: 8, focused: false },
+      { distance: 9, focused: true },
+      { distance: 9, focused: false },
+    ])('uses an 8 px tolerance on wide screens (distance: $distance, focus: $focused)', async ({ distance, focused }) => {
+      const { scroller, composer, requestAnimationFrame } = setupPage(1280, distance, focused);
+      const { runtime } = createRuntime(31, true);
+
+      await runtime.startPolling(31);
+      if (distance === 8) {
+        await vi.waitFor(() => expect(scroller.scrollIntoView).toHaveBeenCalledTimes(2));
+      } else {
+        await nextTick();
+        expect(scroller.scrollIntoView).not.toHaveBeenCalled();
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
+      }
+      expect(composer.scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('switches behavior after resizing without recreating the chat', async () => {
+      const { composer, scroller } = setupPage(390, 24);
+      const { runtime } = createRuntime(31, true);
+
+      await runtime.startPolling(31);
+      await vi.waitFor(() => expect(composer.scrollIntoView).toHaveBeenCalledTimes(2));
+      viewportWidth = 1280;
+      await runtime.startPolling(31);
+      await nextTick();
+      expect(composer.scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(scroller.scrollIntoView).not.toHaveBeenCalled();
+      viewportWidth = 390;
+      await runtime.startPolling(31);
+      await vi.waitFor(() => expect(composer.scrollIntoView).toHaveBeenCalledTimes(4));
+    });
   });
 });
