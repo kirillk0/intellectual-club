@@ -224,8 +224,12 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
            end)
 
     assert Enum.all?(http_headers_for(agent), fn headers ->
-             {"authorization", "Bearer test-key"} in headers
+             {"authorization", "Bearer test-key"} in headers and
+               {"session-id", "intellectual-club:user:#{actor.id}"} in headers
            end)
+
+    assert first_http_request["prompt_cache_key"] == "intellectual-club:user:#{actor.id}"
+    assert tool_http_request["prompt_cache_key"] == first_http_request["prompt_cache_key"]
   end
 
   test "responses provider keeps HTTP selected for common retries after fallback" do
@@ -301,6 +305,14 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
 
     assert length(requests_for(agent)) == 1
     assert length(http_requests_for(agent)) == 2
+
+    assert Enum.all?(http_headers_for(agent), fn headers ->
+             {"session-id", "intellectual-club:user:#{actor.id}"} in headers
+           end)
+
+    assert Enum.all?(http_requests_for(agent), fn payload ->
+             payload["prompt_cache_key"] == "intellectual-club:user:#{actor.id}"
+           end)
   end
 
   test "responses provider falls back to HTTP when WebSocket upgrade fails" do

@@ -15,6 +15,88 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     connect_timeout_ms: 200
   }
 
+  test "duplicates the current body cache key into session-id without changing the payload" do
+    test_pid = self()
+
+    handler = fn conn, _opts ->
+      {:ok, body, conn} = read_body(conn)
+      payload = Jason.decode!(body)
+      assert get_req_header(conn, "session-id") == [payload["prompt_cache_key"]]
+      assert get_req_header(conn, "thread-id") == []
+      assert get_req_header(conn, "x-codex-turn-state") == []
+      assert get_req_header(conn, "authorization") == ["Bearer test-key"]
+      send(test_pid, {:wire_payload, payload})
+
+      send_resp(
+        conn,
+        200,
+        "data: " <>
+          Jason.encode!(%{
+            "type" => "response.completed",
+            "response" => %{"id" => "resp_session", "status" => "completed", "output" => []}
+          }) <> "\n\n"
+      )
+    end
+
+    server = start_supervised!({Bandit, plug: handler, scheme: :http, port: 0})
+    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+
+    for key <- ["intellectual-club:user:1", "intellectual-club:user:2", "other-cache-key"] do
+      payload = %{"model" => "test-model", "input" => [], "prompt_cache_key" => key}
+
+      events =
+        run_and_capture_events!(%{
+          base_url: "http://127.0.0.1:#{port}",
+          api_key: "test-key",
+          request_payload: payload,
+          timeout_ms: 1_000
+        })
+
+      assert_receive {:wire_payload, ^payload}
+      assert Enum.any?(events, &match?({:response_complete, %{raw_request: ^payload}}, &1))
+    end
+  end
+
+  test "omits session-id for missing, empty or invalid body keys" do
+    test_pid = self()
+
+    handler = fn conn, _opts ->
+      {:ok, body, conn} = read_body(conn)
+      assert get_req_header(conn, "session-id") == []
+      send(test_pid, {:wire_payload_without_session, Jason.decode!(body)})
+      send_resp(conn, 400, Jason.encode!(%{"error" => %{"message" => "Test rejection"}}))
+    end
+
+    server = start_supervised!({Bandit, plug: handler, scheme: :http, port: 0})
+    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+
+    for key <- [
+          :missing,
+          nil,
+          "",
+          " \t ",
+          123,
+          "bad\r\nheader",
+          "bad\0header",
+          "\u043a\u044d\u0448"
+        ] do
+      payload = %{"model" => "test-model", "input" => []}
+      payload = if key == :missing, do: payload, else: Map.put(payload, "prompt_cache_key", key)
+
+      error =
+        run_and_capture_error!(%{
+          base_url: "http://127.0.0.1:#{port}",
+          api_key: "test-key",
+          request_payload: payload,
+          timeout_ms: 1_000
+        })
+
+      assert_receive {:wire_payload_without_session, ^payload}
+      assert error.status_code == 400
+      assert error.raw_request == payload
+    end
+  end
+
   test "uses the dedicated Finch pool with the default connection timeout" do
     scripts = %{
       "/responses" => [
