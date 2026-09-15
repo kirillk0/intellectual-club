@@ -451,6 +451,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
         execution_context: %{
           "owner_id" => actor.id,
           "chat_id" => 101,
+          "root_chat_id" => 99,
           "message_id" => 102,
           "assistant_message_id" => 103,
           "step_id" => 104,
@@ -465,6 +466,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
     assert %ExecutionContext{} = context = BackgroundTasks.execution_context(task)
     assert context.owner_id == actor.id
     assert context.chat_id == 101
+    assert context.root_chat_id == 99
     assert context.message_id == 102
     assert context.assistant_message_id == 103
     assert context.step_id == 104

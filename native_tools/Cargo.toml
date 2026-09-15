@@ -6,6 +6,7 @@ members = [
   "crates/outlet-shell",
   "crates/outlet-shell-daemon",
   "crates/outlet-shell-desktop",
+  "crates/outlet-task-container",
 ]
 resolver = "2"
 

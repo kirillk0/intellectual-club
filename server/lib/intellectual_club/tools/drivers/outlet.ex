@@ -460,7 +460,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
            nil,
            %{},
            cursor,
-           nil,
+           BackgroundTasks.execution_context(task),
            persisted_runner_ref(task.runner_ref)
          ) do
       {:ok, result} ->
@@ -520,7 +520,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
            nil,
            %{},
            "0",
-           nil,
+           BackgroundTasks.execution_context(task),
            persisted_runner_ref(task.runner_ref)
          ) do
       {:ok, result} ->

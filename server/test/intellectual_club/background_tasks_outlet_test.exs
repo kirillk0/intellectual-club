@@ -107,6 +107,8 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     assert start_call.background_task_id == task_id
     assert start_call.function == "run_command"
     assert start_call.arguments == %{"command" => "echo immediate"}
+    assert start_call.context.user_id == actor.id
+    assert start_call.context.root_chat_id == start_call.context.chat_id
 
     complete_background_call!(tool_instance, runner, start_call, %{
       "background_task_id" => task_id,
@@ -127,6 +129,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     status_call = wait_for_control_call!(tool_instance, reconnected, "background_status")
 
     assert status_call.background_task_id == task_id
+    assert status_call.context == start_call.context
 
     complete_background_call!(tool_instance, reconnected, status_call, %{
       "background_task_id" => task_id,
@@ -186,6 +189,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     assert replayed_start.background_task_id == accepted_start.background_task_id
     assert replayed_start.function == accepted_start.function
     assert replayed_start.arguments == accepted_start.arguments
+    assert replayed_start.context == accepted_start.context
 
     complete_background_call!(tool_instance, reconnected, replayed_start, %{
       "background_task_id" => task_id,
@@ -230,6 +234,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     context = %ExecutionContext{
       owner_id: actor.id,
       chat_id: source.chat.id,
+      root_chat_id: source.chat.id,
       message_id: source.message.id,
       assistant_message_id: source.message.id,
       step_id: source.step.id,
@@ -299,6 +304,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     context = %ExecutionContext{
       owner_id: actor.id,
       chat_id: source.chat.id,
+      root_chat_id: source.chat.id,
       message_id: source.message.id,
       assistant_message_id: source.message.id,
       step_id: source.step.id,
@@ -848,6 +854,12 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     assert replay.function == "run_command"
     assert replay.arguments == task.arguments
 
+    assert replay.context == %{
+             chat_id: task.execution_context["chat_id"],
+             root_chat_id: task.execution_context["root_chat_id"],
+             user_id: actor.id
+           }
+
     complete_background_call!(tool_instance, reconnected, replay, %{
       "background_task_id" => task.id,
       "status" => "completed",
@@ -902,6 +914,12 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     assert cancel_call.background_task_id == task_id
     assert cancel_call.cursor == "0"
 
+    assert cancel_call.context == %{
+             chat_id: requested.execution_context["chat_id"],
+             root_chat_id: requested.execution_context["root_chat_id"],
+             user_id: actor.id
+           }
+
     complete_background_call!(tool_instance, reconnected, cancel_call, %{
       "background_task_id" => task_id,
       "status" => "canceled",
@@ -941,6 +959,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
     context = %ExecutionContext{
       owner_id: actor.id,
       chat_id: source.chat.id,
+      root_chat_id: source.chat.id,
       message_id: source.message.id,
       assistant_message_id: source.message.id,
       step_id: source.step.id,
@@ -1183,6 +1202,7 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
       execution_context: %{
         "owner_id" => actor.id,
         "chat_id" => source.chat.id,
+        "root_chat_id" => source.chat.id,
         "message_id" => source.message.id,
         "assistant_message_id" => source.message.id,
         "step_id" => source.step.id,

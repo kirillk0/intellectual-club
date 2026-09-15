@@ -667,7 +667,7 @@ defmodule IntellectualClub.Generation.ContextTest do
              "intellectual-club:user:#{actor.id}"
   end
 
-  test "openrouter session affinity follows the root chat lineage" do
+  test "generation routing affinity follows nested spawn, fork and handoff lineage" do
     %{user: actor} = user_fixture()
     configuration = create_llm_configuration!(actor, :openrouter_chat_completion)
 
@@ -680,6 +680,21 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!()
 
+    spawn =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          llm_configuration_id: configuration.id,
+          note: "Spawn",
+          parent_chat_id: root.id,
+          parent_relation_kind: :spawn,
+          subagent: true
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
     fork =
       Chat
       |> Ash.Changeset.for_create(
@@ -687,7 +702,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         %{
           llm_configuration_id: configuration.id,
           note: "Fork",
-          parent_chat_id: root.id,
+          parent_chat_id: spawn.id,
           parent_relation_kind: :fork,
           subagent: true
         },
@@ -710,12 +725,15 @@ defmodule IntellectualClub.Generation.ContextTest do
       )
       |> Ash.create!()
 
-    {:ok, _message} = Threads.add_message_to_end(handoff, :user, "Continue", actor: actor)
+    for chat <- [root, spawn, fork, handoff] do
+      {:ok, _message} = Threads.add_message_to_end(chat, :user, "Continue", actor: actor)
+      context = Context.build!(chat.id, actor: actor, chunk_delay_ms: 0)
 
-    context = Context.build!(handoff.id, actor: actor, chunk_delay_ms: 0)
-
-    assert context.conversation_affinity_id == root.id
-    assert context.request_payload["session_id"] == "intellectual-club:chat:#{root.id}"
+      assert context.owner_id == actor.id
+      assert context.chat_id == chat.id
+      assert context.conversation_affinity_id == root.id
+      assert context.request_payload["session_id"] == "intellectual-club:chat:#{root.id}"
+    end
   end
 
   test "synthetic tool context includes outlet runner instance context when online" do

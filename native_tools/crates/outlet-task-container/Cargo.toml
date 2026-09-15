@@ -1,0 +1,30 @@
+[package]
+name = "outlet-task-container"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bollard = "0.18.1"
+bytes.workspace = true
+clap.workspace = true
+fs2 = "0.4"
+futures-util = "0.3"
+image.workspace = true
+mime_guess.workspace = true
+outlet-core = { path = "../outlet-core" }
+reqwest.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+tempfile = "3"
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

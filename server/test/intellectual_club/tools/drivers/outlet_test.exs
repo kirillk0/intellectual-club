@@ -3,6 +3,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
 
   alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.Drivers.Outlet
+  alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
 
@@ -34,6 +35,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
              Runtime.poll(tool_instance, runner_payload)
 
     assert initial_task.function == "outlet.list_tools"
+    refute Map.has_key?(initial_task, :context)
 
     assert :ok =
              Runtime.complete(tool_instance, %{
@@ -106,6 +108,61 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
                 }
               }
             ]} = Task.await(discover_task, 5_000)
+  end
+
+  test "poll exposes only server-issued routing context and uses the executing user" do
+    %{user: tool_owner} = user_fixture()
+    %{user: executing_user} = user_fixture()
+
+    tool_instance = create_tool_instance!(tool_owner, %{name: "Shared routing outlet"})
+    runner = connect_runner!(tool_instance, "routing-runner", "routing-session")
+    supervisor = start_supervised!({Task.Supervisor, []})
+
+    context = %ExecutionContext{
+      owner_id: executing_user.id,
+      chat_id: 201,
+      root_chat_id: 101,
+      message_id: 301,
+      generation_fence_token: "private-fence",
+      available_file_external_ids: ["private-file"],
+      available_secret_binding_external_ids: ["private-secret"]
+    }
+
+    arguments = %{"command" => "pwd", "context" => %{"root_chat_id" => 999}}
+
+    execute =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        Outlet.execute(tool_instance, "run_command", arguments, context)
+      end)
+
+    task = wait_for_task(tool_instance, runner, &(&1.function == "run_command"))
+    assert task.context == %{chat_id: 201, root_chat_id: 101, user_id: executing_user.id}
+    refute task.context.user_id == tool_owner.id
+    assert task.arguments == arguments
+    refute Jason.encode!(task.context) =~ "private"
+
+    complete_task!(tool_instance, runner, task)
+    assert {:ok, %ExecutionResult{}} = Task.await(execute, 5_000)
+  end
+
+  test "legacy execution contexts do not guess a routing root" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor, %{name: "Legacy routing outlet"})
+    runner = connect_runner!(tool_instance, "legacy-routing-runner", "legacy-routing-session")
+    supervisor = start_supervised!({Task.Supervisor, []})
+
+    execute =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        Outlet.execute(tool_instance, "run_command", %{}, %ExecutionContext{
+          owner_id: actor.id,
+          chat_id: 201
+        })
+      end)
+
+    task = wait_for_task(tool_instance, runner, &(&1.function == "run_command"))
+    assert task.context == %{chat_id: 201, root_chat_id: nil, user_id: actor.id}
+    complete_task!(tool_instance, runner, task)
+    assert {:ok, %ExecutionResult{}} = Task.await(execute, 5_000)
   end
 
   test "discovery adds a disabled background wrapper only for capable functions" do

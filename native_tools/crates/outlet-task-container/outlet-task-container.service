@@ -1,0 +1,22 @@
+[Unit]
+Description=Intellectual Club task container outlet
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=outlet-task
+Group=outlet-task
+SupplementaryGroups=docker
+StateDirectory=outlet-task-container
+StateDirectoryMode=0700
+EnvironmentFile=/etc/outlet-task-container.env
+ExecStart=/usr/local/bin/outlet-task-container --data-dir /var/lib/outlet-task-container
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.ExecutionContext do
   defstruct [
     :owner_id,
     :chat_id,
+    :root_chat_id,
     :message_id,
     :assistant_message_id,
     :step_id,

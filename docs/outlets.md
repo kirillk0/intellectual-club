@@ -133,6 +133,42 @@ instance and may return tasks. Each returned task contains:
 - function name;
 - arguments.
 
+### Per-call routing context
+
+Chat-originated tasks additionally include a server-issued `context` next to (not
+inside) `arguments`:
+
+```json
+{
+  "context": {
+    "chat_id": 456,
+    "root_chat_id": 123,
+    "user_id": 7
+  }
+}
+```
+
+`chat_id` identifies the executing chat. `root_chat_id` is the root of its accessible
+parent lineage, shared by nested spawn/fork subagents and handoff continuations.
+It is captured once in the generation context (also for retries and prepared raw
+requests), not chosen by the model. `user_id` identifies the executing actor from
+that context, **not** the owner of a shared outlet tool instance. Runners can use the
+root to route a chat family to one workspace; file/secret authorization still uses
+the full immutable context on the server, not these routing ids.
+
+The root is a generation-time lineage snapshot, not a permanent workspace identity:
+moving/detaching a chat or deleting or losing access to an ancestor can change the root
+of future generations. The existing lineage traversal is bounded to 100 ancestors.
+Background envelopes persist the captured root and reuse it for start retries,
+status and cancellation, including after a backend restart.
+
+Discovery and other calls without an execution context omit `context`. Individual
+ids may be `null` for legacy contexts/envelopes created before routing metadata was
+supported. A workspace-dependent provider must reject missing routing ids rather
+than guessing a workspace or accepting ids from model arguments. Older runners may
+ignore this optional additive field. No secrets, attachment grants, generation fence
+tokens, or other internal execution-context fields are included in the poll payload.
+
 If no task is immediately available and the runner has capacity, the server may hold
 the request as a long poll. A later server-side tool call can then be delivered by
 replying to that pending poll.
@@ -304,9 +340,28 @@ runner process with the same `runner_session_id` keeps its in-memory jobs and ac
 idempotent control calls after reconnecting. A new runner session does not inherit
 jobs from the old process; unfinished envelopes fail with an unknown execution outcome.
 
+A provider's terminal result is retained after cancellation, including any workspace-reset
+warnings. If the provider reports that termination could not be confirmed, the terminal
+state is `failed` with an `unknown` execution outcome, not a successful `canceled` state.
+Providers can signal this through `outlet-core`'s `ExecutionOutcomeUnknown` error.
+
 Terminal runner results expire after a configurable retention period (24 hours by
 default). Runner-process recovery and an on-disk task spool are outside this protocol
 version.
+
+## Call-scoped file transport
+
+Runners upload artifacts with `POST /api/outlet/calls/:call_id/files`, passing URL-encoded
+`filename` and `mime_type` query parameters. The body is the raw file stream with
+`Content-Type: application/octet-stream`, **not** the document MIME type: sending
+`application/json` or a form type as the transport content type lets the general HTTP
+body parser consume the document before the streaming file endpoint. The response's
+`file` object can be returned as an artifact or image media item.
+
+`GET /api/outlet/calls/:call_id/files/:file_id` downloads an authorized attachment.
+Both operations use the outlet bearer token and the server's immutable call context;
+routing ids are not a substitute for file authorization. Background providers use the
+server-issued `background_task_id` as `:call_id` in these endpoints, as supplied by `CallContext`.
 
 ## Managed secret fetches
 

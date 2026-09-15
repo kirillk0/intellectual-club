@@ -92,6 +92,19 @@ pub struct BackgroundProgress {
     pub cursor: Option<String>,
 }
 
+/// A provider could not confirm termination or the outcome of an external side effect.
+/// Cancellation must not hide this error behind a successful canceled status.
+#[derive(Debug)]
+pub struct ExecutionOutcomeUnknown(pub String);
+
+impl std::fmt::Display for ExecutionOutcomeUnknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ExecutionOutcomeUnknown {}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackgroundError {
     pub code: String,
@@ -244,12 +257,24 @@ fn push_progress_chunks(entries: &mut Vec<BackgroundProgress>, entry: Background
     }
 }
 
+/// Server-issued routing metadata. Tool arguments must not be used as a substitute.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionContext {
+    #[serde(default)]
+    pub chat_id: Option<i64>,
+    #[serde(default)]
+    pub root_chat_id: Option<i64>,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct CallContext {
     client: reqwest::Client,
     server_url: Arc<str>,
     token: Arc<str>,
     call_id: Arc<str>,
+    execution_context: Option<ExecutionContext>,
     progress: Option<ProgressLog>,
     cancellation: CancellationToken,
 }
@@ -266,6 +291,7 @@ impl CallContext {
             server_url: server_url.into(),
             token: token.into(),
             call_id: call_id.into(),
+            execution_context: None,
             progress: None,
             cancellation: CancellationToken::new(),
         }
@@ -284,9 +310,19 @@ impl CallContext {
             server_url: server_url.into(),
             token: token.into(),
             call_id: background_task_id.into(),
+            execution_context: None,
             progress: Some(progress),
             cancellation,
         }
+    }
+
+    pub fn with_execution_context(mut self, context: Option<ExecutionContext>) -> Self {
+        self.execution_context = context;
+        self
+    }
+
+    pub fn execution_context(&self) -> Option<&ExecutionContext> {
+        self.execution_context.as_ref()
     }
 
     pub fn call_id(&self) -> &str {
@@ -365,15 +401,20 @@ impl CallContext {
             .client
             .post(url)
             .bearer_auth(self.token.as_ref())
-            .header(
-                CONTENT_TYPE,
-                if mime_type.trim().is_empty() {
-                    "application/octet-stream"
-                } else {
-                    mime_type
-                },
-            )
-            .query(&[("filename", filename)])
+            // Always send opaque bytes so the server's JSON/form parsers cannot consume
+            // a document before the streaming file endpoint. Its MIME is metadata.
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .query(&[
+                ("filename", filename),
+                (
+                    "mime_type",
+                    if mime_type.trim().is_empty() {
+                        "application/octet-stream"
+                    } else {
+                        mime_type
+                    },
+                ),
+            ])
             .body(body);
 
         if filename.is_ascii() {
@@ -432,6 +473,18 @@ impl CallContext {
         file_id: &str,
         path: impl AsRef<Path>,
     ) -> Result<DownloadedCallFileMetadata> {
+        self.download_call_file_to_path_limited(file_id, path, u64::MAX)
+            .await
+    }
+
+    /// Stream a call file to disk, rejecting oversized bodies before writing beyond the bound.
+    /// The caller owns removal of a partial destination after an error or cancellation.
+    pub async fn download_call_file_to_path_limited(
+        &self,
+        file_id: &str,
+        path: impl AsRef<Path>,
+        max_bytes: u64,
+    ) -> Result<DownloadedCallFileMetadata> {
         let url = join_url(
             &self.server_url,
             &format!("/api/outlet/calls/{}/files/{}", self.call_id, file_id),
@@ -464,6 +517,15 @@ impl CallContext {
             return Err(anyhow!("file download failed: HTTP {status}: {body}"));
         }
 
+        if response
+            .content_length()
+            .is_some_and(|length| length > max_bytes)
+        {
+            return Err(anyhow!(
+                "File exceeds the transfer safety limit ({max_bytes} bytes)"
+            ));
+        }
+
         let mut file = TokioFile::create(path.as_ref())
             .await
             .with_context(|| format!("failed to create {}", path.as_ref().display()))?;
@@ -474,7 +536,12 @@ impl CallContext {
             .await
             .context("failed to read outlet file body")?
         {
-            size_bytes += chunk.len() as u64;
+            size_bytes = size_bytes.saturating_add(chunk.len() as u64);
+            if size_bytes > max_bytes {
+                return Err(anyhow!(
+                    "File exceeds the transfer safety limit ({max_bytes} bytes)"
+                ));
+            }
             file.write_all(&chunk)
                 .await
                 .with_context(|| format!("failed to write {}", path.as_ref().display()))?;
@@ -653,6 +720,8 @@ struct PollTask {
     background_task_id: String,
     #[serde(default, deserialize_with = "deserialize_optional_cursor")]
     cursor: Option<String>,
+    #[serde(default)]
+    context: Option<ExecutionContext>,
 }
 
 fn deserialize_optional_cursor<'de, D>(
@@ -693,6 +762,7 @@ struct CompletePayload<'a> {
 struct BackgroundRequest {
     function_name: String,
     arguments: Value,
+    execution_context: Option<ExecutionContext>,
     fingerprint: [u8; 32],
 }
 
@@ -820,6 +890,24 @@ impl<P: ToolProvider> BackgroundPool<P> {
         arguments: Value,
         cursor: Option<&str>,
     ) -> Result<ToolResult> {
+        self.start_background_with_context(
+            background_task_id,
+            function_name,
+            arguments,
+            cursor,
+            None,
+        )
+        .await
+    }
+
+    pub async fn start_background_with_context(
+        &self,
+        background_task_id: &str,
+        function_name: &str,
+        arguments: Value,
+        cursor: Option<&str>,
+        execution_context: Option<ExecutionContext>,
+    ) -> Result<ToolResult> {
         let background_task_id = background_task_id.trim();
         let function_name = function_name.trim();
         if background_task_id.is_empty() {
@@ -831,7 +919,8 @@ impl<P: ToolProvider> BackgroundPool<P> {
 
         self.cleanup_expired().await;
         let cursor = parse_cursor(cursor)?;
-        let request_fingerprint = background_request_fingerprint(function_name, &arguments)?;
+        let request_fingerprint =
+            background_request_fingerprint(function_name, &arguments, execution_context.as_ref())?;
 
         {
             let tasks = self.inner.tasks.lock().await;
@@ -842,6 +931,7 @@ impl<P: ToolProvider> BackgroundPool<P> {
                         request,
                         function_name,
                         &arguments,
+                        execution_context.as_ref(),
                     )?;
                     return snapshot_result(background_task_id, existing, cursor);
                 }
@@ -877,11 +967,13 @@ impl<P: ToolProvider> BackgroundPool<P> {
                     request,
                     function_name,
                     &arguments,
+                    execution_context.as_ref(),
                 )?;
             } else {
                 existing.request = Some(BackgroundRequest {
                     function_name: function_name.to_string(),
                     arguments,
+                    execution_context,
                     fingerprint: request_fingerprint,
                 });
             }
@@ -902,6 +994,7 @@ impl<P: ToolProvider> BackgroundPool<P> {
                 request: Some(BackgroundRequest {
                     function_name: function_name.to_string(),
                     arguments,
+                    execution_context,
                     fingerprint: request_fingerprint,
                 }),
                 status: BackgroundStatus::Queued,
@@ -1040,7 +1133,7 @@ impl<P: ToolProvider> BackgroundPool<P> {
     }
 
     async fn run_background(&self, background_task_id: String) {
-        let (function_name, arguments, progress, cancellation) = {
+        let (function_name, arguments, execution_context, progress, cancellation) = {
             let tasks = self.inner.tasks.lock().await;
             let Some(task) = tasks.get(&background_task_id) else {
                 return;
@@ -1051,6 +1144,7 @@ impl<P: ToolProvider> BackgroundPool<P> {
             (
                 request.function_name.clone(),
                 request.arguments.clone(),
+                request.execution_context.clone(),
                 task.progress.clone(),
                 task.cancellation.clone(),
             )
@@ -1087,7 +1181,8 @@ impl<P: ToolProvider> BackgroundPool<P> {
             Arc::<str>::from(background_task_id.clone()),
             progress,
             cancellation.clone(),
-        );
+        )
+        .with_execution_context(execution_context);
         let result = self
             .inner
             .provider
@@ -1100,6 +1195,22 @@ impl<P: ToolProvider> BackgroundPool<P> {
         task.finished_at = Some(Instant::now());
         if task.cancel_requested || cancellation.is_cancelled() {
             mark_background_canceled(task);
+            match result {
+                Ok(result) => task.result = Some(result),
+                Err(error) if error.is::<ExecutionOutcomeUnknown>() => {
+                    task.status = BackgroundStatus::Failed;
+                    task.error = Some(BackgroundError {
+                        code: "cancellation_outcome_unknown".to_string(),
+                        message: error.to_string(),
+                        outcome: Some("unknown".to_string()),
+                    });
+                }
+                Err(error) => {
+                    if let Some(detail) = task.error.as_mut() {
+                        detail.message = format!("Background task was canceled: {error:#}");
+                    }
+                }
+            }
             drop(permit);
             return;
         }
@@ -1112,10 +1223,16 @@ impl<P: ToolProvider> BackgroundPool<P> {
             Err(error) => {
                 task.status = BackgroundStatus::Failed;
                 task.result = None;
+                let unknown = error.is::<ExecutionOutcomeUnknown>();
                 task.error = Some(BackgroundError {
-                    code: "execution_failed".to_string(),
+                    code: if unknown {
+                        "execution_outcome_unknown"
+                    } else {
+                        "execution_failed"
+                    }
+                    .to_string(),
                     message: error.to_string(),
-                    outcome: Some("failed".to_string()),
+                    outcome: Some(if unknown { "unknown" } else { "failed" }.to_string()),
                 });
             }
         }
@@ -1178,7 +1295,7 @@ impl<P: ToolProvider> BackgroundPool<P> {
         };
         match expired.fingerprint {
             Some(existing) if existing != fingerprint => Err(anyhow!(
-                "background task {background_task_id} already exists with a different function or arguments"
+                "background task {background_task_id} already exists with a different function or arguments or execution context"
             )),
             Some(_) => Ok(true),
             None if bind_unbound => {
@@ -1198,8 +1315,12 @@ impl<P: ToolProvider> BackgroundPool<P> {
     }
 }
 
-fn background_request_fingerprint(function_name: &str, arguments: &Value) -> Result<[u8; 32]> {
-    let payload = serde_json::to_vec(&(function_name, arguments))
+fn background_request_fingerprint(
+    function_name: &str,
+    arguments: &Value,
+    execution_context: Option<&ExecutionContext>,
+) -> Result<[u8; 32]> {
+    let payload = serde_json::to_vec(&(function_name, arguments, execution_context))
         .context("failed to serialize background request for idempotency")?;
     Ok(Sha256::digest(payload).into())
 }
@@ -1215,12 +1336,16 @@ fn ensure_matching_background_request(
     request: &BackgroundRequest,
     function_name: &str,
     arguments: &Value,
+    execution_context: Option<&ExecutionContext>,
 ) -> Result<()> {
-    if request.function_name == function_name && request.arguments == *arguments {
+    if request.function_name == function_name
+        && request.arguments == *arguments
+        && request.execution_context.as_ref() == execution_context
+    {
         Ok(())
     } else {
         Err(anyhow!(
-            "background task {background_task_id} already exists with a different function or arguments"
+            "background task {background_task_id} already exists with a different function or arguments or execution context"
         ))
     }
 }
@@ -1502,6 +1627,72 @@ impl<P: ToolProvider> OutletRunner<P> {
     }
 }
 
+async fn execute_task<P: ToolProvider>(
+    background: &BackgroundPool<P>,
+    client: &reqwest::Client,
+    config: &RunnerConfig,
+    task: &PollTask,
+) -> Result<ToolResult> {
+    let context = CallContext::new(
+        client.clone(),
+        Arc::<str>::from(config.server_url.clone()),
+        Arc::<str>::from(config.token.clone()),
+        Arc::<str>::from(task.call_id.clone()),
+    )
+    .with_execution_context(task.context.clone());
+
+    let arguments = match &task.arguments {
+        Value::Object(_) => task.arguments.clone(),
+        _ => json!({}),
+    };
+    let cursor = task.cursor.as_deref().unwrap_or("0");
+
+    match task.operation {
+        PollOperation::Execute if task.function_name == DISCOVERY_FUNCTION => {
+            let tools = background
+                .tools()
+                .into_iter()
+                .map(|tool| {
+                    json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema,
+                        "supports_background": tool.supports_background,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(ToolResult::from_raw(json!({ "tools": tools })))
+        }
+        PollOperation::Execute => {
+            background
+                .call_foreground(&task.function_name, arguments, context)
+                .await
+        }
+        PollOperation::BackgroundStart => {
+            background
+                .start_background_with_context(
+                    &task.background_task_id,
+                    &task.function_name,
+                    arguments,
+                    task.cursor.as_deref(),
+                    task.context.clone(),
+                )
+                .await
+        }
+        // Controls address the original job; their context must never replace its routing.
+        PollOperation::BackgroundStatus => {
+            background
+                .background_status(&task.background_task_id, cursor)
+                .await
+        }
+        PollOperation::BackgroundCancel => {
+            background
+                .cancel_background(&task.background_task_id, cursor)
+                .await
+        }
+    }
+}
+
 async fn handle_call<P: ToolProvider>(
     background: BackgroundPool<P>,
     client: reqwest::Client,
@@ -1529,61 +1720,7 @@ async fn handle_call<P: ToolProvider>(
     let mut result = ToolResult::new("", json!({}));
     let mut error_text = String::new();
 
-    let context = CallContext::new(
-        client.clone(),
-        Arc::<str>::from(config.server_url.clone()),
-        Arc::<str>::from(config.token.clone()),
-        Arc::<str>::from(task.call_id.clone()),
-    );
-
-    let arguments = match task.arguments {
-        Value::Object(_) => task.arguments,
-        _ => json!({}),
-    };
-    let cursor = task.cursor.as_deref().unwrap_or("0");
-
-    let call_result = match task.operation {
-        PollOperation::Execute if task.function_name == DISCOVERY_FUNCTION => {
-            let tools = background
-                .tools()
-                .into_iter()
-                .map(|tool| {
-                    json!({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "input_schema": tool.input_schema,
-                        "supports_background": tool.supports_background,
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(ToolResult::from_raw(json!({ "tools": tools })))
-        }
-        PollOperation::Execute => {
-            background
-                .call_foreground(&task.function_name, arguments, context)
-                .await
-        }
-        PollOperation::BackgroundStart => {
-            background
-                .start_background(
-                    &task.background_task_id,
-                    &task.function_name,
-                    arguments,
-                    task.cursor.as_deref(),
-                )
-                .await
-        }
-        PollOperation::BackgroundStatus => {
-            background
-                .background_status(&task.background_task_id, cursor)
-                .await
-        }
-        PollOperation::BackgroundCancel => {
-            background
-                .cancel_background(&task.background_task_id, cursor)
-                .await
-        }
-    };
+    let call_result = execute_task(&background, &client, &config, &task).await;
 
     match call_result {
         Ok(ok) => {
@@ -2126,7 +2263,12 @@ mod tests {
                         permit = self.gate.acquire() => {
                             permit.map_err(|_| anyhow!("test gate closed"))?.forget();
                         }
-                        _ = context.cancelled() => return Err(anyhow!("canceled")),
+                        _ = context.cancelled() => {
+                            if arguments.get("cancel_unknown").and_then(Value::as_bool) == Some(true) {
+                                return Err(anyhow!(ExecutionOutcomeUnknown("Emergency cleanup failed".into())));
+                            }
+                            return Err(anyhow!("canceled"));
+                        },
                     }
                 }
             }
@@ -2139,7 +2281,11 @@ mod tests {
             }
             Ok(ToolResult::new(
                 format!("{function_name} complete"),
-                json!({"arguments": arguments}),
+                json!({
+                    "arguments": arguments,
+                    "call_id": context.call_id(),
+                    "context": context.execution_context(),
+                }),
             ))
         }
     }
@@ -2176,6 +2322,211 @@ mod tests {
         panic!("background task {task_id} did not reach {expected:?}");
     }
 
+    fn test_execution_context() -> ExecutionContext {
+        ExecutionContext {
+            chat_id: Some(12),
+            root_chat_id: Some(10),
+            user_id: Some(7),
+        }
+    }
+
+    fn routed_poll_task(operation: &str) -> PollTask {
+        serde_json::from_value(json!({
+            "call_id": "control-call",
+            "operation": operation,
+            "function": "run",
+            "arguments": {"context": {"root_chat_id": 999}},
+            "background_task_id": "routed-background",
+            "context": test_execution_context(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn poll_task_context_is_optional_and_forward_compatible() {
+        for payload in [
+            json!({"call_id": "c", "function": DISCOVERY_FUNCTION}),
+            json!({"call_id": "c", "function": "run", "context": null}),
+        ] {
+            let task: PollTask = serde_json::from_value(payload).unwrap();
+            assert_eq!(task.context, None);
+            assert_eq!(task.operation, PollOperation::Execute);
+        }
+        let task: PollTask = serde_json::from_value(json!({
+            "call_id": "c",
+            "function": "run",
+            "context": {"chat_id": 12, "future_field": true},
+        }))
+        .unwrap();
+        assert_eq!(
+            task.context,
+            Some(ExecutionContext {
+                chat_id: Some(12),
+                root_chat_id: None,
+                user_id: None,
+            })
+        );
+        let context = test_execution_context();
+        assert_eq!(
+            serde_json::from_value::<ExecutionContext>(serde_json::to_value(&context).unwrap())
+                .unwrap(),
+            context,
+        );
+    }
+
+    #[test]
+    fn call_context_builder_preserves_legacy_construction_and_clone() {
+        let context = CallContext::new(reqwest::Client::new(), "http://server", "token", "call");
+        assert_eq!(context.execution_context(), None);
+        let routing = test_execution_context();
+        let context = context.with_execution_context(Some(routing.clone()));
+        assert_eq!(context.execution_context(), Some(&routing));
+        assert_eq!(context.clone().execution_context(), Some(&routing));
+        assert_eq!(context.call_id(), "call");
+    }
+
+    #[tokio::test]
+    async fn foreground_poll_task_delivers_server_context_not_tool_arguments() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(provider, 1, Duration::from_secs(60));
+        let task = routed_poll_task("execute");
+        let result = execute_task(
+            &pool,
+            &reqwest::Client::new(),
+            &RunnerConfig::new("http://server", "token"),
+            &task,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.raw["context"],
+            serde_json::to_value(test_execution_context()).unwrap()
+        );
+        assert_eq!(result.raw["arguments"]["context"]["root_chat_id"], 999);
+        assert_eq!(result.raw["call_id"], "control-call");
+    }
+
+    #[tokio::test]
+    async fn background_poll_task_keeps_context_and_uses_background_file_scope() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
+        let task = routed_poll_task("background_start");
+        let client = reqwest::Client::new();
+        let config = RunnerConfig::new("http://server", "token");
+        execute_task(&pool, &client, &config, &task).await.unwrap();
+        let completed =
+            wait_for_background_status(&pool, "routed-background", BackgroundStatus::Completed)
+                .await;
+        assert_eq!(
+            completed.raw["result"]["raw"]["context"],
+            serde_json::to_value(test_execution_context()).unwrap()
+        );
+        assert_eq!(
+            completed.raw["result"]["raw"]["call_id"],
+            "routed-background"
+        );
+
+        // Reconnect/control calls do not invoke the provider or replace the original context.
+        for operation in ["background_status", "background_cancel"] {
+            let mut control = routed_poll_task(operation);
+            control.context = None;
+            let result = execute_task(&pool, &client, &config, &control)
+                .await
+                .unwrap();
+            assert_eq!(result.raw["result"], completed.raw["result"]);
+        }
+        execute_task(&pool, &client, &config, &task).await.unwrap();
+        assert_eq!(provider.started.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn background_idempotency_rejects_changed_or_missing_context() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
+        let task = routed_poll_task("background_start");
+        let client = reqwest::Client::new();
+        let config = RunnerConfig::new("http://server", "token");
+        execute_task(&pool, &client, &config, &task).await.unwrap();
+        wait_for_background_status(&pool, "routed-background", BackgroundStatus::Completed).await;
+
+        for context in [
+            None,
+            Some(ExecutionContext {
+                chat_id: Some(13),
+                ..test_execution_context()
+            }),
+            Some(ExecutionContext {
+                root_chat_id: Some(11),
+                ..test_execution_context()
+            }),
+            Some(ExecutionContext {
+                user_id: Some(8),
+                ..test_execution_context()
+            }),
+        ] {
+            let mut replay = task.clone();
+            replay.context = context;
+            let error = execute_task(&pool, &client, &config, &replay)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("execution context"));
+        }
+        assert_eq!(provider.started.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn expired_background_idempotency_still_binds_context() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
+        let task = routed_poll_task("background_start");
+        let client = reqwest::Client::new();
+        let config = RunnerConfig::new("http://server", "token");
+        execute_task(&pool, &client, &config, &task).await.unwrap();
+        wait_for_background_status(&pool, "routed-background", BackgroundStatus::Completed).await;
+        {
+            let mut tasks = pool.inner.tasks.lock().await;
+            tasks.get_mut("routed-background").unwrap().finished_at =
+                Some(Instant::now() - Duration::from_secs(61));
+        }
+        let error = execute_task(&pool, &client, &config, &task)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().starts_with("outlet_task_expired:"));
+        let mut replay = task.clone();
+        replay.context.as_mut().unwrap().root_chat_id = Some(11);
+        let error = execute_task(&pool, &client, &config, &replay)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("execution context"));
+        assert_eq!(provider.started.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn canceled_tombstone_cannot_be_rebound_after_contextual_start() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
+        let client = reqwest::Client::new();
+        let config = RunnerConfig::new("http://server", "token");
+        execute_task(
+            &pool,
+            &client,
+            &config,
+            &routed_poll_task("background_cancel"),
+        )
+        .await
+        .unwrap();
+        let task = routed_poll_task("background_start");
+        let result = execute_task(&pool, &client, &config, &task).await.unwrap();
+        assert_eq!(result.raw["status"], "canceled");
+        let mut replay = task.clone();
+        replay.context.as_mut().unwrap().user_id = Some(8);
+        let error = execute_task(&pool, &client, &config, &replay)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("execution context"));
+        assert_eq!(provider.started.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn background_start_is_idempotent_and_rejects_mismatched_request() {
         let provider = Arc::new(BackgroundTestProvider::new());
@@ -2197,7 +2548,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("different function or arguments"));
+            .contains("different function or arguments or execution context"));
 
         provider.gate.add_permits(1);
         wait_for_background_status(&pool, "task-1", BackgroundStatus::Completed).await;
@@ -2442,6 +2793,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_preserves_provider_result_and_unknown_outcome() {
+        let provider = Arc::new(BackgroundTestProvider::new());
+        let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
+        pool.start_background(
+            "cancel-result",
+            "run",
+            json!({"block": true, "ignore_cancel": true}),
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_background_status(&pool, "cancel-result", BackgroundStatus::Running).await;
+        pool.cancel_background("cancel-result", "0").await.unwrap();
+        provider.gate.add_permits(1);
+        let result =
+            wait_for_background_status(&pool, "cancel-result", BackgroundStatus::Canceled).await;
+        assert_eq!(result.raw["result"]["text"], "run complete");
+
+        pool.start_background(
+            "cancel-unknown",
+            "run",
+            json!({"block": true, "cancel_unknown": true}),
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_background_status(&pool, "cancel-unknown", BackgroundStatus::Running).await;
+        pool.cancel_background("cancel-unknown", "0").await.unwrap();
+        let result =
+            wait_for_background_status(&pool, "cancel-unknown", BackgroundStatus::Failed).await;
+        assert_eq!(result.raw["error"]["code"], "cancellation_outcome_unknown");
+        assert_eq!(result.raw["error"]["outcome"], "unknown");
+        assert!(result.raw["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Emergency cleanup failed"));
+    }
+
+    #[tokio::test]
     async fn cancel_before_start_creates_an_idempotent_tombstone() {
         let provider = Arc::new(BackgroundTestProvider::new());
         let pool = test_pool(Arc::clone(&provider), 1, Duration::from_secs(60));
@@ -2466,7 +2856,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("different function or arguments"));
+            .contains("different function or arguments or execution context"));
     }
 
     #[tokio::test]
@@ -2528,7 +2918,7 @@ mod tests {
             .unwrap_err();
         assert!(mismatch
             .to_string()
-            .contains("different function or arguments"));
+            .contains("different function or arguments or execution context"));
     }
 
     #[tokio::test]

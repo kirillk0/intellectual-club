@@ -520,6 +520,7 @@ defmodule IntellectualClub.BackgroundTasks do
     %ExecutionContext{
       owner_id: context_value(map, "owner_id", task.owner_id),
       chat_id: context_value(map, "chat_id"),
+      root_chat_id: context_value(map, "root_chat_id"),
       message_id: context_value(map, "message_id"),
       assistant_message_id: context_value(map, "assistant_message_id"),
       step_id: context_value(map, "step_id"),

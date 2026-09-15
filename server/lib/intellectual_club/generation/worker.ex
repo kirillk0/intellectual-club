@@ -2320,6 +2320,7 @@ defmodule IntellectualClub.Generation.Worker do
     %ExecutionContext{
       owner_id: Map.get(state.context, :owner_id),
       chat_id: Map.get(state.context, :chat_id),
+      root_chat_id: Map.get(state.context, :conversation_affinity_id),
       message_id: Map.get(state.context, :message_id),
       assistant_message_id: Map.get(state.context, :message_id),
       step_id: Map.get(state.runtime_step, :id) || Map.get(state.context, :step_id),

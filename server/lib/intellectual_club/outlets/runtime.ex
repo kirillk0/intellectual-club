@@ -16,6 +16,7 @@ defmodule IntellectualClub.Outlets.Runtime do
   use GenServer
 
   alias IntellectualClub.Outlets.Config
+  alias IntellectualClub.Tools.ExecutionContext
 
   require Logger
 
@@ -32,6 +33,7 @@ defmodule IntellectualClub.Outlets.Runtime do
   @type poll_task :: %{
           optional(:background_task_id) => String.t(),
           optional(:cursor) => String.t(),
+          optional(:context) => map(),
           call_id: String.t(),
           operation: String.t(),
           function: String.t(),
@@ -1070,7 +1072,19 @@ defmodule IntellectualClub.Outlets.Runtime do
     payload
     |> maybe_put_task_value(:background_task_id, Map.get(call, :background_task_id))
     |> maybe_put_task_value(:cursor, Map.get(call, :cursor))
+    |> maybe_put_task_value(:context, routing_context(Map.get(call, :execution_context)))
   end
+
+  # Expose only routing metadata, never the internal authorization context.
+  defp routing_context(%ExecutionContext{} = context) do
+    %{
+      chat_id: context.chat_id,
+      root_chat_id: context.root_chat_id,
+      user_id: context.owner_id
+    }
+  end
+
+  defp routing_context(_context), do: nil
 
   defp maybe_put_task_value(payload, _key, nil), do: payload
   defp maybe_put_task_value(payload, _key, ""), do: payload
