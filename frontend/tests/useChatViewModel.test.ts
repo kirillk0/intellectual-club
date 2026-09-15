@@ -1,6 +1,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { defineComponent, h } from 'vue';
+import { defineComponent, h, markRaw } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
+import { VueQueryPlugin } from '@tanstack/vue-query';
 
 const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -41,6 +42,9 @@ import type {
 } from '@/features/chat/model/chatViewModel.shared';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import { useNavigationStack } from '@/features/stack/navigationStack';
+import StackRouterView from '@/components/StackRouterView.vue';
+import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 
 type ChatViewModel = ReturnType<typeof useChatViewModel>;
 
@@ -128,6 +132,7 @@ async function mountViewModel(path = '/chats/1', previousPath?: string) {
 
 describe('useChatViewModel loading', () => {
   beforeEach(() => {
+    serverStateQueryClient.clear();
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
     apiMocks.post.mockResolvedValue(undefined);
     apiMocks.put.mockResolvedValue(undefined);
@@ -146,6 +151,7 @@ describe('useChatViewModel loading', () => {
     activeWrapper?.unmount();
     activeWrapper = null;
     useNavigationStack().reset();
+    serverStateQueryClient.clear();
     vi.unstubAllGlobals();
   });
 
@@ -168,6 +174,141 @@ describe('useChatViewModel loading', () => {
     router.back();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/chats/1'));
   });
+
+  it.each([
+    { entry: 'direct', cached: false, settingsOrder: 'before' },
+    { entry: 'direct', cached: false, settingsOrder: 'after' },
+    { entry: 'list', cached: false, settingsOrder: 'before' },
+    { entry: 'list', cached: false, settingsOrder: 'after' },
+    { entry: 'direct', cached: true, settingsOrder: 'after' },
+    { entry: 'list', cached: true, settingsOrder: 'after' },
+  ] as const)(
+    'immediately adds a block from $entry entry (cached: $cached) when settings return $settingsOrder the details',
+    async ({ entry, cached, settingsOrder }) => {
+      const blockDocument = {
+        data: { type: 'knowledge-blocks', id: '42', attributes: { name: 'Created block' } },
+      };
+      let resolveSettings!: (payload: ChatSettingsStatePayload) => void;
+      let resolveBlock!: (payload: typeof blockDocument) => void;
+      let returning = false;
+      apiMocks.get.mockImplementation((path: string) => {
+        if (path.endsWith('/settings')) {
+          return returning
+            ? new Promise<ChatSettingsStatePayload>((resolve) => { resolveSettings = resolve; })
+            : Promise.resolve(chatSettings());
+        }
+        if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+        if (path.startsWith('/api/ash/knowledge-blocks/42')) {
+          return returning
+            ? new Promise<typeof blockDocument>((resolve) => { resolveBlock = resolve; })
+            : Promise.resolve(blockDocument);
+        }
+        return Promise.resolve(undefined);
+      });
+      apiMocks.post.mockResolvedValue(blockDocument);
+
+      let viewModel!: ChatViewModel;
+      let editor!: ReturnType<typeof useCrudEditor<{ name: string }>>;
+      const Chat = defineComponent({
+        setup() {
+          viewModel = useChatViewModel();
+          return () => h('div', viewModel.chatBlocks.value.map((block) => viewModel.chatBlockName(block.block)));
+        },
+      });
+      const Editor = defineComponent({
+        setup() {
+          editor = useCrudEditor({
+            type: 'knowledge-blocks',
+            basePath: '/api/ash/knowledge-blocks',
+            indexPath: '/catalogs/knowledge-blocks',
+            editPath: (id) => `/catalogs/knowledge-blocks/${id}`,
+            defaultForm: () => ({ name: '' }),
+            fromApi: (resource) => ({ name: String(resource.attributes?.name || '') }),
+            toAttributes: (form) => ({ name: form.name }),
+          });
+          return () => h('div', 'Block editor');
+        },
+      });
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [
+          { path: '/chats', component: markRaw(defineComponent({ render: () => h('div', 'Chat list') })) },
+          { path: '/chats/:id', component: Chat },
+          {
+            path: '/catalogs/knowledge-blocks/:id',
+            component: Editor,
+            meta: { stackEntityParams: ['id'] },
+          },
+        ],
+      });
+      const stack = useNavigationStack();
+      router.afterEach((to, from) => {
+        stack.commitPendingPush(from);
+        if (stack.top.value?.route.fullPath === to.fullPath) stack.pop();
+      });
+      await router.push(entry === 'list' ? '/chats' : '/chats/1');
+      activeWrapper = mount(StackRouterView, {
+        global: { plugins: [router, [VueQueryPlugin, { queryClient: serverStateQueryClient }]] },
+      });
+      if (entry === 'list') {
+        stack.markPendingPush(0);
+        await router.push({ path: '/chats/1', state: { stack: true } });
+      }
+      await vi.waitFor(() => expect(viewModel.chatSettingsStatus.value).toBe('ready'));
+      const originalViewModel = viewModel;
+
+      const creation = viewModel.openNewBlock();
+      await vi.waitFor(() => expect(editor?.isNew.value).toBe(true));
+      editor.form.name = 'Created block';
+      expect(await editor.save()).toBe(true);
+      await flushPromises();
+      expect(router.currentRoute.value.path).toBe('/catalogs/knowledge-blocks/42');
+
+      if (!cached) {
+        serverStateQueryClient.removeQueries({
+          queryKey: serverStateKeys.detail('knowledge-blocks', 42, 'editor-document'),
+          exact: true,
+        });
+      }
+      returning = true;
+      editor.goList();
+      await vi.waitFor(() => {
+        expect(resolveSettings).toBeTypeOf('function');
+        if (!cached) expect(resolveBlock).toBeTypeOf('function');
+      });
+      await flushPromises();
+      expect(viewModel).toBe(originalViewModel);
+      expect(viewModel.chatBlocks.value).toEqual([
+        expect.objectContaining({ block: 42, enabled: true, sequence: 0 }),
+      ]);
+      expect(viewModel.chatTabDirty.value).toBe(true);
+      if (cached) {
+        expect(resolveBlock).toBeUndefined();
+        expect(activeWrapper.get('.stack-layer--active').text()).toContain('Created block');
+      }
+      const refreshedSettings = chatSettings();
+      refreshedSettings.options.knowledge_blocks = [
+        { id: 42, name: 'Created block', version: null, token_count: null },
+      ];
+      if (settingsOrder === 'before') {
+        resolveSettings(refreshedSettings);
+        await flushPromises();
+        if (!cached) resolveBlock(blockDocument);
+      } else {
+        if (!cached) resolveBlock(blockDocument);
+        await creation;
+        resolveSettings(refreshedSettings);
+      }
+      await creation;
+      await flushPromises();
+
+      expect(viewModel.chatBlocks.value).toEqual([
+        expect.objectContaining({ block: 42, enabled: true, sequence: 0 }),
+      ]);
+      expect(viewModel.chatTabDirty.value).toBe(true);
+      expect(activeWrapper.get('.stack-layer--active').text()).toContain('Created block');
+    }
+  );
 
   it('shows the chat after the core response while settings are still pending', async () => {
     let resolveSettings!: (payload: ChatSettingsStatePayload) => void;

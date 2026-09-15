@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, shallowRef } from 'vue';
 import type { RouteLocationNormalizedLoaded } from 'vue-router';
 
 export type StackNavigationResult<T> = { status: 'completed'; value: T } | { status: 'cancelled' };
@@ -24,8 +24,9 @@ type PendingStackPush = {
   resultController?: StackResultController;
 };
 
-const stack = ref<StackEntry[]>([]);
-const pendingPush = ref<PendingStackPush | null>(null);
+// Route records contain component definitions, whose identity must remain unchanged.
+const stack = shallowRef<StackEntry[]>([]);
+const pendingPush = shallowRef<PendingStackPush | null>(null);
 let nextPendingPushId = 1;
 
 const active = computed(() => stack.value.length > 0);
@@ -104,18 +105,22 @@ const commitPendingPush = (route: RouteLocationNormalizedLoaded) => {
   const pending = pendingPush.value;
   if (!pending) return null;
 
-  stack.value.push({
-    route: cloneRoute(route),
-    scrollY: pending.scrollY,
-    parentHistoryPosition: pending.parentHistoryPosition,
-    resultController: pending.resultController,
-  });
+  stack.value = [
+    ...stack.value,
+    {
+      route: cloneRoute(route),
+      scrollY: pending.scrollY,
+      parentHistoryPosition: pending.parentHistoryPosition,
+      resultController: pending.resultController,
+    },
+  ];
   pendingPush.value = null;
   return pending;
 };
 
 const pop = () => {
-  const entry = stack.value.pop();
+  const entry = stack.value[stack.value.length - 1];
+  stack.value = stack.value.slice(0, -1);
   entry?.resultController?.complete();
   return entry;
 };

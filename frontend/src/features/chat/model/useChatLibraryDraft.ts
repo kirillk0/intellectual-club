@@ -1,10 +1,11 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 
-import { jsonApiGet, toIntId, type JsonApiResource } from '@/api/jsonApi';
+import { jsonApiGet, toIntId, type JsonApiResource, type JsonApiSingleResponse } from '@/api/jsonApi';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import { updateChatRecord } from '@/features/chat/chatAshApi';
 import { useKnowledgeBlockNewDraft } from '@/features/catalogs/model/useKnowledgeBlockNewDraft';
 import { parseImageAsset } from '@/features/media/image';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 import {
   moveToolBindingInList,
   markShadowedToolBindings,
@@ -121,12 +122,18 @@ export function useChatLibraryDraft(params: Params) {
     );
   });
 
-  const hydrate = ({ chatBlocks, chatToolBindings }: HydratePayload) => {
+  const hydrate = (
+    { chatBlocks, chatToolBindings }: HydratePayload,
+    options: { preserveDraft?: boolean } = {}
+  ) => {
+    const preserveDraft = options.preserveDraft === true && chatTabDirty.value;
     chatBlocksOriginal.value = normalizeSequences(toChatBlockLinks(chatBlocks || []));
-    chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
     chatToolBindingsOriginal.value = normalizeToolBindingSequences(toChatToolBindingLinks(chatToolBindings || []));
-    chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
-    newChatToolInstanceIds.value = [];
+    if (!preserveDraft) {
+      chatBlocksDraft.value = cloneChatBlocks(chatBlocksOriginal.value);
+      chatToolBindingsDraft.value = cloneChatToolBindings(chatToolBindingsOriginal.value);
+      newChatToolInstanceIds.value = [];
+    }
   };
 
   const cancelChatChanges = () => {
@@ -139,22 +146,27 @@ export function useChatLibraryDraft(params: Params) {
   const saveChatChanges = async () => {
     if (params.readOnly.value) return;
     if (!params.chatId.value || savingChatChanges.value) return;
+    const savedBlocks = cloneChatBlocks(chatBlocksDraft.value);
+    const savedTools = cloneChatToolBindings(chatToolBindingsDraft.value);
     savingChatChanges.value = true;
 
     try {
       await updateChatRecord(params.chatId.value, {
-        knowledge_block_bindings: (chatBlocksDraft.value || []).map((binding) => ({
+        knowledge_block_bindings: savedBlocks.map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           knowledge_block_id: binding.block,
           enabled: Boolean(binding.enabled),
         })),
-        tool_bindings: (chatToolBindingsDraft.value || []).map((binding) => ({
+        tool_bindings: savedTools.map((binding) => ({
           ...(binding.id > 0 ? { id: binding.id } : {}),
           tool_instance_id: binding.tool_instance_id,
           enabled: Boolean(binding.enabled),
         })),
       });
 
+      // Only the submitted snapshot is saved; later edits remain a local draft.
+      chatBlocksOriginal.value = savedBlocks;
+      chatToolBindingsOriginal.value = savedTools;
       await params.reloadChat();
     } catch (error) {
       console.error(error);
@@ -332,9 +344,20 @@ export function useChatLibraryDraft(params: Params) {
   const newBlockDraft = useKnowledgeBlockNewDraft({
     linkedBlockIds: () => linkedChatBlockIds.value,
     onBlocksCreated: async (createdIds) => {
-      const createdBlocks = await Promise.all(createdIds.map((id) => fetchKnowledgeBlockCatalogRow(id)));
-      mergeKnowledgeBlockCatalogRows(createdBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
+      // Saving the editor already cached the canonical document; show it without another request.
+      const cachedBlocks = createdIds.map((id) => {
+        const document = serverStateQueryClient.getQueryData<JsonApiSingleResponse>(
+          serverStateKeys.detail('knowledge-blocks', id, 'editor-document')
+        );
+        return parseKnowledgeBlockCatalogResource(document?.data);
+      });
+      mergeKnowledgeBlockCatalogRows(cachedBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
       addChatBlocks(createdIds);
+
+      const missingIds = createdIds.filter((_id, index) => !cachedBlocks[index]);
+      if (!missingIds.length) return;
+      const fetchedBlocks = await Promise.all(missingIds.map((id) => fetchKnowledgeBlockCatalogRow(id)));
+      mergeKnowledgeBlockCatalogRows(fetchedBlocks.filter((block): block is KnowledgeBlock => Boolean(block)));
     },
     onBlocksRemoved: (removedIds) => {
       removeChatBlocksByBlockIds(removedIds);

@@ -30,7 +30,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, reactive, shallowRef, watch } from 'vue';
 import { RouterView, useRoute, type RouteLocationNormalizedLoaded } from 'vue-router';
 import StackLayerProvider from '@/components/StackLayerProvider.vue';
 import { useNavigationStack } from '@/features/stack/navigationStack';
@@ -40,6 +40,7 @@ const props = defineProps<{ reopenKey?: number }>();
 const route = useRoute();
 const stack = useNavigationStack();
 const stackVisible = computed(() => stack.active.value || stack.pendingPush.value !== null);
+const layerReopenKeys = reactive(new Map<number, number>());
 
 const cloneRoute = (source: RouteLocationNormalizedLoaded) =>
   ({
@@ -70,19 +71,17 @@ const routeViewIdentity = (candidate: RouteLocationNormalizedLoaded) => {
 };
 
 const layerKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) =>
-  `${depth}:${routeViewIdentity(layerRoute)}:${depth === lastIndex.value ? props.reopenKey ?? 0 : 0}`;
+  `${depth}:${routeViewIdentity(layerRoute)}:${layerReopenKeys.get(depth) ?? 0}`;
 
 const layerReadinessKey = (layerRoute: RouteLocationNormalizedLoaded, depth: number) => {
   const name = layerRoute.name == null ? '' : String(layerRoute.name);
   const matched = layerRoute.matched
     .map((record) => `${String(record.name ?? '')}:${record.path}`)
     .join('|');
-  return `${depth}:${name}:${layerRoute.path}:${matched}:${
-    depth === lastIndex.value ? props.reopenKey ?? 0 : 0
-  }`;
+  return `${depth}:${name}:${layerRoute.path}:${matched}:${layerReopenKeys.get(depth) ?? 0}`;
 };
 
-const baseLayer = ref<RouteLocationNormalizedLoaded>(cloneRoute(route));
+const baseLayer = shallowRef<RouteLocationNormalizedLoaded>(cloneRoute(route));
 const needsBaseLayerSync = (candidate: RouteLocationNormalizedLoaded) =>
   !baseLayer.value || !sameRouteIdentity(baseLayer.value, candidate);
 
@@ -123,6 +122,10 @@ const layers = computed(() => {
 });
 
 const lastIndex = computed(() => layers.value.length - 1);
+// Reopening affects only that layer; covering it must not change its component key.
+watch(() => props.reopenKey, (key) => {
+  layerReopenKeys.set(lastIndex.value, key ?? 0);
+});
 const stackOverlayActive = computed(() => layers.value.length > 1);
 const layerReadiness = reactive(new Map<string, boolean>());
 const destinationLayerKey = computed(() => {

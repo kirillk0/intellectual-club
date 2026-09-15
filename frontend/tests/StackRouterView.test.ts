@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { VueQueryPlugin } from '@tanstack/vue-query';
 import { defineComponent, h, nextTick, onMounted } from 'vue';
-import { createMemoryHistory, createRouter, useRoute } from 'vue-router';
+import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-router';
 
 const jsonApiMocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -61,6 +61,7 @@ describe('StackRouterView entity identity', () => {
     const wrapper = mount(StackRouterView, { global: { plugins: [router] } });
     await flushPromises();
     expect(mountCount).toBe(1);
+    expect(wrapper.getComponent(RouterView).props('route')?.matched[0]?.components?.default).toBe(Editor);
 
     await wrapper.get('button').trigger('click');
     expect(wrapper.text()).toContain('second');
@@ -134,6 +135,41 @@ describe('StackRouterView entity identity', () => {
     await nextTick();
     expect(wrapper.get('.stack-layer--active').find('[data-testid="editor"]').exists()).toBe(true);
 
+    wrapper.unmount();
+  });
+
+  it('keeps a reopened parent mounted while opening and closing a child', async () => {
+    let parentMounts = 0;
+    const Parent = defineComponent({
+      setup() {
+        parentMounts += 1;
+        return () => h('div', 'Parent');
+      },
+    });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/parent', component: Parent },
+        { path: '/child', component: { render: () => h('div', 'Child') } },
+      ],
+    });
+    const stack = useNavigationStack();
+    router.afterEach((to, from) => {
+      stack.commitPendingPush(from);
+      if (stack.top.value?.route.fullPath === to.fullPath) stack.pop();
+    });
+    await router.push('/parent');
+    const wrapper = mount(StackRouterView, { props: { reopenKey: 0 }, global: { plugins: [router] } });
+    await wrapper.setProps({ reopenKey: 1 });
+    expect(parentMounts).toBe(2);
+
+    stack.markPendingPush(0);
+    await router.push('/child');
+    await flushPromises();
+    expect(parentMounts).toBe(2);
+    router.back();
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/parent'));
+    expect(parentMounts).toBe(2);
     wrapper.unmount();
   });
 

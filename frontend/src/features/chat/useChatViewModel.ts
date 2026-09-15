@@ -493,10 +493,10 @@ export function useChatViewModel() {
       activeToolInstances: payload.active_tool_instances || [],
       activeToolBindings: payload.active_tool_bindings || [],
     });
-    libraryDraft.hydrate({
-      chatBlocks,
-      chatToolBindings,
-    });
+    libraryDraft.hydrate(
+      { chatBlocks, chatToolBindings },
+      { preserveDraft: true }
+    );
   };
 
   const resetSettingsState = () => {

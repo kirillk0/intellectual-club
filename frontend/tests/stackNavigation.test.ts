@@ -1,4 +1,5 @@
-import type { RouteLocationNormalizedLoaded } from 'vue-router';
+import { createMemoryHistory, createRouter, type RouteLocationNormalizedLoaded } from 'vue-router';
+import { defineComponent, isProxy } from 'vue';
 
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -52,6 +53,23 @@ describe('navigation stack results', () => {
 
     expect(entry?.scrollY).toBe(120);
     await expect(promise).resolves.toEqual({ status: 'completed', value: { id: 42 } });
+  });
+
+  it('preserves raw route component identity while a parent is covered by a child layer', () => {
+    const component = defineComponent({ render: () => null });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/parent', component }],
+    });
+    const parent = route('/parent');
+    parent.matched = router.resolve('/parent').matched;
+
+    stack.markPendingPush(0);
+    stack.commitPendingPush(parent);
+
+    const storedComponent = stack.top.value?.route.matched[0]?.components?.default;
+    expect(isProxy(storedComponent)).toBe(false);
+    expect(storedComponent).toBe(component);
   });
 
   it('cancels a result when the browser pops a layer without a value', async () => {
