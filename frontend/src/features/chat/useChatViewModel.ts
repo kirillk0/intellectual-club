@@ -11,6 +11,7 @@ import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
 import { useChatLibraryDraft } from '@/features/chat/model/useChatLibraryDraft';
 import { useChatMessageActions } from '@/features/chat/model/useChatMessageActions';
 import { useChatQueueRuntime } from '@/features/chat/model/useChatQueueRuntime';
+import { useOutletStatusPolling } from '@/features/tools/model/useOutletStatusPolling';
 import {
   useChatUiChrome,
 } from '@/features/chat/model/useChatUiChrome';
@@ -466,6 +467,19 @@ export function useChatViewModel() {
     toolLibrary,
     stackOpen: stackNav.open,
     reloadChat: () => loadChat({ mode: 'soft' }),
+  });
+
+  useOutletStatusPolling({
+    scopeId: chatId,
+    enabled: computed(() => loaded.value && Boolean(chat.value) && layer.active.value),
+    tools: computed(() => {
+      const chatToolIds = new Set(libraryDraft.chatToolBindings.value.map((binding) => binding.tool_instance_id));
+      return [
+        ...contextPanel.activeToolInstances.value,
+        ...contextPanel.activeToolBindings.value.flatMap((binding) => binding.tool_instance ? [binding.tool_instance] : []),
+        ...toolLibrary.value.filter((tool) => chatToolIds.has(tool.id)),
+      ];
+    }),
   });
 
   const applySettingsState = (payload: ChatSettingsStatePayload) => {

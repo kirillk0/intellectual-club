@@ -207,6 +207,7 @@ defmodule IntellectualClubWeb.Router do
     post "/knowledge-blocks/markdown-import", KnowledgeBlocksMarkdownController, :import
 
     get "/tools/types", ToolsController, :types
+    get "/tools/status", ToolsController, :status
     get "/llm-provider-types", LlmProvidersController, :types
     post "/tools/:id/discover", ToolsController, :discover
     patch "/tools/:id/fixed-functions/:name", ToolsController, :update_fixed_function

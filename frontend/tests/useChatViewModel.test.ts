@@ -153,6 +153,41 @@ describe('useChatViewModel loading', () => {
     useNavigationStack().reset();
     serverStateQueryClient.clear();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('refreshes both tool panels without reloading settings while the chat is unchanged', async () => {
+    vi.useFakeTimers();
+    const tool = { id: 12, name: 'Outlet', alias: 'outlet', type: 'outlet', outlet_online: false };
+    const binding = { id: 1, alias: 'outlet', sequence: 0, tool_instance_id: tool.id };
+    const settings = chatSettings();
+    settings.active_tool_instances = [{ ...tool }];
+    settings.active_tool_bindings = [{ ...binding, source: 'chat', tool_instance: { ...tool } }];
+    settings.chat_tool_bindings = [{ ...binding, chat_id: 1, enabled: true }];
+    settings.options.tool_instances = [{ ...tool }];
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(settings);
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      if (path === '/api/bff/tools/status?ids=12') {
+        return Promise.resolve({ tools: [{ id: 12, outlet_online: true }] });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const { viewModel } = await mountViewModel();
+    await flushPromises();
+    viewModel.setChatToolBindingEnabled(1, false);
+    expect(viewModel.chatTabDirty.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(viewModel.activeToolBindings.value[0]?.tool_instance?.outlet_online).toBe(true);
+    expect(viewModel.activeToolInstances.value[0]?.outlet_online).toBe(true);
+    expect(viewModel.toolIsOnline(12)).toBe(true);
+    expect(viewModel.chatToolBindings.value[0]?.enabled).toBe(false);
+    expect(viewModel.chatTabDirty.value).toBe(true);
+    expect(apiMocks.get.mock.calls.filter(([path]) => path.endsWith('/settings'))).toHaveLength(1);
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/api/bff/chat-state/1')).toHaveLength(1);
+    expect(apiMocks.get.mock.calls.filter(([path]) => path.startsWith('/api/bff/tools/status'))).toHaveLength(1);
   });
 
   it('returns to the parent chat after opening a subchat from a stacked chat', async () => {

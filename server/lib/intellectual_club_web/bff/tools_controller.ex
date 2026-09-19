@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
   alias IntellectualClub.Tools.DriverMetadata
   alias IntellectualClub.Tools.Registry
   alias IntellectualClub.Tools.{Discovery, ToolFunction, ToolInstance}
+  alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -18,6 +19,47 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       json(conn, %{types: DriverMetadata.list()})
     end
   end
+
+  def status(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, ids} <- status_ids(Map.get(params, "ids")) do
+      tools =
+        ToolInstance
+        |> Ash.Query.for_read(:primary_read, %{}, actor: actor)
+        |> Ash.Query.filter(id in ^ids and type == "outlet")
+        |> Ash.Query.select([:id, :type, :config])
+        |> Ash.Query.load(:outlet_online)
+        |> Ash.read!(actor: actor)
+
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> json(%{tools: Enum.map(tools, &Map.take(&1, [:id, :outlet_online]))})
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, error} -> ChatAccess.render_error(conn, error)
+    end
+  end
+
+  defp status_ids(raw) when is_binary(raw) and byte_size(raw) <= 4096 do
+    ids =
+      raw
+      |> String.split(",")
+      |> Enum.map(fn value ->
+        case Integer.parse(value) do
+          {id, ""} when id > 0 and id <= 9_223_372_036_854_775_807 -> id
+          _ -> nil
+        end
+      end)
+
+    if length(ids) <= 200 and Enum.all?(ids, &is_integer/1) do
+      {:ok, Enum.uniq(ids)}
+    else
+      {:error, {:validation, "ids must contain between 1 and 200 positive integers"}}
+    end
+  end
+
+  defp status_ids(_raw),
+    do: {:error, {:validation, "ids must contain between 1 and 200 positive integers"}}
 
   def discover(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
