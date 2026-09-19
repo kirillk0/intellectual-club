@@ -450,6 +450,9 @@ const SHELL_TOOL_DESCRIPTION: &str = "Run a shell command and return stdout/stde
 
 #[derive(Debug, Deserialize)]
 struct RunCommandArgs {
+    // Display-only metadata is consumed by the runner's command log.
+    #[serde(default, rename = "description")]
+    _description: Option<String>,
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
@@ -482,6 +485,10 @@ fn run_command_schema() -> Value {
         "type": "object",
         "description": "Provide either `command` (shell string) or `argv` (array of strings). If both are set, `argv` takes precedence.",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": "Briefly describe for the user what you are doing with this command (optional)."
+            },
             "command": {
                 "type": "string",
                 "description": "Shell command to execute."
@@ -1333,7 +1340,8 @@ mod tests {
                 "argv": platform_test_argv(
                     "printf direct",
                     "[Console]::Out.Write('direct')"
-                )
+                ),
+                "description": "Print a short message to verify command execution."
             }))
             .await
             .unwrap();
@@ -1724,6 +1732,15 @@ mod tests {
             schema["properties"]["use_secrets"]["items"]["type"],
             "string"
         );
+    }
+
+    #[test]
+    fn run_command_schema_exposes_an_optional_description() {
+        let schema = run_command_schema();
+        assert_eq!(schema["properties"]["description"]["type"], "string");
+        assert!(!schema["required"]
+            .as_array()
+            .is_some_and(|fields| fields.contains(&json!("description"))));
     }
 
     #[test]

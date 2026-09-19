@@ -10,6 +10,8 @@ anyhow.workspace = true
 chrono.workspace = true
 directories.workspace = true
 eframe = { workspace = true, features = ["wgpu"] }
+getrandom.workspace = true
+hex.workspace = true
 outlet-core = { path = "../outlet-core" }
 outlet-shell = { path = "../outlet-shell" }
 serde.workspace = true
@@ -19,6 +21,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+url.workspace = true
 webbrowser.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]

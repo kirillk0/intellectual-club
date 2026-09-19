@@ -9,7 +9,7 @@ The Rust workspace builds all native binaries together:
 - `outlet-core` — shared HTTP transport, pairing, file helpers, runner loop, and provider interfaces
 - `outlet-shell` — reusable shell outlet tools
 - `outlet-shell-daemon` — headless binary for containers and server environments
-- `outlet-shell-desktop` — desktop GUI for managing multiple shell outlet profiles
+- `outlet-shell-desktop` — desktop GUI with one server per tab, command history, and browser or shared-secret connection
 - `outlet-task-container` — headless per-chat-family Linux containers with SQLite lifecycle state, files, and background commands; see [setup and operations](crates/outlet-task-container/README.md)
 
 The desktop launcher binds the application HTTP server to `0.0.0.0`, allowing
@@ -36,6 +36,33 @@ Run the desktop app:
 ```bash
 cargo run --manifest-path native_tools/Cargo.toml -p outlet-shell-desktop
 ```
+
+## Desktop Outlet
+
+Each saved server connection has a tab with its name and connection status. The
+selected tab shows a compact status summary and a command log filling the window.
+The log includes command text, execution status, duration, exit code, and expandable
+output. It keeps the latest 1,000 entries in memory for the current application
+session; switching tabs or stopping and starting a connection preserves its history.
+Clear removes completed entries while retaining running commands. Copy log includes
+command output, so review it before sharing.
+
+`run_command` accepts an optional `description`: a brief explanation for the user of
+what the command does. Non-empty descriptions appear above the command in the log
+and are included when copying the log. They do not affect command execution.
+
+Use **+** to open the connection dialog:
+
+- **In browser** starts the approval flow on the selected server.
+- **Shared secret** accepts the token of an existing outlet tool. **Generate & copy**
+  creates a cryptographically random 256-bit secret. Save it in the server tool's
+  **Token** field before connecting, or use **Paste** to insert an existing token.
+  The app verifies the token against the metadata endpoint before saving it.
+
+Connection settings include automatic startup, reconnecting with either method,
+and removing a saved connection. Reconnecting leaves the current runner active until
+new credentials have been verified and saved. Canceling the dialog stops pending
+pairing or verification. The footer switches between English and Russian.
 
 ## macOS Releases
 

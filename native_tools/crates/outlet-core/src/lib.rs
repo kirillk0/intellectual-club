@@ -676,6 +676,8 @@ pub enum RunnerEvent {
     CallStarted {
         call_id: String,
         function_name: String,
+        command: Option<String>,
+        description: Option<String>,
     },
     CallFinished {
         call_id: String,
@@ -683,6 +685,8 @@ pub enum RunnerEvent {
         status: String,
         duration_ms: u128,
         error_text: String,
+        exit_code: Option<i64>,
+        output: String,
     },
     Stopped {
         reason: String,
@@ -1712,6 +1716,8 @@ async fn handle_call<P: ToolProvider>(
         RunnerEvent::CallStarted {
             call_id: task.call_id.clone(),
             function_name: task.function_name.clone(),
+            command: command_preview(&task.function_name, &task.arguments),
+            description: command_description(&task.function_name, &task.arguments),
         },
     );
 
@@ -1763,6 +1769,8 @@ async fn handle_call<P: ToolProvider>(
             status: status.clone(),
             duration_ms,
             error_text: error_text.clone(),
+            exit_code: result.raw.get("exit_code").and_then(Value::as_i64),
+            output: event_preview(&result.text, 16_000),
         },
     );
 
@@ -1779,6 +1787,40 @@ async fn handle_call<P: ToolProvider>(
         let mut running = running.lock().await;
         running.remove(&task.call_id);
     }
+}
+
+fn event_preview(text: &str, limit: usize) -> String {
+    let mut chars = text.chars();
+    let mut preview: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        preview.push_str("\n…");
+    }
+    preview
+}
+
+fn command_preview(function_name: &str, arguments: &Value) -> Option<String> {
+    if function_name != "run_command" {
+        return None;
+    }
+    // Only include the command itself, never environment variables or stdin.
+    let command = if let Some(argv) = arguments.get("argv").and_then(Value::as_array) {
+        serde_json::to_string(argv).ok()?
+    } else {
+        arguments.get("command")?.as_str()?.to_string()
+    };
+    Some(event_preview(&command, 4_000))
+}
+
+fn command_description(function_name: &str, arguments: &Value) -> Option<String> {
+    if function_name != "run_command" {
+        return None;
+    }
+    arguments
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(|description| event_preview(description, 1_000))
 }
 
 async fn send_complete(
@@ -3017,6 +3059,43 @@ mod tests {
         };
         assert_eq!(result.media.len(), 1);
         assert_eq!(result.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn command_event_preview_uses_argv_precedence_and_omits_other_arguments() {
+        let arguments = json!({
+            "argv": ["printf", "%s", "hello"], "command": "ignored command",
+            "env": {"TOKEN": "private-value"}, "stdin": "private-input"
+        });
+        let preview = command_preview("run_command", &arguments).unwrap();
+        assert_eq!(preview, r#"["printf","%s","hello"]"#);
+        assert!(command_preview("read_file", &arguments).is_none());
+        assert_eq!(event_preview("абвг", 3), "абв\n…");
+    }
+
+    #[test]
+    fn command_descriptions_are_optional_trimmed_and_bounded() {
+        for arguments in [
+            json!({}),
+            json!({"description": null}),
+            json!({"description": " \n "}),
+        ] {
+            assert_eq!(command_description("run_command", &arguments), None);
+        }
+        let arguments = json!({"description": "  Show the working directory.  "});
+        assert_eq!(
+            command_description("run_command", &arguments).as_deref(),
+            Some("Show the working directory.")
+        );
+        assert_eq!(command_description("read_image", &arguments), None);
+        let long = json!({"description": "я".repeat(1_001)});
+        assert_eq!(
+            command_description("run_command", &long)
+                .unwrap()
+                .chars()
+                .count(),
+            1_002
+        );
     }
 
     #[test]
