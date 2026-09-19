@@ -45,6 +45,37 @@ fn dot(ui: &mut egui::Ui, color: Color32) {
     ui.painter().circle_filled(rect.center(), 3.5, color);
 }
 
+fn tab_label(ui: &egui::Ui, response: &egui::Response, name: &str, server_url: &str) {
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            format!("{name}\n{server_url}"),
+        )
+    });
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(response.rect.left() + 26.0, response.rect.top()),
+        egui::pos2(response.rect.right() - 12.0, response.rect.bottom()),
+    );
+    let painter = ui.painter().with_clip_rect(text_rect);
+    for (text, size, offset, color) in [
+        (name, 14.0, -7.0, ui.style().interact(response).text_color()),
+        (server_url, 11.0, 8.0, ui.visuals().weak_text_color()),
+    ] {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.to_owned(),
+            egui::FontId::proportional(size),
+            color,
+        );
+        job.wrap.max_width = text_rect.width();
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = painter.layout_job(job);
+        let pos = text_rect.center() + egui::vec2(0.0, offset) - galley.size() / 2.0;
+        painter.galley(pos, galley, color);
+    }
+}
+
 impl OutletDesktopApp {
     pub(super) fn render(&mut self, ctx: &egui::Context) {
         let locale = self.config.locale;
@@ -93,18 +124,14 @@ impl OutletDesktopApp {
                                     let response = ui
                                         .add_sized(
                                             [210.0, 40.0],
-                                            egui::Button::new(
-                                                RichText::new(format!("  {}", profile.name))
-                                                    .size(14.0),
-                                            )
-                                            .fill(fill)
-                                            .truncate(),
+                                            egui::Button::new("").fill(fill),
                                         )
                                         .on_hover_text(format!(
                                             "{}\n{}",
                                             profile.server_url,
                                             locale.text(status.label())
                                         ));
+                                    tab_label(ui, &response, &profile.name, &profile.server_url);
                                     ui.painter().circle_filled(
                                         egui::pos2(
                                             response.rect.left() + 13.0,

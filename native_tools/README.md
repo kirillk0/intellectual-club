@@ -39,8 +39,10 @@ cargo run --manifest-path native_tools/Cargo.toml -p outlet-shell-desktop
 
 ## Desktop Outlet
 
-Each saved server connection has a tab with its name and connection status. The
-selected tab shows a compact status summary and a command log filling the window.
+Each saved server connection has a tab with its name, server URL on a smaller second
+line, and connection status. Long names and URLs are truncated to keep tabs compact;
+the full URL is available on hover. The selected tab shows a compact status summary
+and a command log filling the window.
 The log includes command text, execution status, duration, exit code, and expandable
 output. It keeps the latest 1,000 entries in memory for the current application
 session; switching tabs or stopping and starting a connection preserves its history.
