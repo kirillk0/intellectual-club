@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -1436,6 +1436,7 @@ pub struct OutletRunner<P: ToolProvider> {
     config: RunnerConfig,
     client: reqwest::Client,
     runner_session_id: String,
+    poll_sequence: AtomicU64,
     running: Arc<Mutex<HashMap<String, PollOperation>>>,
     events: Option<broadcast::Sender<RunnerEvent>>,
 }
@@ -1483,6 +1484,7 @@ impl<P: ToolProvider> OutletRunner<P> {
             config,
             client,
             runner_session_id: Uuid::new_v4().simple().to_string(),
+            poll_sequence: AtomicU64::new(0),
             running: Arc::new(Mutex::new(HashMap::new())),
             events: None,
         })
@@ -1522,10 +1524,15 @@ impl<P: ToolProvider> OutletRunner<P> {
     }
 
     async fn poll_once(&self) -> Result<()> {
+        // Polls are sequential: every received call is registered before the next snapshot.
+        let poll_sequence = self.poll_sequence.fetch_add(1, Ordering::Relaxed) + 1;
         let (capacity, control_capacity) = self.capacities().await;
+        let active_call_ids: Vec<String> = self.running.lock().await.keys().cloned().collect();
         let payload = json!({
             "runner_id": self.config.runner_id,
             "runner_session_id": self.runner_session_id,
+            "poll_sequence": poll_sequence,
+            "active_call_ids": active_call_ids,
             "capacity": capacity,
             "control_capacity": control_capacity,
             "max_wait_seconds": self.config.poll_max_wait_seconds,
@@ -1574,6 +1581,14 @@ impl<P: ToolProvider> OutletRunner<P> {
                 || (function_required && task.function_name.trim().is_empty())
             {
                 continue;
+            }
+
+            {
+                let mut running = self.running.lock().await;
+                if running.contains_key(&task.call_id) {
+                    continue;
+                }
+                running.insert(task.call_id.clone(), task.operation);
             }
 
             let background = self.background.clone();
@@ -1706,11 +1721,6 @@ async fn handle_call<P: ToolProvider>(
     events: Option<broadcast::Sender<RunnerEvent>>,
     task: PollTask,
 ) {
-    {
-        let mut running = running.lock().await;
-        running.insert(task.call_id.clone(), task.operation);
-    }
-
     emit(
         &events,
         RunnerEvent::CallStarted {
@@ -2195,6 +2205,9 @@ fn truncate_one_line(text: impl AsRef<str>, max_len: usize) -> String {
     truncated.push_str("...");
     truncated
 }
+
+#[cfg(test)]
+mod poll_tests;
 
 #[cfg(test)]
 mod tests {

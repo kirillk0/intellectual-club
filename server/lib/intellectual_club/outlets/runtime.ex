@@ -24,6 +24,7 @@ defmodule IntellectualClub.Outlets.Runtime do
 
   @runner_disconnected_error "Runner disconnected."
   @runner_session_replaced_error "Runner session replaced before completion."
+  @runner_call_missing_error "Outlet runner no longer tracks this call; execution outcome is unknown."
   @auto_discovery_function "outlet.list_tools"
   @max_background_control_capacity 32
   @background_control_timeout_ms 10_000
@@ -257,75 +258,81 @@ defmodule IntellectualClub.Outlets.Runtime do
 
     runner_was_online? = runner_online?(instance, now_ms)
 
-    case touch_runner(
-           instance,
-           state,
-           tool_instance_id,
-           runner_id,
-           runner_session_id,
-           now_ms,
-           metadata,
-           allow_session_replacement?: true
-         ) do
+    with false <- stale_poll?(instance, payload, runner_id, runner_session_id),
+         {:ok, instance, state} <-
+           touch_runner(
+             instance,
+             state,
+             tool_instance_id,
+             runner_id,
+             runner_session_id,
+             now_ms,
+             metadata,
+             allow_session_replacement?: true
+           ) do
+      if not runner_was_online? do
+        notify_background_runner_connected(
+          tool_instance_id,
+          runner_id,
+          runner_session_id
+        )
+      end
+
+      {instance, state} = reconcile_active_calls(instance, state, payload)
+
+      {capacity, control_capacity, max_wait_ms} =
+        normalize_poll_params(instance, payload, cfg, runner_id, runner_session_id)
+
+      instance = maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
+
+      {claimed, instance} =
+        claim_tasks(
+          instance,
+          capacity,
+          control_capacity,
+          runner_id,
+          runner_session_id,
+          now_ms
+        )
+
+      tasks = Enum.map(claimed, &task_payload/1)
+
+      cond do
+        tasks != [] ->
+          state = put_instance(state, tool_instance_id, instance)
+          {:reply, {:ok, %{status: "ok", runner_id: runner_id, tasks: tasks}}, state}
+
+        (capacity <= 0 and control_capacity <= 0) or max_wait_ms <= 0 ->
+          state = put_instance(state, tool_instance_id, instance)
+          {:reply, {:ok, %{status: "idle", runner_id: runner_id, tasks: []}}, state}
+
+        true ->
+          {instance, state, prev_waiter} = pop_poll_waiter(instance, state, tool_instance_id)
+          maybe_reply_prev_poll(prev_waiter)
+
+          {instance, state} =
+            register_poll_waiter(
+              instance,
+              state,
+              tool_instance_id,
+              from,
+              runner_id,
+              runner_session_id,
+              capacity,
+              control_capacity,
+              max_wait_ms
+            )
+
+          state = put_instance(state, tool_instance_id, instance)
+          {:noreply, state}
+      end
+    else
+      true ->
+        {:reply, {:ok, %{status: "idle", runner_id: runner_id, tasks: []}}, state}
+
       {:error, :runner_already_active, instance, state} ->
         state = put_instance(state, tool_instance_id, instance)
         {:reply, {:error, :runner_already_active}, state}
-
-      {:ok, instance, state} ->
-        if not runner_was_online? do
-          notify_background_runner_connected(
-            tool_instance_id,
-            runner_id,
-            runner_session_id
-          )
-        end
-
-        {capacity, control_capacity, max_wait_ms} =
-          normalize_poll_params(instance, payload, cfg, runner_id, runner_session_id)
-
-        instance = maybe_schedule_auto_discovery(instance, runner_session_id, capacity, now_ms)
-
-        {claimed, instance} =
-          claim_tasks(
-            instance,
-            capacity,
-            control_capacity,
-            runner_id,
-            runner_session_id,
-            now_ms
-          )
-
-        tasks = Enum.map(claimed, &task_payload/1)
-
-        cond do
-          tasks != [] ->
-            state = put_instance(state, tool_instance_id, instance)
-            {:reply, {:ok, %{status: "ok", runner_id: runner_id, tasks: tasks}}, state}
-
-          (capacity <= 0 and control_capacity <= 0) or max_wait_ms <= 0 ->
-            state = put_instance(state, tool_instance_id, instance)
-            {:reply, {:ok, %{status: "idle", runner_id: runner_id, tasks: []}}, state}
-
-          true ->
-            {instance, state, prev_waiter} = pop_poll_waiter(instance, state, tool_instance_id)
-            maybe_reply_prev_poll(prev_waiter)
-
-            {instance, state} =
-              register_poll_waiter(
-                instance,
-                state,
-                tool_instance_id,
-                from,
-                runner_id,
-                runner_session_id,
-                capacity,
-                control_capacity,
-                max_wait_ms
-              )
-
-            state = put_instance(state, tool_instance_id, instance)
-            {:noreply, state}
-        end
     end
   end
 
@@ -863,6 +870,61 @@ defmodule IntellectualClub.Outlets.Runtime do
   defp runner_metadata(_metadata, %{} = fallback), do: fallback
   defp runner_metadata(_metadata, _fallback), do: %{}
 
+  defp stale_poll?(instance, payload, runner_id, runner_session_id) do
+    sequence = poll_sequence(payload)
+
+    case instance.runner do
+      %{runner_id: ^runner_id, runner_session_id: ^runner_session_id} = runner ->
+        is_integer(sequence) and sequence <= Map.get(runner, :last_poll_sequence, 0)
+
+      _other ->
+        false
+    end
+  end
+
+  defp poll_sequence(%{"poll_sequence" => sequence}) when is_integer(sequence) and sequence > 0,
+    do: sequence
+
+  defp poll_sequence(_payload), do: nil
+
+  defp reconcile_active_calls(instance, state, payload) do
+    sequence = poll_sequence(payload)
+    active_call_ids = Map.get(payload, "active_call_ids")
+
+    # A missing or malformed snapshot is not evidence that any call was lost.
+    valid_snapshot? =
+      is_integer(sequence) and is_list(active_call_ids) and
+        Enum.all?(active_call_ids, &(is_binary(&1) and String.trim(&1) != ""))
+
+    {instance, state} =
+      if valid_snapshot? do
+        active_call_ids = MapSet.new(active_call_ids)
+        runner = instance.runner
+
+        missing_ids =
+          instance.running
+          |> Enum.filter(fn {call_id, call} ->
+            call.runner_id == runner.runner_id and
+              call.runner_session_id == runner.runner_session_id and
+              not MapSet.member?(active_call_ids, call_id)
+          end)
+          |> Enum.map(fn {call_id, _call} -> call_id end)
+
+        fail_call_ids(instance, state, missing_ids, @runner_call_missing_error)
+      else
+        {instance, state}
+      end
+
+    instance =
+      if is_integer(sequence) do
+        %{instance | runner: Map.put(instance.runner, :last_poll_sequence, sequence)}
+      else
+        instance
+      end
+
+    {instance, state}
+  end
+
   defp expected_runner_session?(_runner, nil), do: true
 
   defp expected_runner_session?(runner, expected_runner)
@@ -1319,11 +1381,13 @@ defmodule IntellectualClub.Outlets.Runtime do
     end
   end
 
-  defp fail_running_calls(instance, state, tool_instance_id, error_text) do
-    running_ids = Map.keys(instance.running)
+  defp fail_running_calls(instance, state, _tool_instance_id, error_text) do
+    fail_call_ids(instance, state, Map.keys(instance.running), error_text)
+  end
 
+  defp fail_call_ids(instance, state, call_ids, error_text) do
     {instance, state} =
-      Enum.reduce(running_ids, {instance, state}, fn call_id, {instance_acc, state_acc} ->
+      Enum.reduce(call_ids, {instance, state}, fn call_id, {instance_acc, state_acc} ->
         {waiter, call_waiters} = Map.pop(instance_acc.call_waiters, call_id)
         instance_acc = %{instance_acc | call_waiters: call_waiters}
 
@@ -1340,8 +1404,7 @@ defmodule IntellectualClub.Outlets.Runtime do
         {instance_acc, state_acc}
       end)
 
-    _tool_instance_id = tool_instance_id
-    instance = %{instance | running: %{}}
+    instance = %{instance | running: Map.drop(instance.running, call_ids)}
     {instance, state}
   end
 

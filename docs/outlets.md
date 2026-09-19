@@ -125,6 +125,29 @@ The runner polls the server for work with a payload containing:
 - requested long-poll wait time;
 - runner metadata.
 
+Runners may additionally send both `poll_sequence` and `active_call_ids` to detect
+calls lost during transport. `poll_sequence` is a positive integer, strictly
+increasing for every poll attempt within a runner session, including attempts whose
+responses cannot be read. It resets when `runner_session_id` changes.
+`active_call_ids` is the complete list of accepted transport call ids: calls waiting
+to start, executing, or still delivering their completion. It includes background
+control call ids, not the separate ids of background jobs.
+
+Poll requests must be sequential. Register every accepted call before constructing
+the next poll snapshot, and keep its id until completion delivery succeeds or is
+abandoned. The server reconciles the snapshot against previously assigned calls
+before assigning any tasks to the current poll. A missing call fails with an error
+that its execution outcome is unknown; it is not automatically executed again.
+An empty list means that no calls are tracked. An absent or malformed list, or a
+missing/invalid sequence, disables reconciliation for that request and preserves
+compatibility with older runners. Older servers may ignore both additional fields.
+
+Within the current session, duplicate or lower poll sequences receive an idle
+response without updating presence, reconciling calls, replacing a waiting poll,
+or assigning tasks. This prevents a delayed request from invalidating newer work.
+Session replacement and the configured disconnect timeout still apply independently.
+No execution deadline is imposed on a call that remains in the active list.
+
 On each successful poll, the server updates runner presence for the outlet tool
 instance and may return tasks. Each returned task contains:
 
