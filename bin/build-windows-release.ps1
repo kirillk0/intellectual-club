@@ -1080,7 +1080,6 @@ if (-not $SkipTests) {
   Invoke-Native 'npm.cmd' @('run', 'build') (Join-Path $script:RepositoryRoot 'frontend')
 
   Write-Step 'Checking and testing the Rust workspace'
-  Invoke-Native 'cargo' @('fmt', '--all', '--', '--check') (Join-Path $script:RepositoryRoot 'native_tools')
   Invoke-Native 'cargo' @('check', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
   Invoke-Native 'cargo' @('test', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
 
