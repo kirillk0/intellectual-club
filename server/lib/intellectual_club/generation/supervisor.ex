@@ -888,14 +888,21 @@ defmodule IntellectualClub.Generation.Supervisor do
        )
        when is_integer(message_id) and is_integer(step_sequence) and is_map(request_payload) and
               is_list(steering_specs) do
-    case Lease.with_fence(lease, fn ->
-           Persistence.replace_steps_for_retry!(
-             message_id,
-             step_sequence,
-             request_payload,
-             steering_specs
-           )
-         end) do
+    case Lease.with_fence(
+           lease,
+           fn operation ->
+             Persistence.replace_steps_for_retry!(
+               message_id,
+               step_sequence,
+               request_payload,
+               steering_specs,
+               operation
+             )
+           end,
+           with_lock_scope: fn callback ->
+             with_retry_cleanup(message_id, step_sequence, callback)
+           end
+         ) do
       {:ok, step_id} when is_integer(step_id) -> {:ok, step_id}
       {:error, _reason} = error -> error
       _other -> {:error, :retry_failed}
@@ -914,14 +921,23 @@ defmodule IntellectualClub.Generation.Supervisor do
        when is_integer(chat_id) and is_list(allowed_statuses) and is_integer(message_id) and
               is_integer(step_sequence) and is_map(request_payload) and
               is_list(steering_specs) do
-    case Lease.claim_and_run_with_chat(lease, chat_id, allowed_statuses, fn ->
-           Persistence.replace_steps_for_retry!(
-             message_id,
-             step_sequence,
-             request_payload,
-             steering_specs
-           )
-         end) do
+    case Lease.claim_and_run_with_chat(
+           lease,
+           chat_id,
+           allowed_statuses,
+           fn operation ->
+             Persistence.replace_steps_for_retry!(
+               message_id,
+               step_sequence,
+               request_payload,
+               steering_specs,
+               operation
+             )
+           end,
+           with_lock_scope: fn callback ->
+             with_retry_cleanup(message_id, step_sequence, callback)
+           end
+         ) do
       {:ok, {%Lease{} = fenced, step_id}} when is_integer(step_id) ->
         {:ok, {fenced, step_id}}
 
@@ -931,6 +947,42 @@ defmodule IntellectualClub.Generation.Supervisor do
       _other ->
         {:error, :retry_failed}
     end
+  end
+
+  defp with_retry_cleanup(message_id, from_sequence, callback) do
+    # Context already authorized the retry. The capability exists only inside
+    # this SQL transaction body, before its row fences, never around manager RPCs.
+    case Ash.get(ChatMessage, message_id, authorize?: false) do
+      {:ok, %ChatMessage{} = message} ->
+        actor = %User{id: message.owner_id}
+
+        IntellectualClub.Chat.LinkedForkCleanup.with_scope(
+          {:steps, message_id, from_sequence},
+          actor,
+          fn operation ->
+            steps =
+              IntellectualClub.Chat.LinkedForkCleanup.retry_steps!(
+                operation,
+                message_id,
+                from_sequence,
+                actor
+              )
+
+            if Enum.any?(steps, &(&1.sequence == from_sequence)) do
+              callback.(operation)
+            else
+              {:error, :retry_step_not_found}
+            end
+          end
+        )
+
+      _other ->
+        {:error, :not_found}
+    end
+  rescue
+    # The scope includes the mutation callback: never turn a post-write exception
+    # into an ordinary return value that could commit an already-written fence.
+    error in ArgumentError -> Ash.DataLayer.rollback(ChatMessage, error)
   end
 
   defp prepare_retry_steering(context, steering_specs)

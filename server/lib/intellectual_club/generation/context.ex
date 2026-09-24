@@ -14,7 +14,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Relations
-  alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Chat.ForkHistory
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
@@ -117,18 +117,7 @@ defmodule IntellectualClub.Generation.Context do
 
     target_parent_id = generation_parent_id(opts, chat)
 
-    source_branch =
-      if is_integer(target_parent_id) do
-        case Threads.branch_to_message(chat, target_parent_id, actor,
-               load: generation_history_load(),
-               strict?: true
-             ) do
-          {:ok, branch} -> branch
-          {:error, :message_not_found} -> raise ArgumentError, "Parent message not found in chat"
-        end
-      else
-        []
-      end
+    source_branch = effective_history_branch!(chat, target_parent_id, actor)
 
     source_branch
     |> history_branch_for_generation()
@@ -402,18 +391,7 @@ defmodule IntellectualClub.Generation.Context do
 
     target_parent_id = generation_parent_id(opts, chat)
 
-    source_branch =
-      if is_integer(target_parent_id) do
-        case Threads.branch_to_message(chat, target_parent_id, actor,
-               load: generation_history_load(),
-               strict?: true
-             ) do
-          {:ok, branch} -> branch
-          {:error, :message_not_found} -> raise ArgumentError, "Parent message not found in chat"
-        end
-      else
-        []
-      end
+    source_branch = effective_history_branch!(chat, target_parent_id, actor)
 
     history = history_branch_for_generation(source_branch)
 
@@ -981,6 +959,17 @@ defmodule IntellectualClub.Generation.Context do
       {:ok, nil} -> []
       {:ok, _other} -> []
       :error -> Map.get(tool_resolution, :tools_payload, [])
+    end
+  end
+
+  defp effective_history_branch!(chat, target_parent_id, actor) do
+    case ForkHistory.effective_branch(chat, target_parent_id, actor,
+           load: generation_history_load(),
+           strict?: true
+         ) do
+      {:ok, branch} -> branch
+      {:error, :message_not_found} -> raise ArgumentError, "Parent message not found in chat"
+      {:error, reason} -> raise ArgumentError, "Chat history unavailable: #{inspect(reason)}"
     end
   end
 

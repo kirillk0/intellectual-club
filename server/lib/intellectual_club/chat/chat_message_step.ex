@@ -11,6 +11,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
+  alias IntellectualClub.Chat.Changes.CleanupLinkedForks
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
@@ -130,8 +131,18 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
 
     destroy :destroy do
       primary?(true)
-      change(cascade_destroy(:items, after_action?: false))
-      change(cascade_destroy(:request_files, after_action?: false))
+      require_atomic?(false)
+      change({CleanupLinkedForks, []})
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :items, after_action?: false}
+      )
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :request_files, after_action?: false}
+      )
     end
 
     create :create do

@@ -8,10 +8,11 @@ defmodule IntellectualClub.Chat.Chat do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Chat.Changes.ClearLastMessageReference
+  alias IntellectualClub.Chat.Changes.CleanupLinkedForks
   alias IntellectualClub.Chat.Changes.CreateFirstMessages
   alias IntellectualClub.Chat.Changes.DeleteChatSharesOnAccessBoundaryChange
   alias IntellectualClub.Chat.Changes.NormalizeChatFields
+  alias IntellectualClub.Chat.Changes.ValidateLinkedFork
   alias IntellectualClub.Chat.Branching
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.Continuation
@@ -104,6 +105,7 @@ defmodule IntellectualClub.Chat.Chat do
     source_id = Ash.Changeset.get_argument(changeset, :id)
 
     with {:ok, source} <- Ash.get(__MODULE__, source_id, actor: actor),
+         :ok <- mutable_history(source),
          source_branch =
            Threads.active_branch(source, actor,
              load: MessageTreeCopy.load_spec(),
@@ -143,6 +145,7 @@ defmodule IntellectualClub.Chat.Chat do
 
     with {:ok, selection} <-
            Branching.active_branch_selection(source_id, message_id, actor, branch_opts),
+         :ok <- mutable_history(selection.source),
          :ok <- Branching.validate_replacement_contents(selection, replacement_contents),
          {:ok, _prefix} <-
            MessageTreeCopy.materialize_loaded_messages(selection.prefix, actor) do
@@ -166,6 +169,23 @@ defmodule IntellectualClub.Chat.Chat do
       {:error, error} ->
         add_action_error(changeset, :id, error)
     end
+  end
+
+  defp mutable_history(%{fork_task: nil}), do: :ok
+  defp mutable_history(_chat), do: {:error, :fork_history_read_only}
+
+  defp require_mutable_history(changeset, _context) do
+    case mutable_history(changeset.data) do
+      :ok -> changeset
+      {:error, reason} -> add_action_error(changeset, :id, reason)
+    end
+  end
+
+  defp add_action_error(changeset, field, :fork_history_read_only) do
+    Ash.Changeset.add_error(changeset,
+      field: field,
+      message: "Linked fork history is read-only. Send a follow-up instead."
+    )
   end
 
   defp add_action_error(changeset, field, %Ash.Error.Forbidden{}) do
@@ -281,6 +301,11 @@ defmodule IntellectualClub.Chat.Chat do
     table("chats")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:parent_chat, on_delete: :nilify)
+      reference(:parent_message, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:owner_id, :updated_at, :id], name: "chats_owner_updated_id_index")
 
@@ -288,6 +313,7 @@ defmodule IntellectualClub.Chat.Chat do
         name: "chats_owner_subagent_updated_id_index"
       )
 
+      index([:fork_source_step_id], name: "chats_fork_source_step_id_index")
       index([:parent_chat_id], name: "chats_parent_chat_id_index")
       index([:parent_message_id], name: "chats_parent_message_id_index")
       index([:parent_relation_kind], name: "chats_parent_relation_kind_index")
@@ -327,6 +353,12 @@ defmodule IntellectualClub.Chat.Chat do
       constraints(one_of: [:handoff, :fork, :spawn])
     end
 
+    attribute :fork_task, :string do
+      allow_nil?(true)
+      public?(false)
+      constraints(trim?: false, allow_empty?: true)
+    end
+
     attribute :subagent, :boolean do
       allow_nil?(false)
       public?(true)
@@ -364,6 +396,11 @@ defmodule IntellectualClub.Chat.Chat do
 
     belongs_to :parent_tool_call_item, IntellectualClub.Chat.ChatMessageItem,
       allow_nil?: true,
+      attribute_type: :integer
+
+    belongs_to :fork_source_step, IntellectualClub.Chat.ChatMessageStep,
+      allow_nil?: true,
+      public?: false,
       attribute_type: :integer
 
     has_many :child_chats, __MODULE__ do
@@ -452,14 +489,31 @@ defmodule IntellectualClub.Chat.Chat do
     destroy :destroy do
       primary?(true)
       require_atomic?(false)
-      change({ClearLastMessageReference, []})
-      change(cascade_destroy(:shares, after_action?: false))
-      change(cascade_destroy(:knowledge_block_bindings, after_action?: false))
-      change(cascade_destroy(:tool_bindings, after_action?: false))
-      change(cascade_destroy(:queued_messages, after_action?: false))
+      change({CleanupLinkedForks, []})
 
       change(
-        cascade_destroy(:root_messages, action: :destroy_with_children, after_action?: false)
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :shares, after_action?: false}
+      )
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :knowledge_block_bindings, after_action?: false}
+      )
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :tool_bindings, after_action?: false}
+      )
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
+         relationship: :queued_messages, after_action?: false}
+      )
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadePlannedDestroy,
+         relationship: :root_messages, action: :destroy_with_children}
       )
     end
 
@@ -658,6 +712,7 @@ defmodule IntellectualClub.Chat.Chat do
         public?(true)
       end
 
+      change(&require_mutable_history/2)
       change(&activate_branch/2)
     end
 
@@ -680,8 +735,13 @@ defmodule IntellectualClub.Chat.Chat do
         public?(true)
       end
 
+      change(&require_mutable_history/2)
       change(&switch_branch/2)
     end
+  end
+
+  changes do
+    change({ValidateLinkedFork, []}, on: [:create, :update])
   end
 
   policies do

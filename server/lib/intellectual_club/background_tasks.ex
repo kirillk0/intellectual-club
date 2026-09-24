@@ -251,8 +251,16 @@ defmodule IntellectualClub.BackgroundTasks do
   defp do_with_active_task_authority(task_id, context, fun, attempt) do
     with {:ok, observed} <- fetch_internal(task_id),
          lifecycle_message_id when is_integer(lifecycle_message_id) <-
-           lifecycle_generation_message_id(observed) do
-      case Ash.transaction([ChatMessage, BackgroundTask], fn ->
+           lifecycle_generation_message_id(observed),
+         %ChatMessage{chat_id: lifecycle_chat_id} <-
+           ChatMessage
+           |> Ash.Query.filter(id == ^lifecycle_message_id)
+           |> Ash.Query.select([:id, :chat_id])
+           |> Ash.read_one!(authorize?: false) do
+      case Ash.transaction([Chat, ChatMessage, BackgroundTask], fn ->
+             # Match generation/cancel lock ordering, including the parent-chat FK
+             # checked when a background fork creates its child chat.
+             lock_authority_chats!([observed.source_chat_id, lifecycle_chat_id])
              lifecycle_message = lock_lifecycle_message(lifecycle_message_id)
 
              current =
@@ -316,6 +324,21 @@ defmodule IntellectualClub.BackgroundTasks do
       {:error, reason} -> {:error, reason}
       _other -> {:error, :lifecycle_generation_missing}
     end
+  end
+
+  defp lock_authority_chats!(chat_ids) do
+    ids = chat_ids |> Enum.filter(&is_integer/1) |> Enum.uniq() |> Enum.sort()
+
+    chats =
+      Chat
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.Query.select([:id])
+      |> Ash.Query.sort(id: :asc)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
+      |> Ash.read!(authorize?: false)
+
+    if length(chats) != length(ids), do: Repo.rollback(:lifecycle_generation_missing)
+    :ok
   end
 
   defp task_authorizes_context?(%BackgroundTask{} = task, %ExecutionContext{} = context) do

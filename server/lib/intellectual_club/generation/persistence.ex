@@ -1000,112 +1000,119 @@ defmodule IntellectualClub.Generation.Persistence do
   defp fence_token_matches?(_actual, :any), do: true
   defp fence_token_matches?(actual, {:expected, expected}), do: actual == expected
 
-  def rollback_last_step_for_retry!(message_id, step_sequence)
-      when is_integer(message_id) and is_integer(step_sequence) and step_sequence > 0 do
-    rollback_steps_for_retry!(message_id, step_sequence)
-  end
-
-  def rollback_steps_for_retry!(message_id, from_sequence)
-      when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      steps =
-        message_id
-        |> steps_for_message(actor, from_sequence: from_sequence)
-        |> Enum.sort_by(& &1.sequence, :desc)
-
-      if steps == [] do
-        raise ArgumentError, "Retry step not found"
-      end
-
-      Enum.each(steps, &Ash.destroy!(&1, actor: actor))
-
-      message_id
-      |> load_message!(actor)
-      |> update_message!(
-        %{
-          status: :generating,
-          error_detail: nil,
-          token_count: 0,
-          finished_at: nil
-        },
-        actor
-      )
-    end)
-
-    :ok
-  end
-
   @doc """
   Replaces a retry step range while preserving step-owned request files.
   """
-  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs \\ [])
+  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs \\ []) do
+    replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs, nil)
+  end
+
+  @doc false
+  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs, operation)
       when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 and
              is_map(raw_request) and is_list(steering_specs) do
     actor = actor_for_message!(message_id)
 
     transaction!(fn ->
-      steps =
-        message_id
-        |> steps_for_message(actor, from_sequence: from_sequence)
-        |> Enum.sort_by(& &1.sequence, :desc)
-
-      source_step = Enum.find(steps, &(&1.sequence == from_sequence))
-
-      if is_nil(source_step) do
-        raise ArgumentError, "Retry step not found"
+      if is_nil(operation) do
+        IntellectualClub.Chat.LinkedForkCleanup.with_scope(
+          {:steps, message_id, from_sequence},
+          actor,
+          &replace_steps_for_retry_in_operation!(
+            message_id,
+            from_sequence,
+            raw_request,
+            steering_specs,
+            actor,
+            &1
+          )
+        )
+      else
+        replace_steps_for_retry_in_operation!(
+          message_id,
+          from_sequence,
+          raw_request,
+          steering_specs,
+          actor,
+          operation
+        )
       end
+    end)
+  end
 
-      staged =
-        source_step.id
-        |> RequestImages.stage_bindings()
-        |> request_images_value!()
+  defp replace_steps_for_retry_in_operation!(
+         message_id,
+         from_sequence,
+         raw_request,
+         steering_specs,
+         actor,
+         operation
+       ) do
+    steps =
+      IntellectualClub.Chat.LinkedForkCleanup.retry_steps!(
+        operation,
+        message_id,
+        from_sequence,
+        actor
+      )
 
-      Enum.each(steps, &Ash.destroy!(&1, actor: actor))
+    source_step = Enum.find(steps, &(&1.sequence == from_sequence))
 
-      message_id
-      |> load_message!(actor)
-      |> update_message!(
+    if is_nil(source_step) do
+      raise ArgumentError, "Retry step not found"
+    end
+
+    staged =
+      source_step.id
+      |> RequestImages.stage_bindings()
+      |> request_images_value!()
+
+    Enum.each(
+      steps,
+      &IntellectualClub.Chat.LinkedForkCleanup.destroy!(&1, :destroy, operation, actor)
+    )
+
+    message_id
+    |> load_message!(actor)
+    |> update_message!(
+      %{
+        status: :generating,
+        error_detail: nil,
+        token_count: 0,
+        finished_at: nil
+      },
+      actor
+    )
+
+    step =
+      create_step!(
         %{
-          status: :generating,
-          error_detail: nil,
-          token_count: 0,
+          chat_message_id: message_id,
+          sequence: from_sequence,
+          status: :waiting_provider,
+          raw_request: normalize_json_map(raw_request),
+          raw_response: nil,
+          response_final: false,
+          input_tokens: nil,
+          output_tokens: nil,
+          cached_input_tokens: nil,
+          reasoning_tokens: nil,
+          cost: nil,
+          first_token_at: nil,
+          last_token_at: nil,
           finished_at: nil
         },
         actor
       )
 
-      step =
-        create_step!(
-          %{
-            chat_message_id: message_id,
-            sequence: from_sequence,
-            status: :waiting_provider,
-            raw_request: normalize_json_map(raw_request),
-            raw_response: nil,
-            response_final: false,
-            input_tokens: nil,
-            output_tokens: nil,
-            cached_input_tokens: nil,
-            reasoning_tokens: nil,
-            cost: nil,
-            first_token_at: nil,
-            last_token_at: nil,
-            finished_at: nil
-          },
-          actor
-        )
+    :ok =
+      staged
+      |> RequestImages.attach_staged_bindings_transactional(step.id)
+      |> request_images_ok!()
 
-      :ok =
-        staged
-        |> RequestImages.attach_staged_bindings_transactional(step.id)
-        |> request_images_ok!()
+    restore_steering_specs_in_transaction!(step, steering_specs, actor)
 
-      restore_steering_specs_in_transaction!(step, steering_specs, actor)
-
-      step.id
-    end)
+    step.id
   end
 
   defp persist_step_snapshot!(message_id, %RuntimeTrace.Step{} = runtime_step, step_status, opts)

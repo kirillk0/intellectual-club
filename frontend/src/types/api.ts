@@ -134,8 +134,31 @@ export type UserKnowledgeBlock = {
   knowledge_block?: KnowledgeBlock | null;
 };
 
+export type ForkContextContentItem = Omit<ChatExportContentItem, 'attachments'> & {
+  attachments: Array<ChatExportAttachment & { url: string | null }>;
+};
+
+// Virtual history is deliberately not a ChatBranchMessage: its IDs cannot be mutated or polled.
+export type ForkContextMessage = {
+  key: string;
+  role: string;
+  source_chat_id: number | null;
+  source_message_id: number | null;
+  source_url: string | null;
+  content: ForkContextContentItem[];
+};
+
+export type ForkContext = {
+  status: 'available' | 'unavailable';
+  live: true;
+  read_only: true;
+  revision: string;
+  messages: ForkContextMessage[];
+};
+
 export type Chat = {
   id: number;
+  history_read_only?: boolean;
   note: string;
   bot_id: number | null;
   llm_configuration_id: number | null;
@@ -465,6 +488,7 @@ export type ChatExportMessage = {
 };
 
 export type ChatExportChat = {
+  fork_context?: ForkContext | null;
   id: number;
   title: string;
   note: string;

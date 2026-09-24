@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClubWeb.Bff.ChatAccess
+  alias IntellectualClubWeb.Bff.ChatForkContext
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
@@ -22,7 +23,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
     explicit_parent? = Map.has_key?(params, "parent_id")
     parent_id = Helpers.parse_optional_integer(Map.get(params, "parent_id"))
 
-    with {:ok, _chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+    with {:ok, chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+         :ok <- ChatAccess.ensure_append_only(chat, params),
+         linked_fork? = ChatForkContext.linked?(chat),
          upload_policy = ChatUploadPolicy.load_for_chat(chat_id, actor),
          {:ok, prepared_uploads} <- ChatAttachments.parse_prepared_uploads(params),
          :ok <- validate_send_payload(content, prepared_uploads),
@@ -33,8 +36,8 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
              upload_policy,
              prepared_uploads,
              content,
-             parent_id,
-             explicit_parent?
+             if(linked_fork?, do: nil, else: parent_id),
+             explicit_parent? and not linked_fork?
            ),
          {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
@@ -56,7 +59,13 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
   def generate(chat_id, params, actor) do
     generation_opts = ChatParams.generation_parent_opts(params, actor)
 
-    with {:ok, _chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+    with {:ok, chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+         :ok <- ChatAccess.ensure_append_only(chat, params),
+         generation_opts =
+           if(ChatForkContext.linked?(chat),
+             do: Keyword.delete(generation_opts, :parent_id),
+             else: generation_opts
+           ),
          {:ok, context} <-
            QueueCoordinator.prepare_direct_generation(chat_id, generation_opts),
          {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
@@ -66,6 +75,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
 
   def branch_to_new_chat(chat_id, message_id, params, actor) when is_integer(message_id) do
     with {:ok, %Chat{} = source} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+         :ok <- ChatAccess.ensure_history_mutable(source),
          {:ok, selection} <- Branching.active_branch_selection(source, message_id, actor),
          {:ok, %Chat{} = target} <- create_branch_target_chat(selection, params, actor),
          {:ok, context} <- start_branch_generation(target, actor) do

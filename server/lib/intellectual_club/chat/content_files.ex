@@ -5,11 +5,15 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ForkHistory
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Generation.History
   alias IntellectualClub.Tools.ExecutionContext
 
   require Ash.Query
+
+  @max_handoff_depth 32
 
   @spec load_payload_for_content(ChatMessageContent.t()) ::
           {:ok, {ChatMessageContent.t(), StoredFile.t(), binary()}} | {:error, term()}
@@ -66,8 +70,9 @@ defmodule IntellectualClub.Chat.ContentFiles do
   def load_path_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
 
   @doc """
-  Returns the current chat and owned ancestor handoff chats whose canonical files
-  are visible from that chat.
+  Returns up to 32 chats in the current owned handoff chain whose canonical files
+  are visible from that chat. Linked fork parents are deliberately excluded: their
+  files are visible only when present in the projected inherited prefix.
   """
   @spec handoff_chat_scope_ids(integer(), integer()) :: [integer()]
   def handoff_chat_scope_ids(chat_id, owner_id)
@@ -144,9 +149,71 @@ defmodule IntellectualClub.Chat.ContentFiles do
     |> Ash.Query.limit(1)
     |> Ash.read_one(authorize?: false, load: [:file])
     |> case do
-      {:ok, %ChatMessageContent{} = content} -> {:ok, content}
-      {:ok, nil} -> {:error, :not_found}
-      {:error, error} -> {:error, error}
+      {:ok, %ChatMessageContent{} = content} ->
+        {:ok, content}
+
+      {:ok, nil} ->
+        find_inherited_content_for_file(normalized_external_id, chat_ids, context.owner_id)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp find_inherited_content_for_file(normalized_external_id, chat_ids, owner_id)
+       when is_integer(owner_id) do
+    actor = %{id: owner_id}
+
+    # Handoff descendants retain their ancestor's file scope, but a fork never
+    # grants access to an entire source chat or its request-file bindings.
+    with {:ok, forks} <-
+           Chat
+           |> Ash.Query.filter(
+             id in ^chat_ids and owner_id == ^owner_id and not is_nil(fork_source_step_id)
+           )
+           |> Ash.Query.select([:id])
+           |> Ash.read(actor: actor) do
+      Enum.reduce_while(forks, {:error, :not_found}, fn fork, not_found ->
+        case ForkHistory.prefix(fork.id, actor) do
+          {:ok, messages} ->
+            case inherited_content(messages, normalized_external_id, owner_id) do
+              %ChatMessageContent{} = content -> {:halt, {:ok, content}}
+              nil -> {:cont, not_found}
+            end
+
+          {:error, :fork_context_unavailable} ->
+            {:cont, not_found}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp find_inherited_content_for_file(_normalized_external_id, _chat_ids, _owner_id),
+    do: {:error, :not_found}
+
+  defp inherited_content(messages, normalized_external_id, owner_id) do
+    # File tools remain owner-scoped even if a history reader can see shared chats.
+    # Synthetic boundary results contain no media, so only actual prefix contents
+    # can grant access; later results, artifacts, steps and sibling branches cannot.
+    if Enum.all?(messages, &(Map.get(&1, :owner_id) == owner_id)) do
+      messages
+      |> Stream.flat_map(&History.steps/1)
+      |> Stream.flat_map(&History.items/1)
+      |> Stream.flat_map(&History.contents/1)
+      |> Enum.find(fn
+        %ChatMessageContent{
+          kind: :media,
+          owner_id: ^owner_id,
+          file: %StoredFile{external_id: external_id}
+        } ->
+          to_string(external_id) == normalized_external_id
+
+        _content ->
+          false
+      end)
     end
   end
 
@@ -162,7 +229,7 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   defp collect_handoff_chat_scope_ids(chat_id, owner_id, seen, acc)
        when is_integer(chat_id) and is_integer(owner_id) do
-    if MapSet.member?(seen, chat_id) do
+    if MapSet.member?(seen, chat_id) or MapSet.size(seen) >= @max_handoff_depth do
       Enum.reverse(acc)
     else
       seen = MapSet.put(seen, chat_id)

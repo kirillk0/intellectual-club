@@ -1,4 +1,5 @@
 import { getEffectiveLocale, type SupportedLocale } from '@/i18n';
+import { ruMessages } from '@/i18n/messages';
 import type {
   ChatExportAttachment,
   ChatExportChat,
@@ -332,6 +333,16 @@ const renderRelatedChatsDialog = (chat: ChatExportChat, chats: ChatExportChat[],
       .join('')}</ul>
   </dialog>`;
 
+const renderForkContext = (chat: ChatExportChat, labels: ExportLabels, locale: SupportedLocale) => {
+  const context = chat.fork_context;
+  if (!context) return '';
+  const t = (text: string) => locale === 'ru' ? (ruMessages[text] ?? text) : text;
+  const body = context.status === 'unavailable'
+    ? `<p>${escapeHtml(t('Inherited context is unavailable. The source may have been deleted or access was revoked.'))}</p>`
+    : context.messages.map((message) => `<article class="message inherited-message"><header>${escapeHtml(message.role === 'user' ? labels.user : labels.assistant)}</header>${message.content.map((item) => renderContentItem(item, labels)).join('')}</article>`).join('');
+  return `<section class="fork-context"><h2>${escapeHtml(t('Inherited live context'))}</h2><p>${escapeHtml(t('Inherited context snapshot — read-only; source edits may change the live context.'))}</p>${body}</section>`;
+};
+
 const renderChatSection = (
   chat: ChatExportChat,
   chats: ChatExportChat[],
@@ -369,6 +380,7 @@ const renderChatSection = (
     <p class="chat-meta">${labels.created}: ${escapeHtml(formatDate(chat.created_at, locale))} · ${labels.updated}: ${escapeHtml(formatDate(chat.updated_at, locale))}</p>
     ${parent ? `<a class="relation-link" href="#chat-${parent.id}">← ${labels.parent}: ${escapeHtml(parent.title)} <span class="badge">${escapeHtml(chat.relation?.kind || '')}</span></a>` : ''}
     ${unanchored.map((child) => `<a class="relation-link" href="#chat-${child.id}">${labels.related}: ${escapeHtml(child.title)}</a>`).join('')}
+    ${renderForkContext(chat, labels, locale)}
     <div class="messages">${chat.messages.length ? chat.messages.map((message) => renderMessage(chat, message, childByMessage.get(message.id) || [], labels, locale)).join('') : `<p class="empty">${labels.noMessages}</p>`}</div>
   </section>`;
 };

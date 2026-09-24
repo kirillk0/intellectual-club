@@ -156,6 +156,44 @@ describe('useChatViewModel loading', () => {
     vi.useRealTimers();
   });
 
+  it('keeps live inherited context separate and refreshes it on prefix revision changes', async () => {
+    vi.useFakeTimers();
+    const state = chatState(1);
+    state.chat.history_read_only = true;
+    state.branch = [{ id: 10, role: 'assistant', status: 'done', content: { items: [], parts: [], media: [] } }];
+    state.fork_context = {
+      status: 'available', live: true, read_only: true, revision: 'prefix-1',
+      messages: [{ key: 'inherited-0', role: 'user', source_chat_id: 2, source_message_id: 999, source_url: '/chats/2', content: [] }],
+    };
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(structuredClone(state));
+      if (path === '/api/bff/chat-state/2') return Promise.resolve(chatState(2));
+      if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed-prefix' });
+      return Promise.resolve(undefined);
+    });
+    const { viewModel, router } = await mountViewModel();
+    await flushPromises();
+    expect(viewModel.historyReadonly.value).toBe(true);
+    expect(viewModel.sharedReadonly.value).toBe(false);
+    expect(viewModel.canEdit.value).toBe(true);
+    expect(viewModel.branch.value.map((message) => message.id)).toEqual([10]);
+    expect(viewModel.forkContext.value?.messages[0]?.source_message_id).toBe(999);
+    expect(viewModel.activeGenerationId.value).toBeNull();
+    viewModel.draft.value = 'follow-up';
+    expect(viewModel.hasSendPayload.value).toBe(true);
+    state.fork_context.revision = 'prefix-2';
+    state.fork_context.messages = [];
+    await vi.advanceTimersByTimeAsync(31_000);
+    await flushPromises();
+    expect(viewModel.forkContext.value?.revision).toBe('prefix-2');
+    expect(viewModel.branch.value.map((message) => message.id)).toEqual([10]);
+    await router.push('/chats/2');
+    await flushPromises();
+    expect(viewModel.forkContext.value).toBeNull();
+    expect(viewModel.historyReadonly.value).toBe(false);
+  });
+
   it('refreshes both tool panels without reloading settings while the chat is unchanged', async () => {
     vi.useFakeTimers();
     const tool = { id: 12, name: 'Outlet', alias: 'outlet', type: 'outlet', outlet_online: false };

@@ -261,3 +261,23 @@ describe('buildChatHtmlExport', () => {
     frame.remove();
   });
 });
+
+
+it('exports inherited context as a marked read-only snapshot without source links or usage', async () => {
+  const data = payload();
+  data.chats[0]!.fork_context = {
+    status: 'available', live: true, read_only: true, revision: 'prefix-1',
+    messages: [{
+      key: 'inherited-0', role: 'user', source_chat_id: 999, source_message_id: 888, source_url: '/chats/999',
+      content: [{ type: 'input', step_sequence: 1, item_sequence: 1, parts: [{ text: 'INHERITED_ONLY <script>evil()</script>' }], attachments: [] }],
+    }],
+  };
+  const { html } = await buildChatHtmlExport(data, { locale: 'en' });
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  const inherited = document.querySelector('.fork-context');
+  expect(inherited?.textContent).toContain('Inherited context snapshot — read-only');
+  expect(inherited?.textContent).toContain('INHERITED_ONLY');
+  expect(inherited?.querySelector('script')).toBeNull();
+  expect(inherited?.querySelector('a[href="/chats/999"]')).toBeNull();
+  expect(inherited?.querySelector('.working, .badge.active')).toBeNull();
+});

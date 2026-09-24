@@ -21,6 +21,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
+  alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatBranchPayload
   alias IntellectualClubWeb.Bff.ChatParams
@@ -158,7 +159,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+      with {:ok, _message} <- fetch_history_mutable_message(message_id, actor) do
         case GenerationSupervisor.retry_last_step(message_id, actor: actor) do
           {:ok, context} ->
             render_retry_generation(conn, context, actor)
@@ -219,7 +220,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       message_id = String.to_integer(message_id)
       step_id = String.to_integer(step_id)
 
-      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
+      with {:ok, _message} <- fetch_history_mutable_message(message_id, actor) do
         case GenerationSupervisor.retry_from_step(message_id, step_id, actor: actor) do
           {:ok, context} ->
             render_retry_generation(conn, context, actor)
@@ -284,7 +285,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      with {:ok, message} <- fetch_owned_message(message_id, actor) do
+      with {:ok, message} <- fetch_history_mutable_message(message_id, actor) do
         case Threads.delete_message_keep_children(message.chat_id, message_id, actor) do
           {:ok, _meta} ->
             {messages, branch_meta_by_id} = load_branch(message.chat_id, actor)
@@ -308,7 +309,7 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       message_id = String.to_integer(id)
 
-      with {:ok, _owned_message} <- fetch_owned_message(message_id, actor) do
+      with {:ok, _owned_message} <- fetch_history_mutable_message(message_id, actor) do
         message =
           Ash.get!(ChatMessage, message_id,
             actor: actor,
@@ -367,47 +368,60 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   def step_raw(conn, %{"message_id" => message_id, "step_id" => step_id} = params) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
-      message_id = String.to_integer(message_id)
-      step_id = String.to_integer(step_id)
-      kind = Map.get(params, "kind", "both")
+    kind = Map.get(params, "kind", "both")
 
-      step =
-        IntellectualClub.Chat.ChatMessageStep
-        |> Ash.Query.filter(id == ^step_id)
-        |> Ash.Query.select([
-          :id,
-          :chat_message_id,
-          :sequence,
-          :raw_request,
-          :raw_response
-        ])
-        |> Ash.read_one!(actor: actor)
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, message_id} <- ChatParams.resource_id(message_id),
+         {:ok, step_id} <- ChatParams.resource_id(step_id),
+         {:ok, %ChatMessageStep{chat_message_id: ^message_id} = step} <-
+           ChatMessageStep
+           |> Ash.Query.filter(id == ^step_id)
+           |> Ash.Query.select([:id, :chat_message_id, :sequence, :raw_request, :raw_response])
+           |> Ash.read_one(actor: actor),
+         :ok <- authorize_inherited_raw_request(step, kind, actor) do
+      payload =
+        case kind do
+          "request" ->
+            %{id: step.id, sequence: step.sequence, raw_request: step.raw_request}
 
-      if step.chat_message_id != message_id do
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Step not found"})
+          "response" ->
+            %{id: step.id, sequence: step.sequence, raw_response: step.raw_response}
+
+          _ ->
+            %{
+              id: step.id,
+              sequence: step.sequence,
+              raw_request: step.raw_request,
+              raw_response: step.raw_response
+            }
+        end
+
+      json(conn, %{step: payload})
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, :forbidden} -> ChatAccess.render_error(conn, :forbidden)
+      _other -> ChatAccess.render_error(conn, :not_found)
+    end
+  end
+
+  defp authorize_inherited_raw_request(_step, "response", _actor), do: :ok
+
+  defp authorize_inherited_raw_request(step, _kind, actor) do
+    with {:ok, %ChatMessage{} = message} <-
+           Ash.get(ChatMessage, step.chat_message_id, actor: actor),
+         {:ok, %Chat{} = chat} <- Ash.get(Chat, message.chat_id, actor: actor) do
+      # A child's stored request also contains its inherited source. Sharing the
+      # child alone must not expose that source via the raw-request inspector.
+      if is_nil(chat.fork_task) do
+        :ok
       else
-        payload =
-          case kind do
-            "request" ->
-              %{id: step.id, sequence: step.sequence, raw_request: step.raw_request}
-
-            "response" ->
-              %{id: step.id, sequence: step.sequence, raw_response: step.raw_response}
-
-            _ ->
-              %{
-                id: step.id,
-                sequence: step.sequence,
-                raw_request: step.raw_request,
-                raw_response: step.raw_response
-              }
-          end
-
-        json(conn, %{step: payload})
+        case IntellectualClub.Chat.ForkHistory.prefix(chat, actor) do
+          {:ok, _prefix} -> :ok
+          {:error, _reason} -> {:error, :forbidden}
+        end
       end
+    else
+      _other -> {:error, :forbidden}
     end
   end
 
@@ -1049,6 +1063,14 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp runtime_step_matches?(_runtime_step, _step_id), do: false
 
+  defp fetch_history_mutable_message(message_id, actor) do
+    with {:ok, message} <- fetch_owned_message(message_id, actor),
+         {:ok, chat} <- ChatAccess.fetch_owned_chat(message.chat_id, actor),
+         :ok <- ChatAccess.ensure_history_mutable(chat) do
+      {:ok, message}
+    end
+  end
+
   defp fetch_owned_message(message_id, actor) do
     case Ash.get(ChatMessage, message_id, actor: actor) do
       {:ok, %ChatMessage{owner_id: owner_id} = message} when owner_id == actor.id ->
@@ -1089,6 +1111,9 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp notify_queued_message_changed(_queued_message), do: :ok
+
+  defp render_access_error(conn, :fork_history_read_only),
+    do: ChatAccess.render_error(conn, :fork_history_read_only)
 
   defp render_access_error(conn, :forbidden) do
     conn

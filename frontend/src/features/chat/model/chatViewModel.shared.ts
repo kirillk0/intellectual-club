@@ -1,5 +1,6 @@
 import type {
   Chat,
+  ForkContext,
   ChatBranchMessage,
   ChatKnowledgeBlock,
   ChatMessageStep,
@@ -39,6 +40,7 @@ export type PromptBlock = {
 };
 
 export type ChatStatePayload = {
+  fork_context?: ForkContext | null;
   chat: Chat;
   branch: ChatBranchMessage[];
   relations?: ChatRelations;

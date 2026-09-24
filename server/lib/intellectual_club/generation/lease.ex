@@ -130,46 +130,61 @@ defmodule IntellectualClub.Generation.Lease do
   @spec claim_and_run_with_chat(t(), pos_integer(), [atom()], (-> result)) ::
           {:ok, {t(), result}} | {:error, term()}
         when result: term()
+  @spec claim_and_run_with_chat(
+          t(),
+          pos_integer(),
+          [atom()],
+          (-> result) | (term() -> result),
+          keyword()
+        ) ::
+          {:ok, {t(), result}} | {:error, term()}
+        when result: term()
+  def claim_and_run_with_chat(lease, chat_id, allowed_statuses, fun, opts \\ [])
+
   def claim_and_run_with_chat(
         %__MODULE__{fence_token: nil} = lease,
         chat_id,
         allowed_statuses,
-        fun
+        fun,
+        opts
       )
       when is_integer(chat_id) and chat_id > 0 and is_list(allowed_statuses) and
-             allowed_statuses != [] and is_function(fun, 0) do
+             allowed_statuses != [] and (is_function(fun, 0) or is_function(fun, 1)) and
+             is_list(opts) do
     if active?(lease) do
       token = Ecto.UUID.generate()
 
       case lease_transaction(
              [Chat, ChatMessage],
              fn ->
-               with {:ok, _chat} <- lock_chat(chat_id),
-                    {:ok, current} <- lock_message(lease.message_id) do
-                 active_generation = lock_other_generating_message(chat_id, lease.message_id)
+               with_lock_scope(opts, fn prepared ->
+                 with {:ok, _chat} <- lock_chat(chat_id),
+                      {:ok, current} <- lock_message(lease.message_id) do
+                   active_generation = lock_other_generating_message(chat_id, lease.message_id)
 
-                 cond do
-                   current.chat_id != chat_id ->
-                     {:error, :chat_mismatch}
+                   cond do
+                     current.chat_id != chat_id ->
+                       {:error, :chat_mismatch}
 
-                   current.role != :assistant or current.status not in allowed_statuses ->
-                     {:error, :invalid_status}
+                     current.role != :assistant or current.status not in allowed_statuses ->
+                       {:error, :invalid_status}
 
-                   match?(%ChatMessage{}, active_generation) ->
-                     {:error, :generation_active}
+                     match?(%ChatMessage{}, active_generation) ->
+                       {:error, :generation_active}
 
-                   true ->
-                     current
-                     |> Ash.Changeset.for_update(
-                       :set_generation_fence,
-                       %{generation_fence_token: token},
-                       authorize?: false
-                     )
-                     |> Ash.update!(authorize?: false)
+                     true ->
+                       current
+                       |> Ash.Changeset.for_update(
+                         :set_generation_fence,
+                         %{generation_fence_token: token},
+                         authorize?: false
+                       )
+                       |> Ash.update!(authorize?: false)
 
-                     {:ok, {%{lease | fence_token: token}, fun.()}}
+                       {:ok, {%{lease | fence_token: token}, run_fenced(fun, prepared)}}
+                   end
                  end
-               end
+               end)
              end,
              []
            ) do
@@ -187,7 +202,7 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
-  def claim_and_run_with_chat(_lease, _chat_id, _allowed_statuses, _fun),
+  def claim_and_run_with_chat(_lease, _chat_id, _allowed_statuses, _fun, _opts),
     do: {:error, :invalid_generation_lease}
 
   @spec transfer(t(), pid()) :: :ok | {:error, term()}
@@ -212,7 +227,8 @@ defmodule IntellectualClub.Generation.Lease do
     :exit, _reason -> :ok
   end
 
-  @spec with_fence(t(), (-> result), keyword()) :: {:ok, result} | {:error, term()}
+  @spec with_fence(t(), (-> result) | (term() -> result), keyword()) ::
+          {:ok, result} | {:error, term()}
         when result: term()
   def with_fence(lease, fun, opts \\ [])
 
@@ -221,22 +237,24 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   def with_fence(%__MODULE__{} = lease, fun, opts)
-      when is_function(fun, 0) and is_list(opts) do
+      when (is_function(fun, 0) or is_function(fun, 1)) and is_list(opts) do
     if active?(lease) do
       case lease_transaction(fn ->
-             with {:ok, current} <- lock_message(lease.message_id) do
-               cond do
-                 current.generation_fence_token != lease.fence_token ->
-                   {:error, :lease_lost}
+             with_lock_scope(opts, fn prepared ->
+               with {:ok, current} <- lock_message(lease.message_id) do
+                 cond do
+                   current.generation_fence_token != lease.fence_token ->
+                     {:error, :lease_lost}
 
-                 Keyword.get(opts, :require_generating?, false) and
-                     current.status != :generating ->
-                   {:error, :invalid_status}
+                   Keyword.get(opts, :require_generating?, false) and
+                       current.status != :generating ->
+                     {:error, :invalid_status}
 
-                 true ->
-                   {:ok, fun.()}
+                   true ->
+                     {:ok, run_fenced(fun, prepared)}
+                 end
                end
-             end
+             end)
            end) do
         {:ok, result} -> {:ok, result}
         {:error, reason} -> {:error, reason}
@@ -698,7 +716,7 @@ defmodule IntellectualClub.Generation.Lease do
       Chat
       |> Ash.Query.filter(id == ^chat_id)
       |> Ash.Query.select([:id])
-      |> Ash.Query.lock(:for_update)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
       |> Ash.read_one!(authorize?: false)
 
     case chat do
@@ -706,6 +724,20 @@ defmodule IntellectualClub.Generation.Lease do
       nil -> {:error, :not_found}
     end
   end
+
+  # The scope surrounds only the SQL transaction body, never manager RPCs. It
+  # runs after the manager liveness check and before the first row fence, and
+  # may prepare an operation capability passed to an arity-one callback.
+  defp with_lock_scope(opts, callback) do
+    case Keyword.get(opts, :with_lock_scope) do
+      nil -> callback.(nil)
+      scope when is_function(scope, 1) -> scope.(callback)
+      _other -> {:error, :invalid_fence_lock_scope}
+    end
+  end
+
+  defp run_fenced(fun, prepared) when is_function(fun, 1), do: fun.(prepared)
+  defp run_fenced(fun, _prepared), do: fun.()
 
   defp lease_transaction(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
     lease_transaction(ChatMessage, fun, opts)

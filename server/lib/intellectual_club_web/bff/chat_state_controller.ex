@@ -12,6 +12,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClubWeb.Bff.ChatAccess
+  alias IntellectualClubWeb.Bff.ChatForkContext
   alias IntellectualClubWeb.Bff.ChatExportPayload
   alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.ChatPayloads
@@ -99,6 +100,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
           lifecycle_states,
           subchat_cost_summary.revision
         )
+        |> ChatForkContext.combine_revision(ChatForkContext.revision(chat, actor))
 
       if Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")

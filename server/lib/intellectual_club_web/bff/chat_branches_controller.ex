@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
       opts = ChatParams.switch_params(params)
 
       with {:ok, chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+           :ok <- ChatAccess.ensure_history_mutable(chat),
            message_id when is_integer(message_id) <- message_id,
            {:ok, _chat} <-
              chat
@@ -34,6 +35,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "message_id is required"})
+
+        {:error, :fork_history_read_only} ->
+          ChatAccess.render_error(conn, :fork_history_read_only)
 
         {:error, :forbidden} ->
           ChatAccess.render_error(conn, :forbidden)
@@ -55,6 +59,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
       message_id = Helpers.parse_optional_integer(Map.get(params, "message_id"))
 
       with {:ok, chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+           :ok <- ChatAccess.ensure_history_mutable(chat),
            message_id when is_integer(message_id) <- message_id,
            {:ok, _chat} <-
              chat
@@ -68,6 +73,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "message_id is required"})
+
+        {:error, :fork_history_read_only} ->
+          ChatAccess.render_error(conn, :fork_history_read_only)
 
         {:error, :forbidden} ->
           ChatAccess.render_error(conn, :forbidden)
@@ -89,6 +97,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
       message_id = Helpers.parse_optional_integer(Map.get(params, "message_id"))
 
       with {:ok, chat} <- ChatAccess.fetch_owned_chat(chat_id, actor),
+           :ok <- ChatAccess.ensure_history_mutable(chat),
            message_id when is_integer(message_id) <- message_id,
            {:ok, %{chat: target}} <- BranchMove.move_branch_to_new_chat(chat, message_id, actor) do
         {target_messages, target_meta_by_id} = ChatPayloads.load_branch(target.id, actor)
@@ -118,6 +127,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: "Message does not belong to this chat."})
+
+        {:error, :fork_history_read_only} ->
+          ChatAccess.render_error(conn, :fork_history_read_only)
 
         {:error, :forbidden} ->
           ChatAccess.render_error(conn, :forbidden)

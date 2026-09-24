@@ -20,6 +20,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClubWeb.Bff.ChatForkContext
   alias IntellectualClubWeb.Bff.ChatBranchPayload
   alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.Loads
@@ -35,9 +36,11 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
     lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
     relations = Relations.relations(chat, messages, actor, child_relations)
     queued_messages = active_queue(chat.id, actor)
+    fork_context = ChatForkContext.build(chat, actor)
 
     %{
       chat: Serializer.chat_detail(chat),
+      fork_context: fork_context,
       branch:
         serialize_branch(messages, branch_meta_by_id, actor,
           subchat_costs_by_message_id: subchat_cost_summary.costs_by_message_id
@@ -54,6 +57,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
           lifecycle_states,
           subchat_cost_summary.revision
         )
+        |> ChatForkContext.combine_revision(fork_context)
     }
   end
 

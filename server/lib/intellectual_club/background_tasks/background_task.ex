@@ -181,6 +181,65 @@ defmodule IntellectualClub.BackgroundTasks.BackgroundTask do
       change(relate_actor(:owner))
     end
 
+    update :detach_deleted_references do
+      public?(false)
+      accept([])
+      argument :chat_ids, {:array, :integer}, allow_nil?: false, default: []
+      argument :message_ids, {:array, :integer}, allow_nil?: false, default: []
+      argument :step_ids, {:array, :integer}, allow_nil?: false, default: []
+      argument :item_ids, {:array, :integer}, allow_nil?: false, default: []
+
+      change(
+        atomic_update(
+          :source_chat_id,
+          expr(if source_chat_id in ^arg(:chat_ids), do: nil, else: source_chat_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :target_chat_id,
+          expr(if target_chat_id in ^arg(:chat_ids), do: nil, else: target_chat_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :source_message_id,
+          expr(if source_message_id in ^arg(:message_ids), do: nil, else: source_message_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :lifecycle_message_id,
+          expr(if lifecycle_message_id in ^arg(:message_ids), do: nil, else: lifecycle_message_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :source_step_id,
+          expr(if source_step_id in ^arg(:step_ids), do: nil, else: source_step_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :source_tool_call_item_id,
+          expr(
+            if source_tool_call_item_id in ^arg(:item_ids),
+              do: nil,
+              else: source_tool_call_item_id
+          )
+        )
+      )
+
+      change(
+        atomic_update(:cancel_requested, expr(cancel_requested or status in [:queued, :running]))
+      )
+    end
+
     update :update_state do
       public?(false)
 

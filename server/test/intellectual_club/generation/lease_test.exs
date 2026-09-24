@@ -211,6 +211,135 @@ defmodule IntellectualClub.Generation.LeaseTest do
     assert reloaded_message!(message.id).generation_fence_token == nil
   end
 
+  test "retry lock preparation runs inside the transaction before its row fences" do
+    %{actor: actor, chat: chat, message: message} = generating_message_fixture!()
+    set_message_status!(message, actor, :error)
+    assert {:ok, reservation} = Lease.reserve(message.id)
+    handler_id = {__MODULE__, :prelock_order, make_ref()}
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:intellectual_club, :repo, :query],
+        fn _, _, metadata, caller ->
+          if self() == caller and String.contains?(metadata.query, "FOR UPDATE") do
+            send(caller, {:lease_row_fence, metadata.query})
+          end
+        end,
+        test_pid
+      )
+
+    scope = fn callback ->
+      assert Repo.in_transaction?()
+      refute_received {:lease_row_fence, _query}
+      send(test_pid, :retry_locks_prepared)
+      callback.(:prepared)
+    end
+
+    try do
+      assert {:ok, {lease, :replaced}} =
+               Lease.claim_and_run_with_chat(
+                 reservation,
+                 chat.id,
+                 [:error],
+                 fn :prepared ->
+                   assert_received :retry_locks_prepared
+                   assert_received {:lease_row_fence, _query}
+                   :replaced
+                 end,
+                 with_lock_scope: scope
+               )
+
+      assert is_binary(lease.fence_token)
+      assert reloaded_message!(message.id).generation_fence_token == lease.fence_token
+      assert :ok = Lease.release(lease)
+    after
+      :telemetry.detach(handler_id)
+      Lease.release(reservation)
+    end
+  end
+
+  test "lock scope passes its value to the mutation and expires before lease registration" do
+    %{actor: actor, chat: chat, message: message} = generating_message_fixture!()
+    set_message_status!(message, actor, :error)
+    assert {:ok, reservation} = Lease.reserve(message.id)
+    key = {__MODULE__, make_ref()}
+    prepared = make_ref()
+
+    scope = fn callback ->
+      assert Repo.in_transaction?()
+      Process.put(key, prepared)
+
+      try do
+        callback.(prepared)
+      after
+        Process.delete(key)
+      end
+    end
+
+    try do
+      assert {:ok, {lease, :replaced}} =
+               Lease.claim_and_run_with_chat(
+                 reservation,
+                 chat.id,
+                 [:error],
+                 fn value ->
+                   assert value == prepared
+                   assert Process.get(key) == prepared
+                   :replaced
+                 end,
+                 with_lock_scope: scope
+               )
+
+      assert Process.get(key) == nil
+
+      assert {:ok, :continued} =
+               Lease.with_fence(
+                 lease,
+                 fn value ->
+                   assert value == prepared
+                   assert Process.get(key) == prepared
+                   :continued
+                 end,
+                 with_lock_scope: scope
+               )
+
+      assert Process.get(key) == nil
+      assert :ok = Lease.release(lease)
+
+      assert {:error, :lease_lost} =
+               Lease.with_fence(
+                 lease,
+                 fn _ -> flunk("stale mutation") end,
+                 with_lock_scope: fn _ -> flunk("stale scope") end
+               )
+    after
+      Lease.release(reservation)
+    end
+  end
+
+  test "rejected scoped preparation never enters the retry fence" do
+    %{actor: actor, chat: chat, message: message} = generating_message_fixture!()
+    set_message_status!(message, actor, :error)
+    assert {:ok, reservation} = Lease.reserve(message.id)
+
+    try do
+      assert {:error, :dependencies_changed} =
+               Lease.claim_and_run_with_chat(
+                 reservation,
+                 chat.id,
+                 [:error],
+                 fn _ -> flunk("unexpected mutation") end,
+                 with_lock_scope: fn _ -> {:error, :dependencies_changed} end
+               )
+
+      assert reloaded_message!(message.id).generation_fence_token == nil
+    after
+      Lease.release(reservation)
+    end
+  end
+
   test "lease connection loss kills its worker and restart recovery handles the orphan" do
     previous_recovery =
       Application.get_env(:intellectual_club, :recover_orphaned_generations_on_startup)

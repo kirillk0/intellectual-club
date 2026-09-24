@@ -1,4 +1,19 @@
 export const ruMessages: Record<string, string> = {
+  'This shared fork cannot be copied into an independent conversation.':
+    'Этот общий fork нельзя скопировать в независимую беседу.',
+  'Inherited live context': 'Наследуемый живой контекст',
+  'Read-only context from the source conversation. It may change when the source is edited.':
+    'Контекст исходной беседы только для чтения. Он может измениться при редактировании источника.',
+  'Inherited context is unavailable. The source may have been deleted or access was revoked.':
+    'Наследуемый контекст недоступен. Возможно, источник удалён или доступ отозван.',
+  'Inherited messages': 'Наследуемые сообщения',
+  'Open source conversation': 'Открыть исходную беседу',
+  'Attachment unavailable': 'Вложение недоступно',
+  'Linked fork history is read-only. Send a follow-up instead.':
+    'История связанного fork доступна только для чтения. Чтобы продолжить, отправьте новое сообщение.',
+  'Inherited context snapshot — read-only; source edits may change the live context.':
+    'Снимок наследуемого контекста — только для чтения; правки источника могут изменить живой контекст.',
+
   'Managed secrets': 'Управляемые секреты',
   'Secrets': 'Секреты',
   'The model sees secret names and environment variables, but never their values.':

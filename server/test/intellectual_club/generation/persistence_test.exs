@@ -16,7 +16,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
 
   require Ash.Query
 
-  test "rollback_steps_for_retry! removes the selected step range and resets the message" do
+  test "replace_steps_for_retry! removes the selected step range and resets the message" do
     %{user: actor} = user_fixture()
 
     chat =
@@ -55,8 +55,10 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     step_3 = create_step!(assistant_message.id, 3, actor)
     {item_3, content_3} = create_text_item!(step_3.id, 1, "step 3", actor)
 
-    :ok = Persistence.rollback_steps_for_retry!(assistant_message.id, 2)
+    replacement_id =
+      Persistence.replace_steps_for_retry!(assistant_message.id, 2, %{"retry" => true})
 
+    assert is_integer(replacement_id)
     assert {:ok, _step} = Ash.get(ChatMessageStep, step_1.id, actor: actor)
     assert {:ok, _item} = Ash.get(ChatMessageItem, item_1.id, actor: actor)
     assert {:ok, _content} = Ash.get(ChatMessageContent, content_1.id, actor: actor)
@@ -78,7 +80,13 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert message.error_detail == nil
     assert message.token_count == 0
     assert message.finished_at == nil
-    assert Enum.map(message.steps || [], & &1.sequence) == [1]
+    assert Enum.map(message.steps || [], & &1.sequence) == [1, 2]
+
+    replacement = Enum.find(message.steps, &(&1.sequence == 2))
+    assert replacement.id == replacement_id
+    assert replacement.status == :waiting_provider
+    assert replacement.raw_request == %{"retry" => true}
+    assert replacement.items == []
   end
 
   test "persisted intermediate steps get finished_at while the next step remains open" do

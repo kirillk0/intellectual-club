@@ -40,6 +40,7 @@ import type {
   Bot,
   Chat,
   ChatBranchMessage,
+  ForkContext,
   ChatContinuationNavItem,
   ChatExportPayload,
   ChatRelationSummary,
@@ -156,6 +157,8 @@ export function useChatViewModel() {
   const chatNote = ref('');
   const canEdit = computed(() => chat.value?.can_edit !== false);
   const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
+  const historyReadonly = computed(() => !canEdit.value || chat.value?.history_read_only === true);
+  const forkContext = ref<ForkContext | null>(null);
   const branch = ref<ChatBranchMessage[]>([]);
   const queuedMessages = ref<ChatQueuedMessage[]>([]);
   const relations = ref<ChatRelations>(emptyChatRelations());
@@ -344,7 +347,7 @@ export function useChatViewModel() {
   const contextPanel = useChatContextPanel({
     chatId,
     branch,
-    readOnly: sharedReadonly,
+    readOnly: historyReadonly,
     promptSources,
     promptBlocks,
     currentConfig: headerControls.currentConfig,
@@ -411,6 +414,7 @@ export function useChatViewModel() {
   });
 
   const messageActions = useChatMessageActions({
+    historyReadOnly: historyReadonly,
     chatId,
     chat,
     readOnly: sharedReadonly,
@@ -446,6 +450,7 @@ export function useChatViewModel() {
   });
 
   const inspectors = useChatInspectors({
+    historyReadOnly: historyReadonly,
     compiledPromptText,
     loadError,
     replaceBranch: messageActions.replaceBranch,
@@ -649,6 +654,7 @@ export function useChatViewModel() {
       activeGenerationId.value = null;
       cancelingGenerationId.value = null;
       queuedMessages.value = [];
+      forkContext.value = null;
       artifactToolsAvailable.value = false;
       chatBlockCount.value = 0;
       chatToolCount.value = 0;
@@ -687,6 +693,7 @@ export function useChatViewModel() {
       });
       chatNote.value = payload.chat?.note || '';
       branch.value = payload.branch || [];
+      forkContext.value = payload.fork_context || null;
       relations.value = payload.relations || emptyChatRelations();
       continuationNav.value = payload.continuation_nav || [];
       replaceQueuedMessages(payload.queued_messages || []);
@@ -733,6 +740,7 @@ export function useChatViewModel() {
       }
       chat.value = null;
       branch.value = [];
+      forkContext.value = null;
       relations.value = emptyChatRelations();
       continuationNav.value = [];
       queuedMessages.value = [];
@@ -974,7 +982,7 @@ export function useChatViewModel() {
   };
 
   const continueConversation = async () => {
-    if (!sharedReadonly.value || !chatId.value || continuingConversation.value) return;
+    if (!sharedReadonly.value || chat.value?.history_read_only === true || !chatId.value || continuingConversation.value) return;
     continuingConversation.value = true;
     try {
       const nextId = await continueChatRecord(chatId.value);
@@ -1110,6 +1118,8 @@ export function useChatViewModel() {
     chatNote,
     canEdit,
     sharedReadonly,
+    historyReadonly,
+    forkContext,
     branch,
     continuationNav,
     parentRelation,

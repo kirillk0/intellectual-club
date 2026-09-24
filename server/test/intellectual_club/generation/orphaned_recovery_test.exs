@@ -422,10 +422,10 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat.id]
 
-    assert get_in(fork_tool_result_raw!(parent_message, parent.call.item_id), [
-             "fork",
-             "chat_id"
-           ]) == child_chat.id
+    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
+
+    assert get_in(raw, ["fork", "chat_id"]) == child_chat.id,
+           inspect({raw, History.project_text_for_item_type(parent_message, :tool_result)})
 
     assert get_in(fork_tool_result_raw!(parent_message, parent.call.item_id), [
              "fork",
@@ -475,7 +475,28 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert raw == result.raw
   end
 
-  test "fork preserves a parallel provider response and closes every copied tool call" do
+  test "fork refuses an unfinished source response before publishing a child" do
+    %{user: actor} = user_fixture()
+    task = "Do not start from streaming context"
+    parent = create_parent_fork_call!(actor, task)
+
+    ChatMessageStep
+    |> Ash.get!(parent.step_id, actor: actor)
+    |> Ash.Changeset.for_update(:update, %{response_final: false}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    assert {:error, :invalid_fork_source} =
+             Fork.start_or_resume(
+               parent.tool_instance,
+               task,
+               fork_execution_context(parent, actor),
+               actor
+             )
+
+    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
+  end
+
+  test "fork preserves the parallel provider response without copying historical steps" do
     %{user: actor} = user_fixture()
     selected_task = "Investigate the selected branch"
 
@@ -508,55 +529,26 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         load: [steps: [:raw_request, :raw_response, items: [:contents]]]
       )
 
-    [copied_step, followup_step] = Enum.sort_by(child_message.steps, & &1.sequence)
+    [followup_step] = child_message.steps
+    assert followup_step.sequence == 1
+    assert followup_step.raw_response == nil
+    assert followup_step.input_tokens == nil
+    assert followup_step.items == []
+    assert child_message.parent_id == nil
 
-    assert copied_step.raw_response == parent.raw_response
+    child_chat = Ash.get!(Chat, reference.chat_id, actor: actor)
+    assert child_chat.fork_source_step_id == parent.step_id
+    assert child_chat.parent_tool_call_item_id == parent.call.item_id
+    assert child_chat.fork_task == selected_task
 
-    copied_calls =
-      copied_step.items
-      |> Enum.filter(&(&1.type == :tool_call))
-      |> Enum.sort_by(& &1.sequence)
+    assert Ash.count!(ChatMessage |> Ash.Query.filter(chat_id == ^child_chat.id), actor: actor) ==
+             1
 
-    copied_results =
-      copied_step.items
-      |> Enum.filter(&(&1.type == :tool_result))
-      |> Enum.sort_by(& &1.sequence)
-
-    [steering] = Enum.filter(copied_step.items, &(&1.type == :steering))
-    steering_text = History.item_text(steering)
-
-    assert length(copied_calls) == 2
-    assert length(copied_results) == 2
-    assert String.starts_with?(steering_text, "FORK CONTROL MESSAGE")
-    assert String.contains?(steering_text, "Execute only the task below")
-    assert String.contains?(steering_text, "Task:\n#{selected_task}")
-
-    [skipped_call, selected_call] = copied_calls
-
-    skipped_raw =
-      copied_results
-      |> Enum.find(&(&1.tool_call_item_id == skipped_call.id))
-      |> tool_result_raw_from_item!()
-
-    selected_raw =
-      copied_results
-      |> Enum.find(&(&1.tool_call_item_id == selected_call.id))
-      |> tool_result_raw_from_item!()
-
-    assert skipped_raw == %{
-             "fork_skipped" => %{
-               "reason" => "not_selected_for_subagent",
-               "selected_tool_call_id" => parent.call.call_id,
-               "skipped" => true
-             }
-           }
-
-    assert selected_raw == %{
-             "fork_instruction" => %{
-               "subagent" => true,
-               "task" => selected_task
-             }
-           }
+    {:ok, inherited} = IntellectualClub.Chat.ForkHistory.prefix(child_chat, actor)
+    projected_step = inherited |> List.last() |> Map.fetch!(:steps) |> List.last()
+    assert length(Enum.filter(projected_step.items, &(&1.type == :tool_call))) == 2
+    assert length(Enum.filter(projected_step.items, &(&1.type == :tool_result))) == 2
+    steering_text = IntellectualClub.Chat.ForkBoundary.steering(selected_task)
 
     messages = followup_step.raw_request["messages"]
     assistant_message = Enum.find(messages, &(&1["role"] == "assistant"))
@@ -587,6 +579,125 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     completed = wait_for_status!(reference.generation_message_id, actor, [:done], 6_000)
     assert completed.error_detail == nil
+  end
+
+  test "linked fork follows up without copying history and keeps its original result reference" do
+    %{user: actor} = user_fixture()
+    task = "Return a short delegated answer"
+    parent = create_parent_fork_call!(actor, task)
+    context = fork_execution_context(parent, actor)
+
+    assert {:ok, first} = Fork.start_or_resume(parent.tool_instance, task, context, actor)
+    original = wait_for_status!(first.generation_message_id, actor, [:done], 6_000)
+    assert {:ok, original_snapshot} = Fork.snapshot(first, actor)
+    assert original_snapshot.status == :completed
+
+    child = Ash.get!(Chat, first.chat_id, actor: actor)
+    assert child.fork_source_step_id == parent.step_id
+    assert child.fork_task == task
+    assert Ash.count!(ChatMessage |> Ash.Query.filter(chat_id == ^child.id), actor: actor) == 1
+
+    {:ok, _followup} =
+      Threads.add_message_to_end(child, :user, "Please expand that answer", actor: actor)
+
+    assert {:ok, followup} = GenerationSupervisor.start_generation(child.id, actor: actor)
+    followup_message = wait_for_status!(followup.message_id, actor, [:done], 6_000)
+    assert followup_message.error_detail == nil
+    refute followup.message_id == original.id
+
+    assert {:ok, resumed} = Fork.start_or_resume(parent.tool_instance, task, context, actor)
+    assert resumed.generation_message_id == original.id
+    assert {:ok, resumed_snapshot} = Fork.snapshot(resumed, actor)
+    assert resumed_snapshot.result.text == original_snapshot.result.text
+
+    # Only the child's own turns are physical records. Its parent continues separately.
+    assert Ash.count!(ChatMessage |> Ash.Query.filter(chat_id == ^child.id), actor: actor) == 3
+
+    {:ok, _late_parent} =
+      Threads.add_message_to_end(parent.chat, :user, "PARENT_ONLY_FUTURE", actor: actor)
+
+    history = IntellectualClub.Generation.Context.history_for_generation!(child.id, actor: actor)
+    refute inspect(history) =~ "PARENT_ONLY_FUTURE"
+    assert inspect(history) =~ "Please expand that answer"
+    {:ok, prefix} = IntellectualClub.Chat.ForkHistory.prefix(child.id, actor)
+    assert inspect(prefix, limit: :infinity) =~ task
+  end
+
+  test "separate parallel fork calls prepare independent local roots with no copied provider usage" do
+    %{user: actor} = user_fixture()
+    parent = create_parent_parallel_fork_calls!(actor, "Task one", "Task two")
+    test_process = self()
+
+    results =
+      parent.calls
+      |> Task.async_stream(
+        fn call ->
+          context = %{fork_execution_context(parent, actor) | tool_call_item_id: call.item_id}
+
+          Fork.start_or_resume(parent.tool_instance, call.args["task"], context, actor,
+            on_reference: fn reference ->
+              send(test_process, {:linked_prepared, reference})
+              {:error, :prepared_only}
+            end
+          )
+        end,
+        max_concurrency: 2,
+        timeout: :infinity
+      )
+      |> Enum.to_list()
+
+    assert results == [{:ok, {:error, :prepared_only}}, {:ok, {:error, :prepared_only}}]
+    assert_receive {:linked_prepared, first}
+    assert_receive {:linked_prepared, second}
+    refute first.chat_id == second.chat_id
+
+    for reference <- [first, second] do
+      messages =
+        ChatMessage
+        |> Ash.Query.filter(chat_id == ^reference.chat_id)
+        |> Ash.read!(actor: actor, load: [steps: [:raw_request]])
+
+      assert [%ChatMessage{parent_id: nil, steps: [step]}] = messages
+      assert step.sequence == 1
+      assert is_nil(step.input_tokens)
+      assert is_nil(step.output_tokens)
+      assert is_nil(step.cost)
+      assert Enum.count(step.raw_request["messages"], &(&1["role"] == "tool")) == 2
+    end
+  end
+
+  test "background fork authority locks chat before lifecycle message" do
+    %{user: actor} = user_fixture()
+    parent = create_parent_fork_call!(actor, "Check lock ordering")
+    task = create_fork_background_task!(actor, parent, "Check lock ordering", :running)
+    context = fork_execution_context(parent, actor)
+    test_pid = self()
+    handler_id = {__MODULE__, :fork_lock_order, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:intellectual_club, :repo, :query],
+        fn _event, _measurements, metadata, expected_pid ->
+          if self() == expected_pid and
+               String.contains?(metadata.query, ["FOR UPDATE", "FOR NO KEY UPDATE"]) do
+            send(expected_pid, {:authority_lock_query, metadata.query})
+          end
+        end,
+        test_pid
+      )
+
+    try do
+      assert :ok == BackgroundTasks.with_active_task_authority(task, context, fn -> :ok end)
+      assert_receive {:authority_lock_query, chat_query}
+      assert_receive {:authority_lock_query, message_query}
+      assert_receive {:authority_lock_query, task_query}
+      assert chat_query =~ ~s(FROM "chats")
+      assert message_query =~ ~s(FROM "chat_messages")
+      assert task_query =~ ~s(FROM "background_tasks")
+    after
+      :telemetry.detach(handler_id)
+    end
   end
 
   test "stale parent epoch cannot prepare a fork child" do
@@ -1249,7 +1360,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       |> Ash.Query.load([:items])
       |> Ash.read!(actor: actor)
 
-    assert Enum.map(steps, &{&1.sequence, &1.status}) == [{1, :done}, {2, :done}]
+    assert Enum.map(steps, &{&1.sequence, &1.status}) == [{1, :done}]
     refute Enum.any?(steps, &(&1.status == :canceled))
     assert Enum.count(List.last(steps).items, &(&1.type == :answer)) == 1
   end
@@ -2374,21 +2485,6 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           %{kind: :opaque, content_json: %{"raw" => %{} = raw}} -> raw
           _other -> nil
         end)
-    end
-  end
-
-  defp tool_result_raw_from_item!(item) do
-    item
-    |> History.opaque_payloads()
-    |> Enum.find_value(fn opaque ->
-      case Map.get(opaque, "raw") do
-        %{} = raw -> raw
-        _other -> nil
-      end
-    end)
-    |> case do
-      %{} = raw -> raw
-      _other -> flunk("Expected tool result raw payload")
     end
   end
 

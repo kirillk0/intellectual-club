@@ -18,6 +18,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
         {:ok, payload} ->
           json(conn, payload)
 
+        {:error, :fork_history_read_only} ->
+          ChatAccess.render_error(conn, :fork_history_read_only)
+
         {:error, :forbidden} ->
           ChatAccess.render_error(conn, :forbidden)
 
@@ -56,7 +59,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
         {:ok, payload} ->
           json(conn, payload)
 
-        {:error, error} when error in [:forbidden, :not_found] ->
+        {:error, error} when error in [:forbidden, :not_found, :fork_history_read_only] ->
           ChatAccess.render_error(conn, error)
 
         {:error, :queue_not_empty} ->

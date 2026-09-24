@@ -157,6 +157,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def chat_detail(%Chat{} = chat) do
     %{
       id: chat.id,
+      history_read_only: IntellectualClubWeb.Bff.ChatForkContext.linked?(chat),
       note: chat.note,
       bot_id: chat.bot_id,
       llm_configuration_id: chat.llm_configuration_id,

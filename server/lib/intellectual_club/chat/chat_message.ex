@@ -9,6 +9,8 @@ defmodule IntellectualClub.Chat.ChatMessage do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Chat.Changes.CleanupLinkedForks
+  alias IntellectualClub.Chat.Changes.RestrictLinkedForkMutations
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
   alias IntellectualClub.Chat.Changes.SetDefaultParentFromChatLastMessage
@@ -163,13 +165,21 @@ defmodule IntellectualClub.Chat.ChatMessage do
       primary?(true)
       require_atomic?(false)
       validate(PreventDestroyWithChildren)
-      change(cascade_destroy(:steps, after_action?: false))
+      change({RestrictLinkedForkMutations, mode: :destroy})
+      change({CleanupLinkedForks, []})
+      change({IntellectualClub.Chat.Changes.CascadePlannedDestroy, relationship: :steps})
     end
 
     destroy :destroy_with_children do
       require_atomic?(false)
-      change(cascade_destroy(:children, action: :destroy_with_children, after_action?: false))
-      change(cascade_destroy(:steps, after_action?: false))
+      change({CleanupLinkedForks, []})
+
+      change(
+        {IntellectualClub.Chat.Changes.CascadePlannedDestroy,
+         relationship: :children, action: :destroy_with_children}
+      )
+
+      change({IntellectualClub.Chat.Changes.CascadePlannedDestroy, relationship: :steps})
     end
 
     create :add_message do
@@ -231,6 +241,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change(relate_actor(:owner))
       change({RequireRelatedAccessByActor, relationships: [:chat], access: :writable})
       change(&prepare_user_message_contents/2)
+      change({RestrictLinkedForkMutations, mode: :append})
       change(&maybe_set_active_leaf_parent/2)
 
       change(

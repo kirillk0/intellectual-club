@@ -15,6 +15,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClubWeb.Bff.ChatForkContext
   alias IntellectualClubWeb.Bff.Loads
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -90,6 +91,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
 
         payload =
           serialize_chat(chat, family_ids, Map.fetch!(active_branches, chat.id),
+            fork_context: ChatForkContext.build(chat, actor, links?: false),
             context_blocks: context_blocks,
             context_tools: context_tools,
             chat_blocks: chat_blocks,
@@ -123,6 +125,9 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
   defp do_lineage_root(%Chat{id: id} = chat, actor, visited, hops) do
     cond do
       MapSet.member?(visited, id) ->
+        chat
+
+      ChatForkContext.linked?(chat) ->
         chat
 
       not is_integer(chat.parent_chat_id) ->
@@ -268,6 +273,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
       llm_configuration: serialize_configuration(Map.get(chat, :llm_configuration)),
       active_generation: Enum.any?(messages, &(&1.status == :generating)),
       messages: Enum.map(messages, &serialize_message/1),
+      fork_context: Keyword.fetch!(refs, :fork_context),
       context: %{
         blocks: Keyword.fetch!(refs, :context_blocks),
         tools: Keyword.fetch!(refs, :context_tools)

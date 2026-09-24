@@ -87,13 +87,14 @@ describe('ChatView loading state', () => {
     expect(document.querySelector('#toolbar-host')?.textContent).toContain('Закрыть');
   });
 
-  it('shows Steer, Queue, and Cancel together and keeps the shortcut on Steer', async () => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])('preserves composer availability (linked=%s, shared=%s)', async (historyReadOnly, sharedReadOnly) => {
     const submitComposer = vi.fn();
     const queueMessage = vi.fn();
     viewModelMocks.useChatViewModel.mockReturnValue({
       loaded: ref(true),
       chatUnavailable: ref(false),
-      chat: ref({ id: 1, bot_id: null, llm_configuration_id: 27 }),
+      chat: ref({ id: 1, bot_id: null, llm_configuration_id: 27, history_read_only: historyReadOnly }),
+      historyReadonly: ref(historyReadOnly || sharedReadOnly),
       chatSettingsReady: ref(true),
       chatSettingsStatus: ref('ready'),
       chatSettingsError: ref(''),
@@ -108,7 +109,7 @@ describe('ChatView loading state', () => {
       fallbackChildRelations: ref([]),
       parentRelationBanner: ref(null),
       handoffPending: ref(false),
-      sharedReadonly: ref(false),
+      sharedReadonly: ref(sharedReadOnly),
       continuingConversation: ref(false),
       queuedMessages: ref([]),
       queuedFollowUpHeadId: ref(null),
@@ -166,6 +167,14 @@ describe('ChatView loading state', () => {
       ChatMessageTreeOverlay: true,
       Teleport: true,
     });
+
+    if (sharedReadOnly) {
+      expect(wrapper.find('.chat-readonly-panel').exists()).toBe(true);
+      expect(wrapper.find('.chat-readonly-panel button').exists()).toBe(!historyReadOnly);
+      expect(wrapper.find('.chat-input-form').exists()).toBe(false);
+      if (historyReadOnly) expect(wrapper.text()).toContain('This shared fork cannot be copied');
+      return;
+    }
 
     expect(wrapper.findAll('.chat-composer__actions > button').map((button) => button.text())).toEqual([
       'Attach',

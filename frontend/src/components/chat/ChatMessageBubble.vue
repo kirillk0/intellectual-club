@@ -204,7 +204,7 @@
           </span>
           <div class="spacer"></div>
           <button
-            v-if="!readonly && msg.prev_sibling_id"
+            v-if="!historyLocked && msg.prev_sibling_id"
             class="icon-button message-action"
             type="button"
             @click="emit('switch-branch', 'prev')"
@@ -217,7 +217,7 @@
             <SvgIcon name="copy" />
           </button>
           <button
-            v-if="!readonly && !hasHandoffSystemEvent"
+            v-if="!historyLocked && !hasHandoffSystemEvent"
             class="icon-button message-action"
             type="button"
             :disabled="branchDisabled"
@@ -228,7 +228,7 @@
             <SvgIcon name="branch" />
           </button>
           <button
-            v-if="!readonly && msg.next_sibling_id"
+            v-if="!historyLocked && msg.next_sibling_id"
             class="icon-button message-action"
             type="button"
             @click="emit('switch-branch', 'next')"
@@ -296,7 +296,7 @@
             <span class="message-actions-menu__label">Bookmark</span>
           </button>
           <button
-            v-if="!readonly && !hasHandoffSystemEvent"
+            v-if="!historyLocked && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -310,7 +310,7 @@
             <span class="message-actions-menu__label">Edit</span>
           </button>
           <button
-            v-if="!readonly && !hasHandoffSystemEvent"
+            v-if="!historyLocked && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item"
             type="button"
             role="menuitem"
@@ -340,7 +340,7 @@
             <span class="message-actions-menu__label">{{ moveBranchToNewChatLabel }}</span>
           </button>
           <button
-            v-if="!readonly && !hasHandoffSystemEvent"
+            v-if="!historyLocked && !hasHandoffSystemEvent"
             class="menu-item message-actions-menu__item danger"
             type="button"
             role="menuitem"
@@ -412,6 +412,7 @@ interface Props {
   canDelete?: boolean;
   deleteTitle?: string;
   readonly?: boolean;
+  historyReadonly?: boolean;
   expectedHandoffEventKind?: HandoffSystemEventKind | null;
   registerRef?: (el: HTMLElement | null) => void;
 }
@@ -512,6 +513,7 @@ const hasMessageStats = computed(() => {
   ].some(hasMessageStatsValue);
 });
 
+const historyLocked = computed(() => props.readonly || props.historyReadonly === true);
 const showMoreActions = computed(() => !props.readonly || hasMessageStats.value);
 const moreMenuOpen = ref(false);
 const moreMenuRef = ref<HTMLElement | null>(null);
@@ -522,7 +524,7 @@ let enhanceMessageContentToken = 0;
 
 const canRetry = computed(
   () =>
-    !props.readonly &&
+    !historyLocked.value &&
     !hasHandoffSystemEvent.value &&
     Boolean(messageId.value) &&
     (msg.value.working?.step_count || 0) > 0
@@ -802,14 +804,14 @@ const previewAttachmentContents = computed(() => messageMediaContents.value);
 
 const branchDisabled = computed(() => {
   if (!messageId.value) return true;
-  if (props.readonly) return true;
+  if (historyLocked.value) return true;
   if (props.branchingAssistantId == null) return false;
   return props.branchingAssistantId === messageId.value;
 });
 
 const branchToNewChatDisabled = computed(() => {
   if (!messageId.value) return true;
-  if (props.readonly) return true;
+  if (historyLocked.value) return true;
   if (props.branchingNewChatMessageId == null) return false;
   return true;
 });
@@ -820,12 +822,12 @@ const hasSiblingBranches = computed(() => {
 });
 
 const canMoveBranchToNewChat = computed(
-  () => !props.readonly && !hasHandoffSystemEvent.value && hasSiblingBranches.value
+  () => !historyLocked.value && !hasHandoffSystemEvent.value && hasSiblingBranches.value
 );
 
 const moveBranchToNewChatDisabled = computed(() => {
   if (!messageId.value) return true;
-  if (props.readonly) return true;
+  if (historyLocked.value) return true;
   if (msg.value.status === 'generating') return true;
   if (props.movingBranchToNewChatMessageId == null) return false;
   return true;

@@ -8,6 +8,7 @@ defmodule IntellectualClub.Chat do
   use Ash.Domain, extensions: [AshJsonApi.Domain]
 
   resources do
+    resource(IntellectualClub.Chat.ForkHistoryRevision)
     resource(IntellectualClub.Chat.Chat)
     resource(IntellectualClub.Chat.ChatShare)
     resource(IntellectualClub.Chat.ChatUploadSession)

@@ -112,7 +112,7 @@
           :branch-search-loading="vm.branchSearchLoading"
           :branch-search-error="vm.branchSearchError"
           :branch-search-results="vm.branchSearchResults"
-          :readonly="vm.sharedReadonly"
+          :readonly="vm.historyReadonly"
           :branch="vm.branch"
           :linked-blocks="vm.linkedBlocks"
           :source-labels="vm.SOURCE_LABELS"
@@ -150,6 +150,10 @@
               <strong>{{ relationTitle(vm.parentRelationBanner) }}</strong>
             </RouterLink>
 
+            <ChatForkContext v-if="vm.forkContext" :context="vm.forkContext" />
+            <p v-if="vm.chat.history_read_only" class="muted" role="note">
+              {{ translate('Linked fork history is read-only. Send a follow-up instead.') }}
+            </p>
             <template v-for="(msg, idx) in vm.branch" :key="msg.id ?? idx">
               <ChatMessageBubble
                 :message="msg"
@@ -160,6 +164,7 @@
                 :retrying="vm.retryingMessageId === msg.id"
                 :bookmarking="vm.isBookmarkingMessage(msg.id)"
                 :readonly="vm.sharedReadonly"
+                :history-readonly="vm.historyReadonly"
                 :poll-reconnecting="vm.generationPollReconnecting && msg.id === vm.activeGenerationId"
                 :branching-assistant-id="vm.branchingAssistantId"
                 :branching-new-chat-message-id="vm.branchingNewChatMessageId"
@@ -263,9 +268,11 @@
           <div v-if="vm.sharedReadonly" class="chat-readonly-panel">
             <div>
               <strong>Shared read-only chat</strong>
-              <p class="muted">You can read live updates and artifacts. Continue to make your own copy.</p>
+              <p v-if="vm.chat.history_read_only" class="muted">{{ translate('This shared fork cannot be copied into an independent conversation.') }}</p>
+              <p v-else class="muted">You can read live updates and artifacts. Continue to make your own copy.</p>
             </div>
             <button
+              v-if="!vm.chat.history_read_only"
               class="primary"
               type="button"
               :disabled="vm.continuingConversation"
@@ -479,7 +486,7 @@
     <ChatMessageTreeOverlay
       :open="messageTreeOpen"
       :chat-id="vm.chat.id"
-      :readonly="vm.sharedReadonly"
+      :readonly="vm.historyReadonly"
       :branch="vm.branch"
       :message-meta-label="vm.messageMetaLabel"
       :message-text="vm.messagePrimaryText"
@@ -605,6 +612,7 @@
         :show-billing="vm.stepDetailsShowBilling"
         :show-response="vm.stepDetailsShowResponse"
         :retry-from-step-pending="vm.stepDetailsRetryFromStepPending"
+        :history-readonly="vm.historyReadonly"
         :request-loading="vm.stepDetailsRequestLoading"
         :request-error="vm.stepDetailsRequestError"
         :request-payload="vm.stepDetailsRequestPayload"
@@ -762,6 +770,7 @@ import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
 import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';
 import ChatStepRawModal from '@/components/chat/ChatStepRawModal.vue';
+import ChatForkContext from '@/components/chat/ChatForkContext.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import ChatQueuedMessagesPanel from '@/components/chat/ChatQueuedMessagesPanel.vue';
 import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';

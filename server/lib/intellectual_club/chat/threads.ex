@@ -8,6 +8,7 @@ defmodule IntellectualClub.Chat.Threads do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.LinkedForkCleanup
   alias IntellectualClub.TokenCounter
 
   require Ash.Query
@@ -341,7 +342,50 @@ defmodule IntellectualClub.Chat.Threads do
   Deletes a message while preserving descendants by reattaching direct children.
   """
   def delete_message_keep_children(chat_or_id, message_id, actor) do
-    chat = fetch_chat!(chat_or_id, actor)
+    result =
+      Ash.transaction([Chat, ChatMessage, ChatMessageStep], fn ->
+        try do
+          chat = fetch_chat!(chat_or_id, actor)
+
+          message =
+            ChatMessage
+            |> Ash.Query.filter(chat_id == ^chat.id and id == ^message_id)
+            |> Ash.read_one!(actor: actor)
+
+          if is_nil(message) do
+            {:error, :message_not_found}
+          else
+            LinkedForkCleanup.with_scope(
+              {:message_keep_children, message.id},
+              actor,
+              fn operation ->
+                # Fence before reparenting; the final destroy reuses this exact plan.
+                chat = fetch_chat!(chat.id, actor)
+                delete_message_keep_children_locked(chat, message_id, actor, operation)
+              end
+            )
+          end
+        rescue
+          error in [
+            ArgumentError,
+            Ash.Error.Invalid,
+            Ash.Error.Forbidden,
+            Ash.Error.Framework,
+            Ash.Error.Unknown
+          ] ->
+            # Also abort an existing caller transaction, rather than rescuing after
+            # nested Ash actions and leaving earlier reparent/active-leaf writes.
+            Ash.DataLayer.rollback(ChatMessage, error)
+        end
+      end)
+
+    case result do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_message_keep_children_locked(chat, message_id, actor, operation) do
     messages = load_messages(chat.id, actor)
     by_id = Map.new(messages, &{&1.id, &1})
     children = build_children_index(messages)
@@ -383,7 +427,7 @@ defmodule IntellectualClub.Chat.Threads do
             |> Ash.update!(actor: actor)
         end)
 
-        _ = Ash.destroy!(message, actor: actor)
+        _ = LinkedForkCleanup.destroy!(message, :destroy, operation, actor)
 
         {:ok, get_branch_with_meta(chat.id, actor)}
       end

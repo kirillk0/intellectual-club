@@ -31,6 +31,7 @@ type ScrollToLastMessage = (opts?: {
 }) => Promise<void> | void;
 
 type Params = {
+  historyReadOnly?: Ref<boolean>;
   compiledPromptText: Ref<string>;
   loadError: Ref<string>;
   replaceBranch: (nextBranch: ChatBranchMessage[] | null | undefined) => void;
@@ -258,6 +259,7 @@ export function useChatInspectors(params: Params) {
   };
 
   const retryFromStep = async () => {
+    if (params.historyReadOnly?.value) return;
     const messageId = stepDetailsMessageId.value;
     const step = stepDetailsStep.value;
     const stepId = Number(step?.id || 0);

@@ -1,6 +1,7 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 
 import { api, getApiErrorMessage } from '@/api/client';
+import { translate } from '@/i18n';
 import {
   createPendingChatFiles,
   mapContentToExistingAttachment,
@@ -35,6 +36,7 @@ type Params = {
   chatId: ComputedRef<number>;
   chat: Ref<Chat | null>;
   readOnly: ComputedRef<boolean>;
+  historyReadOnly?: ComputedRef<boolean>;
   branch: Ref<ChatBranchMessage[]>;
   selectedConfig: Ref<number | ''>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
@@ -62,6 +64,7 @@ export type OpenWorkingState = {
 };
 
 export function useChatMessageActions(params: Params) {
+  const historyReadOnly = computed(() => params.readOnly.value || params.historyReadOnly?.value === true);
   const copiedMessageId = ref<number | null>(null);
   const copiedAllMessageId = ref<number | null>(null);
   const retryingMessageId = ref<number | null>(null);
@@ -218,7 +221,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const canDeleteMessage = (msg: ChatBranchMessage, _idx: number) => {
-    if (params.readOnly.value) return false;
+    if (historyReadOnly.value) return false;
     if (!msg.id) return false;
     if (msg.status === 'generating') return false;
     if (deletingMessageId.value === msg.id) return false;
@@ -227,6 +230,7 @@ export function useChatMessageActions(params: Params) {
 
   const deleteMessageTitle = (msg: ChatBranchMessage, _idx: number) => {
     if (params.readOnly.value) return 'Shared chats are read-only';
+    if (historyReadOnly.value) return translate('Linked fork history is read-only. Send a follow-up instead.');
     if (!msg.id) return 'Message is not saved yet';
     if (msg.status === 'generating') return 'Cannot delete while generating';
     if (deletingMessageId.value === msg.id) return 'Deleting…';
@@ -375,7 +379,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const retryLastStep = async (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     const messageId = msg.id;
     if (!params.chatId.value || !messageId) return;
     if (retryingMessageId.value === messageId) return;
@@ -412,7 +416,7 @@ export function useChatMessageActions(params: Params) {
     direction?: 'prev' | 'next',
     targetId?: number
   ) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!params.chatId.value) return;
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[] }>(
@@ -431,7 +435,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const activateBranchHandler = async (messageId: number) => {
-    if (params.readOnly.value) return false;
+    if (historyReadOnly.value) return false;
     if (!params.chatId.value || !messageId) return false;
 
     try {
@@ -480,7 +484,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const startEdit = (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id) return;
     void params.clearPendingFilesCollection(editPendingFiles);
     const targets = extractEditableTextContents(msg);
@@ -502,7 +506,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const branchFromAssistant = async (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id || !params.chatId.value) return;
     if (branchingAssistantId.value === msg.id) return;
     branchingAssistantId.value = msg.id;
@@ -533,7 +537,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const openBranchModal = (msg: ChatBranchMessage, mode: Extract<EditModalMode, 'branch' | 'branch_new_chat'>) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id) return;
     void params.clearPendingFilesCollection(editPendingFiles);
     const attachments = extractEditableMediaContents(msg);
@@ -548,7 +552,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const startBranch = (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id) return;
     if (msg.role === 'user') {
       openBranchModal(msg, 'branch');
@@ -559,7 +563,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const branchAssistantToNewChat = async (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id || !params.chatId.value) return;
     if (branchingNewChatMessageId.value != null) return;
     branchingNewChatMessageId.value = msg.id;
@@ -589,7 +593,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const startBranchToNewChat = (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id) return;
     if (msg.role === 'user') {
       openBranchModal(msg, 'branch_new_chat');
@@ -600,7 +604,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const moveBranchToNewChat = async (msg: ChatBranchMessage) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!msg.id || !params.chatId.value) return;
     if (!hasSiblingBranches(msg)) return;
     if (movingBranchToNewChatMessageId.value != null) return;
@@ -651,7 +655,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const addEditPendingFiles = (files: File[]) => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!files.length) return;
     const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
 
@@ -667,7 +671,7 @@ export function useChatMessageActions(params: Params) {
   };
 
   const saveEdit = async () => {
-    if (params.readOnly.value) return;
+    if (historyReadOnly.value) return;
     if (!editingMessage.value?.id || savingEdit.value) return;
     const savingMessageId = editingMessage.value.id;
     savingEdit.value = true;

@@ -51,14 +51,14 @@
 
       <template v-else>
         <div class="step-actions-panel">
-          <p v-if="showGeneratingNote" class="muted step-actions-note">
+          <p v-if="!historyReadonly && showGeneratingNote" class="muted step-actions-note">
             Retry from this step is available after generation stops.
           </p>
           <button
-            v-else
+            v-else-if="!historyReadonly"
             type="button"
             class="link step-actions-link"
-            :disabled="!canRetryFromStep || retryFromStepPending"
+            :disabled="historyReadonly || !canRetryFromStep || retryFromStepPending"
             @click="emit('retry-from-step')"
           >
             {{ retryFromStepPending ? 'Retrying…' : 'Retry from this step' }}
@@ -97,6 +97,7 @@ interface Props {
   responseError?: string;
   responsePayload?: unknown;
   retryFromStepPending?: boolean;
+  historyReadonly?: boolean;
 }
 
 type TabKey = 'billing' | 'request' | 'response' | 'actions';

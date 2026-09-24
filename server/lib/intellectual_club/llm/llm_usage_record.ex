@@ -245,6 +245,29 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
       ])
     end
 
+    update :detach_deleted_references do
+      public?(false)
+      accept([])
+      argument :chat_ids, {:array, :integer}, allow_nil?: false, default: []
+      argument :message_ids, {:array, :integer}, allow_nil?: false, default: []
+      argument :step_ids, {:array, :integer}, allow_nil?: false, default: []
+      change(atomic_update(:chat_id, expr(if chat_id in ^arg(:chat_ids), do: nil, else: chat_id)))
+
+      change(
+        atomic_update(
+          :chat_message_id,
+          expr(if chat_message_id in ^arg(:message_ids), do: nil, else: chat_message_id)
+        )
+      )
+
+      change(
+        atomic_update(
+          :chat_message_step_id,
+          expr(if chat_message_step_id in ^arg(:step_ids), do: nil, else: chat_message_step_id)
+        )
+      )
+    end
+
     update :update do
       accept([
         :usage_user_id,

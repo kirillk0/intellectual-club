@@ -42,6 +42,32 @@ defmodule IntellectualClubWeb.Bff.ChatAccess do
     end
   end
 
+  def ensure_history_mutable(chat) do
+    if IntellectualClubWeb.Bff.ChatForkContext.linked?(chat),
+      do: {:error, :fork_history_read_only},
+      else: :ok
+  end
+
+  def ensure_append_only(chat, params) do
+    if IntellectualClubWeb.Bff.ChatForkContext.linked?(chat) and
+         Map.has_key?(params, "parent_id") and
+         IntellectualClubWeb.Bff.Helpers.parse_optional_integer(params["parent_id"]) !=
+           chat.last_message_id do
+      {:error, :fork_history_read_only}
+    else
+      :ok
+    end
+  end
+
+  def render_error(conn, :fork_history_read_only) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{
+      code: "fork_history_read_only",
+      error: "Linked fork history is read-only. Send a follow-up instead."
+    })
+  end
+
   def render_error(conn, {:validation, message}) do
     conn
     |> put_status(:unprocessable_entity)
