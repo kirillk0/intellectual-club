@@ -517,6 +517,79 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert load_step(fixture).status == :waiting_provider
   end
 
+  test "fence loss drains a committed intermediate writer without dispatching its tools" do
+    fixture = fixture()
+    gate_operations(fixture, provider_completed: :stop)
+    {:ok, lease} = Lease.acquire(fixture.message.id)
+    worker = start_worker(fixture, [], %{lease: lease, lease_owner: self()})
+    monitor = Process.monitor(worker)
+    assert_receive {:provider_started, _, provider, _request}, 2_000
+    send(provider, {:complete, :tools})
+    assert_receive {:barrier, :provider_completed, :stop, writer, _identity, gate}, 2_000
+    writer_monitor = Process.monitor(writer)
+
+    current = Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor)
+    assert current.generation_fence_token == lease.fence_token
+
+    current
+    |> Ash.Changeset.for_update(:set_generation_fence, %{generation_fence_token: nil},
+      actor: fixture.actor
+    )
+    |> Ash.update!(actor: fixture.actor)
+
+    assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).generation_fence_token ==
+             nil
+
+    Lease.trigger_validation()
+    _ = :sys.get_state(lease.manager)
+    state = :sys.get_state(worker)
+    assert state.lease_lost?
+    assert state.persistence_op.task.pid == writer
+    assert state.tool_task == nil
+    refute_receive {:DOWN, ^monitor, :process, ^worker, _}, 0
+    refute_receive {:DOWN, ^writer_monitor, :process, ^writer, _}, 0
+    Worker.queue_changed(worker)
+    send(worker, :consume_queued_steers)
+    assert :sys.get_state(worker).persistence_op.task.pid == writer
+
+    send(writer, {gate, :continue})
+    assert_receive {:DOWN, ^writer_monitor, :process, ^writer, :normal}, 2_000
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
+    assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :generating
+    assert length(Persistence.list_missing_tool_calls!(fixture.step_id)) == 1
+    assert Persistence.load_step_for_followup!(fixture.step_id).results == []
+    refute_receive {:provider_started, _, _, _}, 0
+    assert {:ok, replacement} = Lease.reserve(fixture.message.id)
+    assert :ok = Lease.release(replacement)
+  end
+
+  test "fence validation after cancellation commit preserves its acknowledged cancel result" do
+    fixture = fixture()
+    gate_operations(fixture, cancel: :stop)
+    {:ok, lease} = Lease.acquire(fixture.message.id)
+    worker = start_worker(fixture, [], %{lease: lease, lease_owner: self()})
+    monitor = Process.monitor(worker)
+    assert_receive {:provider_started, _, _provider, _request}, 2_000
+    cancel_ref = command(worker, :cancel_and_wait)
+    assert_receive {:barrier, :cancel, :stop, writer, _identity, gate}, 2_000
+    writer_monitor = Process.monitor(writer)
+    assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :canceled
+
+    Lease.trigger_validation()
+    _ = :sys.get_state(lease.manager)
+    assert :sys.get_state(worker).lease_lost?
+    refute_receive {^cancel_ref, _reply}, 0
+    refute_receive {:DOWN, ^writer_monitor, :process, ^writer, _}, 0
+    send(writer, {gate, :continue})
+    assert_receive {^cancel_ref, :ok}, 2_000
+    assert_receive {:DOWN, ^writer_monitor, :process, ^writer, :normal}, 2_000
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
+    message = Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor)
+    assert message.status == :canceled
+    assert message.generation_fence_token == nil
+    refute_receive {:provider_started, _, _, _}, 0
+  end
+
   test "lease remains owned until the in-flight write and cancellation resolve" do
     fixture = fixture()
     gate_operations(fixture, provider_completed: :stop, cancel: :start)
@@ -643,7 +716,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
 
   test "pending cancellation reconciles a committed retry when its acknowledgment is lost" do
     fixture = fixture()
-    gate_operations(fixture, auto_retry: :stop, cancel_recovery: :start)
+    gate_operations(fixture, auto_retry: :stop, failure_resolution: :start)
     worker = start_worker(fixture)
     monitor = Process.monitor(worker)
     assert_receive {:provider_started, _, provider, _request}, 2_000
@@ -653,7 +726,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     cancel_ref = command(worker, :cancel_and_wait)
     assert :sys.get_state(worker).cancel_requested?
     send(writer, {gate, :crash})
-    assert_receive {:barrier, :cancel_recovery, :start, writer, _identity, gate}, 2_000
+    assert_receive {:barrier, :failure_resolution, :start, writer, _identity, gate}, 2_000
     refute_receive {^cancel_ref, _reply}, 0
     send(writer, {gate, :continue})
     assert_receive {^cancel_ref, :ok}, 2_000
@@ -663,7 +736,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     refute_receive {:provider_started, _, _, _}, 0
   end
 
-  test "a committed round transition resumes the new request after writer failure and ignores its late result" do
+  test "a committed round transition reconciles in place after writer failure and ignores its late result" do
     fixture = fixture()
     handler = gate_operations(fixture, tool_followup: :stop)
     worker = start_worker(fixture)
@@ -672,27 +745,133 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     send(provider, {:complete, :tools})
     assert_receive {:barrier, :tool_followup, :stop, writer, identity, gate}, 2_000
     ref = :sys.get_state(worker).persistence_op.task.ref
-    send(writer, {gate, :crash})
-    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
-    :telemetry.detach(handler)
     [old_step, next_step] = steps(fixture)
-    assert old_step.status == :done
-    assert next_step.status == :waiting_provider
     request = StepRequests.request_for_step!(next_step.id, actor: fixture.actor)
-
-    recovered =
-      start_worker(fixture,
-        step_id: next_step.id,
-        request_payload: request,
-        initial_step_sequence: next_step.sequence,
-        initial_resume_mode: :steered_waiting_provider
-      )
+    :telemetry.detach(handler)
+    send(writer, {gate, :crash})
 
     assert_receive {:provider_started, _, _provider, ^request}, 2_000
-    send(recovered, {ref, {:persistence_result, identity, {:ok, :stale}}})
-    assert :sys.get_state(recovered).runtime_step.id == next_step.id
+    refute_receive {:DOWN, ^monitor, :process, ^worker, _}, 0
+    assert old_step.status == :done
+    assert next_step.status == :waiting_provider
+    assert :sys.get_state(worker).runtime_step.id == next_step.id
+
+    send(worker, {ref, {:persistence_result, identity, {:ok, :stale}}})
+    assert :sys.get_state(worker).runtime_step.id == next_step.id
     assert length(Persistence.load_step_for_followup!(old_step.id).results) == 1
-    cancel_worker(recovered)
+
+    assert Ash.get!(ChatMessage, fixture.message.id,
+             actor: fixture.actor,
+             load: [:generation_recovery]
+           ).generation_recovery == nil
+
+    cancel_worker(worker)
+  end
+
+  test "lost queued followup ACK installs the committed successor without generation recovery" do
+    fixture = fixture()
+    completed_handler = gate_operations(fixture, provider_completed: :stop)
+    followup_handler = gate_operations(fixture, tool_followup: :stop)
+    worker = start_worker(fixture)
+    monitor = Process.monitor(worker)
+    assert_receive {:provider_started, _, provider, _request}, 2_000
+    send(provider, {:complete, :tools})
+    assert_receive {:barrier, :provider_completed, :stop, writer, _identity, gate}, 2_000
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_steer(fixture.message.id, "Queued followup", fixture.actor)
+
+    :telemetry.detach(completed_handler)
+    send(writer, {gate, :continue})
+    assert_receive {:barrier, :tool_followup, :stop, writer, _identity, gate}, 2_000
+    [source, successor] = steps(fixture)
+    request = StepRequests.request_for_step!(successor.id, actor: fixture.actor)
+    assert Enum.count(request["messages"], &(&1["content"] == "Queued followup")) == 1
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, fixture.actor)
+    :telemetry.detach(followup_handler)
+    send(writer, {gate, :crash})
+
+    assert_receive {:provider_started, _, _provider, ^request}, 2_000
+    refute_receive {:DOWN, ^monitor, :process, ^worker, _}, 0
+    assert :sys.get_state(worker).runtime_step.id == successor.id
+    assert Enum.map(steps(fixture), & &1.id) == [source.id, successor.id]
+    assert length(Persistence.load_step_for_followup!(source.id).results) == 1
+
+    assert Ash.get!(ChatMessage, fixture.message.id,
+             actor: fixture.actor,
+             load: [:generation_recovery]
+           ).generation_recovery == nil
+
+    cancel_worker(worker)
+  end
+
+  test "queued steer rejection preserves a provider backoff intercepted before its timer starts" do
+    keys = [:generation_auto_retry_backoff_ms, :generation_auto_retry_jitter_ratio]
+    previous = Enum.map(keys, &{&1, Application.get_env(:intellectual_club, &1)})
+    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [60_000])
+    Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {key, nil} -> Application.delete_env(:intellectual_club, key)
+        {key, value} -> Application.put_env(:intellectual_club, key, value)
+      end)
+    end)
+
+    fixture = fixture()
+    gate_operations(fixture, auto_retry: :stop, steering_rejection: :stop)
+
+    worker =
+      start_worker(fixture,
+        adapter_module: IntellectualClub.Test.SteeringFailureAdapter,
+        test_reject_steering?: true
+      )
+
+    assert_receive {:provider_started, _, provider, _request}, 2_000
+    send(provider, :retry)
+    assert_receive {:barrier, :auto_retry, :stop, writer, _identity, gate}, 2_000
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_steer(
+               fixture.message.id,
+               "Rejected during backoff",
+               fixture.actor
+             )
+
+    send(worker, :consume_queued_steers)
+    assert :sys.get_state(worker).queue_dirty?
+    send(writer, {gate, :continue})
+    assert_receive {:barrier, :steering_rejection, :stop, writer, identity, gate}, 2_000
+    state = :sys.get_state(worker)
+    assert state.continuation == {:backoff, 60_000}
+    assert state.retry_timer_ref == nil
+
+    assert {:ok, %{status: :blocked, blocked_reason: "steering_failed"}} =
+             QueuedMessages.get(queued.id, fixture.actor)
+
+    ref = state.persistence_op.task.ref
+    :erlang.trace(worker, true, [:receive])
+    send(writer, {gate, :continue})
+    assert_receive {:trace, ^worker, :receive, {^ref, {:persistence_result, ^identity, _}}}, 2_000
+    state = :sys.get_state(worker)
+    assert state.phase == :backoff
+    {timer, _token} = state.retry_timer_ref
+    assert Process.read_timer(timer) > 50_000
+    refute_receive {:provider_started, _, _, _}, 0
+
+    # A queued retry sweep must not replace the existing provider timer either.
+    handler = gate_operations(fixture, queued_steers: :stop)
+    send(worker, :consume_queued_steers)
+    assert_receive {:barrier, :queued_steers, :stop, writer, identity, gate}, 2_000
+    :telemetry.detach(handler)
+    ref = :sys.get_state(worker).persistence_op.task.ref
+    send(writer, {gate, :continue})
+    assert_receive {:trace, ^worker, :receive, {^ref, {:persistence_result, ^identity, _}}}, 2_000
+    assert :sys.get_state(worker).retry_timer_ref == state.retry_timer_ref
+    assert Process.read_timer(timer) > 50_000
+    :erlang.trace(worker, false, [:receive])
+    refute_receive {:provider_started, _, _, _}, 0
+    cancel_worker(worker)
   end
 
   test "steering deferred behind a round transition replaces only its receiving step before provider dispatch" do

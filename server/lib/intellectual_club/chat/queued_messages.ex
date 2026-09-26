@@ -72,6 +72,48 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
+  @doc """
+  Quarantines unchanged pending steering for an owned, generating assistant message.
+
+  Each snapshot requires `:id` and exact `:text`; optional `:updated_at` must match
+  the revision returned by `list_pending_steers/2`. Changed, missing, or finished
+  entries are skipped, so repeating a rejection does not increment attempts again.
+  The owner actor is required; generation callers must also retain their lease fence.
+  """
+  @spec reject_steers(integer(), [map()], map()) :: {:ok, [integer()]} | {:error, term()}
+  def reject_steers(message_id, specs, %{id: actor_id} = actor)
+      when is_integer(message_id) and is_list(specs) and is_integer(actor_id) do
+    with :ok <- validate_steering_specs(specs),
+         {:ok, %ChatMessage{} = preliminary} <- fetch_owned_generation(message_id, actor) do
+      transact(fn ->
+        with {:ok, %Chat{} = chat} <- lock_owned_chat(preliminary.chat_id, actor),
+             {:ok, %ChatMessage{} = message} <- lock_owned_generation(message_id, actor),
+             :ok <- ensure_message_chat(message, chat),
+             :ok <- ensure_generating_steering_target(message),
+             {:ok, queued_messages} <- lock_rejected_steering_candidates(message, specs, actor) do
+          queued_messages
+          |> Enum.filter(fn queued_message ->
+            Enum.any?(specs, &steering_snapshot_matches?(queued_message, &1))
+          end)
+          |> Enum.map(fn queued_message ->
+            update_steer_state!(
+              queued_message,
+              %{
+                status: :blocked,
+                blocked_reason: "steering_failed",
+                attempt_count: queued_message.attempt_count + 1,
+                finished_at: nil
+              },
+              actor
+            ).id
+          end)
+        end
+      end)
+    end
+  end
+
+  def reject_steers(_message_id, _specs, _actor), do: {:error, :forbidden}
+
   @doc "Lists pending and blocked queue entries in FIFO order."
   @spec list_for_chat(integer(), map()) :: {:ok, [QueuedMessage.t()]} | {:error, term()}
   def list_for_chat(chat_id, actor) when is_integer(chat_id) and is_map(actor) do
@@ -121,6 +163,10 @@ defmodule IntellectualClub.Chat.QueuedMessages do
             actor
           )
 
+          if queued_message.kind == :steer do
+            update_steer_state!(queued_message, %{}, actor)
+          end
+
           load_one!(queued_message.id, actor)
         end
       end)
@@ -153,44 +199,11 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
-  @doc "Retries the blocked head follow-up after explicitly re-anchoring the backlog."
+  @doc "Retries quarantined steering or re-anchors the idle head follow-up backlog."
   @spec send_next(integer(), map()) :: {:ok, QueuedMessage.t()} | {:error, term()}
   def send_next(id, actor) when is_integer(id) and is_map(actor) do
     with {:ok, preliminary} <- get(id, actor) do
-      transact(fn ->
-        with {:ok, %Chat{} = chat} <- lock_owned_chat(preliminary.chat_id, actor),
-             :ok <- ensure_generation_idle(chat.id, actor),
-             {:ok, %QueuedMessage{} = requested} <- lock_one(id, actor),
-             :ok <- ensure_follow_up(requested),
-             :ok <- ensure_mutable(requested),
-             {:ok, %QueuedMessage{} = head} <- lock_head_follow_up(chat.id, actor),
-             :ok <- ensure_requested_head(requested, head),
-             {:ok, backlog} <- lock_follow_up_backlog(chat.id, actor) do
-          Enum.each(backlog, fn queued_message ->
-            update_state!(
-              queued_message,
-              %{
-                status: :pending,
-                blocked_reason: nil,
-                anchor_message_id: chat.last_message_id,
-                finished_at: nil
-              },
-              actor
-            )
-          end)
-
-          head
-          |> update_state!(
-            %{
-              status: :pending,
-              blocked_reason: nil,
-              anchor_message_id: chat.last_message_id
-            },
-            actor
-          )
-          |> load_queue!(actor)
-        end
-      end)
+      retry_queued_message(preliminary, actor)
     end
   end
 
@@ -303,6 +316,195 @@ defmodule IntellectualClub.Chat.QueuedMessages do
       %QueuedMessageContent{kind: :media} = content ->
         %{kind: :media, file_id: content.file_id}
     end)
+  end
+
+  defp validate_steering_specs(specs) do
+    if Enum.all?(specs, fn
+         %{id: id, text: text} = spec when is_integer(id) and is_binary(text) ->
+           not Map.has_key?(spec, :updated_at) or match?(%DateTime{}, spec.updated_at)
+
+         _other ->
+           false
+       end) do
+      :ok
+    else
+      {:error, :invalid_steering_specs}
+    end
+  end
+
+  defp ensure_generating_steering_target(%ChatMessage{role: :assistant, status: :generating}),
+    do: :ok
+
+  defp ensure_generating_steering_target(%ChatMessage{}),
+    do: {:error, :generation_not_active}
+
+  defp lock_rejected_steering_candidates(message, specs, actor) do
+    ids = specs |> Enum.map(& &1.id) |> Enum.uniq()
+
+    QueuedMessage
+    |> Ash.Query.filter(
+      id in ^ids and chat_id == ^message.chat_id and kind == :steer and status == :pending and
+        target_generation_message_id == ^message.id
+    )
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.load(:contents)
+    |> Ash.read(actor: actor, authorize?: true)
+  end
+
+  defp steering_snapshot_matches?(queued_message, spec) do
+    text =
+      queued_message
+      |> content_specs()
+      |> Enum.filter(&(&1.kind == :text))
+      |> Enum.map_join("", & &1.content_text)
+
+    spec.id == queued_message.id and spec.text == text and
+      (not Map.has_key?(spec, :updated_at) or spec.updated_at == queued_message.updated_at)
+  end
+
+  defp retry_queued_message(%QueuedMessage{kind: :steer} = preliminary, actor) do
+    with :ok <- ensure_quarantined_steer(preliminary),
+         {:ok, generation} <-
+           fetch_owned_generation(preliminary.target_generation_message_id, actor),
+         :ok <- validate_steering_target_state(generation) do
+      destination = late_follow_up_destination(generation, actor)
+
+      transact(fn ->
+        with {:ok, chats} <- lock_owned_chats([preliminary.chat_id, destination.chat_id], actor),
+             {:ok, message} <- lock_owned_generation(generation.id, actor),
+             :ok <- ensure_message_chat(message, Map.fetch!(chats, preliminary.chat_id)),
+             {:ok, attrs} <- steering_retry_attrs(message, chats, actor),
+             {:ok, requested} <- lock_one(preliminary.id, actor),
+             :ok <- ensure_quarantined_steer(requested),
+             :ok <- ensure_steering_retry_target(requested, message) do
+          requested
+          |> update_steer_state!(attrs, actor)
+          |> load_queue!(actor)
+        end
+      end)
+    end
+  end
+
+  defp retry_queued_message(preliminary, actor) do
+    transact(fn ->
+      with {:ok, %Chat{} = chat} <- lock_owned_chat(preliminary.chat_id, actor),
+           :ok <- ensure_generation_idle(chat.id, actor),
+           {:ok, %QueuedMessage{} = requested} <- lock_one(preliminary.id, actor),
+           :ok <- ensure_follow_up(requested),
+           :ok <- ensure_mutable(requested),
+           {:ok, %QueuedMessage{} = head} <- lock_head_follow_up(chat.id, actor),
+           :ok <- ensure_requested_head(requested, head),
+           {:ok, backlog} <- lock_follow_up_backlog(chat.id, actor) do
+        Enum.each(backlog, fn queued_message ->
+          update_state!(
+            queued_message,
+            %{
+              status: :pending,
+              blocked_reason: nil,
+              anchor_message_id: chat.last_message_id,
+              finished_at: nil
+            },
+            actor
+          )
+        end)
+
+        head
+        |> update_state!(
+          %{
+            status: :pending,
+            blocked_reason: nil,
+            anchor_message_id: chat.last_message_id
+          },
+          actor
+        )
+        |> load_queue!(actor)
+      end
+    end)
+  end
+
+  defp ensure_quarantined_steer(%QueuedMessage{
+         kind: :steer,
+         status: :blocked,
+         blocked_reason: "steering_failed"
+       }),
+       do: :ok
+
+  defp ensure_quarantined_steer(%QueuedMessage{}), do: {:error, :queued_steering_changed}
+
+  defp ensure_steering_retry_target(queued_message, message) do
+    if queued_message.chat_id == message.chat_id and
+         queued_message.target_generation_message_id == message.id do
+      :ok
+    else
+      {:error, :queued_steering_changed}
+    end
+  end
+
+  defp lock_owned_chats(ids, actor) do
+    ids
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, %{}}, fn id, {:ok, chats} ->
+      case lock_owned_chat(id, actor) do
+        {:ok, chat} -> {:cont, {:ok, Map.put(chats, id, chat)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp steering_retry_attrs(%ChatMessage{role: :assistant, status: :generating}, _chats, _actor) do
+    {:ok, %{status: :pending, blocked_reason: nil, finished_at: nil}}
+  end
+
+  defp steering_retry_attrs(
+         %ChatMessage{role: :assistant, status: status} = message,
+         chats,
+         actor
+       )
+       when status in [:done, :error, :canceled] do
+    destination = late_follow_up_destination(message, actor)
+
+    # A handoff committed while acquiring the source lock must be retried with
+    # both chat locks, never by acquiring another chat lock after message locks.
+    with %Chat{} = chat <- Map.get(chats, destination.chat_id),
+         :ok <- lock_retry_anchor(destination.anchor_message_id, message, chat, actor) do
+      {:ok,
+       Map.merge(destination, %{
+         kind: :follow_up,
+         target_generation_message_id: nil,
+         finished_at: nil
+       })}
+    else
+      nil -> {:error, :queued_steering_changed}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp steering_retry_attrs(%ChatMessage{}, _chats, _actor),
+    do: {:error, :generation_not_active}
+
+  defp lock_retry_anchor(nil, _message, _chat, _actor), do: :ok
+  defp lock_retry_anchor(id, %ChatMessage{id: id}, _chat, _actor), do: :ok
+
+  defp lock_retry_anchor(id, _message, chat, actor) do
+    with {:ok, anchor} <- lock_owned_generation(id, actor) do
+      ensure_message_chat(anchor, chat)
+    end
+  end
+
+  defp update_steer_state!(queued_message, attrs, actor) do
+    timestamp = now()
+
+    revision =
+      if DateTime.compare(timestamp, queued_message.updated_at) == :gt,
+        do: timestamp,
+        else: DateTime.add(queued_message.updated_at, 1, :microsecond)
+
+    queued_message
+    |> Ash.Changeset.for_update(:update_state, attrs, actor: actor)
+    |> Ash.Changeset.force_change_attribute(:updated_at, revision)
+    |> Ash.update!(actor: actor)
   end
 
   defp create_queued_message!(queue_attrs, content, file_ids, actor) do

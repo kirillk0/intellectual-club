@@ -2,6 +2,7 @@ defmodule IntellectualClub.Generation.PersistenceOperation do
   @moduledoc false
 
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.PersistenceFailure
 
   @supervisor IntellectualClub.Generation.PersistenceTasks
   @event [:intellectual_club, :generation, :persistence]
@@ -25,7 +26,10 @@ defmodule IntellectualClub.Generation.PersistenceOperation do
         watch_owner(owner)
         started = System.monotonic_time()
         :telemetry.execute(@event ++ [:start], %{system_time: System.system_time()}, identity)
-        result = fun.()
+        # An uncaught exception in a composite operation may follow a commit.
+        # Narrower helpers classify known rollback/preparation failures; this
+        # outer boundary is deliberately conservative and never replays work.
+        result = PersistenceFailure.capture(fun, kind, unknown_exception?: true)
 
         :telemetry.execute(
           @event ++ [:stop],

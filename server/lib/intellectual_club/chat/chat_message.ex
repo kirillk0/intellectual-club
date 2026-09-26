@@ -129,6 +129,12 @@ defmodule IntellectualClub.Chat.ChatMessage do
       public?(false)
     end
 
+    attribute :generation_recovery, :map do
+      allow_nil?(true)
+      public?(false)
+      select_by_default?(false)
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -320,6 +326,29 @@ defmodule IntellectualClub.Chat.ChatMessage do
       ])
 
       require_atomic?(false)
+    end
+
+    update :set_generation_recovery do
+      accept([])
+      require_atomic?(false)
+
+      argument :recovery, :map do
+        allow_nil?(true)
+        public?(false)
+      end
+
+      change(fn changeset, _context ->
+        case Ash.Changeset.fetch_argument(changeset, :recovery) do
+          {:ok, recovery} ->
+            Ash.Changeset.change_attribute(changeset, :generation_recovery, recovery)
+
+          :error ->
+            Ash.Changeset.add_error(changeset,
+              field: :recovery,
+              message: "must be explicitly set internally"
+            )
+        end
+      end)
     end
 
     update :set_generation_fence do

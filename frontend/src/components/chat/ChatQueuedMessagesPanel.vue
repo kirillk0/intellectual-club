@@ -51,7 +51,17 @@
               {{ translate('Remove from queue') }}
             </button>
             <button
-              v-if="canSendNext(message)"
+              v-if="isRetryableQueuedSteer(message)"
+              class="queued-message__send-next"
+              type="button"
+              :disabled="actionId !== null"
+              :aria-label="translate('Retry')"
+              @click="emit('send-next', message)"
+            >
+              {{ actionId === message.id ? translate('Retrying…') : translate('Retry') }}
+            </button>
+            <button
+              v-else-if="canSendNext(message)"
               class="queued-message__send-next"
               type="button"
               :disabled="actionId !== null"
@@ -95,6 +105,7 @@
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { fileIconByMime, formatFileBytes, type ExistingChatAttachment } from '@/features/chat/attachments';
 import {
+  isRetryableQueuedSteer,
   queuedMessageAttachments,
   queuedMessageText,
 } from '@/features/chat/model/useChatQueueRuntime';
@@ -138,6 +149,7 @@ const blockedReason = (reason: string) => {
     branch_changed: 'The active branch changed. The queue is paused.',
     head_removed: 'The first queued message was removed. The queue is paused.',
     empty_message: 'This queued message no longer contains sendable content.',
+    steering_failed: 'Steering could not be applied. Edit or retry it.',
   };
   return translate(labels[reason] || reason);
 };

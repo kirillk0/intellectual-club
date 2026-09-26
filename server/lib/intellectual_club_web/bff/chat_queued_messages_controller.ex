@@ -8,6 +8,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatParams
@@ -90,7 +91,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, queued_message_id} <- ChatParams.resource_id(id),
          {:ok, queued_message} <- QueuedMessages.send_next(queued_message_id, actor) do
-      kick_dispatcher(queued_message.chat_id)
+      notify_queued_message_changed(queued_message)
       json(conn, %{queued_message: ChatQueuedMessagePayload.queued_message(queued_message)})
     else
       {:error, error} -> render_error(conn, error)
@@ -174,6 +175,14 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
     end
   end
 
+  defp notify_queued_message_changed(%{kind: :steer, target_generation_message_id: message_id}) do
+    GenerationSupervisor.queue_changed(message_id)
+  end
+
+  defp notify_queued_message_changed(%{kind: :follow_up, chat_id: chat_id}) do
+    kick_dispatcher(chat_id)
+  end
+
   defp kick_dispatcher(chat_id) do
     if Code.ensure_loaded?(@dispatcher) and function_exported?(@dispatcher, :kick, 1) do
       _ = apply(@dispatcher, :kick, [chat_id])
@@ -189,6 +198,8 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
        when error in [
               :already_dispatched,
               :generation_active,
+              :generation_not_active,
+              :queued_steering_changed,
               :not_queue_head
             ] do
     conn
@@ -234,5 +245,10 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
 
   defp error_message(:already_dispatched), do: "This queued message is already finished."
   defp error_message(:generation_active), do: "Wait for the active generation to finish."
+  defp error_message(:generation_not_active), do: "Generation is no longer active."
+
+  defp error_message(:queued_steering_changed),
+    do: "This steering message changed. Refresh and try again."
+
   defp error_message(:not_queue_head), do: "Only the first follow-up can be sent next."
 end

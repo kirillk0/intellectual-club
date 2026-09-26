@@ -98,6 +98,7 @@ defmodule IntellectualClub.Chat.Subagent do
   Commits invocation authority and the durable reference before provider work starts.
 
   Returned reference or provider-start failures cancel the prepared child generation.
+  A durable recovery deferral preserves the committed reference and child.
   Process exits and throws are intentionally allowed to escape so durable preparation can
   be recovered after a crash.
   """
@@ -121,7 +122,8 @@ defmodule IntellectualClub.Chat.Subagent do
            with_invocation_authority(context, opts, fn ->
              commit_reference(reference, opts)
            end),
-         {:ok, %{} = started_reference} <- provider_start_fun.() do
+         {:ok, %{} = started_reference} <-
+           accept_deferred_start(provider_start_fun.(), reference) do
       {:ok, started_reference}
     else
       {:error, _reason} = error ->
@@ -136,6 +138,11 @@ defmodule IntellectualClub.Chat.Subagent do
 
   def start_invocation(_context, _reference, _opts, _cancel_fun, _provider_start_fun),
     do: {:error, :invalid_subagent_invocation}
+
+  defp accept_deferred_start({:error, {:recovery_deferred, _retry_at}}, reference),
+    do: {:ok, reference}
+
+  defp accept_deferred_start(result, _reference), do: result
 
   @spec ensure_creation_allowed(ToolInstance.t(), Chat.t(), map()) ::
           :ok | {:error, String.t()}
@@ -416,6 +423,9 @@ defmodule IntellectualClub.Chat.Subagent do
           :ok
 
         {:error, reason} when reason in [:already_running, :invalid_status] ->
+          :ok
+
+        {:error, {:recovery_deferred, _retry_at}} ->
           :ok
 
         {:error, :no_steps_to_retry} ->

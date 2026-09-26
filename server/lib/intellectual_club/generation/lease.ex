@@ -804,7 +804,7 @@ defmodule IntellectualClub.Generation.Lease do
 
   defp lease_transaction(resources, fun, opts)
        when is_function(fun, 0) and is_list(opts) do
-    case Ash.transaction(resources, fun, opts) do
+    case IntellectualClub.Generation.PersistenceFailure.ash_transaction(resources, fun, opts) do
       {:ok, {:ok, result}} -> {:ok, result}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}

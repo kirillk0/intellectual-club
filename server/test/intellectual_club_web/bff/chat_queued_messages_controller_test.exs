@@ -122,6 +122,115 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     assert %{"code" => "already_dispatched"} = json_response(delete_conn, 409)
   end
 
+  test "failed steering can be edited without resuming, then explicitly retried on its worker", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+    chat = create_chat!(actor)
+    generation = create_generating_message!(chat, actor)
+    {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Failed instruction", actor)
+
+    assert {:ok, [_]} =
+             QueuedMessages.reject_steers(
+               generation.id,
+               [%{id: queued.id, text: "Failed instruction", updated_at: queued.updated_at}],
+               actor
+             )
+
+    {:ok, _} =
+      Registry.register(IntellectualClub.Generation.Registry, {:message, generation.id}, %{})
+
+    edited =
+      conn
+      |> patch(~p"/api/bff/chat-queued-messages/#{queued.id}", %{"content" => "Fixed instruction"})
+      |> json_response(200)
+      |> Map.fetch!("queued_message")
+
+    assert edited["status"] == "blocked"
+    assert edited["blocked_reason"] == "steering_failed"
+    refute_received {:"$gen_cast", :queue_changed}
+
+    retried =
+      conn
+      |> post(~p"/api/bff/chat-queued-messages/#{queued.id}/send-next", %{})
+      |> json_response(200)
+      |> Map.fetch!("queued_message")
+
+    assert retried["id"] == queued.id
+    assert retried["kind"] == "steer"
+    assert retried["status"] == "pending"
+    assert retried["blocked_reason"] == nil
+    assert retried["target_generation_message_id"] == generation.id
+    assert retried["updated_at"] != edited["updated_at"]
+    assert_receive {:"$gen_cast", :queue_changed}
+
+    refused = post(conn, ~p"/api/bff/chat-queued-messages/#{queued.id}/send-next", %{})
+    assert %{"code" => "queued_steering_changed"} = json_response(refused, 409)
+    refute_received {:"$gen_cast", :queue_changed}
+  end
+
+  test "steering retry rejects another owner", %{conn: conn} do
+    %{user: actor} = user_fixture()
+    %{user: outsider, password: password} = user_fixture()
+    chat = create_chat!(actor)
+    generation = create_generating_message!(chat, actor)
+    {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Private instruction", actor)
+
+    assert {:ok, [_]} =
+             QueuedMessages.reject_steers(
+               generation.id,
+               [%{id: queued.id, text: "Private instruction"}],
+               actor
+             )
+
+    refused =
+      conn
+      |> sign_in_conn(outsider.username, password)
+      |> post(~p"/api/bff/chat-queued-messages/#{queued.id}/send-next", %{})
+
+    assert refused.status in [403, 404]
+
+    assert {:ok, %{status: :blocked, blocked_reason: "steering_failed"}} =
+             QueuedMessages.get(queued.id, actor)
+  end
+
+  test "retry after cancellation returns the same row as a paused follow-up", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+    chat = create_chat!(actor)
+    generation = create_generating_message!(chat, actor)
+    {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Retry later", actor)
+
+    assert {:ok, [_]} =
+             QueuedMessages.reject_steers(
+               generation.id,
+               [%{id: queued.id, text: "Retry later"}],
+               actor
+             )
+
+    generation
+    |> Ash.Changeset.for_update(
+      :set_generation_state,
+      %{status: :canceled, finished_at: DateTime.utc_now()},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    retried =
+      conn
+      |> post(~p"/api/bff/chat-queued-messages/#{queued.id}/send-next", %{})
+      |> json_response(200)
+      |> Map.fetch!("queued_message")
+
+    assert retried["id"] == queued.id
+    assert retried["kind"] == "follow_up"
+    assert retried["status"] == "blocked"
+    assert retried["blocked_reason"] == "generation_canceled"
+    assert retried["anchor_message_id"] == generation.id
+    assert retried["target_generation_message_id"] == nil
+  end
+
   defp create_chat!(actor) do
     Chat
     |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)

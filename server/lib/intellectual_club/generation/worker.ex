@@ -20,6 +20,8 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.PersistenceOperation
+  alias IntellectualClub.Generation.PersistenceFailure
+  alias IntellectualClub.Generation.RecoveryGate
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.RuntimeSnapshots
@@ -67,11 +69,16 @@ defmodule IntellectualClub.Generation.Worker do
     :snapshot_identity,
     :persistence_op,
     :persistence_action,
+    :failure_plan,
+    :failure_retry_timer,
+    :steering_attempt,
+    :steering_retry_timer,
     :deferred_provider_event,
     :deferred_tool_outcome,
     phase: :initializing,
     continuation: :idle,
     cancel_requested?: false,
+    lease_lost?: false,
     cancel_waiters: [],
     pending_steers: [],
     queue_dirty?: false
@@ -356,6 +363,14 @@ defmodule IntellectualClub.Generation.Worker do
     {:noreply, %{state | deferred_provider_event: state.deferred_provider_event || event}}
   end
 
+  def handle_info(
+        {:provider_event, stream_ref, {kind, _meta}} = event,
+        %{stream_ref: stream_ref, steering_attempt: %{resolving?: true}} = state
+      )
+      when kind in [:response_complete, :response_error] do
+    {:noreply, %{state | deferred_provider_event: state.deferred_provider_event || event}}
+  end
+
   @impl true
   def handle_info(
         {:provider_event, stream_ref, {:response_complete, meta}},
@@ -490,7 +505,7 @@ defmodule IntellectualClub.Generation.Worker do
     opts = state.tool_result_opts || []
     state = %{state | tool_task: nil, tool_result_opts: nil}
 
-    if state.persistence_op do
+    if not is_nil(state.persistence_op) or steering_resolving?(state) do
       {:noreply, %{state | deferred_tool_outcome: {:results, results, opts}}}
     else
       advance(state, {:tool_results, results, opts})
@@ -506,7 +521,7 @@ defmodule IntellectualClub.Generation.Worker do
       event = {:provider_event, state.stream_ref, {:response_error, %{error_text: error_text}}}
       state = %{state | stream_task: nil}
 
-      if state.persistence_op do
+      if not is_nil(state.persistence_op) or steering_resolving?(state) do
         {:noreply, %{state | deferred_provider_event: state.deferred_provider_event || event}}
       else
         finalize_error(state, error_text)
@@ -522,7 +537,7 @@ defmodule IntellectualClub.Generation.Worker do
       error_text = Exception.format_exit(reason)
       state = %{state | tool_task: nil, tool_result_opts: nil}
 
-      if state.persistence_op do
+      if not is_nil(state.persistence_op) or steering_resolving?(state) do
         {:noreply, %{state | deferred_tool_outcome: {:error, error_text}}}
       else
         finalize_error(state, error_text)
@@ -542,7 +557,13 @@ defmodule IntellectualClub.Generation.Worker do
       PersistenceOperation.acknowledge(state.persistence_op)
       action = state.persistence_action
       state = %{state | persistence_op: nil, persistence_action: nil}
-      persistence_finished(state, action, result)
+
+      if state.lease_lost? and not terminal_acknowledgement?(action, result) do
+        reply_failed_steering(action, :generation_not_active)
+        stop_obsolete_owner(state)
+      else
+        persistence_finished(state, action, result)
+      end
     else
       {:noreply, state}
     end
@@ -556,8 +577,48 @@ defmodule IntellectualClub.Generation.Worker do
     # Never rewrite a stale runtime snapshot or replay external work here.
     action = state.persistence_action
     state = %{state | persistence_op: nil, persistence_action: nil}
-    operation_failed(state, action, {:persistence_task_down, reason})
+
+    if state.lease_lost? do
+      reply_failed_steering(action, :generation_not_active)
+      stop_obsolete_owner(state)
+    else
+      operation_failed(state, action, PersistenceFailure.task_down(reason, action_kind(action)))
+    end
   end
+
+  def handle_info(
+        {:retry_failure_resolution, token},
+        %{failure_retry_timer: {_timer, token}} = state
+      ) do
+    state = %{state | failure_retry_timer: nil}
+    resolve_failure(state, failure_plan_for_cancel(state, state.failure_plan))
+  end
+
+  def handle_info({:retry_failure_resolution, _stale_token}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:retry_steering_reconciliation, token},
+        %{
+          steering_retry_timer: {_timer, token},
+          steering_attempt: %{retry_followup_opts: opts}
+        } = state
+      ) do
+    state = %{state | steering_retry_timer: nil, steering_attempt: nil}
+    advance(state, {:tool_results, [], opts})
+  end
+
+  def handle_info(
+        {:retry_steering_reconciliation, token},
+        %{steering_retry_timer: {_timer, token}} = state
+      ) do
+    state = %{state | steering_retry_timer: nil}
+
+    if Map.get(state.steering_attempt, :rejecting?, false),
+      do: reject_queued_steering(state),
+      else: reconcile_steering(state)
+  end
+
+  def handle_info({:retry_steering_reconciliation, _stale_token}, state), do: {:noreply, state}
 
   def handle_info(:publish_runtime_snapshot, state) do
     Process.send_after(self(), :publish_runtime_snapshot, 1_000)
@@ -632,9 +693,23 @@ defmodule IntellectualClub.Generation.Worker do
   def handle_cast(:cancel, state), do: request_cancel(state, nil)
 
   def handle_cast(:generation_fence_lost, state) do
-    state = cancel_tasks(state)
-    state = stop_provider_session(state)
-    {:stop, :normal, state}
+    state = state |> cancel_tasks() |> stop_provider_session()
+
+    if state.persistence_op do
+      # Terminal commit clears the fence before the writer's aftermath/ACK.
+      # Drain that writer instead of killing an active SQL borrower. No new
+      # work may start; the Lease manager's existing force-stop grace remains.
+      {:noreply,
+       publish_snapshot(%{
+         state
+         | lease_lost?: true,
+           phase: :recovering,
+           deferred_provider_event: nil,
+           deferred_tool_outcome: nil
+       })}
+    else
+      stop_obsolete_owner(state)
+    end
   end
 
   def handle_cast(:queue_changed, state) do
@@ -670,26 +745,36 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp persist_cancellation(state) do
-    safe_chat_persist_value(state, :canceled, fn ->
-      if durable_waiting_tools_step?(state.runtime_step) do
-        Persistence.persist_canceled_from_step!(state.context.message_id, state.runtime_step.id)
-      else
-        Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
-      end
+    with {:ok, :recorded} <-
+           RecoveryGate.record_failure(
+             state.context.message_id,
+             state.lease,
+             %User{id: state.context.owner_id},
+             operation: :cancel,
+             error: "Generation canceled",
+             terminal_status: :canceled
+           ) do
+      safe_chat_persist_value(state, :canceled, fn ->
+        if durable_waiting_tools_step?(state.runtime_step) do
+          Persistence.persist_canceled_from_step!(state.context.message_id, state.runtime_step.id)
+        else
+          Persistence.persist_canceled!(state.context.message_id, state.runtime_step)
+        end
 
-      _ = settle_terminal_queue!(state, :canceled)
-      _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
-      record_terminal_event!(state, :canceled, false)
-      :ok
-    end)
+        _ = settle_terminal_queue!(state, :canceled)
+        _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
+        record_terminal_event!(state, :canceled, false)
+        :ok
+      end)
+    end
   end
 
   defp consume_queued_steers_signal(state) do
     cond do
-      state.status != :generating ->
+      state.status != :generating or state.lease_lost? or not is_nil(state.failure_plan) ->
         {:noreply, state}
 
-      state.persistence_op ->
+      not is_nil(state.persistence_op) or steering_resolving?(state) ->
         {:noreply, %{state | queue_dirty?: true}}
 
       state.runtime_step.status != :waiting_provider ->
@@ -715,30 +800,58 @@ defmodule IntellectualClub.Generation.Worker do
     state = %{state | queue_dirty?: false, continuation: continuation}
 
     {:noreply,
-     begin_persistence(state, action, fn ->
-       consume_queued_steers_waiting_provider(state)
+     begin_steering(state, action, :before_response, fn operation_id ->
+       consume_queued_steers_waiting_provider(state, operation_id)
      end)}
   end
 
-  defp consume_queued_steers_waiting_provider(state) do
-    with {:ok, queued_messages} <- QueuedMessages.list_pending_steers(state.context.message_id),
-         specs when specs != [] <- queued_steering_specs(queued_messages),
-         steering_items <- Enum.map(specs, &%{text: &1.text, placement: :before_response}),
-         {:ok, injected} <-
-           inject_steering_request(state, state.runtime_step.raw_request, steering_items) do
-      safe_request_persist_value(state, :queued_steering_before_response, fn ->
-        Persistence.persist_queued_steering_before_provider!(
-          state.context.message_id,
-          state.runtime_step.id,
-          specs,
-          injected.raw_request,
-          request_step_options(state)
-        )
-      end)
-    else
-      [] -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
+  defp consume_queued_steers_waiting_provider(state, operation_id) do
+    case read_pending_steers(state) do
+      {:ok, queued_messages} ->
+        specs = queued_steering_specs(queued_messages)
+
+        if specs == [] do
+          {:ok, nil}
+        else
+          steering_result(
+            fn ->
+              with {:ok, injected} <-
+                     inject_steering_request(
+                       state,
+                       state.runtime_step.raw_request,
+                       Enum.map(specs, &%{text: &1.text, placement: :before_response})
+                     ) do
+                safe_request_persist_value(state, :queued_steering_before_response, fn ->
+                  Persistence.persist_queued_steering_before_provider!(
+                    state.context.message_id,
+                    state.runtime_step.id,
+                    specs,
+                    injected.raw_request,
+                    Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
+                  )
+                end)
+              end
+            end,
+            specs
+          )
+        end
+
+      {:error, reason} ->
+        {:error, {:steering_rejected, reason, nil}}
     end
+  end
+
+  defp read_pending_steers(state) do
+    # Keep read-side driver errors typed and inside the optional command scope,
+    # so Ash wrapping cannot turn a queue outage into a failed base followup.
+    PersistenceFailure.capture(
+      fn ->
+        QueuedMessages.list_pending_steers(state.context.message_id, %User{
+          id: state.context.owner_id
+        })
+      end,
+      :queued_steering_read
+    )
   end
 
   defp queued_steering_retry_state(state, reason) do
@@ -769,57 +882,65 @@ defmodule IntellectualClub.Generation.Worker do
         |> Enum.filter(&(&1.kind == :text))
         |> Enum.map_join("", &to_string(&1.content_text || ""))
 
-      %{id: queued_message.id, text: text}
+      %{id: queued_message.id, text: text, updated_at: queued_message.updated_at}
     end)
     |> Enum.reject(&(&1.text == ""))
     |> Enum.sort_by(& &1.id)
   end
 
   defp steer_waiting_provider(state, text, from) do
+    # Retain already received usage without canceling the live request or
+    # consuming its deferred terminal event before publication is acknowledged.
+    state = absorb_deferred_provider_meta(state)
+
     retry_pending? =
       not is_nil(state.retry_timer_ref) or match?({:backoff, _delay}, state.continuation)
 
-    state =
-      state
-      |> absorb_deferred_provider_meta()
-      |> cancel_retry_timer()
-      |> cancel_stream_task()
-
     {:noreply,
-     begin_persistence(state, {:steer_provider, from, retry_pending?}, fn ->
-       with {:ok, injected} <-
-              inject_steering_request(state, state.runtime_step.raw_request, [
-                %{text: text, placement: :before_response}
-              ]) do
-         safe_request_persist_value(state, :steering_before_response, fn ->
-           Persistence.persist_steering_before_provider!(
-             state.context.message_id,
-             state.runtime_step.id,
-             text,
-             injected.raw_request,
-             request_step_options(state)
-           )
-         end)
+     begin_steering(
+       state,
+       {:steer_provider, from, retry_pending?},
+       :before_response,
+       fn operation_id ->
+         with {:ok, injected} <-
+                inject_steering_request(state, state.runtime_step.raw_request, [
+                  %{text: text, placement: :before_response}
+                ]) do
+           safe_request_persist_value(state, :steering_before_response, fn ->
+             Persistence.persist_steering_before_provider!(
+               state.context.message_id,
+               state.runtime_step.id,
+               text,
+               injected.raw_request,
+               Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
+             )
+           end)
+         end
        end
-     end)}
+     )}
   end
 
   defp steer_waiting_tools(state, text, from) do
     {:noreply,
-     begin_persistence(state, {:steer_tools, from}, fn ->
+     begin_steering(state, {:steer_tools, from}, :after_response, fn operation_id ->
        with {:ok, persisted} <-
               safe_persist_value(state, :steering_handoff_check, fn ->
                 Persistence.load_step_for_followup!(state.runtime_step.id,
                   raw_request: state.runtime_step.raw_request
                 )
               end),
-            false <- Enum.any?(persisted.tool_calls, &handoff_tool_call?(state, &1)) do
+            false <- Enum.any?(persisted.tool_calls, &handoff_tool_call?(state, &1)),
+            {:ok, _validated} <-
+              inject_steering_request(state, state.runtime_step.raw_request, [
+                %{text: text, placement: :after_response}
+              ]) do
          safe_persist_value(state, :steering_after_response, fn ->
            Persistence.persist_steering_after_provider!(
              state.context.message_id,
              state.runtime_step.id,
              text,
-             raw_request: state.runtime_step.raw_request
+             raw_request: state.runtime_step.raw_request,
+             steering_operation_id: operation_id
            )
          end)
        else
@@ -827,6 +948,142 @@ defmodule IntellectualClub.Generation.Worker do
          {:error, reason} -> {:error, reason}
        end
      end)}
+  end
+
+  defp begin_steering(state, action, placement, fun) do
+    operation_id = Ecto.UUID.generate()
+
+    state = %{
+      state
+      | steering_attempt: %{
+          id: operation_id,
+          step_id: state.runtime_step.id,
+          placement: placement,
+          action: action,
+          resolving?: false
+        }
+    }
+
+    begin_persistence(state, action, fn -> fun.(operation_id) end)
+  end
+
+  defp steering_result(fun, specs) do
+    case PersistenceFailure.capture(fun, :steering) do
+      {:error, reason} -> {:error, {:steering_rejected, reason, specs}}
+      {:ok, {:error, reason}} -> {:error, {:steering_rejected, reason, specs}}
+      result -> result
+    end
+  end
+
+  defp steering_resolving?(%{steering_attempt: %{resolving?: true}}), do: true
+  defp steering_resolving?(_state), do: false
+
+  defp reconcile_steering(%{steering_attempt: attempt} = state) do
+    {:noreply,
+     begin_persistence(state, :steering_reconciliation, fn ->
+       safe_chat_persist_value(state, :steering_reconciliation, fn ->
+         Persistence.reconcile_steering!(
+           state.context.message_id,
+           attempt.step_id,
+           attempt.id,
+           attempt.placement,
+           raw_request: state.runtime_step.raw_request
+         )
+       end)
+     end)}
+  end
+
+  defp reject_queued_steering(%{steering_attempt: attempt} = state) do
+    # This idempotent queue-only write is deliberately separate from canonical
+    # reconciliation. Its failure must not become a failure of the generation.
+    state = %{state | steering_attempt: Map.put(attempt, :rejecting?, true)}
+
+    {:noreply,
+     begin_persistence(state, :steering_rejection, fn ->
+       safe_chat_persist_value(state, :steering_rejection, fn ->
+         case QueuedMessages.reject_steers(
+                state.context.message_id,
+                attempt.specs,
+                %User{id: state.context.owner_id}
+              ) do
+           {:ok, _ids} -> :ok
+           {:error, reason} -> raise PersistenceFailure.new(reason, operation: :reject_steers)
+         end
+       end)
+     end)}
+  end
+
+  defp rejected_queue_batch?(attempt) do
+    is_list(attempt.specs) and attempt.specs != [] and
+      attempt.failure.kind in [:permanent, :retry_exhausted] and
+      attempt.failure.reason != :queued_steering_changed
+  end
+
+  defp reject_steering_command(%{steering_attempt: attempt} = state) do
+    state = %{state | steering_attempt: nil}
+    reply_failed_steering(attempt.action, attempt.failure.reason)
+
+    case attempt.action do
+      {:queued_steers, _continuation, _retry?, _started?} ->
+        # A rejected batch is durable and will not be silently re-applied. Read
+        # failures or unknown outcomes proven rolled back only retry the queue.
+        state = queued_steering_retry_state(state, attempt.failure.kind)
+        schedule_queued_steering_retry(state)
+        broadcast(state, {:steering, state.context.message_id})
+
+        continuation =
+          case state.continuation do
+            {:backoff, _delay} = backoff -> backoff
+            _other -> :idle
+          end
+
+        advance(state, continuation)
+
+      {:tool_followup, opts} ->
+        state = queued_steering_retry_state(state, attempt.failure.kind)
+        delay = min(50 * state.queued_steering_retry_attempt, 5_000)
+        token = make_ref()
+        timer = Process.send_after(self(), {:retry_steering_reconciliation, token}, delay)
+
+        {:noreply,
+         publish_snapshot(%{
+           state
+           | steering_attempt: %{resolving?: true, retry_followup_opts: opts},
+             steering_retry_timer: {timer, token},
+             phase: :persisting
+         })}
+
+      _direct_command ->
+        advance(state, state.continuation)
+    end
+  end
+
+  defp retry_steering_reconciliation(%{steering_attempt: attempt} = state, failure) do
+    cond do
+      failure.kind == :lease_lost ->
+        stop_obsolete_owner(state)
+
+      failure.kind in [:permanent, :retry_exhausted] and attempt.retries >= 2 and
+          not Map.get(attempt, :rejecting?, false) ->
+        # Corrupt canonical state is not a rejected command. Fail closed rather
+        # than trusting an old snapshot or replaying the publication.
+        reply_failed_steering(attempt.action, failure.reason)
+        operation_failed(%{state | steering_attempt: nil}, :steering_canonical_state, failure)
+
+      true ->
+        delay = Enum.at([250, 1_000, 5_000], min(attempt.retries, 2))
+        token = make_ref()
+        timer = Process.send_after(self(), {:retry_steering_reconciliation, token}, delay)
+        PersistenceFailure.log(failure, state.context.message_id, attempt.step_id)
+
+        {:noreply,
+         publish_snapshot(%{
+           state
+           | steering_attempt: %{attempt | retries: attempt.retries + 1},
+             steering_retry_timer: {timer, token},
+             phase: :recovering
+         })}
+    end
   end
 
   defp inject_steering_request(state, raw_request, steering_items)
@@ -1009,23 +1266,6 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp persist_terminal_error_from_step(state, step_id, error_text)
-       when is_integer(step_id) do
-    case safe_chat_persist_value(state, :completion_effect_error, fn ->
-           Persistence.persist_error_from_step!(state.context.message_id, step_id, error_text)
-           _ = settle_terminal_queue!(state, :error)
-
-           _ =
-             BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
-
-           record_terminal_event!(state, :error, false)
-           :ok
-         end) do
-      {:ok, :ok} -> :ok
-      {:error, _reason} = error -> error
-    end
-  end
-
   defp terminal_handoff_payload(step_id, opts) do
     case Keyword.get(opts, :terminal_handoff) do
       %{} = payload ->
@@ -1189,22 +1429,32 @@ defmodule IntellectualClub.Generation.Worker do
 
     {:noreply,
      begin_persistence(state, {:error, error_text}, fn ->
-       safe_chat_persist_value(state, :error, fn ->
-         if durable_waiting_tools_step?(runtime_step) do
-           Persistence.persist_error_from_step!(
-             state.context.message_id,
-             runtime_step.id,
-             error_text
-           )
-         else
-           Persistence.persist_error!(state.context.message_id, runtime_step, error_text)
-         end
+       with {:ok, :recorded} <-
+              RecoveryGate.record_failure(
+                state.context.message_id,
+                state.lease,
+                %User{id: state.context.owner_id},
+                operation: :error,
+                error: to_string(error_text || "Provider error"),
+                terminal_status: :error
+              ) do
+         safe_chat_persist_value(state, :error, fn ->
+           if durable_waiting_tools_step?(runtime_step) do
+             Persistence.persist_error_from_step!(
+               state.context.message_id,
+               runtime_step.id,
+               error_text
+             )
+           else
+             Persistence.persist_error!(state.context.message_id, runtime_step, error_text)
+           end
 
-         _ = settle_terminal_queue!(state, :error)
-         _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
-         record_terminal_event!(state, :error, false)
-         :ok
-       end)
+           _ = settle_terminal_queue!(state, :error)
+           _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
+           record_terminal_event!(state, :error, false)
+           :ok
+         end)
+       end
      end)}
   end
 
@@ -1595,36 +1845,20 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp safe_persist_value(%__MODULE__{} = state, status, fun, fence_fun)
        when is_function(fun, 0) and is_function(fence_fun, 2) do
-    message_id = state.context.message_id
+    PersistenceFailure.capture(
+      fn ->
+        case fence_fun.(state, fun) do
+          {:error, reason} = error ->
+            if generation_fence_lost?(reason),
+              do: exit({:generation_lease_lost, reason}),
+              else: error
 
-    try do
-      case fence_fun.(state, fun) do
-        {:error, reason} = error ->
-          if generation_fence_lost?(reason),
-            do: exit({:generation_lease_lost, reason}),
-            else: error
-
-        result ->
-          result
-      end
-    rescue
-      exception ->
-        Logger.warning(
-          "Generation persistence failed (message_id=#{message_id}, status=#{status}): #{Exception.message(exception)}"
-        )
-
-        {:error, exception}
-    catch
-      :exit, {:generation_lease_lost, _reason} = reason ->
-        exit(reason)
-
-      :exit, reason ->
-        Logger.warning(
-          "Generation persistence exited (message_id=#{message_id}, status=#{status}): #{inspect(reason)}"
-        )
-
-        exit({:generation_persistence_unknown, reason})
-    end
+          result ->
+            result
+        end
+      end,
+      status
+    )
   end
 
   defp fenced_call(%__MODULE__{lease: %Lease{} = lease}, fun) when is_function(fun, 0) do
@@ -2023,7 +2257,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
     {:noreply,
-     begin_persistence(state, {:tool_followup, opts}, fn ->
+     begin_steering(state, {:tool_followup, opts}, :followup, fn operation_id ->
        with {:ok, persisted} <-
               safe_persist_value(state, :tool_results, fn ->
                 Persistence.load_step_for_followup!(state.runtime_step.id,
@@ -2035,7 +2269,7 @@ defmodule IntellectualClub.Generation.Worker do
              {:ok, {:handoff, payload}}
 
            nil ->
-             case prepare_tool_followup(state, persisted) do
+             case prepare_tool_followup(state, persisted, operation_id) do
                {:ok, _followup, next_step} -> {:ok, {:next_step, next_step}}
                {:error, reason} -> {:error, reason}
              end
@@ -2071,26 +2305,31 @@ defmodule IntellectualClub.Generation.Worker do
         })
 
       with {:ok, followup} <-
-             maybe_inject_steering(
-               state,
-               followup,
-               Map.get(persisted, :steering_items, [])
-             ),
-           {:ok, queued_messages} <-
-             QueuedMessages.list_pending_steers(state.context.message_id),
-           queued_specs = queued_steering_specs(queued_messages),
-           {:ok, followup} <-
-             maybe_inject_steering(
-               state,
-               followup,
-               Enum.map(queued_specs, &%{text: &1.text, placement: :before_response})
-             ) do
-        {:ok, followup, queued_specs}
+             maybe_inject_steering(state, followup, Map.get(persisted, :steering_items, [])) do
+        case read_pending_steers(state) do
+          {:ok, queued_messages} ->
+            specs = queued_steering_specs(queued_messages)
+
+            case maybe_inject_steering(
+                   state,
+                   followup,
+                   Enum.map(specs, &%{text: &1.text, placement: :before_response})
+                 ) do
+              {:ok, injected} -> {:ok, injected, specs}
+              {:error, reason} -> {:error, {:steering_rejected, reason, specs}}
+            end
+
+          {:error, reason} ->
+            {:error, {:steering_rejected, reason, nil}}
+        end
       end
     rescue
-      exception -> {:error, exception}
+      exception ->
+        {:error,
+         PersistenceFailure.new(exception, operation: :tool_followup, stacktrace: __STACKTRACE__)}
     catch
-      kind, reason -> {:error, {kind, reason}}
+      :exit, reason -> {:error, PersistenceFailure.task_down(reason, :tool_followup)}
+      kind, reason -> {:error, PersistenceFailure.new({kind, reason}, operation: :tool_followup)}
     end
   end
 
@@ -2100,7 +2339,7 @@ defmodule IntellectualClub.Generation.Worker do
     inject_steering_request(state, followup.raw_request, steering_items)
   end
 
-  defp prepare_tool_followup(state, persisted, attempt \\ 0) do
+  defp prepare_tool_followup(state, persisted, operation_id, attempt \\ 0) do
     with {:ok, followup, queued_specs} <- build_followup_with_steering(state, persisted) do
       result =
         safe_request_persist_value(state, :step_done, fn ->
@@ -2110,7 +2349,7 @@ defmodule IntellectualClub.Generation.Worker do
               state.runtime_step.id,
               state.step_sequence + 1,
               followup.raw_request,
-              request_step_options(state)
+              Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
             )
           else
             Persistence.complete_step_and_start_next_with_queued_steering!(
@@ -2119,7 +2358,7 @@ defmodule IntellectualClub.Generation.Worker do
               state.step_sequence + 1,
               followup.raw_request,
               queued_specs,
-              request_step_options(state)
+              Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
             )
           end
         end)
@@ -2129,13 +2368,16 @@ defmodule IntellectualClub.Generation.Worker do
           {:ok, followup, next_step}
 
         {:ok, {:error, :queued_steering_changed}} when attempt < 8 ->
-          prepare_tool_followup(state, persisted, attempt + 1)
+          prepare_tool_followup(state, persisted, operation_id, attempt + 1)
 
         {:error, :queued_steering_changed} when attempt < 8 ->
-          prepare_tool_followup(state, persisted, attempt + 1)
+          prepare_tool_followup(state, persisted, operation_id, attempt + 1)
 
         {:ok, {:error, reason}} ->
-          {:error, reason}
+          {:error, {:steering_rejected, reason, queued_specs}}
+
+        {:error, reason} when queued_specs != [] ->
+          {:error, {:steering_rejected, reason, queued_specs}}
 
         {:error, reason} ->
           {:error, reason}
@@ -2159,7 +2401,7 @@ defmodule IntellectualClub.Generation.Worker do
         )
 
     state =
-      next_state
+      %{next_state | steering_attempt: nil}
       |> install_runtime_step(runtime_step)
       |> Map.put(:step_attempt, 1)
       |> Map.put(:tool_round, next_state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
@@ -2228,12 +2470,15 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp persistence_finished(state, {:tool_followup, _opts}, {:ok, {:handoff, payload}}) do
-    advance(state, {:done, state.runtime_step.id, [terminal_handoff: payload]})
+    advance(
+      %{state | steering_attempt: nil},
+      {:done, state.runtime_step.id, [terminal_handoff: payload]}
+    )
   end
 
   defp persistence_finished(state, {:queued_steers, continuation, _retry?, _started?}, {:ok, nil}) do
     continuation = if state.continuation == :idle, do: continuation, else: state.continuation
-    state = %{state | queued_steering_retry_attempt: 0}
+    state = %{state | queued_steering_retry_attempt: 0, steering_attempt: nil}
     advance(state, continuation)
   end
 
@@ -2271,14 +2516,14 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp persistence_finished(state, {:steer_tools, from}, {:ok, persisted}) do
-    state = install_runtime_step(state, persisted.runtime_step)
+    state = install_runtime_step(%{state | steering_attempt: nil}, persisted.runtime_step)
     reply_steering(from, state, persisted)
     advance(state, state.continuation)
   end
 
   defp persistence_finished(state, {:steer_tools, from}, {:error, :terminal_handoff_in_progress}) do
     GenServer.reply(from, {:error, :terminal_handoff_in_progress})
-    advance(state, state.continuation)
+    advance(%{state | steering_attempt: nil}, state.continuation)
   end
 
   defp persistence_finished(state, {:done, _step_id}, {:ok, effect}) do
@@ -2292,23 +2537,6 @@ defmodule IntellectualClub.Generation.Worker do
 
     broadcast(state, {:done, state.context.message_id})
     finish_terminal(state, :done)
-  end
-
-  defp persistence_finished(
-         state,
-         {:done, step_id},
-         {:error, %CompletionEffectFailure{message: error_text}}
-       ) do
-    {:noreply,
-     begin_persistence(state, {:terminal_error, error_text}, fn ->
-       persist_terminal_error_from_step(state, step_id, error_text)
-     end)}
-  end
-
-  defp persistence_finished(state, {:terminal_error, error_text}, :ok) do
-    finish_error_queue(state)
-    broadcast(state, {:error, state.context.message_id, error_text})
-    finish_terminal(state, :error)
   end
 
   defp persistence_finished(state, {:error, error_text}, {:ok, :ok}) do
@@ -2325,11 +2553,81 @@ defmodule IntellectualClub.Generation.Worker do
     finish_terminal(state, :canceled)
   end
 
-  defp persistence_finished(state, action, result) do
-    operation_failed(state, action, {:persistence_failed, action_kind(action), result})
+  defp persistence_finished(state, action, {:ok, {:finished, status}})
+       when action in [:cancel, :cancel_recovery] do
+    finish_terminal(state, status)
   end
 
+  defp persistence_finished(state, {:error, _text}, {:ok, {:finished, status}}) do
+    finish_terminal(state, status)
+  end
+
+  defp persistence_finished(state, {:failure_resolution, plan}, {:ok, :recorded}) do
+    if state.cancel_requested? and is_nil(plan.terminal_status) do
+      resolve_failure(state, %{plan | terminal_status: :canceled})
+    else
+      stop_for_recovery(state, plan.error)
+    end
+  end
+
+  defp persistence_finished(state, {:failure_resolution, _plan}, {:ok, {:finished, status}}) do
+    finish_terminal(state, status)
+  end
+
+  defp persistence_finished(state, {:failure_resolution, plan}, {:ok, status})
+       when status in [:error, :canceled, :done] do
+    event =
+      if status == :error,
+        do: {:error, state.context.message_id, plan.error},
+        else: {status, state.context.message_id}
+
+    broadcast(state, event)
+    finish_terminal(state, status)
+  end
+
+  defp persistence_finished(state, {:failure_resolution, plan}, result) do
+    retry_failure_resolution(state, plan, failure_from_result(result, :failure_resolution))
+  end
+
+  defp persistence_finished(state, :steering_reconciliation, {:ok, {:applied, persisted}}) do
+    action = state.steering_attempt.action
+
+    result =
+      if match?({:tool_followup, _opts}, action), do: {:next_step, persisted}, else: persisted
+
+    persistence_finished(%{state | steering_attempt: nil}, action, {:ok, result})
+  end
+
+  defp persistence_finished(state, :steering_reconciliation, {:ok, :not_applied}) do
+    if rejected_queue_batch?(state.steering_attempt),
+      do: reject_queued_steering(state),
+      else: reject_steering_command(state)
+  end
+
+  defp persistence_finished(state, :steering_rejection, {:ok, :ok}) do
+    reject_steering_command(state)
+  end
+
+  defp persistence_finished(state, :steering_rejection, result) do
+    retry_steering_reconciliation(state, failure_from_result(result, :steering_rejection))
+  end
+
+  defp persistence_finished(state, :steering_reconciliation, result) do
+    retry_steering_reconciliation(state, failure_from_result(result, :steering_reconciliation))
+  end
+
+  defp persistence_finished(state, action, result) do
+    operation_failed(state, action, failure_from_result(result, action_kind(action)))
+  end
+
+  defp failure_from_result({:error, reason}, operation),
+    do: PersistenceFailure.new(reason, operation: operation)
+
+  defp failure_from_result(result, operation),
+    do: PersistenceFailure.new({:unexpected_result, result}, operation: operation)
+
   defp install_provider_steering(state, action, persisted) do
+    state = %{state | steering_attempt: nil}
     # Until provider completion is durably acknowledged, steering still replaces
     # the request. Account for an already received response on its source step,
     # but never persist its interrupted answer/tool items or dispatch its tools.
@@ -2385,33 +2683,183 @@ defmodule IntellectualClub.Generation.Worker do
     advance(state, :start_stream)
   end
 
-  defp operation_failed(state, action, reason) do
-    reply_failed_steering(action, reason)
+  defp steering_operation_failed(state, attempt, action, failure) do
+    {reason, specs} =
+      case failure.reason do
+        {:steering_rejected, reason, specs} -> {reason, specs}
+        _reason -> {failure, nil}
+      end
 
-    if state.cancel_requested? and action != :cancel_recovery do
-      # The writer has finished or died, but its commit may already be durable.
-      # Reconcile cancellation from DB state rather than rewriting the old step.
-      {:noreply,
-       begin_persistence(state, :cancel_recovery, fn ->
-         safe_chat_persist_value(state, :cancel_recovery, fn ->
-           token = if state.lease, do: state.lease.fence_token, else: nil
+    failure = PersistenceFailure.new(reason, operation: action_kind(action))
+    PersistenceFailure.log(failure, state.context.message_id, attempt.step_id)
 
-           case Persistence.cancel_generating_message!(state.context.message_id,
-                  expected_fence_token: {:expected, token}
+    if failure.kind == :lease_lost do
+      stop_obsolete_owner(state)
+    else
+      attempt =
+        Map.merge(attempt, %{failure: failure, specs: specs, resolving?: true, retries: 0})
+
+      reconcile_steering(%{state | steering_attempt: attempt})
+    end
+  end
+
+  defp operation_failed(state, operation, failure)
+       when operation in [:steering_reconciliation, :steering_rejection] do
+    retry_steering_reconciliation(state, failure)
+  end
+
+  defp operation_failed(
+         %{steering_attempt: %{} = attempt} = state,
+         {:tool_followup, _opts} = action,
+         %PersistenceFailure{reason: {:steering_rejected, _reason, _specs}} = failure
+       ) do
+    steering_operation_failed(state, attempt, action, failure)
+  end
+
+  defp operation_failed(
+         %{steering_attempt: %{} = attempt} = state,
+         {:tool_followup, _opts} = action,
+         %PersistenceFailure{kind: :unknown} = failure
+       ) do
+    steering_operation_failed(state, attempt, action, failure)
+  end
+
+  defp operation_failed(
+         %{steering_attempt: %{} = _attempt} = state,
+         {:tool_followup, _opts} = action,
+         failure
+       ) do
+    operation_failed(%{state | steering_attempt: nil}, action, failure)
+  end
+
+  defp operation_failed(%{steering_attempt: %{} = attempt} = state, action, failure)
+       when is_tuple(action) and
+              elem(action, 0) in [:steer_provider, :steer_tools, :queued_steers] do
+    steering_operation_failed(state, attempt, action, failure)
+  end
+
+  defp operation_failed(state, {:failure_resolution, plan}, failure) do
+    retry_failure_resolution(state, plan, failure)
+  end
+
+  defp operation_failed(state, action, %PersistenceFailure{} = failure) do
+    failure = %{failure | operation: action_kind(action)}
+    PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
+    reply_failed_steering(action, failure.kind)
+
+    if failure.kind == :lease_lost do
+      # An obsolete owner may neither terminalize nor mark the successor.
+      stop_obsolete_owner(state)
+    else
+      terminal_status =
+        cond do
+          state.cancel_requested? or action_kind(action) in [:cancel, :cancel_recovery] ->
+            :canceled
+
+          action_kind(action) in [:error, :terminal_error] ->
+            :error
+
+          failure.kind in [:permanent, :retry_exhausted] ->
+            :error
+
+          true ->
+            nil
+        end
+
+      error =
+        case action do
+          {:error, original} -> to_string(original)
+          {:terminal_error, original} -> to_string(original)
+          _ -> PersistenceFailure.summary(failure)
+        end
+
+      resolve_failure(state, %{
+        operation: action_kind(action),
+        error: error,
+        terminal_status: terminal_status,
+        attempt: 0
+      })
+    end
+  end
+
+  defp resolve_failure(state, plan) do
+    state = state |> cancel_tasks() |> stop_provider_session()
+    plan = failure_plan_for_cancel(state, plan)
+
+    state = %{
+      state
+      | failure_plan: plan,
+        deferred_provider_event: nil,
+        deferred_tool_outcome: nil
+    }
+
+    actor = %User{id: state.context.owner_id}
+
+    {:noreply,
+     begin_persistence(state, {:failure_resolution, plan}, fn ->
+       PersistenceFailure.capture(
+         fn ->
+           case RecoveryGate.record_failure(state.context.message_id, state.lease, actor,
+                  operation: plan.operation,
+                  error: plan.error,
+                  terminal_status: plan.terminal_status
                 ) do
-             :canceled ->
-               _ = settle_terminal_queue!(state, :canceled)
-               _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
-               record_terminal_event!(state, :canceled, false)
-               :ok
+             {:ok, :recorded} when not is_nil(plan.terminal_status) ->
+               RecoveryGate.finish(state.context.message_id, state.lease, actor)
 
              other ->
                other
            end
-         end)
-       end)}
-    else
-      stop_for_recovery(state, reason)
+         end,
+         :failure_resolution
+       )
+     end)}
+  end
+
+  defp failure_plan_for_cancel(%{cancel_requested?: true}, %{terminal_status: nil} = plan),
+    do: %{plan | terminal_status: :canceled}
+
+  defp failure_plan_for_cancel(_state, plan), do: plan
+
+  defp retry_failure_resolution(state, plan, failure) do
+    cond do
+      failure.kind == :lease_lost ->
+        operation_failed(state, :failure_resolution, failure)
+
+      failure.kind in [:permanent, :retry_exhausted] and plan.attempt >= 2 ->
+        # A broken finalizer is not a database outage. Stop this owner after a
+        # bounded attempt; the durable terminal intent makes later recovery
+        # terminal-only. If intent registration itself failed, admission still
+        # bounds restarts instead of resetting the budget with a new Worker.
+        PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
+
+        Logger.error(
+          "Generation failure reconciliation exhausted message_id=#{state.context.message_id}"
+        )
+
+        stop_for_recovery(state, plan.error)
+
+      true ->
+        # Retry ONLY the intent/terminal reconciliation, never the failed provider,
+        # tool or snapshot. Once recorded, the intent also survives owner death.
+        attempt = plan.attempt + 1
+        delay = Enum.at([250, 1_000, 5_000], min(attempt - 1, 2))
+        token = make_ref()
+        timer = Process.send_after(self(), {:retry_failure_resolution, token}, delay)
+        PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
+
+        Logger.warning(
+          "Generation error finalization pending message_id=#{state.context.message_id} " <>
+            "attempt=#{attempt} delay_ms=#{delay}"
+        )
+
+        {:noreply,
+         publish_snapshot(%{
+           state
+           | failure_plan: %{plan | attempt: attempt},
+             failure_retry_timer: {timer, token},
+             phase: :recovering
+         })}
     end
   end
 
@@ -2419,7 +2867,9 @@ defmodule IntellectualClub.Generation.Worker do
   defp action_kind(action), do: action
 
   defp retry_queued_steering(state) do
-    state = queued_steering_retry_state(state, :queued_steering_changed)
+    state =
+      queued_steering_retry_state(%{state | steering_attempt: nil}, :queued_steering_changed)
+
     schedule_queued_steering_retry(state)
     advance(state, :idle)
   end
@@ -2494,9 +2944,17 @@ defmodule IntellectualClub.Generation.Worker do
   # Steering before a provider-completion commit interrupts the source; its
   # deferred response is accounted separately before the receiving step runs.
   # In particular, a canceled follow-up cancels its NEW step, never the old raw.
+  defp advance(%{lease_lost?: true} = state, _continuation), do: {:noreply, state}
+
   defp advance(%{persistence_op: %PersistenceOperation{}} = state, continuation) do
     {:noreply, %{state | continuation: continuation}}
   end
+
+  defp advance(%{steering_attempt: %{resolving?: true}} = state, continuation),
+    do: {:noreply, %{state | continuation: continuation}}
+
+  defp advance(%{failure_plan: plan} = state, _continuation) when not is_nil(plan),
+    do: {:noreply, state}
 
   defp advance(%{cancel_requested?: true} = state, _continuation) do
     state = %{cancel_tasks(state) | continuation: :idle}
@@ -2579,13 +3037,14 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp terminal_operation?(state),
     do:
-      action_kind(state.persistence_action) in [
-        :done,
-        :error,
-        :terminal_error,
-        :cancel,
-        :cancel_recovery
-      ]
+      state.lease_lost? or not is_nil(state.failure_plan) or
+        action_kind(state.persistence_action) in [
+          :done,
+          :error,
+          :terminal_error,
+          :cancel,
+          :cancel_recovery
+        ]
 
   defp finish_terminal(state, status) do
     cancel_result = if status == :canceled, do: :ok, else: {:error, :generation_not_active}
@@ -2613,6 +3072,35 @@ defmodule IntellectualClub.Generation.Worker do
     {:stop, :normal, state}
   end
 
+  # A confirmed terminal commit may resolve pending cancel callers even after
+  # validation observes its cleared fence. All intermediate results are discarded.
+  defp terminal_acknowledgement?({:done, _step_id}, {:ok, effect}) do
+    match?({:queue_boundary, _}, effect) or match?({:handoff, _}, effect) or
+      match?({:terminal_handoff, _, _}, effect)
+  end
+
+  defp terminal_acknowledgement?({:error, _text}, {:ok, :ok}), do: true
+
+  defp terminal_acknowledgement?(action, {:ok, :ok})
+       when action in [:cancel, :cancel_recovery], do: true
+
+  defp terminal_acknowledgement?(action, {:ok, {:finished, status}})
+       when status in [:done, :error, :canceled],
+       do: action_kind(action) in [:error, :cancel, :cancel_recovery, :failure_resolution]
+
+  defp terminal_acknowledgement?({:failure_resolution, _plan}, {:ok, status})
+       when status in [:done, :error, :canceled], do: true
+
+  defp terminal_acknowledgement?(_action, _result), do: false
+
+  defp stop_obsolete_owner(state) do
+    if state.steering_attempt && Map.has_key?(state.steering_attempt, :action),
+      do: reply_failed_steering(state.steering_attempt.action, :generation_not_active)
+
+    reply_pending_commands(state, {:error, :generation_not_active})
+    {:stop, :normal, state |> cancel_tasks() |> stop_provider_session()}
+  end
+
   defp stop_for_recovery(state, reason) do
     Logger.warning(
       "Generation persistence requires recovery " <>
@@ -2637,7 +3125,8 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp ensure_dispatch_allowed!(state) do
-    if state.persistence_op || state.cancel_requested? ||
+    if state.persistence_op || state.failure_plan || state.steering_attempt || state.lease_lost? ||
+         state.cancel_requested? ||
          (state.lease && not Lease.valid?(state.lease)) do
       exit({:generation_lease_lost, :dispatch_not_allowed})
     end

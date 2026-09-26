@@ -197,6 +197,25 @@ describe('chat composer runtime', () => {
     expect(loadError.value).toBe('Failed to steer generation.');
   });
 
+  it('preserves draft and pending files on a refused steer while quarantined instructions remain visible', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const rejected = { ...queuedSteer(), status: 'blocked', blocked_reason: 'steering_failed' } satisfies ChatQueuedMessage;
+    const error = { status: 422, bodyJson: { code: 'steering_failed' } };
+    apiMocks.isHttpError.mockImplementation((value) => value === error);
+    apiMocks.post.mockRejectedValueOnce(error);
+    const { runtime, queuedMessages, onQueuedMessageCreated } = createRuntime(31, false, [rejected]);
+    const file = pendingFile();
+    runtime.pendingFiles.value = [file];
+    runtime.draft.value = 'Keep this correction';
+
+    await runtime.steerGeneration();
+
+    expect(runtime.draft.value).toBe('Keep this correction');
+    expect(runtime.pendingFiles.value).toEqual([file]);
+    expect(queuedMessages.value).toEqual([rejected]);
+    expect(onQueuedMessageCreated).not.toHaveBeenCalled();
+  });
+
   it('localizes a structured steering rejection', async () => {
     const error = { bodyJson: { code: 'generation_not_active' } };
     apiMocks.isHttpError.mockImplementation((value) => value === error);

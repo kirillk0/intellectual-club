@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.PersistenceFailure
   alias IntellectualClub.Generation.PreparedRequests
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
@@ -422,7 +423,16 @@ defmodule IntellectualClub.Generation.Persistence do
       _message = lock_message!(message_id, actor)
       step = load_step_with_items!(step_id, actor)
       ensure_step_belongs_to_message!(step, message_id)
-      steering = create_steering_item!(step, text, :after_response, actor)
+
+      steering =
+        create_steering_item!(
+          step,
+          text,
+          :after_response,
+          actor,
+          Keyword.get(opts, :steering_operation_id)
+        )
+
       step = load_step_for_runtime!(step.id, actor, opts)
 
       %{
@@ -522,7 +532,10 @@ defmodule IntellectualClub.Generation.Persistence do
         _message = lock_message!(message_id, actor)
         step = load_step_with_items!(step_id, actor)
         ensure_step_belongs_to_message!(step, message_id)
-        proof = transition_proof(kind, specs)
+
+        proof =
+          transition_proof(kind, specs)
+          |> maybe_put_steering_operation(Keyword.get(opts, :steering_operation_id))
 
         case get_step_by_sequence(message_id, next_sequence, actor) do
           %ChatMessageStep{} = existing ->
@@ -669,6 +682,95 @@ defmodule IntellectualClub.Generation.Persistence do
       runtime_step: runtime_step_from_persisted_step(step, &(&1.type == :steering))
     }
   end
+
+  @doc "Reconciles one steering publication without replaying or replacing its source step."
+  def reconcile_steering!(message_id, step_id, operation_id, placement, opts \\ [])
+      when is_integer(message_id) and is_integer(step_id) and is_binary(operation_id) and
+             placement in [:before_response, :after_response, :followup] do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      _message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      reconcile_steering_step!(step, operation_id, placement, actor, opts)
+    end)
+  end
+
+  defp reconcile_steering_step!(step, operation_id, placement, actor, _opts)
+       when placement in [:before_response, :followup] do
+    transition =
+      step
+      |> ordered_items()
+      |> Enum.filter(&(&1.type == :other))
+      |> Enum.flat_map(&ordered_contents/1)
+      |> Enum.find_value(fn content ->
+        case content.content_json do
+          %{"generation_transition" => %{"steering_operation_id" => ^operation_id} = proof} ->
+            proof
+
+          _other ->
+            nil
+        end
+      end)
+
+    successor = get_step_by_sequence(step.chat_message_id, step.sequence + 1, actor)
+
+    terminal_status = if placement == :followup, do: :done, else: :canceled
+    source_status = if placement == :followup, do: :waiting_tools, else: :waiting_provider
+
+    case {transition, successor, step.status} do
+      {%{"next_step_id" => next_id, "next_sequence" => sequence},
+       %ChatMessageStep{id: next_id, sequence: sequence} = next_step, ^terminal_status} ->
+        request = StepRequests.request_for_step!(next_step.id, actor: actor)
+        {:applied, transition_result(next_step, request, actor)}
+
+      {nil, nil, ^source_status} ->
+        :not_applied
+
+      {nil, nil, :done} when placement == :followup ->
+        :not_applied
+
+      _other ->
+        raise ArgumentError, "Steering reconciliation conflicts with the canonical provider step"
+    end
+  end
+
+  defp reconcile_steering_step!(step, operation_id, :after_response, actor, opts) do
+    steering =
+      step
+      |> ordered_items()
+      |> Enum.filter(&(&1.type == :steering))
+      |> Enum.find(fn item ->
+        Enum.any?(ordered_contents(item), fn content ->
+          match?(%{"steering_operation_id" => ^operation_id}, content.content_json)
+        end)
+      end)
+
+    cond do
+      steering ->
+        step = load_step_for_runtime!(step.id, actor, opts)
+
+        {:applied,
+         %{
+           item_id: steering.id,
+           step: step,
+           runtime_step:
+             runtime_step_from_persisted_step(step, &(&1.type not in [:tool_result, :artifact]))
+         }}
+
+      step.status == :waiting_tools ->
+        :not_applied
+
+      true ->
+        raise ArgumentError, "Steering reconciliation conflicts with the canonical tools step"
+    end
+  end
+
+  defp maybe_put_steering_operation(map, nil), do: map
+
+  defp maybe_put_steering_operation(map, operation_id) when is_binary(operation_id),
+    do: Map.put(map, "steering_operation_id", operation_id)
 
   defp interrupt_step_for_steering!(step, actor) do
     replace_step_items!(step, [], actor)
@@ -1501,7 +1603,13 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  defp create_steering_item!(%ChatMessageStep{} = step, text, placement, actor)
+  defp create_steering_item!(
+         %ChatMessageStep{} = step,
+         text,
+         placement,
+         actor,
+         operation_id \\ nil
+       )
        when is_binary(text) and placement in [:before_response, :after_response] do
     step = load_step_with_items!(step, actor)
 
@@ -1555,7 +1663,11 @@ defmodule IntellectualClub.Generation.Persistence do
           sequence: @opaque_sequence,
           kind: :opaque,
           content_text: "",
-          content_json: %{"placement" => Atom.to_string(placement)},
+          content_json:
+            maybe_put_steering_operation(
+              %{"placement" => Atom.to_string(placement)},
+              operation_id
+            ),
           file_id: nil
         }
       ],
@@ -1594,7 +1706,17 @@ defmodule IntellectualClub.Generation.Persistence do
       |> Enum.map(&%{id: Map.get(&1, :id), text: to_string(Map.get(&1, :text) || "")})
       |> Enum.sort_by(& &1.id)
 
-    if actual == expected, do: :ok, else: {:error, :queued_steering_changed}
+    revisions_match? =
+      Enum.all?(queued_messages, fn queued_message ->
+        spec = Enum.find(specs, &(Map.get(&1, :id) == queued_message.id))
+
+        not Map.has_key?(spec || %{}, :updated_at) or
+          Map.get(spec, :updated_at) == queued_message.updated_at
+      end)
+
+    if actual == expected and revisions_match?,
+      do: :ok,
+      else: {:error, :queued_steering_changed}
   end
 
   defp queued_steering_text(%QueuedMessage{} = queued_message) do
@@ -2491,14 +2613,21 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp request_transaction!(message_id, opts, fun) do
+    # Retry is owned by the actual Ash transaction boundary, not preparation or
+    # cleanup. Nested transactions propagate to that owner without local retry.
     case Keyword.get(opts, :lease) do
       nil ->
         transaction!(fun)
 
       %Lease{message_id: ^message_id} = lease ->
         case Lease.with_fence(lease, fn -> transaction!(fun) end, require_generating?: true) do
-          {:ok, result} -> result
-          {:error, reason} -> exit({:generation_lease_lost, reason})
+          {:ok, result} ->
+            result
+
+          {:error, reason} ->
+            if PersistenceFailure.lease_lost?(reason),
+              do: exit({:generation_lease_lost, reason}),
+              else: raise(PersistenceFailure.new(reason, operation: :request_publication))
         end
 
       _other ->
@@ -2507,9 +2636,9 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp transaction!(fun) when is_function(fun, 0) do
-    case Ash.transaction(@transaction_resources, fun) do
+    case PersistenceFailure.ash_transaction(@transaction_resources, fun) do
       {:ok, result} -> result
-      {:error, error} -> raise inspect(error)
+      {:error, error} -> raise PersistenceFailure.new(error, operation: :persistence)
     end
   end
 

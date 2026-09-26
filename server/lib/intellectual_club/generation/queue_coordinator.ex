@@ -315,11 +315,15 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     |> Enum.sort()
   end
 
-  @doc "Rejects a direct turn while any undelivered queue entry still needs settlement."
+  @doc "Rejects a direct turn while non-quarantined queue entries still need settlement."
   @spec ensure_direct_start_allowed(integer()) :: :ok | {:error, :queue_not_empty}
   def ensure_direct_start_allowed(chat_id) when is_integer(chat_id) do
     QueuedMessage
-    |> Ash.Query.filter(chat_id == ^chat_id and status in ^@active_queue_statuses)
+    |> Ash.Query.filter(
+      chat_id == ^chat_id and status in ^@active_queue_statuses and
+        (kind != :steer or status != :blocked or is_nil(blocked_reason) or
+           blocked_reason != "steering_failed")
+    )
     |> Ash.Query.limit(1)
     |> Ash.read_one!(authorize?: false)
     |> case do
@@ -358,7 +362,11 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
         queued =
           QueuedMessage
-          |> Ash.Query.filter(chat_id == ^chat_id and status in ^@active_queue_statuses)
+          |> Ash.Query.filter(
+            chat_id == ^chat_id and status in ^@active_queue_statuses and
+              (kind != :steer or status != :blocked or is_nil(blocked_reason) or
+                 blocked_reason != "steering_failed")
+          )
           |> Ash.Query.select([:id])
           |> Ash.Query.limit(1)
           |> Ash.read_one!(actor: actor, authorize?: true)
@@ -382,7 +390,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     transact(fn ->
       chat = lock_chat!(chat_id)
       active_generation = lock_active_generation(chat.id)
-      queue = lock_active_queue!(chat.id)
+      queue = Enum.reject(lock_active_queue!(chat.id), &quarantined_steer?/1)
 
       cond do
         is_nil(actor) or Map.get(actor, :id) != chat.owner_id ->
@@ -406,6 +414,11 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     end)
     |> unwrap_prepare_result()
   end
+
+  defp quarantined_steer?(%{kind: :steer, status: :blocked, blocked_reason: "steering_failed"}),
+    do: true
+
+  defp quarantined_steer?(_queued_message), do: false
 
   defp prepare_next_attempt(chat_id, boundary_message_id, attempts) do
     case transact(fn -> prepare_next_in_transaction(chat_id, boundary_message_id, :snapshot) end) do
@@ -720,6 +733,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
       Enum.filter(queue, fn queued_message ->
         queued_message.kind == :follow_up or
           (queued_message.kind == :steer and
+             queued_message.blocked_reason != "steering_failed" and
              queued_message.target_generation_message_id == source_message.id)
       end)
 

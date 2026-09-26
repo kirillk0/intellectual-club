@@ -7,6 +7,8 @@ defmodule IntellectualClub.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = IntellectualClub.Generation.PersistenceFailure.attach_telemetry()
+
     children = [
       IntellectualClubWeb.Telemetry,
       IntellectualClub.Repo,

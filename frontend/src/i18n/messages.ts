@@ -735,6 +735,8 @@ export const ruMessages: Record<string, string> = {
   'Continuing…': 'Продолжение…',
   'Steer': 'Направить',
   'Steering content must not be empty.': 'Сообщение для направления генерации не должно быть пустым.',
+  'Steering could not be applied. Edit or retry it.': 'Не удалось применить инструкцию. Отредактируйте её или повторите попытку.',
+  'This steering message changed. Refresh and try again.': 'Эта инструкция изменилась. Обновите данные и повторите попытку.',
   'The active branch changed. The queue is paused.': 'Активная ветка изменилась. Очередь приостановлена.',
   'The first queued message was removed. The queue is paused.': 'Первое сообщение удалено из очереди. Очередь приостановлена.',
   'The active branch changed. Use Send next to continue on this branch.': 'Активная ветка изменилась. Нажмите «Отправить следующее», чтобы продолжить в этой ветке.',

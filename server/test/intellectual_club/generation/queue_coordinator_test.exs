@@ -13,6 +13,7 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.StepRequests
+  alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
@@ -333,12 +334,16 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
 
     set_generation_status!(generation, :done, actor)
 
+    :ok = Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
     with_demo_delay(1_000, fn ->
       assert {:advanced, next_message_id} =
                without_registered_dispatcher(fn ->
                  QueueDispatcher.generation_finished(generation.id, :done)
                end)
 
+      # Child startup does not acknowledge the asynchronous initialization.
+      assert_receive {:content_delta, ^next_message_id, _delta}, 5_000
       assert {:ok, _poll} = GenerationSupervisor.poll_generation(next_message_id)
       stop_generation_worker!(next_message_id)
     end)
@@ -356,6 +361,8 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
                actor
              )
 
+    :ok = Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{child_chat.id}")
+
     with_demo_delay(1_000, fn ->
       assert {:transferred, %{transferred_count: 1, dispatch: {:advanced, child_generation_id}}} =
                without_registered_dispatcher(fn ->
@@ -366,6 +373,7 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
       assert delivered.chat_id == child_chat.id
       assert delivered.status == :delivered
       assert delivered.assistant_message_id == child_generation_id
+      assert_receive {:content_delta, ^child_generation_id, _delta}, 5_000
       assert {:ok, _poll} = GenerationSupervisor.poll_generation(child_generation_id)
       stop_generation_worker!(child_generation_id)
     end)
@@ -708,6 +716,13 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     assert [{worker, _metadata}] =
              Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id})
 
-    assert :ok = DynamicSupervisor.terminate_child(GenerationSupervisor, worker)
+    # Killing the Worker can kill a checked-out SQL borrower and its sandbox.
+    # Cancellation joins persistence and receives the lease cleanup ACK first.
+    monitor = Process.monitor(worker)
+    Worker.cancel(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 5_000
+    message = Ash.get!(ChatMessage, message_id, authorize?: false)
+    assert message.status == :canceled
+    assert message.generation_fence_token == nil
   end
 end
