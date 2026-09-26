@@ -5,5 +5,6 @@ defmodule IntellectualClub.Chat.ForkHistoryFixtureDomain do
 
   resources do
     resource(IntellectualClub.Chat.ForkHistoryCorruptFixture)
+    resource(IntellectualClub.Chat.ForkHistoryStepCorruptFixture)
   end
 end

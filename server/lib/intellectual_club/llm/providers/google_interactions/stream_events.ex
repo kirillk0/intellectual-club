@@ -161,7 +161,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
     usage = normalize_usage(Map.get(response, "usage"))
 
     emit_step_snapshot_from_response(response, emit)
-    emit.({:trace, {:set_step_raw_request, raw_request}})
     emit.({:trace, {:set_step_raw_response, response}})
     emit.({:trace, {:set_step_usage, usage}})
     emit.({:trace, {:set_step_response_final, true}})

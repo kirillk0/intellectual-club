@@ -7,7 +7,7 @@ defmodule IntellectualClub.BackgroundTasks.Reaper do
 
   require Logger
 
-  @default_interval_ms 2_000
+  @default_interval_ms 5_000
   @minimum_retry_ms 100
 
   defstruct [:interval_ms, enabled: true, failure_count: 0]

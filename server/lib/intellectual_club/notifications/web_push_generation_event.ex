@@ -13,6 +13,11 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
 
     custom_indexes do
       index([:owner_id], name: "web_push_generation_events_owner_id_index")
+
+      index([:id],
+        name: "web_push_generation_events_pending_index",
+        where: "suppressed = false AND delivered_count < 0"
+      )
     end
   end
 

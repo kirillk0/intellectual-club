@@ -2,18 +2,19 @@ defmodule IntellectualClub.Generation.RequestImages do
   @moduledoc """
   Compacts provider-native request images into stable file markers.
 
-  Materialization pins one logical file per image reference and request step. Hydration
-  resolves only those step-local bindings and restores provider wire encodings without
-  changing the compact request kept for tracing and continuation comparisons.
+  Preparation validates and pins images before the immutable request is inserted.
+  Staged logical files are attached in the same transaction as the new step.
+  Hydration reads only step-local bindings and never changes the saved snapshot.
   """
 
   require Ash.Query
-  require Logger
 
   alias IntellectualClub.Chat.{ContentFiles, ChatMessageStep, ChatMessageStepRequestFile}
 
   alias IntellectualClub.Files
-  alias IntellectualClub.Generation.RequestImages.{StagedBindings, Walker}
+  alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Generation.RequestImages.{SourceScope, StagedBindings, Walker}
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Tools.ExecutionContext
 
   @marker_key "$intellectual_club_file"
@@ -50,45 +51,97 @@ defmodule IntellectualClub.Generation.RequestImages do
   end
 
   @doc """
-  Pins all v1 image markers to `step_id`, stores the compact request on the step,
-  and removes bindings which are no longer referenced by that request.
+  Prepares the final compact request and unbound logical files before step creation.
+
+  The caller supplies an actor-confirmed ContentFiles scope, inserts `request`, and
+  attaches `bindings` in one transaction. Discard the staged value after rollback or
+  if publication is abandoned. No target message or step needs to exist yet.
+
+  `:source_step_id` requires exact pins for refs inherited from that visible source
+  snapshot. Missing, mismatched or corrupt inherited pins never use canonical files.
+  Requests without supported markers do not query the database.
+  """
+  @spec prepare(map(), %ExecutionContext{}, keyword()) ::
+          {:ok, %{request: map(), bindings: StagedBindings.t()}} | {:error, term()}
+  def prepare(raw_request, scope, opts \\ [])
+
+  def prepare(raw_request, %ExecutionContext{} = scope, opts)
+      when is_map(raw_request) and is_list(opts) do
+    with {:ok, descriptors} <- request_descriptors(raw_request) do
+      if map_size(descriptors) == 0 do
+        {:ok, %{request: raw_request, bindings: %StagedBindings{items: []}}}
+      else
+        prepare_images(raw_request, scope, opts)
+      end
+    end
+  end
+
+  def prepare(_raw_request, _scope, _opts), do: {:error, :invalid_preparation_arguments}
+
+  defp prepare_images(raw_request, scope, opts) do
+    chat_scope_ids = ContentFiles.handoff_chat_scope_ids(scope.chat_id, scope.owner_id)
+
+    with {:ok, inherited, bindings} <-
+           inherited_snapshot(Keyword.get(opts, :source_step_id), scope, chat_scope_ids) do
+      state = %{
+        scope: scope,
+        chat_scope_ids: chat_scope_ids,
+        inherited: inherited,
+        bindings: bindings,
+        results: %{},
+        staged: [],
+        error: nil
+      }
+
+      {request, state} = Walker.map_images(raw_request, state, &prepare_block/4)
+
+      case state.error do
+        nil ->
+          {:ok, %{request: request, bindings: %StagedBindings{items: Enum.reverse(state.staged)}}}
+
+        error ->
+          {:error, error_with_cleanup(error, cleanup_staged_files(state.staged))}
+      end
+    end
+  end
+
+  @doc """
+  Read-only validation of a saved snapshot, including exact raw equality and pins.
+
+  Payloads are checked once per referenced image, without wire/base64 construction.
+  Unreferenced bindings are rejected, never removed. No canonical files are loaded.
+  """
+  @spec validate_snapshot(map(), integer()) :: :ok | {:error, term()}
+  def validate_snapshot(raw_request, step_id)
+      when is_map(raw_request) and is_integer(step_id) do
+    with {:ok, step} <- load_step(step_id),
+         {:ok, saved_request} <-
+           StepRequests.request_for_step(step.id, actor: %{id: step.owner_id}),
+         :ok <- validate_snapshot_equality(raw_request, saved_request),
+         {:ok, bindings} <- bindings_for_step(step_id) do
+      validate_snapshot_bindings(raw_request, bindings)
+    end
+  end
+
+  def validate_snapshot(_raw_request, _step_id), do: {:error, :invalid_snapshot_arguments}
+
+  @doc """
+  Compatibility validator only. This function never writes, repairs or backfills.
+  New callers must prepare images before inserting the final request.
   """
   @spec materialize_and_persist(map(), integer()) :: {:ok, map()} | {:error, term()}
   def materialize_and_persist(raw_request, step_id)
-      when is_map(raw_request) and is_integer(step_id),
-      do: do_materialize_and_persist(step_id, raw_request)
+      when is_map(raw_request) and is_integer(step_id) do
+    with :ok <- validate_snapshot(raw_request, step_id), do: {:ok, raw_request}
+  end
 
   @spec materialize_and_persist(integer(), map()) :: {:ok, map()} | {:error, term()}
   def materialize_and_persist(step_id, raw_request)
       when is_integer(step_id) and is_map(raw_request),
-      do: do_materialize_and_persist(step_id, raw_request)
+      do: materialize_and_persist(raw_request, step_id)
 
-  def materialize_and_persist(_step_id, _raw_request),
+  def materialize_and_persist(_raw_request, _step_id),
     do: {:error, :invalid_materialization_arguments}
-
-  defp do_materialize_and_persist(step_id, raw_request) do
-    with {:ok, step} <- load_step(step_id),
-         {:ok, bindings} <- bindings_for_step(step_id) do
-      chat_scope_ids =
-        ContentFiles.handoff_chat_scope_ids(step.chat_message.chat_id, step.owner_id)
-
-      state = %{
-        step: step,
-        chat_scope_ids: chat_scope_ids,
-        owner_id: step.owner_id,
-        bindings: Map.new(bindings, &{to_string(&1.reference_key), &1}),
-        results: %{},
-        active_refs: MapSet.new(),
-        created_binding_ids: [],
-        error: nil
-      }
-
-      {compact_request, state} =
-        Walker.map_images(raw_request, state, &materialize_block/4)
-
-      finish_materialization(compact_request, state)
-    end
-  end
 
   @doc """
   Resolves compact markers through bindings owned by `step_id` and creates the
@@ -97,8 +150,14 @@ defmodule IntellectualClub.Generation.RequestImages do
   """
   @spec hydrate(map(), integer() | nil) :: {:ok, map()} | {:error, term()}
   def hydrate(raw_request, step_id) when is_map(raw_request) and is_integer(step_id) do
-    with {:ok, bindings} <- bindings_for_step(step_id) do
-      hydrate_with_bindings(raw_request, bindings)
+    with {:ok, descriptors} <- request_descriptors(raw_request) do
+      if map_size(descriptors) == 0 do
+        {:ok, raw_request}
+      else
+        with {:ok, bindings} <- bindings_for_step(step_id) do
+          hydrate_with_bindings(raw_request, bindings)
+        end
+      end
     end
   end
 
@@ -212,123 +271,116 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   def discard_staged_bindings(_staged), do: {:error, :invalid_staged_bindings}
 
-  defp materialize_block(_shape, block, _marker, %{error: error} = state)
-       when not is_nil(error),
-       do: {block, state}
+  defp inherited_snapshot(nil, _scope, _chat_scope_ids), do: {:ok, %{}, %{}}
 
-  defp materialize_block(shape, block, marker, state) do
-    with {:ok, descriptor} <- validate_marker(marker, shape),
-         :ok <- validate_repeated_descriptor(state.results, descriptor),
-         {:ok, result, state} <- materialize_descriptor(descriptor, state) do
-      case result do
-        %{status: :ok, mime_type: mime_type} ->
-          compact_marker = put_marker_mime(marker, mime_type)
-          result = Map.put(result, :source_file_external_id, descriptor.source_file_external_id)
-
-          {
-            put_compact_marker(shape, block, compact_marker, mime_type),
-            %{
-              state
-              | results: Map.put(state.results, descriptor.reference_key, result),
-                active_refs: MapSet.put(state.active_refs, descriptor.reference_key)
-            }
-          }
-
-        %{status: :fallback, text: text} ->
-          result = Map.put(result, :source_file_external_id, descriptor.source_file_external_id)
-
-          {
-            fallback_block(shape, block, text),
-            %{state | results: Map.put(state.results, descriptor.reference_key, result)}
-          }
-      end
-    else
-      {:error, reason, failed_state} ->
-        {block, %{failed_state | error: reason}}
-
-      {:error, reason} ->
-        {block, %{state | error: reason}}
+  defp inherited_snapshot(source_step_id, scope, chat_scope_ids)
+       when is_integer(source_step_id) do
+    with {:ok, step} <- load_step(source_step_id),
+         :ok <- SourceScope.validate(step, scope, chat_scope_ids),
+         {:ok, request} <- StepRequests.request_for_step(step.id, actor: %{id: scope.owner_id}),
+         {:ok, descriptors} <- request_descriptors(request, true),
+         {:ok, bindings} <- bindings_for_step(source_step_id) do
+      {:ok, descriptors, Map.new(bindings, &{to_string(&1.reference_key), &1})}
     end
   end
 
-  defp materialize_descriptor(descriptor, state) do
+  defp inherited_snapshot(_source_step_id, _scope, _chat_scope_ids),
+    do: {:error, :invalid_source_step_id}
+
+  defp prepare_block(_shape, block, _marker, %{error: error} = state)
+       when not is_nil(error),
+       do: {block, state}
+
+  defp prepare_block(shape, block, marker, state) do
+    with {:ok, descriptor} <- validate_marker(marker, shape),
+         :ok <- validate_inherited_descriptor(shape, block, descriptor, state),
+         {:ok, result, state} <- prepare_descriptor(descriptor, state) do
+      state = %{state | results: Map.put(state.results, descriptor.reference_key, result)}
+
+      case result do
+        %{status: :ok, mime_type: mime_type} ->
+          {put_compact_marker(shape, block, put_marker_mime(marker, mime_type), mime_type), state}
+
+        %{status: :fallback, text: text} ->
+          {fallback_block(shape, block, text), state}
+      end
+    else
+      {:error, reason} -> {block, %{state | error: reason}}
+    end
+  end
+
+  defp validate_inherited_descriptor(shape, block, descriptor, state) do
+    case Map.get(state.inherited, descriptor.reference_key) do
+      nil ->
+        :ok
+
+      source ->
+        with :ok <- validate_descriptor_match(source, descriptor) do
+          validate_block_mime(shape, block, descriptor)
+        end
+    end
+  end
+
+  defp validate_descriptor_match(source, descriptor) do
+    cond do
+      source.source_file_external_id != descriptor.source_file_external_id ->
+        {:error, {:request_image_binding_source_mismatch, descriptor.reference_key}}
+
+      source.mime_type != descriptor.mime_type ->
+        {:error, {:request_image_binding_mime_mismatch, descriptor.reference_key}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp prepare_descriptor(descriptor, state) do
     case Map.fetch(state.results, descriptor.reference_key) do
       {:ok, result} ->
         {:ok, result, state}
 
       :error ->
-        case Map.get(state.bindings, descriptor.reference_key) do
-          %ChatMessageStepRequestFile{} = binding ->
-            materialize_existing_binding(binding, descriptor, state)
-
-          nil ->
-            materialize_new_binding(descriptor, state)
+        if Map.has_key?(state.inherited, descriptor.reference_key) do
+          with {:ok, image} <- bound_image(descriptor, state.bindings) do
+            binding = Map.fetch!(state.bindings, descriptor.reference_key)
+            duplicate_and_stage(image, binding.variant_key, descriptor, state)
+          end
+        else
+          prepare_new_image(descriptor, state)
         end
     end
   end
 
-  defp materialize_existing_binding(binding, descriptor, state) do
-    case validate_binding_descriptor(binding, descriptor) do
-      :ok ->
-        case load_valid_image(binding.file_id) do
-          {:ok, image} when max(image.width, image.height) <= @max_edge_px ->
-            {:ok, %{status: :ok, mime_type: image.mime_type}, state}
-
-          {:ok, _oversized_image} ->
-            {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
-
-          {:error, reason} ->
-            if fallback_image_error?(reason) do
-              {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
-            else
-              {:error, {:load_request_image_binding_failed, binding.id, reason}, state}
-            end
-        end
-
-      {:error, reason} ->
-        {:error, reason, state}
-    end
-  end
-
-  defp materialize_new_binding(descriptor, state) do
+  defp prepare_new_image(descriptor, state) do
     case reusable_binding(descriptor, state) do
-      {:ok, binding} ->
-        duplicate_and_bind(binding.file_id, binding.variant_key, descriptor, state)
+      {:ok, binding, image} ->
+        duplicate_and_stage(image, binding.variant_key, descriptor, state)
 
       :not_found ->
-        materialize_canonical(descriptor, state)
+        prepare_canonical(descriptor, state)
 
       {:error, reason} ->
-        {:error, {:find_reusable_request_file_failed, reason}, state}
+        {:error, {:find_reusable_request_file_failed, reason}}
     end
   end
 
-  defp materialize_canonical(descriptor, state) do
-    context = %ExecutionContext{
-      owner_id: state.owner_id,
-      chat_id: state.step.chat_message.chat_id,
-      message_id: state.step.chat_message_id,
-      assistant_message_id: state.step.chat_message_id,
-      step_id: state.step.id,
-      available_file_external_ids: []
-    }
-
-    case ContentFiles.load_payload_for_execution(descriptor.source_file_external_id, context) do
+  defp prepare_canonical(descriptor, state) do
+    case ContentFiles.load_payload_for_execution(descriptor.source_file_external_id, state.scope) do
       {:ok, {_content, file, payload}} ->
-        materialize_canonical_payload(file, payload, descriptor, state)
+        prepare_canonical_payload(file, payload, descriptor, state)
 
       {:error, reason} when reason in [:not_found, :file_not_found, :payload_not_found] ->
         {:ok, %{status: :fallback, text: @invalid_image_fallback}, state}
 
       {:error, reason} ->
-        {:error, {:load_canonical_request_image_failed, reason}, state}
+        {:error, {:load_canonical_request_image_failed, reason}}
     end
   end
 
-  defp materialize_canonical_payload(file, payload, descriptor, state) do
+  defp prepare_canonical_payload(file, payload, descriptor, state) do
     case validate_image_payload(file, payload) do
       {:ok, image} when max(image.width, image.height) <= @max_edge_px ->
-        duplicate_and_bind(file.id, @identity_variant, descriptor, state)
+        duplicate_and_stage(image, @identity_variant, descriptor, state)
 
       {:ok, image} ->
         case resize_image_payload(image.payload, image.mime_type) do
@@ -337,15 +389,10 @@ defmodule IntellectualClub.Generation.RequestImages do
 
             case Files.create_from_binary(filename, resized_mime_type, resized_payload) do
               {:ok, resized_file} ->
-                bind_materialized_file(
-                  resized_file.id,
-                  @thumbnail_variant,
-                  descriptor,
-                  state
-                )
+                stage_rendition(resized_file, resized_mime_type, descriptor, state)
 
               {:error, reason} ->
-                {:error, {:create_thumbnail_file_failed, reason}, state}
+                {:error, {:create_thumbnail_file_failed, reason}}
             end
 
           {:error, _reason} ->
@@ -357,92 +404,123 @@ defmodule IntellectualClub.Generation.RequestImages do
     end
   end
 
-  defp duplicate_and_bind(source_file_id, variant_key, descriptor, state) do
-    case Files.duplicate_file(source_file_id) do
-      {:ok, file} ->
-        bind_materialized_file(file.id, variant_key, descriptor, state)
-
-      {:error, reason} ->
-        {:error, {:duplicate_request_file_failed, reason}, state}
+  defp stage_rendition(file, mime_type, descriptor, state) do
+    # A content-addressed rendition may already exist on disk. Validate the stored
+    # bytes too; creating a logical row must not accidentally reuse a corrupt blob.
+    with {:ok, image} <- load_valid_image(file.id),
+         true <- image.mime_type == mime_type and max(image.width, image.height) <= @max_edge_px do
+      stage_file(file, mime_type, @thumbnail_variant, descriptor, state)
+    else
+      failure ->
+        error = {:created_request_image_invalid, failure}
+        {:error, error_with_cleanup(error, delete_unbound_file(file.id))}
     end
   end
 
-  defp bind_materialized_file(file_id, variant_key, descriptor, state) do
-    attrs = %{
-      chat_message_step_id: state.step.id,
-      file_id: file_id,
+  defp duplicate_and_stage(image, variant_key, descriptor, state) do
+    # Correct metadata only on the new logical file, never on the canonical file or
+    # an existing pin. Payload deduplication keeps the same bytes and ownership.
+    duplicate =
+      if image.file.mime_type == image.mime_type do
+        Files.duplicate_file(image.file.id)
+      else
+        Files.create_from_binary(image.file.filename, image.mime_type, image.payload)
+      end
+
+    case duplicate do
+      {:ok, file} -> stage_file(file, image.mime_type, variant_key, descriptor, state)
+      {:error, reason} -> {:error, {:duplicate_request_file_failed, reason}}
+    end
+  end
+
+  defp stage_file(file, mime_type, variant_key, descriptor, state) do
+    item = %{
+      file_id: file.id,
       reference_key: descriptor.reference_key,
       source_file_external_id: descriptor.source_file_external_id,
       variant_key: variant_key
     }
 
-    case create_binding(attrs) do
-      {:ok, binding} ->
-        with {:ok, image} <- load_valid_image(binding.file_id) do
-          next_state = %{
-            state
-            | bindings: Map.put(state.bindings, descriptor.reference_key, binding),
-              created_binding_ids: [binding.id | state.created_binding_ids]
-          }
+    {:ok, %{status: :ok, mime_type: mime_type}, %{state | staged: [item | state.staged]}}
+  end
 
-          {:ok, %{status: :ok, mime_type: image.mime_type}, next_state}
-        else
-          {:error, reason} ->
-            error = {:created_binding_payload_invalid, reason}
-            {:error, error_with_cleanup(error, destroy_binding(binding)), state}
-        end
+  defp request_descriptors(raw_request, strict? \\ false)
 
-      {:error, create_reason} ->
-        case binding_for_reference(state.step.id, descriptor.reference_key) do
-          {:ok, %ChatMessageStepRequestFile{} = winner} ->
-            case delete_unbound_file(file_id) do
-              :ok ->
-                materialize_existing_binding(winner, descriptor, state)
+  defp request_descriptors(raw_request, strict?) when is_map(raw_request) do
+    {_request, result} =
+      Walker.map_images(raw_request, {:ok, %{}}, fn shape, block, marker, acc ->
+        collect_descriptor(shape, block, marker, acc, strict?)
+      end)
 
-              {:error, cleanup_reason} ->
-                {:error, {:request_file_conflict_cleanup_failed, create_reason, cleanup_reason},
-                 state}
-            end
+    result
+  end
 
-          {:ok, nil} ->
-            error = {:create_request_file_binding_failed, create_reason}
-            {:error, error_with_cleanup(error, delete_unbound_file(file_id)), state}
+  defp request_descriptors(_raw_request, _strict?), do: {:error, :invalid_request_snapshot}
 
-          {:error, lookup_reason} ->
-            error =
-              {:request_file_conflict_lookup_failed, create_reason, lookup_reason}
+  defp collect_descriptor(_shape, block, _marker, {:error, _reason} = error, _strict?),
+    do: {block, error}
 
-            {:error, error_with_cleanup(error, delete_unbound_file(file_id)), state}
-        end
+  defp collect_descriptor(shape, block, marker, {:ok, descriptors}, strict?) do
+    result =
+      with {:ok, descriptor} <- validate_marker(marker, shape),
+           :ok <- validate_repeated_descriptor(descriptors, descriptor),
+           :ok <- validate_snapshot_descriptor(shape, block, descriptor, descriptors, strict?) do
+        {:ok, Map.put(descriptors, descriptor.reference_key, descriptor)}
+      end
+
+    {block, result}
+  end
+
+  defp validate_snapshot_descriptor(_shape, _block, _descriptor, _descriptors, false), do: :ok
+
+  defp validate_snapshot_descriptor(shape, block, descriptor, descriptors, true) do
+    with :ok <- validate_block_mime(shape, block, descriptor) do
+      case Map.get(descriptors, descriptor.reference_key) do
+        nil -> :ok
+        source -> validate_descriptor_match(source, descriptor)
+      end
     end
   end
 
-  defp finish_materialization(_compact_request, %{error: error} = state)
-       when not is_nil(error) do
-    {:error, error_with_cleanup(error, compensate_created_bindings(state.created_binding_ids))}
-  end
+  defp validate_snapshot_equality(raw_request, raw_request), do: :ok
+  defp validate_snapshot_equality(_raw_request, _saved), do: {:error, :request_snapshot_mismatch}
 
-  defp finish_materialization(compact_request, state) do
-    case persist_compact_request(state.step, compact_request) do
-      {:ok, _step} ->
-        case remove_stale_bindings(state.step.id, state.active_refs) do
-          :ok ->
-            {:ok, compact_request}
+  defp validate_snapshot_bindings(raw_request, bindings) do
+    state = %{
+      bindings: Map.new(bindings, &{to_string(&1.reference_key), &1}),
+      hydrated: %{},
+      error: nil
+    }
 
-          {:error, reason} ->
-            Logger.warning(
-              "Compact request persisted but stale request files could not be removed " <>
-                "step_id=#{state.step.id} reason=#{inspect(reason)}"
-            )
+    {_request, state} = Walker.map_images(raw_request, state, &validate_snapshot_block/4)
 
-            {:ok, compact_request}
+    case state.error do
+      nil ->
+        case Enum.find(bindings, &(not Map.has_key?(state.hydrated, to_string(&1.reference_key)))) do
+          nil ->
+            :ok
+
+          binding ->
+            {:error, {:unreferenced_request_image_binding, to_string(binding.reference_key)}}
         end
 
-      {:error, reason} ->
-        error = {:persist_compact_request_failed, reason}
+      error ->
+        {:error, error}
+    end
+  end
 
-        {:error,
-         error_with_cleanup(error, compensate_created_bindings(state.created_binding_ids))}
+  defp validate_snapshot_block(_shape, block, _marker, %{error: error} = state)
+       when not is_nil(error), do: {block, state}
+
+  defp validate_snapshot_block(shape, block, marker, state) do
+    with {:ok, descriptor} <- validate_marker(marker, shape),
+         :ok <- validate_block_mime(shape, block, descriptor),
+         {:ok, image, state} <- hydrated_image(descriptor, state) do
+      # A snapshot check does not need to retain payload bytes between occurrences.
+      checked = Map.put(state.hydrated, descriptor.reference_key, Map.take(image, [:mime_type]))
+      {block, %{state | hydrated: checked}}
+    else
+      {:error, reason} -> {block, %{state | error: reason}}
     end
   end
 
@@ -451,10 +529,10 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   defp hydrate_block(shape, block, marker, state) do
     with {:ok, descriptor} <- validate_marker(marker, shape),
+         :ok <- validate_block_mime(shape, block, descriptor),
          {:ok, image, state} <- hydrated_image(descriptor, state) do
       {put_wire_image(shape, block, image), state}
     else
-      {:error, reason, failed_state} -> {block, %{failed_state | error: reason}}
       {:error, reason} -> {block, %{state | error: reason}}
     end
   end
@@ -462,31 +540,54 @@ defmodule IntellectualClub.Generation.RequestImages do
   defp hydrated_image(descriptor, state) do
     case Map.fetch(state.hydrated, descriptor.reference_key) do
       {:ok, image} ->
-        case Map.get(state.bindings, descriptor.reference_key) do
-          %ChatMessageStepRequestFile{} = binding ->
-            case validate_binding_descriptor(binding, descriptor) do
-              :ok -> {:ok, image, state}
-              {:error, reason} -> {:error, reason, state}
-            end
-
-          nil ->
-            {:error, {:request_image_binding_not_found, descriptor.reference_key}, state}
+        with :ok <-
+               validate_binding_descriptor(
+                 Map.fetch!(state.bindings, descriptor.reference_key),
+                 descriptor
+               ),
+             :ok <- validate_image_mime(image, descriptor) do
+          {:ok, image, state}
         end
 
       :error ->
-        with %ChatMessageStepRequestFile{} = binding <-
-               Map.get(state.bindings, descriptor.reference_key),
-             :ok <- validate_binding_descriptor(binding, descriptor),
-             {:ok, image} <- load_valid_image(binding.file_id),
-             true <- max(image.width, image.height) <= @max_edge_px do
+        with {:ok, image} <- bound_image(descriptor, state.bindings) do
           {:ok, image,
            %{state | hydrated: Map.put(state.hydrated, descriptor.reference_key, image)}}
-        else
-          nil -> {:error, {:request_image_binding_not_found, descriptor.reference_key}, state}
-          false -> {:error, {:request_image_binding_oversized, descriptor.reference_key}, state}
-          {:error, reason} -> {:error, reason, state}
         end
     end
+  end
+
+  defp bound_image(descriptor, bindings) do
+    with %ChatMessageStepRequestFile{} = binding <- Map.get(bindings, descriptor.reference_key),
+         :ok <- validate_binding_descriptor(binding, descriptor),
+         {:ok, image} <- load_valid_image(binding.file_id),
+         true <- max(image.width, image.height) <= @max_edge_px,
+         :ok <- validate_image_mime(image, descriptor) do
+      {:ok, image}
+    else
+      nil -> {:error, {:request_image_binding_not_found, descriptor.reference_key}}
+      false -> {:error, {:request_image_binding_oversized, descriptor.reference_key}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_image_mime(image, descriptor) do
+    if image.mime_type == descriptor.mime_type,
+      do: :ok,
+      else: {:error, {:request_image_binding_mime_mismatch, descriptor.reference_key}}
+  end
+
+  defp validate_block_mime(shape, block, descriptor) do
+    mime_type =
+      case shape do
+        :anthropic -> get_in(block, ["source", "media_type"])
+        :google -> Map.get(block, "mime_type")
+        _other -> descriptor.mime_type
+      end
+
+    if mime_type == descriptor.mime_type,
+      do: :ok,
+      else: {:error, {:request_image_block_mime_mismatch, descriptor.reference_key}}
   end
 
   defp validate_marker(marker, shape) when is_map(marker) do
@@ -566,6 +667,7 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   defp validate_image_payload(file, payload) do
     with true <- is_binary(payload),
+         :ok <- validate_payload_integrity(file, payload),
          {mime_type, width, height, _variant}
          when is_binary(mime_type) and is_integer(width) and is_integer(height) and width > 0 and
                 height > 0 <- ExImageInfo.info(payload),
@@ -584,21 +686,27 @@ defmodule IntellectualClub.Generation.RequestImages do
       {:error, reason} -> {:error, reason}
       other -> {:error, {:invalid_image_payload, other}}
     end
+  rescue
+    _error -> {:error, :invalid_image_payload}
   end
 
-  defp fallback_image_error?(reason)
-       when reason in [:payload_not_found, :invalid_image_payload, :not_an_image],
-       do: true
-
-  defp fallback_image_error?({:invalid_image_payload, _detail}), do: true
-  defp fallback_image_error?(_reason), do: false
+  defp validate_payload_integrity(file, payload) do
+    if byte_size(payload) == file.size_bytes and
+         Base.encode16(:crypto.hash(:sha256, payload), case: :lower) == file.sha256 do
+      :ok
+    else
+      {:error, :request_image_payload_integrity_mismatch}
+    end
+  end
 
   defp resize_image_payload(payload, mime_type) do
     try do
       with {:ok, resized_payload, _backend_mime_type} <-
              IntellectualClub.ImageProcessor.resize_down(payload, mime_type, @max_edge_px),
            {resized_mime_type, width, height, _variant}
-           when is_integer(width) and is_integer(height) <- ExImageInfo.info(resized_payload),
+           when is_binary(resized_mime_type) and is_integer(width) and is_integer(height) and
+                  width > 0 and height > 0 <- ExImageInfo.info(resized_payload),
+           true <- image_mime_type?(resized_mime_type),
            true <- max(width, height) <= @max_edge_px do
         {:ok, resized_payload, normalize_mime_type(resized_mime_type)}
       else
@@ -617,7 +725,7 @@ defmodule IntellectualClub.Generation.RequestImages do
   defp load_step(step_id) do
     ChatMessageStep
     |> Ash.Query.filter(id == ^step_id)
-    |> Ash.Query.select([:id, :owner_id, :chat_message_id, :raw_request])
+    |> Ash.Query.select([:id, :owner_id, :chat_message_id])
     |> Ash.Query.load(chat_message: [:id, :chat_id])
     |> Ash.read_one(authorize?: false)
     |> case do
@@ -642,13 +750,15 @@ defmodule IntellectualClub.Generation.RequestImages do
     |> Ash.read_one(authorize?: false)
   end
 
+  defp reusable_binding(_descriptor, %{chat_scope_ids: []}), do: :not_found
+  defp reusable_binding(_descriptor, %{scope: %{owner_id: nil}}), do: :not_found
+
   defp reusable_binding(descriptor, state) do
     ChatMessageStepRequestFile
     |> Ash.Query.filter(
       reference_key == ^descriptor.reference_key and
         source_file_external_id == ^descriptor.source_file_external_id and
-        chat_message_step_id != ^state.step.id and
-        chat_message_step.owner_id == ^state.owner_id and
+        chat_message_step.owner_id == ^state.scope.owner_id and
         chat_message_step.chat_message.chat_id in ^state.chat_scope_ids
     )
     |> Ash.Query.sort(created_at: :desc, id: :desc)
@@ -660,13 +770,18 @@ defmodule IntellectualClub.Generation.RequestImages do
         with :ok <- validate_binding_descriptor(binding, descriptor),
              {:ok, image} <- load_valid_image(binding.file_id),
              true <- max(image.width, image.height) <= @max_edge_px do
-          {:ok, binding}
+          {:ok, binding, image}
         else
           false ->
             :not_found
 
           {:error, reason}
-          when reason in [:payload_not_found, :invalid_image_payload, :not_an_image] ->
+          when reason in [
+                 :payload_not_found,
+                 :invalid_image_payload,
+                 :not_an_image,
+                 :request_image_payload_integrity_mismatch
+               ] ->
             :not_found
 
           {:error, {:invalid_image_payload, _detail}} ->
@@ -688,29 +803,6 @@ defmodule IntellectualClub.Generation.RequestImages do
     ChatMessageStepRequestFile
     |> Ash.Changeset.for_create(:create, attrs, authorize?: false)
     |> Ash.create(authorize?: false)
-  end
-
-  defp persist_compact_request(%ChatMessageStep{raw_request: raw_request} = step, compact_request)
-       when raw_request == compact_request,
-       do: {:ok, step}
-
-  defp persist_compact_request(step, compact_request) do
-    step
-    |> Ash.Changeset.for_update(:update, %{raw_request: compact_request}, authorize?: false)
-    |> Ash.update(authorize?: false)
-  end
-
-  defp remove_stale_bindings(step_id, active_refs) do
-    with {:ok, bindings} <- bindings_for_step(step_id) do
-      bindings
-      |> Enum.reject(&MapSet.member?(active_refs, to_string(&1.reference_key)))
-      |> Enum.reduce_while(:ok, fn binding, :ok ->
-        case destroy_binding(binding) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
-    end
   end
 
   defp compensate_created_bindings(binding_ids) do
@@ -755,11 +847,14 @@ defmodule IntellectualClub.Generation.RequestImages do
       {:ok, binding} ->
         attach_staged_items(rest, target_step_id, [binding.id | attached_binding_ids], opts)
 
+      {:error, reason} when not cleanup_on_error? ->
+        {:error, {:attach_staged_binding_failed, item.reference_key, reason}}
+
       {:error, reason} ->
-        case {cleanup_on_error?, binding_for_reference(target_step_id, item.reference_key)} do
-          {true, {:ok, %ChatMessageStepRequestFile{} = winner}} ->
+        case binding_for_reference(target_step_id, item.reference_key) do
+          {:ok, %ChatMessageStepRequestFile{} = winner} ->
             if staged_binding_matches?(winner, item) do
-              case delete_unbound_file(item.file_id) do
+              case cleanup_staged_files([item]) do
                 :ok ->
                   attach_staged_items(rest, target_step_id, attached_binding_ids, opts)
 
@@ -779,29 +874,34 @@ defmodule IntellectualClub.Generation.RequestImages do
               )
             end
 
-          {true, {:ok, nil}} ->
+          {:ok, nil} ->
             attach_staged_failure(
               {:attach_staged_binding_failed, item.reference_key, reason},
               attached_binding_ids,
               [item | rest]
             )
 
-          {true, {:error, lookup_reason}} ->
+          {:error, lookup_reason} ->
             attach_staged_failure(
               {:attach_staged_binding_lookup_failed, item.reference_key, reason, lookup_reason},
               attached_binding_ids,
               [item | rest]
             )
-
-          {false, _lookup_result} ->
-            {:error, {:attach_staged_binding_failed, item.reference_key, reason}}
         end
     end
   end
 
   defp staged_binding_matches?(binding, item) do
-    to_string(binding.source_file_external_id) == to_string(item.source_file_external_id) and
-      binding.variant_key == item.variant_key
+    with true <-
+           to_string(binding.source_file_external_id) == to_string(item.source_file_external_id),
+         true <- binding.variant_key == item.variant_key,
+         %StoredFile{} = bound_file <- binding.file,
+         {:ok, %StoredFile{} = staged_file} <-
+           Ash.get(StoredFile, item.file_id, authorize?: false) do
+      bound_file.sha256 == staged_file.sha256 and bound_file.size_bytes == staged_file.size_bytes
+    else
+      _other -> false
+    end
   end
 
   defp attach_staged_failure(error, attached_binding_ids, staged_items) do

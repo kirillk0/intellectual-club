@@ -32,42 +32,31 @@ defmodule IntellectualClub.DataCase do
 
   @doc """
   Sets up the sandbox based on the test tags.
+
+  Tests tagged `sandbox: false` exercise real commit effects and must explicitly
+  delete their committed fixtures before the SQL owner is stopped.
   """
   def setup_sandbox(tags) do
     pid =
-      Ecto.Adapters.SQL.Sandbox.start_owner!(IntellectualClub.Repo, shared: not tags[:async])
+      Ecto.Adapters.SQL.Sandbox.start_owner!(IntellectualClub.Repo,
+        shared: not tags[:async],
+        sandbox: Map.get(tags, :sandbox, true)
+      )
 
     on_exit(fn ->
-      IntellectualClub.DataCase.stop_background_test_tasks()
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+      try do
+        # Global application workers belong to the shared sandbox only. Async
+        # tests must supervise and join their own explicitly allowed processes.
+        unless tags[:async], do: IntellectualClub.DataCase.stop_background_test_tasks()
+      after
+        Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+      end
     end)
   end
 
   @doc false
   def stop_background_test_tasks do
-    terminate_dynamic_children(IntellectualClub.BackgroundTasks.Supervisor)
-    terminate_dynamic_children(IntellectualClub.BackgroundTasks.ExecutionSupervisor)
-    terminate_dynamic_children(IntellectualClub.Generation.Supervisor)
-    terminate_dynamic_children(IntellectualClub.Notifications.Dispatcher)
-    :ok
-  end
-
-  defp terminate_dynamic_children(supervisor) do
-    if Process.whereis(supervisor) do
-      supervisor
-      |> DynamicSupervisor.which_children()
-      |> Enum.each(fn
-        {_id, pid, _type, _modules} when is_pid(pid) ->
-          _ = DynamicSupervisor.terminate_child(supervisor, pid)
-
-        _other ->
-          :ok
-      end)
-    end
-  rescue
-    _exception -> :ok
-  catch
-    :exit, _reason -> :ok
+    IntellectualClub.SandboxCleanup.stop_background_tasks!()
   end
 
   @doc """

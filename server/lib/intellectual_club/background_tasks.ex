@@ -132,7 +132,7 @@ defmodule IntellectualClub.BackgroundTasks do
                status in ^@active_statuses
            )
            |> Ash.Query.sort(id: :asc)
-           |> Ash.Query.lock(:for_update)
+           |> Ash.Query.lock("FOR NO KEY UPDATE")
            |> Ash.read!(authorize?: false)
            |> Enum.map(fn task ->
              if task.cancel_requested == true do
@@ -174,8 +174,14 @@ defmodule IntellectualClub.BackgroundTasks do
       when is_integer(source_message_id) and source_message_id > 0 and
              is_integer(child_message_id) and child_message_id > 0 do
     case Ash.transaction([ChatMessage, BackgroundTask], fn ->
-           source_message = lock_lifecycle_message(source_message_id)
-           child_message = lock_lifecycle_message(child_message_id)
+           messages =
+             [source_message_id, child_message_id]
+             |> Enum.uniq()
+             |> Enum.sort()
+             |> Map.new(fn message_id -> {message_id, lock_lifecycle_message(message_id)} end)
+
+           source_message = Map.fetch!(messages, source_message_id)
+           child_message = Map.fetch!(messages, child_message_id)
 
            validate_handoff_lifecycle_messages!(source_message, child_message)
 
@@ -186,7 +192,7 @@ defmodule IntellectualClub.BackgroundTasks do
                status in ^@active_statuses and cancel_requested != true
            )
            |> Ash.Query.sort(id: :asc)
-           |> Ash.Query.lock(:for_update)
+           |> Ash.Query.lock("FOR NO KEY UPDATE")
            |> Ash.read!(authorize?: false)
            |> Enum.map(fn task ->
              if task.owner_id != child_message.owner_id do
@@ -688,7 +694,7 @@ defmodule IntellectualClub.BackgroundTasks do
            current =
              BackgroundTask
              |> Ash.Query.filter(id == ^task.id)
-             |> Ash.Query.lock(:for_update)
+             |> Ash.Query.lock("FOR NO KEY UPDATE")
              |> Ash.read_one!(authorize?: false)
 
            if is_nil(current) do
@@ -1792,7 +1798,7 @@ defmodule IntellectualClub.BackgroundTasks do
     ChatMessage
     |> Ash.Query.filter(id == ^message_id)
     |> Ash.Query.select([:id, :role, :status, :owner_id])
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one!(authorize?: false)
   end
 
@@ -1809,7 +1815,7 @@ defmodule IntellectualClub.BackgroundTasks do
     query =
       BackgroundTask
       |> Ash.Query.filter(id == ^task_id)
-      |> Ash.Query.lock(:for_update)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
 
     query =
       case Keyword.get(opts, :select) do

@@ -118,7 +118,7 @@ defmodule IntellectualClub.Chat.BranchMove do
     with {:ok, loaded_messages} <-
            Ash.load(source_messages, MessageTreeCopy.load_spec(), actor: actor, strict?: true),
          {:ok, _loaded_messages} <-
-           MessageTreeCopy.materialize_loaded_messages(loaded_messages, actor) do
+           MessageTreeCopy.prepare_loaded_messages(loaded_messages, actor) do
       {prefix_messages, moved_messages} = Enum.split(loaded_messages, prefix_count)
 
       {:ok, %{context | prefix_messages: prefix_messages, moved_messages: moved_messages}}

@@ -5,6 +5,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
 
   defmodule InterruptibleAdapter do
@@ -48,6 +49,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
         send(context.test_pid, {:stale_emitter, stale_emitter})
       end
 
+      emit.({:trace, {:set_step_raw_request, %{"mutated_by_event" => true}}})
       emit.({:trace, {:set_text, "answer", :answer, 1, "Discarded partial answer"}})
 
       receive do
@@ -57,7 +59,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
           emit.(
             {:response_complete,
              %{
-               raw_request: request_payload,
+               raw_request: %{"mutated_by_metadata" => true},
                raw_response: %{"id" => "completed", "output" => []}
              }}
           )
@@ -259,7 +261,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
     end
   end
 
-  test "steering interrupts provider, ignores stale events and restarts the same step" do
+  test "steering interrupts provider, ignores stale events and creates a new immutable step" do
     %{user: actor} = user_fixture()
     {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
 
@@ -301,7 +303,9 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       test_pid: self()
     }
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:stream_started, 1, _first_task, ^raw_request}, 1_000
@@ -316,7 +320,8 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
 
     assert_receive {:duplicate_worker_result, {:error, {:already_running, ^pid}}}, 1_000
 
-    assert {:ok, %{step_id: ^step_id}} = Worker.steer(pid, "Change direction")
+    assert {:ok, %{step_id: receiving_step_id}} = Worker.steer(pid, "Change direction")
+    refute receiving_step_id == step_id
 
     assert_receive {:stream_started, 2, second_task, restarted_request}, 1_000
 
@@ -338,8 +343,14 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       )
 
     assert message.status == :done
-    assert [step] = message.steps
-    assert step.id == step_id
+    assert [interrupted, step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert interrupted.id == step_id
+    assert interrupted.status == :canceled
+    refute Enum.any?(interrupted.items, &(&1.type == :answer))
+    assert StepRequests.request_for_step!(interrupted.id, actor: actor) == raw_request
+    assert step.id == receiving_step_id
+    assert step.sequence == 2
+    assert StepRequests.request_for_step!(step.id, actor: actor) == restarted_request
 
     assert Enum.map(Enum.sort_by(step.items, & &1.sequence), & &1.type) == [:steering, :answer]
 
@@ -404,15 +415,18 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       test_pid: self()
     }
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:retry_stream_started, 1, _first_task, ^raw_request}, 1_000
     assert_receive {:retry_stale_emitter, stale_emitter}, 1_000
     _message = wait_for_step_count!(assistant_message.id, actor, 2, 2_000)
 
+    stale_monitor = Process.monitor(stale_emitter)
     send(stale_emitter, :emit)
-    Process.sleep(50)
+    assert_receive {:DOWN, ^stale_monitor, :process, ^stale_emitter, :normal}, 1_000
 
     assert %{status: :generating} = Worker.get_current_state(pid)
 
@@ -423,10 +437,11 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
     refute_receive {:retry_stream_started, 3, _task, _request}, 100
 
     send(second_task, {:fail, "Second retryable failure"})
-    message = wait_for_step_count!(assistant_message.id, actor, 3, 2_000)
+    message = wait_for_step_count!(assistant_message.id, actor, 4, 2_000)
 
     steps = Enum.sort_by(message.steps, & &1.sequence)
-    assert retry_attempt(Enum.at(steps, 1)) == 2
+    assert Enum.at(steps, 1).status == :canceled
+    assert retry_attempt(Enum.at(steps, 2)) == 2
 
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000

@@ -88,7 +88,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     provider =
       Map.get(opts, :provider) || Map.get(state.context, :provider_type) || :responses_wss
 
-    logical_request = stringify_keys(Map.get(opts, :request_payload, %{}) || %{})
+    logical_request = Map.get(opts, :request_payload, %{}) || %{}
     timeout_ms = Map.get(opts, :timeout_ms, 300_000)
 
     with {:ok, url} <-

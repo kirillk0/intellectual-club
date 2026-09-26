@@ -7,6 +7,7 @@ defmodule IntellectualClub.Generation.LeaseTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.Lease.Capabilities
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
@@ -98,6 +99,93 @@ defmodule IntellectualClub.Generation.LeaseTest do
 
     assert {:ok, %{rows: [[true]]}} =
              Repo.query("SELECT pg_advisory_unlock($1)", [Lease.lock_key(message.id)])
+  end
+
+  test "local lease checks do not enter the manager mailbox and match the full capability" do
+    %{message: message} = generating_message_fixture!()
+    assert {:ok, lease} = Lease.acquire(message.id)
+    manager = lease.manager
+    parent = self()
+    result_ref = make_ref()
+
+    assert Capabilities.active?(lease)
+    refute Capabilities.active?(%{lease | manager: self()})
+    refute Capabilities.active?(%{lease | ref: make_ref()})
+    refute Capabilities.active?(%{lease | fence_token: Ecto.UUID.generate()})
+    refute Capabilities.active?(%{lease | fence_token: nil})
+
+    assert :ok = :sys.suspend(manager)
+
+    try do
+      pid =
+        start_supervised!(%{
+          id: result_ref,
+          start:
+            {Task, :start_link,
+             [
+               fn ->
+                 result = Lease.with_fence(lease, fn -> :written_without_rpc end)
+                 send(parent, {result_ref, result})
+               end
+             ]},
+          restart: :temporary
+        })
+
+      monitor = Process.monitor(pid)
+      assert_receive {^result_ref, {:ok, :written_without_rpc}}, 1_000
+      assert_receive {:DOWN, ^monitor, :process, ^pid, reason}, 1_000
+      assert reason in [:normal, :noproc]
+    after
+      :sys.resume(manager)
+      Lease.release(lease)
+    end
+  end
+
+  test "missing local capability state fails closed without affecting token-only fences" do
+    %{message: message} = generating_message_fixture!()
+    assert {:ok, lease} = Lease.acquire(message.id)
+
+    try do
+      :sys.replace_state(lease.manager, fn state ->
+        :ets.delete(Capabilities)
+        state
+      end)
+
+      refute Capabilities.active?(lease)
+
+      assert {:error, :lease_lost} =
+               Lease.with_fence(lease, fn -> flunk("lost capability authorized a write") end)
+
+      assert {:ok, :token_only} =
+               Lease.with_token_fence(message.id, lease.fence_token, fn -> :token_only end)
+
+      assert :ok = Lease.release(lease)
+      assert reloaded_message!(message.id).generation_fence_token == nil
+    after
+      Lease.release(lease)
+      :ok = Supervisor.terminate_child(IntellectualClub.Supervisor, Lease)
+      assert {:ok, _manager} = Supervisor.restart_child(IntellectualClub.Supervisor, Lease)
+    end
+  end
+
+  test "a live local capability never bypasses the durable row-locked token check" do
+    %{actor: actor, message: message} = generating_message_fixture!()
+    assert {:ok, lease} = Lease.acquire(message.id)
+    replacement_token = Ecto.UUID.generate()
+
+    message
+    |> Ash.Changeset.for_update(
+      :set_generation_fence,
+      %{generation_fence_token: replacement_token},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    assert {:error, :lease_lost} =
+             Lease.with_fence(lease, fn -> flunk("stale durable token authorized a write") end)
+
+    assert :ok = Lease.release(lease)
+    assert reloaded_message!(message.id).generation_fence_token == replacement_token
   end
 
   test "normal acquire rejects a terminal message without leaving a fence token" do
@@ -223,7 +311,7 @@ defmodule IntellectualClub.Generation.LeaseTest do
         handler_id,
         [:intellectual_club, :repo, :query],
         fn _, _, metadata, caller ->
-          if self() == caller and String.contains?(metadata.query, "FOR UPDATE") do
+          if self() == caller and String.contains?(metadata.query, "FOR NO KEY UPDATE") do
             send(caller, {:lease_row_fence, metadata.query})
           end
         end,

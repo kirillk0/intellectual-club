@@ -2,8 +2,9 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   @moduledoc """
   One generation step for an assistant message.
 
-  A single assistant `ChatMessage` can contain multiple steps in the future
-  (tool calling loop, retries, etc). For P0 we persist the first step only.
+  An assistant message can contain multiple immutable logical requests. Use
+  `IntellectualClub.Generation.StepRequests` to reconstruct their compact JSON;
+  `raw_request` is only the physical full-checkpoint field.
   """
 
   use IntellectualClub.Resource,
@@ -12,6 +13,9 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.Changes.CleanupLinkedForks
+  alias IntellectualClub.Chat.Changes.PreventStepRequestMutation
+  alias IntellectualClub.Chat.Changes.RewriteStepRequestEncoding
+  alias IntellectualClub.Chat.Changes.ValidateStepRequest
   alias IntellectualClub.Chat.Changes.SetFinishedAtFromStatus
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
@@ -40,6 +44,36 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       allow_nil?(false)
       default(%{})
       select_by_default?(false)
+    end
+
+    attribute :request_mode, :atom do
+      allow_nil?(false)
+      default(:full)
+      constraints(one_of: [:full, :patch])
+    end
+
+    attribute :request_patch, {:array, :map} do
+      allow_nil?(true)
+      select_by_default?(false)
+    end
+
+    attribute :request_hash, :string do
+      allow_nil?(true)
+    end
+
+    attribute :request_base_hash, :string do
+      allow_nil?(true)
+    end
+
+    attribute :request_base_sequence, :integer do
+      allow_nil?(true)
+      constraints(min: 1)
+    end
+
+    attribute :request_checkpoint_distance, :integer do
+      allow_nil?(false)
+      default(0)
+      constraints(min: 0, max: 32)
     end
 
     attribute :raw_response, :map do
@@ -101,13 +135,15 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   end
 
   relationships do
-    belongs_to :owner, IntellectualClub.Accounts.User,
+    belongs_to(:owner, IntellectualClub.Accounts.User,
       allow_nil?: false,
       attribute_type: :integer
+    )
 
-    belongs_to :chat_message, IntellectualClub.Chat.ChatMessage,
+    belongs_to(:chat_message, IntellectualClub.Chat.ChatMessage,
       allow_nil?: false,
       attribute_type: :integer
+    )
 
     has_many :items, IntellectualClub.Chat.ChatMessageItem do
       destination_attribute(:chat_message_step_id)
@@ -123,7 +159,7 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   end
 
   json_api do
-    type "chat-message-steps"
+    type("chat-message-steps")
   end
 
   actions do
@@ -146,11 +182,22 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
     end
 
     create :create do
+      # A transient optimization, verified against the persisted predecessor hash.
+      argument :request_base, :map do
+        public?(false)
+      end
+
       accept([
         :chat_message_id,
         :sequence,
         :status,
         :raw_request,
+        :request_mode,
+        :request_patch,
+        :request_hash,
+        :request_base_hash,
+        :request_base_sequence,
+        :request_checkpoint_distance,
         :raw_response,
         :response_final,
         :input_tokens,
@@ -166,13 +213,12 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:chat_message]})
       change({SetFinishedAtFromStatus, []})
+      change(ValidateStepRequest)
     end
 
     update :update do
       accept([
-        :sequence,
         :status,
-        :raw_request,
         :raw_response,
         :response_final,
         :input_tokens,
@@ -186,22 +232,36 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       ])
 
       require_atomic?(false)
+      change(PreventStepRequestMutation)
+    end
+
+    update :rewrite_request_encoding do
+      public?(false)
+      require_atomic?(false)
+      accept([])
+
+      argument :encoding, :map do
+        allow_nil?(false)
+        public?(false)
+      end
+
+      change(RewriteStepRequestEncoding)
     end
   end
 
   policies do
     policy action_type(:read) do
-      authorize_if relates_to_actor_via(:owner)
+      authorize_if(relates_to_actor_via(:owner))
 
-      authorize_if expr(chat_message.chat.shared_incoming == true)
+      authorize_if(expr(chat_message.chat.shared_incoming == true))
     end
 
     policy action_type(:create) do
-      authorize_if actor_present()
+      authorize_if(actor_present())
     end
 
     policy action_type([:update, :destroy]) do
-      authorize_if relates_to_actor_via(:owner)
+      authorize_if(relates_to_actor_via(:owner))
     end
   end
 end

@@ -9,6 +9,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
@@ -80,7 +81,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert message.error_detail == nil
     assert message.token_count == 0
     assert message.finished_at == nil
-    assert Enum.map(message.steps || [], & &1.sequence) == [1, 2]
+    assert Enum.sort(Enum.map(message.steps || [], & &1.sequence)) == [1, 2]
 
     replacement = Enum.find(message.steps, &(&1.sequence == 2))
     assert replacement.id == replacement_id
@@ -129,7 +130,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       RuntimeTrace.new_step(
         id: step_1_id,
         sequence: 1,
-        raw_request: %{"model" => "demo-model"}
+        raw_request: StepRequests.request_for_step!(step_1_id, actor: actor)
       )
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
       |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Step one"})
@@ -151,7 +152,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       RuntimeTrace.new_step(
         id: step_2_id,
         sequence: 2,
-        raw_request: %{"model" => "demo-model"}
+        raw_request: StepRequests.request_for_step!(step_2_id, actor: actor)
       )
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
       |> RuntimeTrace.apply_event({:set_text, "answer", :answer, 1, "Final answer"})
@@ -229,7 +230,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
         id: step_id,
         sequence: 1,
         started_at: started_at,
-        raw_request: %{"model" => "demo-model"},
+        raw_request: StepRequests.request_for_step!(step_id, actor: actor),
         output_tokens: 12
       )
       |> RuntimeTrace.apply_event({:ensure_item, "answer", :answer, 1})
@@ -711,7 +712,12 @@ defmodule IntellectualClub.Generation.PersistenceTest do
 
     assert message.status == :canceled
     assert message.token_count > 0
-    assert [step] = message.steps
+    assert [interrupted, step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert interrupted.id == step_id
+    assert interrupted.status == :canceled
+    refute Enum.any?(interrupted.items, &(&1.type == :answer))
+    assert step.id == runtime_step.id
+    assert step.id != step_id
     assert step.status == :canceled
     assert step.raw_response == %{"id" => "partial"}
     assert step.input_tokens == 20
@@ -998,7 +1004,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     [source_step, next_step] = Enum.sort_by(message.steps, & &1.sequence)
     assert source_step.status == :done
     assert next_step.status == :waiting_provider
-    assert next_step.raw_request == next_request
+    assert StepRequests.request_for_step!(next_step.id, actor: actor) == next_request
     assert Enum.any?(source_step.items, &(&1.id == steering_item_id and &1.type == :steering))
   end
 

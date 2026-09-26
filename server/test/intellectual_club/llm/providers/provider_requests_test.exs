@@ -1135,7 +1135,11 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         history: [%{role: :user, content: "Weather in Paris?"}],
         system_prompt: "System",
         model_name: "claude-sonnet-4-20250514",
-        parameters: %{"max_tokens" => 200},
+        parameters: %{
+          "max_tokens" => 200,
+          "anthropic_version" => "2025-01-01",
+          "anthropic_beta" => ["beta-a", "beta-b"]
+        },
         tools: [],
         supports_image_input: false
       }).raw_request
@@ -1189,6 +1193,9 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       })
 
     assert followup.raw_request["system"] == "System"
+    assert followup.raw_request["anthropic_version"] == raw_request["anthropic_version"]
+    assert followup.raw_request["anthropic_beta"] == raw_request["anthropic_beta"]
+    assert AnthropicMessages.prepare_request(followup.raw_request, %{}) == followup.raw_request
 
     assert List.last(followup.raw_request["messages"]) == %{
              "role" => "user",

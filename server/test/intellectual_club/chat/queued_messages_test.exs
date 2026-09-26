@@ -139,11 +139,26 @@ defmodule IntellectualClub.Chat.QueuedMessagesTest do
     assert {:error, :generation_active} = QueuedMessages.send_next(queued_message.id, actor)
   end
 
+  # Deleting an active generation schedules work gated on the real outer
+  # transaction outcome, so this fixture must commit rather than roll back.
+  @tag sandbox: false
   test "deleting a steering target cascades pending and delivered queue records" do
     %{user: actor} = user_fixture()
 
+    on_exit(fn ->
+      actor
+      |> Ash.Changeset.for_destroy(:destroy, %{}, authorize?: false)
+      |> Ash.destroy!(authorize?: false)
+    end)
+
     for status <- [:pending, :delivered] do
       chat = create_chat!(actor)
+
+      on_exit(fn ->
+        stop_background_test_tasks()
+        Ash.destroy!(chat, actor: actor)
+      end)
+
       {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
 
       generation =

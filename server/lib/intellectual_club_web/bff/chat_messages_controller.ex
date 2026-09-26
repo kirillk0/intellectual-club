@@ -19,88 +19,69 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.QueueDispatcher
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.TokenCounter
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatAttachments
   alias IntellectualClubWeb.Bff.ChatBranchPayload
   alias IntellectualClubWeb.Bff.ChatParams
+  alias IntellectualClubWeb.Bff.ChatPollPayload
   alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.ChatUploadPolicy
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.ImageControllerHelpers
   alias IntellectualClubWeb.Bff.Loads
-  alias IntellectualClubWeb.Bff.Serializer
 
   def poll(conn, %{"id" => id} = params) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
-      message_id = String.to_integer(id)
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, message_id} <- ChatParams.resource_id(id),
+         {:ok, %ChatMessage{} = message} <- Ash.get(ChatMessage, message_id, actor: actor) do
+      runtime = message |> runtime_for_message() |> maybe_recover_absent(message, actor)
 
-      with {:ok, access_message} <- Ash.get(ChatMessage, message_id, actor: actor) do
-        case GenerationSupervisor.poll_generation(message_id, %{}, []) do
-          {:ok, runtime} ->
-            message = load_persisted_message(message_id, actor)
-            current_step = Serializer.normalize_runtime_step_for_client(runtime.step)
+      meta = %{
+        queued_messages: ChatQueuedMessagePayload.list_for_chat(message.chat_id, actor),
+        active_generation_message_id: active_generation_message_id(message.chat_id, actor)
+      }
 
-            queued_messages =
-              ChatQueuedMessagePayload.list_for_chat(access_message.chat_id, actor)
+      conn = put_resp_header(conn, "cache-control", "no-store")
 
-            payload =
-              if message,
-                do:
-                  ChatBranchPayload.message(message, actor,
-                    runtime_steps_by_message_id: %{message_id => current_step}
-                  ),
-                else: %{}
-
-            response =
-              %{
-                message_id: message_id,
-                runtime: true,
-                status: Atom.to_string(runtime.status),
-                content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
-                usage: Map.get(payload, :usage, Serializer.usage_summary([])),
-                working: Map.get(payload, :working, Serializer.working_summary([])),
-                token_count: if(message, do: message.token_count, else: nil),
-                error_detail: if(message, do: message.error_detail, else: nil),
-                finished_at:
-                  if(message, do: Serializer.datetime_iso(message.finished_at), else: nil),
-                queued_messages: queued_messages,
-                active_generation_message_id:
-                  active_generation_message_id(access_message.chat_id, actor)
-              }
-              |> maybe_put_working_open(message_id, params, actor, current_step)
-
-            json(conn, response)
-
-          :not_found ->
-            render_poll_fallback(conn, message_id, actor, params)
-        end
-      else
-        {:error, error} -> render_access_error(conn, error)
+      case ChatPollPayload.response(message, actor, runtime, params, meta) do
+        :unchanged -> send_resp(conn, :no_content, "")
+        {:ok, payload} -> json(conn, payload)
       end
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, error} -> render_access_error(conn, error)
+      _other -> render_access_error(conn, :not_found)
     end
   end
 
   def working(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, message_id} <- ChatParams.resource_id(id),
          {:ok, step_id} <- parse_working_step_id(Map.get(params, "step_id")),
+         {:ok, %ChatMessage{} = message} <- Ash.get(ChatMessage, message_id, actor: actor),
          {:ok, payload} <-
-           ChatBranchPayload.working_payload(String.to_integer(id), step_id, actor) do
-      json(conn, payload)
+           ChatPollPayload.working(message, actor, step_id, runtime_for_message(message)) do
+      conn |> put_resp_header("cache-control", "no-store") |> json(payload)
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
       {:error, :invalid_step_id} ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "step_id must be an integer or latest"})
 
       {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Working step not found"})
+        conn |> put_status(:not_found) |> json(%{error: "Working step not found"})
 
       {:error, error} ->
         render_access_error(conn, error)
+
+      _other ->
+        render_access_error(conn, :not_found)
     end
   end
 
@@ -376,13 +357,14 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
          {:ok, %ChatMessageStep{chat_message_id: ^message_id} = step} <-
            ChatMessageStep
            |> Ash.Query.filter(id == ^step_id)
-           |> Ash.Query.select([:id, :chat_message_id, :sequence, :raw_request, :raw_response])
+           |> Ash.Query.select([:id, :chat_message_id, :sequence, :raw_response])
            |> Ash.read_one(actor: actor),
-         :ok <- authorize_inherited_raw_request(step, kind, actor) do
+         :ok <- authorize_inherited_raw_request(step, kind, actor),
+         {:ok, raw_request} <- raw_request_for_inspector(step, kind, actor) do
       payload =
         case kind do
           "request" ->
-            %{id: step.id, sequence: step.sequence, raw_request: step.raw_request}
+            %{id: step.id, sequence: step.sequence, raw_request: raw_request}
 
           "response" ->
             %{id: step.id, sequence: step.sequence, raw_response: step.raw_response}
@@ -391,17 +373,38 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
             %{
               id: step.id,
               sequence: step.sequence,
-              raw_request: step.raw_request,
+              raw_request: raw_request,
               raw_response: step.raw_response
             }
         end
 
       json(conn, %{step: payload})
     else
-      {:error, %Plug.Conn{} = conn} -> conn
-      {:error, :forbidden} -> ChatAccess.render_error(conn, :forbidden)
-      _other -> ChatAccess.render_error(conn, :not_found)
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, :forbidden} ->
+        ChatAccess.render_error(conn, :forbidden)
+
+      {:error, {:request_unavailable, _reason}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          code: "request_unavailable",
+          error: "Stored request could not be reconstructed"
+        })
+
+      _other ->
+        ChatAccess.render_error(conn, :not_found)
     end
+  end
+
+  defp raw_request_for_inspector(_step, "response", _actor), do: {:ok, nil}
+
+  defp raw_request_for_inspector(step, _kind, actor) do
+    {:ok, StepRequests.request_for_step!(step.id, actor: actor)}
+  rescue
+    error -> {:error, {:request_unavailable, error}}
   end
 
   defp authorize_inherited_raw_request(_step, "response", _actor), do: :ok
@@ -874,172 +877,38 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     |> Enum.join("")
   end
 
-  defp render_poll_fallback(conn, message_id, actor, params) do
-    with {:ok, message} <- Ash.get(ChatMessage, message_id, actor: actor) do
-      message =
-        if message.status == :generating and actor_owns_message?(message, actor) do
-          case GenerationSupervisor.resume_orphaned_message(message_id, actor: actor) do
-            {:ok, _context} ->
-              Ash.get!(ChatMessage, message_id, actor: actor)
+  defp runtime_for_message(%ChatMessage{status: :generating, id: id}),
+    do: GenerationSupervisor.poll_generation(id)
 
-            {:error, :already_running} ->
-              Ash.get!(ChatMessage, message_id, actor: actor)
+  defp runtime_for_message(_message), do: :not_found
 
-            {:error, reason} ->
-              Logger.warning(
-                "Poll fallback failed to resume orphaned generation message_id=#{message_id}: #{inspect(reason)}"
-              )
+  # Only confirmed absence allows recovery. A timeout, missing snapshot or remote
+  # node failure is busy; neither that path nor recovery errors cancel a worker.
+  defp maybe_recover_absent(:not_found, %{status: :generating} = message, actor) do
+    if actor_owns_message?(message, actor) do
+      case GenerationSupervisor.resume_orphaned_message(message.id, actor: actor) do
+        {:ok, _context} ->
+          GenerationSupervisor.poll_generation(message.id)
 
-              _ = GenerationSupervisor.cancel_generation(message_id)
+        {:error, :already_running} ->
+          GenerationSupervisor.poll_generation(message.id)
 
-              Ash.get!(ChatMessage, message_id, actor: actor)
-          end
-        else
-          message
-        end
-
-      payload = ChatBranchPayload.message(message, actor)
-      queued_messages = ChatQueuedMessagePayload.list_for_chat(message.chat_id, actor)
-
-      response =
-        %{
-          message_id: message_id,
-          runtime: false,
-          status: Atom.to_string(message.status),
-          content: Map.get(payload, :content, %{items: [], parts: [], media: []}),
-          usage: Map.get(payload, :usage, Serializer.usage_summary([])),
-          working: Map.get(payload, :working, Serializer.working_summary([])),
-          token_count: message.token_count,
-          error_detail: message.error_detail,
-          finished_at: Serializer.datetime_iso(message.finished_at),
-          queued_messages: queued_messages,
-          active_generation_message_id: active_generation_message_id(message.chat_id, actor)
-        }
-        |> maybe_put_working_open(message_id, params, actor, nil)
-
-      json(conn, response)
+        {:error, reason} ->
+          Logger.warning("Poll recovery deferred message_id=#{message.id}: #{inspect(reason)}")
+          :not_found
+      end
     else
-      {:error, _error} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Message not found"})
+      :not_found
     end
   end
 
-  defp load_persisted_message(message_id, actor) when is_integer(message_id) do
-    case Ash.get(ChatMessage, message_id, actor: actor) do
-      {:ok, message} ->
-        message
-
-      {:error, _error} ->
-        nil
-    end
-  end
+  defp maybe_recover_absent(runtime, _message, _actor), do: runtime
 
   defp active_generation_message_id(chat_id, actor) when is_integer(chat_id) do
     case Ash.get(Chat, chat_id, actor: actor, load: [:last_message]) do
       {:ok, %Chat{} = chat} -> Revisions.active_generation_message_id(chat)
       {:ok, nil} -> nil
       {:error, _error} -> nil
-    end
-  end
-
-  defp maybe_put_working_open(response, message_id, params, actor, runtime_step) do
-    case parse_working_poll_request(Map.get(params, "working_step_id")) do
-      :none ->
-        response
-
-      :latest ->
-        Map.put(response, :working_open, working_open_latest(message_id, actor, runtime_step))
-
-      {:id, step_id} ->
-        Map.put(
-          response,
-          :working_open,
-          working_open_selected(message_id, step_id, actor, runtime_step)
-        )
-    end
-  end
-
-  defp working_open_latest(message_id, actor, runtime_step) when is_map(runtime_step) do
-    %{
-      selected_step_id: Map.get(runtime_step, :id),
-      step: runtime_step
-    }
-    |> maybe_put_step_index(message_id, actor, runtime_step)
-  end
-
-  defp working_open_latest(message_id, actor, _runtime_step) do
-    case ChatBranchPayload.working_payload(message_id, nil, actor) do
-      {:ok, payload} -> Map.take(payload, [:step_count, :steps, :selected_step_id, :step])
-      {:error, _error} -> nil
-    end
-  end
-
-  defp working_open_selected(message_id, step_id, actor, runtime_step) do
-    if runtime_step_matches?(runtime_step, step_id) do
-      %{
-        selected_step_id: step_id,
-        step: runtime_step
-      }
-      |> maybe_put_step_index(message_id, actor, runtime_step)
-    else
-      case ChatBranchPayload.working_payload(message_id, step_id, actor) do
-        {:ok, payload} ->
-          payload
-          |> Map.take([:selected_step_id, :step])
-          |> put_step_index(Map.get(payload, :steps, []), runtime_step)
-
-        {:error, _error} ->
-          nil
-      end
-    end
-  end
-
-  defp maybe_put_step_index(payload, message_id, actor, runtime_step) when is_map(payload) do
-    case ChatBranchPayload.working_payload(message_id, nil, actor) do
-      {:ok, working_payload} ->
-        put_step_index(payload, Map.get(working_payload, :steps, []), runtime_step)
-
-      {:error, _error} ->
-        put_step_index(payload, [], runtime_step)
-    end
-  end
-
-  defp put_step_index(payload, steps, runtime_step) when is_map(payload) and is_list(steps) do
-    steps = upsert_runtime_step_summary(steps, runtime_step)
-
-    payload
-    |> Map.put(:steps, steps)
-    |> Map.put(:step_count, length(steps))
-  end
-
-  defp upsert_runtime_step_summary(steps, runtime_step)
-       when is_list(steps) and is_map(runtime_step) do
-    runtime_summary = Serializer.working_step_summary(runtime_step)
-    runtime_sequence = Map.get(runtime_summary, :sequence)
-    runtime_id = Map.get(runtime_summary, :id)
-
-    steps
-    |> Enum.reject(fn summary ->
-      (not is_nil(runtime_sequence) and Map.get(summary, :sequence) == runtime_sequence) or
-        (not is_nil(runtime_id) and Map.get(summary, :id) == runtime_id)
-    end)
-    |> Kernel.++([runtime_summary])
-    |> Enum.sort_by(fn summary -> Map.get(summary, :sequence) || 0 end)
-  end
-
-  defp upsert_runtime_step_summary(steps, _runtime_step) when is_list(steps), do: steps
-
-  defp parse_working_poll_request(nil), do: :none
-  defp parse_working_poll_request(""), do: :latest
-  defp parse_working_poll_request("latest"), do: :latest
-
-  defp parse_working_poll_request(value) do
-    case parse_working_step_id(value) do
-      {:ok, nil} -> :latest
-      {:ok, step_id} -> {:id, step_id}
-      {:error, _error} -> :none
     end
   end
 
@@ -1056,12 +925,6 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp parse_working_step_id(_value), do: {:error, :invalid_step_id}
-
-  defp runtime_step_matches?(runtime_step, step_id) when is_map(runtime_step) do
-    Map.get(runtime_step, :id) == step_id
-  end
-
-  defp runtime_step_matches?(_runtime_step, _step_id), do: false
 
   defp fetch_history_mutable_message(message_id, actor) do
     with {:ok, message} <- fetch_owned_message(message_id, actor),
@@ -1132,6 +995,10 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp render_access_error(conn, %Ash.Error.Query.NotFound{}) do
+    render_access_error(conn, :not_found)
+  end
+
+  defp render_access_error(conn, %Ash.Error.Invalid{errors: [%Ash.Error.Query.NotFound{} | _]}) do
     render_access_error(conn, :not_found)
   end
 

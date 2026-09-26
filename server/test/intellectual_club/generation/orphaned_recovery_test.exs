@@ -10,7 +10,6 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Chat.ChatShare
   alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Chat.Spawn
-  alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
@@ -25,6 +24,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
+  alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
@@ -150,24 +150,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       "stream" => true
     }
 
-    old_step =
-      ChatMessageStep
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          chat_message_id: generating_message.id,
-          sequence: 1,
-          status: :waiting_provider,
-          raw_request: raw_request,
-          raw_response: nil,
-          response_final: false
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, old_step.id)
+    %{step: old_step, request: compact_request} =
+      Persistence.create_request_step!(generating_message, 1, raw_request)
 
     [old_binding] = request_file_bindings(old_step.id)
     old_rendition_file = Ash.get!(StoredFile, old_binding.file_id, authorize?: false)
@@ -433,46 +417,65 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
            ]) == child_message.id
   end
 
-  test "fork creates a new subagent on first execution" do
+  test "fork returns a new child result before the parent writer persists its receipt" do
     %{user: actor} = user_fixture()
     task = "Create a fresh fork"
     parent = create_parent_fork_call!(actor, task)
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
 
-    context = %ExecutionContext{
-      owner_id: actor.id,
-      chat_id: parent.chat.id,
-      message_id: parent.message.id,
-      assistant_message_id: parent.message.id,
-      step_id: parent.step_id,
-      tool_call_item_id: parent.call.item_id,
-      available_file_external_ids: []
-    }
+    try do
+      context = %{
+        fork_execution_context(parent, actor)
+        | generation_fence_token: lease.fence_token
+      }
 
-    assert {:ok, result} = Fork.create_and_run(parent.tool_instance, task, context, actor)
+      assert {:ok, %ExecutionResult{} = result} =
+               Fork.create_and_run(parent.tool_instance, task, context, actor)
 
-    assert %{
-             "chat_id" => child_chat_id,
-             "message_id" => child_message_id,
-             "generation_message_id" => child_message_id,
-             "final_chat_id" => child_chat_id,
-             "final_message_id" => child_message_id
-           } = result.raw["fork"]
+      assert %{
+               "chat_id" => child_chat_id,
+               "message_id" => child_message_id,
+               "generation_message_id" => child_message_id,
+               "final_chat_id" => child_chat_id,
+               "final_message_id" => child_message_id
+             } = result.raw["fork"]
 
-    refute result.raw["isError"]
-    assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
+      refute result.raw["isError"]
+      assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
 
-    child_message = Ash.get!(ChatMessage, child_message_id, actor: actor)
-    assert child_message.status == :done
-    assert child_message.error_detail == nil
+      child_message = Ash.get!(ChatMessage, child_message_id, actor: actor)
+      assert child_message.status == :done
+      assert child_message.error_detail == nil
 
-    parent_message =
-      Ash.get!(ChatMessage, parent.message.id,
-        actor: actor,
-        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
-      )
+      parent_message =
+        Ash.get!(ChatMessage, parent.message.id,
+          actor: actor,
+          load: [steps: [items: [:contents]]]
+        )
 
-    raw = fork_tool_result_raw!(parent_message, parent.call.item_id)
-    assert raw == result.raw
+      assert parent_message.status == :generating
+      assert parent_tool_result_items(parent_message, parent.call.item_id) == []
+      assert [missing] = Persistence.list_missing_tool_calls!(parent.step_id)
+      assert missing.item_id == parent.call.item_id
+
+      assert {:ok, %ToolResult{} = receipt} = persist_parent_receipt(parent, lease, result)
+      assert receipt.tool_call_item_id == parent.call.item_id
+      assert receipt.result_raw == result.raw
+      assert receipt.text == result.text
+      assert Persistence.list_missing_tool_calls!(parent.step_id) == []
+
+      parent_message =
+        Ash.get!(ChatMessage, parent.message.id,
+          actor: actor,
+          load: [steps: [items: [:contents]]]
+        )
+
+      assert [persisted] = parent_tool_result_items(parent_message, parent.call.item_id)
+      assert persisted.id == receipt.item_id
+      assert fork_tool_result_raw!(parent_message, parent.call.item_id) == result.raw
+    after
+      Lease.release(lease)
+    end
   end
 
   test "fork refuses an unfinished source response before publishing a child" do
@@ -925,46 +928,81 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert fork_child_ids_for_call(actor, parent.call.item_id) == []
   end
 
-  test "stale parent epoch cannot persist an early subagent tool result" do
+  test "stale parent epoch cannot persist a subagent receipt after cancellation" do
     %{user: actor} = user_fixture()
     parent = create_parent_spawn_call!(actor, "Stale result", "Do not write a result.")
     assert {:ok, lease} = Lease.acquire(parent.message.id)
 
-    context = %{
-      fork_execution_context(parent, actor)
-      | generation_fence_token: lease.fence_token
-    }
+    try do
+      assert :canceled =
+               Persistence.cancel_generating_message!(parent.message.id, error_detail: nil)
 
-    assert :canceled =
-             Persistence.cancel_generating_message!(parent.message.id, error_detail: nil)
+      assert {:error, :lease_lost} =
+               persist_parent_receipt(parent, lease, %ExecutionResult{text: "stale"})
 
-    assert :ok = Lease.release(lease)
+      assert [] =
+               ChatMessageItem
+               |> Ash.Query.filter(
+                 chat_message_step_id == ^parent.step_id and type == :tool_result
+               )
+               |> Ash.read!(actor: actor)
 
-    assert {:error, :parent_generation_stale} =
-             Subagent.persist_parent_tool_result(
-               context,
-               %ExecutionResult{text: "stale", raw: %{}, media: [], artifacts: []}
-             )
-
-    assert [] =
-             ChatMessageItem
-             |> Ash.Query.filter(chat_message_step_id == ^parent.step_id and type == :tool_result)
-             |> Ash.read!(actor: actor)
+      assert Ash.get!(ChatMessage, parent.message.id, actor: actor).generation_fence_token == nil
+    after
+      Lease.release(lease)
+    end
   end
 
-  test "completed parent rejects subagent prepare and early result with the same live epoch" do
+  test "stale parent writer cannot overwrite a receipt from a replacement epoch" do
+    %{user: actor} = user_fixture()
+    parent = create_parent_fork_call!(actor, "Keep the replacement result")
+    assert {:ok, stale_lease} = Lease.acquire(parent.message.id)
+    assert :ok = Lease.release(stale_lease)
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    try do
+      refute lease.fence_token == stale_lease.fence_token
+      stale_result = %ExecutionResult{text: "stale", raw: %{"epoch" => "stale"}}
+      result = %ExecutionResult{text: "replacement", raw: %{"epoch" => "replacement"}}
+
+      assert {:error, :lease_lost} = persist_parent_receipt(parent, stale_lease, stale_result)
+      assert [missing] = Persistence.list_missing_tool_calls!(parent.step_id)
+      assert missing.item_id == parent.call.item_id
+      assert {:ok, %ToolResult{} = receipt} = persist_parent_receipt(parent, lease, result)
+      assert {:error, :lease_lost} = persist_parent_receipt(parent, stale_lease, stale_result)
+      assert :ok = Lease.release(stale_lease)
+
+      message =
+        Ash.get!(ChatMessage, parent.message.id,
+          actor: actor,
+          load: [steps: [items: [:contents]]]
+        )
+
+      assert message.status == :generating
+      assert message.generation_fence_token == lease.fence_token
+      assert Lease.valid?(lease)
+      assert [persisted] = parent_tool_result_items(message, parent.call.item_id)
+      assert persisted.id == receipt.item_id
+      assert fork_tool_result_raw!(message, parent.call.item_id) == result.raw
+      assert History.project_text_for_item_type(message, :tool_result) == result.text
+    after
+      Lease.release(lease)
+    end
+  end
+
+  test "completed parent rejects subagent preparation and fenced receipts with the same live epoch" do
     %{user: actor} = user_fixture()
     brief = "Completed parent"
     prompt = "Do not create a child."
     parent = create_parent_spawn_call!(actor, brief, prompt)
     assert {:ok, lease} = Lease.acquire(parent.message.id)
 
-    context = %{
-      fork_execution_context(parent, actor)
-      | generation_fence_token: lease.fence_token
-    }
+    try do
+      context = %{
+        fork_execution_context(parent, actor)
+        | generation_fence_token: lease.fence_token
+      }
 
-    _completed =
       parent.message
       |> Ash.Changeset.for_update(
         :set_generation_state,
@@ -973,23 +1011,30 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       )
       |> Ash.update!(actor: actor)
 
-    assert {:error, :parent_generation_stale} =
-             Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
+      completed = Ash.get!(ChatMessage, parent.message.id, actor: actor)
+      assert completed.status == :done
+      assert completed.generation_fence_token == lease.fence_token
+      assert {:ok, :same_epoch} = Lease.with_fence(lease, fn -> :same_epoch end)
+      refute Lease.valid?(lease)
 
-    assert {:error, :parent_generation_stale} =
-             Subagent.persist_parent_tool_result(
-               context,
-               %ExecutionResult{text: "stale", raw: %{}, media: [], artifacts: []}
-             )
+      assert {:error, :parent_generation_stale} =
+               Spawn.start_or_resume(parent.tool_instance, brief, prompt, context, actor)
 
-    assert fork_child_ids_for_call(actor, parent.call.item_id) == []
+      assert {:error, :invalid_status} =
+               persist_parent_receipt(parent, lease, %ExecutionResult{text: "stale"})
 
-    assert [] =
-             ChatMessageItem
-             |> Ash.Query.filter(chat_message_step_id == ^parent.step_id and type == :tool_result)
-             |> Ash.read!(actor: actor)
+      assert fork_child_ids_for_call(actor, parent.call.item_id) == []
 
-    assert :ok = Lease.release(lease)
+      assert [] =
+               ChatMessageItem
+               |> Ash.Query.filter(
+                 chat_message_step_id == ^parent.step_id and type == :tool_result
+               )
+               |> Ash.read!(actor: actor)
+    after
+      Lease.release(lease)
+    end
+
     assert Ash.get!(ChatMessage, parent.message.id, actor: actor).generation_fence_token == nil
   end
 
@@ -1365,59 +1410,74 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert Enum.count(List.last(steps).items, &(&1.type == :answer)) == 1
   end
 
-  test "concurrent subagent parent-result persistence creates one tool result" do
+  test "concurrent parent writers return one canonical subagent receipt on replay" do
     %{user: actor} = user_fixture()
-    task = "Persist one parent result"
-    parent = create_parent_fork_call!(actor, task)
-    context = fork_execution_context(parent, actor)
+    parent = create_parent_fork_call!(actor, "Persist one parent result")
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+    writer_supervisor = start_supervised!({Task.Supervisor, []})
     test_process = self()
 
     result = %ExecutionResult{
       text: "Canonical result",
-      raw: %{"fork" => %{"chat_id" => 123, "generation_message_id" => 456}},
-      media: [],
-      artifacts: []
+      raw: %{"fork" => %{"chat_id" => 123, "generation_message_id" => 456}}
     }
 
-    writers =
-      for index <- 1..8 do
-        Task.async(fn ->
-          send(test_process, {:parent_result_writer_ready, index, self()})
+    try do
+      writers =
+        for index <- 1..8 do
+          Task.Supervisor.async_nolink(writer_supervisor, fn ->
+            send(test_process, {:parent_result_writer_ready, index, self()})
 
-          receive do
-            {:persist_parent_result, ^index} ->
-              Subagent.persist_parent_tool_result(context, result)
-          after
-            5_000 -> {:error, :write_barrier_timeout}
-          end
+            receive do
+              {:persist_parent_result, ^index} -> persist_parent_receipt(parent, lease, result)
+            after
+              5_000 -> {:error, :write_barrier_timeout}
+            end
+          end)
+        end
+
+      ready =
+        for _index <- 1..8 do
+          assert_receive {:parent_result_writer_ready, index, pid}, 5_000
+          {index, pid}
+        end
+
+      Enum.each(ready, fn {index, pid} -> send(pid, {:persist_parent_result, index}) end)
+
+      receipts =
+        Enum.map(writers, fn writer ->
+          assert {:ok, %ToolResult{} = receipt} = Task.await(writer, 5_000)
+          receipt
         end)
-      end
 
-    ready =
-      for _index <- 1..8 do
-        assert_receive {:parent_result_writer_ready, index, pid}, 5_000
-        {index, pid}
-      end
+      assert [receipt_id] = receipts |> Enum.map(& &1.item_id) |> Enum.uniq()
+      assert [responses_item] = receipts |> Enum.map(& &1.responses_item) |> Enum.uniq()
+      assert Enum.all?(receipts, &(&1.tool_call_item_id == parent.call.item_id))
 
-    Enum.each(ready, fn {index, pid} -> send(pid, {:persist_parent_result, index}) end)
-    assert Enum.all?(writers, &(Task.await(&1, 5_000) == :ok))
+      assert {:ok, replay} =
+               persist_parent_receipt(parent, lease, %ExecutionResult{
+                 text: "Replay must not replace the canonical receipt",
+                 raw: %{"different" => true}
+               })
 
-    parent_message =
-      Ash.get!(ChatMessage, parent.message.id,
-        actor: actor,
-        load: [steps: [items: [:contents]]]
-      )
+      assert replay.item_id == receipt_id
+      assert replay.responses_item == responses_item
+      assert replay.text == result.text
+      assert replay.result_raw == result.raw
+      assert Persistence.list_missing_tool_calls!(parent.step_id) == []
 
-    tool_results =
-      parent_message.steps
-      |> List.wrap()
-      |> Enum.flat_map(&List.wrap(&1.items))
-      |> Enum.filter(fn item ->
-        item.type == :tool_result and item.tool_call_item_id == parent.call.item_id
-      end)
+      parent_message =
+        Ash.get!(ChatMessage, parent.message.id,
+          actor: actor,
+          load: [steps: [items: [:contents]]]
+        )
 
-    assert length(tool_results) == 1
-    assert fork_tool_result_raw!(parent_message, parent.call.item_id) == result.raw
+      assert [persisted] = parent_tool_result_items(parent_message, parent.call.item_id)
+      assert persisted.id == receipt_id
+      assert fork_tool_result_raw!(parent_message, parent.call.item_id) == result.raw
+    after
+      Lease.release(lease)
+    end
   end
 
   test "fork cancels a prepared child when durable reference persistence fails" do
@@ -2458,6 +2518,27 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     |> Ash.Query.select([:id])
     |> Ash.read!(actor: actor)
     |> Enum.map(& &1.id)
+  end
+
+  defp persist_parent_receipt(parent, lease, %ExecutionResult{} = result) do
+    Lease.with_fence(
+      lease,
+      fn ->
+        Persistence.persist_tool_result!(
+          parent.message.id,
+          parent.step_id,
+          parent.call,
+          ToolResult.execution_payload(result)
+        )
+      end,
+      require_generating?: true
+    )
+  end
+
+  defp parent_tool_result_items(message, tool_call_item_id) do
+    message.steps
+    |> Enum.flat_map(& &1.items)
+    |> Enum.filter(&(&1.type == :tool_result and &1.tool_call_item_id == tool_call_item_id))
   end
 
   defp fork_tool_result_raw!(message, tool_call_item_id) do

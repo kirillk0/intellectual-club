@@ -5,6 +5,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Llm.LlmConfiguration
@@ -156,7 +157,11 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
     assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
     assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
-    assert Enum.map(steps, & &1.raw_request) == List.duplicate(context.request_payload, 4)
+    requests = StepRequests.requests_for_steps!(steps, actor: actor)
+
+    assert Enum.map(steps, &Map.fetch!(requests, &1.id)) ==
+             List.duplicate(context.request_payload, 4)
+
     assert Enum.all?(retry_steps, &is_nil(&1.raw_response))
     assert is_nil(latest_step.raw_response)
 

@@ -84,6 +84,11 @@ defmodule IntellectualClub.Chat.ChatMessage do
       index([:chat_id, :created_at, :id], name: "chat_messages_chat_created_id_index")
       index([:chat_id, :parent_id], name: "chat_messages_chat_parent_id_index")
       index([:owner_id, :chat_id], name: "chat_messages_owner_chat_id_index")
+
+      index([:chat_id, :id],
+        name: "chat_messages_active_generation_index",
+        where: "status = 'generating'"
+      )
     end
   end
 

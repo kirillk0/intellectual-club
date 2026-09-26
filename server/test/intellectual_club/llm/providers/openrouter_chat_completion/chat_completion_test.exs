@@ -104,6 +104,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     {base_url, _agent} = start_scripted_server!(scripts)
     parent = self()
 
+    prepared = NvidiaBuildChatCompletion.prepare_request(@request_payload, %{})
+
     :ok =
       NvidiaBuildChatCompletion.stream_generate(
         %{
@@ -112,7 +114,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
             provider_base_url: base_url,
             provider_api_key: "test-key"
           },
-          request_payload: @request_payload,
+          request_payload: prepared,
           timeout_ms: 1_000
         },
         fn event -> send(parent, {:provider_event, event}) end
@@ -123,6 +125,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
     assert error.status_code == 500
     assert error.retryable == false
     assert error.error_text == message
+    assert error.raw_request == prepared
+    refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
   end
 
   test "uses metadata raw text for generic streamed provider errors" do
@@ -233,6 +237,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
       end)
 
     assert_receive {:provider_event, {:response_error, error}}, 2_000
+    assert error.raw_request == opts.request_payload
+    refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
     error
   end
 

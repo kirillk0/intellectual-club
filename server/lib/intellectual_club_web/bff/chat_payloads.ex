@@ -31,7 +31,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   def state(%Chat{} = chat, actor) do
     chat = Ash.load!(chat, [:last_message], actor: actor)
     {messages, branch_meta_by_id} = load_branch(chat, actor)
-    subchat_cost_summary = SubchatCosts.summary(chat.id, actor)
+    subchat_cost_summary = SubchatCosts.summary(chat.id, actor, refresh?: true)
     child_relations = Relations.child_relation_chats(chat.id, actor)
     lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
     relations = Relations.relations(chat, messages, actor, child_relations)

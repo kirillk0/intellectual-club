@@ -1,7 +1,7 @@
 defmodule IntellectualClub.Generation.RetryCleanupTransactionTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat.{Chat, ChatMessage, Threads}
+  alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, Threads}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
 
   test "a step disappearing before cleanup preflight cannot publish a retry fence" do
@@ -17,14 +17,14 @@ defmodule IntellectualClub.Generation.RetryCleanupTransactionTest do
     {:ok, message} =
       Threads.add_message_to_end(chat, :assistant, "Original response", actor: actor)
 
-    message = Ash.load!(message, :steps, actor: actor)
-    step = hd(message.steps)
-
     step =
-      step
-      |> Ash.Changeset.for_update(
-        :update,
+      ChatMessageStep
+      |> Ash.Changeset.for_create(
+        :create,
         %{
+          chat_message_id: message.id,
+          sequence: 2,
+          status: :done,
           raw_request: %{
             "model" => "demo-model",
             "messages" => [%{"role" => "user", "content" => "Reply briefly"}],
@@ -34,7 +34,7 @@ defmodule IntellectualClub.Generation.RetryCleanupTransactionTest do
         },
         actor: actor
       )
-      |> Ash.update!(actor: actor)
+      |> Ash.create!(actor: actor)
 
     handler = {__MODULE__, make_ref()}
     caller = self()

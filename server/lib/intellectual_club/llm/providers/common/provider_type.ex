@@ -67,11 +67,18 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
   @callback build_initial_request(map()) :: initial_request_result()
   @callback build_followup_request(map()) :: followup_request_result()
   @callback inject_steering(map(), list(), map()) :: initial_request_result()
+  @doc """
+  Normalizes the logical request before persistence, without I/O or credentials.
+
+  Implementations must be deterministic and idempotent for the same context.
+  Stream senders must not repeat preparation or replace the persisted request.
+  """
+  @callback prepare_request(map(), map()) :: map()
   @callback request_snapshot(map()) :: request_snapshot()
   @callback stream_generate(map(), (term() -> any())) :: :ok
 
   @callback start_session(map()) :: {:ok, term()} | :ignore | {:error, term()}
   @callback stop_session(term()) :: :ok
 
-  @optional_callbacks start_session: 1, stop_session: 1
+  @optional_callbacks prepare_request: 2, start_session: 1, stop_session: 1
 end

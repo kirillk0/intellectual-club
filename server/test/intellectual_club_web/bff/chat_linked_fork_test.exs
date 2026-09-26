@@ -15,17 +15,42 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
   alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
   alias IntellectualClubWeb.Bff.ChatForkContext
 
-  setup %{conn: conn} do
+  setup %{conn: conn} = test_context do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     parent = create_chat!(actor)
     {:ok, root} = Threads.add_message_to_end(parent, :user, "source request", actor: actor)
 
-    {:ok, source} =
-      Threads.add_message_to_end(parent, :assistant, "source response", actor: actor)
+    source =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :add_message,
+        %{
+          chat_id: parent.id,
+          role: :assistant,
+          parent_id: root.id,
+          status: :done,
+          token_count: 2
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
 
-    step = first_step!(source, actor)
-    step = update!(step, %{response_final: true}, actor)
+    step =
+      create!(
+        ChatMessageStep,
+        %{
+          chat_message_id: source.id,
+          sequence: 1,
+          status: :done,
+          response_final: true,
+          raw_request: Map.get(test_context, :raw_request, %{})
+        },
+        actor
+      )
+
+    answer = item!(step, :answer, 1, actor)
+    content!(answer, %{kind: :text, content_text: "source response"}, actor)
     call = item!(step, :tool_call, 2, actor)
 
     call_content =
@@ -244,7 +269,6 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
         status: :done,
         input_tokens: 123,
         output_tokens: 456,
-        raw_request: %{"input" => "private raw request"},
         raw_response: %{"output" => "private raw response"}
       },
       f.actor
@@ -287,12 +311,13 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     assert idle(f, restored["revision"]) |> response(204) == ""
   end
 
+  @tag raw_request: %{"large" => String.duplicate("IDLE-MUST-NOT-LOAD-PARENT-PAYLOAD-", 4000)}
   test "idle SQL never returns inherited text or provider payloads", f do
     marker = "IDLE-MUST-NOT-LOAD-PARENT-PAYLOAD-"
     text = String.duplicate(marker, 4000)
     content = first_content!(f.root, f.actor)
     update!(content, %{content_text: text}, f.actor)
-    update!(f.step, %{raw_request: %{"large" => text}, raw_response: %{"large" => text}}, f.actor)
+    update!(f.step, %{raw_response: %{"large" => text}}, f.actor)
     revision = state(f)["idle_revision"]
     handler = {__MODULE__, make_ref()}
 
@@ -511,16 +536,19 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     assert private_state["idle_revision"] == revoked["revision"]
     assert idle(shared_fixture, revoked["revision"]) |> response(204) == ""
 
-    step = first_step!(f.local, f.actor)
-
-    update!(
-      step,
-      %{
-        raw_request: %{"input" => "PRIVATE_SOURCE_REQUEST"},
-        raw_response: %{"output" => "child response"}
-      },
-      f.actor
-    )
+    step =
+      create!(
+        ChatMessageStep,
+        %{
+          chat_message_id: f.local.id,
+          sequence: 2,
+          status: :done,
+          response_final: true,
+          raw_request: %{"input" => "PRIVATE_SOURCE_REQUEST"},
+          raw_response: %{"output" => "child response"}
+        },
+        f.actor
+      )
 
     raw_path = "/api/bff/chat-messages/#{f.local.id}/steps/#{step.id}/raw"
 

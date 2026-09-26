@@ -29,10 +29,13 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
   def branch(messages, branch_meta_by_id, actor, opts \\ []) when is_list(messages) do
     runtime_steps_by_message_id = Keyword.get(opts, :runtime_steps_by_message_id, %{})
-    subchat_costs_by_message_id = subchat_costs_by_message_id(messages, actor, opts)
     message_ids = messages |> Enum.map(& &1.id) |> Enum.filter(&is_integer/1) |> Enum.uniq()
 
     steps = read_steps_for_messages(message_ids, actor)
+
+    subchat_costs_by_message_id =
+      subchat_costs_by_message_id(messages, actor, Keyword.put(opts, :steps, steps))
+
     display = read_display_payload(steps, actor)
     retry_errors_by_message_id = read_retry_error_payload(steps, actor)
     steps_by_message_id = Enum.group_by(steps, & &1.chat_message_id)
@@ -118,15 +121,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
         costs
 
       _other ->
-        messages
-        |> Enum.find_value(&Map.get(&1, :chat_id))
-        |> case do
-          chat_id when is_integer(chat_id) ->
-            SubchatCosts.summary(chat_id, actor).costs_by_message_id
-
-          _other ->
-            %{}
-        end
+        SubchatCosts.for_messages(messages, actor, opts).costs_by_message_id
     end
   end
 
@@ -143,6 +138,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
         :chat_message_id,
         :sequence,
         :created_at,
+        :updated_at,
         :finished_at,
         :status,
         :response_final,

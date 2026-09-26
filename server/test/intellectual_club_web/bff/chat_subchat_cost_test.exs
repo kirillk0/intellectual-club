@@ -4,12 +4,21 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Chat.SubchatCostCache
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.LlmUsageRecord
 
-  test "chat state combines message and recursive subchat cost and updates idle revision", %{
+  require Ash.Query
+
+  setup do
+    if is_nil(Process.whereis(SubchatCostCache)), do: start_supervised!(SubchatCostCache)
+    :ok
+  end
+
+  test "idle retains a phase snapshot and explicit state reopening refreshes child costs", %{
     conn: conn
   } do
     %{user: actor, password: password} = user_fixture()
@@ -27,6 +36,8 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
         subagent: true
       })
 
+    child_message = persist_cost!(child, configuration, actor, 0.02)
+
     initial_state =
       conn
       |> get(~p"/api/bff/chat-state/#{root.id}")
@@ -34,17 +45,30 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
 
     initial_source = branch_message(initial_state, source_message.id)
     assert initial_source["usage"]["total_cost"] == 0.01
-    assert initial_source["usage"]["subchat_cost"] == nil
-    assert initial_source["usage"]["combined_total_cost"] == 0.01
+    assert initial_source["usage"]["subchat_cost"] == 0.02
+    assert initial_source["usage"]["combined_total_cost"] == 0.03
 
-    _child_message = persist_cost!(child, configuration, actor, 0.02)
+    # Change only the ledger: child lifecycle and parent phase stay unchanged.
+    LlmUsageRecord
+    |> Ash.Query.filter(chat_message_id == ^child_message.id)
+    |> Ash.read_one!(actor: actor)
+    |> Ash.Changeset.for_update(:update, %{cost: 0.03}, actor: actor)
+    |> Ash.update!(actor: actor)
 
-    changed_idle =
+    for _poll <- 1..3 do
+      assert conn
+             |> get(
+               ~p"/api/bff/chat-state/#{root.id}/idle-state?revision=#{initial_state["idle_revision"]}"
+             )
+             |> response(204) == ""
+    end
+
+    polled =
       conn
-      |> get(
-        ~p"/api/bff/chat-state/#{root.id}/idle-state?revision=#{initial_state["idle_revision"]}"
-      )
+      |> get(~p"/api/bff/chat-messages/#{source_message.id}/poll")
       |> json_response(200)
+
+    assert polled["usage"]["subchat_cost"] == 0.02
 
     changed_state =
       conn
@@ -53,10 +77,15 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
 
     changed_source = branch_message(changed_state, source_message.id)
     assert changed_source["usage"]["total_cost"] == 0.01
-    assert changed_source["usage"]["subchat_cost"] == 0.02
-    assert changed_source["usage"]["combined_total_cost"] == 0.03
-    assert changed_idle["revision"] != initial_state["idle_revision"]
-    assert changed_state["idle_revision"] == changed_idle["revision"]
+    assert changed_source["usage"]["subchat_cost"] == 0.03
+    assert changed_source["usage"]["combined_total_cost"] == 0.04
+    assert changed_state["idle_revision"] != initial_state["idle_revision"]
+
+    assert conn
+           |> get(
+             ~p"/api/bff/chat-state/#{root.id}/idle-state?revision=#{changed_state["idle_revision"]}"
+           )
+           |> response(204) == ""
   end
 
   defp branch_message(payload, message_id) do

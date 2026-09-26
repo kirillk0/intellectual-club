@@ -70,6 +70,13 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   end
 
   @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    request = RequestPayload.stringify_keys(request)
+    version = request |> Map.get("anthropic_version") |> to_string() |> String.trim()
+    Map.put(request, "anthropic_version", if(version == "", do: "2023-06-01", else: version))
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     {system, messages} =
       opts
@@ -85,6 +92,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
         system: system,
         tools: Map.get(opts, :tools, [])
       )
+      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -120,6 +128,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       )
       |> put_followup_tool_choice(previous_raw_request)
       |> maybe_apply_followup_cache_control(context)
+      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -143,6 +152,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       payload
       |> Map.put("messages", messages)
       |> maybe_apply_followup_cache_control(context)
+      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -202,10 +212,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)

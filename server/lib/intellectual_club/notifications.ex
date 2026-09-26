@@ -737,7 +737,7 @@ defmodule IntellectualClub.Notifications do
   defp lock_generation_event!(event_id) do
     WebPushGenerationEvent
     |> Ash.Query.filter(id == ^event_id)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.limit(1)
     |> Ash.read_one!(authorize?: false)
     |> case do

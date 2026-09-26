@@ -1,8 +1,9 @@
 defmodule IntellectualClub.Generation.RequestImages.StagedBindings do
   @moduledoc """
-  Opaque logical-file duplicates prepared before a destructive step replacement.
+  Opaque logical files prepared before immutable request publication or copying.
 
-  A staged value must be attached to a replacement step or discarded by the caller.
+  A staged value must be attached to a new step or discarded by the caller after
+  rollback. Preparation never attaches files to an existing request snapshot.
   """
 
   @enforce_keys [:items]

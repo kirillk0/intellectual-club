@@ -521,7 +521,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     Chat
     |> Ash.Query.filter(id == ^chat_id)
     |> Ash.Query.limit(1)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one(actor: actor)
     |> case do
       {:ok, %Chat{owner_id: owner_id} = chat} when owner_id == actor.id -> {:ok, chat}
@@ -551,7 +551,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     ChatMessage
     |> Ash.Query.filter(id == ^message_id)
     |> Ash.Query.limit(1)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one(actor: actor)
     |> case do
       {:ok, %ChatMessage{owner_id: owner_id} = message} when owner_id == actor.id ->
@@ -737,7 +737,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.limit(1)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one(actor: actor)
     |> case do
       {:ok, nil} -> :ok

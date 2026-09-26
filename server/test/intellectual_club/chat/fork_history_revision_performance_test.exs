@@ -212,29 +212,8 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionPerformanceTest do
 
   @doc false
   def inflate!(fixture, actor, payload_bytes) do
-    entries =
-      Enum.map(fixture.entries, fn entry ->
-        content =
-          update!(
-            entry.content,
-            content_payload(payload_bytes, entry.item.type == :tool_call),
-            actor
-          )
-
-        step =
-          update!(
-            entry.step,
-            %{
-              raw_request: raw_payload(payload_bytes, 2),
-              raw_response: raw_payload(payload_bytes, 3)
-            },
-            actor
-          )
-
-        %{entry | content: content, step: step}
-      end)
-
-    %{fixture | entries: entries, payload_bytes: payload_bytes}
+    # Requests are immutable; measure a separate equally-sized heavy history.
+    history!(actor, fixture.count, payload_bytes)
   end
 
   defp content_payload(bytes, boundary?) do
@@ -268,12 +247,6 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionPerformanceTest do
     resource
     |> Ash.Changeset.for_create(action, attrs, actor: actor, authorize?: true)
     |> Ash.create!(actor: actor, authorize?: true)
-  end
-
-  defp update!(record, attrs, actor) do
-    record
-    |> Ash.Changeset.for_update(:update, attrs, actor: actor, authorize?: true)
-    |> Ash.update!(actor: actor, authorize?: true)
   end
 
   @doc false

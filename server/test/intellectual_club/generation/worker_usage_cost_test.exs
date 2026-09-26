@@ -186,7 +186,9 @@ defmodule IntellectualClub.Generation.WorkerUsageCostTest do
       test_pid: self()
     }
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
     message_id = message.id
 

@@ -39,6 +39,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
     do: Responses.apply_standard_parameters(parameters, settings)
 
   @impl true
+  def prepare_request(request, context), do: Responses.prepare_request(request, context)
+
+  @impl true
   def build_initial_request(opts), do: Responses.build_initial_request(opts)
 
   @impl true

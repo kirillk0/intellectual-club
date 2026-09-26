@@ -18,6 +18,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.Context.{PublicationError, StalePreparationError}
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Notifications
   alias IntellectualClub.Notifications.WebPushGenerationEvent
@@ -52,8 +53,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   def prepare_next(chat_id, opts) when is_integer(chat_id) and is_list(opts) do
     boundary_message_id = Keyword.get(opts, :boundary_message_id)
 
-    transact(fn -> prepare_next_in_transaction(chat_id, boundary_message_id) end)
-    |> unwrap_prepare_result()
+    prepare_next_attempt(chat_id, boundary_message_id, 2)
   rescue
     exception -> {:error, exception}
   catch
@@ -62,7 +62,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
   def prepare_next(_chat_id, _opts), do: {:error, :invalid_chat_id}
 
-  @doc "Prepares a direct generation while holding the same chat and queue locks as dequeue."
+  @doc "Prepares a direct request before publishing under the same locks as dequeue."
   @spec prepare_direct_generation(integer(), keyword(), nil | (-> term())) ::
           {:ok, map()} | {:error, term()}
   def prepare_direct_generation(chat_id, opts \\ [], prepare_parent \\ nil)
@@ -70,31 +70,15 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   def prepare_direct_generation(chat_id, opts, prepare_parent)
       when is_integer(chat_id) and is_list(opts) and
              (is_nil(prepare_parent) or is_function(prepare_parent, 0)) do
-    actor = Keyword.get(opts, :actor)
-
-    transact(fn ->
-      chat = lock_chat!(chat_id)
-      active_generation = lock_active_generation(chat.id)
-      queue = lock_active_queue!(chat.id)
-
-      cond do
-        is_nil(actor) or Map.get(actor, :id) != chat.owner_id ->
-          {:error, :forbidden}
-
-        match?(%ChatMessage{}, active_generation) ->
-          {:error, :generation_active}
-
-        queue != [] ->
-          {:error, :queue_not_empty}
-
-        true ->
-          with {:ok, context_opts} <- prepare_direct_context_opts(opts, prepare_parent) do
-            {:ok, Context.build!(chat.id, context_opts)}
-          end
-      end
-    end)
-    |> unwrap_prepare_result()
+    if is_nil(prepare_parent) do
+      prepare_direct_attempt(chat_id, opts, 2)
+    else
+      # Arbitrary callbacks may mutate the parent/history. Until they provide a
+      # read-only intent, run both callback and request build under one boundary.
+      prepare_direct_locked(chat_id, opts, prepare_parent, nil)
+    end
   rescue
+    error in PublicationError -> {:error, error.reason}
     exception -> {:error, exception}
   catch
     kind, reason -> {:error, {kind, reason}}
@@ -344,7 +328,133 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     end
   end
 
-  defp prepare_next_in_transaction(chat_id, _boundary_message_id) do
+  defp prepare_direct_attempt(chat_id, opts, attempts) do
+    with :ok <- direct_preflight(chat_id, Keyword.get(opts, :actor)) do
+      case Context.prepare(chat_id, opts) do
+        {:ok, preparation} -> prepare_direct_locked(chat_id, opts, nil, preparation)
+        {:fallback, _reason} -> prepare_direct_locked(chat_id, opts, nil, nil)
+        {:error, %StalePreparationError{} = error} -> raise error
+        {:error, _reason} = error -> error
+      end
+    end
+  rescue
+    _error in StalePreparationError ->
+      if attempts > 0 do
+        prepare_direct_attempt(chat_id, opts, attempts - 1)
+      else
+        prepare_direct_locked(chat_id, opts, nil, nil)
+      end
+  end
+
+  defp direct_preflight(chat_id, %{id: actor_id} = actor) do
+    case Ash.get(Chat, chat_id, actor: actor, authorize?: true) do
+      {:ok, %Chat{owner_id: ^actor_id}} ->
+        active =
+          ChatMessage
+          |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
+          |> Ash.Query.select([:id])
+          |> Ash.Query.limit(1)
+          |> Ash.read_one!(actor: actor, authorize?: true)
+
+        queued =
+          QueuedMessage
+          |> Ash.Query.filter(chat_id == ^chat_id and status in ^@active_queue_statuses)
+          |> Ash.Query.select([:id])
+          |> Ash.Query.limit(1)
+          |> Ash.read_one!(actor: actor, authorize?: true)
+
+        cond do
+          not is_nil(active) -> {:error, :generation_active}
+          not is_nil(queued) -> {:error, :queue_not_empty}
+          true -> :ok
+        end
+
+      _unavailable ->
+        {:error, :forbidden}
+    end
+  end
+
+  defp direct_preflight(_chat_id, _actor), do: {:error, :forbidden}
+
+  defp prepare_direct_locked(chat_id, opts, prepare_parent, preparation) do
+    actor = Keyword.get(opts, :actor)
+
+    transact(fn ->
+      chat = lock_chat!(chat_id)
+      active_generation = lock_active_generation(chat.id)
+      queue = lock_active_queue!(chat.id)
+
+      cond do
+        is_nil(actor) or Map.get(actor, :id) != chat.owner_id ->
+          {:error, :forbidden}
+
+        match?(%ChatMessage{}, active_generation) ->
+          {:error, :generation_active}
+
+        queue != [] ->
+          {:error, :queue_not_empty}
+
+        not is_nil(preparation) ->
+          {:ok, Context.publish!(preparation, actor: actor)}
+
+        true ->
+          case prepare_direct_context_opts(opts, prepare_parent) do
+            {:ok, context_opts} -> {:ok, Context.build!(chat.id, context_opts)}
+            {:error, reason} -> raise PublicationError, reason: reason
+          end
+      end
+    end)
+    |> unwrap_prepare_result()
+  end
+
+  defp prepare_next_attempt(chat_id, boundary_message_id, attempts) do
+    case transact(fn -> prepare_next_in_transaction(chat_id, boundary_message_id, :snapshot) end) do
+      {:ok, {:candidate, ticket}} ->
+        opts = [
+          actor: ticket.actor,
+          parent_id: ticket.parent_id,
+          pending_user_contents: ticket.contents
+        ]
+
+        case Context.prepare(chat_id, opts) do
+          {:ok, preparation} ->
+            transact(fn ->
+              prepare_next_in_transaction(
+                chat_id,
+                boundary_message_id,
+                {:prepared, ticket, preparation}
+              )
+            end)
+            |> unwrap_prepare_result()
+
+          {:fallback, _reason} ->
+            prepare_next_locked(chat_id, boundary_message_id)
+
+          {:error, %StalePreparationError{} = error} ->
+            raise error
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      result ->
+        unwrap_prepare_result(result)
+    end
+  rescue
+    _error in StalePreparationError ->
+      if attempts > 0 do
+        prepare_next_attempt(chat_id, boundary_message_id, attempts - 1)
+      else
+        prepare_next_locked(chat_id, boundary_message_id)
+      end
+  end
+
+  defp prepare_next_locked(chat_id, boundary_message_id) do
+    transact(fn -> prepare_next_in_transaction(chat_id, boundary_message_id, :locked) end)
+    |> unwrap_prepare_result()
+  end
+
+  defp prepare_next_in_transaction(chat_id, _boundary_message_id, mode) do
     chat = lock_chat!(chat_id)
 
     case lock_active_generation(chat.id) do
@@ -368,14 +478,14 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
               |> lock_active_queue!()
               |> Enum.filter(&(&1.kind == :follow_up))
 
-            prepare_locked_head(chat, backlog)
+            prepare_locked_head(chat, backlog, mode)
         end
     end
   end
 
-  defp prepare_locked_head(_chat, []), do: :empty
+  defp prepare_locked_head(_chat, [], _mode), do: :empty
 
-  defp prepare_locked_head(%Chat{} = chat, [%QueuedMessage{} = head | rest]) do
+  defp prepare_locked_head(%Chat{} = chat, [%QueuedMessage{} = head | rest], mode) do
     cond do
       head.status == :blocked ->
         {:blocked, head.blocked_reason || :blocked}
@@ -398,7 +508,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
       true ->
         actor = %User{id: chat.owner_id}
-        head = Ash.load!(head, [contents: [:file]], authorize?: false)
+        head = Ash.load!(head, [contents: [:file]], actor: actor, authorize?: true)
         contents = QueuedMessages.content_specs(head)
 
         if contents == [] do
@@ -410,32 +520,63 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
           {:blocked, :empty_message}
         else
-          user_message = create_user_message!(chat.id, head.anchor_message_id, contents, actor)
-          context = Context.build!(chat.id, actor: actor, parent_id: user_message.id)
-
-          case QueuedMessages.mark_delivered(
-                 head,
-                 %{
-                   user_message_id: user_message.id,
-                   assistant_message_id: context.message_id
-                 },
-                 actor
-               ) do
-            {:ok, _delivered} -> :ok
-            {:error, reason} -> raise "Failed to finalize queued delivery: #{inspect(reason)}"
+          if mode == :snapshot and Enum.all?(contents, &(&1.kind == :text)) do
+            {:candidate,
+             %{
+               actor: actor,
+               parent_id: head.anchor_message_id,
+               revision: queue_head_revision(head),
+               contents: contents
+             }}
+          else
+            context = publish_queue_context!(chat, head, contents, actor, mode)
+            finalize_queued_turn!(head, rest, context, actor)
           end
-
-          Enum.each(rest, fn queued_message ->
-            update_queue!(
-              queued_message,
-              %{anchor_message_id: context.message_id},
-              actor
-            )
-          end)
-
-          {:ok, context}
         end
     end
+  end
+
+  defp publish_queue_context!(chat, head, _contents, actor, {:prepared, ticket, preparation}) do
+    if ticket.revision != queue_head_revision(head) do
+      raise StalePreparationError, chat_id: chat.id
+    end
+
+    Context.publish!(preparation, actor: actor)
+  end
+
+  defp publish_queue_context!(chat, head, contents, actor, _locked_or_media) do
+    user_message = create_user_message!(chat.id, head.anchor_message_id, contents, actor)
+    Context.build!(chat.id, actor: actor, parent_id: user_message.id)
+  end
+
+  defp finalize_queued_turn!(head, rest, context, actor) do
+    case QueuedMessages.mark_delivered(
+           head,
+           %{
+             user_message_id: context.parent_message_id,
+             assistant_message_id: context.message_id
+           },
+           actor
+         ) do
+      {:ok, _delivered} -> :ok
+      {:error, reason} -> raise "Failed to finalize queued delivery: #{inspect(reason)}"
+    end
+
+    Enum.each(rest, fn queued_message ->
+      update_queue!(queued_message, %{anchor_message_id: context.message_id}, actor)
+    end)
+
+    {:ok, context}
+  end
+
+  defp queue_head_revision(head) do
+    contents =
+      head.contents
+      |> Enum.sort_by(& &1.id)
+      |> Enum.map(&Map.take(&1, [:id, :updated_at, :sequence, :kind, :content_text, :file_id]))
+
+    {Map.take(head, [:id, :owner_id, :chat_id, :kind, :status, :anchor_message_id, :updated_at]),
+     contents}
   end
 
   defp create_user_message!(chat_id, parent_id, contents, actor) do
@@ -533,7 +674,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
       |> Ash.Query.filter(chat_id == ^child_chat.id and role == :assistant)
       |> Ash.Query.sort(id: :asc)
       |> Ash.Query.limit(1)
-      |> Ash.Query.lock(:for_update)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
       |> Ash.read_one!(authorize?: false)
 
     case first_generation do
@@ -674,7 +815,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp lock_chat!(chat_id) do
     Chat
     |> Ash.Query.filter(id == ^chat_id)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.limit(1)
     |> Ash.read_one!(authorize?: false)
     |> case do
@@ -690,7 +831,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
       Chat
       |> Ash.Query.filter(id in ^ids)
       |> Ash.Query.sort(id: :asc)
-      |> Ash.Query.lock(:for_update)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
       |> Ash.read!(authorize?: false)
 
     if length(chats) == length(ids) do
@@ -703,7 +844,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp lock_message!(message_id) do
     ChatMessage
     |> Ash.Query.filter(id == ^message_id)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.limit(1)
     |> Ash.read_one!(authorize?: false)
     |> case do
@@ -720,7 +861,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     ChatMessage
     |> Ash.Query.filter(id in ^ids)
     |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read!(authorize?: false)
     |> Map.new(&{&1.id, &1})
   end
@@ -735,7 +876,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.limit(1)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one!(authorize?: false)
   end
 

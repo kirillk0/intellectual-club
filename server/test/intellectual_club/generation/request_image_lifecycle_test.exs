@@ -11,6 +11,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
 
   require Ash.Query
@@ -195,7 +196,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     :ok
   end
 
-  test "Worker persists compact raw, hydrates only for transport, and reuses a binding on steering" do
+  test "Worker hydrates only for transport and steering creates independent immutable image pins" do
     %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: step_id} =
       create_generation!(image_payload())
 
@@ -204,7 +205,9 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     context =
       worker_context(actor, message, step_id, raw_request, SteeringAdapter, attempts: attempts)
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:steering_request, 1, _first_task, ^step_id, compact_request, wire_request},
@@ -217,18 +220,23 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     [initial_binding] = bindings_for_step(step_id)
 
-    assert {:ok, %{step_id: ^step_id}} = Worker.steer(pid, "Use the image carefully")
+    assert {:ok, %{step_id: receiving_step_id}} = Worker.steer(pid, "Use the image carefully")
+    refute receiving_step_id == step_id
 
-    assert_receive {:steering_request, 2, _second_task, ^step_id, steered_request,
+    assert_receive {:steering_request, 2, _second_task, ^receiving_step_id, steered_request,
                     steered_wire_request},
                    2_000
 
     assert wire_image_url(steered_wire_request) == wire_image_url(wire_request)
     refute inspect(steered_request) =~ ";base64,"
 
-    [steered_binding] = bindings_for_step(step_id)
-    assert steered_binding.id == initial_binding.id
-    assert steered_binding.file_id == initial_binding.file_id
+    [steered_binding] = bindings_for_step(receiving_step_id)
+    refute steered_binding.id == initial_binding.id
+    refute steered_binding.file_id == initial_binding.file_id
+    assert steered_binding.reference_key == initial_binding.reference_key
+    assert steered_binding.file.sha256 == initial_binding.file.sha256
+    assert [preserved_binding] = bindings_for_step(step_id)
+    assert preserved_binding.id == initial_binding.id
 
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000
@@ -249,7 +257,9 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
         attempts: attempts
       )
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:retry_request, 1, ^first_step_id, first_request}, 2_000
@@ -286,7 +296,9 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
         max_tool_rounds: 0
       )
 
-    pid = start_supervised!({Worker, %{context: context}})
+    pid =
+      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:tool_request, 1, ^first_step_id, first_request}, 2_000
@@ -398,7 +410,11 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       |> Ash.create!(actor: actor)
 
     raw_request = responses_request(source_file)
-    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
+
+    %{step: step, request: raw_request} =
+      Persistence.create_request_step!(assistant_message, 1, raw_request)
+
+    step_id = step.id
 
     %{
       actor: actor,
@@ -459,6 +475,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     |> Ash.Query.filter(id == ^step_id)
     |> Ash.Query.select([:id, :sequence, :status, :raw_request, :raw_response])
     |> Ash.read_one!(actor: actor)
+    |> Map.put(:raw_request, StepRequests.request_for_step!(step_id, actor: actor))
   end
 
   defp count_files_for_sha(sha256) do

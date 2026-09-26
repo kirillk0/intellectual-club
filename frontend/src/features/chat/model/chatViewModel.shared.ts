@@ -140,12 +140,21 @@ export type PollResponse = {
   message_id: number;
   runtime: boolean;
   status: string;
+  revision?: string;
+  content_revision?: string;
+  runtime_revision?: string;
+  runtime_content?: ChatBranchMessage['content'];
+  runtime_step_sequence?: number;
+  availability?: 'ready' | 'busy' | 'absent';
+  phase?: string;
+  poll_after_ms?: number;
   queued_messages?: ChatQueuedMessage[];
   active_generation_message_id?: number | null;
   content?: ChatBranchMessage['content'];
   usage?: ChatBranchMessage['usage'];
   working?: ChatBranchMessage['working'];
   working_open?: {
+    revision?: string;
     step_count?: number | null;
     steps?: ChatMessageStep[] | null;
     selected_step_id?: number | null;
@@ -157,6 +166,7 @@ export type PollResponse = {
 };
 
 export type WorkingPayload = {
+  revision?: string;
   message_id: number;
   step_count: number;
   steps: ChatMessageStep[];

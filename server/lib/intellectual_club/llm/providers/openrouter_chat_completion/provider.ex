@@ -67,6 +67,13 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   end
 
   @impl true
+  def prepare_request(request, context) when is_map(request) do
+    request
+    |> RequestPayload.stringify_keys()
+    |> put_session_id(context)
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       opts
@@ -81,7 +88,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> put_session_id(opts)
+      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -114,7 +121,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         ),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> put_session_id(context)
+      |> prepare_request(context)
 
     %{
       runtime_step: followup.runtime_step,
@@ -136,7 +143,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
       )
       |> ChatAdapterHelpers.apply_followup_cache_control(context)
 
-    raw_request = Map.put(payload, "messages", messages)
+    raw_request = payload |> Map.put("messages", messages) |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -194,10 +201,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      (Map.get(opts, :request_payload) || %{})
-      |> RequestPayload.stringify_keys()
-      |> put_session_id(context)
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)

@@ -83,7 +83,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           | {:set_text, String.t(), item_type(), integer(), String.t()}
           | {:set_opaque, String.t(), item_type(), integer(), map() | nil}
           | {:set_media, String.t(), item_type(), integer(), map()}
-          | {:set_step_raw_request, map()}
           | {:set_step_raw_response, map() | nil}
           | {:set_step_usage, map() | nil}
           | {:set_step_response_final, boolean()}
@@ -177,11 +176,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
       put_content(item, content)
     end)
-  end
-
-  def apply_event(%Step{} = step, {:set_step_raw_request, raw_request})
-      when is_map(raw_request) do
-    %{step | raw_request: raw_request}
   end
 
   def apply_event(%Step{} = step, {:set_step_raw_response, raw_response}) do

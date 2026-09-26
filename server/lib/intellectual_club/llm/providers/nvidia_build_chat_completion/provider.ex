@@ -59,6 +59,15 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    request
+    |> RequestPayload.stringify_keys()
+    |> Map.delete("session_id")
+    |> strip_cache_control()
+    |> include_stream_usage()
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       opts
@@ -73,7 +82,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request()
+      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -103,7 +112,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         followup.messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request()
+      |> prepare_request(context)
 
     %{
       runtime_step: followup.runtime_step,
@@ -113,7 +122,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -127,7 +136,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
     raw_request =
       payload
       |> Map.put("messages", messages)
-      |> prepare_request()
+      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -139,10 +148,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      (Map.get(opts, :request_payload) || %{})
-      |> RequestPayload.stringify_keys()
-      |> prepare_request()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)
@@ -214,13 +220,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
       end
 
     Map.put(raw_request, "stream_options", Map.put(stream_options, "include_usage", true))
-  end
-
-  defp prepare_request(%{} = raw_request) do
-    raw_request
-    |> Map.delete("session_id")
-    |> strip_cache_control()
-    |> include_stream_usage()
   end
 
   defp strip_cache_control(%{"messages" => messages} = raw_request) when is_list(messages) do

@@ -24,8 +24,6 @@ defmodule IntellectualClub.Llm.Providers.Demo.Trace do
         _ -> %{}
       end
 
-    emit.({:trace, {:set_step_raw_request, raw_request}})
-
     chunk_delay_ms = Map.get(opts, :chunk_delay_ms, 40)
 
     messages =

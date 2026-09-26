@@ -7,7 +7,9 @@ defmodule IntellectualClub.Generation.SupervisorTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.LegacyGenerationSnapshotStub
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.RuntimeSnapshots
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
 
@@ -28,42 +30,6 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       emit.({:trace, {:set_text, "answer", :answer, 1, "Partial answer"}})
       send(context.test_pid, {:partial_output_ready, context.message_id})
       Process.sleep(:infinity)
-    end
-  end
-
-  defmodule GlobalWorkerStub do
-    @moduledoc false
-
-    use GenServer
-
-    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
-
-    @impl true
-    def init(test_pid), do: {:ok, test_pid}
-
-    @impl true
-    def handle_call(:get_current_state, _from, test_pid) do
-      {:reply, %{status: :generating, source: :global}, test_pid}
-    end
-
-    def handle_call({:poll, cursor, opts}, _from, test_pid) do
-      {:reply, %{status: :generating, cursor: cursor, opts: opts, source: :global}, test_pid}
-    end
-
-    def handle_call({:steer, text}, _from, test_pid) do
-      send(test_pid, {:global_worker_steered, text})
-      {:reply, {:ok, %{text: text}}, test_pid}
-    end
-
-    def handle_call(:cancel_and_wait, _from, test_pid) do
-      send(test_pid, :global_worker_canceled)
-      {:stop, :normal, {:error, :not_persisted}, test_pid}
-    end
-
-    @impl true
-    def handle_cast(:cancel, test_pid) do
-      send(test_pid, :global_worker_canceled)
-      {:stop, :normal, test_pid}
     end
   end
 
@@ -437,7 +403,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       )
       |> Ash.create!(actor: actor)
 
-    _step_id =
+    step_id =
       Persistence.ensure_step_started!(message.id, %{
         "model" => "demo-model",
         "messages" => [%{"role" => "user", "content" => "Global"}],
@@ -454,22 +420,54 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert {:ok, lease} = Lease.acquire(message.id)
     on_exit(fn -> Lease.release(lease) end)
 
-    stub = start_supervised!({GlobalWorkerStub, self()})
+    stub = start_supervised!({LegacyGenerationSnapshotStub, self()})
     assert :yes = :global.register_name(Worker.global_name(message.id), stub)
+    assert Registry.lookup(IntellectualClub.Generation.Registry, {:message, message.id}) == []
 
-    assert {:ok, %{status: :generating, source: :global}} =
+    assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
              GenerationSupervisor.get_generation_state(message.id)
 
-    assert {:ok, %{status: :generating, source: :global, cursor: %{step: 1}}} =
+    assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
              GenerationSupervisor.poll_generation(message.id, %{step: 1})
+
+    assert Ash.get!(ChatMessage, message.id, actor: actor).status == :generating
+
+    assert :ok =
+             GenServer.call(
+               stub,
+               {:publish_snapshot, message.id,
+                %{
+                  status: :generating,
+                  phase: :persisting,
+                  step: %{id: step_id, sequence: 1, status: "waiting_provider", items: []}
+                }}
+             )
+
+    assert {:ok, snapshot} = GenerationSupervisor.get_generation_state(message.id)
+    assert %{status: :generating, phase: :persisting, step: %{id: ^step_id}} = snapshot
+    assert is_binary(snapshot.revision)
+    assert {:ok, ^snapshot} = RuntimeSnapshots.read(message.id, stub)
+
+    :ok = :sys.suspend(stub)
+
+    try do
+      assert {:ok, ^snapshot} = GenerationSupervisor.get_generation_state(message.id)
+
+      assert {:ok, ^snapshot} =
+               GenerationSupervisor.poll_generation(message.id, %{step: 1}, include_working: true)
+    after
+      :sys.resume(stub)
+    end
 
     assert {:ok, %{text: "Continue"}} =
              GenerationSupervisor.steer_generation(message.id, "Continue")
 
     assert_receive {:global_worker_steered, "Continue"}
 
+    monitor = Process.monitor(stub)
     assert :ok = GenerationSupervisor.cancel_generation(message.id)
     assert_receive :global_worker_canceled
+    assert_receive {:DOWN, ^monitor, :process, ^stub, :normal}
     canceled = wait_for_status!(message.id, actor, :canceled)
     assert canceled.generation_fence_token == nil
 
@@ -477,6 +475,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert blocked.status == :blocked
     assert blocked.blocked_reason == "generation_canceled"
     assert GenerationSupervisor.get_generation_state(message.id) == :not_found
+    assert RuntimeSnapshots.read(message.id, stub) == :not_found
   end
 
   defp create_chat!(actor, attrs \\ %{}) do

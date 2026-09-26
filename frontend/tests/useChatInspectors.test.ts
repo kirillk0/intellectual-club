@@ -8,6 +8,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/client', () => ({
   api: apiMocks,
   getApiErrorMessage: (_error: unknown, fallback: string) => fallback,
+  isHttpError: (error: unknown) => Boolean(error && typeof error === 'object' && 'bodyJson' in error),
 }));
 
 import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
@@ -50,6 +51,20 @@ describe('chat step details', () => {
     });
   });
 
+  it('reports an unreconstructable stored request without showing an empty payload', async () => {
+    apiMocks.get.mockRejectedValue({ bodyJson: { code: 'request_unavailable' }, status: 422 });
+    const inspectors = createInspectors();
+    inspectors.openStepDetails({
+      messageId: 42,
+      messageStatus: 'generating',
+      step: { id: 7, sequence: 2, status: 'waiting_provider', response_final: false },
+    });
+    await flushPromises();
+    expect(inspectors.stepDetailsRequestError.value).toBe('Stored request could not be reconstructed');
+    expect(inspectors.stepDetailsRequestPayload.value).toBeNull();
+    expect(inspectors.stepDetailsRequestLoading.value).toBe(false);
+  });
+
   it('loads the raw response for a completed retry while the message is still generating', async () => {
     const inspectors = createInspectors();
 
@@ -71,7 +86,8 @@ describe('chat step details', () => {
       body: { error: { message: 'Provider returned error' } },
     });
     expect(apiMocks.get).toHaveBeenCalledWith(
-      '/api/bff/chat-messages/42/steps/7/raw?kind=response'
+      '/api/bff/chat-messages/42/steps/7/raw?kind=response',
+      { showErrorBanner: false }
     );
   });
 });

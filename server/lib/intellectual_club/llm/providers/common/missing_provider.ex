@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.Steering
 
   @impl true
@@ -38,6 +39,11 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
   def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
 
   @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    RequestPayload.stringify_keys(request)
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     raw_request = %{
       "error" => provider_error_text(Map.get(opts, :provider_type))
@@ -52,7 +58,9 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
   @impl true
   def build_followup_request(opts) when is_map(opts) do
     runtime_step = Map.fetch!(opts, :runtime_step)
-    raw_request = Map.get(runtime_step, :raw_request) || %{}
+
+    raw_request =
+      prepare_request(Map.get(runtime_step, :raw_request) || %{}, Map.get(opts, :context, %{}))
 
     %{
       runtime_step: runtime_step,
@@ -65,7 +73,9 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
   def inject_steering(raw_request, steering_items, _context)
       when is_map(raw_request) and is_list(steering_items) do
     raw_request =
-      Map.update(raw_request, "steering", Steering.texts(steering_items), fn existing ->
+      raw_request
+      |> prepare_request(%{})
+      |> Map.update("steering", Steering.texts(steering_items), fn existing ->
         List.wrap(existing) ++ Steering.texts(steering_items)
       end)
 

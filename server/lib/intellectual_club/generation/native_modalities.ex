@@ -3,7 +3,7 @@ defmodule IntellectualClub.Generation.NativeModalities do
   Projects canonical media contents into compact provider-native modalities.
 
   Image bytes are deliberately not read here. Validation, optional resizing, and
-  pinning happen after a request step exists in `RequestImages`.
+  pinning happen in `RequestImages.prepare/3` before the final request is inserted.
   """
 
   require Logger

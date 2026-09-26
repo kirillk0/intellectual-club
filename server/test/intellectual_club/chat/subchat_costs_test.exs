@@ -4,11 +4,17 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.SubchatCosts
+  alias IntellectualClub.Chat.SubchatCostCache
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+
+  setup do
+    if is_nil(Process.whereis(SubchatCostCache)), do: start_supervised!(SubchatCostCache)
+    :ok
+  end
 
   test "aggregates direct subchat and descendant usage by source message" do
     %{user: actor} = user_fixture()
@@ -76,11 +82,12 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
 
     before_zero = SubchatCosts.summary(root.id, actor)
     _zero_message = persist_cost!(zero_spawn, configuration, actor, 0.0)
-    after_zero = SubchatCosts.summary(root.id, actor)
+    after_zero = SubchatCosts.summary(root.id, actor, refresh?: true)
 
     assert_in_delta after_zero.costs_by_message_id[source_one.id], 0.06, 0.000_001
     assert_in_delta after_zero.costs_by_message_id[source_two.id], 0.04, 0.000_001
     assert after_zero.costs_by_message_id[source_zero.id] == 0.0
+    assert before_zero.costs_by_message_id[source_zero.id] == nil
     assert before_zero.revision != after_zero.revision
   end
 

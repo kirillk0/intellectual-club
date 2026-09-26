@@ -190,6 +190,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
       )
 
     events = collect_provider_events([])
+    refute Enum.any?(events, &match?({:trace, {:set_step_raw_request, _}}, &1))
 
     assert Enum.any?(events, fn
              {:trace, {:append_text, "reasoning", :reasoning, 1, "Searching"}} -> true
@@ -221,6 +222,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
         {:response_complete, _meta} -> true
         _other -> false
       end)
+
+    assert meta.raw_request == request_payload
 
     assert get_in(meta, [:raw_response, "choices", Access.at(0), "message", "tool_calls"]) == [
              %{

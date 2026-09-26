@@ -6,6 +6,8 @@ defmodule IntellectualClub.Generation.Lease do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Repo
+  alias IntellectualClub.Generation.Lease.Capabilities
+  alias IntellectualClub.Generation.Lease.State
 
   require Ash.Query
   require Logger
@@ -19,11 +21,6 @@ defmodule IntellectualClub.Generation.Lease do
   @validation_failure_limit 3
 
   defstruct [:manager, :message_id, :ref, :fence_token]
-
-  defmodule State do
-    @moduledoc false
-    defstruct [:connection, leases: %{}, validation_failures: 0]
-  end
 
   @type t :: %__MODULE__{
           manager: pid(),
@@ -92,38 +89,30 @@ defmodule IntellectualClub.Generation.Lease do
         fun
       )
       when is_list(allowed_statuses) and allowed_statuses != [] and is_function(fun, 0) do
-    if active?(lease) do
-      token = Ecto.UUID.generate()
+    with_fence_claim(lease, fn fenced ->
+      lease_transaction(fn ->
+        with {:ok, current} <- lock_message(lease.message_id) do
+          cond do
+            not active?(lease) ->
+              {:error, :lease_lost}
 
-      case lease_transaction(fn ->
-             with {:ok, current} <- lock_message(lease.message_id) do
-               if current.role == :assistant and current.status in allowed_statuses do
-                 current
-                 |> Ash.Changeset.for_update(
-                   :set_generation_fence,
-                   %{generation_fence_token: token},
-                   authorize?: false
-                 )
-                 |> Ash.update!(authorize?: false)
+            current.role != :assistant or current.status not in allowed_statuses ->
+              {:error, :invalid_status}
 
-                 {:ok, {%{lease | fence_token: token}, fun.()}}
-               else
-                 {:error, :invalid_status}
-               end
-             end
-           end) do
-        {:ok, {%__MODULE__{} = fenced, result}} ->
-          case register_fence(fenced) do
-            :ok -> {:ok, {fenced, result}}
-            {:error, _reason} = error -> error
+            true ->
+              current
+              |> Ash.Changeset.for_update(
+                :set_generation_fence,
+                %{generation_fence_token: fenced.fence_token},
+                authorize?: false
+              )
+              |> Ash.update!(authorize?: false)
+
+              {:ok, fun.()}
           end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      {:error, :lease_lost}
-    end
+        end
+      end)
+    end)
   end
 
   @doc false
@@ -151,55 +140,45 @@ defmodule IntellectualClub.Generation.Lease do
       when is_integer(chat_id) and chat_id > 0 and is_list(allowed_statuses) and
              allowed_statuses != [] and (is_function(fun, 0) or is_function(fun, 1)) and
              is_list(opts) do
-    if active?(lease) do
-      token = Ecto.UUID.generate()
+    with_fence_claim(lease, fn fenced ->
+      lease_transaction(
+        [Chat, ChatMessage],
+        fn ->
+          with_lock_scope(opts, fn prepared ->
+            with {:ok, _chat} <- lock_chat(chat_id),
+                 {:ok, current} <- lock_message(lease.message_id) do
+              active_generation = lock_other_generating_message(chat_id, lease.message_id)
 
-      case lease_transaction(
-             [Chat, ChatMessage],
-             fn ->
-               with_lock_scope(opts, fn prepared ->
-                 with {:ok, _chat} <- lock_chat(chat_id),
-                      {:ok, current} <- lock_message(lease.message_id) do
-                   active_generation = lock_other_generating_message(chat_id, lease.message_id)
+              cond do
+                not active?(lease) ->
+                  {:error, :lease_lost}
 
-                   cond do
-                     current.chat_id != chat_id ->
-                       {:error, :chat_mismatch}
+                current.chat_id != chat_id ->
+                  {:error, :chat_mismatch}
 
-                     current.role != :assistant or current.status not in allowed_statuses ->
-                       {:error, :invalid_status}
+                current.role != :assistant or current.status not in allowed_statuses ->
+                  {:error, :invalid_status}
 
-                     match?(%ChatMessage{}, active_generation) ->
-                       {:error, :generation_active}
+                match?(%ChatMessage{}, active_generation) ->
+                  {:error, :generation_active}
 
-                     true ->
-                       current
-                       |> Ash.Changeset.for_update(
-                         :set_generation_fence,
-                         %{generation_fence_token: token},
-                         authorize?: false
-                       )
-                       |> Ash.update!(authorize?: false)
+                true ->
+                  current
+                  |> Ash.Changeset.for_update(
+                    :set_generation_fence,
+                    %{generation_fence_token: fenced.fence_token},
+                    authorize?: false
+                  )
+                  |> Ash.update!(authorize?: false)
 
-                       {:ok, {%{lease | fence_token: token}, run_fenced(fun, prepared)}}
-                   end
-                 end
-               end)
-             end,
-             []
-           ) do
-        {:ok, {%__MODULE__{} = fenced, result}} ->
-          case register_fence(fenced) do
-            :ok -> {:ok, {fenced, result}}
-            {:error, _reason} = error -> error
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      {:error, :lease_lost}
-    end
+                  {:ok, run_fenced(fun, prepared)}
+              end
+            end
+          end)
+        end,
+        []
+      )
+    end)
   end
 
   def claim_and_run_with_chat(_lease, _chat_id, _allowed_statuses, _fun, _opts),
@@ -431,6 +410,7 @@ defmodule IntellectualClub.Generation.Lease do
   @impl true
   def init(_opts) do
     Process.flag(:trap_exit, true)
+    Capabilities.create()
 
     case Postgrex.start_link(connection_options()) do
       {:ok, connection} ->
@@ -464,7 +444,18 @@ defmodule IntellectualClub.Generation.Lease do
           Process.link(owner)
 
           lease = %__MODULE__{manager: self(), message_id: message_id, ref: ref}
-          entry = %{ref: ref, owner: owner, fence_token: nil}
+
+          entry = %{
+            ref: ref,
+            owner: owner,
+            fence_token: nil,
+            claim_token: nil,
+            cleanup_tokens: [],
+            cleanup_ref: nil,
+            release_waiters: []
+          }
+
+          Capabilities.put(lease)
 
           {:reply, {:ok, lease}, %{state | leases: Map.put(leases, message_id, entry)}}
 
@@ -487,16 +478,11 @@ defmodule IntellectualClub.Generation.Lease do
         %State{leases: leases} = state
       ) do
     case Map.get(leases, lease.message_id) do
-      %{ref: ref, owner: ^current_owner} when ref == lease.ref ->
+      %{ref: ref, owner: ^current_owner, fence_token: token, claim_token: nil, cleanup_ref: nil} =
+          entry
+      when ref == lease.ref and token == lease.fence_token ->
         Process.link(new_owner)
-
-        leases =
-          Map.put(leases, lease.message_id, %{
-            ref: lease.ref,
-            owner: new_owner,
-            fence_token: lease.fence_token
-          })
-
+        leases = Map.put(leases, lease.message_id, %{entry | owner: new_owner})
         maybe_unlink_owner(current_owner, leases)
 
         {:reply, :ok, %{state | leases: leases}}
@@ -507,16 +493,61 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   def handle_call(
+        {:prepare_fence, %__MODULE__{} = lease, owner},
+        _from,
+        %State{leases: leases} = state
+      ) do
+    case Map.get(leases, lease.message_id) do
+      %{ref: ref, owner: ^owner, fence_token: nil, claim_token: nil, cleanup_ref: nil} = entry
+      when ref == lease.ref ->
+        if Capabilities.active?(%{lease | fence_token: nil}) do
+          # Remember the token before any database work. An owner can be killed
+          # after commit but before register_fence reaches this mailbox.
+          entry = %{
+            entry
+            | claim_token: lease.fence_token,
+              cleanup_tokens: [lease.fence_token | entry.cleanup_tokens]
+          }
+
+          {:reply, :ok, %{state | leases: Map.put(leases, lease.message_id, entry)}}
+        else
+          {:reply, {:error, :lease_lost}, state}
+        end
+
+      _other ->
+        {:reply, {:error, :generation_lease_not_owned}, state}
+    end
+  end
+
+  def handle_call(
+        {:abandon_fence_claim, %__MODULE__{} = lease},
+        _from,
+        %State{leases: leases} = state
+      ) do
+    case Map.get(leases, lease.message_id) do
+      %{ref: ref, claim_token: token, cleanup_ref: nil} = entry
+      when ref == lease.ref and token == lease.fence_token ->
+        # Keep attempted tokens for compare-and-clear, even when a caller's
+        # surrounding transaction rolls back after a nested claim returns.
+        entry = %{entry | claim_token: nil}
+        {:reply, :ok, %{state | leases: Map.put(leases, lease.message_id, entry)}}
+
+      _other ->
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call(
         {:register_fence, %__MODULE__{} = lease, owner},
         _from,
         %State{leases: leases} = state
       ) do
     case Map.get(leases, lease.message_id) do
-      %{ref: ref, owner: ^owner} = entry when ref == lease.ref ->
-        leases =
-          Map.put(leases, lease.message_id, %{entry | fence_token: lease.fence_token})
-
-        {:reply, :ok, %{state | leases: leases}}
+      %{ref: ref, owner: ^owner, claim_token: token, cleanup_ref: nil} = entry
+      when ref == lease.ref and token == lease.fence_token ->
+        entry = %{entry | fence_token: token, claim_token: nil}
+        Capabilities.put(lease)
+        {:reply, :ok, %{state | leases: Map.put(leases, lease.message_id, entry)}}
 
       _other ->
         {:reply, {:error, :generation_lease_not_owned}, state}
@@ -525,33 +556,20 @@ defmodule IntellectualClub.Generation.Lease do
 
   def handle_call(
         {:release, %__MODULE__{} = lease, owner},
-        _from,
+        from,
         %State{} = state
       ) do
     case Map.get(state.leases, lease.message_id) do
       %{ref: ref, owner: ^owner} when ref == lease.ref ->
-        case unlock(state, lease.message_id, owner) do
-          {:ok, state} ->
-            {:reply, :ok, state}
-
-          {:error, reason} ->
-            {:stop, {:generation_lease_unlock_failed, reason}, {:error, reason}, state}
-        end
+        {:noreply, start_cleanup(state, lease.message_id, from)}
 
       _other ->
         {:reply, :ok, state}
     end
   end
 
-  def handle_call(
-        {:active?, %__MODULE__{} = lease},
-        _from,
-        %State{leases: leases} = state
-      ) do
-    active? =
-      match?(%{ref: ref} when ref == lease.ref, Map.get(leases, lease.message_id))
-
-    {:reply, active?, state}
+  def handle_call({:active?, %__MODULE__{} = lease}, _from, %State{} = state) do
+    {:reply, Capabilities.active?(lease), state}
   end
 
   @impl true
@@ -560,10 +578,32 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   def handle_info({:EXIT, owner, _reason}, %State{} = state) when is_pid(owner) do
-    case release_owner_leases(state, owner) do
+    state =
+      state.leases
+      |> Enum.filter(fn {_message_id, entry} -> entry.owner == owner end)
+      |> Enum.reduce(state, fn {message_id, _entry}, acc ->
+        start_cleanup(acc, message_id)
+      end)
+
+    {:noreply, state}
+  end
+
+  def handle_info({ref, result}, %State{cleanups: cleanups} = state)
+      when is_map_key(cleanups, ref) do
+    Process.demonitor(ref, [:flush])
+
+    case finish_cleanup(state, ref, result) do
       {:ok, state} -> {:noreply, state}
       {:error, reason} -> {:stop, {:generation_lease_unlock_failed, reason}, state}
     end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %State{cleanups: cleanups} = state)
+      when is_map_key(cleanups, ref) do
+    # A missing cleanup acknowledgement must never release the advisory lock.
+    # Stopping the manager closes its dedicated session and fences its owners;
+    # ordinary restart recovery can then claim the orphan with a fresh token.
+    {:stop, {:generation_lease_cleanup_failed, reason}, state}
   end
 
   def handle_info(:recover_orphaned_generations, %State{} = state) do
@@ -617,47 +657,66 @@ defmodule IntellectualClub.Generation.Lease do
     :ok
   end
 
-  defp release_owner_leases(%State{} = state, owner) do
-    state.leases
-    |> Enum.filter(fn {_message_id, entry} -> entry.owner == owner end)
-    |> Enum.reduce_while({:ok, state}, fn {message_id, _entry}, {:ok, acc} ->
-      case unlock(acc, message_id, owner) do
-        {:ok, acc} -> {:cont, {:ok, acc}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
+  defp start_cleanup(state, message_id, from \\ nil)
 
-  defp unlock(%State{connection: connection, leases: leases} = state, message_id, owner) do
-    fence_token =
-      case Map.get(leases, message_id) do
-        %{fence_token: token} -> token
-        _other -> nil
-      end
+  defp start_cleanup(%State{} = state, message_id, from) do
+    entry = Map.fetch!(state.leases, message_id)
+    waiters = if is_nil(from), do: entry.release_waiters, else: [from | entry.release_waiters]
+    entry = %{entry | release_waiters: waiters}
 
-    with :ok <- clear_generation_fence(message_id, fence_token),
-         {:ok, %{rows: [[true]]}} <-
-           Postgrex.query(
-             connection,
-             "SELECT pg_advisory_unlock($1)",
-             [lock_key(message_id)],
-             timeout: query_timeout_ms()
-           ) do
-      leases = Map.delete(leases, message_id)
-      maybe_unlink_owner(owner, leases)
-      {:ok, %{state | leases: leases}}
+    if entry.cleanup_ref do
+      %{state | leases: Map.put(state.leases, message_id, entry)}
     else
-      failure -> {:error, failure}
+      Capabilities.delete(self(), message_id)
+      tokens = entry.cleanup_tokens
+
+      task =
+        Task.Supervisor.async_nolink(IntellectualClub.Generation.LeaseCleanupSupervisor, fn ->
+          clear_generation_fence(message_id, tokens)
+        end)
+
+      entry = %{entry | cleanup_ref: task.ref}
+
+      %{
+        state
+        | leases: Map.put(state.leases, message_id, entry),
+          cleanups: Map.put(state.cleanups, task.ref, {message_id, entry.ref})
+      }
     end
   end
 
-  defp clear_generation_fence(_message_id, nil), do: :ok
+  defp finish_cleanup(%State{} = state, cleanup_ref, :ok) do
+    {message_id, lease_ref} = Map.fetch!(state.cleanups, cleanup_ref)
+    %{ref: ^lease_ref, cleanup_ref: ^cleanup_ref} = entry = Map.fetch!(state.leases, message_id)
 
-  defp clear_generation_fence(message_id, fence_token) when is_binary(fence_token) do
+    # Clear first, unlock second, remove the reservation last. Until all three
+    # steps finish no local or remote successor can obtain this advisory lock.
+    case Postgrex.query(
+           state.connection,
+           "SELECT pg_advisory_unlock($1)",
+           [lock_key(message_id)],
+           timeout: query_timeout_ms()
+         ) do
+      {:ok, %{rows: [[true]]}} ->
+        leases = Map.delete(state.leases, message_id)
+        maybe_unlink_owner(entry.owner, leases)
+        Enum.each(entry.release_waiters, &GenServer.reply(&1, :ok))
+        {:ok, %{state | leases: leases, cleanups: Map.delete(state.cleanups, cleanup_ref)}}
+
+      failure ->
+        {:error, failure}
+    end
+  end
+
+  defp finish_cleanup(_state, _cleanup_ref, failure), do: {:error, failure}
+
+  defp clear_generation_fence(_message_id, []), do: :ok
+
+  defp clear_generation_fence(message_id, fence_tokens) when is_list(fence_tokens) do
     case lease_transaction(
            fn ->
              with {:ok, current} <- lock_message(message_id) do
-               if current.generation_fence_token == fence_token do
+               if current.generation_fence_token in fence_tokens do
                  current
                  |> Ash.Changeset.for_update(
                    :set_generation_fence,
@@ -691,7 +750,7 @@ defmodule IntellectualClub.Generation.Lease do
       ChatMessage
       |> Ash.Query.filter(id == ^message_id)
       |> Ash.Query.select([:id, :chat_id, :role, :status, :generation_fence_token])
-      |> Ash.Query.lock(:for_update)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
       |> Ash.read_one!(authorize?: false)
 
     case message do
@@ -706,7 +765,7 @@ defmodule IntellectualClub.Generation.Lease do
       chat_id == ^chat_id and id != ^excluded_message_id and status == :generating
     )
     |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.limit(1)
     |> Ash.read_one!(authorize?: false)
   end
@@ -725,9 +784,9 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
-  # The scope surrounds only the SQL transaction body, never manager RPCs. It
-  # runs after the manager liveness check and before the first row fence, and
-  # may prepare an operation capability passed to an arity-one callback.
+  # The scope surrounds only the SQL transaction body and expires before
+  # manager registration. It runs before the first row fence and may prepare
+  # an operation capability passed to an arity-one callback.
   defp with_lock_scope(opts, callback) do
     case Keyword.get(opts, :with_lock_scope) do
       nil -> callback.(nil)
@@ -758,11 +817,17 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
-  defp active?(%__MODULE__{} = lease) do
-    GenServer.call(lease.manager, {:active?, lease}, :infinity)
+  defp active?(%__MODULE__{manager: manager} = lease) when is_pid(manager) do
+    if node(manager) == node() do
+      Capabilities.active?(lease)
+    else
+      GenServer.call(manager, {:active?, lease}, query_timeout_ms())
+    end
   catch
     :exit, _reason -> false
   end
+
+  defp active?(_lease), do: false
 
   defp schedule_restart_recovery do
     if Process.whereis(IntellectualClub.Generation.Supervisor) do
@@ -822,7 +887,7 @@ defmodule IntellectualClub.Generation.Lease do
   defp validate_generation_leases(%State{} = state) do
     fenced_entries =
       Enum.filter(state.leases, fn {_message_id, entry} ->
-        is_binary(Map.get(entry, :fence_token))
+        is_nil(entry.cleanup_ref) and is_binary(entry.fence_token)
       end)
 
     if fenced_entries == [] do
@@ -883,6 +948,7 @@ defmodule IntellectualClub.Generation.Lease do
   defp stop_lease_owners(entries) when is_list(entries) do
     Enum.each(entries, fn
       {message_id, %{owner: owner, ref: ref}} when is_pid(owner) ->
+        Capabilities.delete(self(), message_id)
         GenServer.cast(owner, :generation_fence_lost)
 
         Process.send_after(
@@ -899,6 +965,40 @@ defmodule IntellectualClub.Generation.Lease do
   defp release_after_fence_error(lease, reason) do
     _ = release(lease)
     {:error, reason}
+  end
+
+  defp with_fence_claim(lease, fun) do
+    if active?(lease) do
+      fenced = %{lease | fence_token: Ecto.UUID.generate()}
+
+      with :ok <- prepare_fence(fenced) do
+        try do
+          case fun.(fenced) do
+            {:ok, result} ->
+              with :ok <- register_fence(fenced), do: {:ok, {fenced, result}}
+
+            {:error, _reason} = error ->
+              error
+          end
+        after
+          abandon_fence_claim(fenced)
+        end
+      end
+    else
+      {:error, :lease_lost}
+    end
+  end
+
+  defp prepare_fence(%__MODULE__{} = lease) do
+    GenServer.call(lease.manager, {:prepare_fence, lease, self()}, :infinity)
+  catch
+    :exit, reason -> {:error, {:generation_lease_unavailable, reason}}
+  end
+
+  defp abandon_fence_claim(%__MODULE__{} = lease) do
+    GenServer.call(lease.manager, {:abandon_fence_claim, lease}, :infinity)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp register_fence(%__MODULE__{} = lease) do

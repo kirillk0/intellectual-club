@@ -70,6 +70,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
 
     request_payload = %{
       "model" => "claude-sonnet-4-20250514",
+      "anthropic_version" => "2025-01-01",
+      "anthropic_beta" => ["beta-a", "beta-b"],
       "max_tokens" => 128,
       "messages" => [%{"role" => "user", "content" => [%{"type" => "text", "text" => "Hi"}]}],
       "stream" => true
@@ -91,8 +93,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
 
     [request] = recorded_requests(agent, "/messages")
     assert {"x-api-key", "test-key"} in request.headers
-    assert {"anthropic-version", "2023-06-01"} in request.headers
-    assert request.payload == request_payload
+    assert {"anthropic-version", "2025-01-01"} in request.headers
+    assert {"anthropic-beta", "beta-a,beta-b"} in request.headers
+    assert request.payload == Map.drop(request_payload, ["anthropic_version", "anthropic_beta"])
 
     events = collect_provider_events([])
 
@@ -118,6 +121,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
         _other -> false
       end)
 
+    assert meta.raw_request == request_payload
+    refute Enum.any?(events, &match?({:trace, {:set_step_raw_request, _}}, &1))
     assert meta.raw_response["stop_reason"] == "tool_use"
     assert meta.raw_response["usage"] == %{"input_tokens" => 10, "output_tokens" => 20}
 
@@ -321,6 +326,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
         api_key: "test-key",
         request_payload: %{
           "model" => "claude-sonnet-4-20250514",
+          "anthropic_version" => "2025-01-01",
+          "anthropic_beta" => ["beta-a"],
           "max_tokens" => 128,
           "messages" => []
         },
@@ -350,6 +357,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
         api_key: "test-key",
         request_payload: %{
           "model" => "claude-sonnet-4-20250514",
+          "anthropic_version" => "2025-01-01",
+          "anthropic_beta" => ["beta-a"],
           "max_tokens" => 128,
           "messages" => []
         },
@@ -429,6 +438,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
       end)
 
     assert_receive {:provider_event, {:response_error, error}}, 2_000
+    assert error.raw_request == opts.request_payload
+    refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
     error
   end
 

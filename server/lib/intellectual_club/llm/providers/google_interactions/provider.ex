@@ -69,6 +69,11 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    RequestPayload.stringify_keys(request)
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     input_steps =
       Payload.build_input_steps(Map.get(opts, :history, []),
@@ -84,6 +89,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
         system_instruction: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
+      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -115,6 +121,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
           |> to_string(),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
+      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -124,7 +131,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -136,7 +143,9 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
       end)
 
     raw_request =
-      Map.put(payload, "input", Payload.previous_input_steps(payload) ++ steering_steps)
+      payload
+      |> Map.put("input", Payload.previous_input_steps(payload) ++ steering_steps)
+      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -182,10 +191,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)

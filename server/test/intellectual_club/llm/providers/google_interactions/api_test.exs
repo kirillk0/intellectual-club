@@ -287,6 +287,8 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
       end)
 
     assert_receive {:provider_event, {:response_error, error}}, 2_000
+    assert error.raw_request == opts.request_payload
+    refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
     error
   end
 
@@ -298,7 +300,14 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
         send(parent, {:provider_event, event})
       end)
 
-    drain_provider_events([])
+    events = drain_provider_events([])
+    refute Enum.any?(events, &match?({:trace, {:set_step_raw_request, _}}, &1))
+
+    for {event, meta} <- events, event in [:response_complete, :response_error] do
+      assert meta.raw_request == opts.request_payload
+    end
+
+    events
   end
 
   defp drain_provider_events(acc) do

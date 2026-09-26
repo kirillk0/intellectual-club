@@ -86,6 +86,13 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
+  def prepare_request(request, context) when is_map(request) do
+    request
+    |> RequestPayload.stringify_keys()
+    |> apply_prompt_cache_key(context)
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     input_items =
       HistoryInput.build_input_items(Map.get(opts, :history, []),
@@ -102,7 +109,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         instructions: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
-      |> apply_prompt_cache_key(opts)
+      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -153,7 +160,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
           RequestPayload.instructions(previous_raw_request) |> fallback_instructions(context),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> apply_prompt_cache_key(context)
+      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -163,7 +170,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -179,7 +186,9 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       end)
 
     raw_request =
-      Map.put(payload, "input", RequestPayload.input(payload) ++ steering_input_items)
+      payload
+      |> Map.put("input", RequestPayload.input(payload) ++ steering_input_items)
+      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -236,11 +245,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
-      |> apply_prompt_cache_key(context)
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     token_result =
       Auth.get_bearer_token_with_meta(%{
