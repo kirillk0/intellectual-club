@@ -72,11 +72,14 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       for retained_count <- [10, 100] do
         fixture = retry_fixture!(actor, 1, retained_count)
 
-        {replacement, stats} =
+        assert {:ok, reservation} = Lease.reserve(fixture.source.message.id)
+
+        {{fenced, replacement}, stats} =
           measure("retry_one_retained_n#{retained_count}", fn ->
-            Persistence.replace_steps_for_retry!(fixture.source.message.id, 2, %{})
+            claim_retry_replacement!(fixture, reservation, 2, %{}, actor)
           end)
 
+        assert :ok = Lease.release(fenced)
         assert is_integer(replacement)
         assert_one_plan(stats)
         assert_retry_scope(fixture, stats, actor)
@@ -95,11 +98,14 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
         fixture = retry_fixture!(actor, count, 10)
         label = if count == 1, do: "retry_one_retained_n10", else: "retry_twelve_retained_n10"
 
-        {replacement, stats} =
+        assert {:ok, reservation} = Lease.reserve(fixture.source.message.id)
+
+        {{fenced, replacement}, stats} =
           measure(label, fn ->
-            Persistence.replace_steps_for_retry!(fixture.source.message.id, 2, %{})
+            claim_retry_replacement!(fixture, reservation, 2, %{}, actor)
           end)
 
+        assert :ok = Lease.release(fenced)
         assert is_integer(replacement)
         assert_one_plan(stats)
         assert_retry_scope(fixture, stats, actor)
@@ -120,8 +126,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       LinkedForkCleanup.with_scope({:steps, message_id, 2}, actor, callback)
     end
 
-    replace = fn operation ->
-      Persistence.replace_steps_for_retry!(message_id, 2, %{}, [], operation)
+    claim_replace = fn operation, fenced ->
+      Persistence.replace_steps_for_retry!(message_id, 2, %{}, [], operation, lease: fenced)
     end
 
     try do
@@ -131,7 +137,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
             reservation,
             fixture.source.chat.id,
             [:done],
-            replace,
+            claim_replace,
             with_lock_scope: with_scope
           )
         end)
@@ -140,6 +146,10 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       assert is_integer(replacement_id)
       assert_one_plan(stats)
       assert_retry_scope(fixture, stats, actor)
+
+      replace = fn operation ->
+        Persistence.replace_steps_for_retry!(message_id, 2, %{}, [], operation, lease: fenced)
+      end
 
       {retry, stats} =
         measure("retry_existing_fence", fn ->
@@ -328,6 +338,34 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       fork_task: "Cleanup performance fixture"
     })
     |> Ash.create!(actor: actor)
+  end
+
+  defp claim_retry_replacement!(fixture, reservation, from_sequence, request, actor) do
+    message_id = fixture.source.message.id
+
+    with_scope = fn callback ->
+      LinkedForkCleanup.with_scope({:steps, message_id, from_sequence}, actor, callback)
+    end
+
+    assert {:ok, {fenced, replacement}} =
+             Lease.claim_and_run_with_chat(
+               reservation,
+               fixture.source.chat.id,
+               [:done],
+               fn operation, fenced ->
+                 Persistence.replace_steps_for_retry!(
+                   message_id,
+                   from_sequence,
+                   request,
+                   [],
+                   operation,
+                   lease: fenced
+                 )
+               end,
+               with_lock_scope: with_scope
+             )
+
+    {fenced, replacement}
   end
 
   @doc false

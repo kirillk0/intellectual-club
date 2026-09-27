@@ -4,7 +4,7 @@ defmodule IntellectualClub.Generation.StepRequestsPipelineTest do
   import IntellectualClub.StepRequestsFixtures
 
   alias IntellectualClub.Chat.ChatMessageStep
-  alias IntellectualClub.Generation.{Persistence, StepRequests}
+  alias IntellectualClub.Generation.{Lease, Persistence, StepRequests}
   alias IntellectualClub.Generation.StepRequests.{Codec, Reader}
 
   @traced [{Codec, :hash_iodata, 1}, {Codec, :normalize!, 1}, {Jsonpatch, :diff, 3}]
@@ -124,15 +124,30 @@ defmodule IntellectualClub.Generation.StepRequestsPipelineTest do
     assert first.request_snapshot.request == first.request
     assert first.request_snapshot.hash == first.step.request_hash
 
-    assert_raise Ash.Error.Invalid, ~r/runtime_request_mismatch/, fn ->
-      Persistence.persist_retry_error_and_start_next_step!(
-        message.id,
-        first.step.id,
-        source,
-        "retry",
-        previous_request: compact_request(999),
-        force_full: true
-      )
+    message
+    |> Ash.Changeset.for_update(
+      :set_generation_state,
+      %{status: :generating, token_count: 0, finished_at: nil},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    assert {:ok, lease} = Lease.acquire(message.id)
+
+    try do
+      assert_raise Ash.Error.Invalid, ~r/runtime_request_mismatch/, fn ->
+        Persistence.persist_retry_error_and_start_next_step!(
+          message.id,
+          first.step.id,
+          source,
+          "retry",
+          previous_request: compact_request(999),
+          force_full: true,
+          lease: lease
+        )
+      end
+    after
+      Lease.release(lease)
     end
 
     assert Ash.get!(ChatMessageStep, first.step.id, actor: actor).status == :waiting_provider

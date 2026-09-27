@@ -19,7 +19,9 @@ defmodule IntellectualClub.Chat.Changes.ValidateStepRequest do
         actor = changeset.context[:private][:actor]
 
         attrs =
-          Storage.validate_create!(step, actor, Changeset.get_argument(changeset, :request_base))
+          Storage.validate_create!(step, actor, Changeset.get_argument(changeset, :request_base),
+            lease: changeset.context[:generation_lease]
+          )
 
         Changeset.force_change_attributes(changeset, attrs)
       rescue
@@ -58,7 +60,10 @@ defmodule IntellectualClub.Chat.Changes.ValidateStepRequest do
                  do: raise(Error, reason: :logical_request_input_changed)
 
           actor = current.context[:private][:actor]
-          attrs = Storage.verify_logical_create!(plan, actor)
+
+          attrs =
+            Storage.verify_logical_create!(plan, actor, lease: current.context[:generation_lease])
+
           Changeset.force_change_attributes(current, attrs)
         rescue
           error in Error -> request_error(current, error)

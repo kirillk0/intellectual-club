@@ -18,25 +18,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
 
   @event [:intellectual_club, :generation, :persistence]
 
-  test "direct injection ArgumentError rejects only the command and the same provider finishes" do
-    fixture = fixture(test_reject_steering?: true) |> start_worker()
-    gate_operations(fixture, steering_reconciliation: :start, steering_reconciliation: :stop)
-    ref = command(fixture.worker, {:steer, "Rejected instruction"})
-
-    reconciliation = await_barrier(:steering_reconciliation, :start)
-    assert_fenced_operation(fixture, reconciliation)
-    assert_original_generation(fixture)
-    refute_receive {^ref, _}, 0
-    release(reconciliation)
-    reconciliation = await_barrier(:steering_reconciliation, :stop)
-    assert_original_generation(fixture)
-    release(reconciliation)
-
-    assert %ArgumentError{} = assert_command_rejected(ref)
-    assert_original_generation(fixture)
-    finish_original(fixture)
-  end
-
   test "23514 steering-item rollback leaves the original step, request and provider untouched" do
     assert_provider_rollback("23514", 1)
   end
@@ -49,66 +30,26 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     assert_provider_rollback("57P03", 1)
   end
 
-  test "one deadlock retries publication only and keeps the old stream until commit acknowledgment" do
+  test "one deadlock retries queued publication only and keeps the old stream until commit acknowledgment" do
     fixture = fixture() |> start_worker()
     inject_steering_sql_failure(fixture, "40P01", 1)
-    gate_operations(fixture, steer_provider: :start, steer_provider: :stop)
-    ref = command(fixture.worker, {:steer, "Committed after deadlock"})
+    gate_operations(fixture, queued_steers: :start, queued_steers: :stop)
+    queued = enqueue_steer(fixture, "Committed after deadlock")
+    send(fixture.worker, :consume_queued_steers)
 
-    publication = await_barrier(:steer_provider, :start)
+    publication = await_barrier(:queued_steers, :start)
     assert_original_generation(fixture)
     release(publication)
-    publication = await_barrier(:steer_provider, :stop)
+    publication = await_barrier(:queued_steers, :stop)
     assert sql_attempts() == 2
     assert_live_source(fixture)
     assert_successor(fixture, "Committed after deadlock")
     assert_one_injection(fixture, ["Committed after deadlock"])
-    refute_receive {^ref, _}, 0
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, fixture.actor)
     release(publication)
 
-    assert_command_applied(ref, fixture)
     finish_successor(fixture, "Committed after deadlock")
     assert sql_attempts() == 2
-  end
-
-  test "tools-phase SQL rollback preserves tool execution and its single durable receipt" do
-    fixture = fixture() |> with_web_tool() |> start_worker()
-    inject_steering_sql_failure(fixture, "23514", 100)
-    completed_handler = gate_operations(fixture, provider_completed: :stop)
-
-    gate_operations(fixture,
-      steer_tools: :start,
-      steering_reconciliation: :stop,
-      tool_followup: :start
-    )
-
-    send(fixture.provider, {:complete, :tools})
-    completed = await_barrier(:provider_completed, :stop)
-    assert length(Persistence.list_missing_tool_calls!(fixture.step_id)) == 1
-    ref = command(fixture.worker, {:steer, "Rejected tools instruction"})
-    assert length(:sys.get_state(fixture.worker).pending_steers) == 1
-    :telemetry.detach(completed_handler)
-    release(completed)
-
-    publication = await_barrier(:steer_tools, :start)
-    assert :sys.get_state(fixture.worker).tool_task == nil
-    refute_receive {:web_request, _, _, _}, 0
-    release(publication)
-    reconciliation = await_barrier(:steering_reconciliation, :stop)
-    assert_fenced_operation(fixture, reconciliation)
-    assert_no_recovery(fixture)
-    assert steering_items(fixture) == []
-    assert Persistence.load_step_for_followup!(fixture.step_id).results == []
-    assert length(Persistence.list_missing_tool_calls!(fixture.step_id)) == 1
-    release(reconciliation)
-    assert_command_rejected(ref)
-
-    assert_web_tool_called()
-    followup = await_barrier(:tool_followup, :start)
-    receipt = assert_tool_receipt(fixture)
-    release(followup)
-    finish_tool_followup(fixture, receipt)
-    assert sql_attempts() == 1
   end
 
   test "queued rejection blocks only the selected unchanged snapshot and never becomes a follow-up" do
@@ -223,49 +164,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     end
   end
 
-  test "lost direct steering ACK before or after commit is reconciled without stopping the Worker" do
-    for stage <- [:start, :stop] do
-      fixture = fixture() |> start_worker()
-      gate_operations(fixture, [{:steer_provider, stage}])
-      gate_operations(fixture, steering_reconciliation: :start, steering_reconciliation: :stop)
-      ref = command(fixture.worker, {:steer, "Lost ACK instruction"})
-      publication = await_barrier(:steer_provider, stage)
-      operation_id = :sys.get_state(fixture.worker).steering_attempt.id
-      assert {:ok, ^operation_id} = Ecto.UUID.cast(operation_id)
-      assert_live_source(fixture)
-
-      if stage == :stop do
-        assert_successor(fixture, "Lost ACK instruction")
-        assert_operation_receipt(fixture, operation_id)
-      else
-        assert_original_generation(fixture)
-      end
-
-      crash_at_boundary(publication)
-      reconciliation = await_barrier(:steering_reconciliation, :start)
-      assert_fenced_operation(fixture, reconciliation)
-      assert :sys.get_state(fixture.worker).steering_attempt.id == operation_id
-      assert_live_source(fixture)
-      refute_receive {^ref, _}, 0
-      release(reconciliation)
-      reconciliation = await_barrier(:steering_reconciliation, :stop)
-      assert_live_source(fixture)
-      assert_no_recovery(fixture)
-      release(reconciliation)
-
-      if stage == :start do
-        assert_command_rejected(ref)
-        assert_original_generation(fixture)
-        finish_original(fixture)
-      else
-        assert_command_applied(ref, fixture)
-        finish_successor(fixture, "Lost ACK instruction")
-        assert_operation_receipt(fixture, operation_id)
-        assert_one_injection(fixture, ["Lost ACK instruction"])
-      end
-    end
-  end
-
   test "lost queued steering ACK preserves either the old stream or one committed successor" do
     for stage <- [:start, :stop] do
       fixture = fixture() |> start_worker()
@@ -274,7 +172,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
       queued = enqueue_steer(fixture, "Lost queued ACK")
       send(fixture.worker, :consume_queued_steers)
       publication = await_barrier(:queued_steers, stage)
-      operation_id = :sys.get_state(fixture.worker).steering_attempt.id
       assert_live_source(fixture)
       :telemetry.detach(queued_handler)
       crash_at_boundary(publication)
@@ -302,7 +199,7 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
         assert persisted_queue.status == :delivered
         [item] = steering_items(fixture)
         assert persisted_queue.steering_item_id == item.id
-        assert_operation_receipt(fixture, operation_id)
+        assert items(fixture, :other) == []
         release(reconciliation)
         finish_successor(fixture, "Lost queued ACK")
         assert {:ok, after_completion} = QueuedMessages.get(queued.id, fixture.actor)
@@ -311,147 +208,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
         assert_one_injection(fixture, ["Lost queued ACK"])
       end
     end
-  end
-
-  test "lost tools-steering commit ACK installs one steering item and one follow-up" do
-    fixture = fixture() |> with_web_tool() |> start_worker()
-    completed_handler = gate_operations(fixture, provider_completed: :stop)
-
-    gate_operations(fixture,
-      steer_tools: :stop,
-      steering_reconciliation: :stop,
-      tool_followup: :start
-    )
-
-    send(fixture.provider, {:complete, :tools})
-    completed = await_barrier(:provider_completed, :stop)
-    ref = command(fixture.worker, {:steer, "Committed tools instruction"})
-    assert length(:sys.get_state(fixture.worker).pending_steers) == 1
-    :telemetry.detach(completed_handler)
-    release(completed)
-    publication = await_barrier(:steer_tools, :stop)
-    operation_id = :sys.get_state(fixture.worker).steering_attempt.id
-    [item] = steering_items(fixture)
-    assert item.chat_message_step_id == fixture.step_id
-    assert :sys.get_state(fixture.worker).tool_task == nil
-    crash_at_boundary(publication)
-
-    reconciliation = await_barrier(:steering_reconciliation, :stop)
-    assert_fenced_operation(fixture, reconciliation)
-    assert :sys.get_state(fixture.worker).tool_task == nil
-    assert_no_recovery(fixture)
-    assert_tools_operation_receipt(item, operation_id)
-    release(reconciliation)
-    assert_receive {^ref, {:ok, %{step_id: step_id, item_id: item_id}}}, 5_000
-    assert step_id == fixture.step_id
-    assert item_id == item.id
-    assert_web_tool_called()
-    followup = await_barrier(:tool_followup, :start)
-    receipt = assert_tool_receipt(fixture)
-    release(followup)
-    finish_tool_followup(fixture, receipt, "Committed tools instruction")
-    assert Enum.map(steering_items(fixture), & &1.id) == [item.id]
-  end
-
-  test "concurrent cancel with a lost command ACK cancels the canonical old or receiving step" do
-    for stage <- [:start, :stop] do
-      fixture = fixture() |> start_worker()
-      gate_operations(fixture, [{:steer_provider, stage}])
-      gate_operations(fixture, steering_reconciliation: :start, cancel: :start)
-      steer_ref = command(fixture.worker, {:steer, "Cancel race instruction"})
-      publication = await_barrier(:steer_provider, stage)
-      crash_at_boundary(publication)
-      reconciliation = await_barrier(:steering_reconciliation, :start)
-      assert_fenced_operation(fixture, reconciliation)
-      cancel_ref = command(fixture.worker, :cancel_and_wait)
-      assert :sys.get_state(fixture.worker).cancel_requested?
-      refute_receive {^cancel_ref, _}, 0
-      release(reconciliation)
-
-      cancellation = await_barrier(:cancel, :start)
-      state = :sys.get_state(fixture.worker)
-      assert state.stream_task == nil
-      assert state.failure_plan == nil
-      assert_no_new_provider(fixture)
-
-      if stage == :start do
-        assert_command_rejected(steer_ref)
-        [source] = steps(fixture)
-        assert source.id == fixture.step_id
-        assert source.status == :waiting_provider
-        assert cancellation.identity.step_id == source.id
-        assert state.runtime_step.id == source.id
-        assert steering_items(fixture) == []
-      else
-        assert_command_applied(steer_ref, fixture)
-        receiving = assert_successor(fixture, "Cancel race instruction")
-        assert cancellation.identity.step_id == receiving.id
-        assert state.runtime_step.id == receiving.id
-      end
-
-      assert_no_recovery(fixture)
-      release(cancellation)
-      assert_receive {^cancel_ref, :ok}, 5_000
-      assert_stopped(fixture, :canceled)
-      assert Enum.all?(steps(fixture), &(&1.status == :canceled))
-
-      assert StepRequests.request_for_step!(fixture.step_id, actor: fixture.actor) ==
-               fixture.context.request_payload
-
-      assert_no_new_provider(fixture)
-    end
-  end
-
-  test "four reconciliation task deaths retain the command and deferred provider completion" do
-    fixture = fixture(test_reject_steering?: true) |> start_worker()
-    gate_operations(fixture, steering_reconciliation: :start, provider_completed: :stop)
-    ref = command(fixture.worker, {:steer, "Rejected during reconciliation outage"})
-    reconciliation = await_barrier(:steering_reconciliation, :start)
-    operation_id = :sys.get_state(fixture.worker).steering_attempt.id
-    complete_provider(fixture, :answer)
-    deferred = :sys.get_state(fixture.worker).deferred_provider_event
-    assert deferred != nil
-
-    Enum.reduce(1..4, reconciliation, fn attempt, barrier ->
-      state = crash_and_observe_retry(fixture, barrier)
-      {timer, token} = state.steering_retry_timer
-      Process.cancel_timer(timer)
-      assert state.steering_attempt.id == operation_id
-      assert state.steering_attempt.retries == attempt
-      assert state.failure_plan == nil
-      assert state.failure_retry_timer == nil
-      assert state.persistence_op == nil
-      assert state.deferred_provider_event == deferred
-      assert state.runtime_step.id == fixture.step_id
-      assert_no_recovery(fixture)
-      refute_receive {^ref, _}, 0
-      assert_no_new_provider(fixture)
-
-      send(fixture.worker, {:retry_steering_reconciliation, make_ref()})
-      assert :sys.get_state(fixture.worker).persistence_op == nil
-      send(fixture.worker, {:retry_steering_reconciliation, token})
-      next = await_barrier(:steering_reconciliation, :start)
-      assert_fenced_operation(fixture, next)
-      next
-    end)
-    |> release()
-
-    assert_command_rejected(ref)
-    completed = await_barrier(:provider_completed, :stop)
-    [source] = steps(fixture)
-    assert source.id == fixture.step_id
-    assert source.response_final
-    assert :sys.get_state(fixture.worker).deferred_provider_event == nil
-
-    assert StepRequests.request_for_step!(source.id, actor: fixture.actor) ==
-             fixture.context.request_payload
-
-    assert steering_items(fixture) == []
-    assert_no_recovery(fixture)
-    release(completed)
-    assert_stopped(fixture, :done)
-    assert_answer(fixture, "Committed answer")
-    assert_no_new_provider(fixture)
   end
 
   test "enqueue validation and queue-only SQL failure do not touch the running provider" do
@@ -522,44 +278,13 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, 5_000
   end
 
-  defp crash_and_observe_retry(fixture, barrier) do
-    worker = fixture.worker
-    ref = :sys.get_state(worker).persistence_op.task.ref
-    :erlang.trace(worker, true, [:receive])
-
-    try do
-      crash_at_boundary(barrier)
-      assert_receive {:trace, ^worker, :receive, {:DOWN, ^ref, :process, _pid, :killed}}, 5_000
-      :sys.get_state(worker)
-    after
-      :erlang.trace(worker, false, [:receive])
-    end
-  end
-
-  defp complete_provider(fixture, completion) do
-    worker = fixture.worker
-    stream_ref = :sys.get_state(worker).stream_ref
-    :erlang.trace(worker, true, [:receive])
-
-    try do
-      send(fixture.provider, {:complete, completion})
-
-      assert_receive {:trace, ^worker, :receive,
-                      {:provider_event, ^stream_ref, {:response_complete, _meta}}},
-                     5_000
-
-      _ = :sys.get_state(worker)
-    after
-      :erlang.trace(worker, false, [:receive])
-    end
-  end
-
   defp assert_provider_rollback(code, attempts) do
     fixture = fixture() |> start_worker()
     inject_steering_sql_failure(fixture, code, 100)
-    gate_operations(fixture, steer_provider: :start, steering_reconciliation: :stop)
-    ref = command(fixture.worker, {:steer, "Rolled back instruction"})
-    publication = await_barrier(:steer_provider, :start)
+    gate_operations(fixture, queued_steers: :start, steering_reconciliation: :stop)
+    queued = enqueue_steer(fixture, "Rolled back instruction")
+    send(fixture.worker, :consume_queued_steers)
+    publication = await_barrier(:queued_steers, :start)
     assert_original_generation(fixture)
     release(publication)
     reconciliation = await_barrier(:steering_reconciliation, :stop)
@@ -567,7 +292,16 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     assert sql_attempts() == attempts
     assert_original_generation(fixture)
     release(reconciliation)
-    assert_command_rejected(ref)
+
+    if code == "57P03" do
+      assert {:ok, %{status: :pending, blocked_reason: nil}} =
+               QueuedMessages.get(queued.id, fixture.actor)
+
+      assert {:ok, _canceled} = QueuedMessages.cancel(queued.id, fixture.actor)
+    else
+      assert_blocked_steer(fixture, queued)
+    end
+
     assert_original_generation(fixture)
     assert_one_injection(fixture, ["Rolled back instruction"])
     finish_original(fixture)
@@ -631,30 +365,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     if status == :generating do
       assert message.generation_fence_token == fixture.lease.fence_token
     end
-  end
-
-  defp command(worker, command) do
-    ref = make_ref()
-    send(worker, {:"$gen_call", {self(), ref}, command})
-    ref
-  end
-
-  defp assert_command_rejected(ref) do
-    assert_receive {^ref, {:error, {:steering_failed, reason}}}, 5_000
-    refute is_nil(reason)
-    reason
-  end
-
-  defp assert_command_applied(ref, fixture) do
-    assert_receive {^ref, {:ok, %{message_id: message_id, step_id: step_id, item_id: item_id}}},
-                   5_000
-
-    assert message_id == fixture.message.id
-    [source, receiving] = steps(fixture)
-    assert source.id == fixture.step_id
-    assert step_id == receiving.id
-    [item] = steering_items(fixture)
-    assert item.id == item_id
   end
 
   defp assert_successor(fixture, instruction) do
@@ -752,26 +462,6 @@ defmodule IntellectualClub.Generation.SteeringFailureWorkerTest do
     message_id = fixture.message.id
     assert_receive {:steering_attempted, ^message_id, ^expected}, 2_000
     refute_receive {:steering_attempted, ^message_id, _}, 0
-  end
-
-  defp assert_operation_receipt(fixture, operation_id) do
-    proofs =
-      fixture
-      |> items(:other)
-      |> Enum.flat_map(& &1.contents)
-      |> Enum.filter(&(&1.kind == :opaque))
-      |> Enum.map(&Map.get(&1.content_json || %{}, "generation_transition"))
-      |> Enum.reject(&is_nil/1)
-
-    assert [%{"steering_operation_id" => ^operation_id, "next_step_id" => next_id}] = proofs
-    assert next_id == List.last(steps(fixture)).id
-  end
-
-  defp assert_tools_operation_receipt(item, operation_id) do
-    assert Enum.count(item.contents, fn content ->
-             content.kind == :opaque and
-               content.content_json["steering_operation_id"] == operation_id
-           end) == 1
   end
 
   defp enqueue_steer(fixture, text) do

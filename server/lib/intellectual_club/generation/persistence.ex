@@ -67,6 +67,7 @@ defmodule IntellectualClub.Generation.Persistence do
       when is_integer(message_id) and is_integer(sequence) and sequence > 0 and is_list(opts) do
     actor = actor_for_message!(message_id)
     message = load_message!(message_id, actor)
+    ensure_request_step_creation_allowed!(message, sequence, opts)
 
     PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
       prepared = prepare_request_step!(message_id, sequence, prepared, actor, opts)
@@ -76,7 +77,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
         if get_step_by_sequence(message_id, sequence, actor) do
           raise ArgumentError,
-                "Step already exists; use its proven transition instead of resetting it"
+                "Step already exists and cannot be reset"
         end
 
         step = insert_request_step!(prepared, actor)
@@ -403,49 +404,6 @@ defmodule IntellectualClub.Generation.Persistence do
     :ok
   end
 
-  def persist_steering_before_provider!(message_id, step_id, text, raw_request, opts \\ [])
-      when is_integer(message_id) and is_integer(step_id) and is_binary(text) and
-             is_map(raw_request) do
-    transition_request!(
-      message_id,
-      step_id,
-      raw_request,
-      :steering,
-      [%{text: text}],
-      opts,
-      &interrupt_step_for_steering!/2
-    )
-  end
-
-  def persist_steering_after_provider!(message_id, step_id, text, opts \\ [])
-      when is_integer(message_id) and is_integer(step_id) and is_binary(text) do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      _message = lock_message!(message_id, actor)
-      step = load_step_with_items!(step_id, actor)
-      ensure_step_belongs_to_message!(step, message_id)
-
-      steering =
-        create_steering_item!(
-          step,
-          text,
-          :after_response,
-          actor,
-          Keyword.get(opts, :steering_operation_id)
-        )
-
-      step = load_step_for_runtime!(step.id, actor, opts)
-
-      %{
-        item_id: steering.id,
-        step: step,
-        runtime_step:
-          runtime_step_from_persisted_step(step, &(&1.type not in [:tool_result, :artifact]))
-      }
-    end)
-  end
-
   @doc "Atomically delivers queued steering into a new receiving provider step."
   def persist_queued_steering_before_provider!(
         message_id,
@@ -504,6 +462,7 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp transition_request!(message_id, step_id, raw_request, kind, specs, opts, finish_previous!) do
+    require_generation_lease!(message_id, opts)
     actor = actor_for_message!(message_id)
     message = load_message!(message_id, actor)
     previous_step = load_step!(step_id, actor)
@@ -535,16 +494,9 @@ defmodule IntellectualClub.Generation.Persistence do
         step = load_step_with_items!(step_id, actor)
         ensure_step_belongs_to_message!(step, message_id)
 
-        proof =
-          transition_proof(kind, specs)
-          |> maybe_put_steering_operation(Keyword.get(opts, :steering_operation_id))
-
         case get_step_by_sequence(message_id, next_sequence, actor) do
-          %ChatMessageStep{} = existing ->
-            ensure_transition_matches!(step, existing, prepared.request_snapshot, proof, actor)
-
-            transition_result(existing, prepared.request, actor)
-            |> Map.merge(prepared_result(prepared))
+          %ChatMessageStep{} ->
+            raise ArgumentError, "Generation step successor already exists"
 
           nil ->
             ensure_transition_allowed!(step, kind)
@@ -582,8 +534,6 @@ defmodule IntellectualClub.Generation.Persistence do
                 end)
               end
 
-              record_transition!(step, next_step, proof, actor)
-
               transition_result(next_step, prepared.request, actor)
               |> Map.merge(prepared_result(prepared))
             end
@@ -601,66 +551,6 @@ defmodule IntellectualClub.Generation.Persistence do
     unless step.status in allowed do
       raise ArgumentError, "Cannot transition #{inspect(step.status)} step via #{kind}"
     end
-  end
-
-  defp transition_proof(kind, specs) do
-    %{
-      "kind" => to_string(kind),
-      "steering" =>
-        Enum.map(specs, fn spec ->
-          %{"id" => Map.get(spec, :id), "text" => Map.fetch!(spec, :text)}
-        end)
-    }
-  end
-
-  defp ensure_transition_matches!(previous, existing, snapshot, proof, actor) do
-    expected =
-      Map.merge(proof, %{"next_step_id" => existing.id, "next_sequence" => existing.sequence})
-
-    proven? =
-      Enum.any?(ordered_items(previous), fn item ->
-        item.type == :other and
-          Enum.any?(ordered_contents(item), fn content ->
-            content.kind == :opaque and
-              content.content_json == %{"generation_transition" => expected}
-          end)
-      end)
-
-    matches? =
-      if is_binary(existing.request_hash),
-        do: existing.request_hash == snapshot.hash,
-        else:
-          StepRequests.equal?(
-            StepRequests.request_for_step!(existing.id, actor: actor),
-            snapshot.request
-          )
-
-    unless proven? and matches? do
-      raise ArgumentError, "Conflicting generation step transition"
-    end
-  end
-
-  defp record_transition!(previous, next_step, proof, actor) do
-    previous = load_step_with_items!(previous.id, actor)
-
-    item =
-      create_item!(
-        %{
-          chat_message_step_id: previous.id,
-          sequence: next_item_sequence(previous.items),
-          type: :other
-        },
-        actor
-      )
-
-    payload =
-      Map.merge(proof, %{"next_step_id" => next_step.id, "next_sequence" => next_step.sequence})
-
-    create_contents!(
-      item,
-      [%{sequence: 1, kind: :opaque, content_json: %{"generation_transition" => payload}}],
-      actor
-    )
   end
 
   defp transition_result(step, request, actor) do
@@ -698,94 +588,39 @@ defmodule IntellectualClub.Generation.Persistence do
     }
   end
 
-  @doc "Reconciles one steering publication without replaying or replacing its source step."
-  def reconcile_steering!(message_id, step_id, operation_id, placement, opts \\ [])
-      when is_integer(message_id) and is_integer(step_id) and is_binary(operation_id) and
-             placement in [:before_response, :after_response, :followup] do
+  @doc "Reads the canonical outcome of one generation step transition without replaying it."
+  def reconcile_step_transition!(message_id, step_id, placement, opts \\ [])
+      when is_integer(message_id) and is_integer(step_id) and
+             placement in [:before_response, :followup] and is_list(opts) do
     actor = actor_for_message!(message_id)
 
-    transaction!(fn ->
+    require_generation_lease!(message_id, opts)
+
+    request_transaction!(message_id, opts, fn ->
       _message = lock_message!(message_id, actor)
       step = load_step_with_items!(step_id, actor)
       ensure_step_belongs_to_message!(step, message_id)
-      reconcile_steering_step!(step, operation_id, placement, actor, opts)
+      successor = get_step_by_sequence(message_id, step.sequence + 1, actor)
+
+      terminal_status = if placement == :followup, do: :done, else: :canceled
+      source_status = if placement == :followup, do: :waiting_tools, else: :waiting_provider
+
+      case {successor, step.status} do
+        {%ChatMessageStep{} = next_step, ^terminal_status} ->
+          request = StepRequests.request_for_step!(next_step.id, actor: actor)
+          {:applied, transition_result(next_step, request, actor)}
+
+        {nil, ^source_status} ->
+          :not_applied
+
+        {nil, :done} when placement == :followup ->
+          :not_applied
+
+        _other ->
+          raise ArgumentError, "Generation step transition conflicts with canonical state"
+      end
     end)
   end
-
-  defp reconcile_steering_step!(step, operation_id, placement, actor, _opts)
-       when placement in [:before_response, :followup] do
-    transition =
-      step
-      |> ordered_items()
-      |> Enum.filter(&(&1.type == :other))
-      |> Enum.flat_map(&ordered_contents/1)
-      |> Enum.find_value(fn content ->
-        case content.content_json do
-          %{"generation_transition" => %{"steering_operation_id" => ^operation_id} = proof} ->
-            proof
-
-          _other ->
-            nil
-        end
-      end)
-
-    successor = get_step_by_sequence(step.chat_message_id, step.sequence + 1, actor)
-
-    terminal_status = if placement == :followup, do: :done, else: :canceled
-    source_status = if placement == :followup, do: :waiting_tools, else: :waiting_provider
-
-    case {transition, successor, step.status} do
-      {%{"next_step_id" => next_id, "next_sequence" => sequence},
-       %ChatMessageStep{id: next_id, sequence: sequence} = next_step, ^terminal_status} ->
-        request = StepRequests.request_for_step!(next_step.id, actor: actor)
-        {:applied, transition_result(next_step, request, actor)}
-
-      {nil, nil, ^source_status} ->
-        :not_applied
-
-      {nil, nil, :done} when placement == :followup ->
-        :not_applied
-
-      _other ->
-        raise ArgumentError, "Steering reconciliation conflicts with the canonical provider step"
-    end
-  end
-
-  defp reconcile_steering_step!(step, operation_id, :after_response, actor, opts) do
-    steering =
-      step
-      |> ordered_items()
-      |> Enum.filter(&(&1.type == :steering))
-      |> Enum.find(fn item ->
-        Enum.any?(ordered_contents(item), fn content ->
-          match?(%{"steering_operation_id" => ^operation_id}, content.content_json)
-        end)
-      end)
-
-    cond do
-      steering ->
-        step = load_step_for_runtime!(step.id, actor, opts)
-
-        {:applied,
-         %{
-           item_id: steering.id,
-           step: step,
-           runtime_step:
-             runtime_step_from_persisted_step(step, &(&1.type not in [:tool_result, :artifact]))
-         }}
-
-      step.status == :waiting_tools ->
-        :not_applied
-
-      true ->
-        raise ArgumentError, "Steering reconciliation conflicts with the canonical tools step"
-    end
-  end
-
-  defp maybe_put_steering_operation(map, nil), do: map
-
-  defp maybe_put_steering_operation(map, operation_id) when is_binary(operation_id),
-    do: Map.put(map, "steering_operation_id", operation_id)
 
   defp interrupt_step_for_steering!(step, actor) do
     replace_step_items!(step, [], actor)
@@ -838,17 +673,6 @@ defmodule IntellectualClub.Generation.Persistence do
     |> ordered_items()
     |> Enum.filter(&(&1.type == :steering))
     |> Enum.map(&steering_item_payload/1)
-  end
-
-  def restore_steering_specs!(step_id, specs) when is_integer(step_id) and is_list(specs) do
-    actor = actor_for_step!(step_id)
-
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-      restore_steering_specs_in_transaction!(step, specs, actor)
-    end)
-
-    :ok
   end
 
   def persist_tool_result!(message_id, step_id, %ToolCall{} = call, result)
@@ -1624,13 +1448,7 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  defp create_steering_item!(
-         %ChatMessageStep{} = step,
-         text,
-         placement,
-         actor,
-         operation_id \\ nil
-       )
+  defp create_steering_item!(%ChatMessageStep{} = step, text, placement, actor)
        when is_binary(text) and placement in [:before_response, :after_response] do
     step = load_step_with_items!(step, actor)
 
@@ -1684,11 +1502,7 @@ defmodule IntellectualClub.Generation.Persistence do
           sequence: @opaque_sequence,
           kind: :opaque,
           content_text: "",
-          content_json:
-            maybe_put_steering_operation(
-              %{"placement" => Atom.to_string(placement)},
-              operation_id
-            ),
+          content_json: %{"placement" => Atom.to_string(placement)},
           file_id: nil
         }
       ],
@@ -2622,6 +2436,24 @@ defmodule IntellectualClub.Generation.Persistence do
     %User{id: step.owner_id}
   end
 
+  defp ensure_request_step_creation_allowed!(
+         %ChatMessage{status: :generating, id: message_id},
+         sequence,
+         opts
+       )
+       when sequence > 1 do
+    require_generation_lease!(message_id, opts)
+  end
+
+  defp ensure_request_step_creation_allowed!(%ChatMessage{}, _sequence, _opts), do: :ok
+
+  defp require_generation_lease!(message_id, opts) do
+    case Keyword.get(opts, :lease) do
+      %Lease{message_id: ^message_id, fence_token: token} when is_binary(token) -> :ok
+      _other -> raise ArgumentError, "Generation step transition requires a fenced lease"
+    end
+  end
+
   defp request_transaction!(message_id, opts, fun) do
     # Retry is owned by the actual Ash transaction boundary, not preparation or
     # cleanup. Nested transactions propagate to that owner without local retry.
@@ -2630,14 +2462,23 @@ defmodule IntellectualClub.Generation.Persistence do
         transaction!(fun)
 
       %Lease{message_id: ^message_id} = lease ->
-        case Lease.with_fence(lease, fn -> transaction!(fun) end, require_generating?: true) do
-          {:ok, result} ->
-            result
+        cond do
+          Lease.registered?(lease) ->
+            case Lease.with_fence(lease, fn -> transaction!(fun) end, require_generating?: true) do
+              {:ok, result} ->
+                result
 
-          {:error, reason} ->
-            if PersistenceFailure.lease_lost?(reason),
-              do: exit({:generation_lease_lost, reason}),
-              else: raise(PersistenceFailure.new(reason, operation: :request_publication))
+              {:error, reason} ->
+                if PersistenceFailure.lease_lost?(reason),
+                  do: exit({:generation_lease_lost, reason}),
+                  else: raise(PersistenceFailure.new(reason, operation: :request_publication))
+            end
+
+          Lease.authorizes?(lease) and Ash.DataLayer.in_transaction?(ChatMessageStep) ->
+            transaction!(fun)
+
+          true ->
+            exit({:generation_lease_lost, :lease_lost})
         end
 
       _other ->

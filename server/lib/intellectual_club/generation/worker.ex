@@ -82,7 +82,6 @@ defmodule IntellectualClub.Generation.Worker do
     cancel_requested?: false,
     lease_lost?: false,
     cancel_waiters: [],
-    pending_steers: [],
     queue_dirty?: false
   ]
 
@@ -109,10 +108,6 @@ defmodule IntellectualClub.Generation.Worker do
   @doc false
   def global_name(message_id) when is_integer(message_id) do
     {__MODULE__, :message, message_id}
-  end
-
-  def steer(pid, text) when is_binary(text) do
-    GenServer.call(pid, {:steer, text}, 30_000)
   end
 
   def queue_changed(pid) when is_pid(pid) do
@@ -285,7 +280,8 @@ defmodule IntellectualClub.Generation.Worker do
      end)}
   end
 
-  def handle_continue(:start_stream, state), do: begin_queued_steers(state, :start_stream)
+  def handle_continue(:start_stream, state),
+    do: begin_queued_steers(state, {:start_stream, :queue_checked})
 
   def handle_continue(:resume_waiting_tools, state) do
     {:noreply,
@@ -595,7 +591,6 @@ defmodule IntellectualClub.Generation.Worker do
       state = %{state | persistence_op: nil, persistence_action: nil}
 
       if state.lease_lost? and not terminal_acknowledgement?(action, result) do
-        reply_failed_steering(action, :generation_not_active)
         stop_obsolete_owner(state)
       else
         persistence_finished(state, action, result)
@@ -615,7 +610,6 @@ defmodule IntellectualClub.Generation.Worker do
     state = %{state | persistence_op: nil, persistence_action: nil}
 
     if state.lease_lost? do
-      reply_failed_steering(action, :generation_not_active)
       stop_obsolete_owner(state)
     else
       operation_failed(state, action, PersistenceFailure.task_down(reason, action_kind(action)))
@@ -756,20 +750,6 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def handle_call(:cancel_and_wait, from, state), do: request_cancel(state, from)
 
-  def handle_call({:steer, text}, from, state) do
-    cond do
-      text == "" ->
-        {:reply, {:error, :empty_steering}, state}
-
-      state.status != :generating or state.cancel_requested? or terminal_operation?(state) ->
-        {:reply, {:error, :generation_not_active}, state}
-
-      true ->
-        state = %{state | pending_steers: state.pending_steers ++ [{from, text}]}
-        advance(state, state.continuation)
-    end
-  end
-
   @impl true
   def handle_call(:get_current_state, _from, state) do
     {:reply, public_snapshot(state), state}
@@ -836,12 +816,12 @@ defmodule IntellectualClub.Generation.Worker do
     state = %{state | queue_dirty?: false, continuation: continuation}
 
     {:noreply,
-     begin_steering(state, action, :before_response, fn operation_id ->
-       consume_queued_steers_waiting_provider(state, operation_id)
+     begin_step_transition(state, action, :before_response, fn ->
+       consume_queued_steers_waiting_provider(state)
      end)}
   end
 
-  defp consume_queued_steers_waiting_provider(state, operation_id) do
+  defp consume_queued_steers_waiting_provider(state) do
     case read_pending_steers(state) do
       {:ok, queued_messages} ->
         specs = queued_steering_specs(queued_messages)
@@ -863,7 +843,7 @@ defmodule IntellectualClub.Generation.Worker do
                     state.runtime_step.id,
                     specs,
                     injected.raw_request,
-                    Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
+                    request_step_options(state)
                   )
                 end)
               end
@@ -924,75 +904,10 @@ defmodule IntellectualClub.Generation.Worker do
     |> Enum.sort_by(& &1.id)
   end
 
-  defp steer_waiting_provider(state, text, from) do
-    # Retain already received usage without canceling the live request or
-    # consuming its deferred terminal event before publication is acknowledged.
-    state = absorb_deferred_provider_meta(state)
-
-    retry_pending? =
-      not is_nil(state.retry_timer_ref) or match?({:backoff, _delay}, state.continuation)
-
-    {:noreply,
-     begin_steering(
-       state,
-       {:steer_provider, from, retry_pending?},
-       :before_response,
-       fn operation_id ->
-         with {:ok, injected} <-
-                inject_steering_request(state, state.runtime_step.raw_request, [
-                  %{text: text, placement: :before_response}
-                ]) do
-           safe_request_persist_value(state, :steering_before_response, fn ->
-             Persistence.persist_steering_before_provider!(
-               state.context.message_id,
-               state.runtime_step.id,
-               text,
-               injected.raw_request,
-               Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
-             )
-           end)
-         end
-       end
-     )}
-  end
-
-  defp steer_waiting_tools(state, text, from) do
-    {:noreply,
-     begin_steering(state, {:steer_tools, from}, :after_response, fn operation_id ->
-       with {:ok, persisted} <-
-              safe_persist_value(state, :steering_handoff_check, fn ->
-                Persistence.load_step_for_followup!(state.runtime_step.id,
-                  raw_request: state.runtime_step.raw_request
-                )
-              end),
-            false <- Enum.any?(persisted.tool_calls, &handoff_tool_call?(state, &1)),
-            {:ok, _validated} <-
-              inject_steering_request(state, state.runtime_step.raw_request, [
-                %{text: text, placement: :after_response}
-              ]) do
-         safe_persist_value(state, :steering_after_response, fn ->
-           Persistence.persist_steering_after_provider!(
-             state.context.message_id,
-             state.runtime_step.id,
-             text,
-             raw_request: state.runtime_step.raw_request,
-             steering_operation_id: operation_id
-           )
-         end)
-       else
-         true -> {:error, :terminal_handoff_in_progress}
-         {:error, reason} -> {:error, reason}
-       end
-     end)}
-  end
-
-  defp begin_steering(state, action, placement, fun) do
-    operation_id = Ecto.UUID.generate()
-
+  defp begin_step_transition(state, action, placement, fun) when is_function(fun, 0) do
     state = %{
       state
       | steering_attempt: %{
-          id: operation_id,
           step_id: state.runtime_step.id,
           placement: placement,
           action: action,
@@ -1000,7 +915,7 @@ defmodule IntellectualClub.Generation.Worker do
         }
     }
 
-    begin_persistence(state, action, fn -> fun.(operation_id) end)
+    begin_persistence(state, action, fun)
   end
 
   defp steering_result(fun, specs) do
@@ -1017,13 +932,12 @@ defmodule IntellectualClub.Generation.Worker do
   defp reconcile_steering(%{steering_attempt: attempt} = state) do
     {:noreply,
      begin_persistence(state, :steering_reconciliation, fn ->
-       safe_chat_persist_value(state, :steering_reconciliation, fn ->
-         Persistence.reconcile_steering!(
+       safe_request_persist_value(state, :steering_reconciliation, fn ->
+         Persistence.reconcile_step_transition!(
            state.context.message_id,
            attempt.step_id,
-           attempt.id,
            attempt.placement,
-           raw_request: state.runtime_step.raw_request
+           lease: state.lease
          )
        end)
      end)}
@@ -1057,7 +971,6 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp reject_steering_command(%{steering_attempt: attempt} = state) do
     state = %{state | steering_attempt: nil}
-    reply_failed_steering(attempt.action, attempt.failure.reason)
 
     case attempt.action do
       {:queued_steers, _continuation, _retry?, _started?} ->
@@ -1103,7 +1016,6 @@ defmodule IntellectualClub.Generation.Worker do
           not Map.get(attempt, :rejecting?, false) ->
         # Corrupt canonical state is not a rejected command. Fail closed rather
         # than trusting an old snapshot or replaying the publication.
-        reply_failed_steering(attempt.action, failure.reason)
         operation_failed(%{state | steering_attempt: nil}, :steering_canonical_state, failure)
 
       true ->
@@ -1141,16 +1053,6 @@ defmodule IntellectualClub.Generation.Worker do
       kind, reason -> {:error, {kind, reason}}
     end
   end
-
-  defp normalize_steering_error(reason)
-       when reason in [
-              :empty_steering,
-              :generation_not_active,
-              :terminal_handoff_in_progress
-            ],
-       do: reason
-
-  defp normalize_steering_error(reason), do: {:steering_failed, reason}
 
   defp finalize_done_from_step(state, step_id, opts \\ [])
        when is_integer(step_id) and is_list(opts) do
@@ -1825,7 +1727,6 @@ defmodule IntellectualClub.Generation.Worker do
     Lease.adopt(lease, owner)
   end
 
-  defp adopt_generation_lease(nil, _owner), do: :ok
   defp adopt_generation_lease(_lease, _owner), do: {:error, :invalid_generation_lease_owner}
 
   defp stop_provider_session(%{provider_session: nil} = state), do: state
@@ -1903,20 +1804,12 @@ defmodule IntellectualClub.Generation.Worker do
     Lease.with_fence(lease, fun)
   end
 
-  defp fenced_call(%__MODULE__{lease: nil}, fun) when is_function(fun, 0) do
-    {:ok, fun.()}
-  end
-
   defp chat_fenced_call(%__MODULE__{lease: %Lease{} = lease} = state, fun)
        when is_function(fun, 0) do
     Lease.with_chat_fence(lease, state.context.chat_id, fun,
       allowed_statuses: [:generating],
       required_role: :assistant
     )
-  end
-
-  defp chat_fenced_call(%__MODULE__{lease: nil}, fun) when is_function(fun, 0) do
-    {:ok, fun.()}
   end
 
   defp generation_fence_lost?(reason), do: reason in [:lease_lost, :lease_not_fenced]
@@ -2295,7 +2188,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp handle_tool_results(state, results, opts) when is_list(results) and is_list(opts) do
     {:noreply,
-     begin_steering(state, {:tool_followup, opts}, :followup, fn operation_id ->
+     begin_step_transition(state, {:tool_followup, opts}, :followup, fn ->
        with {:ok, persisted} <-
               safe_persist_value(state, :tool_results, fn ->
                 Persistence.load_step_for_followup!(state.runtime_step.id,
@@ -2307,7 +2200,7 @@ defmodule IntellectualClub.Generation.Worker do
              {:ok, {:handoff, payload}}
 
            nil ->
-             case prepare_tool_followup(state, persisted, operation_id) do
+             case prepare_tool_followup(state, persisted) do
                {:ok, _followup, next_step} -> {:ok, {:next_step, next_step}}
                {:error, reason} -> {:error, reason}
              end
@@ -2377,7 +2270,7 @@ defmodule IntellectualClub.Generation.Worker do
     inject_steering_request(state, followup.raw_request, steering_items)
   end
 
-  defp prepare_tool_followup(state, persisted, operation_id, attempt \\ 0) do
+  defp prepare_tool_followup(state, persisted, attempt \\ 0) do
     with {:ok, followup, queued_specs} <- build_followup_with_steering(state, persisted) do
       result =
         safe_request_persist_value(state, :step_done, fn ->
@@ -2387,7 +2280,7 @@ defmodule IntellectualClub.Generation.Worker do
               state.runtime_step.id,
               state.step_sequence + 1,
               followup.raw_request,
-              Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
+              request_step_options(state)
             )
           else
             Persistence.complete_step_and_start_next_with_queued_steering!(
@@ -2396,7 +2289,7 @@ defmodule IntellectualClub.Generation.Worker do
               state.step_sequence + 1,
               followup.raw_request,
               queued_specs,
-              Keyword.put(request_step_options(state), :steering_operation_id, operation_id)
+              request_step_options(state)
             )
           end
         end)
@@ -2406,10 +2299,10 @@ defmodule IntellectualClub.Generation.Worker do
           {:ok, followup, next_step}
 
         {:ok, {:error, :queued_steering_changed}} when attempt < 8 ->
-          prepare_tool_followup(state, persisted, operation_id, attempt + 1)
+          prepare_tool_followup(state, persisted, attempt + 1)
 
         {:error, :queued_steering_changed} when attempt < 8 ->
-          prepare_tool_followup(state, persisted, operation_id, attempt + 1)
+          prepare_tool_followup(state, persisted, attempt + 1)
 
         {:ok, {:error, reason}} ->
           {:error, {:steering_rejected, reason, queued_specs}}
@@ -2555,27 +2448,8 @@ defmodule IntellectualClub.Generation.Worker do
     retry_queued_steering(state)
   end
 
-  defp persistence_finished(state, {:steer_provider, _from, _retry?} = action, {:ok, persisted}) do
-    install_provider_steering(state, action, persisted)
-  end
-
   defp persistence_finished(state, {:interrupted_provider, action, persisted}, {:ok, :ok}) do
     finish_provider_steering(state, action, persisted)
-  end
-
-  defp persistence_finished(state, {:steer_tools, from}, {:ok, persisted}) do
-    state =
-      %{state | steering_attempt: nil}
-      |> install_runtime_step(persisted.runtime_step)
-      |> install_request_images(persisted)
-
-    reply_steering(from, state, persisted)
-    advance(state, state.continuation)
-  end
-
-  defp persistence_finished(state, {:steer_tools, from}, {:error, :terminal_handoff_in_progress}) do
-    GenServer.reply(from, {:error, :terminal_handoff_in_progress})
-    advance(%{state | steering_attempt: nil}, state.continuation)
   end
 
   defp persistence_finished(state, {:done, _step_id}, {:ok, effect}) do
@@ -2685,14 +2559,9 @@ defmodule IntellectualClub.Generation.Worker do
     # but never persist its interrupted answer/tool items or dispatch its tools.
     source_step = absorb_deferred_provider_meta(state).runtime_step
 
-    {attempt_delta, queued_steering_retry_attempt} =
-      case action do
-        {:queued_steers, _continuation, retry?, started?} ->
-          {if(started? and not retry?, do: 1, else: 0), 0}
-
-        {:steer_provider, _from, retry?} ->
-          {if(retry?, do: 0, else: 1), state.queued_steering_retry_attempt}
-      end
+    {:queued_steers, _continuation, retry?, started?} = action
+    attempt_delta = if started? and not retry?, do: 1, else: 0
+    queued_steering_retry_attempt = 0
 
     state =
       state
@@ -2726,14 +2595,9 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp finish_provider_steering(state, {:steer_provider, from, _retry?}, persisted) do
-    reply_steering(from, state, persisted)
-    advance(state, :start_stream)
-  end
-
   defp finish_provider_steering(state, {:queued_steers, _, _, _}, _persisted) do
     broadcast(state, {:steering, state.context.message_id})
-    advance(state, :start_stream)
+    advance(state, {:start_stream, :queue_checked})
   end
 
   defp steering_operation_failed(state, attempt, action, failure) do
@@ -2786,8 +2650,7 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp operation_failed(%{steering_attempt: %{} = attempt} = state, action, failure)
-       when is_tuple(action) and
-              elem(action, 0) in [:steer_provider, :steer_tools, :queued_steers] do
+       when is_tuple(action) and elem(action, 0) == :queued_steers do
     steering_operation_failed(state, attempt, action, failure)
   end
 
@@ -2798,7 +2661,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp operation_failed(state, action, %PersistenceFailure{} = failure) do
     failure = %{failure | operation: action_kind(action)}
     PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
-    reply_failed_steering(action, failure.kind)
 
     if failure.kind == :lease_lost do
       # An obsolete owner may neither terminalize nor mark the successor.
@@ -2927,44 +2789,14 @@ defmodule IntellectualClub.Generation.Worker do
     advance(state, :idle)
   end
 
-  defp reply_steering(from, state, persisted) do
-    broadcast(state, {:steering, state.context.message_id})
-
-    GenServer.reply(
-      from,
-      {:ok,
-       %{
-         message_id: state.context.message_id,
-         step_id: state.runtime_step.id,
-         item_id: persisted.item_id
-       }}
-    )
-  end
-
-  defp reply_failed_steering({:interrupted_provider, action, _persisted}, result),
-    do: reply_failed_steering(action, result)
-
-  defp reply_failed_steering({:steer_provider, from, _retry?}, result),
-    do: GenServer.reply(from, {:error, normalize_steering_error(result)})
-
-  defp reply_failed_steering({:steer_tools, from}, result),
-    do: GenServer.reply(from, {:error, normalize_steering_error(result)})
-
-  defp reply_failed_steering(_action, _result), do: :ok
-
   defp request_cancel(state, from) do
     waiters = if is_nil(from), do: state.cancel_waiters, else: [from | state.cancel_waiters]
     state = state |> absorb_deferred_provider_meta() |> cancel_tasks()
-
-    Enum.each(state.pending_steers, fn {caller, _text} ->
-      GenServer.reply(caller, {:error, :generation_not_active})
-    end)
 
     state = %{
       state
       | cancel_requested?: true,
         cancel_waiters: waiters,
-        pending_steers: [],
         deferred_provider_event: nil,
         deferred_tool_outcome: nil
     }
@@ -3014,22 +2846,6 @@ defmodule IntellectualClub.Generation.Worker do
     {:noreply, begin_persistence(state, :cancel, fn -> persist_cancellation(state) end)}
   end
 
-  defp advance(%{pending_steers: [{from, text} | rest]} = state, continuation) do
-    state = %{state | pending_steers: rest, continuation: continuation}
-
-    case state.runtime_step do
-      %{status: :waiting_provider} ->
-        steer_waiting_provider(state, text, from)
-
-      %{status: :waiting_tools} ->
-        steer_waiting_tools(state, text, from)
-
-      _other ->
-        GenServer.reply(from, {:error, :generation_not_active})
-        advance(state, continuation)
-    end
-  end
-
   defp advance(%{deferred_provider_event: event} = state, _continuation) when not is_nil(event) do
     handle_info(event, %{state | deferred_provider_event: nil, continuation: :idle})
   end
@@ -3056,7 +2872,12 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp dispatch_continuation(state, {:continue, continue}), do: handle_continue(continue, state)
-  defp dispatch_continuation(state, :start_stream), do: {:noreply, start_stream_task(state)}
+
+  defp dispatch_continuation(state, :start_stream),
+    do: begin_queued_steers(state, {:start_stream, :queue_checked})
+
+  defp dispatch_continuation(state, {:start_stream, :queue_checked}),
+    do: {:noreply, start_stream_task(state)}
 
   defp dispatch_continuation(state, {:tool_calls, calls}),
     do: handle_persisted_tool_calls(state, calls)
@@ -3088,17 +2909,6 @@ defmodule IntellectualClub.Generation.Worker do
     {:noreply, publish_snapshot(%{state | phase: phase})}
   end
 
-  defp terminal_operation?(state),
-    do:
-      state.lease_lost? or not is_nil(state.failure_plan) or
-        action_kind(state.persistence_action) in [
-          :done,
-          :error,
-          :terminal_error,
-          :cancel,
-          :cancel_recovery
-        ]
-
   defp finish_terminal(state, status) do
     cancel_result = if status == :canceled, do: :ok, else: {:error, :generation_not_active}
     reply_pending_commands(state, cancel_result)
@@ -3118,8 +2928,7 @@ defmodule IntellectualClub.Generation.Worker do
         | runtime_step: runtime_step,
           status: status,
           phase: status,
-          cancel_waiters: [],
-          pending_steers: []
+          cancel_waiters: []
       })
 
     {:stop, :normal, state}
@@ -3147,9 +2956,6 @@ defmodule IntellectualClub.Generation.Worker do
   defp terminal_acknowledgement?(_action, _result), do: false
 
   defp stop_obsolete_owner(state) do
-    if state.steering_attempt && Map.has_key?(state.steering_attempt, :action),
-      do: reply_failed_steering(state.steering_attempt.action, :generation_not_active)
-
     reply_pending_commands(state, {:error, :generation_not_active})
     {:stop, :normal, state |> cancel_tasks() |> stop_provider_session()}
   end
@@ -3161,26 +2967,21 @@ defmodule IntellectualClub.Generation.Worker do
     )
 
     reply_pending_commands(state, {:error, :persistence_outcome_unknown})
-    reply_failed_steering(state.persistence_action, :persistence_outcome_unknown)
 
     state =
-      publish_snapshot(%{state | phase: :recovering, cancel_waiters: [], pending_steers: []})
+      publish_snapshot(%{state | phase: :recovering, cancel_waiters: []})
 
     {:stop, :normal, state}
   end
 
   defp reply_pending_commands(state, cancel_result) do
     Enum.each(state.cancel_waiters, &GenServer.reply(&1, cancel_result))
-
-    Enum.each(state.pending_steers, fn {from, _text} ->
-      GenServer.reply(from, {:error, :generation_not_active})
-    end)
   end
 
   defp ensure_dispatch_allowed!(state) do
     if state.persistence_op || state.failure_plan || state.steering_attempt || state.lease_lost? ||
          state.cancel_requested? ||
-         (state.lease && not Lease.valid?(state.lease)) do
+         not Lease.valid?(state.lease) do
       exit({:generation_lease_lost, :dispatch_not_allowed})
     end
 

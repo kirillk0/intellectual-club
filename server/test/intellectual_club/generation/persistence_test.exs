@@ -6,7 +6,10 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.LinkedForkCleanup
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.StepRequests
@@ -56,8 +59,33 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     step_3 = create_step!(assistant_message.id, 3, actor)
     {item_3, content_3} = create_text_item!(step_3.id, 1, "step 3", actor)
 
-    replacement_id =
-      Persistence.replace_steps_for_retry!(assistant_message.id, 2, %{"retry" => true})
+    assert {:ok, reservation} = Lease.reserve(assistant_message.id)
+
+    assert {:ok, {fenced, replacement_id}} =
+             Lease.claim_and_run_with_chat(
+               reservation,
+               chat.id,
+               [:error],
+               fn operation, fenced ->
+                 Persistence.replace_steps_for_retry!(
+                   assistant_message.id,
+                   2,
+                   %{"retry" => true},
+                   [],
+                   operation,
+                   lease: fenced
+                 )
+               end,
+               with_lock_scope: fn callback ->
+                 LinkedForkCleanup.with_scope(
+                   {:steps, assistant_message.id, 2},
+                   actor,
+                   callback
+                 )
+               end
+             )
+
+    assert :ok = Lease.release(fenced)
 
     assert is_integer(replacement_id)
     assert {:ok, _step} = Ash.get(ChatMessageStep, step_1.id, actor: actor)
@@ -138,15 +166,17 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     :ok = Persistence.persist_step_trace_only!(assistant_message.id, step_1)
 
     step_2_id =
-      Persistence.ensure_step_started!(
-        assistant_message.id,
-        2,
-        %{
-          "model" => "demo-model",
-          "messages" => [%{"role" => "assistant", "content" => "Step one"}]
-        },
-        []
-      )
+      with_generation_lease(assistant_message.id, fn lease ->
+        Persistence.ensure_step_started!(
+          assistant_message.id,
+          2,
+          %{
+            "model" => "demo-model",
+            "messages" => [%{"role" => "assistant", "content" => "Step one"}]
+          },
+          lease: lease
+        )
+      end)
 
     step_2 =
       RuntimeTrace.new_step(
@@ -423,12 +453,14 @@ defmodule IntellectualClub.Generation.PersistenceTest do
              |> Ash.read!(actor: actor)
 
     provider_step_id =
-      Persistence.ensure_step_started!(
-        assistant_message.id,
-        2,
-        %{"model" => "usage-lifecycle-model"},
-        []
-      )
+      with_generation_lease(assistant_message.id, fn lease ->
+        Persistence.ensure_step_started!(
+          assistant_message.id,
+          2,
+          %{"model" => "usage-lifecycle-model"},
+          lease: lease
+        )
+      end)
 
     runtime_step =
       RuntimeTrace.new_step(
@@ -640,14 +672,15 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       )
 
     %{runtime_step: runtime_step} =
-      Persistence.persist_steering_before_provider!(
-        assistant_message.id,
+      persist_queued_steering!(
+        assistant_message,
         step_id,
         "Change direction",
         %{
           "model" => "demo-model",
           "messages" => [%{"role" => "user", "content" => "Change direction"}]
-        }
+        },
+        actor
       )
 
     runtime_step =
@@ -683,14 +716,15 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       )
 
     %{runtime_step: runtime_step} =
-      Persistence.persist_steering_before_provider!(
-        assistant_message.id,
+      persist_queued_steering!(
+        assistant_message,
         step_id,
         "Do not continue",
         %{
           "model" => "demo-model",
           "messages" => [%{"role" => "user", "content" => "Do not continue"}]
-        }
+        },
+        actor
       )
 
     runtime_step =
@@ -801,12 +835,8 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     %{step: provider_step, tool_calls: [call]} =
       Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
 
-    %{item_id: steering_item_id} =
-      Persistence.persist_steering_after_provider!(
-        assistant_message.id,
-        step_id,
-        "Keep the completed work"
-      )
+    steering_item_id =
+      create_archived_steering_item!(step_id, "Keep the completed work", :after_response, actor).id
 
     result = %{
       text: "tool output",
@@ -853,12 +883,8 @@ defmodule IntellectualClub.Generation.PersistenceTest do
 
     step_id = Persistence.ensure_step_started!(assistant_message.id, 1, raw_request, [])
 
-    %{item_id: trailing_item_id} =
-      Persistence.persist_steering_after_provider!(
-        assistant_message.id,
-        step_id,
-        "Apply this on retry"
-      )
+    trailing_item_id =
+      create_archived_steering_item!(step_id, "Apply this on retry", :after_response, actor).id
 
     step = Ash.get!(ChatMessageStep, step_id, actor: actor)
 
@@ -960,12 +986,13 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     %{tool_calls: [call]} =
       Persistence.persist_provider_completed!(assistant_message.id, runtime_step)
 
-    %{item_id: steering_item_id} =
-      Persistence.persist_steering_after_provider!(
-        assistant_message.id,
+    steering_item_id =
+      create_archived_steering_item!(
         step_id,
-        "Use the tool result differently"
-      )
+        "Use the tool result differently",
+        :after_response,
+        actor
+      ).id
 
     Persistence.persist_tool_result!(assistant_message.id, step_id, call, %{
       text: "tool output",
@@ -985,12 +1012,15 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     }
 
     transition =
-      Persistence.complete_step_and_start_next!(
-        assistant_message.id,
-        step_id,
-        2,
-        next_request
-      )
+      with_generation_lease(assistant_message.id, fn lease ->
+        Persistence.complete_step_and_start_next!(
+          assistant_message.id,
+          step_id,
+          2,
+          next_request,
+          lease: lease
+        )
+      end)
 
     assert transition.step_sequence == 2
     assert transition.raw_request == next_request
@@ -1054,6 +1084,54 @@ defmodule IntellectualClub.Generation.PersistenceTest do
 
     assert results |> Enum.map(& &1.sequence) |> Enum.uniq() |> length() == 2
     assert Persistence.list_missing_tool_calls!(step_id) == []
+  end
+
+  defp persist_queued_steering!(message, step_id, text, request, actor) do
+    assert {:ok, queued} = QueuedMessages.enqueue_steer(message.id, text, actor)
+    specs = [%{id: queued.id, text: text, updated_at: queued.updated_at}]
+
+    with_generation_lease(message.id, fn lease ->
+      Persistence.persist_queued_steering_before_provider!(
+        message.id,
+        step_id,
+        specs,
+        request,
+        lease: lease
+      )
+    end)
+  end
+
+  defp create_archived_steering_item!(step_id, text, placement, actor) do
+    sequence = if placement == :after_response, do: 2_000_000_000, else: 1
+    item = create_item!(step_id, sequence, :steering, actor)
+
+    for attrs <- [
+          %{sequence: 1, kind: :text, content_text: text},
+          %{
+            sequence: 1_000_000,
+            kind: :opaque,
+            content_text: "",
+            content_json: %{"placement" => Atom.to_string(placement)}
+          }
+        ] do
+      ChatMessageContent
+      |> Ash.Changeset.for_create(:create, Map.put(attrs, :chat_message_item_id, item.id),
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+    end
+
+    Ash.get!(ChatMessageItem, item.id, actor: actor, load: [:contents])
+  end
+
+  defp with_generation_lease(message_id, fun) when is_function(fun, 1) do
+    assert {:ok, lease} = Lease.acquire(message_id)
+
+    try do
+      fun.(lease)
+    after
+      Lease.release(lease)
+    end
   end
 
   defp create_step!(message_id, sequence, actor) do

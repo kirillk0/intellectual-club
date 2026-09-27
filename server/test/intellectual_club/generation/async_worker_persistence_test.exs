@@ -86,107 +86,6 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     cancel_worker(worker)
   end
 
-  test "steering behind a queued read accounts a completed response without reviving its answer or tools" do
-    for completion <- [:answer, :tools] do
-      fixture = fixture()
-      {:ok, lease} = Lease.acquire(fixture.message.id)
-      worker = start_worker(fixture, [], %{lease: lease, lease_owner: self()})
-      assert_receive {:provider_started, _, provider, original}, 2_000
-      old_stream_ref = :sys.get_state(worker).stream_ref
-      read_handler = gate_operations(fixture, queued_steers: :start)
-
-      gate_operations(fixture,
-        steer_provider: :stop,
-        interrupted_provider: :start,
-        interrupted_provider: :stop
-      )
-
-      send(worker, :consume_queued_steers)
-      assert_receive {:barrier, :queued_steers, :start, reader, _identity, read_gate}, 2_000
-      complete_provider(worker, provider, completion)
-      assert :sys.get_state(worker).deferred_provider_event != nil
-      steer_ref = command(worker, {:steer, "Use the receiving request"})
-      assert length(:sys.get_state(worker).pending_steers) == 1
-      :telemetry.detach(read_handler)
-      send(reader, {read_gate, :continue})
-
-      assert_receive {:barrier, :steer_provider, :stop, writer, _identity, gate}, 2_000
-      [old_step, next_step] = steps(fixture)
-      assert old_step.status == :canceled
-      assert next_step.status == :waiting_provider
-      source_response = :sys.get_state(worker).runtime_step
-      assert source_response.id == old_step.id
-      assert_no_dispatch(worker)
-      refute_receive {^steer_ref, _}, 0
-      send(writer, {gate, :continue})
-
-      assert_receive {:barrier, :interrupted_provider, :start, writer, identity, gate}, 2_000
-      state = :sys.get_state(worker)
-      assert identity.step_id == next_step.id
-      assert identity.fence_token == lease.fence_token
-      assert state.runtime_step.id == next_step.id
-      assert state.runtime_step.output_tokens == nil
-      assert state.deferred_provider_event == nil
-      assert_no_dispatch(worker)
-      refute_receive {^steer_ref, _}, 0
-      send_stale_completion(worker, old_stream_ref)
-      send(writer, {gate, :continue})
-
-      assert_receive {:barrier, :interrupted_provider, :stop, writer, ^identity, gate}, 2_000
-      recorded = assert_interrupted_accounting(fixture, original)
-      assert_receiving_unaccounted(fixture, next_step.id)
-      assert_no_dispatch(worker)
-      refute_receive {^steer_ref, _}, 0
-      send(writer, {gate, :continue})
-      assert_receive {^steer_ref, {:ok, %{step_id: receiving_id}}}, 2_000
-      assert receiving_id == next_step.id
-      assert_receive {:provider_started, _, receiving_provider, receiving_request}, 2_000
-      assert_receiving_request(fixture, next_step.id, original, receiving_request)
-      send_stale_completion(worker, old_stream_ref)
-      assert usage(fixture).id == recorded.id
-      assert usage(fixture).output_tokens == 3
-      assert :sys.get_state(worker).runtime_step.id == next_step.id
-      assert :sys.get_state(worker).runtime_step.output_tokens == nil
-      finish_receiving_provider(fixture, worker, receiving_provider)
-
-      # The metadata-only API is idempotent, but cannot accept another source
-      # identity, rewritten logical request, or a different receiving step.
-      assert :ok ==
-               Persistence.persist_interrupted_provider_response!(
-                 fixture.message.id,
-                 source_response,
-                 next_step.id
-               )
-
-      assert_raise ArgumentError, ~r/Runtime request differs/, fn ->
-        Persistence.persist_interrupted_provider_response!(
-          fixture.message.id,
-          %{source_response | raw_request: %{"rewritten" => true}},
-          next_step.id
-        )
-      end
-
-      assert_raise ArgumentError, ~r/canceled source step/, fn ->
-        Persistence.persist_interrupted_provider_response!(
-          fixture.message.id,
-          %{source_response | sequence: next_step.sequence},
-          next_step.id
-        )
-      end
-
-      assert_raise ArgumentError, ~r/successor does not match/, fn ->
-        Persistence.persist_interrupted_provider_response!(
-          fixture.message.id,
-          source_response,
-          old_step.id
-        )
-      end
-
-      assert usage(fixture).id == recorded.id
-      assert_interrupted_accounting(fixture, original)
-    end
-  end
-
   test "queued replacement accounts its deferred response before dispatch or cancellation of the receiving step" do
     for cancel? <- [false, true] do
       fixture = fixture()
@@ -260,70 +159,6 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     end
   end
 
-  test "lost interrupted-accounting acknowledgment preserves usage and never replays the source" do
-    for cancel? <- [false, true] do
-      fixture = fixture()
-      worker = start_worker(fixture)
-      monitor = Process.monitor(worker)
-      assert_receive {:provider_started, _, provider, original}, 2_000
-      old_stream_ref = :sys.get_state(worker).stream_ref
-      read_handler = gate_operations(fixture, queued_steers: :start)
-      gate_operations(fixture, interrupted_provider: :stop)
-      send(worker, :consume_queued_steers)
-      assert_receive {:barrier, :queued_steers, :start, reader, _identity, read_gate}, 2_000
-      complete_provider(worker, provider, :answer)
-      steer_ref = command(worker, {:steer, "Use the receiving request"})
-      assert length(:sys.get_state(worker).pending_steers) == 1
-      :telemetry.detach(read_handler)
-      send(reader, {read_gate, :continue})
-      assert_receive {:barrier, :interrupted_provider, :stop, writer, identity, gate}, 2_000
-      ref = :sys.get_state(worker).persistence_op.task.ref
-      recorded = assert_interrupted_accounting(fixture, original)
-      [_source, receiving] = steps(fixture)
-      request = StepRequests.request_for_step!(receiving.id, actor: fixture.actor)
-      assert_receiving_request(fixture, receiving.id, original, request)
-
-      cancel_ref =
-        if cancel? do
-          ref = command(worker, :cancel_and_wait)
-          assert :sys.get_state(worker).cancel_requested?
-          ref
-        end
-
-      send(writer, {gate, :crash})
-      assert_receive {^steer_ref, {:error, {:steering_failed, _reason}}}, 2_000
-      if cancel?, do: assert_receive({^cancel_ref, :ok}, 2_000)
-      assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
-      refute_receive {:provider_started, _, _, _}, 0
-      assert usage(fixture).id == recorded.id
-
-      if cancel? do
-        assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :canceled
-        assert Ash.get!(ChatMessageStep, receiving.id, actor: fixture.actor).status == :canceled
-      else
-        assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status ==
-                 :generating
-
-        recovered =
-          start_worker(fixture,
-            step_id: receiving.id,
-            request_payload: request,
-            initial_step_sequence: receiving.sequence,
-            initial_resume_mode: :steered_waiting_provider
-          )
-
-        assert_receive {:provider_started, _, _provider, ^request}, 2_000
-        send(recovered, {ref, {:persistence_result, identity, {:ok, :ok}}})
-        send_stale_completion(recovered, old_stream_ref)
-        assert :sys.get_state(recovered).runtime_step.id == receiving.id
-        cancel_worker(recovered)
-      end
-
-      assert usage(fixture).id == recorded.id
-      assert_interrupted_accounting(fixture, original)
-    end
-  end
-
   test "slow commit leaves snapshots readable and cancel suppresses deferred steering and tools" do
     fixture = fixture()
 
@@ -359,14 +194,12 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
       :ok = :sys.resume(worker)
     end
 
-    steer_ref = command(worker, {:steer, "must not reach tools"})
-    assert length(:sys.get_state(worker).pending_steers) == 1
+    queued = enqueue_steer(fixture, worker, "must not reach tools")
+    assert queued.status == :pending
     cancel_ref = command(worker, :cancel_and_wait)
     state = :sys.get_state(worker)
     assert state.cancel_requested?
     assert state.persistence_op.identity == identity
-    assert state.pending_steers == []
-    assert_receive {^steer_ref, {:error, :generation_not_active}}
     refute_receive {^cancel_ref, _reply}, 0
 
     send(writer, {gate, :continue})
@@ -397,7 +230,6 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
 
     gate_operations(fixture,
       provider_completed: :stop,
-      steer_tools: :start,
       tool_followup: :start,
       tool_followup: :stop
     )
@@ -410,14 +242,8 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert length(Persistence.list_missing_tool_calls!(fixture.step_id)) == 1
     assert :sys.get_state(worker).tool_task == nil
 
-    steer_ref = command(worker, {:steer, "serialized instruction"})
-    assert length(:sys.get_state(worker).pending_steers) == 1
+    queued = enqueue_steer(fixture, worker, "serialized instruction")
     send(writer, {gate, :continue})
-    assert_receive {:barrier, :steer_tools, :start, writer, _identity, gate}, 2_000
-    assert :sys.get_state(worker).tool_task == nil
-    send(writer, {gate, :continue})
-    assert_receive {^steer_ref, {:ok, %{step_id: step_id}}}, 2_000
-    assert step_id == fixture.step_id
 
     assert_receive {:barrier, :tool_followup, :start, writer, _identity, gate}, 2_000
     assert Persistence.list_missing_tool_calls!(fixture.step_id) == []
@@ -429,6 +255,11 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     [old_step, next_step] = steps(fixture)
     assert old_step.status == :done
     assert next_step.status == :waiting_provider
+
+    assert {:ok, %{status: :delivered, steering_item_id: steering_item_id}} =
+             QueuedMessages.get(queued.id, fixture.actor)
+
+    assert is_integer(steering_item_id)
     assert :sys.get_state(worker).stream_task == nil
 
     send(worker, {:provider_event, old_stream_ref, {:response_complete, %{raw_response: %{}}}})
@@ -685,29 +516,34 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert state.continuation == :start_stream
     assert state.retry_timer_ref == nil
     send(writer, {gate, :continue})
+    assert_receive {:barrier, :queued_steers, :start, writer, _identity, gate}, 2_000
+    send(writer, {gate, :continue})
     assert_receive {:provider_started, _, _provider, _request}, 2_000
     cancel_worker(worker)
   end
 
   test "steering pending behind a retry commit does not count a second provider attempt" do
     fixture = fixture()
-    gate_operations(fixture, auto_retry: :stop, steer_provider: :stop)
+    gate_operations(fixture, auto_retry: :stop)
     worker = start_worker(fixture)
     assert_receive {:provider_started, _, provider, _request}, 2_000
+    gate_operations(fixture, queued_steers: :stop)
     send(provider, :retry)
     assert_receive {:barrier, :auto_retry, :stop, writer, _identity, gate}, 2_000
-    steer_ref = command(worker, {:steer, "steer the pending retry"})
-    assert length(:sys.get_state(worker).pending_steers) == 1
+    queued = enqueue_steer(fixture, worker, "steer the pending retry")
     send(writer, {gate, :continue})
-    assert_receive {:barrier, :steer_provider, :stop, writer, _identity, gate}, 2_000
+    assert_receive {:barrier, :queued_steers, :stop, writer, _identity, gate}, 2_000
     assert :sys.get_state(worker).step_attempt == 2
     assert :sys.get_state(worker).stream_task == nil
     refute_receive {:provider_started, _, _, _}, 0
     send(writer, {gate, :continue})
-    assert_receive {^steer_ref, {:ok, %{step_id: step_id}}}, 2_000
     assert_receive {:provider_started, _, _provider, request}, 2_000
     state = :sys.get_state(worker)
-    assert state.runtime_step.id == step_id
+
+    assert {:ok, %{status: :delivered, steering_item_id: steering_item_id}} =
+             QueuedMessages.get(queued.id, fixture.actor)
+
+    assert is_integer(steering_item_id)
     assert state.step_attempt == 2
     assert state.step_sequence == 3
     assert Enum.count(request["messages"], &(&1["content"] == "steer the pending retry")) == 1
@@ -876,22 +712,26 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
 
   test "steering deferred behind a round transition replaces only its receiving step before provider dispatch" do
     fixture = fixture()
-    gate_operations(fixture, tool_followup: :stop, steer_provider: :stop)
+    gate_operations(fixture, tool_followup: :stop)
     worker = start_worker(fixture)
     assert_receive {:provider_started, _, provider, original}, 2_000
+    gate_operations(fixture, queued_steers: :stop)
     send(provider, {:complete, :tools})
     assert_receive {:barrier, :tool_followup, :stop, writer, _identity, gate}, 2_000
     [old_step, receiving_step] = steps(fixture)
     receiving_request = StepRequests.request_for_step!(receiving_step.id, actor: fixture.actor)
-    steer_ref = command(worker, {:steer, "after round commit"})
-    assert length(:sys.get_state(worker).pending_steers) == 1
+    queued = enqueue_steer(fixture, worker, "after round commit")
     send(writer, {gate, :continue})
-    assert_receive {:barrier, :steer_provider, :stop, writer, _identity, gate}, 2_000
-    assert :sys.get_state(worker).stream_task == nil
+    assert_receive {:barrier, :queued_steers, :stop, writer, _identity, gate}, 2_000
     refute_receive {:provider_started, _, _, _}, 0
     send(writer, {gate, :continue})
-    assert_receive {^steer_ref, {:ok, %{step_id: steered_id}}}, 2_000
+
+    assert_receive {:barrier, :queued_steers, :stop, writer, _identity, gate}, 2_000
+    send(writer, {gate, :continue})
+
     assert_receive {:provider_started, _, _provider, steered_request}, 2_000
+    steered_id = :sys.get_state(worker).runtime_step.id
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, fixture.actor)
     assert Enum.count(steered_request["messages"], &(&1["content"] == "after round commit")) == 1
     assert :sys.get_state(worker).runtime_step.id == steered_id
     assert StepRequests.request_for_step!(old_step.id, actor: fixture.actor) == original
@@ -1216,6 +1056,12 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert Enum.map(records, & &1.cost) == [0.125, 0.125]
   end
 
+  defp enqueue_steer(fixture, worker, text) do
+    assert {:ok, queued} = QueuedMessages.enqueue_steer(fixture.message.id, text, fixture.actor)
+    Worker.queue_changed(worker)
+    queued
+  end
+
   defp command(worker, command) do
     ref = make_ref()
     send(worker, {:"$gen_call", {self(), ref}, command})
@@ -1230,6 +1076,14 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
 
   defp start_worker(fixture, overrides \\ [], opts \\ %{}) do
     context = Map.merge(fixture.context, Map.new(overrides))
+
+    opts =
+      if Map.has_key?(opts, :lease) do
+        opts
+      else
+        assert {:ok, lease} = Lease.acquire(fixture.message.id)
+        Map.merge(opts, %{lease: lease, lease_owner: self()})
+      end
 
     start_supervised!(%{
       id: {Worker, fixture.message.id, make_ref()},

@@ -4,6 +4,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -328,7 +329,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       attempts: attempts
     }
 
-    {:ok, _pid} = Worker.start_link(%{context: context})
+    {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
 
     message = wait_for_status!(assistant_message.id, actor, [:done], 12_000)
     steps = ordered_steps(message)
@@ -432,9 +433,15 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       attempts: attempts
     }
 
-    {:ok, _pid} = Worker.start_link(%{context: context})
+    {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
 
     %{chat: chat, message: assistant_message}
+  end
+
+  defp start_worker_with_lease(message_id, context) do
+    with {:ok, lease} <- Lease.acquire(message_id) do
+      Worker.start_link(%{context: context, lease: lease, lease_owner: self()})
+    end
   end
 
   defp wait_for_status!(message_id, actor, wanted, timeout_ms)

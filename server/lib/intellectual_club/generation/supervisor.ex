@@ -651,20 +651,6 @@ defmodule IntellectualClub.Generation.Supervisor do
       {:error, reason}
   end
 
-  def steer_generation(message_id, text) when is_integer(message_id) and is_binary(text) do
-    case generation_worker_pid(message_id) do
-      pid when is_pid(pid) ->
-        try do
-          Worker.steer(pid, text)
-        catch
-          :exit, _reason -> {:error, :generation_not_active}
-        end
-
-      nil ->
-        {:error, :generation_not_active}
-    end
-  end
-
   def queue_changed(message_id) when is_integer(message_id) do
     case generation_worker_pid(message_id) do
       pid when is_pid(pid) ->
@@ -995,7 +981,8 @@ defmodule IntellectualClub.Generation.Supervisor do
                steering_specs,
                operation,
                request_context: request_context,
-               return_request?: true
+               return_request?: true,
+               lease: lease
              )
            end,
            with_lock_scope: fn callback ->
@@ -1025,7 +1012,7 @@ defmodule IntellectualClub.Generation.Supervisor do
            lease,
            chat_id,
            allowed_statuses,
-           fn operation ->
+           fn operation, fenced ->
              step_id =
                Persistence.replace_steps_for_retry!(
                  message_id,
@@ -1034,7 +1021,8 @@ defmodule IntellectualClub.Generation.Supervisor do
                  steering_specs,
                  operation,
                  request_context: request_context,
-                 return_request?: true
+                 return_request?: true,
+                 lease: fenced
                )
 
              :ok = RecoveryGate.reset!(message_id, %User{id: request_context.owner_id})

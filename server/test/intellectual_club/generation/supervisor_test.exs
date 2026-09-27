@@ -459,11 +459,6 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       :sys.resume(stub)
     end
 
-    assert {:ok, %{text: "Continue"}} =
-             GenerationSupervisor.steer_generation(message.id, "Continue")
-
-    assert_receive {:global_worker_steered, "Continue"}
-
     monitor = Process.monitor(stub)
     assert :ok = GenerationSupervisor.cancel_generation(message.id)
     assert_receive :global_worker_canceled
@@ -521,7 +516,11 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       test_pid: test_pid
     }
 
-    {:ok, _pid} = Worker.start_link(%{context: context})
+    assert {:ok, lease} = Lease.acquire(assistant_message.id)
+
+    {:ok, _pid} =
+      Worker.start_link(%{context: context, lease: lease, lease_owner: self()})
+
     assistant_message
   end
 

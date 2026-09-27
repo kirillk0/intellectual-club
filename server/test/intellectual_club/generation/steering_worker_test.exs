@@ -3,7 +3,9 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
@@ -220,12 +222,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
         test_pid: self()
       }
 
-      pid =
-        start_supervised!(%{
-          id: {Worker, assistant_message.id},
-          start: {Worker, :start_link, [%{context: context}]},
-          restart: :temporary
-        })
+      pid = start_worker_with_lease!(assistant_message.id, context)
 
       monitor_ref = Process.monitor(pid)
 
@@ -303,27 +300,23 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       test_pid: self()
     }
 
-    pid =
-      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+    pid = start_worker_with_lease!(assistant_message.id, context)
 
     monitor_ref = Process.monitor(pid)
 
     assert_receive {:stream_started, 1, _first_task, ^raw_request}, 1_000
     assert_receive {:stale_emitter, stale_emitter}, 1_000
 
-    test_pid = self()
+    assert {:error, :already_running} = Lease.acquire(assistant_message.id)
 
-    spawn(fn ->
-      Process.flag(:trap_exit, true)
-      send(test_pid, {:duplicate_worker_result, Worker.start_link(%{context: context})})
-    end)
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_steer(assistant_message.id, "Change direction", actor)
 
-    assert_receive {:duplicate_worker_result, {:error, {:already_running, ^pid}}}, 1_000
-
-    assert {:ok, %{step_id: receiving_step_id}} = Worker.steer(pid, "Change direction")
-    refute receiving_step_id == step_id
-
+    Worker.queue_changed(pid)
     assert_receive {:stream_started, 2, second_task, restarted_request}, 1_000
+    receiving_step_id = Worker.get_current_state(pid).step.id
+    refute receiving_step_id == step_id
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, actor)
 
     assert List.last(restarted_request["messages"]) == %{
              "role" => "user",
@@ -415,8 +408,7 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
       test_pid: self()
     }
 
-    pid =
-      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+    pid = start_worker_with_lease!(assistant_message.id, context)
 
     monitor_ref = Process.monitor(pid)
 
@@ -430,8 +422,12 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
 
     assert %{status: :generating} = Worker.get_current_state(pid)
 
-    assert {:ok, %{}} = Worker.steer(pid, "Retry with steering")
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_steer(assistant_message.id, "Retry with steering", actor)
+
+    Worker.queue_changed(pid)
     assert_receive {:retry_stream_started, 2, second_task, _request}, 1_000
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, actor)
 
     send(pid, :retry_current_step)
     refute_receive {:retry_stream_started, 3, _task, _request}, 100
@@ -445,6 +441,16 @@ defmodule IntellectualClub.Generation.SteeringWorkerTest do
 
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000
+  end
+
+  defp start_worker_with_lease!(message_id, context) do
+    assert {:ok, lease} = Lease.acquire(message_id)
+
+    start_supervised!(%{
+      id: {Worker, message_id, make_ref()},
+      start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
+      restart: :temporary
+    })
   end
 
   defp item_text(item) do

@@ -36,7 +36,8 @@ defmodule IntellectualClub.Generation.StepRequests do
        do: raise(ArgumentError, "Request base must be the previous step in this message")
 
     changeset =
-      Ash.Changeset.for_create(ChatMessageStep, :create_request, attributes,
+      ChatMessageStep
+      |> Ash.Changeset.for_create(:create_request, attributes,
         actor: actor,
         private_arguments: %{
           request: request,
@@ -46,6 +47,7 @@ defmodule IntellectualClub.Generation.StepRequests do
           max_chain: Keyword.get(opts, :max_chain, Codec.max_chain())
         }
       )
+      |> Ash.Changeset.set_context(%{generation_lease: Keyword.get(opts, :lease)})
 
     unless changeset.valid?, do: raise(Ash.Error.to_error_class(changeset))
     {changeset, Map.fetch!(changeset.context, :step_request_snapshot)}

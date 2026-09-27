@@ -7,10 +7,12 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.ChatMessageStepRequestFile
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeSnapshots
@@ -251,8 +253,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
         request_images: request_images
       )
 
-    pid =
-      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+    pid = start_worker_with_lease!(message.id, context)
 
     monitor_ref = Process.monitor(pid)
 
@@ -268,13 +269,17 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     assert_warm_cache_counters(telemetry)
     [initial_binding] = bindings_for_step(step_id)
 
-    assert {:ok, %{step_id: receiving_step_id}} = Worker.steer(pid, "Use the image carefully")
-    refute receiving_step_id == step_id
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_steer(message.id, "Use the image carefully", actor)
 
-    assert_receive {:steering_request, 2, _second_task, ^receiving_step_id, steered_request,
+    Worker.queue_changed(pid)
+
+    assert_receive {:steering_request, 2, _second_task, receiving_step_id, steered_request,
                     steered_wire_request},
                    2_000
 
+    refute receiving_step_id == step_id
+    assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, actor)
     assert wire_image_url(steered_wire_request) == wire_image_url(wire_request)
     refute inspect(steered_request) =~ ";base64,"
     assert_public_state_compact(pid, message.id, steered_request)
@@ -308,8 +313,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
         attempts: attempts
       )
 
-    pid =
-      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+    pid = start_worker_with_lease!(message.id, context)
 
     monitor_ref = Process.monitor(pid)
 
@@ -367,8 +371,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
         max_tool_rounds: 0
       )
 
-    pid =
-      start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
+    pid = start_worker_with_lease!(message.id, context)
 
     monitor_ref = Process.monitor(pid)
 
@@ -616,6 +619,16 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
   defp oversized_image_payload do
     IntellectualClub.ImageFixtures.png(2_100, 10)
+  end
+
+  defp start_worker_with_lease!(message_id, context) do
+    assert {:ok, lease} = Lease.acquire(message_id)
+
+    start_supervised!(%{
+      id: {Worker, message_id, make_ref()},
+      start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
+      restart: :temporary
+    })
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)

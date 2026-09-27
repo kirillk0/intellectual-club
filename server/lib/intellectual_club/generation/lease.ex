@@ -123,7 +123,7 @@ defmodule IntellectualClub.Generation.Lease do
           t(),
           pos_integer(),
           [atom()],
-          (-> result) | (term() -> result),
+          (-> result) | (term() -> result) | (term(), t() -> result),
           keyword()
         ) ::
           {:ok, {t(), result}} | {:error, term()}
@@ -138,7 +138,8 @@ defmodule IntellectualClub.Generation.Lease do
         opts
       )
       when is_integer(chat_id) and chat_id > 0 and is_list(allowed_statuses) and
-             allowed_statuses != [] and (is_function(fun, 0) or is_function(fun, 1)) and
+             allowed_statuses != [] and
+             (is_function(fun, 0) or is_function(fun, 1) or is_function(fun, 2)) and
              is_list(opts) do
     with_fence_claim(lease, fn fenced ->
       lease_transaction(
@@ -171,7 +172,7 @@ defmodule IntellectualClub.Generation.Lease do
                   )
                   |> Ash.update!(authorize?: false)
 
-                  {:ok, run_fenced(fun, prepared)}
+                  {:ok, run_claimed(fun, prepared, fenced)}
               end
             end
           end)
@@ -391,6 +392,14 @@ defmodule IntellectualClub.Generation.Lease do
   end
 
   @doc false
+  def registered?(%__MODULE__{} = lease), do: active?(lease)
+
+  @doc false
+  def authorizes?(%__MODULE__{} = lease) do
+    registered?(lease) or claim_active?(lease)
+  end
+
+  @doc false
   @spec lock_key(pos_integer()) :: integer()
   def lock_key(message_id) when is_integer(message_id) and message_id > 0 do
     @generation_lock_offset + message_id
@@ -570,6 +579,17 @@ defmodule IntellectualClub.Generation.Lease do
 
   def handle_call({:active?, %__MODULE__{} = lease}, _from, %State{} = state) do
     {:reply, Capabilities.active?(lease), state}
+  end
+
+  def handle_call({:claim_active?, %__MODULE__{} = lease, owner}, _from, %State{} = state) do
+    active? =
+      match?(
+        %{ref: ref, owner: ^owner, claim_token: token, cleanup_ref: nil}
+        when ref == lease.ref and token == lease.fence_token,
+        Map.get(state.leases, lease.message_id)
+      )
+
+    {:reply, active?, state}
   end
 
   @impl true
@@ -795,8 +815,19 @@ defmodule IntellectualClub.Generation.Lease do
     end
   end
 
+  defp run_claimed(fun, prepared, fenced) when is_function(fun, 2),
+    do: fun.(prepared, fenced)
+
+  defp run_claimed(fun, prepared, _fenced), do: run_fenced(fun, prepared)
+
   defp run_fenced(fun, prepared) when is_function(fun, 1), do: fun.(prepared)
   defp run_fenced(fun, _prepared), do: fun.()
+
+  defp claim_active?(%__MODULE__{} = lease) do
+    GenServer.call(lease.manager, {:claim_active?, lease, self()}, :infinity)
+  catch
+    :exit, _reason -> false
+  end
 
   defp lease_transaction(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
     lease_transaction(ChatMessage, fun, opts)

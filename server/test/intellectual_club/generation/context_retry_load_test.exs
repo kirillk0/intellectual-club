@@ -10,8 +10,10 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.LinkedForkCleanup
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.StepRequests
 
@@ -73,10 +75,27 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
 
     request = StepRequests.request_for_step!(step_3.id, actor: actor)
 
-    {new_step_id, queries} =
+    assert {:ok, reservation} = Lease.reserve(message.id)
+
+    {claim, queries} =
       capture_repo_queries(fn ->
-        Persistence.replace_steps_for_retry!(message.id, 3, request)
+        Lease.claim_and_run_with_chat(
+          reservation,
+          chat.id,
+          [:error],
+          fn operation, fenced ->
+            Persistence.replace_steps_for_retry!(message.id, 3, request, [], operation,
+              lease: fenced
+            )
+          end,
+          with_lock_scope: fn callback ->
+            LinkedForkCleanup.with_scope({:steps, message.id, 3}, actor, callback)
+          end
+        )
       end)
+
+    assert {:ok, {fenced, new_step_id}} = claim
+    assert :ok = Lease.release(fenced)
 
     assert is_integer(new_step_id)
 

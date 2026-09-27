@@ -2,12 +2,13 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
   @moduledoc false
 
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep}
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.StepRequests.{Codec, Error, Reader}
 
   require Ash.Query
 
   @terminal_statuses [:done, :canceled, :error]
-  @message_fields [:id, :chat_id, :owner_id, :role, :status]
+  @message_fields [:id, :chat_id, :owner_id, :role, :status, :generation_fence_token]
 
   @base_fields [
     :id,
@@ -96,11 +97,12 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
   end
 
   @doc false
-  def verify_logical_create!(plan, actor) do
+  def verify_logical_create!(plan, actor, opts \\ []) do
     actor = Reader.actor!(actor: actor)
     unless actor.id == plan.actor_id, do: raise(Error, reason: :actor_changed)
     require_transaction!()
-    _message = lock_message!(plan.chat_message_id, actor, false)
+    message = lock_message!(plan.chat_message_id, actor, false)
+    ensure_live_create_allowed!(message, plan.sequence, Keyword.get(opts, :lease))
 
     if plan.previous do
       previous = previous_metadata(plan.chat_message_id, plan.sequence, actor, true)
@@ -129,12 +131,13 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
     previous
   end
 
-  def validate_create!(step, actor, known_base \\ nil) do
+  def validate_create!(step, actor, known_base \\ nil, opts \\ []) do
     _actor = Reader.actor!(actor: actor)
 
     Codec.validate_encoding!(step, fn attrs ->
       require_transaction!()
-      _message = lock_message!(step.chat_message_id, actor, false)
+      message = lock_message!(step.chat_message_id, actor, false)
+      ensure_live_create_allowed!(message, step.sequence, Keyword.get(opts, :lease))
       validated_base!(Map.merge(step, attrs), actor, known_base)
     end)
   end
@@ -292,6 +295,22 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
     unless current && current.owner_id == actor.id, do: raise(Error, reason: :not_found)
     current
   end
+
+  defp ensure_live_create_allowed!(
+         %ChatMessage{status: :generating, id: message_id, generation_fence_token: token},
+         sequence,
+         lease
+       )
+       when sequence > 1 do
+    unless match?(
+             %Lease{message_id: ^message_id, fence_token: ^token},
+             lease
+           ) and is_binary(token) and Lease.authorizes?(lease) do
+      raise Error, reason: :generation_lease_required
+    end
+  end
+
+  defp ensure_live_create_allowed!(%ChatMessage{}, _sequence, _lease), do: :ok
 
   def require_terminal!(message) do
     unless message.role == :assistant and message.status in @terminal_statuses,

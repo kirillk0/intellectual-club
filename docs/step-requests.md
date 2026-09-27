@@ -18,7 +18,7 @@ Normal generation uses the separate, non-public `ChatMessageStep.create_request`
 )
 
 # Encoding is complete. In generation, this transaction also attaches staged
-# image bindings and publishes the previous-step transition/steering receipt.
+# image bindings and atomically delivers any selected queued steering rows.
 Ash.transaction([ChatMessageStep], fn ->
   Ash.create!(changeset, actor: actor, authorize?: true)
 end)
@@ -33,6 +33,30 @@ The resource-owned change derives normalization, canonical hash/size and diff fr
 `Persistence` performs this preparation after provider/image preparation but before its own publication transactions and locks. Callers already inside an outer `Lease`/linked-cleanup/fork transaction retain that outer scope: moving preparation ahead of those locks requires restructuring the outer caller, with staged bindings kept alive until its final transaction outcome. `prepare_create!/3` is the split preparation API; it does not release pre-existing caller locks. `PreparedRequests` may return `%{request: map, bindings: ..., ...}` with additional cache/image metadata: persistence preserves those fields and returns its authoritative `request_snapshot` alongside `request`/`step`. Binding attachment remains in the same transaction as the step. An externally supplied snapshot is not trusted at the Ash boundary; final normalization belongs to the resource.
 
 `StepRequests.snapshot!/1` provides a pure normalized `Snapshot` with cached hash and size. `hash/1` hashes without constructing a forced-full encoding; `equal?/2` compares normalized JSON by numeric value. Snapshots are computation caches, not capabilities. Normalization and canonical encoding are fused into one traversal per distinct current/base document in ordinary preparation; string validity is checked while encoding, without a separate full UTF-8 scan. An unchanged retry uses one snapshot and skips diff; publication-transaction retries reuse the prepared changeset. Neither API authorizes storage access.
+
+## Live generation ownership
+
+A live assistant message has one fenced writer. The first request step may be
+created while the new generation is prepared; every later live step is an
+immediate successor created under that message's `Generation.Lease`. Transition
+writers reject an existing successor instead of adopting, resetting, or
+rewriting it.
+
+A lost persistence acknowledgement is resolved by a read-only inspection under
+the same fence. The source status and the presence of its immediate successor
+determine whether the transaction committed. Operational receipts are not
+stored as trace items: canonical items describe communication with the model,
+not worker coordination.
+
+All user steering is first stored as a durable `QueuedMessage`. The worker reads
+the queue before every provider dispatch, injects the selected batch, creates
+canonical steering items, and marks the queue rows delivered in the same
+transaction. Queue notification is only a wake-up hint; correctness never
+depends on its delivery or ordering.
+
+These restrictions apply only while the parent message is generating. Terminal
+archive traces retain ordinary create/update/destroy support, including sparse
+or independently imported step sequences.
 
 ## Physical encoding writes
 

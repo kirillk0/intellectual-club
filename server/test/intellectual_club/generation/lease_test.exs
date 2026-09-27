@@ -262,7 +262,8 @@ defmodule IntellectualClub.Generation.LeaseTest do
                      "Temporary provider error",
                      attempt: 1,
                      retry_delay_ms: 1_000,
-                     retryable: true
+                     retryable: true,
+                     lease: lease
                    )
                  end)
 

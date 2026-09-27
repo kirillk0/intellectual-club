@@ -1861,6 +1861,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     step_id = Persistence.ensure_step_started!(generating_message.id, 1, raw_request, [])
 
+    assert {:ok, lease} = Lease.acquire(generating_message.id)
+
     %{step_id: orphaned_step_id, step_sequence: 2} =
       Persistence.persist_retry_error_and_start_next_step!(
         generating_message.id,
@@ -1871,8 +1873,11 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         retry_delay_ms: 60_000,
         status_code: 503,
         error_kind: "network",
-        retryable: true
+        retryable: true,
+        lease: lease
       )
+
+    assert :ok = Lease.release(lease)
 
     :ok = GenerationSupervisor.recover_orphaned_generations()
 

@@ -17,11 +17,6 @@ defmodule IntellectualClub.Generation.LegacyGenerationSnapshotStub do
     {:reply, :ok, test_pid}
   end
 
-  def handle_call({:steer, text}, _from, test_pid) do
-    send(test_pid, {:global_worker_steered, text})
-    {:reply, {:ok, %{text: text}}, test_pid}
-  end
-
   def handle_call(:cancel_and_wait, _from, test_pid) do
     send(test_pid, :global_worker_canceled)
     {:stop, :normal, {:error, :not_persisted}, test_pid}
