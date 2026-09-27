@@ -572,6 +572,7 @@ export function useChatViewModel() {
   };
 
   let chatLoadSeq = 0;
+  let chatCoreLoadSeq = 0;
   let chatVisibleLoadSeq = 0;
   let disposed = false;
 
@@ -641,6 +642,9 @@ export function useChatViewModel() {
     const includeSettings = opts.includeSettings !== false;
     const requestedChatId = chatId.value;
     const seq = mode === 'initial' ? ++chatLoadSeq : chatLoadSeq;
+    const coreSeq = ++chatCoreLoadSeq;
+    const branchAtRequest = branch.value;
+    const generationAtRequest = branch.value.find((message) => message.id === activeGenerationId.value);
     const visibleSeq = mode === 'initial' ? ++chatVisibleLoadSeq : chatVisibleLoadSeq;
     const isCurrentLoad = () =>
       !disposed && seq === chatLoadSeq && requestedChatId === chatId.value;
@@ -688,7 +692,23 @@ export function useChatViewModel() {
               showErrorBanner: false,
             });
 
-      if (!isCurrentLoad()) return;
+      if (!isCurrentLoad() || coreSeq !== chatCoreLoadSeq) return;
+      if (mode === 'soft') {
+        // A branch mutation or a newer full reload owns the replacement history.
+        if (branch.value !== branchAtRequest) return;
+        const generation = branch.value.find((message) => message.id === generationAtRequest?.id);
+        if (generationAtRequest && generation && (
+          generation.status !== generationAtRequest.status ||
+          generation.working?.latest_step_id !== generationAtRequest.working?.latest_step_id ||
+          generation.working?.latest_step_sequence !== generationAtRequest.working?.latest_step_sequence ||
+          generation.working?.latest_step_status !== generationAtRequest.working?.latest_step_status
+        )) {
+          // Polling crossed a step/commit boundary while this snapshot was loading.
+          // Keep the visible answer and fetch again rather than rolling it back.
+          await loadChatSafe({ mode: 'soft', includeSettings: false });
+          return;
+        }
+      }
 
       chat.value = payload.chat;
       headerControls.hydrate({
@@ -713,7 +733,7 @@ export function useChatViewModel() {
       }
 
     } catch (error) {
-      if (!isCurrentLoad() || isAbortError(error)) return;
+      if (!isCurrentLoad() || coreSeq !== chatCoreLoadSeq || isAbortError(error)) return;
       if (mode === 'initial') {
         chatSettingsRead.cancel();
         chatSettingsStatus.value = 'idle';
@@ -827,12 +847,9 @@ export function useChatViewModel() {
       }
     );
 
-    if (!payload) return;
+    if (!payload || signal.aborted) return;
 
-    if (typeof payload.revision === 'string') {
-      chatIdleRevision.value = payload.revision;
-    }
-
+    // Only an applied full state acknowledges the revision. Skipped/failed loads retry.
     await loadChatSafe({ mode: 'soft', includeSettings: false });
   }
 

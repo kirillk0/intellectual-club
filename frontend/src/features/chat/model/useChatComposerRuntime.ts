@@ -22,7 +22,11 @@ import {
   type ChatQueuedMessage,
   type PollResponse,
 } from '@/features/chat/model/chatViewModel.shared';
-import { generationPollDelay, mergeRuntimePollContent } from '@/features/chat/model/generationPolling';
+import {
+  generationPollDelay,
+  mergeRuntimePollContent,
+  preserveStreamingMessageContent,
+} from '@/features/chat/model/generationPolling';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import { translate } from '@/i18n';
@@ -600,6 +604,7 @@ export function useChatComposerRuntime(params: Params) {
 
   let pollTimer: number | null = null;
   let pollingToken = 0;
+  let pollingChatId: number | null = null;
   let pollAbortController: AbortController | null = null;
   let lastResumeSyncAt = 0;
   let pollRevision: string | undefined;
@@ -617,6 +622,7 @@ export function useChatComposerRuntime(params: Params) {
   const stopPolling = (opts: { resetConnectionState?: boolean } = {}) => {
     const resetConnectionState = opts.resetConnectionState ?? true;
     pollingToken += 1;
+    pollingChatId = null;
     resetPollRevisions();
     pollDelayMs = 500;
     consecutivePollErrors = 0;
@@ -767,6 +773,7 @@ export function useChatComposerRuntime(params: Params) {
     const sameGeneration = params.activeGenerationId.value === messageId;
     stopPolling({ resetConnectionState: !sameGeneration });
     params.activeGenerationId.value = messageId;
+    pollingChatId = params.chatId.value;
     if (params.chatId.value) {
       publishChatChange({
         operation: 'touch',
@@ -803,7 +810,16 @@ export function useChatComposerRuntime(params: Params) {
     await tick();
   };
 
-  watch(() => params.branch.value, resetPollRevisions, { flush: 'sync' });
+  watch(() => params.branch.value, (next, previous) => {
+    resetPollRevisions();
+    if (pollingChatId !== params.chatId.value || params.activeGenerationId.value == null) return;
+    const messageId = params.activeGenerationId.value;
+    const index = next.findIndex((message) => message.id === messageId);
+    if (index === -1) return;
+    const current = previous.find((message) => message.id === messageId);
+    // Merge synchronously, before Vue can render the persisted-only replacement.
+    next[index] = preserveStreamingMessageContent(current, next[index]!);
+  }, { flush: 'sync' });
   watch(
     () => params.chatId.value,
     () => stopPolling(),

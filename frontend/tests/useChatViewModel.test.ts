@@ -40,6 +40,7 @@ import type {
   ChatSettingsStatePayload,
   ChatStatePayload,
 } from '@/features/chat/model/chatViewModel.shared';
+import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import StackRouterView from '@/components/StackRouterView.vue';
@@ -101,8 +102,9 @@ const chatSettings = (
 });
 
 let activeWrapper: VueWrapper | null = null;
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
-async function mountViewModel(path = '/chats/1', previousPath?: string) {
+async function mountViewModel(path = '/chats/1', previousPath?: string, renderMessages = false) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -122,7 +124,9 @@ async function mountViewModel(path = '/chats/1', previousPath?: string) {
   const Harness = defineComponent({
     setup() {
       viewModel = useChatViewModel();
-      return () => h('div');
+      return () => h('div', renderMessages
+        ? viewModel.branch.value.map((message, index) => h(ChatMessageBubble, { key: message.id, message, index }))
+        : []);
     },
   });
 
@@ -153,7 +157,205 @@ describe('useChatViewModel loading', () => {
     useNavigationStack().reset();
     serverStateQueryClient.clear();
     vi.unstubAllGlobals();
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     vi.useRealTimers();
+  });
+
+  it.each([false, true])('keeps the streaming answer visible across a soft reload (pending poll: %s)', async (pendingPoll) => {
+    vi.useFakeTimers();
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    const state = chatState(1);
+    const completed = {
+      content_id: 101, sequence: 1, step_id: 100, step_sequence: 1,
+      item_id: 101, item_sequence: 1, item_type: 'answer', text: 'Completed answer',
+    };
+    const streaming = {
+      content_id: -21001, sequence: 1, step_id: 200, step_sequence: 2,
+      item_id: -101, item_sequence: 1, item_type: 'answer', text: 'Streaming answer',
+    };
+    const working = {
+      step_count: 2, latest_step_id: 200, latest_step_sequence: 2,
+      latest_step_status: 'waiting_provider', completed_step_duration_ms: 100,
+    };
+    state.branch = [{
+      id: 31, role: 'assistant', status: 'generating', working,
+      content: { items: [], parts: [completed], media: [] },
+    }];
+    state.active_generation_message_id = 31;
+    let stateRequests = 0;
+    let resolveReload!: (payload: ChatStatePayload) => void;
+    let resolvePoll!: (payload: unknown) => void;
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') {
+        if (++stateRequests === 1) return Promise.resolve(structuredClone(state));
+        return new Promise((resolve) => { resolveReload = resolve; });
+      }
+      if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
+      if (path.startsWith('/api/bff/chat-messages/31/poll')) {
+        return new Promise((resolve) => { resolvePoll = resolve; });
+      }
+      return Promise.resolve(undefined);
+    });
+    const { viewModel } = await mountViewModel('/chats/1', undefined, true);
+    await flushPromises();
+    expect(stateRequests).toBe(2);
+    const poll = (text: string) => ({
+      message_id: 31, runtime: true, status: 'generating', phase: 'streaming', working,
+      revision: 'poll-1', content_revision: 'content-1', runtime_revision: 'runtime-1',
+      content: { items: [], parts: [completed, { ...streaming, text }], media: [] },
+    });
+    resolvePoll(poll('Streaming answer'));
+    await flushPromises();
+    expect(activeWrapper!.findAll('.message-answer-part')).toHaveLength(2);
+    const answerElement = activeWrapper!.findAll('.message-answer-part')[1]!.element;
+    if (pendingPoll) await vi.advanceTimersByTimeAsync(500);
+
+    const refreshed = structuredClone(state);
+    refreshed.branch[0]!.content!.parts[0]!.text = 'Updated completed answer';
+    refreshed.chat.note = 'Updated note';
+    resolveReload(refreshed);
+    await flushPromises();
+    expect(viewModel.chatNote.value).toBe('Updated note');
+    expect(activeWrapper!.text()).toContain('Updated completed answer');
+    expect(activeWrapper!.text()).toContain('Streaming answer');
+    expect(activeWrapper!.findAll('.message-answer-part')[1]!.element).toBe(answerElement);
+
+    if (pendingPoll) {
+      resolvePoll(poll('Stale in-flight answer'));
+      await flushPromises();
+      expect(activeWrapper!.text()).not.toContain('Stale in-flight answer');
+    }
+    await vi.advanceTimersByTimeAsync(500);
+    expect(apiMocks.get.mock.calls.at(-1)?.[0]).toBe('/api/bff/chat-messages/31/poll');
+    resolvePoll(poll('Streaming answer continues'));
+    await flushPromises();
+    expect(activeWrapper!.text()).toContain('Streaming answer continues');
+    expect(activeWrapper!.findAll('.message-answer-part')[1]!.element).toBe(answerElement);
+  });
+
+  it.each([false, true])('refetches rather than rolling polling back to an earlier step (refetch fails: %s)', async (refetchFails) => {
+    vi.useFakeTimers();
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    const state = chatState(1);
+    state.active_generation_message_id = 31;
+    state.branch = [{
+      id: 31, role: 'assistant', status: 'generating',
+      working: { step_count: 1, latest_step_id: 100, latest_step_sequence: 1,
+        latest_step_status: 'waiting_provider', completed_step_duration_ms: 0 },
+      content: { items: [], parts: [], media: [] },
+    }];
+    let stateRequests = 0;
+    let resolveReload!: (payload: ChatStatePayload) => void;
+    let resolvePoll!: (payload: unknown) => void;
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') {
+        if (++stateRequests === 1) return Promise.resolve(structuredClone(state));
+        return new Promise((resolve) => { resolveReload = resolve; });
+      }
+      if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
+      if (path.startsWith('/api/bff/chat-messages/31/poll')) {
+        return new Promise((resolve) => { resolvePoll = resolve; });
+      }
+      return Promise.resolve(undefined);
+    });
+    const { viewModel } = await mountViewModel('/chats/1', undefined, true);
+    await flushPromises();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const nextWorking = { step_count: 2, latest_step_id: 200, latest_step_sequence: 2,
+      latest_step_status: 'waiting_provider', completed_step_duration_ms: 100 };
+    resolvePoll({
+      message_id: 31, runtime: true, status: 'generating', phase: 'streaming', working: nextWorking,
+      content: { items: [], media: [], parts: [{
+        content_id: -21001, sequence: 1, step_id: 200, step_sequence: 2,
+        item_id: -101, item_sequence: 1, item_type: 'answer', text: 'Successor answer',
+      }] },
+    });
+    await flushPromises();
+    if (refetchFails) {
+      apiMocks.get.mockImplementation((path: string) => {
+        if (path === '/api/bff/chat-state/1') {
+          stateRequests += 1;
+          return Promise.reject(new Error('Refetch failed'));
+        }
+        return Promise.resolve(undefined);
+      });
+    }
+    resolveReload(structuredClone(state));
+    await flushPromises();
+    expect(stateRequests).toBe(3);
+    expect(activeWrapper!.text()).toContain('Successor answer');
+    if (refetchFails) {
+      expect(viewModel.loadError.value).toBe('Refetch failed');
+      expect(consoleError).toHaveBeenCalled();
+      return;
+    }
+    const nextState = structuredClone(state);
+    nextState.branch[0]!.working = nextWorking;
+    resolveReload(nextState);
+    await flushPromises();
+    expect(viewModel.branch.value[0]!.working?.latest_step_id).toBe(200);
+    expect(activeWrapper!.text()).toContain('Successor answer');
+  });
+
+  it('ignores a soft reload superseded by a newer request', async () => {
+    vi.useFakeTimers();
+    const state = chatState(1);
+    const pending: Array<(payload: ChatStatePayload) => void> = [];
+    let stateRequests = 0;
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') {
+        if (++stateRequests === 1) return Promise.resolve(structuredClone(state));
+        return new Promise((resolve) => { pending.push(resolve); });
+      }
+      if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
+      return Promise.resolve(undefined);
+    });
+    const { viewModel } = await mountViewModel();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(5_000);
+    window.dispatchEvent(new Event('focus'));
+    await flushPromises();
+    expect(pending).toHaveLength(2);
+    const newer = structuredClone(state);
+    newer.chat.note = 'Newer note';
+    pending[1]!(newer);
+    await flushPromises();
+    pending[0]!(structuredClone(state));
+    await flushPromises();
+    expect(viewModel.chatNote.value).toBe('Newer note');
+  });
+
+  it('does not let a delayed soft reload undo a branch switch', async () => {
+    vi.useFakeTimers();
+    const state = chatState(1);
+    state.branch = [{ id: 10, role: 'assistant', status: 'done' }];
+    let stateRequests = 0;
+    let resolveReload!: (payload: ChatStatePayload) => void;
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') {
+        if (++stateRequests === 1) return Promise.resolve(structuredClone(state));
+        return new Promise((resolve) => { resolveReload = resolve; });
+      }
+      if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
+      return Promise.resolve(undefined);
+    });
+    const { viewModel } = await mountViewModel();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(stateRequests).toBe(2);
+    apiMocks.post.mockResolvedValueOnce({ branch: [{ id: 20, role: 'assistant', status: 'done' }] });
+    await viewModel.activateBranchHandler(20);
+    resolveReload(structuredClone(state));
+    await flushPromises();
+    expect(viewModel.branch.value.map((message) => message.id)).toEqual([20]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(stateRequests).toBe(3);
+    expect(apiMocks.get.mock.calls.filter(([path]) => path.includes('/idle-state')).at(-1)?.[0])
+      .toBe('/api/bff/chat-state/1/idle-state?revision=revision-1');
   });
 
   it('keeps live inherited context separate and refreshes it on prefix revision changes', async () => {

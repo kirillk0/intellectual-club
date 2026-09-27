@@ -11,6 +11,7 @@ vi.mock('@/features/chat/chatEvents', () => ({ publishChatChange: mocks.publish 
 import {
   generationPollDelay,
   mergeRuntimePollContent,
+  preserveStreamingMessageContent,
 } from '@/features/chat/model/generationPolling';
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import type { PollResponse } from '@/features/chat/model/chatViewModel.shared';
@@ -66,6 +67,101 @@ function setupRuntime(onGenerationSettled?: (id: number, status: string) => Prom
   });
   return { runtime, branch, chatId, selection, detailRevision, applyWorkingPoll, activeGenerationId, onQueuedMessagesUpdated };
 }
+
+function streamingMessage(): ChatBranchMessage {
+  const completed = { step_id: 100, step_sequence: 1, item_id: 101, item_sequence: 1, item_type: 'answer' };
+  const steering = { step_id: 200, step_sequence: 2, item_id: -101, item_sequence: 1, item_type: 'steering' };
+  const answer = { step_id: 200, step_sequence: 2, item_id: -102, item_sequence: 2, item_type: 'answer' };
+  const artifact = { ...answer, item_id: -103, item_sequence: 3, item_type: 'artifact' };
+  return {
+    id: 31, role: 'assistant', status: 'generating',
+    working: { step_count: 2, latest_step_id: 200, latest_step_sequence: 2,
+      latest_step_status: 'waiting_provider', completed_step_duration_ms: 100 },
+    content: {
+      items: [completed, steering, answer, artifact],
+      parts: [
+        { ...completed, content_id: 1001, sequence: 1, text: 'Completed answer' },
+        { ...steering, content_id: -21001, sequence: 1, text: 'Steering' },
+        { ...answer, content_id: -22001, sequence: 1, text: 'Streaming answer' },
+      ],
+      media: [{ ...artifact, id: -23001, sequence: 1, kind: 'media', media: {
+        external_id: 'file-1', filename: 'image.png', mime_type: 'image/png', size_bytes: 1,
+        sha256: '', is_image: true,
+      } }],
+    },
+  };
+}
+
+function persistedOnlyMessage(): ChatBranchMessage {
+  const message = streamingMessage();
+  message.bookmarked = true;
+  message.content!.items = message.content!.items.slice(0, 2).map((item) => ({ ...item, item_id: Math.abs(item.item_id!) }));
+  message.content!.parts = message.content!.parts.slice(0, 2).map((part) => ({
+    ...part, item_id: Math.abs(part.item_id!), content_id: Math.abs(part.content_id),
+  }));
+  message.content!.parts[0]!.text = 'Edited completed answer';
+  message.content!.media = [];
+  return message;
+}
+
+describe('persisted branch reconciliation', () => {
+  it('retains the whole live step without duplicating persisted steering or losing earlier edits', () => {
+    const current = streamingMessage();
+    const incoming = persistedOnlyMessage();
+    const result = preserveStreamingMessageContent(current, incoming);
+    expect(result.bookmarked).toBe(true);
+    expect(result.working).toBe(incoming.working);
+    expect(result.content!.parts.map((part) => part.text)).toEqual([
+      'Edited completed answer', 'Steering', 'Streaming answer',
+    ]);
+    expect(result.content!.items.map((item) => item.item_id)).toEqual([101, -101, -102, -103]);
+    expect(result.content!.media).toEqual(current.content!.media);
+    expect(current.content!.parts[0]!.text).toBe('Completed answer');
+    expect(incoming.content!.parts).toHaveLength(2);
+  });
+
+  it.each(['waiting_tools', 'done', 'canceled', 'error'])('accepts canonical step status %s even before message finalization', (status) => {
+    const incoming = persistedOnlyMessage();
+    incoming.working!.latest_step_status = status;
+    expect(preserveStreamingMessageContent(streamingMessage(), incoming)).toBe(incoming);
+  });
+
+  it.each(['done', 'canceled', 'error'])('accepts terminal message status %s', (status) => {
+    const incoming = persistedOnlyMessage();
+    incoming.status = status;
+    expect(preserveStreamingMessageContent(streamingMessage(), incoming)).toBe(incoming);
+  });
+
+  it('accepts persisted provider content even with pre-commit step metadata', () => {
+    const incoming = streamingMessage();
+    incoming.content!.items = incoming.content!.items.map((item) => ({ ...item, item_id: Math.abs(item.item_id!) }));
+    incoming.content!.parts = incoming.content!.parts.map((part) => ({
+      ...part, item_id: Math.abs(part.item_id!), content_id: Math.abs(part.content_id),
+    }));
+    incoming.content!.media = incoming.content!.media.map((item) => ({
+      ...item, item_id: Math.abs(item.item_id!), id: Math.abs(item.id),
+    }));
+    expect(preserveStreamingMessageContent(streamingMessage(), incoming)).toBe(incoming);
+  });
+
+  it('does not resurrect runtime when retry reuses the sequence with a new step ID', () => {
+    const incoming = persistedOnlyMessage();
+    incoming.working!.latest_step_id = 201;
+    expect(preserveStreamingMessageContent(streamingMessage(), incoming)).toBe(incoming);
+  });
+
+  it('does not overlay a successor, another message, or content without runtime IDs', () => {
+    const current = streamingMessage();
+    const incoming = persistedOnlyMessage();
+    const successor = { ...incoming, working: { ...incoming.working!, latest_step_id: 300, latest_step_sequence: 3 } };
+    expect(preserveStreamingMessageContent(current, successor)).toBe(successor);
+    expect(preserveStreamingMessageContent({ ...current, id: 32 }, incoming)).toBe(incoming);
+    expect(preserveStreamingMessageContent({ ...current, status: 'done' }, incoming)).toBe(incoming);
+    expect(preserveStreamingMessageContent({ ...current, working: null }, incoming)).toBe(incoming);
+    expect(preserveStreamingMessageContent(undefined, incoming)).toBe(incoming);
+    expect(preserveStreamingMessageContent(persistedOnlyMessage(), incoming)).toBe(incoming);
+  });
+});
 
 describe('revision-aware generation polling', () => {
   beforeEach(() => {
@@ -149,6 +245,34 @@ describe('revision-aware generation polling', () => {
     expect(branch.value[0].content).toEqual(content);
     await vi.advanceTimersByTimeAsync(1750);
     expect(mocks.get).toHaveBeenCalledTimes(4);
+  });
+
+  it('hands preserved runtime content back to canonical polling content', async () => {
+    const current = streamingMessage();
+    const canonical = persistedOnlyMessage();
+    canonical.working!.latest_step_status = 'waiting_tools';
+    canonical.content!.parts.push({ step_id: 200, step_sequence: 2, item_id: 202, item_sequence: 2,
+      content_id: 22001, sequence: 1, item_type: 'answer', text: 'Canonical answer' });
+    mocks.get.mockResolvedValueOnce({ ...initial, content: current.content, working: current.working })
+      .mockResolvedValue({ ...initial, content: canonical.content, working: canonical.working });
+    const { runtime, branch } = setupRuntime();
+    await runtime.startPolling(31);
+    branch.value = [persistedOnlyMessage()];
+    expect(branch.value[0]!.content!.parts.at(-1)!.text).toBe('Streaming answer');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(branch.value[0]!.content).toEqual(canonical.content);
+    expect(branch.value[0]!.content!.parts.every((part) => part.content_id > 0)).toBe(true);
+  });
+
+  it('never carries a streaming overlay across chat routes', async () => {
+    const current = streamingMessage();
+    mocks.get.mockResolvedValue({ ...initial, content: current.content, working: current.working });
+    const { runtime, branch, chatId } = setupRuntime();
+    await runtime.startPolling(31);
+    chatId.value = 13;
+    const incoming = persistedOnlyMessage();
+    branch.value = [incoming];
+    expect(branch.value[0]!.content).toEqual(incoming.content);
   });
 
   it('resynchronizes after a full branch reload and on resume', async () => {
