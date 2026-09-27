@@ -354,12 +354,17 @@ export function useChatMessageActions(params: Params) {
   const getOpenWorkingPollRequest = (messageId: number) => {
     const state = openWorking.value;
     if (!state || state.messageId !== messageId) return null;
-    if (!state.open || state.loading) return null;
+    if (!state.open || state.loading || state.error) return null;
     if (state.followLatest) return 'latest';
     return state.selectedStepId && state.selectedStepId > 0
       ? String(state.selectedStepId)
       : 'latest';
   };
+
+  // Independent loads invalidate the inspector's position in the body cursor stream.
+  // Poll projections keep this generation stable, so synchronization is one-shot.
+  const getOpenWorkingPollSync = (messageId: number) =>
+    getOpenWorkingPollRequest(messageId) ? String(workingLoadVersion) : undefined;
 
   const getOpenWorkingPollRevision = (messageId: number) => {
     const state = openWorking.value;
@@ -379,6 +384,18 @@ export function useChatMessageActions(params: Params) {
     if (openWorking.value.loading) return;
 
     const current = openWorking.value;
+    if (payload.runtime_delta || payload.runtime_summary) {
+      const delta = payload.runtime_delta;
+      const step = current.selectedStep;
+      if (!step || step.id !== (delta?.step_id ?? payload.runtime_summary?.id)) return;
+      const items = (step.items || []).map((item) => !delta || item.id !== delta.item_id ? item : {
+        ...item, contents: (item.contents || []).map((content) => content.id !== delta.content_id ? content : {
+          ...content, content_text: (content.content_text || '') + delta.text,
+        }),
+      });
+      openWorking.value = { ...current, selectedStep: { ...step, ...payload.runtime_summary, items } };
+      return;
+    }
     const selectedStepId =
       payload.selected_step_id !== undefined
         ? payload.selected_step_id
@@ -872,6 +889,7 @@ export function useChatMessageActions(params: Params) {
     selectWorkingStep,
     getOpenWorkingPollRequest,
     getOpenWorkingPollRevision,
+    getOpenWorkingPollSync,
     applyWorkingPoll,
     retryLastStep,
     switchBranchHandler,

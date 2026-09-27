@@ -965,6 +965,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     media = runtime_media_descriptor(content)
 
     content
+    |> Map.take(~w(id external_id sequence kind)a)
     |> Map.put(:content_text, preview_text)
     |> Map.put(:content_text_truncated, truncated?)
     |> Map.put(:content_json, sanitized_content_json)
@@ -972,6 +973,13 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp normalize_runtime_content(content, _item_type), do: content
+
+  defp runtime_media_descriptor(%{kind: "media", media: %{} = media}) do
+    Map.take(
+      media,
+      ~w(external_id file_external_id filename mime_type size_bytes sha256 is_image file_id)a
+    )
+  end
 
   defp runtime_media_descriptor(%{kind: "media"} = content) do
     file = runtime_media_file(Map.get(content, :file))

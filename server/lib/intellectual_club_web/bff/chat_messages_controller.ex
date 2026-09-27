@@ -36,8 +36,23 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   def poll(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, message_id} <- ChatParams.resource_id(id),
-         {:ok, %ChatMessage{} = message} <- Ash.get(ChatMessage, message_id, actor: actor) do
-      runtime = message |> runtime_for_message() |> maybe_recover_absent(message, actor)
+         {:ok, %ChatMessage{} = message} <-
+           Ash.get(ChatMessage, message_id, actor: actor, load: [:poll_revision]) do
+      cursor? = params["poll_protocol"] == "cursor"
+
+      runtime =
+        if cursor? do
+          cursor =
+            if params["content_revision"] == ChatPollPayload.persisted_revision(message),
+              do: decode_runtime_cursor(params["runtime_cursor"]),
+              else: %{}
+
+          runtime_for_cursor(message, cursor)
+        else
+          runtime_for_message(message)
+        end
+
+      runtime = maybe_recover_absent(runtime, message, actor)
 
       meta = %{
         queued_messages: ChatQueuedMessagePayload.list_for_chat(message.chat_id, actor),
@@ -46,7 +61,12 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
       conn = put_resp_header(conn, "cache-control", "no-store")
 
-      case ChatPollPayload.response(message, actor, runtime, params, meta) do
+      result =
+        if cursor?,
+          do: ChatPollPayload.cursor_response(message, actor, runtime, params, meta),
+          else: ChatPollPayload.response(message, actor, runtime, params, meta)
+
+      case result do
         :unchanged -> send_resp(conn, :no_content, "")
         {:ok, payload} -> json(conn, payload)
       end
@@ -876,6 +896,26 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
     |> Enum.map(fn content -> to_string(Map.get(content, :content_text) || "") end)
     |> Enum.join("")
   end
+
+  defp decode_runtime_cursor(value) when is_binary(value) and byte_size(value) <= 2048 do
+    case Jason.decode(value) do
+      {:ok, cursor} when is_map(cursor) ->
+        Map.take(
+          cursor,
+          ~w(epoch step sequence structure item content id generation offset retired)
+        )
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp decode_runtime_cursor(_), do: %{}
+
+  defp runtime_for_cursor(%ChatMessage{status: :generating, id: id}, cursor),
+    do: GenerationSupervisor.poll_generation(id, cursor, protocol: :cursor)
+
+  defp runtime_for_cursor(_message, _cursor), do: :not_found
 
   defp runtime_for_message(%ChatMessage{status: :generating, id: id}),
     do: GenerationSupervisor.poll_generation(id)

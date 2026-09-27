@@ -17,7 +17,6 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Recovery
   alias IntellectualClub.Generation.RecoveryGate
-  alias IntellectualClub.Generation.RuntimeSnapshots
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
@@ -917,21 +916,20 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  @doc "Reads the same mailbox-independent UI snapshot as polling."
+  @doc "Reads runtime state on demand from the owning Worker."
   def get_generation_state(message_id), do: poll_generation(message_id)
 
-  def poll_generation(message_id, _cursor \\ %{}, _opts \\ []) when is_integer(message_id) do
+  def poll_generation(message_id, cursor \\ %{}, opts \\ []) when is_integer(message_id) do
     case generation_worker_pid(message_id) do
       pid when is_pid(pid) ->
-        case RuntimeSnapshots.read(message_id, pid) do
-          {:ok, %{phase: :initializing} = snapshot} ->
-            {:busy, snapshot}
-
-          {:ok, snapshot} ->
-            {:ok, snapshot}
-
-          _missing_or_unavailable ->
-            {:busy, %{status: :generating, phase: :initializing, step: nil}}
+        try do
+          case Worker.poll(pid, cursor, opts) do
+            %{phase: :initializing} = reply -> {:busy, reply}
+            reply -> {:ok, reply}
+          end
+        catch
+          :exit, {:noproc, _} when node(pid) == node() -> :not_found
+          :exit, _ -> {:busy, %{status: :generating, phase: :initializing, step: nil}}
         end
 
       nil ->

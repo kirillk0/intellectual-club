@@ -1,0 +1,92 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "chat_message_poll_revisions_chat_message_id_fkey",
+        "on_delete": "delete",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "chat_messages"
+      },
+      "scale": null,
+      "size": null,
+      "source": "chat_message_id",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "revision",
+      "type": "bigint"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [],
+  "create_table_options": null,
+  "custom_indexes": [],
+  "custom_statements": [
+    {
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS advance_message_trace_revision()",
+      "global?": false,
+      "name": "advance_message_trace_revision",
+      "up": "CREATE OR REPLACE FUNCTION advance_message_trace_revision()\nRETURNS trigger AS $$\nDECLARE message_id bigint;\nBEGIN\n  IF TG_TABLE_NAME = 'chat_message_steps' THEN\n    message_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_id ELSE NEW.chat_message_id END;\n  ELSIF TG_TABLE_NAME = 'chat_message_items' THEN\n    SELECT chat_message_id INTO message_id FROM chat_message_steps\n      WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_step_id ELSE NEW.chat_message_step_id END;\n  ELSE\n    SELECT s.chat_message_id INTO message_id FROM chat_message_items i\n      JOIN chat_message_steps s ON s.id = i.chat_message_step_id\n      WHERE i.id = CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_item_id ELSE NEW.chat_message_item_id END;\n  END IF;\n  INSERT INTO chat_message_poll_revisions (chat_message_id, revision)\n    SELECT id, 1 FROM chat_messages WHERE id = message_id\n    ON CONFLICT (chat_message_id) DO UPDATE\n      SET revision = chat_message_poll_revisions.revision + 1;\n  RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;\n"
+    },
+    {
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_step_trace_revision ON chat_message_steps",
+      "global?": false,
+      "name": "advance_step_trace_revision",
+      "up": "CREATE TRIGGER advance_step_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_steps FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    },
+    {
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_item_trace_revision ON chat_message_items",
+      "global?": false,
+      "name": "advance_item_trace_revision",
+      "up": "CREATE TRIGGER advance_item_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_items FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    },
+    {
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_content_trace_revision ON chat_message_contents",
+      "global?": false,
+      "name": "advance_content_trace_revision",
+      "up": "CREATE TRIGGER advance_content_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_contents FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    }
+  ],
+  "has_create_action": false,
+  "hash": "157EBA5CCDEFE6ED12BF0FD07E6FCAD84AF68BE02943DA6291D7CF78EBEDAE1E",
+  "identities": [],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.IntellectualClub.Repo",
+  "schema": null,
+  "table": "chat_message_poll_revisions"
+}

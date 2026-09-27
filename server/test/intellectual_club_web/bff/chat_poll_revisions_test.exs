@@ -10,11 +10,11 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
     Threads
   }
 
-  alias IntellectualClub.Generation.RuntimeSnapshots
+  alias IntellectualClub.Generation.LegacyGenerationSnapshotStub
   alias IntellectualClubWeb.Bff.PollCache
 
   setup do
-    for child <- [RuntimeSnapshots, PollCache, SubchatCostCache] do
+    for child <- [PollCache, SubchatCostCache] do
       if is_nil(Process.whereis(child)), do: start_supervised!(child)
     end
 
@@ -224,60 +224,18 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
       )
       |> Ash.create!(actor: actor)
 
-    owner = self()
+    worker = start_supervised!({LegacyGenerationSnapshotStub, self()})
 
-    worker =
-      start_supervised!(
-        {Task,
-         fn ->
-           Registry.register(IntellectualClub.Generation.Registry, {:message, message.id}, %{})
-           {:ok, identity} = RuntimeSnapshots.register(message.id)
+    publish = fn text ->
+      GenServer.call(worker, {:publish_snapshot, message.id, ui_snapshot(step, text, :provider)})
+    end
 
-           publish = fn text ->
-             ui_step = %{
-               id: step.id,
-               sequence: step.sequence,
-               status: "waiting_provider",
-               items: [
-                 %{
-                   id: -1,
-                   sequence: 1,
-                   type: "answer",
-                   contents: [%{id: -2, sequence: 1, kind: "text", content_text: text}]
-                 }
-               ]
-             }
-
-             :ok =
-               RuntimeSnapshots.publish(message.id, identity, %{
-                 status: :generating,
-                 phase: :provider,
-                 step: ui_step
-               })
-           end
-
-           publish.("first")
-           send(owner, :published_first)
-
-           receive do
-             :next -> publish.("second")
-           end
-
-           send(owner, :published_second)
-
-           receive do
-             :finish -> :ok
-           end
-         end}
-      )
-
-    assert_receive :published_first
+    publish.("first")
     first = poll(conn, message.id, %{"working_step_id" => "latest"}) |> json_response(200)
     assert first["phase"] == "streaming"
     assert first["poll_after_ms"] == 500
     assert Enum.map(first["content"]["parts"], & &1["text"]) == ["Completed answer", "first"]
-    send(worker, :next)
-    assert_receive :published_second
+    publish.("second")
 
     params = %{
       "revision" => first["revision"],
@@ -347,71 +305,12 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
         actor
       )
 
-    owner = self()
+    worker = start_supervised!({LegacyGenerationSnapshotStub, self()})
 
-    worker =
-      start_supervised!(
-        {Task,
-         fn ->
-           Registry.register(IntellectualClub.Generation.Registry, {:message, message.id}, %{})
-           {:ok, identity} = RuntimeSnapshots.register(message.id)
-
-           stale = %{
-             id: completed.id,
-             sequence: completed.sequence,
-             status: "waiting_tools",
-             items: [
-               %{
-                 id: -1,
-                 sequence: 1,
-                 type: "answer",
-                 contents: [%{id: -2, sequence: 1, kind: "text", content_text: "Stale answer"}]
-               }
-             ]
-           }
-
-           :ok =
-             RuntimeSnapshots.publish(message.id, identity, %{
-               status: :generating,
-               phase: :persisting,
-               step: stale
-             })
-
-           send(owner, :stale_published)
-
-           receive do
-             {:successor, step} ->
-               next = %{
-                 id: step.id,
-                 sequence: step.sequence,
-                 status: "waiting_provider",
-                 items: [
-                   %{
-                     id: -3,
-                     sequence: 1,
-                     type: "answer",
-                     contents: [%{id: -4, sequence: 1, kind: "text", content_text: "New stream"}]
-                   }
-                 ]
-               }
-
-               :ok =
-                 RuntimeSnapshots.publish(message.id, identity, %{
-                   status: :generating,
-                   phase: :provider,
-                   step: next
-                 })
-
-               send(owner, :successor_published)
-           end
-
-           receive do
-             :finish -> :ok
-           end
-         end}
-      )
-
-    assert_receive :stale_published
+    GenServer.call(
+      worker,
+      {:publish_snapshot, message.id, ui_snapshot(completed, "Stale answer", :persisting)}
+    )
 
     # A durable response already owns this step, even before a successor exists.
     committed = poll(conn, message.id, %{"working_step_id" => "latest"}) |> json_response(200)
@@ -443,8 +342,10 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
     assert hd(boundary["content"]["media"])["id"] == media.id
     assert boundary["working_open"]["selected_step_id"] == successor.id
 
-    send(worker, {:successor, successor})
-    assert_receive :successor_published
+    GenServer.call(
+      worker,
+      {:publish_snapshot, message.id, ui_snapshot(successor, "New stream", :provider)}
+    )
 
     {response, queries} =
       measure(fn ->
@@ -460,6 +361,304 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
     assert streaming["runtime_step_sequence"] == 2
     assert hd(streaming["runtime_content"]["parts"])["text"] == "New stream"
     assert_no_content_load(queries)
+  end
+
+  test "cursor polls return suffixes, skip trace metadata on 204, and reconcile a committed step",
+       %{conn: conn} do
+    {conn, actor, chat, parent} = fixture(conn)
+    message = generating_message(chat, parent, actor)
+
+    step =
+      create!(
+        ChatMessageStep,
+        %{chat_message_id: message.id, sequence: 1, status: :waiting_provider},
+        actor
+      )
+
+    runtime =
+      IntellectualClub.Generation.RuntimeTrace.new_step(id: step.id, sequence: 1)
+      |> IntellectualClub.Generation.RuntimeTrace.apply_event(
+        {:append_text, "reasoning", :reasoning, 1, "Thinking"}
+      )
+      |> IntellectualClub.Generation.RuntimeTrace.apply_event(
+        {:append_text, "answer", :answer, 1, "Привет"}
+      )
+
+    worker = start_supervised!({IntellectualClub.Test.RuntimePollStub, {message.id, runtime}})
+    first = poll(conn, message.id, %{"poll_protocol" => "cursor"}) |> json_response(200)
+    assert hd(first["content"]["parts"])["text"] == "Привет"
+    params = cursor_params(first)
+    {unchanged, queries} = measure(fn -> poll(conn, message.id, params) end)
+    assert response(unchanged, 204) == ""
+    assert_no_trace_metadata(queries)
+
+    :ok = GenServer.call(worker, {:event, {:append_text, "answer", :answer, 1, " 🌍"}})
+    {changed, queries} = measure(fn -> poll(conn, message.id, params) end)
+    next = json_response(changed, 200)
+    assert next["runtime_delta"]["text"] == " 🌍"
+    assert next["runtime_delta"]["from"] == byte_size("Привет")
+    refute Map.has_key?(next, "content")
+    refute Map.has_key?(next, "runtime_content")
+    assert_no_trace_metadata(queries)
+    # A lost response is safely replayed from the old client cursor.
+    assert json_response(poll(conn, message.id, params), 200) == next
+    :ok = GenServer.call(worker, {:event, {:set_text, "reasoning", :reasoning, 1, "Revised"}})
+    assert response(poll(conn, message.id, cursor_params(next)), 204) == ""
+
+    :ok = GenServer.call(worker, {:event, {:set_step_usage, %{output_tokens: 7, cost: 0.1}}})
+
+    {metrics_response, metrics_queries} =
+      measure(fn -> poll(conn, message.id, cursor_params(next)) end)
+
+    metrics = json_response(metrics_response, 200)
+    assert metrics["runtime_summary"]["output_tokens"] == 7
+    assert metrics["runtime_cursor"] == next["runtime_cursor"]
+    refute Map.has_key?(metrics, "runtime_content")
+    refute Map.has_key?(metrics, "content")
+    assert_no_trace_metadata(metrics_queries)
+
+    item =
+      create!(
+        IntellectualClub.Chat.ChatMessageItem,
+        %{chat_message_step_id: step.id, sequence: 1, type: :answer},
+        actor
+      )
+
+    content =
+      create!(
+        ChatMessageContent,
+        %{
+          chat_message_item_id: item.id,
+          sequence: 1,
+          kind: :text,
+          content_text: "Canonical answer"
+        },
+        actor
+      )
+
+    step
+    |> Ash.Changeset.for_update(:update, %{response_final: true}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    final = poll(conn, message.id, cursor_params(next)) |> json_response(200)
+    assert hd(final["content"]["parts"])["content_id"] == content.id
+    assert hd(final["content"]["parts"])["text"] == "Canonical answer"
+
+    assert final["runtime_cursor"] == %{
+             "epoch" => next["runtime_cursor"]["epoch"],
+             "step" => step.id,
+             "sequence" => 1,
+             "retired" => true
+           }
+
+    refute Map.has_key?(final, "runtime_content")
+    # A lost canonical response must replay before the client acknowledges it.
+    assert json_response(poll(conn, message.id, cursor_params(next)), 200) == final
+
+    unacknowledged =
+      Map.put(cursor_params(next), "runtime_cursor", Jason.encode!(final["runtime_cursor"]))
+
+    assert json_response(poll(conn, message.id, unacknowledged), 200) == final
+    snapshots = :sys.get_state(worker).full_snapshots
+
+    {unchanged, queries} = measure(fn -> poll(conn, message.id, cursor_params(final)) end)
+    assert response(unchanged, 204) == ""
+    assert_no_trace_metadata(queries)
+    assert :sys.get_state(worker).full_snapshots == snapshots
+
+    for event <- [
+          {:append_text, "answer", :answer, 1, " stale suffix"},
+          {:append_text, "new block", :reasoning, 2, "structural change"},
+          {:set_step_usage, %{output_tokens: 999}}
+        ] do
+      :ok = GenServer.call(worker, {:event, event})
+      {unchanged, queries} = measure(fn -> poll(conn, message.id, cursor_params(final)) end)
+      assert response(unchanged, 204) == ""
+      assert_no_trace_metadata(queries)
+      assert :sys.get_state(worker).full_snapshots == snapshots
+    end
+
+    # Even a retired cursor cannot suppress a subsequent persisted edit.
+    content
+    |> Ash.Changeset.for_update(:update, %{content_text: "Canonical edit"}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    edited = poll(conn, message.id, cursor_params(final)) |> json_response(200)
+    assert hd(edited["content"]["parts"])["text"] == "Canonical edit"
+    assert edited["runtime_cursor"] == final["runtime_cursor"]
+    assert response(poll(conn, message.id, cursor_params(edited)), 204) == ""
+
+    successor =
+      create!(
+        ChatMessageStep,
+        %{chat_message_id: message.id, sequence: 2, status: :waiting_provider},
+        actor
+      )
+
+    boundary = poll(conn, message.id, cursor_params(edited)) |> json_response(200)
+    assert boundary["runtime_cursor"] == final["runtime_cursor"]
+
+    :sys.replace_state(worker, fn state ->
+      %{state | step: %{runtime | id: successor.id, sequence: 2}}
+    end)
+
+    successor_reply = poll(conn, message.id, cursor_params(boundary)) |> json_response(200)
+    assert successor_reply["runtime_step_sequence"] == 2
+    assert hd(successor_reply["runtime_content"]["parts"])["text"] == "Привет"
+    refute Map.has_key?(successor_reply["runtime_cursor"], "retired")
+    assert response(poll(conn, message.id, cursor_params(successor_reply)), 204) == ""
+
+    :sys.replace_state(worker, &%{&1 | epoch: "replacement-worker"})
+    replacement = poll(conn, message.id, cursor_params(successor_reply)) |> json_response(200)
+    assert replacement["runtime_cursor"]["epoch"] == "replacement-worker"
+    assert replacement["runtime_content"] == successor_reply["runtime_content"]
+    assert response(poll(conn, message.id, cursor_params(replacement)), 204) == ""
+    assert final["content_revision"] != next["content_revision"]
+  end
+
+  test "a new inspector sync resets body and details once, then resumes suffix polling", %{
+    conn: conn
+  } do
+    {conn, actor, chat, parent} = fixture(conn)
+    message = generating_message(chat, parent, actor)
+
+    step =
+      create!(
+        ChatMessageStep,
+        %{chat_message_id: message.id, sequence: 1, status: :waiting_provider},
+        actor
+      )
+
+    runtime =
+      IntellectualClub.Generation.RuntimeTrace.new_step(id: step.id, sequence: 1)
+      |> IntellectualClub.Generation.RuntimeTrace.apply_event(
+        {:append_text, "answer", :answer, 1, "A"}
+      )
+
+    worker = start_supervised!({IntellectualClub.Test.RuntimePollStub, {message.id, runtime}})
+    inspector = %{"working_step_id" => "latest", "working_sync" => "1"}
+
+    first =
+      poll(conn, message.id, Map.put(inspector, "poll_protocol", "cursor"))
+      |> json_response(200)
+
+    :ok = GenServer.call(worker, {:event, {:append_text, "answer", :answer, 1, "B"}})
+    loaded = get(conn, "/api/bff/chat-messages/#{message.id}/working") |> json_response(200)
+
+    # The client omits the independently loaded working revision until its
+    # inspector generation has been aligned with the body cursor.
+    reopened =
+      poll(
+        conn,
+        message.id,
+        first |> cursor_params() |> Map.merge(%{inspector | "working_sync" => "2"})
+      )
+      |> json_response(200)
+
+    assert reopened["view_revision"] != first["view_revision"]
+    assert hd(reopened["runtime_content"]["parts"])["text"] == "AB"
+
+    inspector_text = fn payload ->
+      payload["step"]["items"]
+      |> hd()
+      |> Map.fetch!("contents")
+      |> hd()
+      |> Map.fetch!("content_text")
+    end
+
+    assert inspector_text.(reopened["working_open"]) == "AB"
+    assert inspector_text.(loaded) == "AB"
+    assert reopened["runtime_cursor"]["offset"] == 2
+    refute Map.has_key?(reopened, "runtime_delta")
+
+    synchronized =
+      reopened
+      |> cursor_params()
+      |> Map.merge(%{inspector | "working_sync" => "2"})
+      |> Map.put("working_revision", reopened["working_open"]["revision"])
+
+    # Even an equal prior working revision needs a full first synchronized projection.
+    same_snapshot =
+      poll(
+        conn,
+        message.id,
+        synchronized |> Map.put("working_sync", "3") |> Map.delete("working_revision")
+      )
+      |> json_response(200)
+
+    assert same_snapshot["working_open"]["revision"] == reopened["working_open"]["revision"]
+    assert same_snapshot["working_open"]["step"] == reopened["working_open"]["step"]
+    assert same_snapshot["runtime_content"] == reopened["runtime_content"]
+
+    snapshots = :sys.get_state(worker).full_snapshots
+    assert response(poll(conn, message.id, synchronized), 204) == ""
+    assert :sys.get_state(worker).full_snapshots == snapshots
+
+    :ok = GenServer.call(worker, {:event, {:append_text, "answer", :answer, 1, "C"}})
+    suffix = poll(conn, message.id, synchronized) |> json_response(200)
+    assert suffix["runtime_delta"]["text"] == "C"
+    assert suffix["runtime_delta"]["from"] == 2
+    assert suffix["view_revision"] == reopened["view_revision"]
+    refute Map.has_key?(suffix, "working_open")
+    refute Map.has_key?(suffix, "runtime_content")
+    assert :sys.get_state(worker).full_snapshots == snapshots
+  end
+
+  test "cursor 204 invalidates same-count persisted edits and deletion", %{conn: conn} do
+    {conn, actor, _chat, message} = fixture(conn)
+    first = poll(conn, message.id, %{"poll_protocol" => "cursor"}) |> json_response(200)
+    assert response(poll(conn, message.id, cursor_params(first)), 204) == ""
+    id = hd(first["content"]["parts"])["content_id"]
+    content = Ash.get!(ChatMessageContent, id, actor: actor)
+
+    content
+    |> Ash.Changeset.for_update(:update, %{content_text: "edit"}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    edited = poll(conn, message.id, cursor_params(first)) |> json_response(200)
+    assert hd(edited["content"]["parts"])["text"] == "edit"
+    assert edited["content_revision"] != first["content_revision"]
+    Ash.destroy!(content, actor: actor)
+    deleted = poll(conn, message.id, cursor_params(edited)) |> json_response(200)
+    assert deleted["content"]["parts"] == []
+  end
+
+  defp cursor_params(payload) do
+    %{
+      "poll_protocol" => "cursor",
+      "revision" => payload["revision"],
+      "view_revision" => payload["view_revision"],
+      "content_revision" => payload["content_revision"],
+      "runtime_cursor" => Jason.encode!(payload["runtime_cursor"])
+    }
+  end
+
+  defp assert_no_trace_metadata(queries) do
+    refute Enum.any?(queries, fn query ->
+             String.contains?(query, ~s(FROM "chat_message_steps")) or
+               String.contains?(query, ~s(FROM "chat_message_items")) or
+               String.contains?(query, ~s(FROM "chat_message_contents"))
+           end)
+  end
+
+  defp ui_snapshot(step, text, phase) do
+    %{
+      status: :generating,
+      phase: phase,
+      step: %{
+        id: step.id,
+        sequence: step.sequence,
+        status: "waiting_provider",
+        items: [
+          %{
+            id: -1,
+            sequence: 1,
+            type: "answer",
+            contents: [%{id: -2, sequence: 1, kind: "text", content_text: text}]
+          }
+        ]
+      }
+    }
   end
 
   defp create!(resource, attrs, actor) do

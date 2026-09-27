@@ -15,7 +15,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
-  alias IntellectualClub.Generation.RuntimeSnapshots
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
 
@@ -488,7 +488,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     refute inspect(request) =~ ";base64,"
 
     snapshot = Worker.get_current_state(pid)
-    assert {:ok, stored_snapshot} = RuntimeSnapshots.read(message_id, pid)
+    assert {:ok, stored_snapshot} = GenerationSupervisor.poll_generation(message_id)
 
     for public <- [snapshot, stored_snapshot] do
       refute Map.has_key?(public, :image_cache)

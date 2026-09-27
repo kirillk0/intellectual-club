@@ -36,7 +36,6 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.BackgroundTasks.Reaper, []},
       {Registry, keys: :unique, name: IntellectualClub.Generation.Registry},
       {Task.Supervisor, name: IntellectualClub.Generation.PersistenceTasks},
-      {IntellectualClub.Generation.RuntimeSnapshots, []},
       {IntellectualClubWeb.Bff.PollCache, []},
       {IntellectualClub.Generation.Supervisor, []},
       {IntellectualClub.Generation.Recovery, []},

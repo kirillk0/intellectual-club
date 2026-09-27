@@ -168,7 +168,7 @@ describe('chat composer runtime', () => {
     expect(runtime.draft.value).toBe('');
     expect(runtime.pendingFiles.value).toEqual([file]);
     expect(apiMocks.get).toHaveBeenCalledWith(
-      '/api/bff/chat-messages/31/poll',
+      '/api/bff/chat-messages/31/poll?poll_protocol=cursor',
       expect.objectContaining({ showErrorBanner: false })
     );
   });
@@ -350,7 +350,7 @@ describe('chat composer runtime', () => {
     await runtime.startPolling(31);
     await vi.waitFor(() => {
       expect(apiMocks.get).toHaveBeenCalledWith(
-        '/api/bff/chat-messages/32/poll',
+        '/api/bff/chat-messages/32/poll?poll_protocol=cursor',
         expect.objectContaining({ showErrorBanner: false })
       );
     });

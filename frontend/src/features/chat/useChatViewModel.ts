@@ -368,6 +368,7 @@ export function useChatViewModel() {
   };
 
   let getOpenWorkingPollRequest: (messageId: number) => string | null = () => null;
+  let getOpenWorkingPollSync: (messageId: number) => string | undefined = () => undefined;
   let getOpenWorkingPollRevision: (messageId: number) => string | undefined = () => undefined;
   let applyWorkingPoll: Parameters<typeof useChatComposerRuntime>[0]['applyWorkingPoll'] = () => {};
   const replaceQueuedMessages = (messages: ChatQueuedMessage[]) => {
@@ -400,6 +401,7 @@ export function useChatViewModel() {
     autoScrollEnabled: computed(() => layer.active.value),
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
+    getOpenWorkingPollSync: (messageId) => getOpenWorkingPollSync(messageId),
     getOpenWorkingPollRevision: (messageId) => getOpenWorkingPollRevision(messageId),
     applyWorkingPoll: (messageId, payload) => applyWorkingPoll?.(messageId, payload),
     onQueuedMessagesUpdated: replaceQueuedMessages,
@@ -437,6 +439,7 @@ export function useChatViewModel() {
   });
 
   getOpenWorkingPollRequest = messageActions.getOpenWorkingPollRequest;
+  getOpenWorkingPollSync = messageActions.getOpenWorkingPollSync;
   getOpenWorkingPollRevision = messageActions.getOpenWorkingPollRevision;
   applyWorkingPoll = messageActions.applyWorkingPoll;
 

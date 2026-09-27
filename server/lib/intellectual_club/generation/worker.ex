@@ -2,7 +2,7 @@ defmodule IntellectualClub.Generation.Worker do
   @moduledoc """
   Per-message generation worker.
 
-  It accumulates a canonical runtime trace, publishes a request-free UI snapshot,
+  It accumulates a canonical runtime trace, serves client-owned polling cursors,
   and broadcasts lifecycle signals via PubSub. Supervised persistence operations
   serialize completed steps and round transitions without blocking command
   reception. External work resumes only after an acknowledged commit.
@@ -24,7 +24,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.RecoveryGate
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.QueueDispatcher
-  alias IntellectualClub.Generation.RuntimeSnapshots
+  alias IntellectualClub.Generation.RuntimePoll
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Generation.UsageCost
@@ -67,7 +67,7 @@ defmodule IntellectualClub.Generation.Worker do
     :refusal_round,
     :provider_session,
     :request_images,
-    :snapshot_identity,
+    :runtime_epoch,
     :persistence_op,
     :persistence_action,
     :failure_plan,
@@ -170,11 +170,10 @@ defmodule IntellectualClub.Generation.Worker do
       state = %__MODULE__{
         context: context,
         lease: lease,
-        status: :initializing
+        status: :initializing,
+        runtime_epoch: Ash.UUID.generate()
       }
 
-      state = publish_snapshot(state)
-      Process.send_after(self(), :publish_runtime_snapshot, 1_000)
       {:ok, state, {:continue, :initialize}}
     else
       {:error, reason} -> {:stop, reason}
@@ -306,9 +305,6 @@ defmodule IntellectualClub.Generation.Worker do
     PersistenceOperation.shutdown(state.persistence_op)
     _ = stop_provider_session(state)
 
-    if state.snapshot_identity,
-      do: RuntimeSnapshots.remove(state.context.message_id, state.snapshot_identity)
-
     if state.lease, do: Lease.release(state.lease)
     :ok
   end
@@ -351,13 +347,13 @@ defmodule IntellectualClub.Generation.Worker do
         )
       end)
 
-    publish_snapshot(%{
+    %{
       state
       | stream_task: task,
         stream_ref: stream_ref,
         retry_timer_ref: nil,
         phase: :provider
-    })
+    }
   end
 
   @impl true
@@ -384,7 +380,7 @@ defmodule IntellectualClub.Generation.Worker do
     trace_event = semantic_trace_event(state, trace_event)
     runtime_step = apply_trace_event(state.runtime_step, trace_event, state.context)
     maybe_broadcast_text_delta(state, trace_event)
-    {:noreply, publish_snapshot(%{state | runtime_step: runtime_step})}
+    {:noreply, %{state | runtime_step: runtime_step}}
   end
 
   def handle_info(
@@ -650,11 +646,6 @@ defmodule IntellectualClub.Generation.Worker do
 
   def handle_info({:retry_steering_reconciliation, _stale_token}, state), do: {:noreply, state}
 
-  def handle_info(:publish_runtime_snapshot, state) do
-    Process.send_after(self(), :publish_runtime_snapshot, 1_000)
-    {:noreply, publish_snapshot(state)}
-  end
-
   @impl true
   def handle_info({ref, :ok}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
@@ -730,13 +721,13 @@ defmodule IntellectualClub.Generation.Worker do
       # Drain that writer instead of killing an active SQL borrower. No new
       # work may start; the Lease manager's existing force-stop grace remains.
       {:noreply,
-       publish_snapshot(%{
+       %{
          state
          | lease_lost?: true,
            phase: :recovering,
            deferred_provider_event: nil,
            deferred_tool_outcome: nil
-       })}
+       }}
     else
       stop_obsolete_owner(state)
     end
@@ -756,6 +747,12 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
+  def handle_call({:poll, cursor, [protocol: :cursor]}, _from, state) do
+    reply = RuntimePoll.poll(state.runtime_step, state.runtime_epoch, cursor)
+    status = if state.status == :initializing, do: :generating, else: state.status
+    {:reply, Map.merge(reply, %{status: status, phase: state.phase}), state}
+  end
+
   def handle_call({:poll, _cursor, _opts}, _from, state) do
     {:reply, public_snapshot(state), state}
   end
@@ -995,12 +992,12 @@ defmodule IntellectualClub.Generation.Worker do
         timer = Process.send_after(self(), {:retry_steering_reconciliation, token}, delay)
 
         {:noreply,
-         publish_snapshot(%{
+         %{
            state
            | steering_attempt: %{resolving?: true, retry_followup_opts: opts},
              steering_retry_timer: {timer, token},
              phase: :persisting
-         })}
+         }}
 
       _direct_command ->
         advance(state, state.continuation)
@@ -1025,12 +1022,12 @@ defmodule IntellectualClub.Generation.Worker do
         PersistenceFailure.log(failure, state.context.message_id, attempt.step_id)
 
         {:noreply,
-         publish_snapshot(%{
+         %{
            state
            | steering_attempt: %{attempt | retries: attempt.retries + 1},
              steering_retry_timer: {timer, token},
              phase: :recovering
-         })}
+         }}
     end
   end
 
@@ -2113,7 +2110,7 @@ defmodule IntellectualClub.Generation.Worker do
          |> order_tool_results()}
       end)
 
-    publish_snapshot(%{state | tool_task: task, tool_result_opts: opts, phase: :tools})
+    %{state | tool_task: task, tool_result_opts: opts, phase: :tools}
   end
 
   defp execute_and_persist_tool_calls(
@@ -2350,7 +2347,7 @@ defmodule IntellectualClub.Generation.Worker do
   # Only this coordinator may launch a persistence operation. In-flight writes
   # are never fire-and-forget, and command handling never starts a second write.
   defp begin_persistence(%{persistence_op: nil} = state, action, fun) do
-    state = publish_snapshot(%{state | phase: :persisting})
+    state = %{state | phase: :persisting}
     kind = if is_tuple(action), do: elem(action, 0), else: action
 
     operation =
@@ -2769,12 +2766,12 @@ defmodule IntellectualClub.Generation.Worker do
         )
 
         {:noreply,
-         publish_snapshot(%{
+         %{
            state
            | failure_plan: %{plan | attempt: attempt},
              failure_retry_timer: {timer, token},
              phase: :recovering
-         })}
+         }}
     end
   end
 
@@ -2894,7 +2891,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp dispatch_continuation(state, {:backoff, delay}) do
     token = make_ref()
     timer = Process.send_after(self(), {:retry_current_step, token}, delay)
-    {:noreply, publish_snapshot(%{state | retry_timer_ref: {timer, token}, phase: :backoff})}
+    {:noreply, %{state | retry_timer_ref: {timer, token}, phase: :backoff}}
   end
 
   defp dispatch_continuation(state, :idle) do
@@ -2906,7 +2903,7 @@ defmodule IntellectualClub.Generation.Worker do
         true -> :initializing
       end
 
-    {:noreply, publish_snapshot(%{state | phase: phase})}
+    {:noreply, %{state | phase: phase}}
   end
 
   defp finish_terminal(state, status) do
@@ -2923,13 +2920,13 @@ defmodule IntellectualClub.Generation.Worker do
       end
 
     state =
-      publish_snapshot(%{
+      %{
         state
         | runtime_step: runtime_step,
           status: status,
           phase: status,
           cancel_waiters: []
-      })
+      }
 
     {:stop, :normal, state}
   end
@@ -2969,7 +2966,7 @@ defmodule IntellectualClub.Generation.Worker do
     reply_pending_commands(state, {:error, :persistence_outcome_unknown})
 
     state =
-      publish_snapshot(%{state | phase: :recovering, cancel_waiters: []})
+      %{state | phase: :recovering, cancel_waiters: []}
 
     {:stop, :normal, state}
   end
@@ -3008,32 +3005,6 @@ defmodule IntellectualClub.Generation.Worker do
     # the public message status keeps polling and generation controls active.
     status = if state.status == :initializing, do: :generating, else: state.status
     %{status: status, phase: state.phase, step: runtime_snapshot(state)}
-  end
-
-  defp publish_snapshot(state) do
-    snapshot = public_snapshot(state)
-
-    case RuntimeSnapshots.publish(state.context.message_id, state.snapshot_identity, snapshot) do
-      :ok -> state
-      {:error, _reason} -> register_snapshot(state, snapshot)
-    end
-  end
-
-  defp register_snapshot(state, snapshot) do
-    # A store restart needs a new identity, but a displaced Worker must not
-    # register over the new owner, even if it still has queued stream events.
-    if :global.whereis_name(global_name(state.context.message_id)) == self() do
-      case RuntimeSnapshots.register(state.context.message_id) do
-        {:ok, identity} ->
-          RuntimeSnapshots.publish(state.context.message_id, identity, snapshot)
-          %{state | snapshot_identity: identity}
-
-        {:error, _reason} ->
-          state
-      end
-    else
-      state
-    end
   end
 
   defp request_step_options(state) do

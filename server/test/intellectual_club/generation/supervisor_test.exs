@@ -9,7 +9,6 @@ defmodule IntellectualClub.Generation.SupervisorTest do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.LegacyGenerationSnapshotStub
   alias IntellectualClub.Generation.Persistence
-  alias IntellectualClub.Generation.RuntimeSnapshots
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
 
@@ -445,15 +444,14 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     assert {:ok, snapshot} = GenerationSupervisor.get_generation_state(message.id)
     assert %{status: :generating, phase: :persisting, step: %{id: ^step_id}} = snapshot
-    assert is_binary(snapshot.revision)
-    assert {:ok, ^snapshot} = RuntimeSnapshots.read(message.id, stub)
 
     :ok = :sys.suspend(stub)
 
     try do
-      assert {:ok, ^snapshot} = GenerationSupervisor.get_generation_state(message.id)
+      assert {:busy, %{status: :generating}} =
+               GenerationSupervisor.get_generation_state(message.id)
 
-      assert {:ok, ^snapshot} =
+      assert {:busy, %{status: :generating}} =
                GenerationSupervisor.poll_generation(message.id, %{step: 1}, include_working: true)
     after
       :sys.resume(stub)
@@ -470,7 +468,6 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert blocked.status == :blocked
     assert blocked.blocked_reason == "generation_canceled"
     assert GenerationSupervisor.get_generation_state(message.id) == :not_found
-    assert RuntimeSnapshots.read(message.id, stub) == :not_found
   end
 
   defp create_chat!(actor, attrs \\ %{}) do

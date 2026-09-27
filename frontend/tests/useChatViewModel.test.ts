@@ -161,6 +161,151 @@ describe('useChatViewModel loading', () => {
     vi.useRealTimers();
   });
 
+  it.each(['reopen', 'load-first', 'poll-first', 'stale-projection'] as const)(
+    'synchronizes independently loaded working details with the body cursor (%s)',
+    async (race) => {
+      vi.useFakeTimers();
+      HTMLElement.prototype.scrollIntoView = vi.fn();
+      const state = chatState(1);
+      const descriptor = {
+        content_id: -21001, sequence: 1, step_id: 200, step_sequence: 1,
+        item_id: -101, item_sequence: 1, item_type: 'answer',
+      };
+      const content = (text: string, canonical = false) => ({
+        items: [], media: [], parts: [{ ...descriptor, text,
+          ...(canonical ? { item_id: 101, content_id: 21001 } : {}) }],
+      });
+      const details = (text: string, canonical = false) => ({
+        message_id: 31, revision: `working-${text}`, selected_step_id: 200,
+        steps: [{ id: 200, sequence: 1 }],
+        step: { id: 200, sequence: 1, output_tokens: text.length, items: [{
+          id: canonical ? 101 : -101, sequence: 1, type: 'answer',
+          contents: [{ id: canonical ? 21001 : -21001, sequence: 1, kind: 'text', content_text: text }],
+        }] },
+      });
+      const cursor = (text: string) => ({
+        epoch: 'epoch', step: 200, sequence: 1, content: 1, offset: text.length,
+      });
+      const projection = (text: string, sync?: string | null) => ({
+        message_id: 31, runtime: true, status: 'generating', phase: 'streaming',
+        revision: `poll-${text}-${sync}`, content_revision: 'content', view_revision: `view-${sync}`,
+        runtime_cursor: cursor(text), content: content(text),
+        ...(sync ? { working_open: details(text) } : {}),
+      });
+      const delta = (from: string, suffix: string, sync: string) => ({
+        message_id: 31, runtime: true, status: 'generating', phase: 'streaming',
+        revision: `poll-${from + suffix}-${sync}`, content_revision: 'content', view_revision: `view-${sync}`,
+        runtime_cursor: cursor(from + suffix),
+        runtime_delta: { ...descriptor, from: from.length, to: from.length + suffix.length, text: suffix },
+        runtime_summary: { id: 200, sequence: 1, output_tokens: (from + suffix).length },
+      });
+      state.active_generation_message_id = 31;
+      state.branch = [{ id: 31, role: 'assistant', status: 'generating', content: content('A') }];
+      const polls: Array<{ query: URLSearchParams; resolve: (payload: unknown) => void }> = [];
+      const loads: Array<(payload: unknown) => void> = [];
+      apiMocks.get.mockImplementation((path: string) => {
+        if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+        if (path === '/api/bff/chat-state/1') return Promise.resolve(structuredClone(state));
+        if (path.includes('/idle-state')) return Promise.resolve(undefined);
+        if (path.includes('/31/working')) return new Promise((resolve) => { loads.push(resolve); });
+        if (path.includes('/31/poll?')) return new Promise((resolve) => {
+          polls.push({ query: new URL(path, 'http://localhost').searchParams, resolve });
+        });
+        return Promise.resolve(undefined);
+      });
+      const { viewModel } = await mountViewModel();
+      await flushPromises();
+      const bodyText = () => viewModel.branch.value[0]?.content?.parts[0]?.text;
+      const inspectorText = () => viewModel.workingStateFor(31)?.selectedStep?.items?.[0]?.contents?.[0]?.content_text;
+      const nextPoll = async () => {
+        const count = polls.length;
+        await vi.advanceTimersByTimeAsync(500);
+        expect(polls).toHaveLength(count + 1);
+        return polls.at(-1)!;
+      };
+      polls.at(-1)!.resolve(projection('A'));
+      await flushPromises();
+      viewModel.toggleWorking(31);
+      loads.at(-1)!(details('A'));
+      await flushPromises();
+      const initial = await nextPoll();
+      const initialSync = initial.query.get('working_sync')!;
+      expect(initialSync).toBeTruthy();
+      expect(initial.query.get('working_revision')).toBeNull();
+      initial.resolve(projection('A', initialSync));
+      await flushPromises();
+      expect(inspectorText()).toBe('A');
+
+      let stale: (typeof polls)[number] | undefined;
+      if (race !== 'reopen') {
+        stale = await nextPoll();
+        expect(stale.query.get('working_revision')).toBe('working-A');
+      }
+      viewModel.toggleWorking(31);
+      viewModel.toggleWorking(31);
+      if (race === 'poll-first') {
+        stale!.resolve(delta('A', 'B', initialSync));
+        await flushPromises();
+        expect(bodyText()).toBe('AB');
+        expect(inspectorText()).toBe('A');
+        // Polls made while /working is pending must not claim an inspector session.
+        const loadingPoll = await nextPoll();
+        expect(loadingPoll.query.has('working_step_id')).toBe(false);
+        expect(loadingPoll.query.has('working_sync')).toBe(false);
+        loadingPoll.resolve(projection('AB'));
+        await flushPromises();
+        loads.at(-1)!(details('A'));
+      } else {
+        loads.at(-1)!(details('AB'));
+      }
+      await flushPromises();
+      if (stale && race !== 'poll-first') {
+        stale.resolve(race === 'stale-projection' ? projection('A', initialSync) : delta('A', 'B', initialSync));
+        await flushPromises();
+        expect(inspectorText()).toBe('AB');
+        expect(viewModel.workingStateFor(31)?.selectedStep?.output_tokens).toBe(2);
+      }
+      const synchronized = await nextPoll();
+      const sync = synchronized.query.get('working_sync')!;
+      expect(sync).toBeTruthy();
+      expect(sync).not.toBe(initialSync);
+      expect(synchronized.query.get('working_step_id')).toBe('latest');
+      // /working can have the same revision as the last poll yet a different cursor position.
+      expect(synchronized.query.has('working_revision')).toBe(false);
+      synchronized.resolve(projection('ABC', sync));
+      await flushPromises();
+      expect(bodyText()).toBe('ABC');
+      expect(inspectorText()).toBe('ABC');
+      const suffix = await nextPoll();
+      expect(suffix.query.get('working_sync')).toBe(sync);
+      expect(suffix.query.get('working_revision')).toBe('working-ABC');
+      expect(JSON.parse(suffix.query.get('runtime_cursor')!).offset).toBe(3);
+      suffix.resolve(delta('ABC', 'D', sync));
+      await flushPromises();
+      expect(bodyText()).toBe('ABCD');
+      expect(inspectorText()).toBe('ABCD');
+
+      const terminal = await nextPoll();
+      state.active_generation_message_id = null;
+      state.branch = [{ id: 31, role: 'assistant', status: 'done', content: content('Canonical', true) }];
+      terminal.resolve({
+        ...projection('Canonical', sync), status: 'done', runtime: false, runtime_cursor: null,
+        content: content('Canonical', true), working_open: details('Canonical', true),
+      });
+      await flushPromises();
+      // Settling reloads the inspector independently; durable IDs must win both paths.
+      loads.at(-1)!(details('Canonical', true));
+      await flushPromises();
+      expect(bodyText()).toBe('Canonical');
+      expect(inspectorText()).toBe('Canonical');
+      expect(viewModel.branch.value[0]?.content?.parts[0]?.content_id).toBe(21001);
+      expect(viewModel.workingStateFor(31)?.selectedStep?.items?.[0]?.id).toBe(101);
+      const count = polls.length;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(polls).toHaveLength(count);
+    }
+  );
+
   it.each([false, true])('keeps the streaming answer visible across a soft reload (pending poll: %s)', async (pendingPoll) => {
     vi.useFakeTimers();
     HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -192,7 +337,7 @@ describe('useChatViewModel loading', () => {
         return new Promise((resolve) => { resolveReload = resolve; });
       }
       if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
-      if (path.startsWith('/api/bff/chat-messages/31/poll')) {
+      if (path.startsWith('/api/bff/chat-messages/31/poll?poll_protocol=cursor')) {
         return new Promise((resolve) => { resolvePoll = resolve; });
       }
       return Promise.resolve(undefined);
@@ -227,7 +372,7 @@ describe('useChatViewModel loading', () => {
       expect(activeWrapper!.text()).not.toContain('Stale in-flight answer');
     }
     await vi.advanceTimersByTimeAsync(500);
-    expect(apiMocks.get.mock.calls.at(-1)?.[0]).toBe('/api/bff/chat-messages/31/poll');
+    expect(apiMocks.get.mock.calls.at(-1)?.[0]).toBe('/api/bff/chat-messages/31/poll?poll_protocol=cursor');
     resolvePoll(poll('Streaming answer continues'));
     await flushPromises();
     expect(activeWrapper!.text()).toContain('Streaming answer continues');
@@ -255,7 +400,7 @@ describe('useChatViewModel loading', () => {
         return new Promise((resolve) => { resolveReload = resolve; });
       }
       if (path.includes('/idle-state')) return Promise.resolve({ revision: 'changed' });
-      if (path.startsWith('/api/bff/chat-messages/31/poll')) {
+      if (path.startsWith('/api/bff/chat-messages/31/poll?poll_protocol=cursor')) {
         return new Promise((resolve) => { resolvePoll = resolve; });
       }
       return Promise.resolve(undefined);

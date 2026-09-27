@@ -140,6 +140,10 @@ defmodule IntellectualClub.Chat.ChatMessage do
   end
 
   relationships do
+    has_one :poll_revision, IntellectualClub.Chat.ChatMessagePollRevision do
+      destination_attribute(:chat_message_id)
+    end
+
     belongs_to :owner, IntellectualClub.Accounts.User,
       allow_nil?: false,
       attribute_type: :integer

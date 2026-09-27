@@ -10,7 +10,10 @@ vi.mock('@/features/chat/chatEvents', () => ({ publishChatChange: mocks.publish 
 
 import {
   generationPollDelay,
+  selectRuntimeCursor,
+  validRuntimeDelta,
   mergeRuntimePollContent,
+  mergeRuntimeUsage,
   preserveStreamingMessageContent,
 } from '@/features/chat/model/generationPolling';
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
@@ -215,7 +218,32 @@ describe('revision-aware generation polling', () => {
         runtime_content: { items: [], parts: [], media: [] },
         runtime_step_sequence: 2,
       })
-    ).toBe(changed);
+    ).toEqual({ items: [], media: [], parts: [changed!.parts[0]] });
+  });
+
+  it('acknowledges applied suffixes and resynchronizes canonical final content', async () => {
+    const message = streamingMessage();
+    const cursor = { epoch: 'worker', step: 200, sequence: 2, structure: 1,
+      item: 'answer', content: 1, id: 'block', generation: 0, offset: 16 };
+    const delta = { step_id: 200, step_sequence: 2, item_id: -102, item_sequence: 2,
+      item_type: 'answer', content_id: -22001, sequence: 1, from: 16, to: 21, text: ' 🌍' };
+    const canonical = persistedOnlyMessage().content!;
+    mocks.get.mockResolvedValueOnce({ ...initial, content: message.content, view_revision: 'v1', runtime_cursor: cursor })
+      .mockResolvedValueOnce({ ...initial, content: undefined, revision: 'r2', view_revision: 'v1',
+        runtime_delta: delta, runtime_cursor: { ...cursor, offset: 21 } })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ ...initial, status: 'done', content: canonical, content_revision: 'final', runtime_cursor: null });
+    const { runtime, branch } = setupRuntime();
+    await runtime.startPolling(31);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(branch.value[0]!.content!.parts.at(-1)!.text).toBe('Streaming answer 🌍');
+    expect(JSON.parse(new URL(mocks.get.mock.calls[1][0], 'http://test').searchParams.get('runtime_cursor')!)).toEqual(cursor);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(JSON.parse(new URL(mocks.get.mock.calls[2][0], 'http://test').searchParams.get('runtime_cursor')!).offset).toBe(21);
+    expect(branch.value[0]!.content!.parts.at(-1)!.text).toBe('Streaming answer 🌍');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(branch.value[0]!.content).toEqual(canonical);
+    expect(branch.value[0]!.status).toBe('done');
   });
 
   it('sends revisions, preserves omitted content and accepts 204 without failing', async () => {
@@ -281,10 +309,10 @@ describe('revision-aware generation polling', () => {
     await runtime.startPolling(31);
     branch.value = [{ id: 31, role: 'assistant', status: 'generating' }];
     await vi.advanceTimersByTimeAsync(500);
-    expect(mocks.get.mock.calls[1][0]).toBe('/api/bff/chat-messages/31/poll');
+    expect(mocks.get.mock.calls[1][0]).toBe('/api/bff/chat-messages/31/poll?poll_protocol=cursor');
     expect(branch.value[0].content).toEqual(initial.content);
     await runtime.startPolling(31);
-    expect(mocks.get.mock.calls[2][0]).toBe('/api/bff/chat-messages/31/poll');
+    expect(mocks.get.mock.calls[2][0]).toBe('/api/bff/chat-messages/31/poll?poll_protocol=cursor');
   });
 
   it('discards responses from the previous route or replaced branch', async () => {
@@ -381,5 +409,50 @@ describe('revision-aware generation polling', () => {
     expect(branch.value[0].status).toBe('generating');
     await vi.advanceTimersByTimeAsync(500);
     expect(mocks.get).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('client-owned runtime cursors', () => {
+  const cursor = { epoch: 'owner', step: 200, sequence: 2, structure: 1,
+    item: 'answer', content: 1, id: 'content', generation: 0, offset: 6 };
+  const delta = { step_id: 200, step_sequence: 2, item_id: -102, item_sequence: 2,
+    item_type: 'answer', content_id: -22001, sequence: 1, from: 6, to: 11, text: ' 🌍' };
+
+  it('updates usage totals by scalar step differences', () => {
+    const result = mergeRuntimeUsage({ latest_step: { id: 1, sequence: 1, output_tokens: 2, cost: 0.1 },
+      total: { output_tokens: 12, cost: 0.6 }, total_cost: 0.6, subchat_cost: 0.2 },
+      { id: 1, sequence: 1, output_tokens: 5, cost: 0.2 });
+    expect(result.total!.output_tokens).toBe(15);
+    expect(result.total_cost).toBeCloseTo(0.7);
+    expect(result.combined_total_cost).toBeCloseTo(0.9);
+  });
+
+  it('selects answer even when reasoning was returned first', () => {
+    expect(selectRuntimeCursor({ ...initial, runtime_cursor: { ...cursor, item: 'reasoning' },
+      runtime_targets: [{ item_type: 'reasoning', cursor: { ...cursor, item: 'reasoning' } },
+        { item_type: 'answer', cursor }] })).toEqual(cursor);
+  });
+
+  it('checks UTF-8 bytes from the acknowledged cursor, not JavaScript character counts', () => {
+    expect(validRuntimeDelta(cursor, delta)).toBe(true);
+    expect(validRuntimeDelta({ ...cursor, offset: 7 }, delta)).toBe(false);
+    expect(validRuntimeDelta(cursor, { ...delta, to: 9 })).toBe(false);
+    expect(validRuntimeDelta({ ...cursor, step: 201 }, delta)).toBe(false);
+  });
+
+  it('appends only the chosen block and preserves completed content', () => {
+    const current = streamingMessage().content!;
+    const response = { ...initial, content: undefined, runtime_delta: delta };
+    const merged = mergeRuntimePollContent(current, response)!;
+    expect(merged.parts[0]).toEqual(current.parts[0]);
+    expect(merged.parts.at(-1)!.text).toBe('Streaming answer 🌍');
+    expect(current.parts.at(-1)!.text).toBe('Streaming answer');
+  });
+
+  it('creates a previously empty answer block only from offset zero', () => {
+    const current = { items: [], parts: [], media: [] };
+    expect(mergeRuntimePollContent(current, { ...initial, content: undefined,
+      runtime_delta: { ...delta, from: 0, to: 5 } })!.parts[0]!.text).toBe(' 🌍');
+    expect(() => mergeRuntimePollContent(current, { ...initial, content: undefined, runtime_delta: delta })).toThrow();
   });
 });

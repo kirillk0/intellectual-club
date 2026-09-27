@@ -136,6 +136,26 @@ export type ChatPromptContextPayload = Pick<
   'prompt_sources' | 'prompt_blocks' | 'compiled_prompt_text' | 'counters'
 >;
 
+export type RuntimeCursor = {
+  epoch: string;
+  retired?: boolean;
+  step?: number;
+  sequence?: number;
+  structure?: number;
+  item?: string;
+  content?: number;
+  id?: string;
+  generation?: number;
+  offset?: number;
+};
+
+export type RuntimeDelta = {
+  step_id: number; step_sequence: number;
+  item_id: number; item_sequence: number; item_type: string;
+  content_id: number; sequence: number;
+  from: number; to: number; text: string;
+};
+
 export type PollResponse = {
   message_id: number;
   runtime: boolean;
@@ -143,6 +163,11 @@ export type PollResponse = {
   revision?: string;
   content_revision?: string;
   runtime_revision?: string;
+  view_revision?: string;
+  runtime_cursor?: RuntimeCursor | null;
+  runtime_targets?: { item_type: string; cursor: RuntimeCursor }[];
+  runtime_delta?: RuntimeDelta;
+  runtime_summary?: Omit<ChatMessageStep, 'items'> | null;
   runtime_content?: ChatBranchMessage['content'];
   runtime_step_sequence?: number;
   availability?: 'ready' | 'busy' | 'absent';
@@ -154,6 +179,8 @@ export type PollResponse = {
   usage?: ChatBranchMessage['usage'];
   working?: ChatBranchMessage['working'];
   working_open?: {
+    runtime_delta?: RuntimeDelta;
+    runtime_summary?: Omit<ChatMessageStep, 'items'> | null;
     revision?: string;
     step_count?: number | null;
     steps?: ChatMessageStep[] | null;

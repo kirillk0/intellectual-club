@@ -9,7 +9,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
-  alias IntellectualClub.Generation.RuntimeSnapshots
+  alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Llm.LlmProvider
@@ -28,7 +28,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
       start_supervised!({Task.Supervisor, name: IntellectualClub.Generation.PersistenceTasks})
     end
 
-    for child <- [RuntimeSnapshots, PollCache, SubchatCostCache] do
+    for child <- [PollCache, SubchatCostCache] do
       unless Process.whereis(child), do: start_supervised!(child)
     end
 
@@ -40,6 +40,8 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     gate_operations(fixture, initialize: :start, initialize: :stop)
     worker = start_worker(fixture)
     monitor = Process.monitor(worker)
+    epoch = Worker.poll(worker, %{}, protocol: :cursor).stream.cursor["epoch"]
+    assert is_binary(epoch)
 
     for stage <- [:start, :stop] do
       assert_receive {:barrier, :initialize, ^stage, writer, _identity, gate}, 2_000
@@ -49,8 +51,6 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
       assert state.stream_task == nil
       assert state.tool_task == nil
 
-      send(worker, :publish_runtime_snapshot)
-
       assert Worker.get_current_state(worker) == %{
                status: :generating,
                phase: :persisting,
@@ -58,7 +58,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
              }
 
       assert Worker.poll(worker, %{}) == Worker.get_current_state(worker)
-      assert {:ok, snapshot} = RuntimeSnapshots.read(fixture.message.id, worker)
+      assert {:ok, snapshot} = GenerationSupervisor.poll_generation(fixture.message.id)
       assert snapshot.status == :generating
       assert snapshot.phase == :persisting
       assert snapshot.step == nil
@@ -80,9 +80,10 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
 
     assert_receive {:provider_started, _, _provider, _request}, 2_000
     _ = :sys.get_state(worker)
-    assert {:ok, snapshot} = RuntimeSnapshots.read(fixture.message.id, worker)
+    assert {:ok, snapshot} = GenerationSupervisor.poll_generation(fixture.message.id)
     assert snapshot.status == :generating
     assert snapshot.phase == :provider
+    assert Worker.poll(worker, %{}, protocol: :cursor).stream.cursor["epoch"] == epoch
     cancel_worker(worker)
   end
 
@@ -180,19 +181,16 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert state.tool_task == nil
     assert state.phase == :persisting
 
-    :ok = :sys.suspend(worker)
-
-    try do
-      assert {:ok, snapshot} = RuntimeSnapshots.read(fixture.message.id, worker)
-      assert snapshot.phase == :persisting
-      assert snapshot.status == :generating
-      refute Map.has_key?(snapshot, :context)
-      refute Map.has_key?(snapshot.step, :raw_request)
-      refute Map.has_key?(snapshot.step, :raw_response)
-      refute inspect(snapshot) =~ "large_raw_only"
-    after
-      :ok = :sys.resume(worker)
-    end
+    # Persistence is blocked, but the Worker still serves on-demand UI reads.
+    (fn ->
+       assert {:ok, snapshot} = GenerationSupervisor.poll_generation(fixture.message.id)
+       assert snapshot.phase == :persisting
+       assert snapshot.status == :generating
+       refute Map.has_key?(snapshot, :context)
+       refute Map.has_key?(snapshot.step, :raw_request)
+       refute Map.has_key?(snapshot.step, :raw_response)
+       refute inspect(snapshot) =~ "large_raw_only"
+     end).()
 
     queued = enqueue_steer(fixture, worker, "must not reach tools")
     assert queued.status == :pending
@@ -207,6 +205,41 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert load_step(fixture).status == :waiting_tools
     assert usage(fixture).output_tokens == 3
     assert :sys.get_state(worker).tool_task == nil
+
+    # The runtime status still precedes the committed step until the writer ACK.
+    snapshot = Worker.poll(worker, %{}, protocol: :cursor)
+    assert snapshot.step.status == "waiting_provider"
+
+    message =
+      Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor, load: [:poll_revision])
+
+    assert {:ok, canonical} =
+             ChatPollPayload.cursor_response(
+               message,
+               fixture.actor,
+               {:ok, snapshot},
+               %{"working_step_id" => "latest"},
+               %{}
+             )
+
+    assert canonical.runtime_cursor["retired"]
+    assert is_map(canonical.content)
+    assert canonical.working_open.step.items != []
+    assert Enum.all?(canonical.working_open.step.items, &(&1.id > 0))
+    retired = Worker.poll(worker, canonical.runtime_cursor, protocol: :cursor)
+    assert retired.step == nil
+    refute retired.stream.reset
+
+    params = %{
+      "working_step_id" => "latest",
+      "content_revision" => canonical.content_revision,
+      "view_revision" => canonical.view_revision,
+      "revision" => canonical.revision
+    }
+
+    assert :unchanged ==
+             ChatPollPayload.cursor_response(message, fixture.actor, {:ok, retired}, params, %{})
+
     send(writer, {gate, :continue})
     assert_receive {:barrier, :cancel, :start, cancel_writer, cancel_identity, cancel_gate}, 2_000
 
@@ -221,7 +254,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
     assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :canceled
     assert usage(fixture).output_tokens == 3
-    assert RuntimeSnapshots.read(fixture.message.id, worker) == :not_found
+    assert GenerationSupervisor.poll_generation(fixture.message.id) == :not_found
     refute_receive {:provider_started, _, _, _}, 0
   end
 
@@ -305,7 +338,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
       assert_receive {:barrier, :provider_completed, ^stage, writer, _identity, gate}, 2_000
       send(writer, {gate, :crash})
       assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
-      assert RuntimeSnapshots.read(fixture.message.id, worker) == :not_found
+      assert GenerationSupervisor.poll_generation(fixture.message.id) == :not_found
       assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :generating
       :telemetry.detach(handler)
 
@@ -344,7 +377,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     Process.exit(worker, :kill)
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 2_000
     assert_receive {:DOWN, ^writer_monitor, :process, ^writer, :killed}, 2_000
-    assert RuntimeSnapshots.read(fixture.message.id, worker) == :not_found
+    assert GenerationSupervisor.poll_generation(fixture.message.id) == :not_found
     assert load_step(fixture).status == :waiting_provider
   end
 
@@ -843,25 +876,17 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :done
   end
 
-  test "a lost snapshot registration is republished by its still-current Worker" do
+  test "runtime polling keeps no eagerly serialized snapshot" do
     fixture = fixture()
     worker = start_worker(fixture)
     assert_receive {:provider_started, _, _provider, _request}, 2_000
-    {:ok, before} = RuntimeSnapshots.read(fixture.message.id, worker)
-    before_identity = :sys.get_state(worker).snapshot_identity
-
-    :sys.replace_state(worker, fn state ->
-      RuntimeSnapshots.remove(state.context.message_id, state.snapshot_identity)
-      state
-    end)
-
-    send(worker, :publish_runtime_snapshot)
-    _ = :sys.get_state(worker)
-    assert {:ok, after_loss} = RuntimeSnapshots.read(fixture.message.id, worker)
-    assert :sys.get_state(worker).snapshot_identity != before_identity
-    refute Map.has_key?(after_loss, :identity)
-    assert after_loss.step == before.step
-    assert after_loss.phase == :provider
+    before = :sys.get_state(worker)
+    refute Map.has_key?(before, :snapshot_identity)
+    first = Worker.poll(worker, %{}, protocol: :cursor)
+    second = Worker.poll(worker, first.stream.cursor, protocol: :cursor)
+    refute second.stream.reset
+    assert second.stream.cursor == first.stream.cursor
+    assert :sys.get_state(worker).runtime_epoch == before.runtime_epoch
     cancel_worker(worker)
   end
 
