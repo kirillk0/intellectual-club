@@ -16,7 +16,7 @@ defmodule IntellectualClub.Generation.PreparedRequests do
 
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Generation.RequestImages
-  alias IntellectualClub.Generation.StepRequests
+  alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.PreparedRequest
   alias IntellectualClub.Tools.ExecutionContext
 
@@ -35,9 +35,12 @@ defmodule IntellectualClub.Generation.PreparedRequests do
       |> Map.put(:chat_id, message.chat_id)
       |> Map.put(:message_id, message.id)
 
-    request = StepRequests.normalize!(raw)
     adapter = Map.get(context, :adapter_module) || Map.get(context, :adapter)
-    request = if adapter, do: PreparedRequest.prepare(adapter, request, context), else: request
+
+    request =
+      if adapter,
+        do: PreparedRequest.prepare(adapter, raw, context),
+        else: RequestPayload.json_keys!(raw)
 
     scope = %ExecutionContext{
       owner_id: message.owner_id,
@@ -61,8 +64,17 @@ defmodule IntellectualClub.Generation.PreparedRequests do
           raise ArgumentError, "Request image scope does not belong to the message owner"
       end
 
+    image_opts = [
+      source_step_id: Keyword.get(opts, :source_step_id),
+      source_request: Keyword.get(opts, :previous_request),
+      source_image_state: Keyword.get(opts, :source_image_state),
+      cache: Keyword.get(opts, :image_cache, %{}),
+      mapper: RequestImages.mapper(adapter),
+      source_mapper: Keyword.get(opts, :source_mapper, RequestImages.mapper(adapter))
+    ]
+
     prepared =
-      case RequestImages.prepare(request, scope, Keyword.take(opts, [:source_step_id])) do
+      case RequestImages.prepare(request, scope, image_opts) do
         {:ok, prepared} ->
           prepared
 
@@ -71,7 +83,7 @@ defmodule IntellectualClub.Generation.PreparedRequests do
       end
 
     try do
-      fun.(%{prepared | request: StepRequests.normalize!(prepared.request)})
+      prepared |> fun.() |> attach_image_state(prepared.image_state)
     after
       case RequestImages.discard_staged_bindings(prepared.bindings) do
         :ok ->
@@ -82,4 +94,27 @@ defmodule IntellectualClub.Generation.PreparedRequests do
       end
     end
   end
+
+  # This metadata is returned only after the publication callback succeeds. It is
+  # private runtime state, not part of the immutable request or public snapshot.
+  defp attach_image_state(%{step_id: step_id, raw_request: request} = result, image_state) do
+    Map.put(
+      result,
+      :request_images,
+      Map.merge(image_state, %{step_id: step_id, request: request})
+    )
+  end
+
+  defp attach_image_state(%{step: %{id: step_id}, request: request} = result, image_state) do
+    Map.put(
+      result,
+      :request_images,
+      Map.merge(image_state, %{step_id: step_id, request: request})
+    )
+  end
+
+  defp attach_image_state({:ok, result}, image_state),
+    do: {:ok, attach_image_state(result, image_state)}
+
+  defp attach_image_state(result, _image_state), do: result
 end

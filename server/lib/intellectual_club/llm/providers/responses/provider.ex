@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   require Logger
 
+  alias IntellectualClub.Llm.Providers.Responses.ImageMapper
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Llm.Providers.Common.TraceHelpers
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
@@ -86,10 +87,12 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, context) when is_map(request) do
-    request
-    |> RequestPayload.stringify_keys()
-    |> apply_prompt_cache_key(context)
+    apply_prompt_cache_key(request, context)
   end
 
   @impl true
@@ -109,7 +112,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         instructions: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -160,7 +162,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
           RequestPayload.instructions(previous_raw_request) |> fallback_instructions(context),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -170,7 +171,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, context)
+  def inject_steering(raw_request, steering_items, _context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -188,7 +189,6 @@ defmodule IntellectualClub.Llm.Providers.Responses do
     raw_request =
       payload
       |> Map.put("input", RequestPayload.input(payload) ++ steering_input_items)
-      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -322,6 +322,9 @@ defmodule IntellectualClub.Llm.Providers.Responses do
                    api_key: token,
                    request_payload: request_payload,
                    request_step_id: Map.get(opts, :request_step_id),
+                   image_mapper: &map_request_images/3,
+                   image_cache: Map.get(opts, :image_cache, %{}),
+                   image_cache_update: Map.get(opts, :image_cache_update),
                    timeout_ms: Map.get(opts, :timeout_ms, 300_000),
                    connect_timeout_ms: Map.get(opts, :connect_timeout_ms, 10_000),
                    provider: Map.get(context, :provider_type, type())
@@ -331,8 +334,9 @@ defmodule IntellectualClub.Llm.Providers.Responses do
             :ok ->
               :ok
 
-            {:fallback_to_http, fallback_meta} ->
+            {:fallback_to_http, fallback_meta, image_cache} ->
               maybe_log_transport_fallback(fallback_meta, opts, context)
+              opts = Map.put(opts, :image_cache, image_cache)
               stream_http(endpoint, token, request_payload, opts, context, emit)
           end
         after
@@ -351,6 +355,9 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         api_key: token,
         request_payload: request_payload,
         request_step_id: Map.get(opts, :request_step_id),
+        image_mapper: &map_request_images/3,
+        image_cache: Map.get(opts, :image_cache, %{}),
+        image_cache_update: Map.get(opts, :image_cache_update),
         timeout_ms: Map.get(opts, :timeout_ms, 300_000),
         connect_timeout_ms: Map.get(opts, :connect_timeout_ms, 10_000),
         provider: Map.get(context, :provider_type, type())

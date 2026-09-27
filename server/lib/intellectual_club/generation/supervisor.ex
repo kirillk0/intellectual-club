@@ -267,14 +267,14 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  defp replacement_request_context(context, step_id) do
-    request = StepRequests.request_for_step!(step_id, actor: %User{id: context.owner_id})
+  defp replacement_request_context(context, %{step: step, request: request} = replacement) do
     snapshot = context.adapter_module.request_snapshot(request)
 
     %{
       context
-      | step_id: step_id,
+      | step_id: step.id,
         request_payload: request,
+        request_images: Map.get(replacement, :request_images),
         system_prompt: Map.get(snapshot, :system_prompt) || "",
         messages: Map.get(snapshot, :model_input, []),
         history_length: Map.get(snapshot, :history_length),
@@ -994,14 +994,15 @@ defmodule IntellectualClub.Generation.Supervisor do
                request_payload,
                steering_specs,
                operation,
-               request_context: request_context
+               request_context: request_context,
+               return_request?: true
              )
            end,
            with_lock_scope: fn callback ->
              with_retry_cleanup(message_id, step_sequence, callback)
            end
          ) do
-      {:ok, step_id} when is_integer(step_id) -> {:ok, step_id}
+      {:ok, %{step: _step} = replacement} -> {:ok, replacement}
       {:error, _reason} = error -> error
       _other -> {:error, :retry_failed}
     end
@@ -1032,7 +1033,8 @@ defmodule IntellectualClub.Generation.Supervisor do
                  request_payload,
                  steering_specs,
                  operation,
-                 request_context: request_context
+                 request_context: request_context,
+                 return_request?: true
                )
 
              :ok = RecoveryGate.reset!(message_id, %User{id: request_context.owner_id})
@@ -1042,8 +1044,8 @@ defmodule IntellectualClub.Generation.Supervisor do
              with_retry_cleanup(message_id, step_sequence, callback)
            end
          ) do
-      {:ok, {%Lease{} = fenced, step_id}} when is_integer(step_id) ->
-        {:ok, {fenced, step_id}}
+      {:ok, {%Lease{} = fenced, %{step: _step} = replacement}} ->
+        {:ok, {fenced, replacement}}
 
       {:error, _reason} = error ->
         error

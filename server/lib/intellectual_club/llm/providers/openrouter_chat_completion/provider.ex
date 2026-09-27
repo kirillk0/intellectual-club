@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.Common.ChatCompletions.ImageMapper
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
@@ -67,10 +68,12 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, context) when is_map(request) do
-    request
-    |> RequestPayload.stringify_keys()
-    |> put_session_id(context)
+    put_session_id(request, context)
   end
 
   @impl true
@@ -88,7 +91,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -121,7 +123,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
         ),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> prepare_request(context)
 
     %{
       runtime_step: followup.runtime_step,
@@ -143,7 +144,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
       )
       |> ChatAdapterHelpers.apply_followup_cache_control(context)
 
-    raw_request = payload |> Map.put("messages", messages) |> prepare_request(context)
+    raw_request = Map.put(payload, "messages", messages)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -239,6 +240,9 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit
@@ -266,8 +270,6 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
       session_id -> Map.put(raw_request, "session_id", session_id)
     end
   end
-
-  defp put_session_id(raw_request, _source), do: raw_request
 
   defp session_id_from_source(%{} = source) do
     source

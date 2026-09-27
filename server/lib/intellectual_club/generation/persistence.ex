@@ -69,6 +69,8 @@ defmodule IntellectualClub.Generation.Persistence do
     message = load_message!(message_id, actor)
 
     PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+      prepared = prepare_request_step!(message_id, sequence, prepared, actor, opts)
+
       request_transaction!(message_id, opts, fn ->
         _message = lock_message!(message_id, actor)
 
@@ -77,8 +79,8 @@ defmodule IntellectualClub.Generation.Persistence do
                 "Step already exists; use its proven transition instead of resetting it"
         end
 
-        step = insert_request_step!(message_id, sequence, prepared, actor, opts)
-        %{step: step, request: prepared.request}
+        step = insert_request_step!(prepared, actor)
+        prepared_result(prepared) |> Map.put(:step, step)
       end)
     end)
   end
@@ -517,8 +519,6 @@ defmodule IntellectualClub.Generation.Persistence do
         StepRequests.request_for_step!(step_id, actor: actor)
       end)
 
-    ensure_runtime_request_matches!(previous_step, previous_request, actor)
-
     opts =
       opts
       |> Keyword.put(:previous_step, previous_step)
@@ -528,6 +528,8 @@ defmodule IntellectualClub.Generation.Persistence do
     raw_request = if is_map(raw_request), do: raw_request, else: previous_request
 
     PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+      prepared = prepare_request_step!(message_id, next_sequence, prepared, actor, opts)
+
       request_transaction!(message_id, opts, fn ->
         _message = lock_message!(message_id, actor)
         step = load_step_with_items!(step_id, actor)
@@ -539,8 +541,10 @@ defmodule IntellectualClub.Generation.Persistence do
 
         case get_step_by_sequence(message_id, next_sequence, actor) do
           %ChatMessageStep{} = existing ->
-            ensure_transition_matches!(step, existing, prepared.request, proof, actor)
+            ensure_transition_matches!(step, existing, prepared.request_snapshot, proof, actor)
+
             transition_result(existing, prepared.request, actor)
+            |> Map.merge(prepared_result(prepared))
 
           nil ->
             ensure_transition_allowed!(step, kind)
@@ -553,7 +557,7 @@ defmodule IntellectualClub.Generation.Persistence do
                      else: :ok
                    ) do
               finish_previous!.(step, actor)
-              next_step = insert_request_step!(message_id, next_sequence, prepared, actor, opts)
+              next_step = insert_request_step!(prepared, actor)
 
               if queued? do
                 Enum.each(queued_messages, fn queued_message ->
@@ -579,7 +583,9 @@ defmodule IntellectualClub.Generation.Persistence do
               end
 
               record_transition!(step, next_step, proof, actor)
+
               transition_result(next_step, prepared.request, actor)
+              |> Map.merge(prepared_result(prepared))
             end
         end
       end)
@@ -607,7 +613,7 @@ defmodule IntellectualClub.Generation.Persistence do
     }
   end
 
-  defp ensure_transition_matches!(previous, existing, request, proof, actor) do
+  defp ensure_transition_matches!(previous, existing, snapshot, proof, actor) do
     expected =
       Map.merge(proof, %{"next_step_id" => existing.id, "next_sequence" => existing.sequence})
 
@@ -620,7 +626,16 @@ defmodule IntellectualClub.Generation.Persistence do
           end)
       end)
 
-    unless proven? and StepRequests.request_for_step!(existing.id, actor: actor) == request do
+    matches? =
+      if is_binary(existing.request_hash),
+        do: existing.request_hash == snapshot.hash,
+        else:
+          StepRequests.equal?(
+            StepRequests.request_for_step!(existing.id, actor: actor),
+            snapshot.request
+          )
+
+    unless proven? and matches? do
       raise ArgumentError, "Conflicting generation step transition"
     end
   end
@@ -1117,32 +1132,36 @@ defmodule IntellectualClub.Generation.Persistence do
 
     opts = opts |> Keyword.put(:source_step_id, source_step.id) |> Keyword.put(:force_full, true)
 
-    PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
-      request_transaction!(message_id, opts, fn ->
-        replace = fn cleanup ->
-          replace_steps_for_retry_in_operation!(
-            message_id,
-            from_sequence,
-            prepared,
-            source_step.id,
-            steering_specs,
-            actor,
-            cleanup,
-            opts
-          )
-        end
+    result =
+      PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+        prepared = prepare_request_step!(message_id, from_sequence, prepared, actor, opts)
 
-        if is_nil(operation) do
-          IntellectualClub.Chat.LinkedForkCleanup.with_scope(
-            {:steps, message_id, from_sequence},
-            actor,
-            replace
-          )
-        else
-          replace.(operation)
-        end
+        request_transaction!(message_id, opts, fn ->
+          replace = fn cleanup ->
+            replace_steps_for_retry_in_operation!(
+              message_id,
+              from_sequence,
+              prepared,
+              source_step.id,
+              steering_specs,
+              actor,
+              cleanup
+            )
+          end
+
+          if is_nil(operation) do
+            IntellectualClub.Chat.LinkedForkCleanup.with_scope(
+              {:steps, message_id, from_sequence},
+              actor,
+              replace
+            )
+          else
+            replace.(operation)
+          end
+        end)
       end)
-    end)
+
+    if Keyword.get(opts, :return_request?, false), do: result, else: result.step.id
   end
 
   defp replace_steps_for_retry_in_operation!(
@@ -1152,8 +1171,7 @@ defmodule IntellectualClub.Generation.Persistence do
          source_step_id,
          steering_specs,
          actor,
-         operation,
-         opts
+         operation
        ) do
     steps =
       IntellectualClub.Chat.LinkedForkCleanup.retry_steps!(
@@ -1181,9 +1199,9 @@ defmodule IntellectualClub.Generation.Persistence do
       actor
     )
 
-    step = insert_request_step!(message_id, from_sequence, prepared, actor, opts)
+    step = insert_request_step!(prepared, actor)
     restore_steering_specs_in_transaction!(step, steering_specs, actor)
-    step.id
+    prepared_result(prepared) |> Map.put(:step, step)
   end
 
   defp persist_step_snapshot!(message_id, %RuntimeTrace.Step{} = runtime_step, step_status, opts)
@@ -1257,9 +1275,12 @@ defmodule IntellectualClub.Generation.Persistence do
 
     matches? =
       if is_binary(hash) do
-        StepRequests.create_attributes(request, force_full: true).request_hash == hash
+        StepRequests.hash(request) == hash
       else
-        StepRequests.request_for_step!(step.id, actor: actor) == StepRequests.normalize!(request)
+        StepRequests.equal?(
+          StepRequests.request_for_step!(step.id, actor: actor),
+          StepRequests.normalize!(request)
+        )
       end
 
     unless matches?,
@@ -1758,34 +1779,32 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  defp insert_request_step!(message_id, sequence, prepared, actor, opts) do
-    case Keyword.get(opts, :previous_step) do
-      %ChatMessageStep{chat_message_id: ^message_id, sequence: previous_sequence}
-      when previous_sequence == sequence - 1 ->
-        :ok
-
-      nil ->
-        :ok
-
-      _other ->
-        raise ArgumentError, "Request base must be the previous step in this message"
-    end
-
-    attrs =
-      StepRequests.create_attributes(prepared.request, Keyword.put(opts, :sequence, sequence))
-
-    step =
-      create_step!(
-        Map.merge(attrs, %{
+  defp prepare_request_step!(message_id, sequence, prepared, actor, opts) do
+    {changeset, snapshot} =
+      StepRequests.prepare_create!(
+        %{
           chat_message_id: message_id,
           sequence: sequence,
           status: :waiting_provider,
           raw_response: nil,
           response_final: false
-        }),
-        actor,
-        Keyword.get(opts, :previous_request)
+        },
+        prepared.request,
+        Keyword.put(opts, :actor, actor)
       )
+
+    # Preserve image staging and any future preparation metadata. A supplied
+    # snapshot is only a hint; the resource derives its authoritative one above.
+    prepared
+    |> Map.put(:request_changeset, changeset)
+    |> Map.put(:request, snapshot.request)
+    |> Map.put(:request_snapshot, snapshot)
+  end
+
+  defp prepared_result(prepared), do: Map.delete(prepared, :request_changeset)
+
+  defp insert_request_step!(prepared, actor) do
+    step = Ash.create!(prepared.request_changeset, actor: actor, authorize?: true)
 
     prepared.bindings
     |> RequestImages.attach_staged_bindings_transactional(step.id)
@@ -1839,15 +1858,6 @@ defmodule IntellectualClub.Generation.Persistence do
 
   defp ensure_step_belongs_to_message!(%ChatMessageStep{}, _message_id) do
     raise ArgumentError, "Step does not belong to message"
-  end
-
-  defp create_step!(attrs, actor, request_base) when is_map(attrs) do
-    ChatMessageStep
-    |> Ash.Changeset.for_create(:create, attrs,
-      actor: actor,
-      private_arguments: %{request_base: request_base}
-    )
-    |> Ash.create!(actor: actor)
   end
 
   defp update_step!(%ChatMessageStep{} = step, attrs, actor) when is_map(attrs) do

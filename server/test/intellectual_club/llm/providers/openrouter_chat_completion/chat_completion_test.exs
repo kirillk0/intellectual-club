@@ -60,6 +60,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ChatCompletion
       ChatCompletions.stream_generate(
         %{
           provider: :nvidia_build_chat_completion,
+          image_mapper: &NvidiaBuildChatCompletion.map_request_images/3,
           base_url: base_url,
           api_key: "test-key",
           request_payload: @request_payload,

@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.ResponsesWss
+  alias IntellectualClub.Llm.Providers.Common.PreparedRequest
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
 
@@ -43,7 +44,12 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert result.raw_request["model"] == "openai/gpt-5-mini"
     assert result.raw_request["temperature"] == 0.1
-    assert result.raw_request["session_id"] == "intellectual-club:chat:77"
+    refute Map.has_key?(result.raw_request, "session_id")
+
+    assert PreparedRequest.prepare(OpenRouterChatCompletion, result.raw_request, %{
+             chat_id: 123,
+             conversation_affinity_id: 77
+           })["session_id"] == "intellectual-club:chat:77"
 
     assert result.raw_request["tools"] == [
              hosted_tool,
@@ -92,7 +98,12 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.raw_request["model"] == "nvidia/nemotron-3-nano-30b-a3b"
     assert result.raw_request["reasoning_effort"] == "high"
     assert result.raw_request["stream"] == true
-    assert result.raw_request["stream_options"] == %{"include_usage" => true}
+    refute Map.has_key?(result.raw_request, "stream_options")
+
+    assert PreparedRequest.prepare(NvidiaBuildChatCompletion, result.raw_request, %{})[
+             "stream_options"
+           ] == %{"include_usage" => true}
+
     refute Map.has_key?(result.raw_request, "session_id")
 
     [system_message, user_message] = result.raw_request["messages"]
@@ -129,7 +140,12 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     assert result.raw_request["model"] == "gpt-5"
     assert result.raw_request["max_output_tokens"] == 200
     assert result.raw_request["store"] == false
-    assert result.raw_request["prompt_cache_key"] == "intellectual-club:user:456"
+    refute Map.has_key?(result.raw_request, "prompt_cache_key")
+
+    assert PreparedRequest.prepare(Responses, result.raw_request, %{owner_id: 456})[
+             "prompt_cache_key"
+           ] == "intellectual-club:user:456"
+
     assert result.raw_request["instructions"] == "Use tools when needed."
     assert is_list(result.raw_request["input"])
     assert is_list(result.raw_request["tools"])
@@ -178,7 +194,10 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
     assert ResponsesWss.build_initial_request(opts) == Responses.build_initial_request(opts)
 
-    assert ResponsesWss.build_initial_request(opts).raw_request["prompt_cache_key"] ==
+    request = ResponsesWss.build_initial_request(opts).raw_request
+    refute Map.has_key?(request, "prompt_cache_key")
+
+    assert PreparedRequest.prepare(ResponsesWss, request, opts)["prompt_cache_key"] ==
              "intellectual-club:user:456"
 
     raw_request = %{"model" => "gpt-5", "input" => [], "instructions" => "System"}
@@ -741,7 +760,9 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
     old_tool_message = Enum.at(messages, 3)
     new_tool_message = List.last(messages)
 
-    assert followup.raw_request["session_id"] == "intellectual-club:chat:77"
+    assert PreparedRequest.prepare(OpenRouterChatCompletion, followup.raw_request, %{
+             conversation_affinity_id: 77
+           })["session_id"] == "intellectual-club:chat:77"
 
     assert Enum.at(followup.raw_request["tools"], 0) == %{
              "type" => "openrouter:web_search",
@@ -846,16 +867,21 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
         tools: []
       })
 
-    refute Map.has_key?(followup.raw_request, "session_id")
+    prepared = PreparedRequest.prepare(NvidiaBuildChatCompletion, followup.raw_request, %{})
+    refute Map.has_key?(prepared, "session_id")
     assert followup.raw_request["reasoning_budget"] == 2_048
-    assert followup.raw_request["stream_options"] == %{"custom" => true, "include_usage" => true}
-    assert followup.request_snapshot.history_length == nil
+    assert prepared["stream_options"] == %{"custom" => true, "include_usage" => true}
+
+    assert followup.request_snapshot ==
+             NvidiaBuildChatCompletion.request_snapshot(followup.raw_request)
+
+    assert NvidiaBuildChatCompletion.request_snapshot(prepared).history_length == nil
 
     assert Enum.any?(followup.raw_request["messages"], fn message ->
              message["role"] == "tool" and message["tool_call_id"] == "call_weather"
            end)
 
-    refute followup.raw_request["messages"]
+    refute prepared["messages"]
            |> inspect()
            |> String.contains?("cache_control")
   end
@@ -1014,7 +1040,10 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
            end)
 
     assert followup.request_snapshot.system_prompt == "System"
-    assert followup.raw_request["prompt_cache_key"] == "intellectual-club:user:456"
+
+    assert PreparedRequest.prepare(Responses, followup.raw_request, %{owner_id: 456})[
+             "prompt_cache_key"
+           ] == "intellectual-club:user:456"
 
     assert RuntimeTrace.text_for_item_type(followup.runtime_step, :tool_result) ==
              ~s({"temperature":18.5})

@@ -9,6 +9,126 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
   @terminal_statuses [:done, :canceled, :error]
   @message_fields [:id, :chat_id, :owner_id, :role, :status]
 
+  @base_fields [
+    :id,
+    :owner_id,
+    :chat_message_id,
+    :sequence,
+    :request_mode,
+    :request_hash,
+    :request_checkpoint_distance
+  ]
+
+  @doc false
+  def prepare_logical_create!(step, request, actor, opts) do
+    actor = Reader.actor!(actor: actor)
+
+    unless is_integer(step.sequence) and step.sequence > 0,
+      do: raise(Error, reason: :invalid_sequence)
+
+    known_base = Keyword.get(opts, :previous_request)
+    expected_id = Keyword.get(opts, :previous_step_id)
+
+    previous =
+      if step.sequence > 1 and
+           (not Keyword.get(opts, :force_full, false) or not is_nil(known_base) or
+              not is_nil(expected_id)),
+         do: previous_metadata(step.chat_message_id, step.sequence, actor)
+
+    if expected_id && (is_nil(previous) or previous.id != expected_id),
+      do: raise(Error, reason: :invalid_patch_base)
+
+    if not is_nil(known_base) and is_nil(previous), do: raise(Error, reason: :missing_base)
+
+    base =
+      if previous do
+        cond do
+          not is_nil(known_base) and is_binary(previous.request_hash) ->
+            candidate = Codec.snapshot!(known_base)
+
+            unless candidate.hash == previous.request_hash,
+              do: raise(Error, reason: :runtime_request_mismatch, step_id: previous.id)
+
+            candidate
+
+          true ->
+            persisted = Reader.snapshots_for_steps!([previous.id], actor: actor)[previous.id]
+
+            if not is_nil(known_base) do
+              candidate =
+                if known_base === persisted.request,
+                  do: persisted,
+                  else: Codec.snapshot!(known_base)
+
+              unless candidate.hash == persisted.hash,
+                do: raise(Error, reason: :runtime_request_mismatch, step_id: previous.id)
+
+              candidate
+            else
+              persisted
+            end
+        end
+      end
+
+    snapshot =
+      if base &&
+           (request === base.request or (not is_nil(known_base) and request === known_base)),
+         do: base,
+         else: Codec.snapshot!(request)
+
+    attrs =
+      Codec.create_from_snapshots(snapshot,
+        sequence: step.sequence,
+        previous_step: previous,
+        previous_snapshot: base,
+        force_full: opts[:force_full] || false,
+        max_chain: opts[:max_chain] || Codec.max_chain()
+      )
+
+    %{
+      actor_id: actor.id,
+      chat_message_id: step.chat_message_id,
+      sequence: step.sequence,
+      previous: if(previous, do: Map.take(previous, @base_fields)),
+      attrs: attrs,
+      snapshot: snapshot
+    }
+  end
+
+  @doc false
+  def verify_logical_create!(plan, actor) do
+    actor = Reader.actor!(actor: actor)
+    unless actor.id == plan.actor_id, do: raise(Error, reason: :actor_changed)
+    require_transaction!()
+    _message = lock_message!(plan.chat_message_id, actor, false)
+
+    if plan.previous do
+      previous = previous_metadata(plan.chat_message_id, plan.sequence, actor, true)
+
+      unless previous && Map.take(previous, @base_fields) == plan.previous,
+        do: raise(Error, reason: :request_base_changed)
+    end
+
+    plan.attrs
+  end
+
+  defp previous_metadata(message_id, sequence, actor, lock? \\ false) do
+    previous_sequence = sequence - 1
+
+    query =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^message_id and sequence == ^previous_sequence)
+      |> Ash.Query.select(@base_fields)
+
+    query = if lock?, do: Ash.Query.lock(query, "FOR SHARE"), else: query
+    previous = Ash.read_one!(query, actor: actor, authorize?: true)
+
+    if previous && previous.owner_id != actor.id,
+      do: raise(Error, reason: :unsafe_step_owner, step_id: previous.id)
+
+    previous
+  end
+
   def validate_create!(step, actor, known_base \\ nil) do
     _actor = Reader.actor!(actor: actor)
 
@@ -58,7 +178,7 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
     rows = window!(step.chat_message_id, step.sequence, actor)
     previous = Enum.find(rows, &(&1.sequence == step.sequence - 1))
     unless previous, do: raise(Error, reason: :missing_base)
-    {previous, Reader.decode_rows!(rows, [previous.id]) |> Map.fetch!(previous.id)}
+    {previous, Reader.decode_snapshots!(rows, [previous.id]) |> Map.fetch!(previous.id)}
   end
 
   @doc "Independently proves that a physical rewrite cannot change any logical request."
@@ -81,27 +201,40 @@ defmodule IntellectualClub.Generation.StepRequests.Storage do
     unless current, do: raise(Error, reason: :not_found, step_id: step_id)
     unless current.status in @terminal_statuses, do: raise(Error, reason: :active_message)
 
-    original = Reader.decode_rows!(rows, [step_id]) |> Map.fetch!(step_id)
+    successor = Enum.find(rows, &(&1.sequence == current.sequence + 1))
+    previous = Enum.find(rows, &(&1.sequence == current.sequence - 1))
     candidate = Map.merge(current, attrs)
-    candidate_rows = Enum.map(rows, fn row -> if row.id == step_id, do: candidate, else: row end)
-    reconstructed = Reader.decode_rows!(candidate_rows, [step_id]) |> Map.fetch!(step_id)
 
-    unless reconstructed === original,
+    ids =
+      [
+        current,
+        if(candidate.request_mode == :patch, do: previous),
+        if(match?(%{request_mode: :patch}, successor), do: successor)
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(& &1.id)
+
+    originals = Reader.decode_snapshots!(rows, ids)
+    original = Map.fetch!(originals, step_id)
+
+    {attrs, reconstructed} =
+      Codec.validate_encoding_snapshot!(candidate, fn _attrs ->
+        unless previous, do: raise(Error, reason: :missing_base)
+        {previous, Map.fetch!(originals, previous.id)}
+      end)
+
+    unless reconstructed.hash == original.hash,
       do: raise(Error, reason: :logical_request_changed, step_id: step_id)
 
     # A checkpoint cannot be removed underneath an existing patch chain unless
     # its distance remains valid. Subsequent hashes refer to unchanged content.
-    case Enum.find(rows, &(&1.sequence == current.sequence + 1)) do
-      %{request_mode: :patch} = successor ->
-        old_next = Reader.decode_rows!(rows, [successor.id]) |> Map.fetch!(successor.id)
-        new_next = Codec.decode!(successor, candidate, reconstructed)
-        unless new_next === old_next, do: raise(Error, reason: :logical_request_changed)
-
-      _other ->
-        :ok
+    if match?(%{request_mode: :patch}, successor) do
+      old_next = Map.fetch!(originals, successor.id)
+      new_next = Codec.decode_snapshot!(successor, candidate, reconstructed)
+      unless new_next.hash == old_next.hash, do: raise(Error, reason: :logical_request_changed)
     end
 
-    {Codec.validate_shape!(candidate), current.updated_at}
+    {attrs, current.updated_at}
   end
 
   defp rewrite_attributes!(encoding) when is_map(encoding) and not is_struct(encoding) do

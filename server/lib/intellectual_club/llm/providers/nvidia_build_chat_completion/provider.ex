@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.Common.ChatCompletions.ImageMapper
   alias IntellectualClub.Generation.CacheControl
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
@@ -59,9 +60,12 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, _context) when is_map(request) do
     request
-    |> RequestPayload.stringify_keys()
     |> Map.delete("session_id")
     |> strip_cache_control()
     |> include_stream_usage()
@@ -82,7 +86,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -112,7 +115,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         followup.messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(context)
 
     %{
       runtime_step: followup.runtime_step,
@@ -122,7 +124,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, context)
+  def inject_steering(raw_request, steering_items, _context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -136,7 +138,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
     raw_request =
       payload
       |> Map.put("messages", messages)
-      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -187,6 +188,9 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000),
             retryable_http_status_codes: @retryable_http_status_codes
           },
@@ -215,7 +219,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   defp include_stream_usage(%{} = raw_request) do
     stream_options =
       case Map.get(raw_request, "stream_options") do
-        %{} = options -> RequestPayload.stringify_keys(options)
+        %{} = options -> options
         _other -> %{}
       end
 

@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.GoogleInteractions.ImageMapper
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
@@ -69,8 +70,12 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, _context) when is_map(request) do
-    RequestPayload.stringify_keys(request)
+    request
   end
 
   @impl true
@@ -89,7 +94,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
         system_instruction: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -121,7 +125,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
           |> to_string(),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
-      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -131,7 +134,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, context)
+  def inject_steering(raw_request, steering_items, _context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
@@ -145,7 +148,6 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
     raw_request =
       payload
       |> Map.put("input", Payload.previous_input_steps(payload) ++ steering_steps)
-      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -229,6 +231,9 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

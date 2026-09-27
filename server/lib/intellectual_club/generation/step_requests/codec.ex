@@ -8,7 +8,7 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
   The hard read bound is 32; writers may choose a smaller bound.
   """
 
-  alias IntellectualClub.Generation.StepRequests.Error
+  alias IntellectualClub.Generation.StepRequests.{Error, Snapshot}
 
   @max_chain 32
   @fields [
@@ -30,37 +30,100 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
 
   def normalize!(_request), do: fail!(:expected_json_object)
 
-  def hash(request), do: request |> normalize_value!() |> encode() |> hash_iodata()
+  def hash(request) do
+    {_request, json} = normalize_encoded!(request)
+    hash_iodata(json)
+  end
 
   defp hash_iodata(json), do: :crypto.hash(:sha256, json) |> Base.encode16(case: :lower)
 
-  def json!(value), do: value |> normalize_value!() |> encode() |> IO.iodata_to_binary()
+  def json!(value) do
+    {_value, json} = normalize_encoded!(value)
+    IO.iodata_to_binary(json)
+  end
+
+  @doc "Normalizes and canonically encodes one document exactly once."
+  def snapshot!(request) when is_map(request) and not is_struct(request) do
+    {request, json} = normalize_encoded!(request)
+    %Snapshot{request: request, hash: hash_iodata(json), size: IO.iodata_length(json)}
+  end
+
+  def snapshot!(_request), do: fail!(:expected_json_object)
+
+  defp normalized_snapshot(request) do
+    json = encode(request)
+    %Snapshot{request: request, hash: hash_iodata(json), size: IO.iodata_length(json)}
+  end
 
   def create_attributes(request, opts \\ []) do
-    request = normalize!(request)
+    snapshot = snapshot!(request)
+    previous_request = Keyword.get(opts, :previous_request)
+
+    base =
+      cond do
+        previous_request === request ->
+          snapshot
+
+        is_map(previous_request) and not is_struct(previous_request) ->
+          snapshot!(previous_request)
+
+        true ->
+          nil
+      end
+
+    create_from_snapshots(snapshot, Keyword.put(opts, :previous_snapshot, base))
+  end
+
+  @doc false
+  def create_from_snapshots(%Snapshot{} = snapshot, opts \\ []) do
     sequence = Keyword.get(opts, :sequence, 1)
     limit = chain_limit!(opts)
     previous = Keyword.get(opts, :previous_step)
-    previous_request = Keyword.get(opts, :previous_request)
-    json = encode(request)
-    full = full(request, hash_iodata(json))
+    base = Keyword.get(opts, :previous_snapshot)
+    full = full(snapshot.request, snapshot.hash)
 
     unless is_integer(sequence) and sequence > 0, do: fail!(:invalid_sequence)
 
     if sequence == 1 or Keyword.get(opts, :force_full, false) or
-         not usable_previous?(previous, previous_request, sequence, limit) do
+         not usable_previous?(previous, base, sequence, limit) do
       full
     else
-      previous_request = normalize!(previous_request)
-      base_hash = previous_request |> encode() |> hash_iodata()
-
-      if is_nil(Map.get(previous, :request_hash)) or previous.request_hash == base_hash do
-        patch_or_full(full, IO.iodata_length(json), previous, previous_request, base_hash)
+      if is_nil(Map.get(previous, :request_hash)) or previous.request_hash == base.hash do
+        patch_or_full(full, snapshot.size, previous, base)
       else
         full
       end
     end
   end
+
+  @doc "JSON numeric-value equality, consistent with the canonical decimal hash."
+  def equal?(left, right) when left === right, do: true
+
+  def equal?(left, right) when is_number(left) and is_number(right),
+    do: canonical_number(left) == canonical_number(right)
+
+  def equal?(left, right)
+      when is_map(left) and is_map(right) and map_size(left) == map_size(right) do
+    Enum.all?(left, fn {key, value} ->
+      case Map.fetch(right, key) do
+        {:ok, other} -> equal?(value, other)
+        :error -> false
+      end
+    end)
+  end
+
+  def equal?(left, right) when is_list(left) and is_list(right),
+    do: equal_list?(left, right)
+
+  def equal?(_left, _right), do: false
+
+  # Do not repeat the structural fast path for every suffix of a differing list.
+  defp equal_list?([], []), do: true
+
+  defp equal_list?([left | rest_left], [right | rest_right]),
+    do: equal?(left, right) and equal_list?(rest_left, rest_right)
+
+  defp equal_list?(_left, _right), do: false
 
   def chain_limit!(opts) do
     limit = Keyword.get(opts, :max_chain, @max_chain)
@@ -80,8 +143,7 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
     }
   end
 
-  defp usable_previous?(previous, request, sequence, limit)
-       when is_map(previous) and is_map(request) and not is_struct(request) do
+  defp usable_previous?(previous, %Snapshot{}, sequence, limit) when is_map(previous) do
     distance = Map.get(previous, :request_checkpoint_distance, 0)
     mode = Map.get(previous, :request_mode, :full)
 
@@ -92,21 +154,26 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
 
   defp usable_previous?(_previous, _request, _sequence, _limit), do: false
 
-  defp patch_or_full(full, full_size, previous, previous_request, base_hash) do
+  defp patch_or_full(full, full_size, previous, base) do
     request = full.raw_request
-    patch = previous_request |> Jsonpatch.diff(request) |> normalize_value!()
+
+    patch =
+      if base.hash == full.request_hash,
+        do: [],
+        else: base.request |> Jsonpatch.diff(request) |> normalize_value!()
+
     validate_patch!(patch)
 
-    # The dependency's diff considers 1 and 1.0 equal. Verify the exact normalized
-    # result as well as the hash, and fall back instead of changing logical data.
+    # Keep one meaningful roundtrip: the dependency has overlapping-pointer
+    # escape bugs and may conflate large integer/float values in its diff.
     if IO.iodata_length(encode(patch)) * 2 < full_size and
-         apply_normalized_patch!(previous_request, patch) === request do
+         equal?(apply_normalized_patch!(base.request, patch), request) do
       %{
         request_mode: :patch,
         raw_request: %{},
         request_patch: patch,
         request_hash: full.request_hash,
-        request_base_hash: base_hash,
+        request_base_hash: base.hash,
         request_base_sequence: Map.fetch!(previous, :sequence),
         request_checkpoint_distance: Map.get(previous, :request_checkpoint_distance, 0) + 1
       }
@@ -120,6 +187,12 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
 
   @doc "Validates physical shape, normalizing JSON without requiring a predecessor."
   def validate_shape!(step) do
+    attrs = normalized_shape!(step)
+    if attrs.request_mode == :full, do: full_snapshot!(attrs, step)
+    attrs
+  end
+
+  defp normalized_shape!(step) do
     sequence = Map.get(step, :sequence)
     unless is_integer(sequence) and sequence > 0, do: fail!(:invalid_sequence, step)
     attrs = Map.take(step, @fields)
@@ -132,7 +205,6 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
                  is_nil(attrs.request_base_sequence) and attrs.request_checkpoint_distance == 0,
                do: fail!(:invalid_full_encoding, step)
 
-        verify_hash!(attrs.request_hash, raw, step, true)
         attrs
 
       :patch ->
@@ -154,46 +226,68 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
 
   @doc "Decodes one row, checking both the base and the reconstructed result."
   def decode!(step, previous \\ nil, previous_request \\ nil) do
-    step |> validate_shape!() |> decode_request!(step, previous, previous_request)
+    base =
+      if Map.get(step, :request_mode) == :patch and previous_request,
+        do: snapshot!(previous_request)
+
+    decode_snapshot!(step, previous, base).request
+  end
+
+  @doc false
+  def decode_snapshot!(step, previous \\ nil, base \\ nil) do
+    step |> normalized_shape!() |> decode_snapshot(step, previous, base)
   end
 
   @doc "Validates shape and reconstruction, resolving the base only for a valid patch."
   def validate_encoding!(step, resolve_base) when is_function(resolve_base, 1) do
-    attrs = validate_shape!(step)
-
-    if attrs.request_mode == :patch do
-      {previous, base} = resolve_base.(attrs)
-      _request = decode_request!(attrs, step, previous, base)
-    end
-
+    {attrs, _snapshot} = validate_encoding_snapshot!(step, resolve_base)
     attrs
   end
 
-  defp decode_request!(attrs, step, previous, previous_request) do
-    case attrs.request_mode do
-      :full ->
-        attrs.raw_request
+  @doc false
+  def validate_encoding_snapshot!(step, resolve_base) do
+    attrs = normalized_shape!(step)
 
-      :patch ->
-        unless is_map(previous) and
-                 Map.get(previous, :chat_message_id) == Map.get(step, :chat_message_id) and
-                 Map.get(previous, :sequence) == attrs.request_base_sequence and
-                 Map.get(previous, :request_checkpoint_distance) ==
-                   attrs.request_checkpoint_distance - 1,
-               do: fail!(:invalid_patch_base, step)
+    snapshot =
+      if attrs.request_mode == :patch do
+        {previous, base} = resolve_base.(attrs)
+        base = if is_struct(base, Snapshot), do: base, else: snapshot!(base)
+        decode_snapshot(attrs, step, previous, base)
+      else
+        full_snapshot!(attrs, step)
+      end
 
-        base = normalize!(previous_request)
-        verify_hash!(attrs.request_base_hash, base, step, false)
-        request = apply_normalized_patch!(base, attrs.request_patch)
-        verify_hash!(attrs.request_hash, request, step, false)
-        request
-    end
+    {attrs, snapshot}
   end
 
-  defp verify_hash!(nil, _request, _step, true), do: :ok
+  defp decode_snapshot(%{request_mode: :full} = attrs, step, _previous, _base),
+    do: full_snapshot!(attrs, step)
 
-  defp verify_hash!(expected, request, step, _optional?) do
-    unless valid_hash?(expected) and expected == hash_iodata(encode(request)),
+  defp decode_snapshot(attrs, step, previous, base) do
+    unless is_map(previous) and is_struct(base, Snapshot) and
+             Map.get(previous, :chat_message_id) == Map.get(step, :chat_message_id) and
+             Map.get(previous, :sequence) == attrs.request_base_sequence and
+             Map.get(previous, :request_checkpoint_distance) ==
+               attrs.request_checkpoint_distance - 1,
+           do: fail!(:invalid_patch_base, step)
+
+    verify_hash!(attrs.request_base_hash, base, step, false)
+    request = apply_normalized_patch!(base.request, attrs.request_patch)
+    snapshot = if request === base.request, do: base, else: normalized_snapshot(request)
+    verify_hash!(attrs.request_hash, snapshot, step, false)
+    snapshot
+  end
+
+  defp full_snapshot!(attrs, step) do
+    snapshot = normalized_snapshot(attrs.raw_request)
+    verify_hash!(attrs.request_hash, snapshot, step, true)
+    snapshot
+  end
+
+  defp verify_hash!(nil, _snapshot, _step, true), do: :ok
+
+  defp verify_hash!(expected, snapshot, step, _optional?) do
+    unless valid_hash?(expected) and expected == snapshot.hash,
       do: fail!(:hash_mismatch, step)
   end
 
@@ -229,9 +323,18 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
             operation
         end
 
-      case Jsonpatch.apply_patch(operation, target, keys: {:custom, &cast_fragment/4}) do
-        {:ok, result} -> result
-        {:error, _error} -> fail!(:invalid_patch)
+      case operation do
+        %{"op" => "test", "path" => path, "value" => expected} ->
+          unless equal?(fetch_pointer!(target, fragments(path)), expected),
+            do: fail!(:invalid_patch)
+
+          target
+
+        operation ->
+          case Jsonpatch.apply_patch(operation, target, keys: {:custom, &cast_fragment/4}) do
+            {:ok, result} -> result
+            {:error, _error} -> fail!(:invalid_patch)
+          end
       end
     end)
   rescue
@@ -318,6 +421,50 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
   defp pointer?("/" <> path), do: not Regex.match?(~r/~(?![01])/, path)
   defp pointer?(_path), do: false
 
+  # Encoding validates UTF-8 while escaping strings. Build the normalized value
+  # and canonical iodata together instead of scanning every string beforehand.
+  defp normalize_encoded!(value) do
+    encode_value!(value)
+  rescue
+    _error in Jason.EncodeError -> fail!(:invalid_json_string)
+  end
+
+  defp encode_value!(value) when is_map(value) and not is_struct(value) do
+    {normalized, pairs} =
+      Enum.reduce(value, {%{}, []}, fn {key, nested}, {normalized, pairs} ->
+        key = encoded_key!(key)
+        if Map.has_key?(normalized, key), do: fail!(:duplicate_json_key)
+        {nested, json} = encode_value!(nested)
+        {Map.put(normalized, key, nested), [{key, json} | pairs]}
+      end)
+
+    encoded =
+      pairs
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map(fn {key, json} -> [Jason.encode_to_iodata!(key), ":", json] end)
+
+    {normalized, ["{", Enum.intersperse(encoded, ","), "}"]}
+  end
+
+  defp encode_value!(value) when is_list(value) do
+    {values, json} =
+      Enum.reduce(value, {[], []}, fn item, {values, json} ->
+        {item, encoded} = encode_value!(item)
+        {[item | values], [encoded | json]}
+      end)
+
+    {Enum.reverse(values), ["[", Enum.intersperse(Enum.reverse(json), ","), "]"]}
+  end
+
+  defp encode_value!(value) when value in [nil, true, false], do: {value, encode(value)}
+  defp encode_value!(value) when is_atom(value), do: encode_value!(Atom.to_string(value))
+  defp encode_value!(value) when is_binary(value) or is_number(value), do: {value, encode(value)}
+  defp encode_value!(_value), do: fail!(:invalid_json_value)
+
+  defp encoded_key!(key) when is_binary(key), do: key
+  defp encoded_key!(key) when is_atom(key), do: Atom.to_string(key)
+  defp encoded_key!(_key), do: fail!(:invalid_json_key)
+
   defp normalize_value!(value) when is_map(value) and not is_struct(value) do
     Enum.reduce(value, %{}, fn {key, value}, result ->
       key = normalize_key!(key)
@@ -354,7 +501,10 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
   defp encode(value) when is_list(value),
     do: ["[", Enum.intersperse(Enum.map(value, &encode/1), ","), "]"]
 
-  defp encode(value) when is_integer(value) or is_float(value) do
+  defp encode(value) when is_integer(value) or is_float(value), do: canonical_number(value)
+  defp encode(value), do: Jason.encode_to_iodata!(value)
+
+  defp canonical_number(value) do
     # JSONB can expand exponents and erase the sign of zero. Hash the JSON
     # number's decimal value, not its input spelling or BEAM integer/float type.
     # Integers are already materialized JSON values, not unbounded decimal input
@@ -371,8 +521,6 @@ defmodule IntellectualClub.Generation.StepRequests.Codec do
       do: "0",
       else: Decimal.to_string(decimal, :scientific)
   end
-
-  defp encode(value), do: Jason.encode_to_iodata!(value)
 
   defp fail!(reason, step \\ %{}), do: raise(Error, reason: reason, step_id: Map.get(step, :id))
 end

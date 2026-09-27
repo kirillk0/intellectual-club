@@ -216,6 +216,57 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
       change(ValidateStepRequest)
     end
 
+    create :create_request do
+      public?(false)
+
+      argument :request, :map do
+        allow_nil?(false)
+        public?(false)
+      end
+
+      argument :request_base, :map do
+        public?(false)
+      end
+
+      argument :request_base_step_id, :integer do
+        public?(false)
+      end
+
+      argument :force_full, :boolean do
+        default(false)
+        allow_nil?(false)
+        public?(false)
+      end
+
+      argument :max_chain, :integer do
+        default(32)
+        allow_nil?(false)
+        constraints(min: 1, max: 32)
+        public?(false)
+      end
+
+      accept([
+        :chat_message_id,
+        :sequence,
+        :status,
+        :raw_response,
+        :response_final,
+        :input_tokens,
+        :output_tokens,
+        :cached_input_tokens,
+        :reasoning_tokens,
+        :cost,
+        :first_token_at,
+        :last_token_at,
+        :finished_at
+      ])
+
+      change(relate_actor(:owner))
+      change({RequireRelatedOwnedByActor, relationships: [:chat_message]})
+      change({SetFinishedAtFromStatus, []})
+      change({ValidateStepRequest, logical?: true})
+    end
+
     update :update do
       accept([
         :status,

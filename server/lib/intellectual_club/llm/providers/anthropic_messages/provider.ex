@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.AnthropicMessages.ImageMapper
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Api
@@ -70,8 +71,11 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, _context) when is_map(request) do
-    request = RequestPayload.stringify_keys(request)
     version = request |> Map.get("anthropic_version") |> to_string() |> String.trim()
     Map.put(request, "anthropic_version", if(version == "", do: "2023-06-01", else: version))
   end
@@ -92,7 +96,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
         system: system,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request(opts)
 
     %{
       raw_request: raw_request,
@@ -128,7 +131,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       )
       |> put_followup_tool_choice(previous_raw_request)
       |> maybe_apply_followup_cache_control(context)
-      |> prepare_request(context)
 
     %{
       runtime_step: runtime_step,
@@ -152,7 +154,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       payload
       |> Map.put("messages", messages)
       |> maybe_apply_followup_cache_control(context)
-      |> prepare_request(context)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -250,6 +251,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

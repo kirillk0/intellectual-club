@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   use IntellectualClub.DataCase, async: false
 
+  import IntellectualClub.Generation.RequestImageCacheTestHelpers
+
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
@@ -11,6 +13,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
+  alias IntellectualClub.Generation.RuntimeSnapshots
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
 
@@ -20,6 +23,9 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     @moduledoc false
 
     alias IntellectualClub.Generation.RequestImages
+    alias IntellectualClub.Llm.Providers.Responses.ImageMapper
+
+    defdelegate map_request_images(request, acc, mapper), to: ImageMapper
 
     def inject_steering(raw_request, steering_items, _context) do
       steering_input =
@@ -44,7 +50,13 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       logical_request = Map.fetch!(opts, :request_payload)
       step_id = Map.fetch!(opts, :request_step_id)
       attempt = Agent.get_and_update(context.attempts, &{&1 + 1, &1 + 1})
-      {:ok, wire_request} = RequestImages.hydrate(logical_request, step_id)
+
+      {:ok, wire_request} =
+        RequestImages.hydrate(logical_request, step_id,
+          mapper: &__MODULE__.map_request_images/3,
+          cache: Map.fetch!(opts, :image_cache),
+          on_cache: Map.fetch!(opts, :image_cache_update)
+        )
 
       send(
         context.test_pid,
@@ -71,13 +83,25 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   defmodule RetryOnceAdapter do
     @moduledoc false
 
+    alias IntellectualClub.Generation.RequestImages
+    alias IntellectualClub.Llm.Providers.Responses.ImageMapper
+
+    defdelegate map_request_images(request, acc, mapper), to: ImageMapper
+
     def stream_generate(opts, emit) do
       context = Map.fetch!(opts, :context)
       logical_request = Map.fetch!(opts, :request_payload)
       step_id = Map.fetch!(opts, :request_step_id)
       attempt = Agent.get_and_update(context.attempts, &{&1 + 1, &1 + 1})
 
-      send(context.test_pid, {:retry_request, attempt, step_id, logical_request})
+      {:ok, wire_request} =
+        RequestImages.hydrate(logical_request, step_id,
+          mapper: &__MODULE__.map_request_images/3,
+          cache: Map.fetch!(opts, :image_cache),
+          on_cache: Map.fetch!(opts, :image_cache_update)
+        )
+
+      send(context.test_pid, {:retry_request, attempt, step_id, logical_request, wire_request})
 
       if attempt == 1 do
         emit.(
@@ -112,6 +136,11 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   defmodule ToolFollowupAdapter do
     @moduledoc false
 
+    alias IntellectualClub.Generation.RequestImages
+    alias IntellectualClub.Llm.Providers.Responses.ImageMapper
+
+    defdelegate map_request_images(request, acc, mapper), to: ImageMapper
+
     def build_followup_request(opts) do
       runtime_step = Map.fetch!(opts, :runtime_step)
 
@@ -132,7 +161,14 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       step_id = Map.fetch!(opts, :request_step_id)
       attempt = Agent.get_and_update(context.attempts, &{&1 + 1, &1 + 1})
 
-      send(context.test_pid, {:tool_request, attempt, step_id, logical_request})
+      {:ok, wire_request} =
+        RequestImages.hydrate(logical_request, step_id,
+          mapper: &__MODULE__.map_request_images/3,
+          cache: Map.fetch!(opts, :image_cache),
+          on_cache: Map.fetch!(opts, :image_cache_update)
+        )
+
+      send(context.test_pid, {:tool_request, attempt, step_id, logical_request, wire_request})
 
       if attempt == 1 do
         call_id = "call_image_followup"
@@ -197,13 +233,23 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
   end
 
   test "Worker hydrates only for transport and steering creates independent immutable image pins" do
-    %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: step_id} =
-      create_generation!(image_payload())
+    %{
+      actor: actor,
+      assistant_message: message,
+      raw_request: raw_request,
+      step_id: step_id,
+      request_images: request_images
+    } = create_generation!(image_payload())
 
-    {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
+    telemetry = observe_image_cache()
+
+    attempts = start_supervised!({Agent, fn -> 0 end})
 
     context =
-      worker_context(actor, message, step_id, raw_request, SteeringAdapter, attempts: attempts)
+      worker_context(actor, message, step_id, raw_request, SteeringAdapter,
+        attempts: attempts,
+        request_images: request_images
+      )
 
     pid =
       start_supervised!(Supervisor.child_spec({Worker, %{context: context}}, restart: :temporary))
@@ -218,6 +264,8 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     assert wire_image_url(wire_request) =~ "data:image/png;base64,"
     refute inspect(compact_request) =~ ";base64,"
 
+    assert_public_state_compact(pid, message.id, raw_request)
+    assert_warm_cache_counters(telemetry)
     [initial_binding] = bindings_for_step(step_id)
 
     assert {:ok, %{step_id: receiving_step_id}} = Worker.steer(pid, "Use the image carefully")
@@ -229,6 +277,8 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     assert wire_image_url(steered_wire_request) == wire_image_url(wire_request)
     refute inspect(steered_request) =~ ";base64,"
+    assert_public_state_compact(pid, message.id, steered_request)
+    assert_warm_cache_counters(telemetry)
 
     [steered_binding] = bindings_for_step(receiving_step_id)
     refute steered_binding.id == initial_binding.id
@@ -246,11 +296,12 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     refute inspect(persisted_step.raw_request) =~ ";base64,"
   end
 
-  test "auto-retry pins the stable image reference with a separate logical file per step" do
+  test "auto-retry retains hydrated wire cache and pins a separate logical file per step" do
     %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: first_step_id} =
       create_generation!(image_payload())
 
-    {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
+    telemetry = observe_image_cache()
+    attempts = start_supervised!({Agent, fn -> 0 end})
 
     context =
       worker_context(actor, message, first_step_id, raw_request, RetryOnceAdapter,
@@ -262,10 +313,22 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     monitor_ref = Process.monitor(pid)
 
-    assert_receive {:retry_request, 1, ^first_step_id, first_request}, 2_000
-    assert_receive {:retry_request, 2, second_step_id, second_request}, 2_000
+    assert_receive {:retry_request, 1, ^first_step_id, first_request, first_wire}, 2_000
+    assert_receive {:retry_request, 2, second_step_id, second_request, second_wire}, 2_000
     assert second_step_id != first_step_id
     assert compact_image_url(second_request) == compact_image_url(first_request)
+
+    assert first_wire == second_wire
+    refute inspect(first_request) =~ ";base64,"
+    refute inspect(second_request) =~ ";base64,"
+    assert_public_state_compact(pid, message.id, second_request)
+
+    assert %{loaded_bytes: loaded, miss: 1, hit: hits, encoded_bytes: encoded} =
+             image_cache_counters(telemetry)
+
+    assert loaded == byte_size(image_payload())
+    assert encoded == byte_size(wire_image_url(first_wire))
+    assert hits > 0
 
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000
@@ -284,15 +347,23 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
            end)
   end
 
-  test "tool follow-up pins the same reference with an independent logical file" do
-    %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: first_step_id} =
-      create_generation!(image_payload())
+  test "tool follow-up retains prepared wire cache with an independent logical file" do
+    %{
+      actor: actor,
+      assistant_message: message,
+      raw_request: raw_request,
+      step_id: first_step_id,
+      request_images: request_images
+    } = create_generation!(image_payload())
 
-    {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
+    telemetry = observe_image_cache()
+
+    attempts = start_supervised!({Agent, fn -> 0 end})
 
     context =
       worker_context(actor, message, first_step_id, raw_request, ToolFollowupAdapter,
         attempts: attempts,
+        request_images: request_images,
         max_tool_rounds: 0
       )
 
@@ -301,10 +372,16 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     monitor_ref = Process.monitor(pid)
 
-    assert_receive {:tool_request, 1, ^first_step_id, first_request}, 2_000
-    assert_receive {:tool_request, 2, second_step_id, second_request}, 2_000
+    assert_receive {:tool_request, 1, ^first_step_id, first_request, first_wire}, 2_000
+    assert_receive {:tool_request, 2, second_step_id, second_request, second_wire}, 2_000
     assert second_step_id != first_step_id
     assert compact_image_url(second_request) == compact_image_url(first_request)
+
+    assert first_wire == second_wire
+    refute inspect(first_request) =~ ";base64,"
+    refute inspect(second_request) =~ ";base64,"
+    assert_public_state_compact(pid, message.id, second_request)
+    assert_warm_cache_counters(telemetry)
 
     Worker.cancel(pid)
     assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 2_000
@@ -321,8 +398,12 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: old_step_id} =
       create_generation!(oversized_image_payload())
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, old_step_id)
+    assert :ok =
+             RequestImages.validate_snapshot(raw_request, old_step_id,
+               mapper: &SteeringAdapter.map_request_images/3
+             )
+
+    compact_request = raw_request
 
     [old_binding] = bindings_for_step(old_step_id)
     old_file_id = old_binding.file_id
@@ -332,7 +413,9 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     assert FilesystemStorage.exists?(rendition_sha)
 
     new_step_id =
-      Persistence.replace_steps_for_retry!(message.id, 1, compact_request)
+      Persistence.replace_steps_for_retry!(message.id, 1, compact_request, [], nil,
+        request_context: %{adapter_module: SteeringAdapter}
+      )
 
     assert new_step_id != old_step_id
     assert {:error, _error} = Ash.get(ChatMessageStep, old_step_id, actor: actor)
@@ -357,15 +440,21 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
     %{actor: actor, assistant_message: message, raw_request: raw_request, step_id: old_step_id} =
       create_generation!(oversized_image_payload())
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, old_step_id)
+    assert :ok =
+             RequestImages.validate_snapshot(raw_request, old_step_id,
+               mapper: &SteeringAdapter.map_request_images/3
+             )
+
+    compact_request = raw_request
 
     [old_binding] = bindings_for_step(old_step_id)
     rendition_sha = old_binding.file.sha256
     file_count_before = count_files_for_sha(rendition_sha)
 
     assert_raise BadMapError, fn ->
-      Persistence.replace_steps_for_retry!(message.id, 1, compact_request, [42])
+      Persistence.replace_steps_for_retry!(message.id, 1, compact_request, [42], nil,
+        request_context: %{adapter_module: SteeringAdapter}
+      )
     end
 
     assert Ash.get!(ChatMessageStep, old_step_id, actor: actor).id == old_step_id
@@ -379,6 +468,30 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     message = Ash.get!(ChatMessage, message.id, actor: actor, load: [:steps])
     assert Enum.map(message.steps, &{&1.id, &1.sequence}) == [{old_step_id, 1}]
+  end
+
+  defp assert_warm_cache_counters(telemetry) do
+    assert %{loaded_bytes: 0, miss: 0, encoded_bytes: 0, hit: hits} =
+             image_cache_counters(telemetry)
+
+    assert hits > 0
+  end
+
+  defp assert_public_state_compact(pid, message_id, request) do
+    state = :sys.get_state(pid)
+    assert state.runtime_step.raw_request == request
+    assert state.context.request_payload == request
+    assert_wire_cache(state.image_cache, image_payload())
+    refute inspect(request) =~ ";base64,"
+
+    snapshot = Worker.get_current_state(pid)
+    assert {:ok, stored_snapshot} = RuntimeSnapshots.read(message_id, pid)
+
+    for public <- [snapshot, stored_snapshot] do
+      refute Map.has_key?(public, :image_cache)
+      refute Map.has_key?(public, :request_images)
+      refute inspect(public) =~ Base.encode64(image_payload())
+    end
   end
 
   defp create_generation!(payload) do
@@ -411,8 +524,10 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
 
     raw_request = responses_request(source_file)
 
-    %{step: step, request: raw_request} =
-      Persistence.create_request_step!(assistant_message, 1, raw_request)
+    %{step: step, request: raw_request, request_images: request_images} =
+      Persistence.create_request_step!(assistant_message, 1, raw_request,
+        request_context: %{adapter_module: SteeringAdapter}
+      )
 
     step_id = step.id
 
@@ -422,6 +537,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       assistant_message: assistant_message,
       source_file: source_file,
       raw_request: raw_request,
+      request_images: request_images,
       step_id: step_id
     }
   end
@@ -435,6 +551,7 @@ defmodule IntellectualClub.Generation.RequestImageLifecycleTest do
       provider_type: "test",
       adapter_module: adapter,
       request_payload: raw_request,
+      request_images: Keyword.get(opts, :request_images),
       timeout_ms: 5_000,
       chunk_delay_ms: 0,
       attempts: Keyword.fetch!(opts, :attempts),

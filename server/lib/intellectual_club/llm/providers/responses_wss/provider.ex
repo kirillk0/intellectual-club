@@ -39,6 +39,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss do
     do: Responses.apply_standard_parameters(parameters, settings)
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: Responses.map_request_images(request, acc, mapper)
+
+  @impl true
   def prepare_request(request, context), do: Responses.prepare_request(request, context)
 
   @impl true

@@ -113,7 +113,12 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     assert [child_binding] = bindings(first_step)
     refute source_binding.file_id == child_binding.file_id
     assert child_binding.source_file_external_id == source_image.file.external_id
-    assert {:ok, wire_request} = RequestImages.hydrate(request, first_step.id)
+
+    assert {:ok, wire_request} =
+             RequestImages.hydrate(request, first_step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
+
     assert [wire_image] = image_blocks(wire_request)
     assert wire_image["image_url"] == "data:image/png;base64," <> Base.encode64(@png)
 
@@ -183,7 +188,12 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
     boundary =
       if Keyword.get(opts, :pin_boundary_input?, false) do
-        %{step: step} = Persistence.create_request_step!(message, 2, image_request([input]))
+        %{step: step} =
+          Persistence.create_request_step!(message, 2, image_request([input]),
+            request_context: %{
+              adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter
+            }
+          )
 
         step
         |> Ash.Changeset.for_update(:update, %{status: :done, response_final: true}, actor: actor)
@@ -297,7 +307,10 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     assert MapSet.new(bindings(step), &to_string(&1.source_file_external_id)) ==
              MapSet.new(allowed, &to_string(&1.file.external_id))
 
-    assert {:ok, wire} = RequestImages.hydrate(compact, step.id)
+    assert {:ok, wire} =
+             RequestImages.hydrate(compact, step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
 
     for block <- Enum.take(image_blocks(wire), length(allowed)) do
       assert block["image_url"] == "data:image/png;base64," <> Base.encode64(@png)
@@ -308,7 +321,15 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     actor = %{id: step.owner_id}
     message = Ash.get!(ChatMessage, step.chat_message_id, actor: actor, load: [:steps])
     sequence = Enum.max(Enum.map(message.steps, & &1.sequence)) + 1
-    Persistence.create_request_step!(message, sequence, request, opts)
+
+    Persistence.create_request_step!(
+      message,
+      sequence,
+      request,
+      Keyword.put(opts, :request_context, %{
+        adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter
+      })
+    )
   end
 
   defp context(chat, actor) do

@@ -22,10 +22,13 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
             required(:base_url) => String.t(),
             required(:api_key) => String.t(),
             required(:provider) => atom() | String.t(),
+            required(:image_mapper) => function(),
             required(:request_payload) => map(),
             optional(:extra_headers) => [{String.t(), String.t()}],
             optional(:retryable_http_status_codes) => [integer()] | MapSet.t(integer()),
             optional(:request_step_id) => integer() | nil,
+            optional(:image_cache) => map(),
+            optional(:image_cache_update) => (map() -> any()),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -46,7 +49,10 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
     case RequestHydration.hydrate(
            logical_request,
            Map.get(opts, :request_step_id),
-           provider
+           Map.fetch!(opts, :image_mapper),
+           cache: Map.get(opts, :image_cache, %{}),
+           on_cache: Map.get(opts, :image_cache_update),
+           provider: provider
          ) do
       {:ok, wire_request} ->
         headers =

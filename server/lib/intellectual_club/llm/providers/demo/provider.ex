@@ -50,8 +50,11 @@ defmodule IntellectualClub.Llm.Providers.Demo do
   def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
 
   @impl true
+  def map_request_images(request, acc, _mapper), do: {request, acc}
+
+  @impl true
   def prepare_request(request, _context) when is_map(request) do
-    RequestPayload.stringify_keys(request)
+    request
   end
 
   @impl true
@@ -63,7 +66,7 @@ defmodule IntellectualClub.Llm.Providers.Demo do
         |> Map.put(:cache_control_enabled, false)
       )
 
-    raw_request = prepare_request(%{"messages" => messages}, opts)
+    raw_request = %{"messages" => messages}
 
     %{
       raw_request: raw_request,
@@ -80,8 +83,7 @@ defmodule IntellectualClub.Llm.Providers.Demo do
         |> Map.put(:cache_control_enabled, false)
       )
 
-    raw_request =
-      prepare_request(%{"messages" => followup.messages}, Map.get(opts, :context, %{}))
+    raw_request = %{"messages" => followup.messages}
 
     %{
       runtime_step: followup.runtime_step,

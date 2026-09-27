@@ -57,6 +57,9 @@ defmodule IntellectualClub.TestSupport.LlmProviders.SelfContainedTestProvider do
   end
 
   @impl true
+  def map_request_images(request, acc, _mapper), do: {request, acc}
+
+  @impl true
   def request_snapshot(_raw_request),
     do: %{model_input: [], system_prompt: "", history_length: nil}
 

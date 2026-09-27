@@ -433,6 +433,169 @@ defmodule IntellectualClub.Generation.StepRequestsStorageTest do
              Codec.json!(target)
   end
 
+  test "logical creation prepares normalized snapshots before locks and publishes without raw base reads" do
+    %{user: actor} = user_fixture()
+    message = request_message!(actor)
+    source = compact_request(1)
+    first = encoded_request_step!(message, 1, source, actor)
+    request = Map.put(source, :added, %{value: 1.0})
+
+    {{changeset, snapshot}, preparation} =
+      measure(fn ->
+        StepRequests.prepare_create!(%{chat_message_id: message.id, sequence: 2}, request,
+          actor: actor,
+          previous_step: first,
+          previous_request: source
+        )
+      end)
+
+    assert snapshot.request["added"] === %{"value" => 1.0}
+    assert snapshot.hash == Codec.hash(request)
+    assert preparation.raw_reads == 0
+    assert preparation.shared_locks == 0
+
+    {{:ok, second}, publication} = measure(fn -> Ash.create(changeset, actor: actor) end)
+    assert publication.raw_reads == 0
+    assert publication.shared_locks >= 1
+    assert second.request_mode == :patch
+    assert second.request_hash == snapshot.hash
+    assert StepRequests.request_for_step!(second.id, actor: actor) == snapshot.request
+  end
+
+  test "logical writes reject runtime base mismatches even when forced full or checkpoint limited" do
+    %{user: actor} = user_fixture()
+    message = request_message!(actor)
+    source = compact_request(1)
+    first = encoded_request_step!(message, 1, source, actor)
+
+    for opts <- [[force_full: true], [max_chain: 1], []] do
+      changeset =
+        logical_changeset(
+          message.id,
+          2,
+          compact_request(2),
+          actor,
+          Keyword.merge(opts, request_base: compact_request(999), request_base_step_id: first.id)
+        )
+
+      refute changeset.valid?
+      assert {:error, _} = Ash.create(changeset, actor: actor)
+    end
+
+    legacy_message = request_message!(actor)
+    legacy = historical_request_step!(legacy_message, 1, source, actor)
+    assert legacy.request_hash == nil
+
+    assert {:error, _} =
+             logical_changeset(legacy_message.id, 2, source, actor,
+               request_base: compact_request(999),
+               force_full: true
+             )
+             |> Ash.create(actor: actor)
+  end
+
+  test "caller snapshots and validated flags cannot authorize logical or physical encodings" do
+    %{user: actor} = user_fixture()
+    message = request_message!(actor)
+    source = compact_request(1)
+    first = encoded_request_step!(message, 1, source, actor)
+    target = compact_request(2)
+    forged = %{Codec.snapshot!(target) | hash: String.duplicate("0", 64), request: source}
+
+    changeset =
+      logical_changeset(message.id, 2, target, actor, request_base: source)
+      |> Ash.Changeset.set_context(%{validated: true, step_request_snapshot: forged})
+
+    assert {:ok, second} = Ash.create(changeset, actor: actor)
+    assert second.request_hash == Codec.hash(target)
+    assert StepRequests.request_for_step!(second.id, actor: actor) == target
+
+    other = request_message!(actor)
+
+    assert {:error, _} =
+             logical_changeset(other.id, 1, forged, actor)
+             |> Ash.create(actor: actor)
+
+    attrs =
+      Codec.create_attributes(target,
+        sequence: 3,
+        previous_step: second,
+        previous_request: target
+      )
+
+    assert {:error, _} =
+             create_encoding(message.id, 3, %{attrs | request_hash: first.request_hash}, actor,
+               private_arguments: %{request_base: target},
+               context: %{validated: true, step_request_snapshot: forged}
+             )
+  end
+
+  test "resource-owned plans reject changed inputs, owners, actors and locked predecessor metadata" do
+    %{user: actor} = user_fixture()
+    %{user: stranger} = user_fixture()
+    message = request_message!(actor)
+    source = compact_request(1)
+    first = historical_request_step!(message, 1, source, actor)
+    changeset = logical_changeset(message.id, 2, compact_request(2), actor, request_base: source)
+    assert changeset.valid?
+
+    for {field, value} <- [
+          request_hash: String.duplicate("0", 64),
+          sequence: 3,
+          owner_id: stranger.id,
+          raw_request: source
+        ] do
+      assert {:error, _} =
+               changeset
+               |> Ash.Changeset.force_change_attribute(field, value)
+               |> Ash.create(actor: actor)
+    end
+
+    assert {:error, _} =
+             changeset
+             |> Ash.Changeset.force_set_argument(:request, compact_request(3))
+             |> Ash.create(actor: actor)
+
+    assert {:error, _} = Ash.create(changeset, actor: stranger)
+
+    assert {:ok, _} = rewrite(first, Codec.create_attributes(source), actor)
+    assert {:error, _} = Ash.create(changeset, actor: actor)
+
+    assert {:ok, second} =
+             logical_changeset(message.id, 2, compact_request(2), actor, request_base: source)
+             |> Ash.create(actor: actor)
+
+    assert second.request_mode == :patch
+  end
+
+  test "physical rewrites accept semantic integer and float equality but not rounded large integers" do
+    %{user: actor} = user_fixture()
+    message = request_message!(actor)
+    source = Map.merge(compact_request(1), %{"value" => 1, "large" => Integer.pow(10, 80)})
+    step = historical_request_step!(message, 1, source, actor)
+    equivalent = %{source | "value" => 1.0, "large" => 1.0e80}
+    assert {:ok, _} = rewrite(step, Codec.create_attributes(equivalent), actor)
+
+    assert {:error, _} =
+             rewrite(
+               step,
+               Codec.create_attributes(%{source | "large" => Integer.pow(10, 80) + 1}),
+               actor
+             )
+
+    assert Codec.equal?(StepRequests.request_for_step!(step.id, actor: actor), source)
+  end
+
+  defp logical_changeset(message_id, sequence, request, actor, opts \\ []) do
+    ChatMessageStep
+    |> Ash.Changeset.for_create(
+      :create_request,
+      %{chat_message_id: message_id, sequence: sequence},
+      actor: actor,
+      private_arguments: Map.put(Map.new(opts), :request, request)
+    )
+  end
+
   defp rewrite(step, attrs, actor) do
     step
     |> Ash.Changeset.for_update(:rewrite_request_encoding, %{},

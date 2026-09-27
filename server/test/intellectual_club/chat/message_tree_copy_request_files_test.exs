@@ -263,7 +263,11 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
 
     Ash.destroy!(source, actor: actor)
 
-    assert {:ok, hydrated_request} = RequestImages.hydrate(moved_step.raw_request, moved_step.id)
+    assert {:ok, hydrated_request} =
+             RequestImages.hydrate(moved_step.raw_request, moved_step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
+
     assert inspect(hydrated_request) =~ "data:image/png;base64,"
     assert FilesystemStorage.exists?(moved_binding.file.sha256)
 
@@ -305,7 +309,10 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     }
 
     %{step: request_step} =
-      Persistence.create_request_step!(message, step.sequence + 1, raw_request, force_full: true)
+      Persistence.create_request_step!(message, step.sequence + 1, raw_request,
+        force_full: true,
+        request_context: %{adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter}
+      )
 
     request_step
     |> Ash.Changeset.for_update(:update, %{status: :done}, actor: actor)

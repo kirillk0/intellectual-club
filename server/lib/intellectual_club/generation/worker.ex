@@ -66,6 +66,7 @@ defmodule IntellectualClub.Generation.Worker do
     :tool_round,
     :refusal_round,
     :provider_session,
+    :request_images,
     :snapshot_identity,
     :persistence_op,
     :persistence_action,
@@ -75,6 +76,7 @@ defmodule IntellectualClub.Generation.Worker do
     :steering_retry_timer,
     :deferred_provider_event,
     :deferred_tool_outcome,
+    image_cache: %{},
     phase: :initializing,
     continuation: :idle,
     cancel_requested?: false,
@@ -233,8 +235,19 @@ defmodule IntellectualClub.Generation.Worker do
           }
       end
 
+    request_images = Map.get(context, :request_images)
+
+    request_images =
+      if match?(
+           %{step_id: id, request: request}
+           when id == runtime_step.id and request === runtime_step.raw_request,
+           request_images
+         ),
+         do: request_images
+
     context =
       context
+      |> Map.put(:request_images, nil)
       |> Map.put(:step_id, runtime_step.id)
       |> Map.put(:request_payload, runtime_step.raw_request)
 
@@ -252,7 +265,9 @@ defmodule IntellectualClub.Generation.Worker do
       stream_ref: nil,
       retry_timer_ref: nil,
       queued_steering_retry_attempt: 0,
-      provider_session: nil
+      provider_session: nil,
+      request_images: if(request_images, do: Map.delete(request_images, :cache)),
+      image_cache: if(request_images, do: request_images.cache, else: %{})
     }
 
     {state, continue}
@@ -312,18 +327,29 @@ defmodule IntellectualClub.Generation.Worker do
     me = self()
     stream_ref = make_ref()
 
+    adapter = state.adapter
+    context = state.context
+    provider_session = state.provider_session
+    image_cache = state.image_cache
+
     task =
       Task.async(fn ->
         emit = fn event -> send(me, {:provider_event, stream_ref, event}) end
 
-        state.adapter.stream_generate(
+        cache_update = fn entries ->
+          send(me, {:image_cache_update, stream_ref, step_id, entries})
+        end
+
+        adapter.stream_generate(
           %{
-            context: state.context,
+            context: context,
             request_payload: compact_request,
             request_step_id: step_id,
-            timeout_ms: state.context.timeout_ms || 300_000,
-            chunk_delay_ms: state.context.chunk_delay_ms,
-            provider_session: state.provider_session
+            timeout_ms: context.timeout_ms || 300_000,
+            chunk_delay_ms: context.chunk_delay_ms,
+            provider_session: provider_session,
+            image_cache: image_cache,
+            image_cache_update: cache_update
           },
           emit
         )
@@ -339,6 +365,16 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   @impl true
+  def handle_info(
+        {:image_cache_update, ref, step_id, entries},
+        %{stream_ref: ref, runtime_step: %{id: step_id}, lease_lost?: false} = state
+      )
+      when is_map(entries) do
+    {:noreply, %{state | image_cache: Map.merge(state.image_cache, entries)}}
+  end
+
+  def handle_info({:image_cache_update, _ref, _step_id, _entries}, state), do: {:noreply, state}
+
   def handle_info(
         {:provider_event, stream_ref, {:trace, _event}},
         %{stream_ref: stream_ref, deferred_provider_event: event} = state
@@ -1510,6 +1546,8 @@ defmodule IntellectualClub.Generation.Worker do
              request_context: Map.put(state.context, :adapter_module, state.adapter),
              source_step_id: state.runtime_step.id,
              previous_request: state.runtime_step.raw_request,
+             source_image_state: state.request_images,
+             image_cache: state.image_cache,
              lease: state.lease
            )
          end) do
@@ -1523,7 +1561,7 @@ defmodule IntellectualClub.Generation.Worker do
             raw_request: retry_step.raw_request || raw_request
           )
 
-        {:ok, runtime_step}
+        {:ok, %{runtime_step: runtime_step, request_images: Map.get(retry_step, :request_images)}}
 
       {:error, _reason} = error ->
         error
@@ -2403,6 +2441,7 @@ defmodule IntellectualClub.Generation.Worker do
     state =
       %{next_state | steering_attempt: nil}
       |> install_runtime_step(runtime_step)
+      |> install_request_images(next_step)
       |> Map.put(:step_attempt, 1)
       |> Map.put(:tool_round, next_state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
       |> Map.put(
@@ -2460,8 +2499,17 @@ defmodule IntellectualClub.Generation.Worker do
     advance(state, {:resume_tools, calls})
   end
 
-  defp persistence_finished(state, {:auto_retry, attempt, delay}, {:ok, runtime_step}) do
-    state = state |> install_runtime_step(runtime_step) |> Map.put(:step_attempt, attempt + 1)
+  defp persistence_finished(
+         state,
+         {:auto_retry, attempt, delay},
+         {:ok, %{runtime_step: runtime_step} = result}
+       ) do
+    state =
+      state
+      |> install_runtime_step(runtime_step)
+      |> install_request_images(result)
+      |> Map.put(:step_attempt, attempt + 1)
+
     advance(state, {:backoff, delay})
   end
 
@@ -2516,7 +2564,11 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp persistence_finished(state, {:steer_tools, from}, {:ok, persisted}) do
-    state = install_runtime_step(%{state | steering_attempt: nil}, persisted.runtime_step)
+    state =
+      %{state | steering_attempt: nil}
+      |> install_runtime_step(persisted.runtime_step)
+      |> install_request_images(persisted)
+
     reply_steering(from, state, persisted)
     advance(state, state.continuation)
   end
@@ -2648,6 +2700,7 @@ defmodule IntellectualClub.Generation.Worker do
       |> cancel_stream_task()
       |> stop_provider_session()
       |> install_runtime_step(persisted.runtime_step)
+      |> install_request_images(persisted)
 
     state = %{
       state
@@ -3187,6 +3240,8 @@ defmodule IntellectualClub.Generation.Worker do
       request_context: Map.put(state.context, :adapter_module, state.adapter),
       source_step_id: state.runtime_step.id,
       previous_request: state.runtime_step.raw_request,
+      source_image_state: state.request_images,
+      image_cache: state.image_cache,
       lease: state.lease
     ]
   end
@@ -3197,8 +3252,22 @@ defmodule IntellectualClub.Generation.Worker do
       |> Map.put(:step_id, runtime_step.id)
       |> Map.put(:request_payload, runtime_step.raw_request)
 
+    state =
+      if state.runtime_step && state.runtime_step.id == runtime_step.id do
+        state
+      else
+        %{state | request_images: nil, image_cache: %{}}
+      end
+
     %{state | context: context, runtime_step: runtime_step, step_sequence: runtime_step.sequence}
   end
+
+  defp install_request_images(state, %{request_images: %{step_id: id, request: request} = images})
+       when id == state.runtime_step.id and request === state.runtime_step.raw_request do
+    %{state | request_images: Map.delete(images, :cache), image_cache: images.cache}
+  end
+
+  defp install_request_images(state, _result), do: state
 
   defp tool_execution_context(state) do
     %ExecutionContext{

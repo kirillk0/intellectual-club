@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   """
 
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
+  alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias Req.Response
 
@@ -29,6 +30,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
             required(:api_key) => String.t(),
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
+            optional(:image_cache) => map(),
+            optional(:image_cache_update) => (map() -> any()),
+            optional(:image_mapper) => function(),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -55,7 +59,10 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     case RequestHydration.hydrate(
            logical_request,
            Map.get(opts, :request_step_id),
-           :anthropic_messages
+           Map.get(opts, :image_mapper, &AnthropicMessages.map_request_images/3),
+           cache: Map.get(opts, :image_cache, %{}),
+           on_cache: Map.get(opts, :image_cache_update),
+           provider: :anthropic_messages
          ) do
       {:ok, wire_request} ->
         request_opts = [

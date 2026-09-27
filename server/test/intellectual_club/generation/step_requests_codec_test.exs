@@ -4,6 +4,13 @@ defmodule IntellectualClub.Generation.StepRequestsCodecTest do
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.StepRequests.{Codec, Error, Reader}
 
+  test "numeric equality walks long list suffixes without repeated structural comparisons" do
+    prefix = Enum.to_list(1..10_000)
+    assert Codec.equal?(%{"items" => prefix ++ [1]}, %{"items" => prefix ++ [1.0]})
+    refute Codec.equal?(%{"items" => prefix ++ [1]}, %{"items" => prefix ++ [2.0]})
+    refute Codec.equal?(prefix, prefix ++ [0])
+  end
+
   test "normalization is opaque, recursive and rejects ambiguous or non-JSON values" do
     assert StepRequests.normalize!(%{role: :user, list: [%{x: nil}, true, 42, 1.25]}) ==
              %{"role" => "user", "list" => [%{"x" => nil}, true, 42, 1.25]}
@@ -197,7 +204,7 @@ defmodule IntellectualClub.Generation.StepRequestsCodecTest do
     assert_raise Error, fn -> StepRequests.create_attributes(request, max_chain: 33) end
   end
 
-  test "integer versus float cannot be silently lost by the dependency diff" do
+  test "integer and float spellings of the same JSON value use an empty patch" do
     request = %{"pad" => String.duplicate("x", 2048), "value" => 1}
     target = %{request | "value" => 1.0}
 
@@ -208,10 +215,14 @@ defmodule IntellectualClub.Generation.StepRequestsCodecTest do
         previous_request: request
       )
 
-    assert attrs.request_mode == :full
-    assert attrs.raw_request === target
-    # JSON numbers compare by value; the stricter writer still preserves the
-    # requested in-memory numeric representation instead of using an empty diff.
+    assert attrs.request_mode == :patch
+    assert attrs.request_patch == []
+
+    assert Codec.equal?(
+             Codec.decode!(Map.merge(row(2, target), attrs), row(1, request), request),
+             target
+           )
+
     assert Codec.hash(request) == Codec.hash(target)
   end
 
@@ -445,6 +456,73 @@ defmodule IntellectualClub.Generation.StepRequestsCodecTest do
       invalid = %{step | request_patch: [%{"op" => "replace", "path" => "", "value" => value}]}
       assert_raise Error, fn -> Codec.decode!(invalid, first, source) end
       assert_raise Error, fn -> Codec.validate_encoding!(invalid, fn _ -> {first, source} end) end
+    end
+  end
+
+  test "semantic equality follows decimal JSON values without rounding large integers" do
+    large = Integer.pow(10, 80)
+    assert Codec.equal?(%{"n" => [1, large, -0.0]}, %{"n" => [1.0, 1.0e80, 0]})
+    refute Codec.equal?(%{"n" => large + 1}, %{"n" => 1.0e80})
+    refute Codec.equal?(%{"n" => large}, %{"n" => large + 1})
+    refute Codec.equal?(%{"n" => 1}, %{"n" => "1"})
+    refute Codec.equal?(%{"a" => nil}, %{"b" => nil})
+
+    for {value, target_value} <- [{large, 1.0e80}, {large + 1, 1.0e80}] do
+      source = %{"pad" => String.duplicate("x", 2048), "n" => value}
+      target = %{source | "n" => target_value}
+      previous = row(1, source)
+
+      attrs =
+        Codec.create_attributes(target,
+          sequence: 2,
+          previous_step: previous,
+          previous_request: source
+        )
+
+      restored = Codec.decode!(Map.merge(row(2, target), attrs), previous, source)
+      assert Codec.equal?(restored, target)
+      assert Codec.hash(restored) == Codec.hash(target)
+    end
+  end
+
+  test "RFC test operations use the same numeric equality as hashes" do
+    source = %{"n" => Integer.pow(10, 80)}
+
+    assert Codec.apply_patch!(source, [%{"op" => "test", "path" => "/n", "value" => 1.0e80}]) ==
+             source
+
+    assert_raise Error, fn ->
+      Codec.apply_patch!(%{"n" => Integer.pow(10, 80) + 1}, [
+        %{"op" => "test", "path" => "/n", "value" => 1.0e80}
+      ])
+    end
+  end
+
+  test "snapshots cache normalized documents, canonical hashes and sizes without changing numbers" do
+    request = %{n: Integer.pow(10, 400) + 123, float: 1.0, list: [%{x: :ok}]}
+    snapshot = StepRequests.snapshot!(request)
+    assert snapshot.request === Codec.normalize!(request)
+    assert snapshot.hash == Codec.hash(request)
+    assert snapshot.size == byte_size(Codec.json!(request))
+    assert Codec.create_from_snapshots(snapshot) == Codec.create_attributes(request)
+    assert_raise Error, fn -> StepRequests.snapshot!(snapshot) end
+  end
+
+  test "reader caches verified snapshots and reuses unchanged patch results" do
+    source = %{"pad" => String.duplicate("x", 2048), "n" => 1}
+    first = row(1, source)
+
+    attrs =
+      Codec.create_attributes(source, sequence: 2, previous_step: first, previous_request: source)
+
+    second = Map.merge(row(2, source), attrs)
+    snapshots = Reader.decode_snapshots!([second, first], [1, 2])
+    assert snapshots[1] === snapshots[2]
+    assert snapshots[1].hash == first.request_hash
+    assert snapshots[2].request == source
+
+    assert_raise Error, fn ->
+      Reader.decode_snapshots!([first, %{second | request_hash: String.duplicate("0", 64)}])
     end
   end
 

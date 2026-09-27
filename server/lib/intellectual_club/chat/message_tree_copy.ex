@@ -11,7 +11,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.StepRequests
-  alias IntellectualClub.Generation.RequestImages.Walker
   alias IntellectualClub.Llm.LlmConfiguration
 
   require Ash.Query
@@ -368,18 +367,19 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   defp copy_step_status(_status), do: :done
 
   defp ensure_request_markers_bound!(%ChatMessageStep{} = step, request) do
-    {_request, descriptors} =
-      Walker.map_images(request, %{}, fn _shape, block, marker, descriptors ->
+    descriptors =
+      RequestImages.inspect_stored_images(request, %{}, fn reference, descriptors ->
+        marker = reference.marker
         reference_key = Map.get(marker, "reference_key")
         source_file_external_id = Map.get(marker, "source_file_external_id")
 
         if is_binary(reference_key) and is_binary(source_file_external_id) do
           case Map.get(descriptors, reference_key) do
             nil ->
-              {block, Map.put(descriptors, reference_key, source_file_external_id)}
+              Map.put(descriptors, reference_key, source_file_external_id)
 
             ^source_file_external_id ->
-              {block, descriptors}
+              descriptors
 
             other_source_file_external_id ->
               raise "Conflicting source files for copied request reference #{reference_key}: #{other_source_file_external_id} and #{source_file_external_id}"

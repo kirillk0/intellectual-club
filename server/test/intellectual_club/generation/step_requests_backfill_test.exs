@@ -301,6 +301,30 @@ defmodule IntellectualClub.Generation.StepRequestsBackfillTest do
     refute inspect(progress) =~ "unchangedunchanged"
   end
 
+  test "numeric spellings backfill to empty patches without rounding large integers" do
+    %{user: actor} = user_fixture()
+    message = request_message!(actor)
+    large = Integer.pow(10, 80)
+    source = Map.merge(compact_request(1), %{"value" => 1, "large" => large})
+    target = %{source | "value" => 1.0, "large" => 1.0e80}
+    first = historical_request_step!(message, 1, source, actor)
+    second = historical_request_step!(message, 2, target, actor)
+    third = historical_request_step!(message, 3, %{source | "large" => large + 1}, actor)
+
+    assert {:ok, %{rewritten_messages: 1, rewritten_steps: 3}} =
+             StepRequests.backfill_batch(actor: actor, message_limit: 1, dry_run: false)
+
+    physical = stored_request_step!(second.id, actor)
+    assert physical.request_mode == :patch
+    assert physical.request_patch == []
+    restored = StepRequests.requests_for_steps!([first, second, third], actor: actor)
+    assert StepRequests.equal?(restored[second.id], target)
+    assert restored[third.id]["large"] === large + 1
+
+    assert {:ok, %{rewritten_steps: 0}} =
+             StepRequests.backfill_batch(actor: actor, message_limit: 1, dry_run: false)
+  end
+
   defp await_job(_job, _actor, 0), do: flunk("backfill job did not finish its bounded batch")
 
   defp await_job(job, actor, attempts) do

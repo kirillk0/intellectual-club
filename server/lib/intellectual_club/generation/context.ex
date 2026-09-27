@@ -20,7 +20,6 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.StepRequests
-  alias IntellectualClub.Llm.Providers.Common.PreparedRequest
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
@@ -64,6 +63,7 @@ defmodule IntellectualClub.Generation.Context do
     :fix_role_alteration,
     :messages,
     :request_payload,
+    :request_images,
     :chunk_delay_ms,
     :tools_payload,
     :tool_instances_by_alias,
@@ -401,8 +401,7 @@ defmodule IntellectualClub.Generation.Context do
     with :ok <- validate_pending_user(opts),
          {:ok, revision} <- Revision.capture(chat_id, actor, opts) do
       context = build_draft!(chat_id, opts)
-      request = PreparedRequest.prepare(context.adapter_module, context.request_payload, context)
-      context = %{context | request_payload: request}
+      request = context.request_payload
 
       if native_image_marker?(request) do
         {:fallback, :native_request_images}
@@ -838,6 +837,7 @@ defmodule IntellectualClub.Generation.Context do
     request_context = %{draft | message_id: generating_message.id, parent_message_id: parent_id}
 
     %{step: step, request: request} =
+      created =
       Persistence.create_request_step!(generating_message, 1, draft.request_payload,
         request_context: request_context,
         force_full: true
@@ -848,6 +848,7 @@ defmodule IntellectualClub.Generation.Context do
     %{
       request_context
       | step_id: step.id,
+        request_images: Map.get(created, :request_images),
         request_payload: request,
         messages: Map.get(snapshot, :model_input, []),
         system_prompt: Map.get(snapshot, :system_prompt) || draft.system_prompt,

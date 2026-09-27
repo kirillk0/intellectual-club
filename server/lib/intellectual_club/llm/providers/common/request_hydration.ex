@@ -3,25 +3,32 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydration do
 
   alias IntellectualClub.Generation.RequestImages
 
-  @spec hydrate(map(), integer() | nil, atom() | String.t()) ::
+  @spec hydrate(map(), integer() | nil, function(), keyword()) ::
           {:ok, map()} | {:error, map()}
-  def hydrate(raw_request, request_step_id, provider) when is_map(raw_request) do
-    case RequestImages.hydrate(raw_request, request_step_id) do
+  def hydrate(raw_request, request_step_id, mapper, opts \\ [])
+      when is_map(raw_request) and is_function(mapper, 3) do
+    case RequestImages.hydrate(raw_request, request_step_id,
+           mapper: mapper,
+           cache: Keyword.get(opts, :cache, %{}),
+           on_cache: Keyword.get(opts, :on_cache),
+           provider: Keyword.get(opts, :provider)
+         ) do
       {:ok, %{} = wire_request} ->
         {:ok, wire_request}
 
       {:error, reason} ->
-        {:error, error_meta(raw_request, provider, reason)}
+        {:error, error_meta(raw_request, Keyword.get(opts, :provider), reason)}
 
       other ->
-        {:error, error_meta(raw_request, provider, {:invalid_hydration_result, other})}
+        {:error,
+         error_meta(raw_request, Keyword.get(opts, :provider), {:invalid_hydration_result, other})}
     end
   rescue
     exception ->
-      {:error, error_meta(raw_request, provider, exception)}
+      {:error, error_meta(raw_request, Keyword.get(opts, :provider), exception)}
   catch
     kind, reason ->
-      {:error, error_meta(raw_request, provider, {kind, reason})}
+      {:error, error_meta(raw_request, Keyword.get(opts, :provider), {kind, reason})}
   end
 
   defp error_meta(raw_request, provider, reason) do

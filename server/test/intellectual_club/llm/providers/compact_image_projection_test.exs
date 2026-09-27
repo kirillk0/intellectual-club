@@ -173,7 +173,11 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
       ]
     }
 
-    assert {:error, error} = RequestHydration.hydrate(logical_request, nil, :responses)
+    assert {:error, error} =
+             RequestHydration.hydrate(logical_request, nil, &Responses.map_request_images/3,
+               provider: :responses
+             )
+
     assert error.error_kind == "request_hydration"
     assert error.retryable == false
     assert error.raw_request == logical_request
@@ -246,6 +250,8 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
     }
 
     assert {:ok, ^legacy_request} =
-             RequestHydration.hydrate(legacy_request, nil, :responses)
+             RequestHydration.hydrate(legacy_request, nil, &Responses.map_request_images/3,
+               provider: :responses
+             )
   end
 end

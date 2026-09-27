@@ -5,6 +5,8 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace do
 
   alias IntellectualClub.Llm.Providers.Common.ChatCompletionsTrace
 
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
+
   @app_headers [
     {"http-referer", "https://github.com/kirillk0/intellectual-club"},
     {"x-openrouter-title", "Intellectual Club"}
@@ -16,6 +18,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.Trace do
 
     opts
     |> Map.put(:provider, :openrouter_chat_completion)
+    |> Map.put_new(:image_mapper, &OpenRouterChatCompletion.map_request_images/3)
     |> Map.put(:extra_headers, extra_headers)
     |> ChatCompletionsTrace.stream_generate(emit)
   end

@@ -39,8 +39,11 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
   def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
 
   @impl true
+  def map_request_images(request, acc, _mapper), do: {request, acc}
+
+  @impl true
   def prepare_request(request, _context) when is_map(request) do
-    RequestPayload.stringify_keys(request)
+    request
   end
 
   @impl true
@@ -60,7 +63,7 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
     runtime_step = Map.fetch!(opts, :runtime_step)
 
     raw_request =
-      prepare_request(Map.get(runtime_step, :raw_request) || %{}, Map.get(opts, :context, %{}))
+      RequestPayload.stringify_keys(Map.get(runtime_step, :raw_request) || %{})
 
     %{
       runtime_step: runtime_step,
@@ -74,7 +77,7 @@ defmodule IntellectualClub.Llm.Providers.Common.MissingProvider do
       when is_map(raw_request) and is_list(steering_items) do
     raw_request =
       raw_request
-      |> prepare_request(%{})
+      |> RequestPayload.stringify_keys()
       |> Map.update("steering", Steering.texts(steering_items), fn existing ->
         List.wrap(existing) ++ Steering.texts(steering_items)
       end)

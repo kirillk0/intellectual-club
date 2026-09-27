@@ -45,7 +45,7 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
                "prompt_cache_key" => "intellectual-club:user:12"
              }
 
-      assert adapter.prepare_request(request, context) == prepared
+      assert adapter.prepare_request(RequestPayload.stringify_keys(request), context) == prepared
       assert PreparedRequest.prepare(adapter, prepared, context) == prepared
       assert PreparedRequest.prepare(adapter, request, %{})["prompt_cache_key"] == "legacy"
     end
@@ -57,7 +57,12 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
     prepared = PreparedRequest.prepare(OpenRouterChatCompletion, request, context)
 
     assert prepared["session_id"] == "intellectual-club:chat:56"
-    assert OpenRouterChatCompletion.prepare_request(request, context) == prepared
+
+    assert OpenRouterChatCompletion.prepare_request(
+             RequestPayload.stringify_keys(request),
+             context
+           ) == prepared
+
     assert PreparedRequest.prepare(OpenRouterChatCompletion, prepared, context) == prepared
 
     assert PreparedRequest.prepare(OpenRouterChatCompletion, request, %{chat_id: 34})[
@@ -88,7 +93,9 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
              ]
            }
 
-    assert NvidiaBuildChatCompletion.prepare_request(request, %{}) == prepared
+    assert NvidiaBuildChatCompletion.prepare_request(RequestPayload.stringify_keys(request), %{}) ==
+             prepared
+
     assert PreparedRequest.prepare(NvidiaBuildChatCompletion, prepared, %{}) == prepared
   end
 
@@ -104,12 +111,12 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
 
     assert PreparedRequest.prepare(AnthropicMessages, prepared, %{}) == prepared
 
-    assert AnthropicMessages.prepare_request(%{anthropic_version: nil}, %{}) == %{
+    assert AnthropicMessages.prepare_request(%{"anthropic_version" => nil}, %{}) == %{
              "anthropic_version" => "2023-06-01"
            }
   end
 
-  test "built-in initial builders agree with preparation before persistence" do
+  test "builders leave final provider preparation to the persistence boundary" do
     context = %{
       history: [%{role: :user, content: "Hi"}],
       model_name: "test",
@@ -123,8 +130,44 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
 
     for adapter <- @adapters do
       result = adapter.build_initial_request(context)
-      assert PreparedRequest.prepare(adapter, result.raw_request, context) == result.raw_request
       assert result.request_snapshot == adapter.request_snapshot(result.raw_request)
+      prepared = PreparedRequest.prepare(adapter, result.raw_request, context)
+      assert PreparedRequest.prepare(adapter, prepared, context) == prepared
+
+      case adapter do
+        adapter when adapter in [Responses, ResponsesWss] ->
+          refute Map.has_key?(result.raw_request, "prompt_cache_key")
+          assert prepared["prompt_cache_key"] == "intellectual-club:user:12"
+
+        OpenRouterChatCompletion ->
+          refute Map.has_key?(result.raw_request, "session_id")
+          assert prepared["session_id"] == "intellectual-club:chat:34"
+
+        NvidiaBuildChatCompletion ->
+          refute Map.has_key?(result.raw_request, "stream_options")
+          assert prepared["stream_options"] == %{"include_usage" => true}
+
+        _other ->
+          :ok
+      end
+    end
+  end
+
+  test "steering preserves provider fields until the one final preparation" do
+    context = %{owner_id: 99, chat_id: 88}
+
+    for {adapter, field, initial, final} <- [
+          {Responses, "prompt_cache_key", "original", "intellectual-club:user:99"},
+          {ResponsesWss, "prompt_cache_key", "original", "intellectual-club:user:99"},
+          {OpenRouterChatCompletion, "session_id", "original", "intellectual-club:chat:88"},
+          {AnthropicMessages, "anthropic_version", " 2025-01-01 ", "2025-01-01"},
+          {NvidiaBuildChatCompletion, "session_id", "original", nil}
+        ] do
+      request = %{"model" => "test", "input" => [], "messages" => [], field => initial}
+      result = adapter.inject_steering(request, [], context)
+      assert result.raw_request[field] == initial
+      assert result.request_snapshot == adapter.request_snapshot(result.raw_request)
+      assert PreparedRequest.prepare(adapter, result.raw_request, context)[field] == final
     end
   end
 

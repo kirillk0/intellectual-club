@@ -13,7 +13,7 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Generation.RequestImages.{SourceScope, StagedBindings, Walker}
+  alias IntellectualClub.Generation.RequestImages.{Cache, SourceScope, StagedBindings}
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Tools.ExecutionContext
 
@@ -67,11 +67,17 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   def prepare(raw_request, %ExecutionContext{} = scope, opts)
       when is_map(raw_request) and is_list(opts) do
-    with {:ok, descriptors} <- request_descriptors(raw_request) do
+    with {:ok, mapper} <- required_mapper(opts),
+         {:ok, descriptors} <- request_descriptors(raw_request, mapper) do
       if map_size(descriptors) == 0 do
-        {:ok, %{request: raw_request, bindings: %StagedBindings{items: []}}}
+        {:ok,
+         %{
+           request: raw_request,
+           bindings: %StagedBindings{items: []},
+           image_state: %{request: raw_request, descriptors: %{}, cache: %{}}
+         }}
       else
-        prepare_images(raw_request, scope, opts)
+        prepare_images(raw_request, scope, Keyword.put(opts, :mapper, mapper))
       end
     end
   end
@@ -79,25 +85,45 @@ defmodule IntellectualClub.Generation.RequestImages do
   def prepare(_raw_request, _scope, _opts), do: {:error, :invalid_preparation_arguments}
 
   defp prepare_images(raw_request, scope, opts) do
+    StagedBindings.with_scope(
+      fn track -> prepare_images_in_scope(raw_request, scope, opts, track) end,
+      &cleanup_staged_files/1
+    )
+  end
+
+  defp prepare_images_in_scope(raw_request, scope, opts, track) do
     chat_scope_ids = ContentFiles.handoff_chat_scope_ids(scope.chat_id, scope.owner_id)
 
     with {:ok, inherited, bindings} <-
-           inherited_snapshot(Keyword.get(opts, :source_step_id), scope, chat_scope_ids) do
+           inherited_snapshot(Keyword.get(opts, :source_step_id), scope, chat_scope_ids, opts) do
       state = %{
         scope: scope,
         chat_scope_ids: chat_scope_ids,
         inherited: inherited,
         bindings: bindings,
         results: %{},
+        descriptors: %{},
         staged: [],
+        track_staged: track,
+        cache: Keyword.get(opts, :cache, %{}),
+        used_cache_keys: [],
         error: nil
       }
 
-      {request, state} = Walker.map_images(raw_request, state, &prepare_block/4)
+      {request, state} = opts[:mapper].(raw_request, state, &prepare_block/2)
 
       case state.error do
         nil ->
-          {:ok, %{request: request, bindings: %StagedBindings{items: Enum.reverse(state.staged)}}}
+          {:ok,
+           %{
+             request: request,
+             bindings: %StagedBindings{items: Enum.reverse(state.staged)},
+             image_state: %{
+               request: request,
+               descriptors: state.descriptors,
+               cache: Cache.retain(state.cache, state.used_cache_keys)
+             }
+           }}
 
         error ->
           {:error, error_with_cleanup(error, cleanup_staged_files(state.staged))}
@@ -111,75 +137,115 @@ defmodule IntellectualClub.Generation.RequestImages do
   Payloads are checked once per referenced image, without wire/base64 construction.
   Unreferenced bindings are rejected, never removed. No canonical files are loaded.
   """
-  @spec validate_snapshot(map(), integer()) :: :ok | {:error, term()}
-  def validate_snapshot(raw_request, step_id)
+  @spec validate_snapshot(map(), integer(), keyword()) :: :ok | {:error, term()}
+  def validate_snapshot(raw_request, step_id, opts \\ [])
+
+  def validate_snapshot(raw_request, step_id, opts)
       when is_map(raw_request) and is_integer(step_id) do
-    with {:ok, step} <- load_step(step_id),
+    with {:ok, mapper} <- required_mapper(opts),
+         {:ok, step} <- load_step(step_id),
          {:ok, saved_request} <-
            StepRequests.request_for_step(step.id, actor: %{id: step.owner_id}),
          :ok <- validate_snapshot_equality(raw_request, saved_request),
          {:ok, bindings} <- bindings_for_step(step_id) do
-      validate_snapshot_bindings(raw_request, bindings)
+      validate_snapshot_bindings(
+        raw_request,
+        bindings,
+        mapper
+      )
     end
   end
 
-  def validate_snapshot(_raw_request, _step_id), do: {:error, :invalid_snapshot_arguments}
+  def validate_snapshot(_raw_request, _step_id, _opts), do: {:error, :invalid_snapshot_arguments}
 
   @doc """
-  Compatibility validator only. This function never writes, repairs or backfills.
-  New callers must prepare images before inserting the final request.
+  Resolves markers using the provider's mapper and this step's bindings. A cache
+  hit reuses verified bytes; it never substitutes for resolving a binding.
   """
-  @spec materialize_and_persist(map(), integer()) :: {:ok, map()} | {:error, term()}
-  def materialize_and_persist(raw_request, step_id)
-      when is_map(raw_request) and is_integer(step_id) do
-    with :ok <- validate_snapshot(raw_request, step_id), do: {:ok, raw_request}
+  def hydrate(raw_request, step_id, opts \\ []) do
+    case hydrate_with_cache(raw_request, step_id, opts) do
+      {:ok, wire_request, updates} ->
+        if on_cache = Keyword.get(opts, :on_cache), do: on_cache.(updates)
+        {:ok, wire_request}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
-  @spec materialize_and_persist(integer(), map()) :: {:ok, map()} | {:error, term()}
-  def materialize_and_persist(step_id, raw_request)
-      when is_integer(step_id) and is_map(raw_request),
-      do: materialize_and_persist(raw_request, step_id)
+  @doc "Returns private cache updates directly for same-task transport fallback."
+  def hydrate_with_cache(raw_request, step_id, opts \\ [])
 
-  def materialize_and_persist(_raw_request, _step_id),
-    do: {:error, :invalid_materialization_arguments}
-
-  @doc """
-  Resolves compact markers through bindings owned by `step_id` and creates the
-  provider wire payload. Legacy strings and markers outside supported image paths
-  are left untouched.
-  """
-  @spec hydrate(map(), integer() | nil) :: {:ok, map()} | {:error, term()}
-  def hydrate(raw_request, step_id) when is_map(raw_request) and is_integer(step_id) do
-    with {:ok, descriptors} <- request_descriptors(raw_request) do
+  def hydrate_with_cache(raw_request, step_id, opts) when is_map(raw_request) and is_list(opts) do
+    with {:ok, mapper} <- required_mapper(opts),
+         {:ok, descriptors} <- request_descriptors(raw_request, mapper) do
       if map_size(descriptors) == 0 do
-        {:ok, raw_request}
+        {:ok, raw_request, %{}}
       else
-        with {:ok, bindings} <- bindings_for_step(step_id) do
-          hydrate_with_bindings(raw_request, bindings)
+        with {:ok, bindings} <- hydration_bindings(step_id) do
+          state = %{
+            bindings: Map.new(bindings, &{to_string(&1.reference_key), &1}),
+            hydrated: %{},
+            cache: Keyword.get(opts, :cache, %{}),
+            used_cache_keys: [],
+            error: nil
+          }
+
+          {wire_request, state} = mapper.(raw_request, state, &hydrate_block/2)
+
+          case state.error do
+            nil ->
+              {:ok, wire_request, Map.take(state.cache, state.used_cache_keys)}
+
+            error ->
+              {:error, error}
+          end
         end
       end
     end
   end
 
-  def hydrate(raw_request, nil) when is_map(raw_request),
-    do: hydrate_with_bindings(raw_request, [])
+  def hydrate_with_cache(_raw_request, _step_id, _opts),
+    do: {:error, :invalid_hydration_arguments}
 
-  def hydrate(_raw_request, _step_id), do: {:error, :invalid_hydration_arguments}
+  defp hydration_bindings(nil), do: {:ok, []}
+  defp hydration_bindings(step_id) when is_integer(step_id), do: bindings_for_step(step_id)
+  defp hydration_bindings(_step_id), do: {:error, :invalid_step_id}
 
-  defp hydrate_with_bindings(raw_request, bindings) do
-    state = %{
-      bindings: Map.new(bindings, &{to_string(&1.reference_key), &1}),
-      hydrated: %{},
-      error: nil
-    }
+  @doc false
+  def mapper(adapter) when is_atom(adapter) and not is_nil(adapter) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :map_request_images, 3),
+      do: &adapter.map_request_images/3,
+      else: &passthrough/3
+  end
 
-    {wire_request, state} = Walker.map_images(raw_request, state, &hydrate_block/4)
+  def mapper(_adapter), do: &passthrough/3
 
-    case state.error do
-      nil -> {:ok, wire_request}
-      error -> {:error, error}
+  @doc """
+  Inspects historical requests whose provider configuration may no longer exist.
+  Each registered provider owns recognition of its native image paths. This is
+  used for read-only copy validation, never for the generation preparation path.
+  """
+  def inspect_stored_images(request, acc, inspect_reference) do
+    IntellectualClub.Llm.Providers.Common.Registry.all()
+    |> Enum.reduce(acc, fn adapter, acc ->
+      {_request, acc} =
+        mapper(adapter).(request, acc, fn reference, acc ->
+          {:keep, inspect_reference.(reference, acc)}
+        end)
+
+      acc
+    end)
+  end
+
+  defp required_mapper(opts) do
+    case Keyword.get(opts, :mapper) do
+      mapper when is_function(mapper, 3) -> {:ok, mapper}
+      _ -> {:error, :image_mapper_required}
     end
   end
+
+  defp passthrough(request, acc, _mapper), do: {request, acc}
 
   @doc """
   Duplicates all request-file bindings from one existing step to another.
@@ -271,53 +337,80 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   def discard_staged_bindings(_staged), do: {:error, :invalid_staged_bindings}
 
-  defp inherited_snapshot(nil, _scope, _chat_scope_ids), do: {:ok, %{}, %{}}
+  defp inherited_snapshot(nil, _scope, _chat_scope_ids, _opts), do: {:ok, %{}, %{}}
 
-  defp inherited_snapshot(source_step_id, scope, chat_scope_ids)
+  defp inherited_snapshot(source_step_id, scope, chat_scope_ids, opts)
        when is_integer(source_step_id) do
     with {:ok, step} <- load_step(source_step_id),
          :ok <- SourceScope.validate(step, scope, chat_scope_ids),
-         {:ok, request} <- StepRequests.request_for_step(step.id, actor: %{id: scope.owner_id}),
-         {:ok, descriptors} <- request_descriptors(request, true),
+         {:ok, descriptors} <- inherited_descriptors(step, scope, opts),
          {:ok, bindings} <- bindings_for_step(source_step_id) do
       {:ok, descriptors, Map.new(bindings, &{to_string(&1.reference_key), &1})}
     end
   end
 
-  defp inherited_snapshot(_source_step_id, _scope, _chat_scope_ids),
+  defp inherited_snapshot(_source_step_id, _scope, _chat_scope_ids, _opts),
     do: {:error, :invalid_source_step_id}
 
-  defp prepare_block(_shape, block, _marker, %{error: error} = state)
-       when not is_nil(error),
-       do: {block, state}
+  defp inherited_descriptors(step, scope, opts) do
+    mapper = Keyword.get(opts, :source_mapper, opts[:mapper])
+    # The normal transition has already bound this logical request to its saved
+    # predecessor. Cold/direct callers reconstruct through the authorized reader.
+    case Keyword.get(opts, :source_request) do
+      %{} = request ->
+        case Keyword.get(opts, :source_image_state) do
+          %{step_id: id, request: cached, descriptors: descriptors}
+          when id == step.id and cached === request ->
+            {:ok, descriptors}
 
-  defp prepare_block(shape, block, marker, state) do
-    with {:ok, descriptor} <- validate_marker(marker, shape),
-         :ok <- validate_inherited_descriptor(shape, block, descriptor, state),
+          _ ->
+            request_descriptors(request, mapper, true)
+        end
+
+      _ ->
+        with {:ok, request} <-
+               StepRequests.request_for_step(step.id, actor: %{id: scope.owner_id}),
+             do: request_descriptors(request, mapper, true)
+    end
+  end
+
+  defp prepare_block(_reference, %{error: error} = state) when not is_nil(error),
+    do: {:keep, state}
+
+  defp prepare_block(reference, state) do
+    with {:ok, descriptor} <- validate_reference(reference),
+         :ok <- validate_inherited_descriptor(reference, descriptor, state),
          {:ok, result, state} <- prepare_descriptor(descriptor, state) do
       state = %{state | results: Map.put(state.results, descriptor.reference_key, result)}
 
       case result do
-        %{status: :ok, mime_type: mime_type} ->
-          {put_compact_marker(shape, block, put_marker_mime(marker, mime_type), mime_type), state}
+        %{status: :ok, mime_type: mime_type, image: image} ->
+          {_wire, state} = cache_image(image, descriptor, state)
+          descriptor = %{descriptor | mime_type: mime_type}
+
+          state = %{
+            state
+            | descriptors: Map.put(state.descriptors, descriptor.reference_key, descriptor)
+          }
+
+          {{:marker, put_marker_mime(reference.marker, mime_type), mime_type}, state}
 
         %{status: :fallback, text: text} ->
-          {fallback_block(shape, block, text), state}
+          {{:omit, text}, state}
       end
     else
-      {:error, reason} -> {block, %{state | error: reason}}
+      {:error, reason} -> {:keep, %{state | error: reason}}
     end
   end
 
-  defp validate_inherited_descriptor(shape, block, descriptor, state) do
+  defp validate_inherited_descriptor(reference, descriptor, state) do
     case Map.get(state.inherited, descriptor.reference_key) do
       nil ->
         :ok
 
       source ->
-        with :ok <- validate_descriptor_match(source, descriptor) do
-          validate_block_mime(shape, block, descriptor)
-        end
+        with :ok <- validate_descriptor_match(source, descriptor),
+             do: validate_reference_mime(reference, descriptor)
     end
   end
 
@@ -336,12 +429,22 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   defp prepare_descriptor(descriptor, state) do
     case Map.fetch(state.results, descriptor.reference_key) do
+      {:ok, %{image: image} = result} ->
+        key = Cache.key(image.file.sha256, image.mime_type, descriptor.format_key)
+
+        if Map.has_key?(image, :payload) or Map.has_key?(state.cache, key) do
+          {:ok, result, state}
+        else
+          with {:ok, loaded} <- load_valid_image(image.file.id),
+               do: {:ok, %{result | image: loaded}, state}
+        end
+
       {:ok, result} ->
         {:ok, result, state}
 
       :error ->
         if Map.has_key?(state.inherited, descriptor.reference_key) do
-          with {:ok, image} <- bound_image(descriptor, state.bindings) do
+          with {:ok, image} <- bound_image(descriptor, state.bindings, state.cache) do
             binding = Map.fetch!(state.bindings, descriptor.reference_key)
             duplicate_and_stage(image, binding.variant_key, descriptor, state)
           end
@@ -409,7 +512,7 @@ defmodule IntellectualClub.Generation.RequestImages do
     # bytes too; creating a logical row must not accidentally reuse a corrupt blob.
     with {:ok, image} <- load_valid_image(file.id),
          true <- image.mime_type == mime_type and max(image.width, image.height) <= @max_edge_px do
-      stage_file(file, mime_type, @thumbnail_variant, descriptor, state)
+      stage_file(file, mime_type, @thumbnail_variant, descriptor, state, image)
     else
       failure ->
         error = {:created_request_image_invalid, failure}
@@ -428,12 +531,12 @@ defmodule IntellectualClub.Generation.RequestImages do
       end
 
     case duplicate do
-      {:ok, file} -> stage_file(file, image.mime_type, variant_key, descriptor, state)
+      {:ok, file} -> stage_file(file, image.mime_type, variant_key, descriptor, state, image)
       {:error, reason} -> {:error, {:duplicate_request_file_failed, reason}}
     end
   end
 
-  defp stage_file(file, mime_type, variant_key, descriptor, state) do
+  defp stage_file(file, mime_type, variant_key, descriptor, state, image) do
     item = %{
       file_id: file.id,
       reference_key: descriptor.reference_key,
@@ -441,58 +544,47 @@ defmodule IntellectualClub.Generation.RequestImages do
       variant_key: variant_key
     }
 
-    {:ok, %{status: :ok, mime_type: mime_type}, %{state | staged: [item | state.staged]}}
+    state.track_staged.(item)
+
+    {:ok, %{status: :ok, mime_type: mime_type, image: Map.put(image, :file, file)},
+     %{state | staged: [item | state.staged]}}
   end
 
-  defp request_descriptors(raw_request, strict? \\ false)
-
-  defp request_descriptors(raw_request, strict?) when is_map(raw_request) do
+  defp request_descriptors(raw_request, mapper, strict? \\ false) do
     {_request, result} =
-      Walker.map_images(raw_request, {:ok, %{}}, fn shape, block, marker, acc ->
-        collect_descriptor(shape, block, marker, acc, strict?)
+      mapper.(raw_request, {:ok, %{}}, fn reference, acc ->
+        collect_descriptor(reference, acc, strict?)
       end)
 
     result
   end
 
-  defp request_descriptors(_raw_request, _strict?), do: {:error, :invalid_request_snapshot}
+  defp collect_descriptor(_reference, {:error, _reason} = error, _strict?), do: {:keep, error}
 
-  defp collect_descriptor(_shape, block, _marker, {:error, _reason} = error, _strict?),
-    do: {block, error}
-
-  defp collect_descriptor(shape, block, marker, {:ok, descriptors}, strict?) do
+  defp collect_descriptor(reference, {:ok, descriptors}, strict?) do
     result =
-      with {:ok, descriptor} <- validate_marker(marker, shape),
+      with {:ok, descriptor} <- validate_reference(reference),
            :ok <- validate_repeated_descriptor(descriptors, descriptor),
-           :ok <- validate_snapshot_descriptor(shape, block, descriptor, descriptors, strict?) do
+           :ok <- if(strict?, do: validate_reference_mime(reference, descriptor), else: :ok) do
         {:ok, Map.put(descriptors, descriptor.reference_key, descriptor)}
       end
 
-    {block, result}
-  end
-
-  defp validate_snapshot_descriptor(_shape, _block, _descriptor, _descriptors, false), do: :ok
-
-  defp validate_snapshot_descriptor(shape, block, descriptor, descriptors, true) do
-    with :ok <- validate_block_mime(shape, block, descriptor) do
-      case Map.get(descriptors, descriptor.reference_key) do
-        nil -> :ok
-        source -> validate_descriptor_match(source, descriptor)
-      end
-    end
+    {:keep, result}
   end
 
   defp validate_snapshot_equality(raw_request, raw_request), do: :ok
   defp validate_snapshot_equality(_raw_request, _saved), do: {:error, :request_snapshot_mismatch}
 
-  defp validate_snapshot_bindings(raw_request, bindings) do
+  defp validate_snapshot_bindings(raw_request, bindings, mapper) do
     state = %{
       bindings: Map.new(bindings, &{to_string(&1.reference_key), &1}),
       hydrated: %{},
+      cache: %{},
+      used_cache_keys: [],
       error: nil
     }
 
-    {_request, state} = Walker.map_images(raw_request, state, &validate_snapshot_block/4)
+    {_request, state} = mapper.(raw_request, state, &validate_snapshot_block/2)
 
     case state.error do
       nil ->
@@ -509,32 +601,38 @@ defmodule IntellectualClub.Generation.RequestImages do
     end
   end
 
-  defp validate_snapshot_block(_shape, block, _marker, %{error: error} = state)
-       when not is_nil(error), do: {block, state}
+  defp validate_snapshot_block(_reference, %{error: error} = state) when not is_nil(error),
+    do: {:keep, state}
 
-  defp validate_snapshot_block(shape, block, marker, state) do
-    with {:ok, descriptor} <- validate_marker(marker, shape),
-         :ok <- validate_block_mime(shape, block, descriptor),
+  defp validate_snapshot_block(reference, state) do
+    with {:ok, descriptor} <- validate_reference(reference),
+         :ok <- validate_reference_mime(reference, descriptor),
          {:ok, image, state} <- hydrated_image(descriptor, state) do
-      # A snapshot check does not need to retain payload bytes between occurrences.
       checked = Map.put(state.hydrated, descriptor.reference_key, Map.take(image, [:mime_type]))
-      {block, %{state | hydrated: checked}}
+      {:keep, %{state | hydrated: checked}}
     else
-      {:error, reason} -> {block, %{state | error: reason}}
+      {:error, reason} -> {:keep, %{state | error: reason}}
     end
   end
 
-  defp hydrate_block(_shape, block, _marker, %{error: error} = state) when not is_nil(error),
-    do: {block, state}
+  defp hydrate_block(_reference, %{error: error} = state) when not is_nil(error),
+    do: {:keep, state}
 
-  defp hydrate_block(shape, block, marker, state) do
-    with {:ok, descriptor} <- validate_marker(marker, shape),
-         :ok <- validate_block_mime(shape, block, descriptor),
+  defp hydrate_block(reference, state) do
+    with {:ok, descriptor} <- validate_reference(reference),
+         :ok <- validate_reference_mime(reference, descriptor),
          {:ok, image, state} <- hydrated_image(descriptor, state) do
-      {put_wire_image(shape, block, image), state}
+      {cached, state} = cache_image(image, descriptor, state)
+      {{:wire, cached.wire, cached.mime_type}, state}
     else
-      {:error, reason} -> {block, %{state | error: reason}}
+      {:error, reason} -> {:keep, %{state | error: reason}}
     end
+  end
+
+  defp cache_image(image, descriptor, state) do
+    {cached, cache} = Cache.put(state.cache, image, descriptor)
+    key = Cache.key(image.file.sha256, image.mime_type, descriptor.format_key)
+    {cached, %{state | cache: cache, used_cache_keys: [key | state.used_cache_keys]}}
   end
 
   defp hydrated_image(descriptor, state) do
@@ -546,21 +644,33 @@ defmodule IntellectualClub.Generation.RequestImages do
                  descriptor
                ),
              :ok <- validate_image_mime(image, descriptor) do
-          {:ok, image, state}
+          # Different occurrences can request different wire representations.
+          if Map.has_key?(image, :payload) or not Map.has_key?(image, :wire) or
+               Map.has_key?(
+                 state.cache,
+                 Cache.key(image.file.sha256, image.mime_type, descriptor.format_key)
+               ) do
+            {:ok, image, state}
+          else
+            with {:ok, image} <- bound_image(descriptor, state.bindings, state.cache),
+                 do:
+                   {:ok, image,
+                    %{state | hydrated: Map.put(state.hydrated, descriptor.reference_key, image)}}
+          end
         end
 
       :error ->
-        with {:ok, image} <- bound_image(descriptor, state.bindings) do
-          {:ok, image,
-           %{state | hydrated: Map.put(state.hydrated, descriptor.reference_key, image)}}
-        end
+        with {:ok, image} <- bound_image(descriptor, state.bindings, state.cache),
+             do:
+               {:ok, image,
+                %{state | hydrated: Map.put(state.hydrated, descriptor.reference_key, image)}}
     end
   end
 
-  defp bound_image(descriptor, bindings) do
+  defp bound_image(descriptor, bindings, cache) do
     with %ChatMessageStepRequestFile{} = binding <- Map.get(bindings, descriptor.reference_key),
          :ok <- validate_binding_descriptor(binding, descriptor),
-         {:ok, image} <- load_valid_image(binding.file_id),
+         {:ok, image} <- cached_or_loaded_image(binding, descriptor, cache),
          true <- max(image.width, image.height) <= @max_edge_px,
          :ok <- validate_image_mime(image, descriptor) do
       {:ok, image}
@@ -571,33 +681,37 @@ defmodule IntellectualClub.Generation.RequestImages do
     end
   end
 
+  defp cached_or_loaded_image(binding, descriptor, cache) do
+    case Cache.fetch(cache, binding.file, descriptor) do
+      {:ok, image} -> {:ok, image}
+      :error -> load_valid_image(binding.file_id)
+    end
+  end
+
   defp validate_image_mime(image, descriptor) do
     if image.mime_type == descriptor.mime_type,
       do: :ok,
       else: {:error, {:request_image_binding_mime_mismatch, descriptor.reference_key}}
   end
 
-  defp validate_block_mime(shape, block, descriptor) do
-    mime_type =
-      case shape do
-        :anthropic -> get_in(block, ["source", "media_type"])
-        :google -> Map.get(block, "mime_type")
-        _other -> descriptor.mime_type
-      end
-
-    if mime_type == descriptor.mime_type,
+  defp validate_reference_mime(reference, descriptor) do
+    if reference.mime_type == descriptor.mime_type,
       do: :ok,
       else: {:error, {:request_image_block_mime_mismatch, descriptor.reference_key}}
   end
 
-  defp validate_marker(marker, shape) when is_map(marker) do
+  defp validate_reference(reference) do
+    with {:ok, descriptor} <- validate_marker(reference.marker, reference.encoding) do
+      {:ok, Map.merge(descriptor, Map.take(reference, [:format_key, :format]))}
+    end
+  end
+
+  defp validate_marker(marker, expected_encoding) when is_map(marker) do
     reference_key = Map.get(marker, "reference_key")
     source_file_external_id = Map.get(marker, "source_file_external_id")
     rendition = Map.get(marker, "rendition")
     encoding = Map.get(marker, "encoding")
     mime_type = normalize_mime_type(Map.get(marker, "mime_type"))
-
-    expected_encoding = if shape in [:responses, :openrouter], do: "data_url", else: "base64"
 
     cond do
       Map.get(marker, "version") != @version ->
@@ -617,7 +731,7 @@ defmodule IntellectualClub.Generation.RequestImages do
         {:error, :unsupported_request_image_rendition}
 
       encoding != expected_encoding ->
-        {:error, {:invalid_request_image_encoding, shape, encoding}}
+        {:error, {:invalid_request_image_encoding, expected_encoding, encoding}}
 
       not image_mime_type?(mime_type) ->
         {:error, :invalid_request_image_mime_type}
@@ -661,6 +775,12 @@ defmodule IntellectualClub.Generation.RequestImages do
 
   defp load_valid_image(file_id) do
     with {:ok, {file, payload}} <- Files.load_payload(file_id) do
+      :telemetry.execute(
+        [:intellectual_club, :generation, :request_image_cache],
+        %{loaded_bytes: byte_size(payload)},
+        %{}
+      )
+
       validate_image_payload(file, payload)
     end
   end
@@ -768,7 +888,7 @@ defmodule IntellectualClub.Generation.RequestImages do
     |> case do
       {:ok, %ChatMessageStepRequestFile{} = binding} ->
         with :ok <- validate_binding_descriptor(binding, descriptor),
-             {:ok, image} <- load_valid_image(binding.file_id),
+             {:ok, image} <- cached_or_loaded_image(binding, descriptor, state.cache),
              true <- max(image.width, image.height) <= @max_edge_px do
           {:ok, binding, image}
         else
@@ -982,75 +1102,7 @@ defmodule IntellectualClub.Generation.RequestImages do
     end
   end
 
-  defp put_compact_marker(:responses, block, marker, _mime_type) do
-    Map.put(block, "image_url", %{@marker_key => marker})
-  end
-
-  defp put_compact_marker(:openrouter, block, marker, _mime_type) do
-    Map.update!(block, "image_url", &Map.put(&1, "url", %{@marker_key => marker}))
-  end
-
-  defp put_compact_marker(:anthropic, block, marker, mime_type) do
-    source =
-      block
-      |> Map.get("source", %{})
-      |> Map.put("type", "base64")
-      |> Map.put("media_type", mime_type)
-      |> Map.put("data", %{@marker_key => marker})
-
-    Map.put(block, "source", source)
-  end
-
-  defp put_compact_marker(:google, block, marker, mime_type) do
-    block
-    |> Map.put("mime_type", mime_type)
-    |> Map.put("data", %{@marker_key => marker})
-  end
-
-  defp put_wire_image(:responses, block, image) do
-    Map.put(block, "image_url", data_url(image))
-  end
-
-  defp put_wire_image(:openrouter, block, image) do
-    Map.update!(block, "image_url", &Map.put(&1, "url", data_url(image)))
-  end
-
-  defp put_wire_image(:anthropic, block, image) do
-    source =
-      block
-      |> Map.get("source", %{})
-      |> Map.put("type", "base64")
-      |> Map.put("media_type", image.mime_type)
-      |> Map.put("data", Base.encode64(image.payload))
-
-    Map.put(block, "source", source)
-  end
-
-  defp put_wire_image(:google, block, image) do
-    block
-    |> Map.put("mime_type", image.mime_type)
-    |> Map.put("data", Base.encode64(image.payload))
-  end
-
-  defp fallback_block(:responses, _block, text), do: %{"type" => "input_text", "text" => text}
-  defp fallback_block(:openrouter, _block, text), do: %{"type" => "text", "text" => text}
-  defp fallback_block(:google, _block, text), do: %{"type" => "text", "text" => text}
-
-  defp fallback_block(:anthropic, block, text) do
-    case Map.get(block, "cache_control") do
-      %{} = cache_control ->
-        %{"type" => "text", "text" => text, "cache_control" => cache_control}
-
-      _other ->
-        %{"type" => "text", "text" => text}
-    end
-  end
-
   defp put_marker_mime(marker, mime_type), do: Map.put(marker, "mime_type", mime_type)
-
-  defp data_url(image) do
-    "data:#{image.mime_type};base64," <> Base.encode64(image.payload)
-  end
 
   defp rendition_filename(file, reference_key, mime_type) do
     basename =

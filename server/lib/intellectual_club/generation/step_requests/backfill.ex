@@ -194,10 +194,10 @@ defmodule IntellectualClub.Generation.StepRequests.Backfill do
       |> Ash.Query.sort(sequence: :asc)
       |> Ash.read!(actor: actor, authorize?: true)
 
-    before = Reader.decode_rows!(steps)
+    before = Reader.decode_snapshots!(steps)
     planned = plan(steps, before, opts)
 
-    unless Reader.decode_rows!(planned) === before,
+    unless same_requests?(Reader.decode_snapshots!(planned), before),
       do: raise(Error, reason: :logical_request_changed)
 
     changes =
@@ -225,7 +225,7 @@ defmodule IntellectualClub.Generation.StepRequests.Backfill do
         |> Ash.Query.sort(sequence: :asc)
         |> Ash.read!(actor: actor, authorize?: true)
 
-      unless Reader.decode_rows!(after_rows) === before,
+      unless same_requests?(Reader.decode_snapshots!(after_rows), before),
         do: raise(Error, reason: :logical_request_changed)
     end
 
@@ -246,10 +246,10 @@ defmodule IntellectualClub.Generation.StepRequests.Backfill do
             # checkpoint immediately before an existing patch chain.
             Map.take(step, Codec.fields())
           else
-            Codec.create_attributes(request,
+            Codec.create_from_snapshots(request,
               sequence: step.sequence,
               previous_step: previous,
-              previous_request: if(previous, do: Map.fetch!(requests, previous.id)),
+              previous_snapshot: if(previous, do: Map.fetch!(requests, previous.id)),
               force_full: not is_nil(successor) and successor.request_mode == :patch,
               max_chain: opts[:max_chain]
             )
@@ -260,6 +260,11 @@ defmodule IntellectualClub.Generation.StepRequests.Backfill do
       end)
 
     planned
+  end
+
+  defp same_requests?(left, right) do
+    map_size(left) == map_size(right) and
+      Enum.all?(left, fn {id, snapshot} -> snapshot.hash == Map.fetch!(right, id).hash end)
   end
 
   defp contiguous?(steps),

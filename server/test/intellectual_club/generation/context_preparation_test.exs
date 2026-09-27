@@ -119,7 +119,7 @@ defmodule IntellectualClub.Generation.ContextPreparationTest do
       | context: %{preparation.context | request_payload: %{"not_json" => self()}}
     }
 
-    assert_raise IntellectualClub.Generation.StepRequests.Error, fn ->
+    assert_raise Ash.Error.Invalid, ~r/invalid_json_value/, fn ->
       Context.publish!(invalid, actor: actor)
     end
 

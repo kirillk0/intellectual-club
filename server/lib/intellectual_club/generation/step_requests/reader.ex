@@ -18,7 +18,13 @@ defmodule IntellectualClub.Generation.StepRequests.Reader do
     end
   end
 
-  def requests_for_steps!(steps, opts) when is_list(steps) do
+  def requests_for_steps!(steps, opts) do
+    steps
+    |> snapshots_for_steps!(opts)
+    |> Map.new(fn {id, snapshot} -> {id, snapshot.request} end)
+  end
+
+  def snapshots_for_steps!(steps, opts) when is_list(steps) do
     actor = actor!(opts)
     ids = steps |> Enum.map(&step_id!/1) |> Enum.uniq()
 
@@ -51,11 +57,16 @@ defmodule IntellectualClub.Generation.StepRequests.Reader do
       |> Enum.uniq_by(& &1.id)
 
     require_ids!(rows, ids)
-    decode_rows!(rows, ids)
+    decode_snapshots!(rows, ids)
   end
 
   @doc false
   def decode_rows!(rows, ids \\ nil) do
+    rows |> decode_snapshots!(ids) |> Map.new(fn {id, snapshot} -> {id, snapshot.request} end)
+  end
+
+  @doc false
+  def decode_snapshots!(rows, ids \\ nil) do
     by_key = Map.new(rows, &{{&1.chat_message_id, &1.sequence}, &1})
     by_id = Map.new(rows, &{&1.id, &1})
     ids = ids || Enum.map(rows, & &1.id)
@@ -85,9 +96,9 @@ defmodule IntellectualClub.Generation.StepRequests.Reader do
             previous = Map.get(by_key, {step.chat_message_id, step.sequence - 1})
             unless previous, do: raise(Error, reason: :missing_base, step_id: step.id)
             {base, cache} = resolve!(previous, by_key, cache, depth + 1)
-            {Codec.decode!(step, previous, base), cache}
+            {Codec.decode_snapshot!(step, previous, base), cache}
           else
-            {Codec.decode!(step), cache}
+            {Codec.decode_snapshot!(step), cache}
           end
 
         {request, Map.put(cache, step.id, request)}

@@ -113,9 +113,29 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   test "orphan restart preserves an oversized request image rendition" do
     %{user: actor} = user_fixture()
 
+    provider =
+      LlmProvider
+      |> Ash.Changeset.for_create(
+        :create,
+        %{name: "Image recovery", type: "image_recovery_test"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    configuration =
+      LlmConfiguration
+      |> Ash.Changeset.for_create(
+        :create,
+        %{note: "Image recovery", provider_id: provider.id, model_name: "image-test"},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     chat =
       Chat
-      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.Changeset.for_create(:create, %{note: "", llm_configuration_id: configuration.id},
+        actor: actor
+      )
       |> Ash.create!(actor: actor)
 
     {:ok, canonical_file} =
@@ -151,7 +171,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     }
 
     %{step: old_step, request: compact_request} =
-      Persistence.create_request_step!(generating_message, 1, raw_request)
+      Persistence.create_request_step!(generating_message, 1, raw_request,
+        request_context: %{adapter_module: IntellectualClub.TestSupport.ImageRecoveryProvider}
+      )
 
     [old_binding] = request_file_bindings(old_step.id)
     old_rendition_file = Ash.get!(StoredFile, old_binding.file_id, authorize?: false)
@@ -176,7 +198,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert FilesystemStorage.exists?(old_rendition_file.sha256)
 
     assert {:ok, hydrated_request} =
-             RequestImages.hydrate(compact_request, final_step.id)
+             RequestImages.hydrate(compact_request, final_step.id,
+               mapper: &IntellectualClub.TestSupport.ImageRecoveryProvider.map_request_images/3
+             )
 
     assert inspect(hydrated_request) =~ "data:image/png;base64,"
   end
