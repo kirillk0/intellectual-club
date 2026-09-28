@@ -16,7 +16,7 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.ForkHistory
-  alias IntellectualClub.Generation.Context.{Preparation, Revision, StalePreparationError}
+  alias IntellectualClub.Generation.Context.{Preparation, StalePreparationError}
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.StepRequests
@@ -392,65 +392,75 @@ defmodule IntellectualClub.Generation.Context do
   @doc """
   Prepares an authorized request without creating messages, steps or image pins.
 
-  Unsupported external/linked dependencies and native images use the protected
-  build! fallback. Text-only pending user contents are for queue orchestration.
+  Content and settings are read best-effort and may become stale before publication.
+  Only publication identity and branch state are revalidated. Existing transactions
+  and native images use the protected build! fallback; text-only pending user
+  contents are supported for queue orchestration.
   """
   def prepare(chat_id, opts \\ []) do
     actor = Keyword.get(opts, :actor)
 
     with :ok <- validate_pending_user(opts),
-         {:ok, revision} <- Revision.capture(chat_id, actor, opts) do
-      context = build_draft!(chat_id, opts)
-      request = context.request_payload
+         false <- Ash.DataLayer.in_transaction?(Chat),
+         {:ok, chat} <- preparation_chat(chat_id, actor) do
+      context = build_draft!(chat, opts)
 
-      if native_image_marker?(request) do
+      if native_image_marker?(context.request_payload) do
         {:fallback, :native_request_images}
       else
-        case Revision.capture(chat_id, actor, opts) do
-          {:ok, ^revision} ->
-            :telemetry.execute([:intellectual_club, :generation, :context, :prepared], %{}, %{
-              chat_id: chat_id
-            })
+        preparation = %Preparation{
+          context: context,
+          actor_id: actor.id,
+          chat_id: chat.id,
+          parent_id: context.parent_message_id,
+          last_message_id: chat.last_message_id,
+          intent: publication_intent(opts),
+          opts: opts
+        }
 
-            {:ok,
-             %Preparation{
-               context: context,
-               actor_id: actor.id,
-               chat_id: chat_id,
-               parent_id: revision.parent_id,
-               revision: revision,
-               opts: opts
-             }}
+        :telemetry.execute([:intellectual_club, :generation, :context, :prepared], %{}, %{
+          chat_id: chat_id
+        })
 
-          _changed ->
-            {:error, %StalePreparationError{chat_id: chat_id}}
-        end
+        {:ok, preparation}
       end
+    else
+      true -> {:fallback, :existing_transaction}
+      result -> result
     end
   rescue
     _error in Ash.Error.Forbidden -> {:error, :forbidden}
     exception -> {:error, exception}
   end
 
-  @doc "Publishes a prepared request only after authorization and revision revalidation."
+  defp preparation_chat(chat_id, %{id: actor_id} = actor) when is_integer(actor_id) do
+    chat = load_draft_chat!(chat_id, actor)
+    if chat.owner_id == actor_id, do: {:ok, chat}, else: {:error, :forbidden}
+  end
+
+  defp preparation_chat(_chat_id, _actor), do: {:error, :forbidden}
+
+  @doc "Publishes a prepared request after authorization and branch-state validation."
   def publish!(%Preparation{} = preparation, opts \\ []) do
     actor = Keyword.get(opts, :actor)
 
     publication_transaction!(fn ->
-      _chat = lock_owned_chat!(preparation.chat_id, actor)
+      chat = lock_owned_chat!(preparation.chat_id, actor)
 
       if actor.id != preparation.actor_id or
            preparation.context.owner_id != actor.id or
            preparation.context.chat_id != preparation.chat_id or
-           preparation.context.parent_message_id != preparation.parent_id or
-           preparation.revision.parent_id != preparation.parent_id do
+           preparation.context.parent_message_id != preparation.parent_id do
         raise ArgumentError, "Generation preparation identity mismatch"
       end
 
-      case Revision.capture(preparation.chat_id, actor, preparation.opts) do
-        {:ok, revision} when revision == preparation.revision -> :ok
-        _changed -> raise StalePreparationError, chat_id: preparation.chat_id
+      if chat.last_message_id != preparation.last_message_id or
+           publication_intent(preparation.opts) != preparation.intent or
+           preparation.parent_id != generation_parent_id(preparation.opts, chat) do
+        raise StalePreparationError, chat_id: preparation.chat_id
       end
+
+      validate_prepared_parent!(preparation, actor)
 
       parent_id =
         create_pending_user!(preparation.chat_id, preparation.parent_id, preparation.opts, actor)
@@ -459,8 +469,37 @@ defmodule IntellectualClub.Generation.Context do
     end)
   end
 
+  defp publication_intent(opts) do
+    opts
+    |> Keyword.take([
+      :parent_id,
+      :pending_user_contents,
+      :tools_payload_override,
+      :completion_effect,
+      :chunk_delay_ms
+    ])
+    |> Map.new()
+  end
+
+  defp validate_prepared_parent!(%Preparation{parent_id: nil}, _actor), do: :ok
+
+  defp validate_prepared_parent!(preparation, actor) do
+    parent =
+      ChatMessage
+      |> Ash.Query.filter(id == ^preparation.parent_id and chat_id == ^preparation.chat_id)
+      |> Ash.Query.select([:id])
+      |> Ash.read_one!(actor: actor, authorize?: true)
+
+    if is_nil(parent), do: raise(StalePreparationError, chat_id: preparation.chat_id)
+    :ok
+  end
+
   @doc "Builds and atomically publishes a generation; existing transactional callers remain valid."
-  def build!(chat_id, opts \\ []), do: build_with_retries!(chat_id, opts, 2)
+  def build!(chat_id, opts \\ []) do
+    if Ash.DataLayer.in_transaction?(Chat),
+      do: build_locked!(chat_id, opts),
+      else: build_with_retries!(chat_id, opts, 2)
+  end
 
   defp build_with_retries!(chat_id, opts, attempts) do
     case prepare(chat_id, opts) do
@@ -623,14 +662,23 @@ defmodule IntellectualClub.Generation.Context do
 
   defp native_image_marker?(_value), do: false
 
-  defp build_draft!(chat_id, opts) do
-    actor = Keyword.get(opts, :actor)
+  defp load_draft_chat!(chat_id, actor) do
+    Ash.get!(Chat, chat_id,
+      actor: actor,
+      authorize?: true,
+      load: [:bot, :last_message, llm_configuration: [:provider]]
+    )
+  end
 
-    chat =
-      Ash.get!(Chat, chat_id,
-        actor: actor,
-        load: [:bot, :last_message, llm_configuration: [:provider]]
-      )
+  defp build_draft!(chat_id, opts) when is_integer(chat_id) do
+    chat_id
+    |> load_draft_chat!(Keyword.get(opts, :actor))
+    |> build_draft!(opts)
+  end
+
+  defp build_draft!(%Chat{} = chat, opts) do
+    chat_id = chat.id
+    actor = Keyword.get(opts, :actor)
 
     owner_id = actor && actor.id
     conversation_affinity_id = Relations.lineage_root_id(chat, actor)
