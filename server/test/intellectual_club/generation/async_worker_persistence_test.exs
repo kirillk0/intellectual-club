@@ -9,6 +9,7 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Worker
@@ -85,6 +86,88 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     assert snapshot.phase == :provider
     assert Worker.poll(worker, %{}, protocol: :cursor).stream.cursor["epoch"] == epoch
     cancel_worker(worker)
+  end
+
+  test "provider and tool dispatch never query the database in the worker" do
+    fixture = fixture()
+    gate_operations(fixture, initialize: :stop)
+    worker = start_worker(fixture)
+    assert_receive {:barrier, :initialize, :stop, writer, _identity, gate}, 2_000
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:intellectual_club, :repo, :query],
+        &__MODULE__.observe_worker_query/4,
+        {self(), worker}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    send(writer, {gate, :continue})
+    assert_receive {:provider_started, _, provider, _request}, 2_000
+    send(provider, {:complete, :tools})
+    assert_receive {:provider_started, _, _next_provider, _request}, 2_000
+    _ = :sys.get_state(worker)
+    assert Persistence.list_missing_tool_calls!(fixture.step_id) == []
+    refute_receive {:worker_query, ^worker, _query}, 0
+    cancel_worker(worker)
+  end
+
+  test "external cancellation permits late dispatch until validation but cannot revive the message" do
+    fixture = fixture()
+    gate_operations(fixture, queued_steers: :stop)
+    assert {:ok, lease} = Lease.acquire(fixture.message.id)
+    worker = start_worker(fixture, [], %{lease: lease, lease_owner: self()})
+    monitor = Process.monitor(worker)
+    assert_receive {:barrier, :queued_steers, :stop, writer, _identity, gate}, 2_000
+    assert :ok = :sys.suspend(lease.manager)
+
+    try do
+      assert :canceled = QueueCoordinator.cancel_generation(fixture.message.id)
+      assert Lease.dispatch_allowed?(lease)
+      refute Lease.valid?(lease)
+      send(writer, {gate, :continue})
+      assert_receive {:provider_started, _, provider, _request}, 2_000
+      provider_monitor = Process.monitor(provider)
+      assert Worker.get_current_state(worker).phase == :provider
+
+      assert :ok = :sys.resume(lease.manager)
+      Lease.trigger_validation()
+      assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 2_000
+      assert_receive {:DOWN, ^provider_monitor, :process, ^provider, _reason}, 2_000
+      refute Lease.dispatch_allowed?(lease)
+      message = Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor)
+      assert message.status == :canceled
+      assert message.generation_fence_token == nil
+      assert load_step(fixture).status == :canceled
+      assert length(steps(fixture)) == 1
+    after
+      :sys.resume(lease.manager)
+    end
+  end
+
+  test "cancel and steering in either enqueue order leave a blocked followup" do
+    for cancel_first? <- [false, true] do
+      fixture = fixture()
+
+      if cancel_first?,
+        do: assert(:canceled = QueueCoordinator.cancel_generation(fixture.message.id))
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_steer(fixture.message.id, "Late steering", fixture.actor)
+
+      unless cancel_first?,
+        do: assert(:canceled = QueueCoordinator.cancel_generation(fixture.message.id))
+
+      assert {:ok, queued} = QueuedMessages.get(queued.id, fixture.actor)
+      assert queued.kind == :follow_up
+      assert queued.status == :blocked
+      assert queued.blocked_reason == "generation_canceled"
+      assert queued.anchor_message_id == fixture.message.id
+      assert queued.target_generation_message_id == nil
+      assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :canceled
+    end
   end
 
   test "queued replacement accounts its deferred response before dispatch or cancellation of the receiving step" do
@@ -919,6 +1002,10 @@ defmodule IntellectualClub.Generation.AsyncWorkerPersistenceTest do
     after
       Lease.release(successor)
     end
+  end
+
+  def observe_worker_query(_event, _measurements, metadata, {owner, worker}) do
+    if self() == worker, do: send(owner, {:worker_query, worker, metadata.query})
   end
 
   # Telemetry callbacks run inside the writer, giving deterministic barriers on

@@ -391,6 +391,18 @@ defmodule IntellectualClub.Generation.Lease do
     )
   end
 
+  @doc """
+  Checks dispatch admission using the registered fenced capability, not database state.
+
+  Local managers are checked through ETS. External cancellation or fence changes
+  become visible after manager validation; writes must still use durable fencing.
+  """
+  @spec dispatch_allowed?(term()) :: boolean()
+  def dispatch_allowed?(%__MODULE__{fence_token: token} = lease) when is_binary(token),
+    do: active?(lease)
+
+  def dispatch_allowed?(_lease), do: false
+
   @doc false
   def registered?(%__MODULE__{} = lease), do: active?(lease)
 
@@ -1004,15 +1016,18 @@ defmodule IntellectualClub.Generation.Lease do
 
       with :ok <- prepare_fence(fenced) do
         try do
-          case fun.(fenced) do
-            {:ok, result} ->
-              with :ok <- register_fence(fenced), do: {:ok, {fenced, result}}
-
+          with {:ok, result} <- fun.(fenced),
+               :ok <- register_fence(fenced) do
+            {:ok, {fenced, result}}
+          else
             {:error, _reason} = error ->
+              abandon_fence_claim(fenced)
               error
           end
-        after
-          abandon_fence_claim(fenced)
+        catch
+          kind, reason ->
+            abandon_fence_claim(fenced)
+            :erlang.raise(kind, reason, __STACKTRACE__)
         end
       end
     else

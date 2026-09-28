@@ -2978,7 +2978,7 @@ defmodule IntellectualClub.Generation.Worker do
   defp ensure_dispatch_allowed!(state) do
     if state.persistence_op || state.failure_plan || state.steering_attempt || state.lease_lost? ||
          state.cancel_requested? ||
-         not Lease.valid?(state.lease) do
+         not Lease.dispatch_allowed?(state.lease) do
       exit({:generation_lease_lost, :dispatch_not_allowed})
     end
 

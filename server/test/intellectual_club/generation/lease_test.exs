@@ -141,6 +141,111 @@ defmodule IntellectualClub.Generation.LeaseTest do
     end
   end
 
+  test "dispatch admission uses only the registered fenced capability without SQL or manager calls" do
+    %{message: message} = generating_message_fixture!()
+    assert {:ok, reservation} = Lease.reserve(message.id)
+    refute Lease.dispatch_allowed?(reservation)
+    assert {:ok, lease} = Lease.fence(reservation)
+    manager = lease.manager
+    parent = self()
+    result_ref = make_ref()
+    handler_id = {__MODULE__, :dispatch_queries, result_ref}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:intellectual_club, :repo, :query],
+        fn _, _, _, {recipient, tag} -> send(recipient, {tag, :query, self()}) end,
+        {parent, result_ref}
+      )
+
+    assert :ok = :sys.suspend(manager)
+
+    try do
+      pid =
+        start_supervised!(%{
+          id: result_ref,
+          start:
+            {Task, :start_link,
+             [
+               fn ->
+                 assert Lease.dispatch_allowed?(lease)
+                 refute Lease.dispatch_allowed?(nil)
+                 refute Lease.dispatch_allowed?(%{})
+                 refute Lease.dispatch_allowed?(reservation)
+                 refute Lease.dispatch_allowed?(%{lease | manager: self()})
+                 refute Lease.dispatch_allowed?(%{lease | ref: make_ref()})
+                 refute Lease.dispatch_allowed?(%{lease | fence_token: Ecto.UUID.generate()})
+                 send(parent, {result_ref, :checked})
+               end
+             ]},
+          restart: :temporary
+        })
+
+      assert_receive {^result_ref, :checked}, 1_000
+      refute_received {^result_ref, :query, ^pid}
+    after
+      :sys.resume(manager)
+      :telemetry.detach(handler_id)
+      Lease.release(lease)
+    end
+
+    refute Lease.dispatch_allowed?(lease)
+  end
+
+  test "successful fence registration does not abandon its completed claim" do
+    %{message: message} = generating_message_fixture!()
+    assert {:ok, reservation} = Lease.reserve(message.id)
+    manager = reservation.manager
+    :erlang.trace(manager, true, [:receive])
+
+    try do
+      assert {:ok, lease} = Lease.fence(reservation)
+      delivery = :erlang.trace_delivered(manager)
+      assert_receive {:trace_delivered, ^manager, ^delivery}
+
+      assert_received {:trace, ^manager, :receive, {:"$gen_call", _, {:prepare_fence, ^lease, _}}}
+
+      assert_received {:trace, ^manager, :receive,
+                       {:"$gen_call", _, {:register_fence, ^lease, _}}}
+
+      refute_received {:trace, ^manager, :receive, {:"$gen_call", _, {:abandon_fence_claim, _}}}
+
+      entry = :sys.get_state(manager).leases[message.id]
+      assert entry.claim_token == nil
+      assert entry.fence_token == lease.fence_token
+      assert lease.fence_token in entry.cleanup_tokens
+    after
+      :erlang.trace(manager, false, [:receive])
+      Lease.release(reservation)
+    end
+  end
+
+  test "failed and thrown fence claims release their claim slot for a retry" do
+    %{message: message} = generating_message_fixture!()
+    assert {:ok, reservation} = Lease.reserve(message.id)
+
+    try do
+      assert {:error, :invalid_status} =
+               Lease.claim_and_run(reservation, [:error], fn -> flunk("invalid status") end)
+
+      assert :sys.get_state(reservation.manager).leases[message.id].claim_token == nil
+
+      assert catch_throw(
+               Lease.claim_and_run(reservation, [:generating], fn -> throw(:claim_aborted) end)
+             ) == :claim_aborted
+
+      entry = :sys.get_state(reservation.manager).leases[message.id]
+      assert entry.claim_token == nil
+      assert length(entry.cleanup_tokens) == 2
+      assert reloaded_message!(message.id).generation_fence_token == nil
+      assert {:ok, lease} = Lease.fence(reservation)
+      assert Lease.dispatch_allowed?(lease)
+    after
+      Lease.release(reservation)
+    end
+  end
+
   test "missing local capability state fails closed without affecting token-only fences" do
     %{message: message} = generating_message_fixture!()
     assert {:ok, lease} = Lease.acquire(message.id)
@@ -152,6 +257,7 @@ defmodule IntellectualClub.Generation.LeaseTest do
       end)
 
       refute Capabilities.active?(lease)
+      refute Lease.dispatch_allowed?(lease)
 
       assert {:error, :lease_lost} =
                Lease.with_fence(lease, fn -> flunk("lost capability authorized a write") end)
@@ -287,6 +393,13 @@ defmodule IntellectualClub.Generation.LeaseTest do
 
     assert reloaded_message!(message.id).generation_fence_token == nil
     assert {:error, :lease_not_fenced} = Lease.with_fence(reservation, fn -> :stale_write end)
+    entry = :sys.get_state(reservation.manager).leases[message.id]
+    assert entry.claim_token == nil
+    assert length(entry.cleanup_tokens) == 1
+
+    assert {:ok, {_lease, :retried}} =
+             Lease.claim_and_run(reservation, [:error], fn -> :retried end)
+
     assert :ok = Lease.release(reservation)
 
     test_pid = self()
