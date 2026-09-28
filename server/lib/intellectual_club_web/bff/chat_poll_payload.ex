@@ -511,7 +511,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollPayload do
   end
 
   defp cache_key(message, actor, kind),
-    do: {Serializer.poll_revision(actor), message.id, message.chat_id, kind}
+    do: {{actor.__struct__, actor.id}, message.id, message.chat_id, kind}
 
   # A committed provider response or successor owns its canonical items. The
   # worker may still expose the predecessor until its async write is acknowledged.

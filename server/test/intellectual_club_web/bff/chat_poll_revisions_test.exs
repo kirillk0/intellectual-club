@@ -51,6 +51,56 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
     assert Ash.get!(ChatMessage, message.id, actor: actor).status == :done
   end
 
+  for protocol <- ["legacy", "cursor"] do
+    @protocol protocol
+    test "#{protocol} polling reuses cached payloads after user activity changes", %{conn: conn} do
+      {conn, actor, _chat, message} = fixture(conn)
+      params = %{"working_step_id" => "latest", "poll_protocol" => @protocol}
+      first = poll(conn, message.id, params) |> json_response(200)
+      assert first["content"]["parts"] != []
+      assert is_map(first["working_open"]["step"])
+
+      user =
+        IntellectualClub.Accounts.User
+        |> Ash.Query.for_read(:get_current, %{id: actor.id})
+        |> Ash.read_one!(actor: actor)
+
+      activity_at = DateTime.add(user.last_activity_at, 1, :second)
+
+      user
+      |> Ash.Changeset.for_update(:touch_activity, %{last_activity_at: activity_at}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      # Omit client revisions so both display and selected details must use the cache.
+      {response, queries} = measure(fn -> poll(conn, message.id, params) end)
+      assert response.assigns.current_user.last_activity_at == activity_at
+      payload = json_response(response, 200)
+      assert payload["content"] == first["content"]
+      assert payload["working_open"] == first["working_open"]
+      assert_no_content_load(queries)
+    end
+  end
+
+  test "shared message payloads remain cached separately for each user" do
+    %{user: owner, password: owner_password} = user_fixture()
+    %{user: viewer, password: viewer_password} = user_fixture()
+    shared = IntellectualClub.StepRequestsFixtures.shared_request_message!(owner, viewer)
+    chat = Ash.get!(Chat, shared.chat_id, actor: owner)
+    {:ok, message} = Threads.add_message_to_end(chat, :assistant, "Shared answer", actor: owner)
+    owner_conn = sign_in_conn(build_conn(), owner.username, owner_password)
+    viewer_conn = sign_in_conn(build_conn(), viewer.username, viewer_password)
+    params = %{"working_step_id" => "latest"}
+    first = poll(owner_conn, message.id, params) |> json_response(200)
+
+    {response, queries} = measure(fn -> poll(viewer_conn, message.id, params) end)
+    assert json_response(response, 200)["content"] == first["content"]
+    assert Enum.any?(queries, &String.contains?(&1, "\"content_text\""))
+
+    {response, queries} = measure(fn -> poll(viewer_conn, message.id, params) end)
+    assert json_response(response, 200)["working_open"] == first["working_open"]
+    assert_no_content_load(queries)
+  end
+
   test "same-count content edits invalidate terminal content and selected details", %{conn: conn} do
     {conn, actor, _chat, message} = fixture(conn)
     first = poll(conn, message.id, %{"working_step_id" => "latest"}) |> json_response(200)
