@@ -266,6 +266,47 @@ defmodule IntellectualClub.Generation.PersistenceFailure do
   end
 
   def rollback?(reason), do: contains?(reason, &rollback_error?/1)
+
+  @doc "Identifies transient database errors for reads or explicitly idempotent operations."
+  def transient_database_error?(reason), do: rollback?(reason) or connection_failure?(reason)
+
+  @doc "Retries an explicitly idempotent operation after transient database failures."
+  def retry_idempotent(fun, opts \\ []) when is_function(fun, 0) do
+    if IntellectualClub.Repo.in_transaction?() do
+      raise ArgumentError, "idempotent retry must own its transaction boundary"
+    end
+
+    retry_idempotent(fun, opts, Enum.take(Keyword.get(opts, :delays, @retry_delays), 3), 1)
+  end
+
+  defp retry_idempotent(fun, opts, delays, attempt) do
+    operation = Keyword.fetch!(opts, :operation)
+    result = capture(fun, operation)
+
+    case {result, delays} do
+      {{:error, reason}, [delay | rest]} ->
+        if transient_database_error?(reason) do
+          delay = max(delay, 0)
+          delay = delay + if(delay > 0, do: :rand.uniform(max(div(delay, 5), 1)) - 1, else: 0)
+
+          Logger.warning(
+            "Generation idempotent database operation retry " <>
+              "operation=#{operation} attempt=#{attempt} delay_ms=#{delay}"
+          )
+
+          receive do
+          after
+            delay -> retry_idempotent(fun, opts, rest, attempt + 1)
+          end
+        else
+          result
+        end
+
+      _ ->
+        result
+    end
+  end
+
   defp connection_failure?(reason), do: contains?(reason, &connection_error?/1)
 
   defp rollback_error?(%Postgrex.Error{postgres: postgres}) when is_map(postgres),

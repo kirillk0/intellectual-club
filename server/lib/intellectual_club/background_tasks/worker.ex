@@ -6,6 +6,7 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.BackgroundTasks.Registry, as: AdapterRegistry
+  alias IntellectualClub.Generation.PersistenceFailure
   alias IntellectualClub.Tools.ExecutionResult
 
   require Logger
@@ -262,6 +263,20 @@ defmodule IntellectualClub.BackgroundTasks.Worker do
   end
 
   defp reconcile_adapter(%BackgroundTask{} = task) do
+    case PersistenceFailure.capture(fn -> do_reconcile_adapter(task) end, :background_reconcile) do
+      {:error, reason} = error ->
+        # Observation failure is not a terminal child outcome. The adapter's
+        # durable reference makes reconciliation and orphan recovery repeatable.
+        if PersistenceFailure.transient_database_error?(reason),
+          do: {:retry, reason},
+          else: error
+
+      result ->
+        result
+    end
+  end
+
+  defp do_reconcile_adapter(%BackgroundTask{} = task) do
     with {:ok, module} <- AdapterRegistry.fetch(task.adapter),
          true <- function_exported?(module, :reconcile_background, 1) do
       apply(module, :reconcile_background, [task])

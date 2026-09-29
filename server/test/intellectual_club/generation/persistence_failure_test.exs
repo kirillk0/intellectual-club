@@ -3,6 +3,69 @@ defmodule IntellectualClub.Generation.PersistenceFailureTest do
 
   alias IntellectualClub.Generation.PersistenceFailure, as: Failure
 
+  test "explicitly idempotent cleanup retries a lost acknowledgement without replaying an effect" do
+    Process.put(:cleanup_attempts, 0)
+    Process.put(:fence, "old-owner")
+
+    assert :ok =
+             Failure.retry_idempotent(
+               fn ->
+                 attempt = Process.get(:cleanup_attempts) + 1
+                 Process.put(:cleanup_attempts, attempt)
+
+                 if Process.get(:fence) == "old-owner", do: Process.put(:fence, nil)
+
+                 if attempt == 1 do
+                   raise DBConnection.ConnectionError, message: "commit acknowledgement lost"
+                 end
+
+                 :ok
+               end,
+               operation: :generation_lease_cleanup,
+               delays: [0]
+             )
+
+    assert Process.get(:cleanup_attempts) == 2
+    assert Process.get(:fence) == nil
+  end
+
+  test "idempotent retry is bounded and never retries an unrelated permanent error" do
+    error = %DBConnection.ConnectionError{reason: :queue_timeout, message: "pool busy"}
+    Process.put(:cleanup_attempts, 0)
+
+    assert {:error, ^error} =
+             Failure.retry_idempotent(
+               fn ->
+                 Process.put(:cleanup_attempts, Process.get(:cleanup_attempts) + 1)
+                 {:error, error}
+               end,
+               operation: :generation_lease_cleanup,
+               delays: [0, 0, 0, 0]
+             )
+
+    assert Process.get(:cleanup_attempts) == 4
+
+    assert {:error, :forbidden} =
+             Failure.retry_idempotent(
+               fn ->
+                 Process.put(:cleanup_attempts, Process.get(:cleanup_attempts) + 1)
+                 {:error, :forbidden}
+               end,
+               operation: :generation_lease_cleanup,
+               delays: [0, 0, 0]
+             )
+
+    assert Process.get(:cleanup_attempts) == 5
+  end
+
+  test "database observation failure uses typed causes rather than error text" do
+    error = %DBConnection.ConnectionError{reason: :queue_timeout, message: "pool busy"}
+    assert Failure.transient_database_error?(Failure.new(error))
+    refute Failure.transient_database_error?("DBConnection.ConnectionError queue_timeout")
+    refute Failure.transient_database_error?(:not_found)
+    refute Failure.transient_database_error?(%Ash.Error.Forbidden{})
+  end
+
   test "only typed rollback errors are eligible for transaction replay" do
     for code <- [:deadlock_detected, :serialization_failure, "40P01", "40001"] do
       error = %Postgrex.Error{postgres: %{code: code}}

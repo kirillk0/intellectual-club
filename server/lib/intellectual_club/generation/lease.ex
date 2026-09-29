@@ -8,6 +8,7 @@ defmodule IntellectualClub.Generation.Lease do
   alias IntellectualClub.Repo
   alias IntellectualClub.Generation.Lease.Capabilities
   alias IntellectualClub.Generation.Lease.State
+  alias IntellectualClub.Generation.PersistenceFailure
 
   require Ash.Query
   require Logger
@@ -704,7 +705,12 @@ defmodule IntellectualClub.Generation.Lease do
 
       task =
         Task.Supervisor.async_nolink(IntellectualClub.Generation.LeaseCleanupSupervisor, fn ->
-          clear_generation_fence(message_id, tokens)
+          # Compare-and-clear is idempotent even if a previous commit lost its
+          # acknowledgement. Keep the advisory lock and reservation until success.
+          PersistenceFailure.retry_idempotent(
+            fn -> clear_generation_fence(message_id, tokens) end,
+            operation: :generation_lease_cleanup
+          )
         end)
 
       entry = %{entry | cleanup_ref: task.ref}
