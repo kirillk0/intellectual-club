@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   """
 
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
+  alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias Req.Response
 
@@ -29,6 +30,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
             required(:api_key) => String.t(),
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
+            optional(:image_cache) => map(),
+            optional(:image_cache_update) => (map() -> any()),
+            optional(:image_mapper) => function(),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -41,7 +45,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     timeout_ms = Map.get(opts, :timeout_ms, 300_000)
     connect_timeout_ms = Map.get(opts, :connect_timeout_ms, 10_000)
     url = String.trim_trailing(base_url, "/") <> "/messages"
-    logical_request = clean_transport_payload(payload)
+    logical_request = payload
 
     headers =
       [
@@ -55,14 +59,17 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     case RequestHydration.hydrate(
            logical_request,
            Map.get(opts, :request_step_id),
-           :anthropic_messages
+           Map.get(opts, :image_mapper, &AnthropicMessages.map_request_images/3),
+           cache: Map.get(opts, :image_cache, %{}),
+           on_cache: Map.get(opts, :image_cache_update),
+           provider: :anthropic_messages
          ) do
       {:ok, wire_request} ->
         request_opts = [
           url: url,
           method: :post,
           headers: headers,
-          json: wire_request,
+          json: clean_transport_payload(wire_request),
           connect_options: [timeout: connect_timeout_ms],
           receive_timeout: timeout_ms,
           into: :self,
@@ -396,7 +403,6 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     raw_response = build_raw_response(state)
     usage = normalized_trace_usage(raw_response)
 
-    emit.({:trace, {:set_step_raw_request, raw_request}})
     emit.({:trace, {:set_step_raw_response, raw_response}})
     emit.({:trace, {:set_step_usage, usage}})
     emit.({:trace, {:set_step_response_final, true}})

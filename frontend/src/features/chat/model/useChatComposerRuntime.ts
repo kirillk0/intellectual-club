@@ -21,7 +21,16 @@ import {
   buildSendPayload,
   type ChatQueuedMessage,
   type PollResponse,
+  type RuntimeCursor,
 } from '@/features/chat/model/chatViewModel.shared';
+import {
+  generationPollDelay,
+  selectRuntimeCursor,
+  validRuntimeDelta,
+  mergeRuntimePollContent,
+  mergeRuntimeUsage,
+  preserveStreamingMessageContent,
+} from '@/features/chat/model/generationPolling';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import { translate } from '@/i18n';
@@ -46,6 +55,8 @@ type Params = {
   autoScrollEnabled?: ComputedRef<boolean>;
   scrollToLastMessage: ScrollToLastMessage;
   getOpenWorkingPollRequest?: (messageId: number) => string | null;
+  getOpenWorkingPollSync?: (messageId: number) => string | undefined;
+  getOpenWorkingPollRevision?: (messageId: number) => string | undefined;
   applyWorkingPoll?: (messageId: number, payload: PollResponse['working_open']) => void;
   onQueuedMessagesUpdated?: (messages: ChatQueuedMessage[]) => void;
   onQueuedMessageCreated?: (message: ChatQueuedMessage) => void;
@@ -598,12 +609,34 @@ export function useChatComposerRuntime(params: Params) {
 
   let pollTimer: number | null = null;
   let pollingToken = 0;
+  let pollingChatId: number | null = null;
   let pollAbortController: AbortController | null = null;
   let lastResumeSyncAt = 0;
+  let pollRevision: string | undefined;
+  let contentRevision: string | undefined;
+  let runtimeRevision: string | undefined;
+  let viewRevision: string | undefined;
+  let synchronizedWorkingSync: string | undefined;
+  let runtimeCursor: RuntimeCursor | null | undefined;
+  let pollDelayMs = 500;
+  let consecutivePollErrors = 0;
+
+  const resetPollRevisions = () => {
+    pollRevision = undefined;
+    contentRevision = undefined;
+    runtimeRevision = undefined;
+    viewRevision = undefined;
+    synchronizedWorkingSync = undefined;
+    runtimeCursor = undefined;
+  };
 
   const stopPolling = (opts: { resetConnectionState?: boolean } = {}) => {
     const resetConnectionState = opts.resetConnectionState ?? true;
     pollingToken += 1;
+    pollingChatId = null;
+    resetPollRevisions();
+    pollDelayMs = 500;
+    consecutivePollErrors = 0;
     if (pollTimer != null) {
       window.clearTimeout(pollTimer);
       pollTimer = null;
@@ -625,6 +658,8 @@ export function useChatComposerRuntime(params: Params) {
   const pollOnce = async (messageId: number, token: number) => {
     const controller = new AbortController();
     pollAbortController = controller;
+    const branchAtRequest = params.branch.value;
+    const chatAtRequest = params.chatId.value;
 
     let didTimeout = false;
     const timeoutHandle = window.setTimeout(() => {
@@ -633,20 +668,48 @@ export function useChatComposerRuntime(params: Params) {
     }, 25_000);
 
     try {
-      const searchParams = new URLSearchParams();
+      const searchParams = new URLSearchParams({ poll_protocol: 'cursor' });
+      const cursorAtRequest = runtimeCursor;
+      if (runtimeCursor) searchParams.set('runtime_cursor', JSON.stringify(runtimeCursor));
+      if (viewRevision) searchParams.set('view_revision', viewRevision);
       const workingStepId = params.getOpenWorkingPollRequest?.(messageId);
-      if (workingStepId) searchParams.set('working_step_id', workingStepId);
+      const workingSync = params.getOpenWorkingPollSync?.(messageId);
+      if (workingStepId) {
+        if (workingSync) searchParams.set('working_sync', workingSync);
+        searchParams.set('working_step_id', workingStepId);
+        const workingRevision = params.getOpenWorkingPollRevision?.(messageId);
+        // The first projection must align inspector and body, even if /working
+        // happened to return the same revision as a previous poll snapshot.
+        if (workingRevision && workingSync === synchronizedWorkingSync) {
+          searchParams.set('working_revision', workingRevision);
+        }
+      }
+      if (pollRevision) searchParams.set('revision', pollRevision);
+      if (contentRevision) searchParams.set('content_revision', contentRevision);
+      if (runtimeRevision) searchParams.set('runtime_revision', runtimeRevision);
       const suffix = searchParams.toString() ? `?${searchParams.toString()}` : '';
 
-      const response = await api.get<PollResponse>(`/api/bff/chat-messages/${messageId}/poll${suffix}`, {
-        signal: controller.signal,
-        showErrorBanner: false,
-        timeoutMs: null,
-        retry: false,
-      });
+      const response = await api.get<PollResponse | undefined>(
+        `/api/bff/chat-messages/${messageId}/poll${suffix}`,
+        {
+          signal: controller.signal,
+          showErrorBanner: false,
+          timeoutMs: null,
+          retry: false,
+        }
+      );
 
       if (pollingToken !== token) return false;
       generationPollReconnecting.value = false;
+      consecutivePollErrors = 0;
+      // A full reload owns the new branch. Discard even a previously valid 204.
+      if (params.branch.value !== branchAtRequest) return true;
+      if (!response) return true;
+      if (response.runtime_delta && !validRuntimeDelta(cursorAtRequest, response.runtime_delta)) {
+        resetPollRevisions();
+        return true;
+      }
+      pollDelayMs = generationPollDelay(response);
 
       if (Array.isArray(response.queued_messages)) {
         params.onQueuedMessagesUpdated?.(response.queued_messages);
@@ -667,14 +730,36 @@ export function useChatComposerRuntime(params: Params) {
           patch.token_count = response.token_count;
         }
 
-        if (response.content) patch.content = response.content;
+        if (response.content !== undefined || response.runtime_content !== undefined || response.runtime_delta) {
+          patch.content = mergeRuntimePollContent(current.content, response);
+        }
         if (response.usage) patch.usage = response.usage;
+        else if (response.runtime_summary) {
+          patch.usage = mergeRuntimeUsage(current.usage, response.runtime_summary);
+        }
         if (response.working) patch.working = response.working;
 
         updateBranchMessage(messageId, patch);
-        if (response.working_open !== undefined) {
-          params.applyWorkingPoll?.(messageId, response.working_open);
+        const sameWorkingSession = Boolean(workingStepId) &&
+          workingStepId === params.getOpenWorkingPollRequest?.(messageId) &&
+          workingSync === params.getOpenWorkingPollSync?.(messageId);
+        if (sameWorkingSession) {
+          if (response.working_open !== undefined) {
+            params.applyWorkingPoll?.(messageId, response.working_open);
+            synchronizedWorkingSync = workingSync;
+          }
+          if (response.runtime_delta || response.runtime_summary) {
+            params.applyWorkingPoll?.(messageId, {
+              runtime_delta: response.runtime_delta, runtime_summary: response.runtime_summary,
+            });
+          }
         }
+        // A cursor acknowledges only data that was successfully applied to this branch.
+        pollRevision = response.revision;
+        contentRevision = response.content_revision;
+        runtimeRevision = response.runtime_revision;
+        viewRevision = response.view_revision;
+        runtimeCursor = selectRuntimeCursor(response);
         if (shouldKeepPageAtBottom || keepFocusedComposerVisible) {
           void keepAutoScrollPosition(shouldKeepPageAtBottom);
         }
@@ -688,9 +773,14 @@ export function useChatComposerRuntime(params: Params) {
             ? response.active_generation_message_id
             : null;
         if (params.activeGenerationId.value === messageId) params.activeGenerationId.value = null;
-        if (params.cancelingGenerationId.value === messageId) params.cancelingGenerationId.value = null;
+        if (params.cancelingGenerationId.value === messageId)
+          params.cancelingGenerationId.value = null;
         stopPolling();
+        const terminalToken = pollingToken;
         await params.onGenerationSettled?.(messageId, response.status);
+        // Reload may await navigation or a newly started generation. The old
+        // continuation must not take ownership of that route's polling session.
+        if (pollingToken !== terminalToken || params.chatId.value !== chatAtRequest) return false;
         if (nextGenerationId && params.activeGenerationId.value !== nextGenerationId) {
           void startPolling(nextGenerationId);
         }
@@ -706,6 +796,7 @@ export function useChatComposerRuntime(params: Params) {
 
       return true;
     } catch (error) {
+      resetPollRevisions();
       if (didTimeout && error instanceof DOMException && error.name === 'AbortError') {
         throw new Error('Generation poll timed out.');
       }
@@ -721,6 +812,7 @@ export function useChatComposerRuntime(params: Params) {
     const sameGeneration = params.activeGenerationId.value === messageId;
     stopPolling({ resetConnectionState: !sameGeneration });
     params.activeGenerationId.value = messageId;
+    pollingChatId = params.chatId.value;
     if (params.chatId.value) {
       publishChatChange({
         operation: 'touch',
@@ -737,21 +829,41 @@ export function useChatComposerRuntime(params: Params) {
       try {
         const keepGoing = await pollOnce(messageId, token);
         if (keepGoing && params.activeGenerationId.value === messageId && pollingToken === token) {
-          pollTimer = window.setTimeout(tick, 500);
+          pollTimer = window.setTimeout(tick, pollDelayMs);
         }
       } catch (error) {
         if (pollingToken !== token) return;
         if (error instanceof DOMException && error.name === 'AbortError') return;
         console.warn(error);
         generationPollReconnecting.value = true;
+        consecutivePollErrors += 1;
         if (params.activeGenerationId.value === messageId && pollingToken === token) {
-          pollTimer = window.setTimeout(tick, 1500);
+          pollTimer = window.setTimeout(
+            tick,
+            Math.min(1500 * 2 ** (consecutivePollErrors - 1), 10_000)
+          );
         }
       }
     };
 
     await tick();
   };
+
+  watch(() => params.branch.value, (next, previous) => {
+    resetPollRevisions();
+    if (pollingChatId !== params.chatId.value || params.activeGenerationId.value == null) return;
+    const messageId = params.activeGenerationId.value;
+    const index = next.findIndex((message) => message.id === messageId);
+    if (index === -1) return;
+    const current = previous.find((message) => message.id === messageId);
+    // Merge synchronously, before Vue can render the persisted-only replacement.
+    next[index] = preserveStreamingMessageContent(current, next[index]!);
+  }, { flush: 'sync' });
+  watch(
+    () => params.chatId.value,
+    () => stopPolling(),
+    { flush: 'sync' }
+  );
 
   watch(
     () => generatingMessageIdInBranch.value,

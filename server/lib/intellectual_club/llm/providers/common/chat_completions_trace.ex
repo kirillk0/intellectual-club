@@ -35,21 +35,17 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletionsTrace do
         :ok
 
       {:response_complete, meta} ->
-        raw_request = Map.get(meta, :raw_request) || %{}
         raw_response = Map.get(meta, :raw_response)
         usage = Map.get(meta, :usage)
 
-        emit.({:trace, {:set_step_raw_request, raw_request}})
         emit.({:trace, {:set_step_raw_response, raw_response}})
         emit.({:trace, {:set_step_usage, usage}})
         emit.({:trace, {:set_step_response_final, true}})
         emit.({:response_complete, meta})
 
       {:response_error, meta} ->
-        raw_request = Map.get(meta, :raw_request) || %{}
         raw_response = Map.get(meta, :raw_response)
 
-        emit.({:trace, {:set_step_raw_request, raw_request}})
         emit.({:trace, {:set_step_raw_response, raw_response}})
         emit.({:trace, {:set_step_response_final, false}})
         emit.({:response_error, meta})

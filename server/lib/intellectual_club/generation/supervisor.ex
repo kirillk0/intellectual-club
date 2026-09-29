@@ -16,7 +16,9 @@ defmodule IntellectualClub.Generation.Supervisor do
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Recovery
+  alias IntellectualClub.Generation.RecoveryGate
   alias IntellectualClub.Generation.Worker
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
 
   require Ash.Query
@@ -48,7 +50,13 @@ defmodule IntellectualClub.Generation.Supervisor do
   @doc "Starts a generation whose canonical assistant and initial step already exist."
   def start_prepared_context(%{message_id: message_id} = context)
       when is_integer(message_id) do
-    with_generation_lease(message_id, &start_worker(context, &1))
+    actor = %User{id: Map.get(context, :owner_id)}
+
+    with_generation_lease(message_id, fn lease ->
+      gate_start(message_id, [actor: actor], lease, :start, fn ->
+        start_worker(context, lease)
+      end)
+    end)
   end
 
   def start_prepared_context(_context), do: {:error, :invalid_context}
@@ -61,19 +69,21 @@ defmodule IntellectualClub.Generation.Supervisor do
     :ok = Context.authorize_chat!(chat_id, actor)
 
     with_generation_lease(message_id, fn lease ->
-      with :ok <- cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id]),
-           {:ok, canonical_step} <- canonical_prepared_step(chat_id, message_id, actor) do
-        context =
-          Context.build_prepared!(
-            chat_id,
-            message_id,
-            canonical_step.id,
-            canonical_step.raw_request || %{},
-            opts
-          )
+      gate_start(message_id, opts, lease, :start, fn ->
+        with :ok <- cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id]),
+             {:ok, canonical_step} <- canonical_prepared_step(chat_id, message_id, actor) do
+          context =
+            Context.build_prepared!(
+              chat_id,
+              message_id,
+              canonical_step.id,
+              StepRequests.request_for_step!(canonical_step.id, actor: actor),
+              opts
+            )
 
-        start_worker(context, lease)
-      end
+          start_worker(context, lease)
+        end
+      end)
     end)
   end
 
@@ -118,9 +128,10 @@ defmodule IntellectualClub.Generation.Supervisor do
              context.message_id,
              step_sequence,
              request_payload,
-             steering_specs
+             steering_specs,
+             context
            ) do
-      context = %{context | step_id: step_id, request_payload: request_payload}
+      context = replacement_request_context(context, step_id)
       start_worker(context, lease)
     else
       nil ->
@@ -136,7 +147,78 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   def resume_orphaned_message(message_id, opts \\ [])
       when is_integer(message_id) and is_list(opts) do
-    with_generation_lease(message_id, &do_resume_orphaned_message(message_id, opts, &1))
+    with_generation_lease(message_id, fn lease ->
+      gate_start(message_id, opts, lease, :recovery, nil)
+    end)
+  end
+
+  # Admission commits before Context can decode a corrupt request or a Worker
+  # can repeat external work. Prepared entrypoints with a guard must reconcile
+  # canonical state rather than replay the caller's potentially stale context.
+  defp gate_start(message_id, opts, lease, mode, fresh_start) do
+    actor = Keyword.get(opts, :actor)
+
+    case RecoveryGate.admit(message_id, lease, actor, mode: mode) do
+      {:ok, :fresh} ->
+        run_admitted_start(message_id, lease, actor, fresh_start)
+
+      {:ok, :admitted} ->
+        run_admitted_start(message_id, lease, actor, fn ->
+          do_resume_orphaned_message(message_id, opts, lease)
+        end)
+
+      {:ok, {:finish, _status}} ->
+        case RecoveryGate.finish(message_id, lease, actor) do
+          {:ok, status} -> recovery_finished(message_id, status)
+          {:error, _reason} = error -> error
+        end
+
+      {:ok, {:finished, status}} ->
+        recovery_finished(message_id, status)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp run_admitted_start(message_id, lease, actor, fun) do
+    result =
+      try do
+        fun.()
+      rescue
+        exception -> {:error, exception}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    case result do
+      {:error, reason}
+      when reason not in [:already_running, :no_steps_to_retry, :invalid_status] ->
+        # Do not persist exception payloads, requests, or credentials. Admission
+        # already consumed the attempt even if this diagnostic write fails.
+        case RecoveryGate.record_failure(message_id, lease, actor,
+               operation: :recovery_start,
+               error: "Generation recovery preparation or worker start failed"
+             ) do
+          {:error, registration_error} ->
+            Logger.warning(
+              "Failed to record generation recovery failure message_id=#{message_id} " <>
+                "reason=#{inspect(registration_error, limit: 5, printable_limit: 500)}"
+            )
+
+          _other ->
+            :ok
+        end
+
+        result
+
+      _other ->
+        result
+    end
+  end
+
+  defp recovery_finished(message_id, status) do
+    {:ok, %{message_id: message_id, status: status, recovery_finished?: true}}
   end
 
   defp do_resume_orphaned_message(message_id, opts, lease) do
@@ -165,9 +247,10 @@ defmodule IntellectualClub.Generation.Supervisor do
                    context.message_id,
                    step_sequence,
                    context.request_payload || %{},
-                   []
+                   [],
+                   context
                  ) do
-            context = %{context | step_id: step_id}
+            context = replacement_request_context(context, step_id)
             start_worker(context, lease)
           end
       end
@@ -181,6 +264,21 @@ defmodule IntellectualClub.Generation.Supervisor do
       _other ->
         {:error, :retry_failed}
     end
+  end
+
+  defp replacement_request_context(context, %{step: step, request: request} = replacement) do
+    snapshot = context.adapter_module.request_snapshot(request)
+
+    %{
+      context
+      | step_id: step.id,
+        request_payload: request,
+        request_images: Map.get(replacement, :request_images),
+        system_prompt: Map.get(snapshot, :system_prompt) || "",
+        messages: Map.get(snapshot, :model_input, []),
+        history_length: Map.get(snapshot, :history_length),
+        initial_step_status: :waiting_provider
+    }
   end
 
   defp waiting_tools_status?(status), do: status == :waiting_tools
@@ -245,6 +343,9 @@ defmodule IntellectualClub.Generation.Supervisor do
             Logger.info("Recovered orphaned generation message_id=#{message_id}")
 
           {:error, :already_running} ->
+            :ok
+
+          {:error, {:recovery_deferred, _retry_at}} ->
             :ok
 
           {:error, :no_steps_to_retry} ->
@@ -424,7 +525,7 @@ defmodule IntellectualClub.Generation.Supervisor do
        }} ->
         ChatMessageStep
         |> Ash.Query.filter(chat_message_id == ^message_id)
-        |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
+        |> Ash.Query.select([:id, :chat_message_id, :sequence, :status])
         |> Ash.Query.sort(sequence: :desc, id: :desc)
         |> Ash.Query.limit(1)
         |> Ash.read_one(actor: actor)
@@ -547,20 +648,6 @@ defmodule IntellectualClub.Generation.Supervisor do
       )
 
       {:error, reason}
-  end
-
-  def steer_generation(message_id, text) when is_integer(message_id) and is_binary(text) do
-    case generation_worker_pid(message_id) do
-      pid when is_pid(pid) ->
-        try do
-          Worker.steer(pid, text)
-        catch
-          :exit, _reason -> {:error, :generation_not_active}
-        end
-
-      nil ->
-        {:error, :generation_not_active}
-    end
   end
 
   def queue_changed(message_id) when is_integer(message_id) do
@@ -829,27 +916,20 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
-  def get_generation_state(message_id) do
-    case generation_worker_pid(message_id) do
-      pid when is_pid(pid) ->
-        try do
-          {:ok, Worker.get_current_state(pid)}
-        catch
-          :exit, _reason -> :not_found
-        end
-
-      nil ->
-        :not_found
-    end
-  end
+  @doc "Reads runtime state on demand from the owning Worker."
+  def get_generation_state(message_id), do: poll_generation(message_id)
 
   def poll_generation(message_id, cursor \\ %{}, opts \\ []) when is_integer(message_id) do
     case generation_worker_pid(message_id) do
       pid when is_pid(pid) ->
         try do
-          {:ok, Worker.poll(pid, cursor, opts)}
+          case Worker.poll(pid, cursor, opts) do
+            %{phase: :initializing} = reply -> {:busy, reply}
+            reply -> {:ok, reply}
+          end
         catch
-          :exit, _reason -> :not_found
+          :exit, {:noproc, _} when node(pid) == node() -> :not_found
+          :exit, _ -> {:busy, %{status: :generating, phase: :initializing, step: nil}}
         end
 
       nil ->
@@ -884,7 +964,8 @@ defmodule IntellectualClub.Generation.Supervisor do
          message_id,
          step_sequence,
          request_payload,
-         steering_specs
+         steering_specs,
+         request_context
        )
        when is_integer(message_id) and is_integer(step_sequence) and is_map(request_payload) and
               is_list(steering_specs) do
@@ -896,14 +977,17 @@ defmodule IntellectualClub.Generation.Supervisor do
                step_sequence,
                request_payload,
                steering_specs,
-               operation
+               operation,
+               request_context: request_context,
+               return_request?: true,
+               lease: lease
              )
            end,
            with_lock_scope: fn callback ->
              with_retry_cleanup(message_id, step_sequence, callback)
            end
          ) do
-      {:ok, step_id} when is_integer(step_id) -> {:ok, step_id}
+      {:ok, %{step: _step} = replacement} -> {:ok, replacement}
       {:error, _reason} = error -> error
       _other -> {:error, :retry_failed}
     end
@@ -916,7 +1000,8 @@ defmodule IntellectualClub.Generation.Supervisor do
          message_id,
          step_sequence,
          request_payload,
-         steering_specs
+         steering_specs,
+         request_context
        )
        when is_integer(chat_id) and is_list(allowed_statuses) and is_integer(message_id) and
               is_integer(step_sequence) and is_map(request_payload) and
@@ -925,21 +1010,28 @@ defmodule IntellectualClub.Generation.Supervisor do
            lease,
            chat_id,
            allowed_statuses,
-           fn operation ->
-             Persistence.replace_steps_for_retry!(
-               message_id,
-               step_sequence,
-               request_payload,
-               steering_specs,
-               operation
-             )
+           fn operation, fenced ->
+             step_id =
+               Persistence.replace_steps_for_retry!(
+                 message_id,
+                 step_sequence,
+                 request_payload,
+                 steering_specs,
+                 operation,
+                 request_context: request_context,
+                 return_request?: true,
+                 lease: fenced
+               )
+
+             :ok = RecoveryGate.reset!(message_id, %User{id: request_context.owner_id})
+             step_id
            end,
            with_lock_scope: fn callback ->
              with_retry_cleanup(message_id, step_sequence, callback)
            end
          ) do
-      {:ok, {%Lease{} = fenced, step_id}} when is_integer(step_id) ->
-        {:ok, {fenced, step_id}}
+      {:ok, {%Lease{} = fenced, %{step: _step} = replacement}} ->
+        {:ok, {fenced, replacement}}
 
       {:error, _reason} = error ->
         error

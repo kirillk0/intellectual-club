@@ -50,6 +50,14 @@ defmodule IntellectualClub.Llm.Providers.Demo do
   def apply_standard_parameters(parameters, _settings) when is_map(parameters), do: parameters
 
   @impl true
+  def map_request_images(request, acc, _mapper), do: {request, acc}
+
+  @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    request
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       ChatAdapterHelpers.build_initial_messages(
@@ -103,10 +111,7 @@ defmodule IntellectualClub.Llm.Providers.Demo do
 
   @impl true
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     Trace.stream_generate(
       %{

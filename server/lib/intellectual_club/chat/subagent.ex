@@ -14,11 +14,8 @@ defmodule IntellectualClub.Chat.Subagent do
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Lease
-  alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Generation.ToolCall
-  alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -29,8 +26,6 @@ defmodule IntellectualClub.Chat.Subagent do
   @max_parent_hops 64
   @max_wait_retry_ms 5_000
   @progress_page_max_bytes 48_000
-  @parent_tool_result_unique_constraint "chat_message_items_unique_step_sequence_index"
-  @parent_tool_result_race_retries 1
 
   @doc false
   @spec with_parent_generation_fence(ExecutionContext.t(), (-> result)) ::
@@ -103,6 +98,7 @@ defmodule IntellectualClub.Chat.Subagent do
   Commits invocation authority and the durable reference before provider work starts.
 
   Returned reference or provider-start failures cancel the prepared child generation.
+  A durable recovery deferral preserves the committed reference and child.
   Process exits and throws are intentionally allowed to escape so durable preparation can
   be recovered after a crash.
   """
@@ -126,7 +122,8 @@ defmodule IntellectualClub.Chat.Subagent do
            with_invocation_authority(context, opts, fn ->
              commit_reference(reference, opts)
            end),
-         {:ok, %{} = started_reference} <- provider_start_fun.() do
+         {:ok, %{} = started_reference} <-
+           accept_deferred_start(provider_start_fun.(), reference) do
       {:ok, started_reference}
     else
       {:error, _reason} = error ->
@@ -141,6 +138,11 @@ defmodule IntellectualClub.Chat.Subagent do
 
   def start_invocation(_context, _reference, _opts, _cancel_fun, _provider_start_fun),
     do: {:error, :invalid_subagent_invocation}
+
+  defp accept_deferred_start({:error, {:recovery_deferred, _retry_at}}, reference),
+    do: {:ok, reference}
+
+  defp accept_deferred_start(result, _reference), do: result
 
   @spec ensure_creation_allowed(ToolInstance.t(), Chat.t(), map()) ::
           :ok | {:error, String.t()}
@@ -421,6 +423,9 @@ defmodule IntellectualClub.Chat.Subagent do
           :ok
 
         {:error, reason} when reason in [:already_running, :invalid_status] ->
+          :ok
+
+        {:error, {:recovery_deferred, _retry_at}} ->
           :ok
 
         {:error, :no_steps_to_retry} ->
@@ -1320,93 +1325,6 @@ defmodule IntellectualClub.Chat.Subagent do
         {:error, {:invalid_reference_callback_result, other}}
     end
   end
-
-  @spec persist_parent_tool_result(ExecutionContext.t(), ExecutionResult.t()) ::
-          :ok | {:error, term()}
-  def persist_parent_tool_result(
-        %ExecutionContext{} = parent_context,
-        %ExecutionResult{} = result
-      ) do
-    payload = ToolResult.execution_payload(result)
-
-    do_persist_parent_tool_result(parent_context, payload, 0)
-  end
-
-  defp do_persist_parent_tool_result(parent_context, payload, retry_count) do
-    try do
-      with_parent_generation_fence(parent_context, fn ->
-        parent_message_id = parent_context.message_id || parent_context.assistant_message_id
-        followup_state = Persistence.load_step_for_followup!(parent_context.step_id)
-
-        case Enum.find(
-               followup_state.tool_calls,
-               &match?(
-                 %ToolCall{item_id: item_id} when item_id == parent_context.tool_call_item_id,
-                 &1
-               )
-             ) do
-          %ToolCall{} = source_call ->
-            _ =
-              Persistence.persist_tool_result!(
-                parent_message_id,
-                parent_context.step_id,
-                source_call,
-                payload
-              )
-
-            :ok
-
-          _other ->
-            {:error, :tool_call_not_found}
-        end
-      end)
-    rescue
-      exception ->
-        if retry_count < @parent_tool_result_race_retries and
-             parent_tool_result_unique_constraint_error?(exception) do
-          do_persist_parent_tool_result(parent_context, payload, retry_count + 1)
-        else
-          {:error, Exception.message(exception)}
-        end
-    catch
-      :exit, reason -> {:error, Exception.format_exit(reason)}
-    end
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{errors: errors}) when is_list(errors) do
-    Enum.any?(errors, &parent_tool_result_unique_constraint_error?/1)
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{private_vars: vars}) when is_list(vars) do
-    Keyword.get(vars, :constraint) == @parent_tool_result_unique_constraint
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{private_vars: vars}) when is_map(vars) do
-    Map.get(vars, :constraint) == @parent_tool_result_unique_constraint
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{postgres: %{constraint: constraint}}) do
-    constraint == @parent_tool_result_unique_constraint
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{constraint: constraint}) do
-    constraint == @parent_tool_result_unique_constraint
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{error: error}) do
-    parent_tool_result_unique_constraint_error?(error)
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%{reason: reason}) do
-    parent_tool_result_unique_constraint_error?(reason)
-  end
-
-  defp parent_tool_result_unique_constraint_error?(%RuntimeError{message: message})
-       when is_binary(message) do
-    String.contains?(message, @parent_tool_result_unique_constraint)
-  end
-
-  defp parent_tool_result_unique_constraint_error?(_error), do: false
 
   @spec nested_subchats_limit(ToolInstance.t()) :: non_neg_integer()
   def nested_subchats_limit(%ToolInstance{} = tool_instance) do

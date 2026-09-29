@@ -56,6 +56,38 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
           required(:web_search_enabled) => boolean()
         }
 
+  @type request_image_reference :: %{
+          required(:marker) => map(),
+          required(:encoding) => String.t(),
+          required(:mime_type) => term(),
+          required(:format_key) => term(),
+          required(:format) => (binary(), String.t() -> binary())
+        }
+
+  @type request_image_change ::
+          :keep
+          | {:marker, map(), String.t()}
+          | {:wire, binary(), String.t()}
+          | {:omit, String.t()}
+
+  @type request_image_mapper ::
+          (request_image_reference(), term() -> {request_image_change(), term()})
+
+  @doc """
+  Maps compact image references only at this provider's supported image paths.
+
+  The mapper receives the inner file marker, expected encoding ("data_url" or
+  "base64"), native MIME field, and a stable format key plus formatter accepting
+  already-base64-encoded bytes and MIME. Format keys must identify identical wire
+  formatting across providers that share a hydration cache.
+
+  Implementations own traversal, native field updates and omission text blocks.
+  Legacy inline images and opaque user/tool JSON must remain untouched. A marker
+  change supplies the complete new inner marker and corrected native MIME; a
+  wire change supplies the already formatted image value and native MIME.
+  """
+  @callback map_request_images(map(), term(), request_image_mapper()) :: {map(), term()}
+
   @callback type() :: String.t()
   @callback label() :: String.t()
   @callback metadata() :: metadata()
@@ -67,11 +99,20 @@ defmodule IntellectualClub.Llm.Providers.Common.ProviderType do
   @callback build_initial_request(map()) :: initial_request_result()
   @callback build_followup_request(map()) :: followup_request_result()
   @callback inject_steering(map(), list(), map()) :: initial_request_result()
+  @doc """
+  Finalizes a string-keyed logical request before persistence, without I/O or credentials.
+
+  Common.PreparedRequest owns key normalization; implementations receive normalized keys.
+
+  Implementations must be deterministic and idempotent for the same context.
+  Stream senders must not repeat preparation or replace the persisted request.
+  """
+  @callback prepare_request(map(), map()) :: map()
   @callback request_snapshot(map()) :: request_snapshot()
   @callback stream_generate(map(), (term() -> any())) :: :ok
 
   @callback start_session(map()) :: {:ok, term()} | :ignore | {:error, term()}
   @callback stop_session(term()) :: :ok
 
-  @optional_callbacks start_session: 1, stop_session: 1
+  @optional_callbacks prepare_request: 2, start_session: 1, stop_session: 1
 end

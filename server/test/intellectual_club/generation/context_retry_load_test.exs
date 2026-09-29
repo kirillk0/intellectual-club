@@ -10,11 +10,14 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.LinkedForkCleanup
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.StepRequests
 
-  test "prepare_retry/2 loads only the last step raw request for retry-last-step" do
+  test "prepare_retry/2 selects the last step and reconstructs its bounded request window" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor, "Retry last step context")
     {message, _steps} = create_retryable_assistant_message_with_steps!(chat, actor, :error, 3)
@@ -33,10 +36,10 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     assert context.request_payload["temperature"] == 0
     assert context.request_payload["reasoning"] == %{"effort" => "low"}
 
-    assert_single_retry_step_query(queries)
+    assert_bounded_retry_request_queries(queries)
   end
 
-  test "prepare_retry/2 loads only the selected step raw request for retry-from-step" do
+  test "prepare_retry/2 selects the requested step and reconstructs its bounded request window" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor, "Retry from step context")
 
@@ -60,7 +63,7 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     assert get_in(context.request_payload, ["messages", Access.at(0), "content"]) ==
              "hello step 2"
 
-    assert_single_retry_step_query(queries)
+    assert_bounded_retry_request_queries(queries)
   end
 
   test "replace_steps_for_retry!/4 filters the retry range in SQL without loading raw payloads" do
@@ -70,16 +73,29 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     {message, [_step_1, _step_2, step_3]} =
       create_retryable_assistant_message_with_steps!(chat, actor, :error, 3)
 
-    step_3 =
-      ChatMessageStep
-      |> Ash.Query.filter(id == ^step_3.id)
-      |> Ash.Query.select([:id, :raw_request])
-      |> Ash.read_one!(actor: actor)
+    request = StepRequests.request_for_step!(step_3.id, actor: actor)
 
-    {new_step_id, queries} =
+    assert {:ok, reservation} = Lease.reserve(message.id)
+
+    {claim, queries} =
       capture_repo_queries(fn ->
-        Persistence.replace_steps_for_retry!(message.id, 3, step_3.raw_request)
+        Lease.claim_and_run_with_chat(
+          reservation,
+          chat.id,
+          [:error],
+          fn operation, fenced ->
+            Persistence.replace_steps_for_retry!(message.id, 3, request, [], operation,
+              lease: fenced
+            )
+          end,
+          with_lock_scope: fn callback ->
+            LinkedForkCleanup.with_scope({:steps, message.id, 3}, actor, callback)
+          end
+        )
       end)
+
+    assert {:ok, {fenced, new_step_id}} = claim
+    assert :ok = Lease.release(fenced)
 
     assert is_integer(new_step_id)
 
@@ -97,12 +113,53 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     replacement =
       ChatMessageStep
       |> Ash.Query.filter(id == ^new_step_id)
-      |> Ash.Query.select([:id, :sequence, :status, :raw_request])
+      |> Ash.Query.select([:id, :sequence, :status])
       |> Ash.read_one!(actor: actor)
 
     assert replacement.sequence == 3
     assert replacement.status == :waiting_provider
-    assert replacement.raw_request == step_3.raw_request
+    assert StepRequests.request_for_step!(replacement.id, actor: actor) == request
+  end
+
+  test "prepare_retry reconstructs a patch without hydrating or rewriting either step" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor, "Compact retry")
+    {message, [first]} = create_retryable_assistant_message_with_steps!(chat, actor, :error, 1)
+    base = StepRequests.request_for_step!(first.id, actor: actor)
+    request = Map.put(base, "temperature", 0.75)
+
+    encoded =
+      StepRequests.create_attributes(request,
+        sequence: 2,
+        previous_step: first,
+        previous_request: base
+      )
+
+    assert encoded.request_mode == :patch
+
+    second =
+      ChatMessageStep
+      |> Ash.Changeset.for_create(
+        :create,
+        Map.merge(encoded, %{chat_message_id: message.id, sequence: 2, status: :error}),
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    assert {:ok, context} = Context.prepare_retry(message.id, actor: actor)
+    assert context.step_id == second.id
+    assert context.request_payload == request
+
+    saved =
+      Ash.get!(ChatMessageStep, second.id,
+        actor: actor,
+        load: [:raw_request, :request_mode, :request_patch]
+      )
+
+    assert saved.raw_request == %{}
+    assert saved.request_mode == :patch
+    assert saved.request_patch == encoded.request_patch
+    assert StepRequests.request_for_step!(first.id, actor: actor) == base
   end
 
   defp create_chat!(actor, _title) do
@@ -146,6 +203,7 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
             status: retryable_step_status(status),
             raw_request: %{
               "model" => "demo-model",
+              "metadata" => %{"padding" => String.duplicate("x", 2_000)},
               "temperature" => 0,
               "reasoning" => %{"effort" => "low"},
               "messages" => [
@@ -205,17 +263,21 @@ defmodule IntellectualClub.Generation.ContextRetryLoadTest do
     end
   end
 
-  defp assert_single_retry_step_query(queries) when is_list(queries) do
+  defp assert_bounded_retry_request_queries(queries) when is_list(queries) do
     step_queries =
       Enum.filter(queries, fn query ->
-        String.contains?(query, ~s(FROM "chat_message_steps"))
+        String.starts_with?(query, "SELECT") and
+          String.contains?(query, ~s(FROM "chat_message_steps"))
       end)
 
-    assert length(step_queries) == 1
+    [selected_step | _] = step_queries
+    refute selected_step =~ ~s("raw_request")
+    refute selected_step =~ ~s("raw_response")
 
-    [step_query] = step_queries
-
-    assert step_query =~ ~s("raw_request")
-    refute step_query =~ ~s("raw_response")
+    assert [request_query] = Enum.filter(step_queries, &String.contains?(&1, ~s("raw_request")))
+    assert request_query =~ ~s("request_patch")
+    assert request_query =~ ~s("sequence" >=)
+    assert request_query =~ ~s("sequence" <=)
+    refute Enum.any?(step_queries, &String.contains?(&1, ~s("raw_response")))
   end
 end

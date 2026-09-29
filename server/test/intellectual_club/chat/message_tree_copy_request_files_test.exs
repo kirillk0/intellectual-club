@@ -17,16 +17,18 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Files.GarbageCollector
   alias IntellectualClub.Generation.RequestImages
+  alias IntellectualClub.Generation.Persistence
 
   require Ash.Query
 
-  test "continue action materializes before create and clones compact request bindings" do
+  test "continue action never mutates the source and clones frozen request bindings" do
     %{user: actor} = user_fixture()
 
     %{chat: source, step: source_step, file: canonical_file} =
       create_source_with_request!(actor, image_payload())
 
-    assert request_bindings(source_step.id) == []
+    [initial_binding] = request_bindings(source_step.id)
+    source_updated_at = source_step.updated_at
     refute Repo.in_transaction?()
 
     changeset =
@@ -53,6 +55,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
 
     assert compact_source_step.raw_request == source_step.raw_request
     assert source_binding.reference_key == canonical_file.external_id
+    assert source_binding.id == initial_binding.id
+    assert compact_source_step.updated_at == source_updated_at
 
     target = Ash.create!(changeset, actor: actor)
 
@@ -62,10 +66,15 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
         strict?: true
       )
 
-    [target_step] = target_message.steps
+    target_step = Enum.find(target_message.steps, &(&1.sequence == source_step.sequence))
     [target_binding] = request_bindings(target_step.id)
 
-    assert target_step.raw_request == compact_source_step.raw_request
+    refute Ash.Resource.selected?(target_step, :raw_request)
+
+    assert IntellectualClub.Generation.StepRequests.request_for_step!(target_step.id,
+             actor: actor
+           ) == compact_source_step.raw_request
+
     assert target_binding.reference_key == source_binding.reference_key
     assert target_binding.source_file_external_id == source_binding.source_file_external_id
     assert target_binding.variant_key == source_binding.variant_key
@@ -79,7 +88,81 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     refute FilesystemStorage.exists?(canonical_file.sha256)
   end
 
-  test "preflight keeps an oversized rendition owned when a later copy rolls back" do
+  test "copy refuses a stale pin snapshot instead of publishing markers without bindings" do
+    %{user: actor} = user_fixture()
+    %{chat: source, step: source_step} = create_source_with_request!(actor, image_payload())
+
+    branch =
+      Threads.active_branch(source.id, actor, load: MessageTreeCopy.load_spec(), strict?: true)
+
+    [binding] = request_bindings(source_step.id)
+    Ash.destroy!(binding, authorize?: false)
+    target = create_empty_chat!(actor)
+
+    assert_raise RuntimeError, ~r/unresolved request file references/, fn ->
+      Repo.transaction(fn -> MessageTreeCopy.copy_messages!(branch, target, actor) end)
+    end
+
+    assert messages_for_chat(target.id, actor) == []
+    assert request_bindings(source_step.id) == []
+
+    assert Ash.get!(ChatMessageStep, source_step.id, actor: actor).request_hash ==
+             source_step.request_hash
+  end
+
+  test "complete, truncated and gapped patch chains copy as independent requests" do
+    %{user: actor} = user_fixture()
+    source = create_empty_chat!(actor)
+    message = IntellectualClub.StepRequestsFixtures.request_message!(actor, chat: source)
+    requests = Map.new(1..3, &{&1, IntellectualClub.StepRequestsFixtures.compact_request(&1)})
+
+    {steps, _} =
+      Enum.map_reduce(1..3, nil, fn sequence, previous ->
+        step =
+          IntellectualClub.StepRequestsFixtures.encoded_request_step!(
+            message,
+            sequence,
+            requests[sequence],
+            actor,
+            previous_step: previous,
+            previous_request: if(previous, do: requests[sequence - 1])
+          )
+
+        {step, step}
+      end)
+
+    assert Enum.map(steps, & &1.request_mode) == [:full, :patch, :patch]
+    loaded = Ash.get!(ChatMessage, message.id, actor: actor, load: MessageTreeCopy.load_spec())
+    refute Enum.any?(loaded.steps, &Ash.Resource.selected?(&1, :raw_request))
+
+    for {sequences, modes} <- [
+          {[1, 2, 3], [:full, :patch, :patch]},
+          {[2, 3], [:full, :patch]},
+          {[1, 3], [:full, :full]}
+        ] do
+      target = create_empty_chat!(actor)
+      slice = %{loaded | steps: Enum.filter(loaded.steps, &(&1.sequence in sequences))}
+
+      {:ok, _} =
+        Repo.transaction(fn -> MessageTreeCopy.copy_messages!([slice], target, actor) end)
+
+      [copied_message] = messages_for_chat(target.id, actor)
+      copied_steps = Enum.sort_by(copied_message.steps, & &1.sequence)
+      assert Enum.map(copied_steps, & &1.request_mode) == modes
+
+      for copied <- copied_steps do
+        assert IntellectualClub.Generation.StepRequests.request_for_step!(copied.id, actor: actor) ==
+                 requests[copied.sequence]
+      end
+    end
+
+    assert Enum.map(
+             Ash.load!(message, [:steps], actor: actor).steps |> Enum.sort_by(& &1.sequence),
+             & &1.request_mode
+           ) == [:full, :patch, :patch]
+  end
+
+  test "read-only preflight keeps a frozen rendition unchanged when a later copy rolls back" do
     %{user: actor} = user_fixture()
 
     %{chat: source, step: source_step} =
@@ -92,7 +175,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
       )
 
     assert {:ok, ^source_branch} =
-             MessageTreeCopy.materialize_loaded_messages(source_branch, actor)
+             MessageTreeCopy.prepare_loaded_messages(source_branch, actor)
 
     source_bindings = request_bindings(source_step.id)
 
@@ -118,7 +201,10 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
                MessageTreeCopy.copy_messages!(source_branch, target, actor)
 
                [copied_message] = messages_for_chat(target.id, actor)
-               [copied_step] = copied_message.steps
+
+               copied_step =
+                 Enum.find(copied_message.steps, &(&1.sequence == source_step.sequence))
+
                [copied_binding] = request_bindings(copied_step.id)
                send(parent, {:rolled_back_request_file_id, copied_binding.file_id})
 
@@ -143,7 +229,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     refute FilesystemStorage.exists?(rendition_file.sha256)
   end
 
-  test "branch move pins request files before their canonical source stays behind" do
+  test "branch move preserves pre-existing pins when their canonical source stays behind" do
     %{user: actor} = user_fixture()
     source = create_empty_chat!(actor)
     {:ok, canonical_file} = Files.create_from_binary("source.png", "image/png", image_payload())
@@ -163,7 +249,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
       Threads.add_message(source, :assistant, "Kept", actor: actor, parent_id: root.id)
 
     {:ok, _meta} = Threads.activate_branch(source.id, kept.id, actor)
-    assert request_bindings(moved_step.id) == []
+    [original_binding] = request_bindings(moved_step.id)
 
     assert {:ok, %{chat: target}} =
              BranchMove.move_branch_to_new_chat(source.id, moved.id, actor)
@@ -173,10 +259,15 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
 
     assert Ash.get!(ChatMessage, moved.id, actor: actor).chat_id == target.id
     assert moved_binding.source_file_external_id == canonical_file.external_id
+    assert moved_binding.id == original_binding.id
 
     Ash.destroy!(source, actor: actor)
 
-    assert {:ok, hydrated_request} = RequestImages.hydrate(moved_step.raw_request, moved_step.id)
+    assert {:ok, hydrated_request} =
+             RequestImages.hydrate(moved_step.raw_request, moved_step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
+
     assert inspect(hydrated_request) =~ "data:image/png;base64,"
     assert FilesystemStorage.exists?(moved_binding.file.sha256)
 
@@ -217,8 +308,14 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
       ]
     }
 
-    step
-    |> Ash.Changeset.for_update(:update, %{raw_request: raw_request}, actor: actor)
+    %{step: request_step} =
+      Persistence.create_request_step!(message, step.sequence + 1, raw_request,
+        force_full: true,
+        request_context: %{adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter}
+      )
+
+    request_step
+    |> Ash.Changeset.for_update(:update, %{status: :done}, actor: actor)
     |> Ash.update!(actor: actor)
     |> Ash.load!([:raw_request], actor: actor)
   end

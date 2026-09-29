@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
   use GenServer
 
+  alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.Endpoint
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
@@ -54,10 +55,46 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   end
 
   @spec stream_generate(pid(), map(), (event() -> any())) ::
-          :ok | {:fallback_to_http, map()}
+          :ok | {:fallback_to_http, map(), map()}
   def stream_generate(pid, opts, emit)
       when is_pid(pid) and is_map(opts) and is_function(emit, 1) do
-    GenServer.call(pid, {:stream_generate, opts, emit}, :infinity)
+    caller = self()
+    cache_ref = make_ref()
+    on_cache = Map.get(opts, :image_cache_update)
+
+    capture_cache = fn cache ->
+      send(caller, {__MODULE__, cache_ref, cache})
+      if on_cache, do: on_cache.(cache)
+    end
+
+    session_opts = Map.put(opts, :image_cache_update, capture_cache)
+
+    try do
+      case GenServer.call(pid, {:stream_generate, session_opts, emit}, :infinity) do
+        {:fallback_to_http, fallback_meta} ->
+          # The Session sends the cache update before its call reply. Preserve the
+          # original cache too: a WSS delta may omit images needed by HTTP fallback.
+          image_cache = Map.get(opts, :image_cache, %{})
+
+          image_cache =
+            receive do
+              {__MODULE__, ^cache_ref, updated} -> Map.merge(image_cache, updated)
+            after
+              0 -> image_cache
+            end
+
+          {:fallback_to_http, fallback_meta, image_cache}
+
+        :ok ->
+          :ok
+      end
+    after
+      receive do
+        {__MODULE__, ^cache_ref, _cache} -> :ok
+      after
+        0 -> :ok
+      end
+    end
   end
 
   @impl true
@@ -88,7 +125,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     provider =
       Map.get(opts, :provider) || Map.get(state.context, :provider_type) || :responses_wss
 
-    logical_request = stringify_keys(Map.get(opts, :request_payload, %{}) || %{})
+    logical_request = Map.get(opts, :request_payload, %{}) || %{}
     timeout_ms = Map.get(opts, :timeout_ms, 300_000)
 
     with {:ok, url} <-
@@ -98,7 +135,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
            RequestHydration.hydrate(
              logical_transport_request,
              Map.get(opts, :request_step_id),
-             provider
+             Map.get(opts, :image_mapper, &Responses.map_request_images/3),
+             cache: Map.get(opts, :image_cache, %{}),
+             on_cache: Map.get(opts, :image_cache_update),
+             provider: provider
            ),
          {:ok, connection, state} <- ensure_connection(state, opts, url),
          {:ok, connection} <- send_payload(connection, wire_payload) do

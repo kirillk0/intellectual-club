@@ -6,6 +6,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   https://www.openresponses.org
   """
 
+  alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.HttpPool
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
@@ -26,6 +27,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             required(:api_key) => String.t(),
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
+            optional(:image_cache) => map(),
+            optional(:image_cache_update) => (map() -> any()),
+            optional(:image_mapper) => function(),
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer(),
             optional(:provider) => String.t() | atom()
@@ -51,7 +55,10 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
     case RequestHydration.hydrate(
            logical_request,
            Map.get(opts, :request_step_id),
-           :responses
+           Map.get(opts, :image_mapper, &Responses.map_request_images/3),
+           cache: Map.get(opts, :image_cache, %{}),
+           on_cache: Map.get(opts, :image_cache_update),
+           provider: :responses
          ) do
       {:ok, wire_request} ->
         headers =

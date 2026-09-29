@@ -15,6 +15,7 @@ defmodule IntellectualClub.Generation.ContextTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.Context
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockFile
   alias IntellectualClub.Llm.LlmConfiguration
@@ -252,7 +253,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     message =
       Ash.get!(ChatMessage, context.message_id,
         actor: actor,
-        load: [:chat, steps: [:raw_request]]
+        load: [:chat, :steps]
       )
 
     steps = Enum.sort_by(message.steps || [], & &1.sequence)
@@ -265,7 +266,7 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert step.chat_message_id == context.message_id
     assert step.sequence == 1
     assert step.status == :waiting_provider
-    assert step.raw_request == context.request_payload
+    assert StepRequests.request_for_step!(step.id, actor: actor) == context.request_payload
     assert step.finished_at == nil
   end
 
@@ -411,8 +412,8 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert context.cached_input_price_per_million_tokens == 0.25
     assert context.output_price_per_million_tokens == 5.0
 
-    step = Ash.get!(ChatMessageStep, context.step_id, actor: actor, load: [:raw_request])
-    assert step.raw_request == context.request_payload
+    step = Ash.get!(ChatMessageStep, context.step_id, actor: actor)
+    assert StepRequests.request_for_step!(step.id, actor: actor) == context.request_payload
   end
 
   test "includes fixed driver functions in tools payload without discovery" do

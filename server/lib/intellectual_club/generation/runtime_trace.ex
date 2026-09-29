@@ -30,6 +30,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       :usage,
       :first_token_at,
       :last_token_at,
+      structure_revision: 0,
       items_by_key: %{}
     ]
   end
@@ -56,7 +57,8 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
       :file_id,
       :file,
       :content_text,
-      :content_json
+      :content_json,
+      text_generation: 0
     ]
   end
 
@@ -83,7 +85,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           | {:set_text, String.t(), item_type(), integer(), String.t()}
           | {:set_opaque, String.t(), item_type(), integer(), map() | nil}
           | {:set_media, String.t(), item_type(), integer(), map()}
-          | {:set_step_raw_request, map()}
           | {:set_step_raw_response, map() | nil}
           | {:set_step_usage, map() | nil}
           | {:set_step_response_final, boolean()}
@@ -177,11 +178,6 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
 
       put_content(item, content)
     end)
-  end
-
-  def apply_event(%Step{} = step, {:set_step_raw_request, raw_request})
-      when is_map(raw_request) do
-    %{step | raw_request: raw_request}
   end
 
   def apply_event(%Step{} = step, {:set_step_raw_response, raw_response}) do
@@ -370,7 +366,16 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           |> maybe_set_item_sequence(item_sequence)
           |> Map.put(:type, item_type)
 
-        %{step | items_by_key: Map.put(step.items_by_key, item_key, item)}
+        %{
+          step
+          | items_by_key: Map.put(step.items_by_key, item_key, item),
+            structure_revision:
+              step.structure_revision +
+                if(existing.type != item.type or existing.sequence != item.sequence,
+                  do: 1,
+                  else: 0
+                )
+        }
 
       true ->
         sequence =
@@ -387,7 +392,11 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
           contents_by_sequence: %{}
         }
 
-        %{step | items_by_key: Map.put(step.items_by_key, item_key, item)}
+        %{
+          step
+          | items_by_key: Map.put(step.items_by_key, item_key, item),
+            structure_revision: step.structure_revision + 1
+        }
     end
   end
 
@@ -402,7 +411,16 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   defp update_item(%Step{} = step, item_key, fun) when is_function(fun, 1) do
     case Map.get(step.items_by_key, item_key) do
       %Item{} = item ->
-        %{step | items_by_key: Map.put(step.items_by_key, item_key, fun.(item))}
+        updated = fun.(item)
+
+        changed_structure? =
+          map_size(updated.contents_by_sequence) != map_size(item.contents_by_sequence)
+
+        %{
+          step
+          | items_by_key: Map.put(step.items_by_key, item_key, updated),
+            structure_revision: step.structure_revision + if(changed_structure?, do: 1, else: 0)
+        }
 
       _ ->
         step
@@ -421,7 +439,11 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
        when is_integer(content_sequence) and content_sequence > 0 and is_atom(kind) do
     case Map.get(item.contents_by_sequence, content_sequence) do
       %Content{} = content ->
-        %{content | kind: kind}
+        %{
+          content
+          | kind: kind,
+            text_generation: content.text_generation + if(content.kind != kind, do: 1, else: 0)
+        }
 
       _ ->
         %Content{
@@ -468,7 +490,7 @@ defmodule IntellectualClub.Generation.RuntimeTrace do
   end
 
   defp set_text(%Content{} = content, text) do
-    %{content | content_text: to_string(text || "")}
+    %{content | content_text: to_string(text || ""), text_generation: content.text_generation + 1}
   end
 
   defp set_opaque(%Content{} = content, json) do

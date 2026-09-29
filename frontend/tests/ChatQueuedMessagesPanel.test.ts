@@ -32,6 +32,16 @@ const messages: ChatQueuedMessage[] = [
   },
 ];
 
+const failedSteer: ChatQueuedMessage = {
+  id: 3,
+  chat_id: 5,
+  kind: 'steer',
+  status: 'blocked',
+  target_generation_message_id: 20,
+  blocked_reason: 'steering_failed',
+  contents: [{ id: 31, sequence: 1, kind: 'text', content_text: 'Rejected instruction' }],
+};
+
 describe('ChatQueuedMessagesPanel', () => {
   afterEach(() => {
     setPreferredLocale(null);
@@ -92,4 +102,74 @@ describe('ChatQueuedMessagesPanel', () => {
     expect(wrapper.text()).toContain('Убрать из очереди');
     expect(wrapper.text()).toContain('Отправить следующее');
   });
+
+  it.each([20, null])('offers Retry for quarantined steering with active generation %s', async (activeGenerationId) => {
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [...messages, failedSteer],
+        activeGenerationId,
+        actionId: null,
+        headFollowUpId: 2,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+
+    expect(wrapper.text()).toContain('Steering could not be applied. Edit or retry it.');
+    const retry = wrapper.get('button[aria-label="Retry"]');
+    expect(retry.attributes('disabled')).toBeUndefined();
+    await retry.trigger('click');
+    expect(wrapper.emitted('send-next')).toEqual([[failedSteer]]);
+    const row = wrapper.findAll('li').at(-1)!;
+    await row.get('button[aria-label="Edit queued message"]').trigger('click');
+    await row.get('button[aria-label="Remove from queue"]').trigger('click');
+    expect(wrapper.emitted('edit')).toEqual([[failedSteer]]);
+    expect(wrapper.emitted('remove')).toEqual([[failedSteer]]);
+  });
+
+  it('does not offer Retry for pending steering or other blocked reasons', () => {
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [...messages, { ...failedSteer, blocked_reason: 'generation_error' }],
+        activeGenerationId: null,
+        actionId: null,
+        headFollowUpId: 2,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+
+    expect(wrapper.find('button[aria-label="Retry"]').exists()).toBe(false);
+    expect(wrapper.findAll('button[aria-label="Send next queued message"]')).toHaveLength(1);
+  });
+
+  it('disables retry while a queue action is in progress', () => {
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [failedSteer],
+        activeGenerationId: 20,
+        actionId: failedSteer.id,
+        headFollowUpId: null,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+
+    expect(wrapper.get('button[aria-label="Retry"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('Retrying…');
+  });
+
+  it('localizes failed steering and Retry in Russian', () => {
+    setPreferredLocale('ru');
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [failedSteer],
+        activeGenerationId: 20,
+        actionId: null,
+        headFollowUpId: null,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+
+    expect(wrapper.text()).toContain('Не удалось применить инструкцию. Отредактируйте её или повторите попытку.');
+    expect(wrapper.get('button[aria-label="Повторить"]').text()).toBe('Повторить');
+  });
+
 });

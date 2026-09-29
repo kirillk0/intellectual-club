@@ -88,6 +88,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
          {:ok, chat_id} <- ChatParams.resource_id(id),
          {:ok, %Chat{} = chat} <- ChatAccess.fetch_readable_chat_for_idle(chat_id, actor) do
       child_relations = Relations.child_relation_chats(chat.id, actor)
+      # Idle polling shares parent-phase snapshots with full state and message polls.
       subchat_cost_summary = SubchatCosts.summary(chat.id, actor)
       lifecycle_states = Subagent.lifecycle_states(child_relations, actor)
       queued_messages = active_queue(chat.id, actor)

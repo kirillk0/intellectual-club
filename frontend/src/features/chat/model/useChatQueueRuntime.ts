@@ -43,6 +43,11 @@ export const isVisibleQueuedMessage = (message: ChatQueuedMessage) =>
 export const isEditableQueuedMessage = (message: ChatQueuedMessage) =>
   editableStatuses.has(message.status);
 
+export const isRetryableQueuedSteer = (message: ChatQueuedMessage) =>
+  message.kind === 'steer' &&
+  message.status === 'blocked' &&
+  message.blocked_reason === 'steering_failed';
+
 type NormalizedQueuedContent = {
   id: number;
   position: number;
@@ -121,7 +126,7 @@ export function useChatQueueRuntime(params: Params) {
   const headFollowUpId = computed(() => followUpMessages.value[0]?.id ?? null);
 
   const upsertQueuedMessage = (message: ChatQueuedMessage) => {
-    if (!isVisibleQueuedMessage(message)) {
+    if (!isVisibleQueuedMessage(message) || message.chat_id !== params.chatId.value) {
       params.queuedMessages.value = params.queuedMessages.value.filter((item) => item.id !== message.id);
       return;
     }
@@ -200,6 +205,8 @@ export function useChatQueueRuntime(params: Params) {
         invalid_file_ids: 'Some queued attachments are no longer available.',
         invalid_remove_content_ids: 'Some queued attachments cannot be edited.',
         follow_up_required: 'Only follow-up messages can be sent next.',
+        queued_steering_changed: 'This steering message changed. Refresh and try again.',
+        generation_not_active: 'Generation is no longer active.',
       };
       if (typeof code === 'string' && messageByCode[code]) return translate(messageByCode[code]);
     }
@@ -295,8 +302,8 @@ export function useChatQueueRuntime(params: Params) {
     if (
       params.readOnly.value ||
       queueActionId.value ||
-      message.kind !== 'follow_up' ||
-      message.id !== headFollowUpId.value
+      (!isRetryableQueuedSteer(message) &&
+        (message.kind !== 'follow_up' || message.id !== headFollowUpId.value))
     ) return;
 
     queueActionId.value = message.id;

@@ -4,6 +4,7 @@ defmodule IntellectualClub.Generation.WorkerUsageCostTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Llm.LlmConfiguration
@@ -186,7 +187,15 @@ defmodule IntellectualClub.Generation.WorkerUsageCostTest do
       test_pid: self()
     }
 
-    pid = start_supervised!({Worker, %{context: context}})
+    assert {:ok, lease} = Lease.acquire(message.id)
+
+    pid =
+      start_supervised!(%{
+        id: {Worker, message.id, make_ref()},
+        start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
+        restart: :temporary
+      })
+
     monitor_ref = Process.monitor(pid)
     message_id = message.id
 

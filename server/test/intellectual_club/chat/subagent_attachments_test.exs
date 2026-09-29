@@ -14,6 +14,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
   alias IntellectualClub.Chat.{ContentFiles, Subagent, Threads}
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.{Lease, Persistence, ToolResult}
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Tools.Drivers.{NativeAgentManagement, NativeArtifactReader}
@@ -25,7 +26,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
        )
 
   for primitive <- [:fork, :spawn] do
-    test "#{primitive} persists returned attachments for reading and history replay" do
+    test "#{primitive} parent writer persists returned attachments for reading and history replay" do
       primitive = unquote(primitive)
       %{user: actor} = user_fixture()
       {parent, context} = parent_call!(actor, primitive)
@@ -56,10 +57,26 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert result.media == []
       assert result.text =~ "file_id=#{image.external_id}"
       assert length(Regex.scan(~r/\[Attached file/, result.text)) == 2
-      assert :ok = Subagent.persist_parent_tool_result(context, result)
-      assert :ok = Subagent.persist_parent_tool_result(context, result)
+      before_write = load_message!(context.message_id, actor)
+      assert tool_result_items(before_write, context.tool_call_item_id) == []
+      assert artifact_file_ids(before_write) == []
+      assert [call] = Persistence.list_missing_tool_calls!(context.step_id)
+      assert call.item_id == context.tool_call_item_id
+
+      assert {:error, :not_found} =
+               ContentFiles.load_payload_for_execution(file.external_id, context)
+
+      receipt = persist_parent_receipt!(context, call, result)
+      replay = persist_parent_receipt!(context, call, result)
+      assert receipt.item_id == replay.item_id
+      assert receipt.responses_item == replay.responses_item
+      assert receipt.result_raw == result.raw
+      assert receipt.text == result.text
+      assert Persistence.list_missing_tool_calls!(context.step_id) == []
 
       persisted = load_message!(context.message_id, actor)
+      assert [item] = tool_result_items(persisted, context.tool_call_item_id)
+      assert item.id == receipt.item_id
       assert artifact_file_ids(persisted) == [file.id, image.id]
 
       for projection <- [
@@ -141,7 +158,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     test "#{primitive} background results retain attachments with an exhausted cursor" do
       primitive = unquote(primitive)
       %{user: actor} = user_fixture()
-      {parent, context} = parent_call!(actor, primitive)
+      {parent, context} = parent_call!(actor, :check_background_task_status)
       {_child, _message, step, reference} = child_answer!(actor, parent, primitive)
       file = file!("background.txt", "text/plain", @payload)
       attach!(actor, step, file, 2)
@@ -180,7 +197,35 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
                )
 
       assert [%{file_external_id: ^file_id}] = result.artifacts
-      assert :ok = Subagent.persist_parent_tool_result(context, result)
+      before_write = load_message!(context.message_id, actor)
+      assert tool_result_items(before_write, context.tool_call_item_id) == []
+      assert artifact_file_ids(before_write) == []
+
+      assert {:error, :not_found} =
+               ContentFiles.load_payload_for_execution(file.external_id, context)
+
+      assert [call] = Persistence.list_missing_tool_calls!(context.step_id)
+      assert call.name == "agent_management__check_background_task_status"
+      receipt = persist_parent_receipt!(context, call, result)
+      replay = persist_parent_receipt!(context, call, result)
+      assert replay.item_id == receipt.item_id
+      assert replay.responses_item == receipt.responses_item
+      assert receipt.result_raw == result.raw
+      assert Persistence.list_missing_tool_calls!(context.step_id) == []
+
+      persisted = load_message!(context.message_id, actor)
+      assert [item] = tool_result_items(persisted, context.tool_call_item_id)
+      assert item.id == receipt.item_id
+      assert artifact_file_ids(persisted) == [file.id]
+
+      for projection <- [
+            HistoryInput.build_input_items([persisted], supports_image_input: true),
+            ChatHistory.build_messages([persisted], supports_image_input: true)
+          ] do
+        encoded = Jason.encode!(projection)
+        assert encoded =~ file.external_id
+        refute encoded =~ @payload
+      end
 
       assert {:ok, {_content, _file, @payload}} =
                ContentFiles.load_payload_for_execution(file.external_id, context)
@@ -256,6 +301,36 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
              Subagent.sync_execution_result_from_snapshot(snapshot, actor).artifacts
 
     assert file_id == file.external_id
+  end
+
+  defp persist_parent_receipt!(context, call, result) do
+    assert {:ok, lease} = Lease.acquire(context.message_id)
+
+    try do
+      assert {:ok, %ToolResult{} = receipt} =
+               Lease.with_fence(
+                 lease,
+                 fn ->
+                   Persistence.persist_tool_result!(
+                     context.message_id,
+                     context.step_id,
+                     call,
+                     ToolResult.execution_payload(result)
+                   )
+                 end,
+                 require_generating?: true
+               )
+
+      receipt
+    after
+      Lease.release(lease)
+    end
+  end
+
+  defp tool_result_items(message, tool_call_item_id) do
+    message.steps
+    |> Enum.flat_map(& &1.items)
+    |> Enum.filter(&(&1.type == :tool_result and &1.tool_call_item_id == tool_call_item_id))
   end
 
   defp parent_call!(actor, primitive) do

@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.GoogleInteractions.ImageMapper
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
@@ -66,6 +67,15 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
       %{"type" => "google_search"},
       "type"
     )
+  end
+
+  @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    request
   end
 
   @impl true
@@ -136,7 +146,8 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
       end)
 
     raw_request =
-      Map.put(payload, "input", Payload.previous_input_steps(payload) ++ steering_steps)
+      payload
+      |> Map.put("input", Payload.previous_input_steps(payload) ++ steering_steps)
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -182,10 +193,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)
@@ -223,6 +231,9 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

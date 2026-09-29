@@ -17,7 +17,6 @@ defmodule IntellectualClub.Chat.Fork do
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestPayload
-  alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Repo
@@ -43,16 +42,11 @@ defmodule IntellectualClub.Chat.Fork do
       when is_binary(task) do
     with {:ok, reference} <- start_or_resume(tool_instance, task, context, actor),
          {:ok, snapshot} <- await_snapshot(reference, actor),
-         result = Subagent.sync_execution_result_from_snapshot(snapshot, actor),
-         :ok <- persist_parent_tool_result(context, result) do
+         result = Subagent.sync_execution_result_from_snapshot(snapshot, actor) do
       {:ok, result}
     else
       {:error, {:fork_result, message}} ->
-        result = Subagent.error_result(message)
-
-        with :ok <- persist_parent_tool_result(context, result) do
-          {:ok, result}
-        end
+        {:ok, Subagent.error_result(message)}
 
       {:error, _reason} = error ->
         error
@@ -275,11 +269,9 @@ defmodule IntellectualClub.Chat.Fork do
            Ash.get(ChatMessage, assistant_message_id, actor: actor),
          true <- source_message.chat_id == source.id and source_message.role == :assistant,
          {:ok, %ChatMessageStep{} = source_step} <-
-           Ash.get(ChatMessageStep, context.step_id, actor: actor, load: [:raw_request]),
+           Ash.get(ChatMessageStep, context.step_id, actor: actor),
          true <-
            source_step.chat_message_id == source_message.id and source_step.response_final == true,
-         {:ok, _compact_request} <-
-           RequestImages.materialize_and_persist(source_step.raw_request || %{}, source_step.id),
          followup_state = Persistence.load_step_for_followup!(context.step_id),
          {:ok, source_call} <-
            find_tool_call(followup_state.tool_calls, context.tool_call_item_id) do
@@ -542,7 +534,7 @@ defmodule IntellectualClub.Chat.Fork do
   defp create_subagent_state(source_context, %ExecutionContext{} = context, actor, opts) do
     # Build the provider payload before acquiring the short parent publication fence.
     # Only the response at the fork boundary is read; no historical message is copied.
-    raw_request = prepare_fork_request(source_context, context, actor)
+    {raw_request, request_context} = prepare_fork_request(source_context, context, actor)
 
     Subagent.with_invocation_authority(context, opts, fn ->
       Repo.transaction(fn ->
@@ -565,19 +557,23 @@ defmodule IntellectualClub.Chat.Fork do
           )
           |> Ash.create!(actor: actor)
 
-        step_id = Persistence.ensure_step_started!(message.id, 1, raw_request, [])
+        # The source request is never repaired. Pin its exact inherited images while
+        # creating the child's final compact request and step in this transaction.
+        prepared =
+          Persistence.create_request_step!(message, 1, raw_request,
+            request_context: %{request_context | chat_id: chat.id, message_id: message.id},
+            image_scope: context,
+            source_step_id: source_context.followup_state.step.id,
+            force_full: true
+          )
 
-        # Request-image pins belong to actual provider requests, not inherited history.
-        case RequestImages.clone_bindings(source_context.followup_state.step.id, step_id) do
-          :ok -> :ok
-          {:error, reason} -> Repo.rollback(reason)
-        end
+        step_id = prepared.step.id
 
         %{
           chat: Ash.get!(Chat, chat.id, actor: actor, load: [:last_message]),
           message_id: message.id,
           generation_step_id: step_id,
-          generation_step_raw_request: raw_request
+          generation_step_raw_request: prepared.request
         }
       end)
       |> unwrap_transaction()
@@ -592,7 +588,7 @@ defmodule IntellectualClub.Chat.Fork do
         source_context.source.id,
         source_context.source_message.id,
         state.step.id,
-        state.step.raw_request || %{},
+        state.runtime_step.raw_request || %{},
         actor: actor,
         available_file_external_ids: context.available_file_external_ids || [],
         available_secret_binding_external_ids: context.available_secret_binding_external_ids || []
@@ -607,7 +603,8 @@ defmodule IntellectualClub.Chat.Fork do
         runtime_step: state.runtime_step,
         results: results,
         tools:
-          generation_context.tools_payload || RequestPayload.tools(state.step.raw_request || %{})
+          generation_context.tools_payload ||
+            RequestPayload.tools(state.runtime_step.raw_request || %{})
       })
 
     injected =
@@ -618,7 +615,7 @@ defmodule IntellectualClub.Chat.Fork do
         generation_context
       )
 
-    injected.raw_request || %{}
+    {injected.raw_request || %{}, generation_context}
   end
 
   defp start_subagent_reference(
@@ -750,7 +747,7 @@ defmodule IntellectualClub.Chat.Fork do
               chat_id,
               message_id,
               step.id,
-              step.raw_request || %{},
+              %{},
               parent_context,
               actor
             )
@@ -819,7 +816,7 @@ defmodule IntellectualClub.Chat.Fork do
     step =
       ChatMessageStep
       |> Ash.Query.filter(chat_message_id == ^message_id)
-      |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
+      |> Ash.Query.select([:id, :chat_message_id, :sequence, :status])
       |> Ash.Query.sort(sequence: :desc, id: :desc)
       |> Ash.Query.limit(1)
       |> Ash.read_one!(actor: actor)
@@ -839,13 +836,6 @@ defmodule IntellectualClub.Chat.Fork do
       _other ->
         nil
     end
-  end
-
-  defp persist_parent_tool_result(
-         %ExecutionContext{} = parent_context,
-         %ExecutionResult{} = result
-       ) do
-    Subagent.persist_parent_tool_result(parent_context, result)
   end
 
   defp create_target_chat!(source_context, parent_tool_call_item_id, actor) do

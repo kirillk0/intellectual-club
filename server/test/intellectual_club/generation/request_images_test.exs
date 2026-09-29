@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Generation.RequestImagesTest do
   use IntellectualClub.DataCase, async: false
 
+  import IntellectualClub.Generation.RequestImageCacheTestHelpers
+
   alias IntellectualClub.Chat.{
     Chat,
     ChatMessage,
@@ -12,260 +14,261 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
 
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.FilesystemStorage
-  alias IntellectualClub.Files.GarbageCollector
+  alias IntellectualClub.Files.{FilesystemStorage, GarbageCollector}
   alias IntellectualClub.Generation.RequestImages
+  alias IntellectualClub.Generation.RequestImagesTestAdapter
   alias IntellectualClub.Generation.RequestImages.StagedBindings
+  alias IntellectualClub.Tools.ExecutionContext
 
   require Ash.Query
 
   @invalid_fallback "[Image omitted: attached file could not be validated as an image.]"
   @resize_fallback "[Image omitted: attached image exceeded the native image size limit and could not be resized.]"
 
-  test "materializes one identity binding and hydrates all four provider shapes" do
+  test "provider-boundary normalization recognizes atom-valued image types before pinning" do
     fixture = request_fixture!(image_payload())
-    raw_request = four_shape_request(fixture.file)
+    marker = RequestImages.marker(to_string(fixture.file.external_id), "image/png")
+    raw = %{input: [%{role: :user, content: [%{type: :input_image, image_url: marker}]}]}
 
-    file_count_before = count_files()
-
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
-
-    assert [binding] = bindings_for_step(fixture.target_step.id)
-    assert binding.variant_key == "identity:v1"
-    assert to_string(binding.reference_key) == to_string(fixture.file.external_id)
-    assert count_files() == file_count_before + 1
-
-    persisted_step =
-      Ash.get!(ChatMessageStep, fixture.target_step.id,
-        authorize?: false,
-        load: [:raw_request]
+    %{step: step, request: request} =
+      IntellectualClub.Generation.Persistence.create_request_step!(fixture.target_message, 1, raw,
+        request_context: %{adapter_module: IntellectualClub.Llm.Providers.Responses}
       )
 
-    assert persisted_step.raw_request == compact_request
-
-    Process.sleep(2)
-
-    assert {:ok, ^compact_request} =
-             RequestImages.materialize_and_persist(compact_request, fixture.target_step.id)
-
-    assert [same_binding] = bindings_for_step(fixture.target_step.id)
-    assert same_binding.id == binding.id
-    assert count_files() == file_count_before + 1
-
-    unchanged_step = Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false)
-    assert unchanged_step.updated_at == persisted_step.updated_at
-
-    assert {:ok, wire_request} =
-             RequestImages.hydrate(compact_request, fixture.target_step.id)
-
-    [responses, openrouter, anthropic, google] = image_blocks(wire_request)
-
-    assert decode_data_url(responses["image_url"]) == fixture.payload
-    assert decode_data_url(openrouter["image_url"]["url"]) == fixture.payload
-    assert Base.decode64!(anthropic["source"]["data"]) == fixture.payload
-    assert anthropic["source"]["media_type"] == "image/png"
-    assert Base.decode64!(google["data"]) == fixture.payload
-    assert google["mime_type"] == "image/png"
-
-    assert {:error, {:request_image_binding_not_found, _reference_key}} =
-             RequestImages.hydrate(compact_request, fixture.unbound_step.id)
+    assert [_binding] = bindings_for_step(step.id)
+    assert hd(hd(request["input"])["content"])["type"] == "input_image"
+    assert {:ok, wire} = hydrate(request, step.id)
+    assert hd(hd(wire["input"])["content"])["image_url"] =~ "data:image/png;base64,"
   end
 
-  test "stores an oversized image as a bounded thumbnail and keeps the canonical payload" do
+  test "formatter exceptions discard files staged before the callback failed" do
+    fixture = request_fixture!(image_payload())
+    request = responses_request(fixture.file)
+    before_count = count_files()
+
+    mapper = fn raw, acc, mapper ->
+      IntellectualClub.Llm.Providers.Responses.map_request_images(raw, acc, fn reference, state ->
+        reference = %{reference | format: fn _, _ -> raise "Injected formatter failure" end}
+        mapper.(reference, state)
+      end)
+    end
+
+    assert_raise RuntimeError, "Injected formatter failure", fn ->
+      RequestImages.prepare(request, scope(fixture), mapper: mapper)
+    end
+
+    assert count_files() == before_count
+    assert [] == steps_for_message(fixture.target_message.id)
+  end
+
+  test "mapper throws after staging discard the entire staged journal" do
+    fixture = request_fixture!(image_payload())
+    request = responses_request(fixture.file)
+    before_count = count_files()
+
+    mapper = fn raw, acc, callback ->
+      result = IntellectualClub.Llm.Providers.Responses.map_request_images(raw, acc, callback)
+      if is_map(acc) and Map.has_key?(acc, :staged), do: throw(:after_staging)
+      result
+    end
+
+    assert catch_throw(RequestImages.prepare(request, scope(fixture), mapper: mapper)) ==
+             :after_staging
+
+    assert count_files() == before_count
+  end
+
+  test "prepares one stable pin for all four shapes before INSERT and never updates raw" do
+    fixture = request_fixture!(image_payload())
+    raw = four_shape_request(fixture.file)
+    file_count = count_files()
+
+    {{prepared, step}, queries} =
+      capture_queries(fn ->
+        assert {:ok, prepared} = prepare(raw, scope(fixture))
+        assert prepared.request == raw
+        assert [item] = prepared.bindings.items
+        assert item.variant_key == "identity:v1"
+        assert item.reference_key == to_string(fixture.file.external_id)
+        assert count_files() == file_count + 1
+        assert [] == bindings_for_step(fixture.source_step.id)
+        assert [] == steps_for_message(fixture.target_message.id)
+
+        step = publish!(fixture, prepared)
+        assert :ok = validate_snapshot(prepared.request, step.id)
+        assert saved_step(step.id).raw_request == raw
+        assert saved_step(step.id).updated_at == step.updated_at
+        assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+        assert count_files() == file_count + 1
+        {prepared, step}
+      end)
+
+    refute Enum.any?(queries, &Regex.match?(~r/UPDATE\s+"chat_message_steps"/i, &1))
+    assert Enum.count(queries, &Regex.match?(~r/INSERT INTO "chat_message_steps"/i, &1)) == 1
+    assert [binding] = bindings_for_step(step.id)
+    assert binding.file_id == hd(prepared.bindings.items).file_id
+    assert {:ok, wire} = hydrate(prepared.request, step.id)
+    assert_wire_payload(wire, fixture.payload, "image/png")
+
+    unbound = create_step!(fixture.target_message.id, 2, fixture.actor, prepared.request)
+
+    assert {:error, {:request_image_binding_not_found, _ref}} =
+             hydrate(prepared.request, unbound.id)
+  end
+
+  test "prepares without an assistant message or step and uses the source parent scope" do
+    fixture = request_fixture!(image_payload(), target_message?: false)
+
+    assert {:ok, prepared} =
+             prepare(responses_request(fixture.file), scope(fixture))
+
+    assert [item] = prepared.bindings.items
+    assert item.reference_key == to_string(fixture.file.external_id)
+
+    message =
+      create_message!(fixture.chat.id, :assistant, fixture.actor, fixture.source_message.id)
+
+    step = publish!(%{fixture | target_message: message}, prepared)
+    assert :ok = validate_snapshot(prepared.request, step.id)
+  end
+
+  test "prepares one bounded thumbnail for all shapes and keeps the canonical payload" do
     fixture = request_fixture!(oversized_png_payload())
-    raw_request = responses_request(fixture.file)
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
+    assert {:ok, prepared} =
+             prepare(four_shape_request(fixture.file), scope(fixture))
 
-    assert [binding] = bindings_for_step(fixture.target_step.id)
-    assert binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
-
-    assert {:ok, {_request_file, resized_payload}} = Files.load_payload(binding.file_id)
-
-    assert {"image/png", resized_width, resized_height, _variant} =
-             ExImageInfo.info(resized_payload)
-
-    assert max(resized_width, resized_height) <= 2_000
-
-    assert {:ok, {_source_file, original_payload}} = Files.load_payload(fixture.file.id)
-    assert {"image/png", 3_000, 1_500, _variant} = ExImageInfo.info(original_payload)
-
-    assert {:ok, wire_request} =
-             RequestImages.hydrate(compact_request, fixture.target_step.id)
-
-    [wire_block] = image_blocks(wire_request)
-    assert decode_data_url(wire_block["image_url"]) == resized_payload
+    assert [item] = prepared.bindings.items
+    assert item.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
+    assert item.reference_key == to_string(fixture.file.external_id)
+    assert {:ok, {_file, resized}} = Files.load_payload(item.file_id)
+    assert {"image/png", width, height, _variant} = ExImageInfo.info(resized)
+    assert max(width, height) <= 2_000
+    assert {:ok, {_file, original}} = Files.load_payload(fixture.file.id)
+    assert original == fixture.payload
+    assert {"image/png", 3_000, 1_500, _variant} = ExImageInfo.info(original)
+    step = publish!(fixture, prepared)
+    assert saved_step(step.id).raw_request == prepared.request
+    assert {:ok, wire} = hydrate(prepared.request, step.id)
+    assert_wire_payload(wire, resized, "image/png")
   end
 
-  test "materializes an oversized attachment on its canonical message step" do
-    fixture = request_fixture!(oversized_png_payload())
-    raw_request = responses_request(fixture.file)
-
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.source_step.id)
-
-    assert compact_request == raw_request
-    assert [binding] = bindings_for_step(fixture.source_step.id)
-    assert binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
-  end
-
-  test "updates compact and wire MIME types from the validated image payload" do
+  test "corrects all MIME fields before INSERT without changing canonical metadata or refs" do
     fixture = request_fixture!(jpeg_payload(), mime_type: "image/png", filename: "declared.png")
+    raw = four_shape_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    refute prepared.request == raw
+    [responses, openrouter, anthropic, google] = image_blocks(prepared.request)
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(
-               four_shape_request(fixture.file),
-               fixture.target_step.id
-             )
+    for marker <- [
+          responses["image_url"],
+          openrouter["image_url"]["url"],
+          anthropic["source"]["data"],
+          google["data"]
+        ] do
+      assert marker["$intellectual_club_file"]["mime_type"] == "image/jpeg"
 
-    [responses, openrouter, anthropic, google] = image_blocks(compact_request)
+      assert marker["$intellectual_club_file"]["reference_key"] ==
+               to_string(fixture.file.external_id)
+    end
 
-    assert marker_mime_type(responses["image_url"]) == "image/jpeg"
-    assert marker_mime_type(openrouter["image_url"]["url"]) == "image/jpeg"
-    assert marker_mime_type(anthropic["source"]["data"]) == "image/jpeg"
-    assert anthropic["source"]["media_type"] == "image/jpeg"
-    assert marker_mime_type(google["data"]) == "image/jpeg"
-    assert google["mime_type"] == "image/jpeg"
-
-    assert {:ok, wire_request} =
-             RequestImages.hydrate(compact_request, fixture.target_step.id)
-
-    [responses, _openrouter, anthropic, google] = image_blocks(wire_request)
-    assert String.starts_with?(responses["image_url"], "data:image/jpeg;base64,")
     assert anthropic["source"]["media_type"] == "image/jpeg"
     assert google["mime_type"] == "image/jpeg"
+    assert Ash.get!(StoredFile, fixture.file.id, authorize?: false).mime_type == "image/png"
+    assert [item] = prepared.bindings.items
+    assert Ash.get!(StoredFile, item.file_id, authorize?: false).mime_type == "image/jpeg"
+    step = publish!(fixture, prepared)
+    assert :ok = validate_snapshot(prepared.request, step.id)
+    assert {:ok, wire} = hydrate(prepared.request, step.id)
+    assert_wire_payload(wire, fixture.payload, "image/jpeg")
   end
 
-  test "uses the resize-specific fallback when an oversized format cannot be resized" do
+  test "uses resize fallback in all shapes before publication" do
     fixture =
       request_fixture!(oversized_bmp_header_payload(),
         mime_type: "image/bmp",
         filename: "source.bmp"
       )
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(
-               responses_request(fixture.file),
-               fixture.target_step.id
-             )
+    assert {:ok, prepared} =
+             prepare(four_shape_request(fixture.file), scope(fixture))
 
-    assert [%{"type" => "input_text", "text" => @resize_fallback}] =
-             image_blocks(compact_request)
-
-    assert [] == bindings_for_step(fixture.target_step.id)
+    assert prepared.bindings.items == []
+    assert_fallback(prepared.request, @resize_fallback)
+    step = publish!(fixture, prepared)
+    assert saved_step(step.id).raw_request == prepared.request
   end
 
-  test "concurrent materialization converges on one step binding" do
+  test "invalid new images become provider-native text and preserve Anthropic cache control" do
+    fixture = request_fixture!("<html>not an image</html>")
+    raw = four_shape_request(fixture.file, anthropic_cache_control?: true)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    assert prepared.bindings.items == []
+    assert_fallback(prepared.request, @invalid_fallback, anthropic_cache_control?: true)
+    refute Jason.encode!(prepared.request) =~ "$intellectual_club_file"
+    assert count_files() == 1
+  end
+
+  test "independent preparations own independent files with the same stable reference" do
     fixture = request_fixture!(image_payload())
-    raw_request = responses_request(fixture.file)
+    raw = responses_request(fixture.file)
 
-    results =
+    prepared =
       1..2
-      |> Enum.map(fn _index ->
-        Task.async(fn ->
-          RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
-        end)
-      end)
-      |> Enum.map(&Task.await(&1, 5_000))
+      |> Task.async_stream(fn _ -> prepare(raw, scope(fixture)) end,
+        timeout: :infinity
+      )
+      |> Enum.map(fn {:ok, {:ok, prepared}} -> prepared end)
 
-    assert Enum.all?(results, &match?({:ok, _compact_request}, &1))
-    assert [_binding] = bindings_for_step(fixture.target_step.id)
+    assert [first, second] = prepared
+    assert first.request == second.request
+    assert hd(first.bindings.items).reference_key == hd(second.bindings.items).reference_key
+    refute hd(first.bindings.items).file_id == hd(second.bindings.items).file_id
+    assert count_files() == 3
+    assert :ok = RequestImages.discard_staged_bindings(first.bindings)
+    step = publish!(fixture, second)
+    assert :ok = validate_snapshot(second.request, step.id)
     assert count_files() == 2
   end
 
-  test "removes bindings which are no longer present in the compact request" do
+  test "snapshot validation never writes raw, backfills missing pins or removes stale pins" do
     fixture = request_fixture!(image_payload())
-    empty_request = %{"input" => []}
+    raw = responses_request(fixture.file)
+    step = create_step!(fixture.target_message.id, 1, fixture.actor, raw)
+    ref = to_string(fixture.file.external_id)
+    count = count_files()
 
-    assert {:ok, _compact_request} =
-             RequestImages.materialize_and_persist(
-               responses_request(fixture.file),
-               fixture.target_step.id
-             )
+    {_, queries} =
+      capture_queries(fn ->
+        assert {:error, {:request_image_binding_not_found, ^ref}} =
+                 validate_snapshot(raw, step.id)
 
-    assert [binding] = bindings_for_step(fixture.target_step.id)
+        assert {:error, :request_snapshot_mismatch} =
+                 validate_snapshot(%{"input" => []}, step.id)
 
-    persisted_step =
-      fixture.target_step
-      |> Ash.Changeset.for_update(:update, %{raw_request: empty_request}, authorize?: false)
-      |> Ash.update!(authorize?: false)
+        assert saved_step(step.id).raw_request == raw
+        assert saved_step(step.id).updated_at == step.updated_at
+        assert count_files() == count
+        assert bindings_for_step(step.id) == []
 
-    Process.sleep(2)
+        assert {:ok, prepared} = prepare(raw, scope(fixture))
+        empty_step = create_step!(fixture.target_message.id, 2, fixture.actor, %{"input" => []})
+        assert :ok = RequestImages.attach_staged_bindings(prepared.bindings, empty_step.id)
 
-    assert {:ok, ^empty_request} =
-             RequestImages.materialize_and_persist(empty_request, fixture.target_step.id)
+        assert {:error, {:unreferenced_request_image_binding, ^ref}} =
+                 validate_snapshot(%{"input" => []}, empty_step.id)
 
-    assert [] == bindings_for_step(fixture.target_step.id)
+        assert [_binding] = bindings_for_step(empty_step.id)
+        assert count_files() == count + 1
+      end)
 
-    assert Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false).updated_at ==
-             persisted_step.updated_at
-
-    assert {:error, _error} = Ash.get(StoredFile, binding.file_id, authorize?: false)
-    assert Ash.get!(StoredFile, fixture.file.id, authorize?: false).id == fixture.file.id
+    refute Enum.any?(queries, &Regex.match?(~r/UPDATE\s+"chat_message_steps"/i, &1))
   end
 
-  test "stale payload cleanup commits logical deletion and remains retryable by GC" do
-    fixture = request_fixture!(oversized_png_payload())
+  test "ignores markers in parameters, tool arguments and opaque result maps without DB work" do
+    marker = RequestImages.marker(Ash.UUID.generate(), "image/png")
 
-    assert {:ok, _compact_request} =
-             RequestImages.materialize_and_persist(
-               responses_request(fixture.file),
-               fixture.target_step.id
-             )
-
-    [binding] = bindings_for_step(fixture.target_step.id)
-    assert {:ok, {_file, rendition_payload}} = Files.load_payload(binding.file_id)
-    replace_payload_with_directory!(binding.file.sha256)
-
-    assert {:ok, empty_request} =
-             RequestImages.materialize_and_persist(%{"input" => []}, fixture.target_step.id)
-
-    assert empty_request == %{"input" => []}
-
-    assert Ash.get!(ChatMessageStep, fixture.target_step.id,
-             authorize?: false,
-             load: [:raw_request]
-           ).raw_request ==
-             empty_request
-
-    assert [] == bindings_for_step(fixture.target_step.id)
-    assert {:error, _error} = Ash.get(StoredFile, binding.file_id, authorize?: false)
-    assert {:error, _reason} = GarbageCollector.collect_sha256(binding.file.sha256)
-
-    restore_payload!(binding.file.sha256, rendition_payload)
-    assert {:ok, :deleted} = GarbageCollector.collect_sha256(binding.file.sha256)
-  end
-
-  test "replaces invalid image blocks with provider-native fallback text" do
-    fixture = request_fixture!("<html><body>not an image</body></html>")
-    raw_request = four_shape_request(fixture.file, anthropic_cache_control?: true)
-
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
-
-    assert [] == bindings_for_step(fixture.target_step.id)
-
-    assert [responses, openrouter, anthropic, google] = image_blocks(compact_request)
-    assert responses == %{"type" => "input_text", "text" => @invalid_fallback}
-    assert openrouter == %{"type" => "text", "text" => @invalid_fallback}
-
-    assert anthropic == %{
-             "type" => "text",
-             "text" => @invalid_fallback,
-             "cache_control" => %{"type" => "ephemeral"}
-           }
-
-    assert google == %{"type" => "text", "text" => @invalid_fallback}
-    refute Jason.encode!(compact_request) =~ "$intellectual_club_file"
-  end
-
-  test "ignores markers in parameters, tool arguments, and opaque result maps" do
-    fixture = request_fixture!(image_payload())
-    marker = RequestImages.marker(to_string(fixture.file.external_id), "image/png")
-
-    raw_request = %{
+    raw = %{
       "custom_parameter" => %{"type" => "input_image", "image_url" => marker},
       "tools" => [%{"arguments" => %{"type" => "image", "data" => marker}}],
       "input" => [
@@ -284,190 +287,967 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       ]
     }
 
-    assert {:ok, ^raw_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
+    {_, queries} =
+      capture_queries(fn ->
+        assert {:ok, %{request: ^raw, bindings: %StagedBindings{items: []}}} =
+                 prepare(raw, %ExecutionContext{}, source_step_id: -1)
 
-    assert [] == bindings_for_step(fixture.target_step.id)
-    assert {:ok, ^raw_request} = RequestImages.hydrate(raw_request, nil)
+        assert {:ok, ^raw} = hydrate(raw, nil)
+        assert {:ok, ^raw} = hydrate(raw, -1)
+      end)
+
+    assert queries == []
   end
 
-  test "leaves legacy requests untouched and rejects an unbound marker without a step" do
+  test "walks image blocks in structured function results" do
     fixture = request_fixture!(image_payload())
+
+    raw = %{
+      "input" => [
+        %{"type" => "function_result", "result" => image_blocks(four_shape_request(fixture.file))}
+      ]
+    }
+
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    assert [_item] = prepared.bindings.items
+    step = publish!(fixture, prepared)
+    assert {:ok, wire} = hydrate(prepared.request, step.id)
+    assert_wire_blocks(hd(wire["input"])["result"], fixture.payload, "image/png")
+  end
+
+  test "legacy inline encodings in all shapes and text-only requests are a DB-free pass-through" do
+    data = Base.encode64(image_payload())
 
     legacy = %{
       "messages" => [
         %{
           "role" => "user",
           "content" => [
+            %{"type" => "input_image", "image_url" => "data:image/png;base64," <> data},
+            %{"type" => "image_url", "image_url" => %{"url" => "data:image/png;base64," <> data}},
             %{
-              "type" => "image_url",
-              "image_url" => %{"url" => "data:image/png;base64,#{Base.encode64(image_payload())}"}
-            }
+              "type" => "image",
+              "source" => %{"type" => "base64", "media_type" => "image/png", "data" => data}
+            },
+            %{"type" => "image", "mime_type" => "image/png", "data" => data}
           ]
         }
       ]
     }
 
-    file_count_before = count_files()
+    {_, queries} =
+      capture_queries(fn ->
+        for raw <- [legacy, %{"input" => []}, %{"input" => "hello"}] do
+          assert {:ok, %{request: ^raw, bindings: %StagedBindings{items: []}}} =
+                   prepare(raw, %ExecutionContext{step_id: -1}, source_step_id: -1)
 
-    assert {:ok, ^legacy} =
-             RequestImages.materialize_and_persist(legacy, fixture.target_step.id)
+          assert {:ok, ^raw} = hydrate(raw, nil)
+        end
+      end)
 
-    persisted_step = Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false)
-    Process.sleep(2)
+    assert queries == []
 
-    assert {:ok, ^legacy} =
-             RequestImages.materialize_and_persist(legacy, fixture.target_step.id)
+    ref = Ash.UUID.generate()
 
-    unchanged_step = Ash.get!(ChatMessageStep, fixture.target_step.id, authorize?: false)
-
-    assert unchanged_step.updated_at == persisted_step.updated_at
-    assert count_files() == file_count_before
-    assert [] == bindings_for_step(fixture.target_step.id)
-    assert {:ok, ^legacy} = RequestImages.hydrate(legacy, nil)
-
-    external_id = Ash.UUID.generate()
-    request = responses_request(%{external_id: external_id, mime_type: "image/png"})
-
-    assert {:error, {:request_image_binding_not_found, ^external_id}} =
-             RequestImages.hydrate(request, nil)
+    assert {:error, {:request_image_binding_not_found, ^ref}} =
+             hydrate(
+               responses_request(%{external_id: ref, mime_type: "image/png"}),
+               nil
+             )
   end
 
-  test "reuses and clones pinned files after the canonical attachment is deleted" do
+  test "ordinary history reuse and pin copying survive canonical deletion without changing raw" do
     fixture = request_fixture!(image_payload())
-    raw_request = responses_request(fixture.file)
 
-    assert {:ok, compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
+    assert {:ok, prepared} =
+             prepare(four_shape_request(fixture.file), scope(fixture))
 
-    assert :ok = RequestImages.clone_bindings(fixture.target_step.id, fixture.unbound_step.id)
-
-    [source_binding] = bindings_for_step(fixture.target_step.id)
-    [cloned_binding] = bindings_for_step(fixture.unbound_step.id)
-    assert cloned_binding.file_id != source_binding.file_id
-    assert cloned_binding.file.sha256 == source_binding.file.sha256
-
+    source = publish!(fixture, prepared)
+    [source_binding] = bindings_for_step(source.id)
     Ash.destroy!(fixture.content, actor: fixture.actor)
-    assert {:error, _error} = Ash.get(StoredFile, fixture.file.id, authorize?: false)
+    assert {:error, _} = Ash.get(StoredFile, fixture.file.id, authorize?: false)
 
-    assert {:ok, wire_request} =
-             RequestImages.hydrate(compact_request, fixture.unbound_step.id)
+    copy = create_step!(fixture.target_message.id, 2, fixture.actor, prepared.request)
+    assert :ok = validate_snapshot(prepared.request, source.id)
+    assert :ok = RequestImages.clone_bindings(source.id, copy.id)
+    [copy_binding] = bindings_for_step(copy.id)
+    refute copy_binding.file_id == source_binding.file_id
+    assert copy_binding.file.sha256 == source_binding.file.sha256
+    assert saved_step(source.id).raw_request == prepared.request
+    assert saved_step(copy.id).raw_request == prepared.request
+    assert saved_step(source.id).updated_at == source.updated_at
+    assert saved_step(copy.id).updated_at == copy.updated_at
 
-    assert [wire_block] = image_blocks(wire_request)
-    assert decode_data_url(wire_block["image_url"]) == fixture.payload
-
-    reused_step = create_step!(fixture.target_message.id, 3, fixture.actor)
-
-    assert {:ok, ^compact_request} =
-             RequestImages.materialize_and_persist(compact_request, reused_step.id)
-
-    [reused_binding] = bindings_for_step(reused_step.id)
-    assert reused_binding.file_id not in [source_binding.file_id, cloned_binding.file_id]
-    assert reused_binding.file.sha256 == source_binding.file.sha256
-
-    Ash.destroy!(fixture.target_step, actor: fixture.actor)
-    Ash.destroy!(fixture.unbound_step, actor: fixture.actor)
+    assert {:ok, reused} = prepare(prepared.request, scope(fixture))
+    reuse = publish!(fixture, reused, 3)
+    assert reused.request == prepared.request
+    [reuse_binding] = bindings_for_step(reuse.id)
+    assert reuse_binding.file_id not in [source_binding.file_id, copy_binding.file_id]
+    assert {:ok, wire} = hydrate(reused.request, reuse.id)
+    assert_wire_payload(wire, fixture.payload, "image/png")
+    Ash.destroy!(source, actor: fixture.actor)
+    Ash.destroy!(copy, actor: fixture.actor)
     assert FilesystemStorage.exists?(source_binding.file.sha256)
-
-    Ash.destroy!(reused_step, actor: fixture.actor)
+    Ash.destroy!(reuse, actor: fixture.actor)
     assert {:ok, :deleted} = GarbageCollector.collect_sha256(source_binding.file.sha256)
     refute FilesystemStorage.exists?(source_binding.file.sha256)
   end
 
-  test "transactional staging preserves the source payload when retry replacement rolls back" do
+  test "copy conflicts never accept different pin bytes or change either saved request" do
     fixture = request_fixture!(image_payload())
-    raw_request = responses_request(fixture.file)
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    source = publish!(fixture, prepared)
+    ref = to_string(fixture.file.external_id)
+    other_raw = responses_request(%{external_id: ref, mime_type: "image/jpeg"})
+    target = create_step!(fixture.target_message.id, 2, fixture.actor, other_raw)
+    assert {:ok, other_file} = Files.create_from_binary("other.jpg", "image/jpeg", jpeg_payload())
+    target_binding = create_binding!(target.id, other_file.id, ref, ref, "identity:v1")
+    count = count_files()
 
-    assert {:ok, _compact_request} =
-             RequestImages.materialize_and_persist(raw_request, fixture.target_step.id)
+    assert {:error, {:conflicting_staged_binding, ^ref, _source_ref, "identity:v1"}} =
+             RequestImages.clone_bindings(source.id, target.id)
 
-    [binding] = bindings_for_step(fixture.target_step.id)
-    sha256 = binding.file.sha256
+    assert count_files() == count
+    assert [binding] = bindings_for_step(target.id)
+    assert binding.id == target_binding.id
+    assert binding.file_id == other_file.id
+    assert saved_step(source.id).raw_request == raw
+    assert saved_step(target.id).raw_request == other_raw
+    assert saved_step(source.id).updated_at == source.updated_at
+    assert saved_step(target.id).updated_at == target.updated_at
+    assert :ok = validate_snapshot(raw, source.id)
+    assert :ok = validate_snapshot(other_raw, target.id)
+  end
 
-    assert {:error, :forced_retry_failure} =
+  test "exact inherited refs use source-local pins after canonical deletion" do
+    fixture = request_fixture!(jpeg_payload(), mime_type: "image/png")
+
+    assert {:ok, prepared} =
+             prepare(four_shape_request(fixture.file), scope(fixture))
+
+    source = publish!(fixture, prepared)
+    [source_binding] = bindings_for_step(source.id)
+    Ash.destroy!(fixture.content, actor: fixture.actor)
+
+    assert {:ok, inherited} =
+             prepare(prepared.request, scope(fixture), source_step_id: source.id)
+
+    assert inherited.request == prepared.request
+    assert [item] = inherited.bindings.items
+    refute item.file_id == source_binding.file_id
+    assert item.reference_key == to_string(source_binding.reference_key)
+    step = publish!(fixture, inherited, 2)
+    assert :ok = validate_snapshot(inherited.request, step.id)
+    assert saved_step(source.id).updated_at == source.updated_at
+    assert {:ok, wire} = hydrate(inherited.request, step.id)
+    assert_wire_payload(wire, fixture.payload, "image/jpeg")
+  end
+
+  test "missing exact source pin fails despite a canonical file and another usable pin" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    _other = publish!(fixture, prepared)
+    source = create_step!(fixture.target_message.id, 2, fixture.actor, raw)
+    count = count_files()
+    ref = to_string(fixture.file.external_id)
+
+    assert {:error, {:request_image_binding_not_found, ^ref}} =
+             prepare(raw, scope(fixture), source_step_id: source.id)
+
+    assert count_files() == count
+    assert saved_step(source.id).raw_request == raw
+    assert bindings_for_step(source.id) == []
+  end
+
+  test "inherited binding source, MIME, variant, size and payload failures cannot fall back" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    ref = to_string(fixture.file.external_id)
+
+    invalid_pins = [
+      {image_payload(), "identity:v1", Ash.UUID.generate(),
+       {:request_image_binding_source_mismatch, ref}},
+      {jpeg_payload(), "identity:v1", ref, {:request_image_binding_mime_mismatch, ref}},
+      {image_payload(), "unknown:v1", ref,
+       {:unsupported_request_image_binding_variant, "unknown:v1"}},
+      {oversized_png_payload(), "identity:v1", ref, {:request_image_binding_oversized, ref}},
+      {"invalid bytes", "identity:v1", ref, :invalid_image_payload}
+    ]
+
+    invalid_pins
+    |> Enum.with_index(1)
+    |> Enum.each(fn {{payload, variant, source_ref, expected_error}, sequence} ->
+      source = create_step!(fixture.target_message.id, sequence, fixture.actor, raw)
+      assert {:ok, file} = Files.create_from_binary("pin.png", "image/png", payload)
+      create_binding!(source.id, file.id, ref, source_ref, variant)
+      count = count_files()
+
+      assert {:error, ^expected_error} =
+               prepare(raw, scope(fixture), source_step_id: source.id)
+
+      assert count_files() == count
+      assert saved_step(source.id).raw_request == raw
+      assert [_binding] = bindings_for_step(source.id)
+    end)
+  end
+
+  test "a missing inherited rendition payload fails even when canonical bytes are available" do
+    fixture = request_fixture!(oversized_png_payload())
+
+    assert {:ok, prepared} =
+             prepare(responses_request(fixture.file), scope(fixture))
+
+    source = publish!(fixture, prepared)
+    [binding] = bindings_for_step(source.id)
+    assert {:ok, {_file, bytes}} = Files.load_payload(binding.file_id)
+    {:ok, path} = FilesystemStorage.path_for(binding.file.sha256)
+    File.rm!(path)
+
+    try do
+      assert {:error, :payload_not_found} =
+               prepare(prepared.request, scope(fixture), source_step_id: source.id)
+
+      assert {:error, :payload_not_found} =
+               validate_snapshot(prepared.request, source.id)
+
+      assert {:ok, {_file, original}} = Files.load_payload(fixture.file.id)
+      assert original == fixture.payload
+
+      File.write!(path, image_payload())
+
+      assert {:error, :request_image_payload_integrity_mismatch} =
+               prepare(prepared.request, scope(fixture), source_step_id: source.id)
+
+      assert {:error, :request_image_payload_integrity_mismatch} =
+               validate_snapshot(prepared.request, source.id)
+    after
+      File.rm(path)
+      assert {:ok, :created} = FilesystemStorage.store(binding.file.sha256, bytes)
+    end
+  end
+
+  test "repeated inherited descriptors and hydration cannot change source identity or MIME" do
+    fixture = request_fixture!(image_payload())
+
+    assert {:ok, prepared} =
+             prepare(four_shape_request(fixture.file), scope(fixture))
+
+    source = publish!(fixture, prepared)
+    [responses, openrouter, anthropic, google] = image_blocks(prepared.request)
+    ref = to_string(fixture.file.external_id)
+
+    changed_mime =
+      put_in(google, ["data", "$intellectual_club_file", "mime_type"], "image/jpeg")
+      |> Map.put("mime_type", "image/jpeg")
+
+    raw = put_blocks(prepared.request, [responses, openrouter, anthropic, changed_mime])
+
+    assert {:error, {:request_image_binding_mime_mismatch, ^ref}} =
+             prepare(raw, scope(fixture), source_step_id: source.id)
+
+    assert {:error, {:request_image_binding_mime_mismatch, ^ref}} =
+             hydrate(raw, source.id)
+
+    wrong_outer_mime = Map.put(google, "mime_type", "image/jpeg")
+    raw = put_blocks(prepared.request, [responses, openrouter, anthropic, wrong_outer_mime])
+
+    assert {:error, {:request_image_block_mime_mismatch, ^ref}} =
+             prepare(raw, scope(fixture), source_step_id: source.id)
+
+    changed_source =
+      put_in(
+        responses,
+        ["image_url", "$intellectual_club_file", "source_file_external_id"],
+        Ash.UUID.generate()
+      )
+
+    raw = put_blocks(prepared.request, [changed_source])
+
+    assert {:error, {:request_image_binding_source_mismatch, ^ref}} =
+             prepare(raw, scope(fixture), source_step_id: source.id)
+
+    assert saved_step(source.id).raw_request == prepared.request
+  end
+
+  test "preparation cleans already staged new files when an inherited pin fails later" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    source = create_step!(fixture.target_message.id, 1, fixture.actor, raw)
+
+    {file, _content} =
+      attach_content!(fixture.source_step, fixture.actor, jpeg_payload(), 2, "image/jpeg")
+
+    request = put_blocks(raw, image_blocks(responses_request(file)) ++ image_blocks(raw))
+    count = count_files()
+    ref = to_string(fixture.file.external_id)
+
+    assert {:error, {:request_image_binding_not_found, ^ref}} =
+             prepare(request, scope(fixture), source_step_id: source.id)
+
+    assert count_files() == count
+    assert bindings_for_step(source.id) == []
+    assert {:ok, {_file, bytes}} = Files.load_payload(file.id)
+    assert bytes == jpeg_payload()
+  end
+
+  test "prepare plus attach rolls back atomically and discards only unowned staged files" do
+    fixture = request_fixture!(image_payload())
+    assert {:ok, first} = prepare(responses_request(fixture.file), scope(fixture))
+    source = publish!(fixture, first)
+
+    assert {:ok, staged} =
+             prepare(first.request, scope(fixture), source_step_id: source.id)
+
+    [item] = staged.bindings.items
+    count = count_files()
+
+    assert {:error, :publication_failed} =
              Repo.transaction(fn ->
-               assert {:ok, staged} = RequestImages.stage_bindings(fixture.target_step.id)
-               Ash.destroy!(fixture.target_step, actor: fixture.actor)
-
-               replacement = create_step!(fixture.target_message.id, 1, fixture.actor)
+               replacement =
+                 create_step!(fixture.target_message.id, 2, fixture.actor, staged.request)
 
                assert :ok =
                         RequestImages.attach_staged_bindings_transactional(
-                          staged,
+                          staged.bindings,
                           replacement.id
                         )
+
+               Repo.rollback(:publication_failed)
+             end)
+
+    assert Enum.map(steps_for_message(fixture.target_message.id), & &1.id) == [source.id]
+    assert count_files() == count
+    assert :ok = RequestImages.discard_staged_bindings(staged.bindings)
+    assert :ok = RequestImages.discard_staged_bindings(staged.bindings)
+    assert {:error, _} = Ash.get(StoredFile, item.file_id, authorize?: false)
+    assert :ok = validate_snapshot(first.request, source.id)
+    assert saved_step(source.id).updated_at == source.updated_at
+    assert count_files() == count - 1
+  end
+
+  test "filesystem GC discovers a resized payload after a successful nested create is rolled back" do
+    fixture = request_fixture!(oversized_png_payload())
+    raw = responses_request(fixture.file)
+    source_before = saved_step(fixture.source_step.id)
+    file_count = count_files()
+    parent = self()
+
+    assert {:error, :late_outer_failure} =
+             Repo.transaction(fn ->
+               %{step: step} =
+                 IntellectualClub.Generation.Persistence.create_request_step!(
+                   fixture.target_message,
+                   1,
+                   raw,
+                   request_context: %{adapter_module: RequestImagesTestAdapter}
+                 )
+
+               [binding] = bindings_for_step(step.id)
+               assert binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
+               send(parent, {:staged_outer_file, binding.file_id, binding.file.sha256, step.id})
+               Repo.rollback(:late_outer_failure)
+             end)
+
+    assert_receive {:staged_outer_file, file_id, sha256, step_id}
+    assert steps_for_message(fixture.target_message.id) == []
+    assert bindings_for_step(step_id) == []
+    assert {:error, _} = Ash.get(StoredFile, file_id, authorize?: false)
+    assert count_files() == file_count
+    assert FilesystemStorage.exists?(sha256)
+    assert {:ok, %{deleted: deleted}} = GarbageCollector.collect()
+    assert deleted > 0
+    refute FilesystemStorage.exists?(sha256)
+    assert FilesystemStorage.exists?(fixture.file.sha256)
+    source_after = saved_step(fixture.source_step.id)
+    assert source_after.updated_at == source_before.updated_at
+    assert source_after.raw_request == source_before.raw_request
+  end
+
+  test "exact image pins are inherited from reconstructed patch steps" do
+    fixture = request_fixture!(image_payload())
+
+    request =
+      Map.put(responses_request(fixture.file), "opaque_padding", String.duplicate("x", 4096))
+
+    first =
+      IntellectualClub.Generation.Persistence.create_request_step!(
+        fixture.target_message,
+        1,
+        request,
+        request_context: %{adapter_module: RequestImagesTestAdapter}
+      )
+
+    second =
+      IntellectualClub.Generation.Persistence.create_request_step!(
+        fixture.target_message,
+        2,
+        Map.put(first.request, "round", 2),
+        request_context: %{adapter_module: RequestImagesTestAdapter},
+        previous_request: first.request,
+        previous_step: first.step,
+        source_step_id: first.step.id
+      )
+
+    assert second.step.request_mode == :patch
+    assert :ok = validate_snapshot(second.request, second.step.id)
+
+    # The exact previous pin, not canonical lookup, must serve the third request.
+    fixture.content
+    |> Ash.Changeset.for_update(:update, %{file_id: nil}, actor: fixture.actor)
+    |> Ash.update!(actor: fixture.actor)
+
+    assert :ok = Files.delete_file_and_maybe_payload(fixture.file.id)
+
+    third =
+      IntellectualClub.Generation.Persistence.create_request_step!(
+        fixture.target_message,
+        3,
+        Map.put(second.request, "round", 3),
+        request_context: %{adapter_module: RequestImagesTestAdapter},
+        previous_request: second.request,
+        previous_step: second.step,
+        source_step_id: second.step.id
+      )
+
+    assert third.step.request_mode == :patch
+    assert :ok = validate_snapshot(third.request, third.step.id)
+    assert {:ok, wire} = hydrate(third.request, third.step.id)
+    assert inspect(wire) =~ "data:image/png;base64,"
+  end
+
+  test "transactional attachment errors can roll back partial bindings without losing staged ownership" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, first} = prepare(raw, scope(fixture))
+    assert {:ok, second} = prepare(raw, scope(fixture))
+    staged = %StagedBindings{items: first.bindings.items ++ second.bindings.items}
+
+    assert {:error, _reason} =
+             Repo.transaction(fn ->
+               step = create_step!(fixture.target_message.id, 1, fixture.actor, raw)
+
+               assert {:error, {:attach_staged_binding_failed, _ref, _reason}} =
+                        RequestImages.attach_staged_bindings_transactional(staged, step.id)
+
+               Repo.rollback(:attach_failed)
+             end)
+
+    assert steps_for_message(fixture.target_message.id) == []
+    assert :ok = RequestImages.discard_staged_bindings(staged)
+    assert count_files() == 1
+  end
+
+  test "staging source-local copies inside a failed replacement transaction preserves the source" do
+    fixture = request_fixture!(image_payload())
+
+    assert {:ok, prepared} =
+             prepare(responses_request(fixture.file), scope(fixture))
+
+    source = publish!(fixture, prepared)
+    [binding] = bindings_for_step(source.id)
+
+    assert {:error, :forced_retry_failure} =
+             Repo.transaction(fn ->
+               assert {:ok, staged} = RequestImages.stage_bindings(source.id)
+               Ash.destroy!(source, actor: fixture.actor)
+
+               replacement =
+                 create_step!(fixture.target_message.id, 1, fixture.actor, prepared.request)
+
+               assert :ok =
+                        RequestImages.attach_staged_bindings_transactional(staged, replacement.id)
 
                Repo.rollback(:forced_retry_failure)
              end)
 
-    assert Ash.get!(ChatMessageStep, fixture.target_step.id, actor: fixture.actor).id ==
-             fixture.target_step.id
-
-    assert [restored_binding] = bindings_for_step(fixture.target_step.id)
-    assert restored_binding.id == binding.id
-    assert FilesystemStorage.exists?(sha256)
-    assert {:ok, {_file, payload}} = Files.load_payload(restored_binding.file_id)
+    assert [restored] = bindings_for_step(source.id)
+    assert restored.id == binding.id
+    assert :ok = validate_snapshot(prepared.request, source.id)
+    assert {:ok, {_file, payload}} = Files.load_payload(restored.file_id)
     assert payload == fixture.payload
   end
 
-  test "discarding staged files commits logical cleanup and leaves payload retryable by GC" do
-    payload = "staged cleanup payload"
+  test "discarded prepared rendition cleanup commits logically and remains retryable by GC" do
+    fixture = request_fixture!(oversized_png_payload())
 
-    assert {:ok, file} =
-             Files.create_from_binary("staged.bin", "application/octet-stream", payload)
+    assert {:ok, prepared} =
+             prepare(responses_request(fixture.file), scope(fixture))
 
-    staged = %StagedBindings{items: [%{file_id: file.id}]}
+    [item] = prepared.bindings.items
+    assert {:ok, {file, payload}} = Files.load_payload(item.file_id)
     replace_payload_with_directory!(file.sha256)
 
-    assert :ok = RequestImages.discard_staged_bindings(staged)
-    assert {:error, _error} = Ash.get(StoredFile, file.id, authorize?: false)
-    assert {:error, _reason} = GarbageCollector.collect_sha256(file.sha256)
+    try do
+      assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+      assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
+      assert {:error, _} = GarbageCollector.collect_sha256(file.sha256)
+    after
+      restore_payload!(file.sha256, payload)
+    end
 
-    restore_payload!(file.sha256, payload)
     assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
+    assert {:ok, {_file, original}} = Files.load_payload(fixture.file.id)
+    assert original == fixture.payload
   end
+
+  test "preparation never stages a corrupt existing rendition blob and cleans its new logical row" do
+    fixture = request_fixture!(oversized_png_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, first} = prepare(raw, scope(fixture))
+    [item] = first.bindings.items
+    assert {:ok, {file, payload}} = Files.load_payload(item.file_id)
+    {:ok, path} = FilesystemStorage.path_for(file.sha256)
+    File.write!(path, "corrupt rendition")
+    count = count_files()
+
+    try do
+      assert {:error,
+              {:created_request_image_invalid,
+               {:error, :request_image_payload_integrity_mismatch}}} =
+               prepare(raw, scope(fixture))
+
+      assert count_files() == count
+      assert steps_for_message(fixture.target_message.id) == []
+      assert File.read!(path) == "corrupt rendition"
+    after
+      File.rm(path)
+      assert {:ok, :created} = FilesystemStorage.store(file.sha256, payload)
+      assert :ok = RequestImages.discard_staged_bindings(first.bindings)
+    end
+  end
+
+  test "canonical and reusable pins remain owner and chat scoped" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    source = publish!(fixture, prepared)
+    other_chat = create_chat!(fixture.actor)
+    other_scope = %ExecutionContext{owner_id: fixture.actor.id, chat_id: other_chat.id}
+    assert {:ok, denied} = prepare(raw, other_scope)
+    assert denied.bindings.items == []
+    assert [%{"type" => "input_text", "text" => @invalid_fallback}] = image_blocks(denied.request)
+
+    assert {:error, :request_image_source_out_of_scope} =
+             prepare(raw, other_scope, source_step_id: source.id)
+
+    %{user: other_actor} = user_fixture()
+
+    assert {:error, :request_image_source_out_of_scope} =
+             prepare(
+               raw,
+               %ExecutionContext{owner_id: other_actor.id, chat_id: fixture.chat.id},
+               source_step_id: source.id
+             )
+
+    assert {:ok, denied} =
+             prepare(raw, %ExecutionContext{
+               owner_id: other_actor.id,
+               chat_id: fixture.chat.id
+             })
+
+    assert denied.bindings.items == []
+  end
+
+  test "explicit available files resolve with no chat while nil scope grants no implicit access" do
+    assert {:ok, file} = Files.create_from_binary("available.png", "image/png", image_payload())
+    raw = responses_request(file)
+    assert {:ok, denied} = prepare(raw, %ExecutionContext{})
+    assert denied.bindings.items == []
+
+    assert {:ok, prepared} =
+             prepare(raw, %ExecutionContext{
+               available_file_external_ids: [to_string(file.external_id)]
+             })
+
+    assert prepared.request == raw
+    assert [_item] = prepared.bindings.items
+    assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+  end
+
+  test "handoff descendants may reuse ancestor pins" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    source = publish!(fixture, prepared)
+    Ash.destroy!(fixture.content, actor: fixture.actor)
+
+    child =
+      create_chat!(fixture.actor, %{
+        parent_chat_id: fixture.chat.id,
+        parent_message_id: fixture.target_message.id,
+        parent_relation_kind: :handoff
+      })
+
+    child_scope = %ExecutionContext{owner_id: fixture.actor.id, chat_id: child.id}
+
+    for opts <- [[], [source_step_id: source.id]] do
+      assert {:ok, inherited} = prepare(raw, child_scope, opts)
+      assert inherited.request == raw
+      assert [_item] = inherited.bindings.items
+      assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
+    end
+  end
+
+  test "linked forks permit exact prefix pins but never future parent refs or snapshots" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    anchor = publish!(fixture, prepared)
+    call = create_tool_call!(anchor, fixture.actor)
+
+    future_message =
+      create_message!(fixture.chat.id, :user, fixture.actor, fixture.target_message.id)
+
+    future_content_step = create_step!(future_message.id, 1, fixture.actor)
+
+    {future_file, _content} =
+      attach_content!(future_content_step, fixture.actor, jpeg_payload(), 1, "image/jpeg")
+
+    future_raw = responses_request(future_file)
+    assert {:ok, future} = prepare(future_raw, scope(fixture))
+    future_step = publish!(fixture, future, 2)
+    fork = linked_fork!(fixture, anchor, call)
+    fork_scope = %ExecutionContext{owner_id: fixture.actor.id, chat_id: fork.id}
+
+    assert {:ok, denied} = prepare(future_raw, fork_scope)
+    assert denied.bindings.items == []
+    assert [%{"type" => "input_text", "text" => @invalid_fallback}] = image_blocks(denied.request)
+
+    assert {:error, :request_image_source_out_of_scope} =
+             prepare(future_raw, fork_scope, source_step_id: future_step.id)
+
+    Ash.destroy!(fixture.content, actor: fixture.actor)
+    assert {:ok, inherited} = prepare(raw, fork_scope, source_step_id: anchor.id)
+    assert inherited.request == raw
+    assert [_item] = inherited.bindings.items
+    assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
+  end
+
+  test "provider image formats are not inferred without an explicit mapper" do
+    raw = four_shape_request(%{external_id: Ash.UUID.generate(), mime_type: "image/png"})
+
+    {_, queries} =
+      capture_queries(fn ->
+        assert {:ok, %{request: ^raw, bindings: %StagedBindings{items: []}}} =
+                 RequestImages.prepare(raw, %ExecutionContext{},
+                   mapper: RequestImages.mapper(nil)
+                 )
+
+        assert {:ok, ^raw} = RequestImages.hydrate(raw, nil, mapper: RequestImages.mapper(nil))
+      end)
+
+    assert queries == []
+  end
+
+  test "cold hydration loads once and encodes repeated occurrences once per wire format" do
+    fixture = request_fixture!(image_payload())
+    raw = four_shape_request(fixture.file)
+    raw = put_blocks(raw, List.duplicate(image_blocks(raw), 3) |> List.flatten())
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    assert prepared.image_state.request == prepared.request
+    assert map_size(prepared.image_state.descriptors) == 1
+    assert map_size(prepared.image_state.cache) == 2
+    assert_wire_cache(prepared.image_state.cache, fixture.payload)
+    refute Jason.encode!(prepared.request) =~ ";base64,"
+    step = publish!(fixture, prepared)
+    telemetry = observe_image_cache()
+    cache_tag = make_ref()
+    test_pid = self()
+
+    assert {:ok, wire} =
+             hydrate(prepared.request, step.id,
+               cache: %{},
+               on_cache: &send(test_pid, {cache_tag, &1})
+             )
+
+    for blocks <- Enum.chunk_every(image_blocks(wire), 4) do
+      assert_wire_blocks(blocks, fixture.payload, "image/png")
+    end
+
+    assert_receive {^cache_tag, cache}
+    assert cache == prepared.image_state.cache
+    assert_wire_cache(cache, fixture.payload)
+    encoded_size = byte_size(Base.encode64(fixture.payload))
+
+    assert image_cache_counters(telemetry) == %{
+             loaded_bytes: byte_size(fixture.payload),
+             miss: 2,
+             hit: 0,
+             encoded_bytes: encoded_size * 2 + byte_size("data:image/png;base64,")
+           }
+  end
+
+  test "second hydration reuses verified wire cache without loading, hashing or encoding bytes" do
+    fixture = request_fixture!(image_payload())
+    assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+    step = publish!(fixture, prepared)
+    [binding] = bindings_for_step(step.id)
+    telemetry = observe_image_cache()
+    cache_tag = make_ref()
+    test_pid = self()
+
+    assert {:ok, first_wire} =
+             hydrate(prepared.request, step.id,
+               cache: %{},
+               on_cache: &send(test_pid, {cache_tag, &1})
+             )
+
+    assert_receive {^cache_tag, cache}
+    assert image_cache_counters(telemetry).loaded_bytes == byte_size(fixture.payload)
+    {:ok, path} = FilesystemStorage.path_for(binding.file.sha256)
+    File.rm!(path)
+
+    try do
+      assert {:ok, ^first_wire} =
+               hydrate(prepared.request, step.id,
+                 cache: cache,
+                 on_cache: &send(test_pid, {cache_tag, &1})
+               )
+
+      assert_receive {^cache_tag, ^cache}
+
+      assert %{loaded_bytes: 0, miss: 0, encoded_bytes: 0, hit: hits} =
+               image_cache_counters(telemetry)
+
+      assert hits > 0
+      assert_wire_cache(cache, fixture.payload)
+      assert saved_step(step.id).raw_request == prepared.request
+    after
+      assert {:ok, :created} = FilesystemStorage.store(binding.file.sha256, fixture.payload)
+    end
+  end
+
+  test "inherited prepare reuses a warm cache while staging independent logical files" do
+    fixture = request_fixture!(image_payload())
+    assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+    source = publish!(fixture, prepared)
+    [source_binding] = bindings_for_step(source.id)
+    Ash.destroy!(fixture.content, actor: fixture.actor)
+    assert {:error, _} = Ash.get(StoredFile, fixture.file.id, authorize?: false)
+    {:ok, path} = FilesystemStorage.path_for(source_binding.file.sha256)
+    File.rm!(path)
+    telemetry = observe_image_cache()
+
+    try do
+      assert {:ok, inherited} =
+               prepare(prepared.request, scope(fixture),
+                 source_step_id: source.id,
+                 cache: prepared.image_state.cache
+               )
+
+      assert inherited.request == prepared.request
+      assert inherited.image_state.request == prepared.request
+      assert inherited.image_state.cache == prepared.image_state.cache
+      assert_wire_cache(inherited.image_state.cache, fixture.payload)
+      assert [item] = inherited.bindings.items
+      refute item.file_id == source_binding.file_id
+      assert item.reference_key == to_string(source_binding.reference_key)
+      step = publish!(fixture, inherited, 2)
+      assert {:ok, wire} = hydrate(inherited.request, step.id, cache: inherited.image_state.cache)
+      assert_wire_payload(wire, fixture.payload, "image/png")
+
+      assert %{loaded_bytes: 0, miss: 0, encoded_bytes: 0, hit: hits} =
+               image_cache_counters(telemetry)
+
+      assert hits > 0
+      assert saved_step(source.id).raw_request == prepared.request
+      assert saved_step(step.id).raw_request == prepared.request
+    after
+      assert {:ok, :created} =
+               FilesystemStorage.store(source_binding.file.sha256, fixture.payload)
+    end
+  end
+
+  test "warm cache never bypasses a missing step-local binding in hydration or inherited prepare" do
+    fixture = request_fixture!(image_payload())
+    assert {:ok, prepared} = prepare(responses_request(fixture.file), scope(fixture))
+    _source = publish!(fixture, prepared)
+    unbound = create_step!(fixture.target_message.id, 2, fixture.actor, prepared.request)
+    ref = to_string(fixture.file.external_id)
+    count = count_files()
+    telemetry = observe_image_cache()
+    cache_tag = make_ref()
+    test_pid = self()
+
+    for step_id <- [nil, unbound.id] do
+      assert {:error, {:request_image_binding_not_found, ^ref}} =
+               hydrate(prepared.request, step_id,
+                 cache: prepared.image_state.cache,
+                 on_cache: &send(test_pid, {cache_tag, &1})
+               )
+    end
+
+    assert {:error, {:request_image_binding_not_found, ^ref}} =
+             prepare(prepared.request, scope(fixture),
+               source_step_id: unbound.id,
+               cache: prepared.image_state.cache
+             )
+
+    assert count_files() == count
+    assert bindings_for_step(unbound.id) == []
+
+    assert image_cache_counters(telemetry) == %{
+             loaded_bytes: 0,
+             miss: 0,
+             hit: 0,
+             encoded_bytes: 0
+           }
+
+    refute_received {^cache_tag, _cache}
+  end
+
+  test "warm cache cannot bypass source and variant validation on an existing binding" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    _source = publish!(fixture, prepared)
+    ref = to_string(fixture.file.external_id)
+    telemetry = observe_image_cache()
+
+    invalid_bindings = [
+      {Ash.UUID.generate(), "identity:v1", {:request_image_binding_source_mismatch, ref}},
+      {ref, "unknown:v1", {:unsupported_request_image_binding_variant, "unknown:v1"}}
+    ]
+
+    for {{source_ref, variant, expected_error}, sequence} <-
+          Enum.with_index(invalid_bindings, 2) do
+      step = create_step!(fixture.target_message.id, sequence, fixture.actor, raw)
+      assert {:ok, file} = Files.duplicate_file(fixture.file.id)
+      create_binding!(step.id, file.id, ref, source_ref, variant)
+
+      assert {:error, ^expected_error} = hydrate(raw, step.id, cache: prepared.image_state.cache)
+
+      assert {:error, ^expected_error} =
+               prepare(raw, scope(fixture),
+                 source_step_id: step.id,
+                 cache: prepared.image_state.cache
+               )
+    end
+
+    assert image_cache_counters(telemetry) == %{
+             loaded_bytes: 0,
+             miss: 0,
+             hit: 0,
+             encoded_bytes: 0
+           }
+  end
+
+  test "cache keys use bound content rather than only the stable image reference" do
+    fixture = request_fixture!(image_payload())
+    raw = responses_request(fixture.file)
+    assert {:ok, prepared} = prepare(raw, scope(fixture))
+    _source = publish!(fixture, prepared)
+    ref = to_string(fixture.file.external_id)
+    changed_payload = IntellectualClub.ImageFixtures.png(2, 1)
+
+    assert {:ok, changed_file} =
+             Files.create_from_binary("changed.png", "image/png", changed_payload)
+
+    changed_step = create_step!(fixture.target_message.id, 2, fixture.actor, raw)
+    create_binding!(changed_step.id, changed_file.id, ref, ref, "identity:v1")
+    telemetry = observe_image_cache()
+    cache_tag = make_ref()
+    test_pid = self()
+
+    assert {:ok, wire} =
+             hydrate(raw, changed_step.id,
+               cache: prepared.image_state.cache,
+               on_cache: &send(test_pid, {cache_tag, &1})
+             )
+
+    assert [block] = image_blocks(wire)
+    assert block["image_url"] == "data:image/png;base64," <> Base.encode64(changed_payload)
+    assert_receive {^cache_tag, updated_cache}
+    assert_wire_cache(updated_cache, changed_payload)
+    assert map_size(updated_cache) == 1
+    assert Map.keys(updated_cache) == [{changed_file.sha256, "image/png", :data_url}]
+
+    assert image_cache_counters(telemetry) == %{
+             loaded_bytes: byte_size(changed_payload),
+             miss: 1,
+             hit: 0,
+             encoded_bytes: byte_size(block["image_url"])
+           }
+  end
+
+  test "cold hydration still rejects missing and same-size corrupt payloads without cache updates" do
+    fixture = request_fixture!(image_payload())
+    assert {:ok, prepared} = prepare(responses_request(fixture.file), scope(fixture))
+    step = publish!(fixture, prepared)
+    [binding] = bindings_for_step(step.id)
+    {:ok, path} = FilesystemStorage.path_for(binding.file.sha256)
+    File.rm!(path)
+    telemetry = observe_image_cache()
+    cache_tag = make_ref()
+    test_pid = self()
+    opts = [cache: %{}, on_cache: &send(test_pid, {cache_tag, &1})]
+
+    try do
+      assert {:error, :payload_not_found} = hydrate(prepared.request, step.id, opts)
+
+      assert image_cache_counters(telemetry) == %{
+               loaded_bytes: 0,
+               miss: 0,
+               hit: 0,
+               encoded_bytes: 0
+             }
+
+      <<_first, rest::binary>> = fixture.payload
+      File.write!(path, <<0, rest::binary>>)
+
+      assert {:error, :request_image_payload_integrity_mismatch} =
+               hydrate(prepared.request, step.id, opts)
+
+      assert image_cache_counters(telemetry) == %{
+               loaded_bytes: byte_size(fixture.payload),
+               miss: 0,
+               hit: 0,
+               encoded_bytes: 0
+             }
+
+      refute_received {^cache_tag, _cache}
+    after
+      File.rm(path)
+      assert {:ok, :created} = FilesystemStorage.store(binding.file.sha256, fixture.payload)
+    end
+  end
+
+  defp prepare(request, scope, opts \\ []) do
+    RequestImages.prepare(request, scope, with_mapper(opts))
+  end
+
+  defp hydrate(request, step_id, opts \\ []) do
+    RequestImages.hydrate(request, step_id, with_mapper(opts))
+  end
+
+  defp validate_snapshot(request, step_id) do
+    RequestImages.validate_snapshot(request, step_id, with_mapper([]))
+  end
+
+  defp with_mapper(opts),
+    do: Keyword.put_new(opts, :mapper, &RequestImagesTestAdapter.map_request_images/3)
 
   defp request_fixture!(payload, opts \\ []) do
     %{user: actor} = user_fixture()
-
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-      |> Ash.create!(actor: actor)
-
+    chat = create_chat!(actor)
     source_message = create_message!(chat.id, :user, actor)
     source_step = create_step!(source_message.id, 1, actor)
 
-    item =
-      ChatMessageItem
-      |> Ash.Changeset.for_create(
-        :create,
-        %{chat_message_step_id: source_step.id, sequence: 1, type: :input},
-        actor: actor
+    {file, content} =
+      attach_content!(
+        source_step,
+        actor,
+        payload,
+        1,
+        Keyword.get(opts, :mime_type, "image/png"),
+        Keyword.get(opts, :filename, "source.png")
       )
-      |> Ash.create!(actor: actor)
 
-    mime_type = Keyword.get(opts, :mime_type, "image/png")
-    filename = Keyword.get(opts, :filename, "source.png")
-    {:ok, file} = Files.create_from_binary(filename, mime_type, payload)
-
-    content =
-      ChatMessageContent
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          chat_message_item_id: item.id,
-          sequence: 1,
-          kind: :media,
-          file_id: file.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    target_message = create_message!(chat.id, :assistant, actor, source_message.id)
-    target_step = create_step!(target_message.id, 1, actor)
-    unbound_step = create_step!(target_message.id, 2, actor)
+    target_message =
+      if Keyword.get(opts, :target_message?, true),
+        do: create_message!(chat.id, :assistant, actor, source_message.id)
 
     %{
       actor: actor,
@@ -475,29 +1255,38 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       source_message: source_message,
       source_step: source_step,
       target_message: target_message,
-      target_step: target_step,
-      unbound_step: unbound_step,
       content: content,
       file: file,
       payload: payload
     }
   end
 
-  defp create_message!(chat_id, role, actor, parent_id \\ nil) do
-    attrs = %{
-      chat_id: chat_id,
-      role: role,
-      parent_id: parent_id,
-      status: :done,
-      token_count: 0
+  defp scope(fixture) do
+    %ExecutionContext{
+      owner_id: fixture.actor.id,
+      chat_id: fixture.chat.id,
+      message_id: fixture.source_message.id,
+      assistant_message_id: nil
     }
+  end
 
-    ChatMessage
-    |> Ash.Changeset.for_create(:add_message, attrs, actor: actor)
+  defp create_chat!(actor, attrs \\ %{}) do
+    Chat
+    |> Ash.Changeset.for_create(:create, Map.put_new(attrs, :note, ""), actor: actor)
     |> Ash.create!(actor: actor)
   end
 
-  defp create_step!(message_id, sequence, actor) do
+  defp create_message!(chat_id, role, actor, parent_id \\ nil) do
+    ChatMessage
+    |> Ash.Changeset.for_create(
+      :add_message,
+      %{chat_id: chat_id, role: role, parent_id: parent_id, status: :done, token_count: 0},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp create_step!(message_id, sequence, actor, raw \\ %{}) do
     ChatMessageStep
     |> Ash.Changeset.for_create(
       :create,
@@ -505,42 +1294,148 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
         chat_message_id: message_id,
         sequence: sequence,
         status: :done,
-        raw_request: %{}
+        raw_request: raw,
+        response_final: true
       },
       actor: actor
     )
     |> Ash.create!(actor: actor)
   end
 
+  defp publish!(fixture, prepared, sequence \\ 1) do
+    assert {:ok, step} =
+             Repo.transaction(fn ->
+               step =
+                 create_step!(
+                   fixture.target_message.id,
+                   sequence,
+                   fixture.actor,
+                   prepared.request
+                 )
+
+               assert :ok =
+                        RequestImages.attach_staged_bindings_transactional(
+                          prepared.bindings,
+                          step.id
+                        )
+
+               step
+             end)
+
+    step
+  end
+
+  defp attach_content!(step, actor, payload, sequence, mime_type, filename \\ "source.png") do
+    item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: sequence, type: :input},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, file} = Files.create_from_binary(filename, mime_type, payload)
+
+    content =
+      ChatMessageContent
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_item_id: item.id, sequence: 1, kind: :media, file_id: file.id},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {file, content}
+  end
+
+  defp create_binding!(step_id, file_id, ref, source_ref, variant) do
+    ChatMessageStepRequestFile
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_step_id: step_id,
+        file_id: file_id,
+        reference_key: ref,
+        source_file_external_id: source_ref,
+        variant_key: variant
+      },
+      authorize?: false
+    )
+    |> Ash.create!(authorize?: false)
+  end
+
+  defp create_tool_call!(step, actor) do
+    item =
+      ChatMessageItem
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_step_id: step.id, sequence: 1, type: :tool_call},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    ChatMessageContent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_item_id: item.id,
+        sequence: 1,
+        kind: :opaque,
+        content_json: %{
+          "call_id" => "fork_images",
+          "name" => "fork_chat",
+          "arguments" => %{"task" => "inspect images"}
+        }
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    item
+  end
+
+  defp linked_fork!(fixture, anchor, call) do
+    Chat
+    |> Ash.Changeset.for_create(
+      :create_empty,
+      %{
+        note: "",
+        parent_chat_id: fixture.chat.id,
+        parent_message_id: fixture.target_message.id,
+        parent_tool_call_item_id: call.id,
+        parent_relation_kind: :fork
+      },
+      actor: fixture.actor
+    )
+    |> Ash.Changeset.force_change_attribute(:fork_source_step_id, anchor.id)
+    |> Ash.Changeset.force_change_attribute(:fork_task, "inspect images")
+    |> Ash.create!(actor: fixture.actor)
+  end
+
   defp four_shape_request(file, opts \\ []) do
-    data_url_marker = RequestImages.marker(to_string(file.external_id), file.mime_type, :data_url)
-    base64_marker = RequestImages.marker(to_string(file.external_id), file.mime_type, :base64)
+    data_url = RequestImages.marker(to_string(file.external_id), file.mime_type, :data_url)
+    base64 = RequestImages.marker(to_string(file.external_id), file.mime_type, :base64)
 
     anthropic = %{
       "type" => "image",
-      "source" => %{
-        "type" => "base64",
-        "media_type" => file.mime_type,
-        "data" => base64_marker
-      }
+      "source" => %{"type" => "base64", "media_type" => file.mime_type, "data" => base64}
     }
 
     anthropic =
-      if Keyword.get(opts, :anthropic_cache_control?, false) do
-        Map.put(anthropic, "cache_control", %{"type" => "ephemeral"})
-      else
-        anthropic
-      end
+      if Keyword.get(opts, :anthropic_cache_control?, false),
+        do: Map.put(anthropic, "cache_control", %{"type" => "ephemeral"}),
+        else: anthropic
 
     %{
       "messages" => [
         %{
           "role" => "user",
           "content" => [
-            %{"type" => "input_image", "image_url" => data_url_marker},
-            %{"type" => "image_url", "image_url" => %{"url" => data_url_marker}},
+            %{"type" => "input_image", "image_url" => data_url},
+            %{"type" => "image_url", "image_url" => %{"url" => data_url}},
             anthropic,
-            %{"type" => "image", "mime_type" => file.mime_type, "data" => base64_marker}
+            %{"type" => "image", "mime_type" => file.mime_type, "data" => base64}
           ]
         }
       ]
@@ -548,7 +1443,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
   end
 
   defp responses_request(file) do
-    marker = RequestImages.marker(to_string(file.external_id), file.mime_type, :data_url)
+    marker = RequestImages.marker(to_string(file.external_id), file.mime_type)
 
     %{
       "input" => [
@@ -561,9 +1456,37 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     }
   end
 
-  defp image_blocks(request) do
-    container = List.first(request["messages"] || request["input"])
-    container["content"]
+  defp image_blocks(request), do: hd(request["messages"] || request["input"])["content"]
+
+  defp put_blocks(request, blocks) do
+    key = if Map.has_key?(request, "messages"), do: "messages", else: "input"
+    Map.update!(request, key, fn [container] -> [Map.put(container, "content", blocks)] end)
+  end
+
+  defp assert_wire_payload(wire, payload, mime_type),
+    do: assert_wire_blocks(image_blocks(wire), payload, mime_type)
+
+  defp assert_wire_blocks([responses, openrouter, anthropic, google], payload, mime_type) do
+    assert responses["image_url"] == "data:#{mime_type};base64," <> Base.encode64(payload)
+    assert openrouter["image_url"]["url"] == responses["image_url"]
+    assert Base.decode64!(anthropic["source"]["data"]) == payload
+    assert anthropic["source"]["media_type"] == mime_type
+    assert Base.decode64!(google["data"]) == payload
+    assert google["mime_type"] == mime_type
+  end
+
+  defp assert_fallback(request, text, opts \\ []) do
+    [responses, openrouter, anthropic, google] = image_blocks(request)
+    assert responses == %{"type" => "input_text", "text" => text}
+    assert openrouter == %{"type" => "text", "text" => text}
+
+    expected_anthropic =
+      if Keyword.get(opts, :anthropic_cache_control?, false),
+        do: %{"type" => "text", "text" => text, "cache_control" => %{"type" => "ephemeral"}},
+        else: %{"type" => "text", "text" => text}
+
+    assert anthropic == expected_anthropic
+    assert google == %{"type" => "text", "text" => text}
   end
 
   defp bindings_for_step(step_id) do
@@ -573,19 +1496,47 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     |> Ash.read!(authorize?: false, load: [:file])
   end
 
-  defp count_files do
-    StoredFile
+  defp steps_for_message(message_id) do
+    ChatMessageStep
+    |> Ash.Query.filter(chat_message_id == ^message_id)
+    |> Ash.Query.sort(sequence: :asc)
     |> Ash.read!(authorize?: false)
-    |> length()
   end
 
-  defp decode_data_url("data:" <> data_url) do
-    [_metadata, encoded] = String.split(data_url, ";base64,", parts: 2)
-    Base.decode64!(encoded)
+  defp saved_step(id), do: Ash.get!(ChatMessageStep, id, authorize?: false, load: [:raw_request])
+  defp count_files, do: StoredFile |> Ash.read!(authorize?: false) |> length()
+
+  defp capture_queries(fun) do
+    tag = make_ref()
+    handler = {__MODULE__, tag}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:intellectual_club, :repo, :query],
+        &__MODULE__.record_query/4,
+        {self(), tag}
+      )
+
+    try do
+      result = fun.()
+      {result, collect_queries(tag, [])}
+    after
+      :telemetry.detach(handler)
+    end
   end
 
-  defp marker_mime_type(%{"$intellectual_club_file" => marker}),
-    do: marker["mime_type"]
+  @doc false
+  def record_query(_event, _measurements, metadata, {pid, tag}),
+    do: send(pid, {tag, metadata.query})
+
+  defp collect_queries(tag, queries) do
+    receive do
+      {^tag, query} -> collect_queries(tag, [query | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
+  end
 
   defp image_payload do
     <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,

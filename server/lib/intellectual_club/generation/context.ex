@@ -14,8 +14,12 @@ defmodule IntellectualClub.Generation.Context do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Relations
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.ForkHistory
+  alias IntellectualClub.Generation.Context.{Preparation, StalePreparationError}
   alias IntellectualClub.Generation.History
+  alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.SystemPrompt
   alias IntellectualClub.Llm.LlmConfiguration
@@ -35,6 +39,7 @@ defmodule IntellectualClub.Generation.Context do
     :conversation_affinity_id,
     :bot_id,
     :message_id,
+    :parent_message_id,
     :step_id,
     :llm_configuration_id,
     :history_mode,
@@ -58,6 +63,7 @@ defmodule IntellectualClub.Generation.Context do
     :fix_role_alteration,
     :messages,
     :request_payload,
+    :request_images,
     :chunk_delay_ms,
     :tools_payload,
     :tool_instances_by_alias,
@@ -140,7 +146,7 @@ defmodule IntellectualClub.Generation.Context do
     with {:ok, message} <- load_retry_message(message_id, actor),
          :ok <- validate_retry_message(message, allowed_statuses),
          {:ok, retry_step} <- load_retry_step(message, opts),
-         {:ok, request_payload} <- normalize_retry_request_payload(retry_step.raw_request),
+         {:ok, request_payload} <- retry_request_payload(retry_step.id, actor),
          {:ok, chat} <- load_retry_chat(message),
          {:ok, llm_configuration} <- resolve_retry_configuration(message, chat, actor) do
       tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
@@ -202,6 +208,7 @@ defmodule IntellectualClub.Generation.Context do
         conversation_affinity_id: Relations.lineage_root_id(chat, actor),
         bot_id: chat.bot_id,
         message_id: message.id,
+        parent_message_id: message.parent_id,
         step_id: retry_step.id,
         llm_configuration_id: llm_configuration && llm_configuration.id,
         history_mode: :agent,
@@ -277,6 +284,10 @@ defmodule IntellectualClub.Generation.Context do
       |> Ash.Query.limit(1)
       |> Ash.read_one!(actor: actor)
 
+    unless message.chat_id == chat.id and not is_nil(step) do
+      raise ArgumentError, "Prepared generation does not belong to the chat"
+    end
+
     llm_configuration =
       case resolve_retry_configuration(message, chat, actor) do
         {:ok, configuration} ->
@@ -329,6 +340,7 @@ defmodule IntellectualClub.Generation.Context do
       conversation_affinity_id: Relations.lineage_root_id(chat, actor),
       bot_id: chat.bot_id,
       message_id: message.id,
+      parent_message_id: message.parent_id,
       step_id: step.id,
       llm_configuration_id: llm_configuration && llm_configuration.id,
       history_mode: :prepared_raw,
@@ -377,14 +389,296 @@ defmodule IntellectualClub.Generation.Context do
     }
   end
 
-  def build!(chat_id, opts \\ []) do
+  @doc """
+  Prepares an authorized request without creating messages, steps or image pins.
+
+  Content and settings are read best-effort and may become stale before publication.
+  Only publication identity and branch state are revalidated. Existing transactions
+  and native images use the protected build! fallback; text-only pending user
+  contents are supported for queue orchestration.
+  """
+  def prepare(chat_id, opts \\ []) do
     actor = Keyword.get(opts, :actor)
 
+    with :ok <- validate_pending_user(opts),
+         false <- Ash.DataLayer.in_transaction?(Chat),
+         {:ok, chat} <- preparation_chat(chat_id, actor) do
+      context = build_draft!(chat, opts)
+
+      if native_image_marker?(context.request_payload) do
+        {:fallback, :native_request_images}
+      else
+        preparation = %Preparation{
+          context: context,
+          actor_id: actor.id,
+          chat_id: chat.id,
+          parent_id: context.parent_message_id,
+          last_message_id: chat.last_message_id,
+          intent: publication_intent(opts),
+          opts: opts
+        }
+
+        :telemetry.execute([:intellectual_club, :generation, :context, :prepared], %{}, %{
+          chat_id: chat_id
+        })
+
+        {:ok, preparation}
+      end
+    else
+      true -> {:fallback, :existing_transaction}
+      result -> result
+    end
+  rescue
+    _error in Ash.Error.Forbidden -> {:error, :forbidden}
+    exception -> {:error, exception}
+  end
+
+  defp preparation_chat(chat_id, %{id: actor_id} = actor) when is_integer(actor_id) do
+    chat = load_draft_chat!(chat_id, actor)
+    if chat.owner_id == actor_id, do: {:ok, chat}, else: {:error, :forbidden}
+  end
+
+  defp preparation_chat(_chat_id, _actor), do: {:error, :forbidden}
+
+  @doc "Publishes a prepared request after authorization and branch-state validation."
+  def publish!(%Preparation{} = preparation, opts \\ []) do
+    actor = Keyword.get(opts, :actor)
+
+    publication_transaction!(fn ->
+      chat = lock_owned_chat!(preparation.chat_id, actor)
+
+      if actor.id != preparation.actor_id or
+           preparation.context.owner_id != actor.id or
+           preparation.context.chat_id != preparation.chat_id or
+           preparation.context.parent_message_id != preparation.parent_id do
+        raise ArgumentError, "Generation preparation identity mismatch"
+      end
+
+      if chat.last_message_id != preparation.last_message_id or
+           publication_intent(preparation.opts) != preparation.intent or
+           preparation.parent_id != generation_parent_id(preparation.opts, chat) do
+        raise StalePreparationError, chat_id: preparation.chat_id
+      end
+
+      validate_prepared_parent!(preparation, actor)
+
+      parent_id =
+        create_pending_user!(preparation.chat_id, preparation.parent_id, preparation.opts, actor)
+
+      persist_initial_generation!(preparation.context, parent_id, actor)
+    end)
+  end
+
+  defp publication_intent(opts) do
+    opts
+    |> Keyword.take([
+      :parent_id,
+      :pending_user_contents,
+      :tools_payload_override,
+      :completion_effect,
+      :chunk_delay_ms
+    ])
+    |> Map.new()
+  end
+
+  defp validate_prepared_parent!(%Preparation{parent_id: nil}, _actor), do: :ok
+
+  defp validate_prepared_parent!(preparation, actor) do
+    parent =
+      ChatMessage
+      |> Ash.Query.filter(id == ^preparation.parent_id and chat_id == ^preparation.chat_id)
+      |> Ash.Query.select([:id])
+      |> Ash.read_one!(actor: actor, authorize?: true)
+
+    if is_nil(parent), do: raise(StalePreparationError, chat_id: preparation.chat_id)
+    :ok
+  end
+
+  @doc "Builds and atomically publishes a generation; existing transactional callers remain valid."
+  def build!(chat_id, opts \\ []) do
+    if Ash.DataLayer.in_transaction?(Chat),
+      do: build_locked!(chat_id, opts),
+      else: build_with_retries!(chat_id, opts, 2)
+  end
+
+  defp build_with_retries!(chat_id, opts, attempts) do
+    case prepare(chat_id, opts) do
+      {:ok, preparation} ->
+        publish!(preparation, actor: Keyword.get(opts, :actor))
+
+      {:fallback, _reason} ->
+        build_locked!(chat_id, opts)
+
+      {:error, %StalePreparationError{}} when attempts > 0 ->
+        build_with_retries!(chat_id, opts, attempts - 1)
+
+      {:error, %StalePreparationError{}} ->
+        build_locked!(chat_id, opts)
+
+      {:error, reason} ->
+        raise_preparation_error(reason)
+    end
+  rescue
+    _error in StalePreparationError ->
+      if attempts > 0,
+        do: build_with_retries!(chat_id, opts, attempts - 1),
+        else: build_locked!(chat_id, opts)
+  end
+
+  defp build_locked!(chat_id, opts) do
+    actor = Keyword.get(opts, :actor)
+
+    publication_transaction!(fn ->
+      chat = lock_owned_chat!(chat_id, actor)
+      parent_id = create_pending_user!(chat_id, generation_parent_id(opts, chat), opts, actor)
+
+      draft_opts =
+        opts |> Keyword.delete(:pending_user_contents) |> Keyword.put(:parent_id, parent_id)
+
+      persist_initial_generation!(build_draft!(chat_id, draft_opts), parent_id, actor)
+    end)
+  end
+
+  defp publication_transaction!(fun) do
+    case Ash.transaction(
+           [
+             Chat,
+             ChatMessage,
+             ChatMessageStep,
+             ChatMessageItem,
+             IntellectualClub.Chat.ChatMessageContent
+           ],
+           fun
+         ) do
+      {:ok, result} -> result
+      {:error, reason} -> raise_preparation_error(reason)
+    end
+  end
+
+  defp lock_owned_chat!(chat_id, actor) do
     chat =
-      Ash.get!(Chat, chat_id,
-        actor: actor,
-        load: [:bot, :last_message, llm_configuration: [:provider]]
-      )
+      Chat
+      |> Ash.Query.filter(id == ^chat_id)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
+      |> Ash.read_one!(actor: actor, authorize?: true)
+
+    if is_nil(chat) or is_nil(actor) or chat.owner_id != Map.get(actor, :id) do
+      raise ArgumentError, "Generation requires the chat owner"
+    end
+
+    chat
+  end
+
+  defp raise_preparation_error(%{__exception__: true} = error), do: raise(error)
+
+  defp raise_preparation_error(reason),
+    do: raise("Failed to prepare generation: #{inspect(reason)}")
+
+  defp validate_pending_user(opts) do
+    case Keyword.fetch(opts, :pending_user_contents) do
+      :error ->
+        :ok
+
+      {:ok, [_ | _] = contents} ->
+        cond do
+          not Enum.all?(
+            contents,
+            &match?(%{kind: :text, content_text: text} when is_binary(text), &1)
+          ) ->
+            {:fallback, :pending_user_media}
+
+          Threads.normalize_content_specs(contents) == [] ->
+            {:error, :invalid_pending_user_contents}
+
+          true ->
+            :ok
+        end
+
+      _other ->
+        {:error, :invalid_pending_user_contents}
+    end
+  end
+
+  defp append_pending_user(branch, opts) do
+    case Keyword.fetch(opts, :pending_user_contents) do
+      :error ->
+        branch
+
+      {:ok, contents} ->
+        branch ++
+          [
+            %{
+              role: :user,
+              status: :done,
+              steps: [
+                %{
+                  sequence: 1,
+                  status: :done,
+                  items: [
+                    %{
+                      sequence: 1,
+                      type: :input,
+                      contents: Threads.normalize_content_specs(contents)
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+    end
+  end
+
+  defp create_pending_user!(chat_id, parent_id, opts, actor) do
+    case Keyword.fetch(opts, :pending_user_contents) do
+      :error ->
+        parent_id
+
+      {:ok, contents} ->
+        message =
+          ChatMessage
+          |> Ash.Changeset.for_create(
+            :add_user_message_with_contents,
+            %{
+              chat_id: chat_id,
+              parent_id: parent_id,
+              contents: contents,
+              use_active_leaf_parent: false
+            },
+            actor: actor
+          )
+          |> Ash.create!(actor: actor)
+
+        message.id
+    end
+  end
+
+  defp native_image_marker?(%{} = value) do
+    Map.has_key?(value, "$intellectual_club_file") or
+      Enum.any?(Map.values(value), &native_image_marker?/1)
+  end
+
+  defp native_image_marker?(value) when is_list(value),
+    do: Enum.any?(value, &native_image_marker?/1)
+
+  defp native_image_marker?(_value), do: false
+
+  defp load_draft_chat!(chat_id, actor) do
+    Ash.get!(Chat, chat_id,
+      actor: actor,
+      authorize?: true,
+      load: [:bot, :last_message, llm_configuration: [:provider]]
+    )
+  end
+
+  defp build_draft!(chat_id, opts) when is_integer(chat_id) do
+    chat_id
+    |> load_draft_chat!(Keyword.get(opts, :actor))
+    |> build_draft!(opts)
+  end
+
+  defp build_draft!(%Chat{} = chat, opts) do
+    chat_id = chat.id
+    actor = Keyword.get(opts, :actor)
 
     owner_id = actor && actor.id
     conversation_affinity_id = Relations.lineage_root_id(chat, actor)
@@ -392,6 +686,7 @@ defmodule IntellectualClub.Generation.Context do
     target_parent_id = generation_parent_id(opts, chat)
 
     source_branch = effective_history_branch!(chat, target_parent_id, actor)
+    source_branch = append_pending_user(source_branch, opts)
 
     history = history_branch_for_generation(source_branch)
 
@@ -515,22 +810,12 @@ defmodule IntellectualClub.Generation.Context do
            messages, cache_control_enabled, history_length, adapter_module}
       end
 
-    {generating_message, initial_step} =
-      persist_initial_generation!(
-        chat_id,
-        target_parent_id,
-        chat.llm_configuration_id,
-        request_payload,
-        actor
-      )
-
     %__MODULE__{
       owner_id: owner_id,
       chat_id: chat_id,
       conversation_affinity_id: conversation_affinity_id,
       bot_id: chat.bot_id,
-      message_id: generating_message.id,
-      step_id: initial_step.id,
+      parent_message_id: target_parent_id,
       llm_configuration_id: chat.llm_configuration_id,
       history_mode: history_mode,
       history: history_entries,
@@ -570,8 +855,8 @@ defmodule IntellectualClub.Generation.Context do
       context_soft_limit_percent: context_soft_limit_percent_for_chat(chat),
       cache_control_enabled: cache_control_enabled,
       history_length: history_length,
-      initial_step_sequence: initial_step.sequence,
-      initial_step_status: initial_step.status,
+      initial_step_sequence: 1,
+      initial_step_status: :waiting_provider,
       completion_effect: Keyword.get(opts, :completion_effect),
       chunk_delay_ms:
         Keyword.get(
@@ -582,63 +867,44 @@ defmodule IntellectualClub.Generation.Context do
     }
   end
 
-  defp persist_initial_generation!(
-         chat_id,
-         target_parent_id,
-         llm_configuration_id,
-         request_payload,
-         actor
-       ) do
-    case Ash.transaction([ChatMessage, ChatMessageStep], fn ->
-           generating_message_params = %{
-             chat_id: chat_id,
-             parent_id: target_parent_id,
-             llm_configuration_id: llm_configuration_id,
-             token_count: 0
-           }
+  defp persist_initial_generation!(%__MODULE__{} = draft, parent_id, actor) do
+    generating_message =
+      ChatMessage
+      |> Ash.Changeset.for_create(
+        :create_generating_assistant,
+        %{
+          chat_id: draft.chat_id,
+          parent_id: parent_id,
+          llm_configuration_id: draft.llm_configuration_id,
+          token_count: 0
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
 
-           generating_message =
-             ChatMessage
-             |> Ash.Changeset.for_create(:create_generating_assistant, generating_message_params,
-               actor: actor
-             )
-             |> Ash.create!(actor: actor)
+    request_context = %{draft | message_id: generating_message.id, parent_message_id: parent_id}
 
-           initial_step =
-             ChatMessageStep
-             |> Ash.Changeset.for_create(
-               :create,
-               %{
-                 chat_message_id: generating_message.id,
-                 sequence: 1,
-                 status: :waiting_provider,
-                 raw_request: normalize_initial_step_request(request_payload),
-                 raw_response: nil,
-                 response_final: false,
-                 input_tokens: nil,
-                 output_tokens: nil,
-                 cached_input_tokens: nil,
-                 reasoning_tokens: nil,
-                 cost: nil,
-                 first_token_at: nil,
-                 last_token_at: nil,
-                 finished_at: nil
-               },
-               actor: actor
-             )
-             |> Ash.create!(actor: actor)
+    %{step: step, request: request} =
+      created =
+      Persistence.create_request_step!(generating_message, 1, draft.request_payload,
+        request_context: request_context,
+        force_full: true
+      )
 
-           {generating_message, initial_step}
-         end) do
-      {:ok, result} -> result
-      {:error, reason} -> raise "Failed to persist initial generation: #{inspect(reason)}"
-    end
+    snapshot = draft.adapter_module.request_snapshot(request)
+
+    %{
+      request_context
+      | step_id: step.id,
+        request_images: Map.get(created, :request_images),
+        request_payload: request,
+        messages: Map.get(snapshot, :model_input, []),
+        system_prompt: Map.get(snapshot, :system_prompt) || draft.system_prompt,
+        history_length: Map.get(snapshot, :history_length, draft.history_length),
+        initial_step_sequence: step.sequence,
+        initial_step_status: step.status
+    }
   end
-
-  defp normalize_initial_step_request(%{} = value), do: Map.new(value)
-  defp normalize_initial_step_request(nil), do: %{}
-  defp normalize_initial_step_request(value) when is_list(value), do: %{"items" => value}
-  defp normalize_initial_step_request(value), do: %{"raw" => value}
 
   defp project_message_text(message) do
     role = Map.get(message, :role)
@@ -801,11 +1067,19 @@ defmodule IntellectualClub.Generation.Context do
   defp retry_step_query(message_id) when is_integer(message_id) and message_id > 0 do
     ChatMessageStep
     |> Ash.Query.filter(chat_message_id == ^message_id)
-    |> Ash.Query.select([:id, :chat_message_id, :sequence, :status, :raw_request])
+    |> Ash.Query.select([:id, :chat_message_id, :sequence, :status])
   end
 
   defp read_retry_step(query, actor) do
     Ash.read_one(query, actor: actor)
+  end
+
+  defp retry_request_payload(step_id, actor) do
+    step_id
+    |> StepRequests.request_for_step!(actor: actor)
+    |> normalize_retry_request_payload()
+  rescue
+    _exception -> {:error, :invalid_step_request}
   end
 
   defp normalize_retry_request_payload(%{} = raw_request) do

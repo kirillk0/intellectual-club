@@ -12,6 +12,7 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
   }
 
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Tools.ExecutionContext
 
@@ -88,35 +89,41 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     fixture = fork_fixture!()
     request = image_request([fixture.future])
 
-    assert {:ok, ^request} =
-             RequestImages.materialize_and_persist(request, fixture.future_step.id)
+    %{step: future_request_step, request: ^request} =
+      create_followup_request!(fixture.future_step, request)
 
-    assert [_binding] = bindings(fixture.future_step)
+    assert [_binding] = bindings(future_request_step)
 
     step = followup_step!(fixture.actor, fixture.child)
     assert bindings(step) == []
     assert_materialized(step, fixture.allowed, fixture.denied)
   end
 
-  test "cloning only the source request bindings leaves canonical prefix files available later" do
-    fixture = fork_fixture!()
+  test "inheriting only source request bindings leaves canonical prefix files available later" do
+    fixture = fork_fixture!(pin_boundary_input?: true)
     [source_image | other_images] = fixture.allowed
     request = image_request([source_image])
 
-    assert {:ok, ^request} = RequestImages.materialize_and_persist(request, fixture.boundary.id)
-    first_step = followup_step!(fixture.actor, fixture.child)
-    assert :ok = RequestImages.clone_bindings(fixture.boundary.id, first_step.id)
+    %{step: first_step, request: ^request} =
+      fixture.actor
+      |> followup_step!(fixture.child)
+      |> create_followup_request!(request, source_step_id: fixture.boundary.id)
 
     assert [source_binding] = bindings(fixture.boundary)
     assert [child_binding] = bindings(first_step)
     refute source_binding.file_id == child_binding.file_id
     assert child_binding.source_file_external_id == source_image.file.external_id
-    assert {:ok, wire_request} = RequestImages.hydrate(request, first_step.id)
+
+    assert {:ok, wire_request} =
+             RequestImages.hydrate(request, first_step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
+
     assert [wire_image] = image_blocks(wire_request)
     assert wire_image["image_url"] == "data:image/png;base64," <> Base.encode64(@png)
 
     # These older canonical images were not pinned on the fork's source step.
-    next_step = step!(fixture.actor, first_step.chat_message_id, 2)
+    next_step = step!(fixture.actor, first_step.chat_message_id, first_step.sequence + 1)
     assert_materialized(next_step, other_images, fixture.denied)
   end
 
@@ -159,7 +166,7 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
              ContentFiles.load_payload_for_execution(Ecto.UUID.generate(), context(second, actor))
   end
 
-  defp fork_fixture! do
+  defp fork_fixture!(opts \\ []) do
     %{user: actor} = user_fixture()
     parent = chat!(actor)
     input_message = message!(actor, parent, %{role: :user})
@@ -178,7 +185,23 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
       )
 
     earlier_artifact = attach!(actor, earlier_step, :artifact, 3, "prefix-artifact")
-    boundary = step!(actor, message.id, 2)
+
+    boundary =
+      if Keyword.get(opts, :pin_boundary_input?, false) do
+        %{step: step} =
+          Persistence.create_request_step!(message, 2, image_request([input]),
+            request_context: %{
+              adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter
+            }
+          )
+
+        step
+        |> Ash.Changeset.for_update(:update, %{status: :done, response_final: true}, actor: actor)
+        |> Ash.update!(actor: actor)
+      else
+        step!(actor, message.id, 2)
+      end
+
     before_response = attach!(actor, boundary, :steering, 1, "before-response")
     placement!(actor, before_response.item, "before_response")
     response = attach!(actor, boundary, :answer, 2, "provider-response")
@@ -272,8 +295,8 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
   end
 
   defp assert_materialized(step, allowed, denied) do
-    assert {:ok, compact} =
-             RequestImages.materialize_and_persist(image_request(allowed ++ denied), step.id)
+    %{step: step, request: compact} =
+      create_followup_request!(step, image_request(allowed ++ denied))
 
     blocks = image_blocks(compact)
     assert Enum.take(blocks, length(allowed)) == image_blocks(image_request(allowed))
@@ -284,11 +307,29 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     assert MapSet.new(bindings(step), &to_string(&1.source_file_external_id)) ==
              MapSet.new(allowed, &to_string(&1.file.external_id))
 
-    assert {:ok, wire} = RequestImages.hydrate(compact, step.id)
+    assert {:ok, wire} =
+             RequestImages.hydrate(compact, step.id,
+               mapper: &IntellectualClub.Llm.Providers.Responses.map_request_images/3
+             )
 
     for block <- Enum.take(image_blocks(wire), length(allowed)) do
       assert block["image_url"] == "data:image/png;base64," <> Base.encode64(@png)
     end
+  end
+
+  defp create_followup_request!(step, request, opts \\ []) do
+    actor = %{id: step.owner_id}
+    message = Ash.get!(ChatMessage, step.chat_message_id, actor: actor, load: [:steps])
+    sequence = Enum.max(Enum.map(message.steps, & &1.sequence)) + 1
+
+    Persistence.create_request_step!(
+      message,
+      sequence,
+      request,
+      Keyword.put(opts, :request_context, %{
+        adapter_module: IntellectualClub.Generation.RequestImagesTestAdapter
+      })
+    )
   end
 
   defp context(chat, actor) do

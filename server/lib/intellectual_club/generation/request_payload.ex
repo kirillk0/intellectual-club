@@ -24,6 +24,34 @@ defmodule IntellectualClub.Generation.RequestPayload do
   def stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   def stringify_keys(value), do: value
 
+  @doc """
+  Converts JSON keys and atom values at the provider preparation boundary,
+  rejecting ambiguous keys without scanning string values. Final encoding validates UTF-8.
+  """
+  def json_keys!(value) when is_map(value) and not is_struct(value) do
+    Enum.reduce(value, %{}, fn {key, nested}, acc ->
+      key =
+        cond do
+          is_binary(key) -> key
+          is_atom(key) -> Atom.to_string(key)
+          true -> raise IntellectualClub.Generation.StepRequests.Error, reason: :invalid_json_key
+        end
+
+      if Map.has_key?(acc, key),
+        do: raise(IntellectualClub.Generation.StepRequests.Error, reason: :duplicate_json_key)
+
+      Map.put(acc, key, json_keys!(nested))
+    end)
+  end
+
+  def json_keys!(%_{}),
+    do: raise(IntellectualClub.Generation.StepRequests.Error, reason: :invalid_json_value)
+
+  def json_keys!(value) when is_list(value), do: Enum.map(value, &json_keys!/1)
+  def json_keys!(value) when value in [nil, true, false], do: value
+  def json_keys!(value) when is_atom(value), do: Atom.to_string(value)
+  def json_keys!(value), do: value
+
   def model_name(payload, fallback \\ nil)
 
   def model_name(%{} = payload, fallback) do

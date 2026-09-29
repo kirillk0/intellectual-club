@@ -9,6 +9,7 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.ChatShare
   alias IntellectualClub.Chat.ForkHistory
+  alias IntellectualClub.Chat.ForkHistoryStepCorruptFixture
   alias IntellectualClub.Chat.ForkHistoryCorruptFixture
   alias IntellectualClub.Chat.ForkHistoryFixtureDomain
   alias IntellectualClub.Chat.ForkHistoryRevision
@@ -288,7 +289,6 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
           input_tokens: 999,
           output_tokens: 111,
           cost: 1.5,
-          raw_request: %{"private" => "changed request"},
           raw_response: %{"private" => "changed response"}
         },
         actor
@@ -562,9 +562,9 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
   test "SQL returns only bounded metadata, never text, opaque payloads or step raw data", %{
     actor: actor
   } do
-    source = source!(actor)
-    child = child!(source, actor)
     large_payload = String.duplicate("PRIVATE_HISTORY_PAYLOAD", 25_000)
+    source = source!(actor, raw_request: %{"private" => large_payload})
+    child = child!(source, actor)
     update!(source.root_content, %{content_text: large_payload}, actor)
 
     update!(
@@ -575,7 +575,7 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
 
     update!(
       source.step,
-      %{raw_request: %{"private" => large_payload}, raw_response: %{"private" => large_payload}},
+      %{raw_response: %{"private" => large_payload}},
       actor
     )
 
@@ -656,7 +656,7 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
     message = message!(chat, :assistant, root.id, actor)
     previous = step!(message, 1, actor)
     item!(previous, 1, :answer, "Previous response", actor)
-    step = step!(message, 2, actor)
+    step = step!(message, 2, actor, raw_request: Keyword.get(opts, :raw_request, %{}))
     answer = item!(step, 10, :answer, "Boundary response", actor)
     call = item!(step, 20, :tool_call, "Fork call", actor, call_payload())
 
@@ -718,11 +718,17 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
     )
   end
 
-  defp step!(message, sequence, actor) do
+  defp step!(message, sequence, actor, opts \\ []) do
     create!(
       ChatMessageStep,
       :create,
-      %{chat_message_id: message.id, sequence: sequence, status: :done, response_final: true},
+      %{
+        chat_message_id: message.id,
+        sequence: sequence,
+        status: :done,
+        response_final: true,
+        raw_request: Keyword.get(opts, :raw_request, %{})
+      },
       actor
     )
   end
@@ -778,7 +784,19 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
 
   # Force changes through authorized Ash actions only, to model legacy corruption
   # and metadata edits which the public write API does not normally expose.
-  defp force_update!(record, attrs, actor, action \\ :update) do
+  defp force_update!(record, attrs, actor, action \\ :update)
+
+  defp force_update!(%ChatMessageStep{} = record, attrs, actor, _action) do
+    updated =
+      ForkHistoryStepCorruptFixture
+      |> Ash.get!(record.id, actor: actor, domain: ForkHistoryFixtureDomain)
+      |> Ash.Changeset.for_update(:corrupt_identity, attrs, actor: actor)
+      |> Ash.update!(actor: actor, domain: ForkHistoryFixtureDomain)
+
+    Map.merge(record, Map.take(updated, [:owner_id, :chat_message_id, :sequence, :updated_at]))
+  end
+
+  defp force_update!(record, attrs, actor, action) do
     record
     |> Ash.Changeset.for_update(action, %{}, actor: actor)
     |> Ash.Changeset.force_change_attributes(attrs)

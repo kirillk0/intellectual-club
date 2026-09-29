@@ -1,5 +1,8 @@
-defmodule IntellectualClub.Generation.RequestImages.Walker do
-  @moduledoc false
+defmodule IntellectualClub.Generation.RequestImagesTestAdapter do
+  @moduledoc """
+  Test-only composite mapper for synthetic requests containing all provider shapes.
+  Production adapters remain responsible for their own native image structures.
+  """
 
   @container_types MapSet.new([
                      "message",
@@ -8,14 +11,7 @@ defmodule IntellectualClub.Generation.RequestImages.Walker do
                      "tool_result"
                    ])
 
-  @type provider_shape :: :responses | :openrouter | :anthropic | :google
-
-  @type marker :: map()
-
-  @spec map_images(map(), term(), (provider_shape(), map(), marker(), term() ->
-                                     {map(), term()})) ::
-          {map(), term()}
-  def map_images(request, acc, mapper) when is_map(request) and is_function(mapper, 4) do
+  def map_request_images(request, acc, mapper) when is_map(request) and is_function(mapper, 2) do
     Enum.reduce(["messages", "input"], {request, acc}, fn key, {current, current_acc} ->
       case Map.fetch(current, key) do
         {:ok, value} ->
@@ -28,7 +24,7 @@ defmodule IntellectualClub.Generation.RequestImages.Walker do
     end)
   end
 
-  def map_images(request, acc, _mapper), do: {request, acc}
+  def map_request_images(request, acc, _mapper), do: {request, acc}
 
   defp walk_root(items, acc, mapper) when is_list(items) do
     map_list(items, acc, &walk_item(&1, &2, mapper))
@@ -40,7 +36,9 @@ defmodule IntellectualClub.Generation.RequestImages.Walker do
   defp walk_item(%{} = block, acc, mapper) do
     case image_marker(block) do
       {:ok, shape, marker} ->
-        mapper.(shape, block, marker, acc)
+        reference = reference(shape, block, marker)
+        {change, acc} = mapper.(reference, acc)
+        {apply_change(shape, block, change), acc}
 
       :not_image_marker ->
         walk_container(block, acc, mapper)
@@ -112,4 +110,56 @@ defmodule IntellectualClub.Generation.RequestImages.Walker do
 
   defp string_value(value) when is_binary(value), do: value
   defp string_value(_value), do: ""
+
+  defp reference(shape, block, marker) do
+    format_key = if shape in [:responses, :openrouter], do: :data_url, else: :base64
+
+    mime_type =
+      case shape do
+        :anthropic -> get_in(block, ["source", "media_type"])
+        :google -> Map.get(block, "mime_type")
+        _ -> Map.get(marker, "mime_type")
+      end
+
+    %{
+      marker: marker,
+      encoding: Atom.to_string(format_key),
+      mime_type: mime_type,
+      format_key: format_key,
+      format: if(format_key == :data_url, do: &data_url/2, else: &base64/2)
+    }
+  end
+
+  defp data_url(encoded, mime), do: "data:#{mime};base64," <> encoded
+  defp base64(encoded, _mime), do: encoded
+
+  defp apply_change(_shape, block, :keep), do: block
+
+  defp apply_change(shape, block, {:marker, marker, mime}),
+    do: put_image(shape, block, %{"$intellectual_club_file" => marker}, mime)
+
+  defp apply_change(shape, block, {:wire, wire, mime}), do: put_image(shape, block, wire, mime)
+
+  defp apply_change(:responses, _block, {:omit, text}),
+    do: %{"type" => "input_text", "text" => text}
+
+  defp apply_change(:anthropic, block, {:omit, text}) do
+    Map.merge(%{"type" => "text", "text" => text}, Map.take(block, ["cache_control"]))
+  end
+
+  defp apply_change(_shape, _block, {:omit, text}), do: %{"type" => "text", "text" => text}
+
+  defp put_image(:responses, block, value, _mime), do: Map.put(block, "image_url", value)
+
+  defp put_image(:openrouter, block, value, _mime),
+    do: Map.update!(block, "image_url", &Map.put(&1, "url", value))
+
+  defp put_image(:anthropic, block, value, mime) do
+    Map.update!(block, "source", fn source ->
+      source |> Map.put("type", "base64") |> Map.put("media_type", mime) |> Map.put("data", value)
+    end)
+  end
+
+  defp put_image(:google, block, value, mime),
+    do: block |> Map.put("mime_type", mime) |> Map.put("data", value)
 end

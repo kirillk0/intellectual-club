@@ -129,7 +129,8 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
              filename: "report.pdf",
              mime_type: "application/pdf",
              size_bytes: 128,
-             sha256: "sha256"
+             sha256: "sha256",
+             internal_secret: "never expose"
            }
          }}
       )
@@ -139,7 +140,11 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
 
     normalized = Serializer.normalize_runtime_step_for_client(snapshot)
 
-    assert [%{contents: [%{kind: "media", media: media}]}] = normalized.items
+    assert [%{contents: [%{kind: "media", media: media} = content]}] = normalized.items
+    refute Map.has_key?(content, :file)
+    refute Map.has_key?(content, :file_id)
+    refute Jason.encode!(normalized) =~ "never expose"
+    assert Serializer.normalize_runtime_step_for_client(normalized) == normalized
 
     assert media == %{
              external_id: "content-123",

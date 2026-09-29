@@ -12,6 +12,8 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.QueueDispatcher
+  alias IntellectualClub.Generation.StepRequests
+  alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
@@ -332,12 +334,16 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
 
     set_generation_status!(generation, :done, actor)
 
+    :ok = Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
     with_demo_delay(1_000, fn ->
       assert {:advanced, next_message_id} =
                without_registered_dispatcher(fn ->
                  QueueDispatcher.generation_finished(generation.id, :done)
                end)
 
+      # Child startup does not acknowledge the asynchronous initialization.
+      assert_receive {:content_delta, ^next_message_id, _delta}, 5_000
       assert {:ok, _poll} = GenerationSupervisor.poll_generation(next_message_id)
       stop_generation_worker!(next_message_id)
     end)
@@ -355,6 +361,8 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
                actor
              )
 
+    :ok = Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{child_chat.id}")
+
     with_demo_delay(1_000, fn ->
       assert {:transferred, %{transferred_count: 1, dispatch: {:advanced, child_generation_id}}} =
                without_registered_dispatcher(fn ->
@@ -365,9 +373,160 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
       assert delivered.chat_id == child_chat.id
       assert delivered.status == :delivered
       assert delivered.assistant_message_id == child_generation_id
+      assert_receive {:content_delta, ^child_generation_id, _delta}, 5_000
       assert {:ok, _poll} = GenerationSupervisor.poll_generation(child_generation_id)
       stop_generation_worker!(child_generation_id)
     end)
+  end
+
+  test "editing the FIFO head during unlocked preparation publishes only the new contents" do
+    %{user: actor} = user_fixture()
+    {chat, _root, anchor} = create_chat_with_anchor!(actor)
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_follow_up(chat.id, %{content: "Old text"}, actor)
+
+    {task, prepared_pid, ref} = pause_preparation(chat.id)
+
+    assert {:ok, _updated} = QueuedMessages.update(queued.id, %{content: "Edited text"}, actor)
+    send(prepared_pid, {:continue_preparation, ref})
+    assert {:ok, context} = Task.await(task, 15_000)
+
+    assert {:ok, delivered} = QueuedMessages.get(queued.id, actor)
+    assert delivered.status == :delivered
+    assert delivered.user_message_id == context.parent_message_id
+    user = load_message_trace!(delivered.user_message_id, actor)
+    assert user.parent_id == anchor.id
+    assert canonical_text(user) == "Edited text"
+    assert List.last(context.history) == %{role: :user, content: "Edited text"}
+    assert length(Threads.all_messages(chat.id, actor)) == 4
+  end
+
+  test "canceling the FIFO head during unlocked preparation creates no generation" do
+    %{user: actor} = user_fixture()
+    {chat, _root, anchor} = create_chat_with_anchor!(actor)
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_follow_up(chat.id, %{content: "Cancel me"}, actor)
+
+    {task, prepared_pid, ref} = pause_preparation(chat.id)
+
+    assert {:ok, _canceled} = QueuedMessages.cancel(queued.id, actor)
+    send(prepared_pid, {:continue_preparation, ref})
+    assert :empty = Task.await(task, 15_000)
+    assert {:ok, %{status: :canceled}} = QueuedMessages.get(queued.id, actor)
+    assert length(Threads.all_messages(chat.id, actor)) == 2
+    assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == anchor.id
+  end
+
+  test "direct generation cannot bypass a queue whose request is being prepared" do
+    %{user: actor} = user_fixture()
+    {chat, _root, _anchor} = create_chat_with_anchor!(actor)
+    assert {:ok, _queued} = QueuedMessages.enqueue_follow_up(chat.id, %{content: "First"}, actor)
+    {task, prepared_pid, ref} = pause_preparation(chat.id)
+
+    assert {:error, :queue_not_empty} =
+             QueueCoordinator.prepare_direct_generation(chat.id, actor: actor)
+
+    send(prepared_pid, {:continue_preparation, ref})
+    assert {:ok, _context} = Task.await(task, 15_000)
+    assert length(Threads.all_messages(chat.id, actor)) == 4
+  end
+
+  test "an ordinary parent callback error rolls back its mutations" do
+    %{user: actor} = user_fixture()
+    {chat, _root, anchor} = create_chat_with_anchor!(actor)
+
+    assert {:error, :parent_rejected} =
+             QueueCoordinator.prepare_direct_generation(chat.id, [actor: actor], fn ->
+               {:ok, _user} =
+                 Threads.add_message_to_end(chat, :user, "Must not survive", actor: actor)
+
+               {:error, :parent_rejected}
+             end)
+
+    assert length(Threads.all_messages(chat.id, actor)) == 2
+    assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == anchor.id
+  end
+
+  test "terminal handoff publishes the child step and backlog together without starting a worker" do
+    %{user: actor} = user_fixture()
+    {source, _root, _anchor} = create_chat_with_anchor!(actor)
+    generation = create_generating_assistant!(source, actor)
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_follow_up(source.id, %{content: "After handoff"}, actor)
+
+    set_generation_status!(generation, :done, actor)
+
+    child =
+      Chat
+      |> Ash.Changeset.for_create(
+        :create_empty,
+        %{
+          note: "",
+          parent_chat_id: source.id,
+          parent_message_id: generation.id,
+          parent_relation_kind: :handoff
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
+    {:ok, summary} = Threads.add_message_to_end(child, :user, "Handoff summary", actor: actor)
+
+    assert {:ok, result} = QueueCoordinator.prepare_terminal_handoff(generation.id, child.id)
+    context = result.prepared_context
+    assert context.parent_message_id == summary.id
+    assert result.child_generation_message_id == context.message_id
+    assert result.transferred_count == 1
+
+    assert StepRequests.request_for_step!(context.step_id, actor: actor) ==
+             context.request_payload
+
+    assert GenerationSupervisor.get_generation_state(context.message_id) == :not_found
+    assert {:ok, moved} = QueuedMessages.get(queued.id, actor)
+    assert moved.chat_id == child.id
+    assert moved.anchor_message_id == context.message_id
+    assert moved.status == :pending
+
+    assert {:ok, resumed} = QueueCoordinator.prepare_terminal_handoff(generation.id, child.id)
+    assert resumed.prepared_context == nil
+    assert resumed.child_generation_message_id == context.message_id
+    assert length(Threads.all_messages(child.id, actor)) == 2
+  end
+
+  defp pause_preparation(chat_id) do
+    ref = make_ref()
+    handler = {__MODULE__, ref}
+    owner = self()
+
+    :telemetry.attach(
+      handler,
+      [:intellectual_club, :generation, :context, :prepared],
+      fn _event, _measurements, metadata, {expected_chat, target, token} ->
+        if metadata.chat_id == expected_chat do
+          send(target, {:preparation_ready, self(), token})
+
+          receive do
+            {:continue_preparation, ^token} -> :ok
+          after
+            15_000 -> raise "Timed out waiting to publish a prepared queue turn"
+          end
+        end
+      end,
+      {chat_id, owner, ref}
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    supervisor = start_supervised!({Task.Supervisor, []})
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn -> QueueCoordinator.prepare_next(chat_id) end)
+
+    assert_receive {:preparation_ready, pid, ^ref}, 15_000
+    :telemetry.detach(handler)
+    {task, pid, ref}
   end
 
   defp create_chat_with_anchor!(actor, llm_configuration_id \\ nil) do
@@ -557,6 +716,13 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     assert [{worker, _metadata}] =
              Registry.lookup(IntellectualClub.Generation.Registry, {:message, message_id})
 
-    assert :ok = DynamicSupervisor.terminate_child(GenerationSupervisor, worker)
+    # Killing the Worker can kill a checked-out SQL borrower and its sandbox.
+    # Cancellation joins persistence and receives the lease cleanup ACK first.
+    monitor = Process.monitor(worker)
+    Worker.cancel(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 5_000
+    message = Ash.get!(ChatMessage, message_id, authorize?: false)
+    assert message.status == :canceled
+    assert message.generation_fence_token == nil
   end
 end

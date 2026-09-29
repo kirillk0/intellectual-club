@@ -4,6 +4,12 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload, as: AnthropicPayload
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
+  alias IntellectualClub.Llm.Providers.Common.PreparedRequest
+  alias IntellectualClub.Llm.Providers.AnthropicMessages
+  alias IntellectualClub.Llm.Providers.GoogleInteractions
+  alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
+  alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
+  alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Payload, as: GooglePayload
   alias IntellectualClub.Llm.Providers.ResponsesWss.Session
 
@@ -167,11 +173,67 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
       ]
     }
 
-    assert {:error, error} = RequestHydration.hydrate(logical_request, nil, :responses)
+    assert {:error, error} =
+             RequestHydration.hydrate(logical_request, nil, &Responses.map_request_images/3,
+               provider: :responses
+             )
+
     assert error.error_kind == "request_hydration"
     assert error.retryable == false
     assert error.raw_request == logical_request
     assert error.raw_response == nil
+  end
+
+  test "HTTP senders echo logical image markers on hydration failure without a request setter" do
+    parent = self()
+    base64_marker = put_in(@marker, ["$intellectual_club_file", "encoding"], "base64")
+
+    for {adapter, block, container} <- [
+          {Responses, %{"type" => "input_image", "image_url" => @marker}, "input"},
+          {OpenRouterChatCompletion, %{"type" => "image_url", "image_url" => %{"url" => @marker}},
+           "messages"},
+          {NvidiaBuildChatCompletion,
+           %{"type" => "image_url", "image_url" => %{"url" => @marker}}, "messages"},
+          {AnthropicMessages,
+           %{
+             "type" => "image",
+             "source" => %{
+               "type" => "base64",
+               "media_type" => "image/png",
+               "data" => base64_marker
+             }
+           }, "messages"},
+          {GoogleInteractions,
+           %{"type" => "image", "mime_type" => "image/png", "data" => base64_marker}, "input"}
+        ] do
+      context = %{
+        provider_type: adapter.type(),
+        provider_base_url: "http://127.0.0.1:1",
+        provider_auth_method: "api_key",
+        provider_api_key: "test-key",
+        owner_id: 12,
+        chat_id: 34
+      }
+
+      request = %{
+        "model" => "test",
+        "anthropic_beta" => ["beta-a"],
+        container => [%{"role" => "user", "content" => [block]}]
+      }
+
+      prepared = PreparedRequest.prepare(adapter, request, context)
+
+      assert :ok =
+               adapter.stream_generate(
+                 %{context: context, request_payload: prepared},
+                 fn event -> send(parent, {:provider_event, event}) end
+               )
+
+      assert_receive {:provider_event, {:response_error, error}}
+      assert error.error_kind == "request_hydration"
+      assert error.raw_request == prepared
+      refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
+    end
   end
 
   test "transport hydration leaves legacy payloads untouched without a step" do
@@ -188,6 +250,8 @@ defmodule IntellectualClub.Llm.Providers.CompactImageProjectionTest do
     }
 
     assert {:ok, ^legacy_request} =
-             RequestHydration.hydrate(legacy_request, nil, :responses)
+             RequestHydration.hydrate(legacy_request, nil, &Responses.map_request_images/3,
+               provider: :responses
+             )
   end
 end

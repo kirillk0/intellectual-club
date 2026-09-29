@@ -146,6 +146,7 @@ defmodule IntellectualClub.Chat.QueuedMessage do
 
     has_many :contents, IntellectualClub.Chat.QueuedMessageContent do
       destination_attribute(:queued_message_id)
+      sort(sequence: :asc)
     end
   end
 

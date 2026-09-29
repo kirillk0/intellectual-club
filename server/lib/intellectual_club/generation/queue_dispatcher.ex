@@ -15,7 +15,7 @@ defmodule IntellectualClub.Generation.QueueDispatcher do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
 
-  @default_reconcile_interval_ms 2_000
+  @default_reconcile_interval_ms 5_000
   @start_retry_delay_ms 25
   @max_start_retries 160
 
@@ -120,8 +120,6 @@ defmodule IntellectualClub.Generation.QueueDispatcher do
   def handle_continue(:recover, state) do
     state =
       if state.reconcile? do
-        NotificationsDispatcher.recover_generation_events()
-
         if Application.get_env(
              :intellectual_club,
              :recover_orphaned_generations_on_startup,

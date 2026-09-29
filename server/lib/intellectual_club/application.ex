@@ -7,6 +7,8 @@ defmodule IntellectualClub.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = IntellectualClub.Generation.PersistenceFailure.attach_telemetry()
+
     children = [
       IntellectualClubWeb.Telemetry,
       IntellectualClub.Repo,
@@ -16,7 +18,9 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.Llm.Providers.Responses.HttpPool, []},
       IntellectualClub.Llm.Auth.OpenAIOAuthCache,
       {IntellectualClub.Files.GarbageCollector, []},
+      {Task.Supervisor, name: IntellectualClub.Generation.LeaseCleanupSupervisor},
       {IntellectualClub.Generation.Lease, []},
+      {IntellectualClub.Chat.SubchatCostCache, []},
       {AshAuthentication.Supervisor, otp_app: :intellectual_club},
       {DNSCluster, query: Application.get_env(:intellectual_club, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: IntellectualClub.PubSub},
@@ -31,6 +35,8 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.BackgroundTasks.Supervisor, []},
       {IntellectualClub.BackgroundTasks.Reaper, []},
       {Registry, keys: :unique, name: IntellectualClub.Generation.Registry},
+      {Task.Supervisor, name: IntellectualClub.Generation.PersistenceTasks},
+      {IntellectualClubWeb.Bff.PollCache, []},
       {IntellectualClub.Generation.Supervisor, []},
       {IntellectualClub.Generation.Recovery, []},
       {IntellectualClub.Generation.QueueDispatcher, []},

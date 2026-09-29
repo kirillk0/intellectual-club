@@ -15,6 +15,8 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
     repo(IntellectualClub.Repo)
 
     custom_indexes do
+      index([:chat_id], name: "llm_usage_records_chat_id_index")
+
       index([:configuration_owner_id_snapshot, :occurred_at],
         name: "llm_usage_records_owner_occurred_at_index"
       )

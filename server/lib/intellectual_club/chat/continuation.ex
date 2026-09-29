@@ -20,11 +20,14 @@ defmodule IntellectualClub.Chat.Continuation do
              strict?: true
            ),
          {:ok, _source_branch} <-
-           MessageTreeCopy.materialize_loaded_messages(source_branch, actor) do
-      Repo.transaction(fn ->
-        target = create_target_chat!(source, actor)
-        copy_active_branch_to_target!(source, target, actor)
-      end)
+           MessageTreeCopy.prepare_loaded_messages(source_branch, actor) do
+      Repo.transaction(
+        fn ->
+          target = create_target_chat!(source, actor)
+          copy_loaded_branch_to_target!(source, source_branch, target, actor)
+        end,
+        timeout: 60_000
+      )
       |> unwrap_transaction()
     end
   end
@@ -68,7 +71,7 @@ defmodule IntellectualClub.Chat.Continuation do
   defp branch_note(note), do: to_string(note) <> " (branch)"
 
   @doc """
-  Copies a branch whose request-image markers were materialized before the
+  Copies a branch with immutable request snapshots authorized before the
   caller's transaction started.
   """
   @spec copy_active_branch_to_target!(Chat.t(), Chat.t(), map()) :: Chat.t()
@@ -81,7 +84,18 @@ defmodule IntellectualClub.Chat.Continuation do
   end
 
   @doc """
-  Copies a selected branch whose prefix request-image markers were materialized
+  Copies an already authorized immutable branch snapshot without loading it twice.
+  Source access is checked again at publication; request-image pins are only cloned.
+  """
+  def copy_loaded_branch_to_target!(%Chat{} = source, messages, %Chat{} = target, actor)
+      when is_list(messages) do
+    _ = Ash.get!(Chat, source.id, actor: actor)
+    MessageTreeCopy.copy_messages!(messages, target, actor)
+    Ash.get!(Chat, target.id, actor: actor)
+  end
+
+  @doc """
+  Copies a selected branch whose prefix request snapshots were authorized
   before the caller's transaction started.
   """
   @spec copy_branch_to_target!(Chat.t(), Chat.t(), integer(), map(), keyword()) :: Chat.t()
@@ -99,11 +113,23 @@ defmodule IntellectualClub.Chat.Continuation do
       when is_integer(message_id) and is_list(opts) do
     branch_opts = [load: MessageTreeCopy.load_spec(), strict?: true]
 
-    with {:ok, %{message: selected, prefix: prefix}} <-
-           Branching.active_branch_selection(source, message_id, actor, branch_opts),
+    with {:ok, selection} <-
+           Branching.active_branch_selection(source, message_id, actor, branch_opts) do
+      copy_selected_branch_to_target(selection, target, actor, opts)
+    end
+  end
+
+  @doc false
+  def copy_selected_branch_to_target(
+        %{source: %Chat{} = source, message: selected, prefix: prefix},
+        %Chat{} = target,
+        actor,
+        opts
+      ) do
+    with {:ok, %Chat{}} <- Ash.get(Chat, source.id, actor: actor),
+         {:ok, %ChatMessage{}} <- Ash.get(ChatMessage, selected.id, actor: actor),
          {:ok, replacement_contents} <- replacement_contents(selected, opts) do
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
-
       copied_ids = MessageTreeCopy.copy_messages!(prefix, target, actor)
 
       if Branching.user_message?(selected) do

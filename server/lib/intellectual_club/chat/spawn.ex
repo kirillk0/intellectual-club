@@ -46,8 +46,7 @@ defmodule IntellectualClub.Chat.Spawn do
       when is_binary(brief) and is_binary(prompt) do
     with {:ok, reference} <- start_or_resume(tool_instance, brief, prompt, context, actor),
          {:ok, snapshot} <- Subagent.await_snapshot(reference, actor),
-         result = Subagent.sync_execution_result_from_snapshot(snapshot, actor),
-         :ok <- Subagent.persist_parent_tool_result(context, result) do
+         result = Subagent.sync_execution_result_from_snapshot(snapshot, actor) do
       {:ok, result}
     end
   end
@@ -210,70 +209,75 @@ defmodule IntellectualClub.Chat.Spawn do
          actor,
          opts
        ) do
-    transaction_result =
-      Subagent.with_invocation_authority(context, opts, fn ->
-        Repo.transaction(fn ->
-          case Subagent.ensure_creation_allowed(tool_instance, source, actor) do
-            :ok -> :ok
-            {:error, reason} -> Repo.rollback(reason)
+    # Expected policy rejection must not become a rollback of a nested fence
+    # transaction. Repeat the policy read under invocation authority before any
+    # mutation; unexpected write failures escape to the outer transaction.
+    with :ok <- Subagent.ensure_creation_allowed(tool_instance, source, actor) do
+      transaction_result =
+        Subagent.with_invocation_authority(context, opts, fn ->
+          with {:ok, current_source} <- fetch_owned_chat(source.id, actor),
+               :ok <- Subagent.ensure_creation_allowed(tool_instance, current_source, actor) do
+            Repo.transaction(fn ->
+              attrs = %{
+                note: brief,
+                bot_id: current_source.bot_id,
+                llm_configuration_id: current_source.llm_configuration_id,
+                parent_chat_id: current_source.id,
+                parent_message_id: context.assistant_message_id || context.message_id,
+                parent_tool_call_item_id: context.tool_call_item_id,
+                parent_relation_kind: @relation_kind,
+                subagent: true
+              }
+
+              chat =
+                Chat
+                |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+                |> Ash.create!(actor: actor)
+
+              :ok = ChatSettingsCopy.copy_bindings!(current_source.id, chat.id, actor)
+
+              {:ok, prompt_message} =
+                Threads.add_message_to_end(chat, :user, prompt,
+                  actor: actor,
+                  llm_configuration_id: current_source.llm_configuration_id
+                )
+
+              # The new chat identity and copied binding scope do not exist
+              # before this commit. Keep this path protected rather than prepare
+              # a request against the source chat's unrelated history/files.
+              generation_context =
+                GenerationContext.build!(chat.id,
+                  actor: actor,
+                  parent_id: prompt_message.id
+                )
+
+              %{
+                state: :new,
+                chat: Ash.get!(Chat, chat.id, actor: actor, load: [:last_message]),
+                prompt_message_id: prompt_message.id,
+                generation_message_id: generation_context.message_id,
+                generation_context: generation_context
+              }
+            end)
           end
-
-          attrs = %{
-            note: brief,
-            bot_id: source.bot_id,
-            llm_configuration_id: source.llm_configuration_id,
-            parent_chat_id: source.id,
-            parent_message_id: context.assistant_message_id || context.message_id,
-            parent_tool_call_item_id: context.tool_call_item_id,
-            parent_relation_kind: @relation_kind,
-            subagent: true
-          }
-
-          chat =
-            case Chat
-                 |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-                 |> Ash.create(actor: actor) do
-              {:ok, %Chat{} = chat} -> chat
-              {:error, error} -> Repo.rollback(error)
-            end
-
-          :ok = ChatSettingsCopy.copy_bindings!(source.id, chat.id, actor)
-
-          {:ok, prompt_message} =
-            Threads.add_message_to_end(chat, :user, prompt,
-              actor: actor,
-              llm_configuration_id: source.llm_configuration_id
-            )
-
-          generation_context =
-            GenerationContext.build!(chat.id,
-              actor: actor,
-              parent_id: prompt_message.id
-            )
-
-          %{
-            state: :new,
-            chat: Ash.get!(Chat, chat.id, actor: actor, load: [:last_message]),
-            prompt_message_id: prompt_message.id,
-            generation_message_id: generation_context.message_id,
-            generation_context: generation_context
-          }
         end)
-      end)
 
-    case transaction_result do
-      {:ok, prepared} ->
-        {:ok, prepared}
+      recover_preparation(transaction_result, context, actor)
+    end
+  rescue
+    error -> recover_preparation({:error, error}, context, actor)
+  end
 
-      {:error, error} ->
-        if parent_tool_call_unique_constraint_error?(error) do
-          case fetch_spawn_chat_by_tool_call_item_id(context.tool_call_item_id, actor) do
-            %Chat{} = chat -> load_existing_prepared(chat, actor)
-            nil -> {:error, error}
-          end
-        else
-          {:error, error}
-        end
+  defp recover_preparation({:ok, prepared}, _context, _actor), do: {:ok, prepared}
+
+  defp recover_preparation({:error, error}, context, actor) do
+    if parent_tool_call_unique_constraint_error?(error) do
+      case fetch_spawn_chat_by_tool_call_item_id(context.tool_call_item_id, actor) do
+        %Chat{} = chat -> load_existing_prepared(chat, actor)
+        nil -> {:error, error}
+      end
+    else
+      {:error, error}
     end
   end
 

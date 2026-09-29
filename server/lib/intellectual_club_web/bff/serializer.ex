@@ -556,6 +556,97 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   def normalize_runtime_step_for_client(step), do: step
 
+  @doc "Stable revisions of UI values or lean, authorized persistence metadata."
+  def poll_revision(value) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(value, [:deterministic]))
+    |> Base.url_encode64(padding: false)
+  end
+
+  @doc "Projects one serialized runtime step into the ordinary message display shape."
+  def runtime_message_content(step, role) when is_map(step) do
+    text_types =
+      if role == :assistant,
+        do: ["answer", "handoff_summary", "steering"],
+        else: [
+          "input",
+          "handoff_request",
+          "handoff_context",
+          "handoff_history",
+          "handoff_message"
+        ]
+
+    media_types = if role == :assistant, do: ["artifact", "handoff_summary"], else: text_types
+
+    Enum.reduce(Map.get(step, :items, []), %{items: [], parts: [], media: []}, fn item, acc ->
+      type = Map.get(item, :type)
+
+      descriptor = %{
+        step_id: step.id,
+        step_sequence: step.sequence,
+        item_id: item.id,
+        item_sequence: item.sequence,
+        item_type: type
+      }
+
+      contents = Map.get(item, :contents, [])
+
+      parts =
+        if type in text_types do
+          contents
+          |> Enum.filter(&(Map.get(&1, :kind) == "text" and Map.get(&1, :content_text, "") != ""))
+          |> Enum.map(fn content ->
+            Map.merge(descriptor, %{
+              content_id: content.id,
+              sequence: content.sequence,
+              text: content.content_text,
+              content_text_truncated: Map.get(content, :content_text_truncated) == true,
+              created_at: Map.get(item, :created_at) || Map.get(step, :created_at)
+            })
+          end)
+        else
+          []
+        end
+
+      media =
+        if type in media_types,
+          do:
+            contents
+            |> Enum.filter(&(Map.get(&1, :kind) == "media" and not is_nil(Map.get(&1, :media))))
+            |> Enum.map(&Map.merge(&1, descriptor)),
+          else: []
+
+      descriptors = if type in text_types or type in media_types, do: [descriptor], else: []
+      %{items: acc.items ++ descriptors, parts: acc.parts ++ parts, media: acc.media ++ media}
+    end)
+  end
+
+  def runtime_message_content(_step, _role), do: %{items: [], parts: [], media: []}
+
+  @doc "Replaces only the runtime step, preserving completed steps and their ordering."
+  def merge_runtime_message_content(persisted, nil, _role), do: persisted
+
+  def merge_runtime_message_content(persisted, step, role) do
+    case runtime_message_content(step, role) do
+      %{items: [], parts: [], media: []} ->
+        persisted
+
+      runtime ->
+        Map.new([:items, :parts, :media], fn key ->
+          values =
+            persisted
+            |> Map.get(key, [])
+            |> Enum.reject(&(Map.get(&1, :step_sequence) == step.sequence))
+
+          {key,
+           Enum.sort_by(
+             values ++ Map.get(runtime, key, []),
+             &{Map.get(&1, :step_sequence) || 0, Map.get(&1, :item_sequence) || 0,
+              Map.get(&1, :sequence) || 0}
+           )}
+        end)
+    end
+  end
+
   defp configuration_display_label(%LlmConfiguration{} = configuration) do
     note = configuration |> Map.get(:note) |> loaded_string() |> String.trim()
     model_name = configuration |> Map.get(:model_name) |> loaded_string() |> String.trim()
@@ -874,6 +965,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     media = runtime_media_descriptor(content)
 
     content
+    |> Map.take(~w(id external_id sequence kind)a)
     |> Map.put(:content_text, preview_text)
     |> Map.put(:content_text_truncated, truncated?)
     |> Map.put(:content_json, sanitized_content_json)
@@ -881,6 +973,13 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   end
 
   defp normalize_runtime_content(content, _item_type), do: content
+
+  defp runtime_media_descriptor(%{kind: "media", media: %{} = media}) do
+    Map.take(
+      media,
+      ~w(external_id file_external_id filename mime_type size_bytes sha256 is_image file_id)a
+    )
+  end
 
   defp runtime_media_descriptor(%{kind: "media"} = content) do
     file = runtime_media_file(Map.get(content, :file))

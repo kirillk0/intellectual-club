@@ -16,8 +16,12 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Files.File, as: StoredFile
+  alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.PersistenceFailure
+  alias IntellectualClub.Generation.PreparedRequests
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Llm.LlmUsageRecord
@@ -49,37 +53,36 @@ defmodule IntellectualClub.Generation.Persistence do
 
   def ensure_step_started!(message_id, sequence, raw_request, opts)
       when is_integer(message_id) and is_integer(sequence) and is_list(opts) do
-    _ = opts
+    create_request_step!(message_id, sequence, raw_request, opts).step.id
+  end
+
+  @doc "Creates a step with its final immutable compact request and image bindings."
+  def create_request_step!(message, sequence, raw_request, opts \\ [])
+
+  def create_request_step!(%ChatMessage{id: message_id}, sequence, raw_request, opts) do
+    create_request_step!(message_id, sequence, raw_request, opts)
+  end
+
+  def create_request_step!(message_id, sequence, raw_request, opts)
+      when is_integer(message_id) and is_integer(sequence) and sequence > 0 and is_list(opts) do
     actor = actor_for_message!(message_id)
+    message = load_message!(message_id, actor)
+    ensure_request_step_creation_allowed!(message, sequence, opts)
 
-    transaction!(fn ->
-      attrs = %{
-        chat_message_id: message_id,
-        sequence: sequence,
-        status: :waiting_provider,
-        raw_request: normalize_json_map(raw_request),
-        raw_response: nil,
-        response_final: false,
-        input_tokens: nil,
-        output_tokens: nil,
-        cached_input_tokens: nil,
-        reasoning_tokens: nil,
-        cost: nil,
-        first_token_at: nil,
-        last_token_at: nil,
-        finished_at: nil
-      }
+    PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+      prepared = prepare_request_step!(message_id, sequence, prepared, actor, opts)
 
-      step =
-        case get_step_by_sequence(message_id, sequence, actor) do
-          nil ->
-            create_step!(attrs, actor)
+      request_transaction!(message_id, opts, fn ->
+        _message = lock_message!(message_id, actor)
 
-          %ChatMessageStep{} = step ->
-            update_step!(step, Map.delete(attrs, :chat_message_id), actor)
+        if get_step_by_sequence(message_id, sequence, actor) do
+          raise ArgumentError,
+                "Step already exists and cannot be reset"
         end
 
-      step.id
+        step = insert_request_step!(prepared, actor)
+        prepared_result(prepared) |> Map.put(:step, step)
+      end)
     end)
   end
 
@@ -96,9 +99,60 @@ defmodule IntellectualClub.Generation.Persistence do
       end
 
     step = persist_step_snapshot!(message_id, runtime_step, status, replace_items?: true)
-    tool_calls = list_tool_calls_for_step!(step.id)
+
+    tool_calls =
+      step |> persisted_tool_calls_by_item_id() |> Map.values() |> Enum.sort_by(& &1.sequence)
 
     %{step: step, tool_calls: tool_calls}
+  end
+
+  @doc """
+  Accounts for a provider response received before steering replaced its step.
+
+  Only the canceled source's raw response and usage are updated. Its immutable
+  request, items, response-final flag and successor are never rewritten or revived.
+  Callers must hold the generation fence, just as for provider completion.
+  """
+  def persist_interrupted_provider_response!(
+        message_id,
+        %RuntimeTrace.Step{} = runtime_step,
+        receiving_step_id
+      )
+      when is_integer(message_id) and is_integer(receiving_step_id) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      _message = lock_message!(message_id, actor)
+      step = load_step!(runtime_step.id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+      ensure_runtime_request_matches!(step, runtime_step.raw_request, actor)
+
+      unless step.status == :canceled and step.sequence == runtime_step.sequence do
+        raise ArgumentError, "Interrupted response requires its canceled source step"
+      end
+
+      case get_step_by_sequence(message_id, step.sequence + 1, actor) do
+        %ChatMessageStep{id: ^receiving_step_id} -> :ok
+        _other -> raise ArgumentError, "Interrupted response successor does not match"
+      end
+
+      attrs =
+        runtime_step
+        |> Map.take([
+          :input_tokens,
+          :output_tokens,
+          :cached_input_tokens,
+          :reasoning_tokens,
+          :cost,
+          :first_token_at,
+          :last_token_at
+        ])
+        |> Map.put(:raw_response, normalize_optional_json(runtime_step.raw_response))
+
+      step = update_step!(step, attrs, actor)
+      persist_usage_record!(step, runtime_step.usage, step.status, step.finished_at, actor)
+      :ok
+    end)
   end
 
   def persist_step_waiting_tools!(message_id, %RuntimeTrace.Step{} = runtime_step)
@@ -117,7 +171,7 @@ defmodule IntellectualClub.Generation.Persistence do
     actor = actor_for_message!(message_id)
 
     transaction!(fn ->
-      step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :done, actor)
+      persist_step_snapshot_in_transaction!(message_id, runtime_step, :done, actor)
       answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
@@ -133,14 +187,6 @@ defmodule IntellectualClub.Generation.Persistence do
         },
         actor
       )
-
-      persist_usage_record!(
-        step.id,
-        Map.get(RuntimeTrace.persistable(runtime_step), :usage),
-        :done,
-        now,
-        actor
-      )
     end)
 
     :ok
@@ -152,6 +198,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
     transaction!(fn ->
       step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
       answer_text = text_for_item_types(step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
@@ -169,7 +216,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
+      persist_usage_record!(step, nil, :done, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -179,7 +226,7 @@ defmodule IntellectualClub.Generation.Persistence do
     actor = actor_for_message!(message_id)
 
     transaction!(fn ->
-      step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :canceled, actor)
+      persist_step_snapshot_in_transaction!(message_id, runtime_step, :canceled, actor)
       answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
@@ -192,14 +239,6 @@ defmodule IntellectualClub.Generation.Persistence do
           generation_fence_token: nil,
           finished_at: now
         },
-        actor
-      )
-
-      persist_usage_record!(
-        step.id,
-        Map.get(RuntimeTrace.persistable(runtime_step), :usage),
-        :canceled,
-        now,
         actor
       )
     end)
@@ -231,7 +270,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :canceled, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :canceled, now, actor, create_if_missing?: false)
+      persist_usage_record!(step, nil, :canceled, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -241,7 +280,7 @@ defmodule IntellectualClub.Generation.Persistence do
     actor = actor_for_message!(message_id)
 
     transaction!(fn ->
-      step = persist_step_snapshot_in_transaction!(message_id, runtime_step, :error, actor)
+      persist_step_snapshot_in_transaction!(message_id, runtime_step, :error, actor)
       answer_text = RuntimeTrace.text_for_item_types(runtime_step, @assistant_answer_item_types)
       now = DateTime.utc_now()
 
@@ -255,14 +294,6 @@ defmodule IntellectualClub.Generation.Persistence do
           generation_fence_token: nil,
           finished_at: now
         },
-        actor
-      )
-
-      persist_usage_record!(
-        step.id,
-        Map.get(RuntimeTrace.persistable(runtime_step), :usage),
-        :error,
-        now,
         actor
       )
     end)
@@ -285,6 +316,7 @@ defmodule IntellectualClub.Generation.Persistence do
 
       maybe_create_error_item!(step, error_text, actor)
       step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
       answer_text = text_for_item_types(step, @assistant_answer_item_types)
 
       message_id
@@ -301,7 +333,7 @@ defmodule IntellectualClub.Generation.Persistence do
       )
 
       update_step!(step, %{status: :error, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :error, now, actor, create_if_missing?: false)
+      persist_usage_record!(step, nil, :error, now, actor, create_if_missing?: false)
     end)
 
     :ok
@@ -315,45 +347,21 @@ defmodule IntellectualClub.Generation.Persistence do
         opts \\ []
       )
       when is_integer(message_id) and is_integer(step_id) and is_list(opts) do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-
-      if step.chat_message_id != message_id do
-        raise ArgumentError, "Step does not belong to message"
-      end
-
+    transition_request!(message_id, step_id, raw_request, :retry, [], opts, fn step, actor ->
       now = DateTime.utc_now()
-      next_sequence = step.sequence + 1
-
-      raw_request =
-        case raw_request do
-          value when is_map(value) and map_size(value) > 0 -> normalize_json_map(value)
-          _other -> normalize_json_map(step.raw_request || %{})
-        end
-
       replace_step_items!(step, [], actor)
 
       step =
-        step
-        |> update_step!(
+        update_step!(
+          step,
           %{
             status: :error,
             raw_response: normalize_optional_json(Keyword.get(opts, :raw_response)),
             response_final: false,
-            input_tokens: nil,
-            output_tokens: nil,
-            cached_input_tokens: nil,
-            reasoning_tokens: nil,
-            cost: nil,
-            first_token_at: nil,
-            last_token_at: nil,
             finished_at: now
           },
           actor
         )
-        |> load_step_with_items!(actor)
 
       create_retry_error_item!(
         step,
@@ -362,70 +370,7 @@ defmodule IntellectualClub.Generation.Persistence do
         actor
       )
 
-      next_step =
-        case get_step_by_sequence(message_id, next_sequence, actor) do
-          nil ->
-            create_step!(
-              %{
-                chat_message_id: message_id,
-                sequence: next_sequence,
-                status: :waiting_provider,
-                raw_request: raw_request,
-                raw_response: nil,
-                response_final: false,
-                input_tokens: nil,
-                output_tokens: nil,
-                cached_input_tokens: nil,
-                reasoning_tokens: nil,
-                cost: nil,
-                first_token_at: nil,
-                last_token_at: nil,
-                finished_at: nil
-              },
-              actor
-            )
-
-          %ChatMessageStep{} = next_step ->
-            replace_step_items!(next_step, [], actor)
-
-            update_step!(
-              next_step,
-              %{
-                status: :waiting_provider,
-                raw_request: raw_request,
-                raw_response: nil,
-                response_final: false,
-                input_tokens: nil,
-                output_tokens: nil,
-                cached_input_tokens: nil,
-                reasoning_tokens: nil,
-                cost: nil,
-                first_token_at: nil,
-                last_token_at: nil,
-                finished_at: nil
-              },
-              actor
-            )
-        end
-
-      message_id
-      |> load_message!(actor)
-      |> update_message!(
-        %{
-          status: :generating,
-          error_detail: nil,
-          token_count: 0,
-          finished_at: nil
-        },
-        actor
-      )
-
-      %{
-        step_id: next_step.id,
-        step_sequence: next_step.sequence,
-        started_at: next_step.created_at,
-        raw_request: raw_request
-      }
+      persist_usage_record!(step, nil, :error, now, actor, create_if_missing?: false)
     end)
   end
 
@@ -453,149 +398,31 @@ defmodule IntellectualClub.Generation.Persistence do
     transaction!(fn ->
       step = load_step!(step_id, actor)
       update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
+      persist_usage_record!(step, nil, :done, now, actor, create_if_missing?: false)
     end)
 
     :ok
   end
 
-  def persist_steering_before_provider!(message_id, step_id, text, raw_request)
-      when is_integer(message_id) and is_integer(step_id) and is_binary(text) and
-             is_map(raw_request) do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-      ensure_step_belongs_to_message!(step, message_id)
-
-      step.items
-      |> List.wrap()
-      |> Enum.reject(&(&1.type == :steering))
-      |> ordered_by_sequence()
-      |> Enum.reverse()
-      |> Enum.each(&Ash.destroy!(&1, actor: actor))
-
-      steering = create_steering_item!(step, text, :before_response, actor)
-
-      step =
-        update_step!(
-          step,
-          %{
-            status: :waiting_provider,
-            raw_request: normalize_json_map(raw_request),
-            raw_response: nil,
-            response_final: false,
-            input_tokens: nil,
-            output_tokens: nil,
-            cached_input_tokens: nil,
-            reasoning_tokens: nil,
-            cost: nil,
-            first_token_at: nil,
-            last_token_at: nil,
-            finished_at: nil
-          },
-          actor
-        )
-
-      %{
-        item_id: steering.id,
-        step: load_step_with_items!(step.id, actor),
-        runtime_step:
-          step.id
-          |> load_step_with_items!(actor)
-          |> runtime_step_from_persisted_step(&(&1.type == :steering))
-      }
-    end)
-  end
-
-  def persist_steering_after_provider!(message_id, step_id, text)
-      when is_integer(message_id) and is_integer(step_id) and is_binary(text) do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-      ensure_step_belongs_to_message!(step, message_id)
-      steering = create_steering_item!(step, text, :after_response, actor)
-      step = load_step_with_items!(step.id, actor)
-
-      %{
-        item_id: steering.id,
-        step: step,
-        runtime_step:
-          runtime_step_from_persisted_step(
-            step,
-            &(&1.type not in [:tool_result, :artifact])
-          )
-      }
-    end)
-  end
-
-  @doc "Atomically commits a FIFO queued steering batch into a waiting provider request."
-  def persist_queued_steering_before_provider!(message_id, step_id, specs, raw_request)
+  @doc "Atomically delivers queued steering into a new receiving provider step."
+  def persist_queued_steering_before_provider!(
+        message_id,
+        step_id,
+        specs,
+        raw_request,
+        opts \\ []
+      )
       when is_integer(message_id) and is_integer(step_id) and is_list(specs) and
              is_map(raw_request) do
-    actor = actor_for_message!(message_id)
-
-    transaction!(fn ->
-      _message = lock_message!(message_id, actor)
-      step = load_step_with_items!(step_id, actor)
-      ensure_step_belongs_to_message!(step, message_id)
-      queued_messages = lock_queued_steers!(message_id, specs)
-
-      with :ok <- validate_queued_steering_specs(queued_messages, specs) do
-        step.items
-        |> List.wrap()
-        |> Enum.reject(&(&1.type == :steering))
-        |> ordered_by_sequence()
-        |> Enum.reverse()
-        |> Enum.each(&Ash.destroy!(&1, actor: actor))
-
-        steering_items =
-          Enum.map(queued_messages, fn queued_message ->
-            steering =
-              create_steering_item!(
-                step,
-                queued_steering_text(queued_message),
-                :before_response,
-                actor
-              )
-
-            mark_queued_steering_delivered!(queued_message, steering.id, actor)
-            steering
-          end)
-
-        step =
-          update_step!(
-            step,
-            %{
-              status: :waiting_provider,
-              raw_request: normalize_json_map(raw_request),
-              raw_response: nil,
-              response_final: false,
-              input_tokens: nil,
-              output_tokens: nil,
-              cached_input_tokens: nil,
-              reasoning_tokens: nil,
-              cost: nil,
-              first_token_at: nil,
-              last_token_at: nil,
-              finished_at: nil
-            },
-            actor
-          )
-
-        %{
-          deliveries:
-            Enum.zip_with(queued_messages, steering_items, fn queued_message, steering ->
-              %{queued_message_id: queued_message.id, item_id: steering.id}
-            end),
-          runtime_step:
-            step.id
-            |> load_step_with_items!(actor)
-            |> runtime_step_from_persisted_step(&(&1.type == :steering))
-        }
-      end
-    end)
+    transition_request!(
+      message_id,
+      step_id,
+      raw_request,
+      :queued_steering,
+      specs,
+      opts,
+      &interrupt_step_for_steering!/2
+    )
   end
 
   @doc "Completes a tool step and commits queued steering into its receiving next step."
@@ -604,117 +431,217 @@ defmodule IntellectualClub.Generation.Persistence do
         step_id,
         next_sequence,
         raw_request,
-        specs
+        specs,
+        opts \\ []
       )
       when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
              next_sequence > 0 and is_map(raw_request) and is_list(specs) do
-    actor = actor_for_message!(message_id)
-    now = DateTime.utc_now()
-    raw_request = normalize_json_map(raw_request)
+    transition_request!(
+      message_id,
+      step_id,
+      raw_request,
+      :queued_followup,
+      specs,
+      Keyword.put(opts, :next_sequence, next_sequence),
+      &complete_transition_step!/2
+    )
+  end
 
-    transaction!(fn ->
+  def complete_step_and_start_next!(message_id, step_id, next_sequence, raw_request, opts \\ [])
+      when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
+             next_sequence > 0 and is_map(raw_request) do
+    transition_request!(
+      message_id,
+      step_id,
+      raw_request,
+      :followup,
+      [],
+      Keyword.put(opts, :next_sequence, next_sequence),
+      &complete_transition_step!/2
+    )
+  end
+
+  defp transition_request!(message_id, step_id, raw_request, kind, specs, opts, finish_previous!) do
+    require_generation_lease!(message_id, opts)
+    actor = actor_for_message!(message_id)
+    message = load_message!(message_id, actor)
+    previous_step = load_step!(step_id, actor)
+    ensure_step_belongs_to_message!(previous_step, message_id)
+    next_sequence = previous_step.sequence + 1
+
+    if Keyword.get(opts, :next_sequence, next_sequence) != next_sequence do
+      raise ArgumentError, "A transition must create the immediately following step"
+    end
+
+    previous_request =
+      Keyword.get_lazy(opts, :previous_request, fn ->
+        StepRequests.request_for_step!(step_id, actor: actor)
+      end)
+
+    opts =
+      opts
+      |> Keyword.put(:previous_step, previous_step)
+      |> Keyword.put(:previous_request, previous_request)
+      |> Keyword.put_new(:source_step_id, step_id)
+
+    raw_request = if is_map(raw_request), do: raw_request, else: previous_request
+
+    PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+      prepared = prepare_request_step!(message_id, next_sequence, prepared, actor, opts)
+
+      request_transaction!(message_id, opts, fn ->
+        _message = lock_message!(message_id, actor)
+        step = load_step_with_items!(step_id, actor)
+        ensure_step_belongs_to_message!(step, message_id)
+
+        case get_step_by_sequence(message_id, next_sequence, actor) do
+          %ChatMessageStep{} ->
+            raise ArgumentError, "Generation step successor already exists"
+
+          nil ->
+            ensure_transition_allowed!(step, kind)
+            queued? = kind in [:queued_steering, :queued_followup]
+            queued_messages = if queued?, do: lock_queued_steers!(message_id, specs), else: []
+
+            with :ok <-
+                   if(queued?,
+                     do: validate_queued_steering_specs(queued_messages, specs),
+                     else: :ok
+                   ) do
+              finish_previous!.(step, actor)
+              next_step = insert_request_step!(prepared, actor)
+
+              if queued? do
+                Enum.each(queued_messages, fn queued_message ->
+                  steering =
+                    create_steering_item!(
+                      next_step,
+                      queued_steering_text(queued_message),
+                      :before_response,
+                      actor
+                    )
+
+                  mark_queued_steering_delivered!(queued_message, steering.id, actor)
+                end)
+              else
+                Enum.each(specs, fn spec ->
+                  create_steering_item!(
+                    next_step,
+                    Map.fetch!(spec, :text),
+                    :before_response,
+                    actor
+                  )
+                end)
+              end
+
+              transition_result(next_step, prepared.request, actor)
+              |> Map.merge(prepared_result(prepared))
+            end
+        end
+      end)
+    end)
+  end
+
+  defp ensure_transition_allowed!(step, kind) do
+    allowed =
+      if kind in [:followup, :queued_followup],
+        do: [:waiting_tools, :done],
+        else: [:waiting_provider]
+
+    unless step.status in allowed do
+      raise ArgumentError, "Cannot transition #{inspect(step.status)} step via #{kind}"
+    end
+  end
+
+  defp transition_result(step, request, actor) do
+    step =
+      load_step_for_runtime!(step.id, actor,
+        raw_request: request,
+        response?: step.status != :waiting_provider
+      )
+
+    steering_items = Enum.filter(ordered_items(step), &(&1.type == :steering))
+    item = List.first(steering_items)
+
+    deliveries =
+      if steering_items == [] do
+        []
+      else
+        item_ids = Enum.map(steering_items, & &1.id)
+
+        QueuedMessage
+        |> Ash.Query.filter(steering_item_id in ^item_ids and status == :delivered)
+        |> Ash.Query.sort(id: :asc)
+        |> Ash.read!(actor: actor)
+        |> Enum.map(&%{queued_message_id: &1.id, item_id: &1.steering_item_id})
+      end
+
+    %{
+      step: step,
+      step_id: step.id,
+      step_sequence: step.sequence,
+      started_at: step.created_at,
+      raw_request: request,
+      item_id: item && item.id,
+      deliveries: deliveries,
+      runtime_step: runtime_step_from_persisted_step(step, &(&1.type == :steering))
+    }
+  end
+
+  @doc "Reads the canonical outcome of one generation step transition without replaying it."
+  def reconcile_step_transition!(message_id, step_id, placement, opts \\ [])
+      when is_integer(message_id) and is_integer(step_id) and
+             placement in [:before_response, :followup] and is_list(opts) do
+    actor = actor_for_message!(message_id)
+
+    require_generation_lease!(message_id, opts)
+
+    request_transaction!(message_id, opts, fn ->
       _message = lock_message!(message_id, actor)
       step = load_step_with_items!(step_id, actor)
       ensure_step_belongs_to_message!(step, message_id)
-      queued_messages = lock_queued_steers!(message_id, specs)
+      successor = get_step_by_sequence(message_id, step.sequence + 1, actor)
 
-      with :ok <- validate_queued_steering_specs(queued_messages, specs) do
-        step = update_step!(step, %{status: :done, finished_at: now}, actor)
-        persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
+      terminal_status = if placement == :followup, do: :done, else: :canceled
+      source_status = if placement == :followup, do: :waiting_tools, else: :waiting_provider
 
-        next_step = upsert_waiting_provider_step!(message_id, next_sequence, raw_request, actor)
+      case {successor, step.status} do
+        {%ChatMessageStep{} = next_step, ^terminal_status} ->
+          request = StepRequests.request_for_step!(next_step.id, actor: actor)
+          {:applied, transition_result(next_step, request, actor)}
 
-        deliveries =
-          Enum.map(queued_messages, fn queued_message ->
-            steering =
-              create_steering_item!(
-                next_step,
-                queued_steering_text(queued_message),
-                :before_response,
-                actor
-              )
+        {nil, ^source_status} ->
+          :not_applied
 
-            mark_queued_steering_delivered!(queued_message, steering.id, actor)
-            %{queued_message_id: queued_message.id, item_id: steering.id}
-          end)
+        {nil, :done} when placement == :followup ->
+          :not_applied
 
-        next_step = load_step_with_items!(next_step.id, actor)
-
-        %{
-          step_id: next_step.id,
-          step_sequence: next_step.sequence,
-          raw_request: raw_request,
-          deliveries: deliveries,
-          runtime_step: runtime_step_from_persisted_step(next_step, &(&1.type == :steering))
-        }
+        _other ->
+          raise ArgumentError, "Generation step transition conflicts with canonical state"
       end
     end)
   end
 
-  def complete_step_and_start_next!(message_id, step_id, next_sequence, raw_request)
-      when is_integer(message_id) and is_integer(step_id) and is_integer(next_sequence) and
-             next_sequence > 0 and is_map(raw_request) do
-    actor = actor_for_message!(message_id)
+  defp interrupt_step_for_steering!(step, actor) do
+    replace_step_items!(step, [], actor)
     now = DateTime.utc_now()
-    raw_request = normalize_json_map(raw_request)
 
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-      ensure_step_belongs_to_message!(step, message_id)
-      step = update_step!(step, %{status: :done, finished_at: now}, actor)
-      persist_usage_record!(step.id, nil, :done, now, actor, create_if_missing?: false)
+    step =
+      update_step!(step, %{status: :canceled, response_final: false, finished_at: now}, actor)
 
-      next_step =
-        case get_step_by_sequence(message_id, next_sequence, actor) do
-          nil ->
-            create_step!(
-              %{
-                chat_message_id: message_id,
-                sequence: next_sequence,
-                status: :waiting_provider,
-                raw_request: raw_request,
-                raw_response: nil,
-                response_final: false,
-                input_tokens: nil,
-                output_tokens: nil,
-                cached_input_tokens: nil,
-                reasoning_tokens: nil,
-                cost: nil,
-                first_token_at: nil,
-                last_token_at: nil,
-                finished_at: nil
-              },
-              actor
-            )
-
-          %ChatMessageStep{} = existing ->
-            update_step!(
-              existing,
-              %{
-                status: :waiting_provider,
-                raw_request: raw_request,
-                raw_response: nil,
-                response_final: false,
-                input_tokens: nil,
-                output_tokens: nil,
-                cached_input_tokens: nil,
-                reasoning_tokens: nil,
-                cost: nil,
-                first_token_at: nil,
-                last_token_at: nil,
-                finished_at: nil
-              },
-              actor
-            )
-        end
-
-      %{step_id: next_step.id, step_sequence: next_step.sequence, raw_request: raw_request}
-    end)
+    maybe_create_error_item!(step, "Provider attempt interrupted by steering", actor)
+    persist_usage_record!(step, nil, :canceled, now, actor, create_if_missing?: false)
   end
 
-  def load_step_for_provider_restart!(step_id) when is_integer(step_id) do
+  defp complete_transition_step!(step, actor) do
+    now = DateTime.utc_now()
+    step = update_step!(step, %{status: :done, finished_at: now}, actor)
+    persist_usage_record!(step, nil, :done, now, actor, create_if_missing?: false)
+  end
+
+  def load_step_for_provider_restart!(step_id, opts \\ []) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
-    step = load_step_with_items!(step_id, actor)
+    step = load_step_for_runtime!(step_id, actor, Keyword.put(opts, :response?, false))
 
     %{
       step: step,
@@ -748,23 +675,13 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Enum.map(&steering_item_payload/1)
   end
 
-  def restore_steering_specs!(step_id, specs) when is_integer(step_id) and is_list(specs) do
-    actor = actor_for_step!(step_id)
-
-    transaction!(fn ->
-      step = load_step_with_items!(step_id, actor)
-      restore_steering_specs_in_transaction!(step, specs, actor)
-    end)
-
-    :ok
-  end
-
   def persist_tool_result!(message_id, step_id, %ToolCall{} = call, result)
       when is_integer(message_id) and is_integer(step_id) do
     actor = actor_for_message!(message_id)
 
     transaction!(fn ->
       step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
       persist_tool_result_for_step_in_transaction!(step, call, result, actor)
     end)
   end
@@ -871,9 +788,9 @@ defmodule IntellectualClub.Generation.Persistence do
     |> missing_tool_calls()
   end
 
-  def load_step_for_followup!(step_id) when is_integer(step_id) do
+  def load_step_for_followup!(step_id, opts \\ []) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
-    step = load_step_with_items!(step_id, actor)
+    step = load_step_for_runtime!(step_id, actor, opts)
     calls_by_item_id = persisted_tool_calls_by_item_id(step)
 
     %{
@@ -1008,42 +925,74 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   @doc false
-  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs, operation)
-      when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 and
-             is_map(raw_request) and is_list(steering_specs) do
-    actor = actor_for_message!(message_id)
+  def replace_steps_for_retry!(message_id, from_sequence, raw_request, steering_specs, operation) do
+    replace_steps_for_retry!(
+      message_id,
+      from_sequence,
+      raw_request,
+      steering_specs,
+      operation,
+      []
+    )
+  end
 
-    transaction!(fn ->
-      if is_nil(operation) do
-        IntellectualClub.Chat.LinkedForkCleanup.with_scope(
-          {:steps, message_id, from_sequence},
-          actor,
-          &replace_steps_for_retry_in_operation!(
-            message_id,
-            from_sequence,
-            raw_request,
-            steering_specs,
-            actor,
-            &1
-          )
-        )
-      else
-        replace_steps_for_retry_in_operation!(
-          message_id,
-          from_sequence,
-          raw_request,
-          steering_specs,
-          actor,
-          operation
-        )
-      end
-    end)
+  @doc false
+  def replace_steps_for_retry!(
+        message_id,
+        from_sequence,
+        raw_request,
+        steering_specs,
+        operation,
+        opts
+      )
+      when is_integer(message_id) and is_integer(from_sequence) and from_sequence > 0 and
+             is_map(raw_request) and is_list(steering_specs) and is_list(opts) do
+    actor = actor_for_message!(message_id)
+    message = load_message!(message_id, actor)
+
+    source_step =
+      get_step_by_sequence(message_id, from_sequence, actor) ||
+        raise ArgumentError, "Retry step not found"
+
+    opts = opts |> Keyword.put(:source_step_id, source_step.id) |> Keyword.put(:force_full, true)
+
+    result =
+      PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
+        prepared = prepare_request_step!(message_id, from_sequence, prepared, actor, opts)
+
+        request_transaction!(message_id, opts, fn ->
+          replace = fn cleanup ->
+            replace_steps_for_retry_in_operation!(
+              message_id,
+              from_sequence,
+              prepared,
+              source_step.id,
+              steering_specs,
+              actor,
+              cleanup
+            )
+          end
+
+          if is_nil(operation) do
+            IntellectualClub.Chat.LinkedForkCleanup.with_scope(
+              {:steps, message_id, from_sequence},
+              actor,
+              replace
+            )
+          else
+            replace.(operation)
+          end
+        end)
+      end)
+
+    if Keyword.get(opts, :return_request?, false), do: result, else: result.step.id
   end
 
   defp replace_steps_for_retry_in_operation!(
          message_id,
          from_sequence,
-         raw_request,
+         prepared,
+         source_step_id,
          steering_specs,
          actor,
          operation
@@ -1058,14 +1007,9 @@ defmodule IntellectualClub.Generation.Persistence do
 
     source_step = Enum.find(steps, &(&1.sequence == from_sequence))
 
-    if is_nil(source_step) do
-      raise ArgumentError, "Retry step not found"
+    unless source_step && source_step.id == source_step_id do
+      raise ArgumentError, "Retry source changed during request preparation"
     end
-
-    staged =
-      source_step.id
-      |> RequestImages.stage_bindings()
-      |> request_images_value!()
 
     Enum.each(
       steps,
@@ -1075,44 +1019,13 @@ defmodule IntellectualClub.Generation.Persistence do
     message_id
     |> load_message!(actor)
     |> update_message!(
-      %{
-        status: :generating,
-        error_detail: nil,
-        token_count: 0,
-        finished_at: nil
-      },
+      %{status: :generating, error_detail: nil, token_count: 0, finished_at: nil},
       actor
     )
 
-    step =
-      create_step!(
-        %{
-          chat_message_id: message_id,
-          sequence: from_sequence,
-          status: :waiting_provider,
-          raw_request: normalize_json_map(raw_request),
-          raw_response: nil,
-          response_final: false,
-          input_tokens: nil,
-          output_tokens: nil,
-          cached_input_tokens: nil,
-          reasoning_tokens: nil,
-          cost: nil,
-          first_token_at: nil,
-          last_token_at: nil,
-          finished_at: nil
-        },
-        actor
-      )
-
-    :ok =
-      staged
-      |> RequestImages.attach_staged_bindings_transactional(step.id)
-      |> request_images_ok!()
-
+    step = insert_request_step!(prepared, actor)
     restore_steering_specs_in_transaction!(step, steering_specs, actor)
-
-    step.id
+    prepared_result(prepared) |> Map.put(:step, step)
   end
 
   defp persist_step_snapshot!(message_id, %RuntimeTrace.Step{} = runtime_step, step_status, opts)
@@ -1125,17 +1038,33 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp persist_step_snapshot_in_transaction!(message_id, runtime_step, step_status, actor) do
+    _message = lock_message!(message_id, actor)
     persistable = RuntimeTrace.persistable(runtime_step)
-    sequence = positive_int(Map.get(persistable, :sequence), 1)
+
+    unless is_integer(runtime_step.id) and is_integer(runtime_step.sequence) and
+             runtime_step.sequence > 0 do
+      raise ArgumentError, "A snapshot requires its saved step ID and sequence"
+    end
+
+    step = load_step!(runtime_step.id, actor)
+    ensure_step_belongs_to_message!(step, message_id)
+
+    if step.sequence != runtime_step.sequence do
+      raise ArgumentError, "Runtime step sequence does not match its saved step"
+    end
+
+    ensure_runtime_request_matches!(step, runtime_step.raw_request, actor)
+
+    if get_step_by_sequence(message_id, step.sequence + 1, actor) do
+      raise ArgumentError, "Cannot persist a stale step after its successor was created"
+    end
+
     now = DateTime.utc_now()
     status = step_status
     finished_at = if status in [:done, :canceled, :error], do: now, else: nil
 
     attrs = %{
-      chat_message_id: message_id,
-      sequence: sequence,
       status: status,
-      raw_request: normalize_json_map(Map.get(persistable, :raw_request)),
       raw_response: normalize_optional_json(Map.get(persistable, :raw_response)),
       response_final: Map.get(persistable, :response_final, false) == true,
       input_tokens: Map.get(persistable, :input_tokens),
@@ -1148,26 +1077,38 @@ defmodule IntellectualClub.Generation.Persistence do
       finished_at: finished_at
     }
 
-    step =
-      case get_step_by_sequence(message_id, sequence, actor) do
-        nil ->
-          create_step!(attrs, actor)
-
-        %ChatMessageStep{} = step ->
-          update_step!(step, Map.delete(attrs, :chat_message_id), actor)
-      end
+    step = update_step!(step, attrs, actor)
 
     replace_step_items!(step, Map.get(persistable, :items, []), actor)
 
     persist_usage_record!(
-      step.id,
+      step,
       Map.get(persistable, :usage),
       status,
       finished_at || now,
       actor
     )
 
-    load_step_with_items!(step.id, actor)
+    step
+    |> load_step_with_items!(actor)
+    |> Map.put(:raw_response, attrs.raw_response)
+  end
+
+  defp ensure_runtime_request_matches!(step, request, actor) do
+    hash = Map.get(step, :request_hash)
+
+    matches? =
+      if is_binary(hash) do
+        StepRequests.hash(request) == hash
+      else
+        StepRequests.equal?(
+          StepRequests.request_for_step!(step.id, actor: actor),
+          StepRequests.normalize!(request)
+        )
+      end
+
+    unless matches?,
+      do: raise(ArgumentError, "Runtime request differs from immutable saved request")
   end
 
   defp replace_step_items!(%ChatMessageStep{} = step, items, actor) when is_list(items) do
@@ -1192,69 +1133,78 @@ defmodule IntellectualClub.Generation.Persistence do
       |> Enum.map(&offset_provider_item_sequence(&1, leading_steering_count))
       |> Enum.sort_by(&positive_int(Map.get(&1, :sequence), 0))
 
-    {calls_by_call_id, calls_by_sequence} =
-      normalized_items
-      |> Enum.reject(&(Map.get(&1, :type) == :tool_result))
-      |> Enum.reduce({%{}, %{}}, fn item, {by_call_id, by_sequence} ->
-        type = Map.get(item, :type, :other)
+    {provider_items, result_items} =
+      Enum.split_with(normalized_items, &(Map.get(&1, :type) != :tool_result))
 
-        created =
-          create_item!(
-            %{
-              chat_message_step_id: step.id,
-              sequence: positive_int(Map.get(item, :sequence), 1),
-              type: type,
-              tool_call_item_id: nil
-            },
-            actor
-          )
+    created_provider_items =
+      provider_items
+      |> Enum.map(&item_create_attributes(&1, step.id, nil))
+      |> bulk_create_records!(ChatMessageItem, actor)
 
-        create_contents!(created, Map.get(item, :contents, []), actor)
+    created_by_sequence = Map.new(created_provider_items, &{&1.sequence, &1})
 
-        by_sequence = Map.put(by_sequence, created.sequence, created.id)
+    calls_by_sequence =
+      created_provider_items
+      |> Enum.filter(&(&1.type == :tool_call))
+      |> Map.new(&{&1.sequence, &1.id})
 
-        by_call_id =
-          if type == :tool_call do
-            case tool_call_identity_from_persistable_item(item) do
-              "" -> by_call_id
-              call_id -> Map.put(by_call_id, call_id, created.id)
-            end
-          else
-            by_call_id
-          end
-
-        {by_call_id, by_sequence}
+    calls_by_call_id =
+      provider_items
+      |> Enum.filter(&(Map.get(&1, :type) == :tool_call))
+      |> Map.new(fn item ->
+        created = Map.fetch!(created_by_sequence, Map.fetch!(item, :sequence))
+        {tool_call_identity_from_persistable_item(item), created.id}
       end)
 
+    created_result_items =
+      result_items
+      |> Enum.map(fn item ->
+        call_id = tool_result_call_id_from_persistable_item(item)
+
+        linked_id =
+          Map.get(calls_by_call_id, call_id) ||
+            preceding_tool_call_item_id(item, calls_by_sequence)
+
+        item_create_attributes(item, step.id, linked_id)
+      end)
+      |> bulk_create_records!(ChatMessageItem, actor)
+
+    created_by_sequence =
+      Map.merge(created_by_sequence, Map.new(created_result_items, &{&1.sequence, &1}))
+
     normalized_items
-    |> Enum.filter(&(Map.get(&1, :type) == :tool_result))
-    |> Enum.each(fn item ->
-      tool_call_item_id =
-        item
-        |> tool_result_call_id_from_persistable_item()
-        |> case do
-          "" -> nil
-          call_id -> Map.get(calls_by_call_id, call_id)
-        end
-
-      tool_call_item_id =
-        tool_call_item_id || preceding_tool_call_item_id(item, calls_by_sequence)
-
-      created =
-        create_item!(
-          %{
-            chat_message_step_id: step.id,
-            sequence: positive_int(Map.get(item, :sequence), 1),
-            type: :tool_result,
-            tool_call_item_id: tool_call_item_id
-          },
-          actor
-        )
-
-      create_contents!(created, Map.get(item, :contents, []), actor)
+    |> Enum.flat_map(fn item ->
+      created = Map.fetch!(created_by_sequence, Map.fetch!(item, :sequence))
+      content_create_attributes(created.id, Map.get(item, :contents, []))
     end)
+    |> bulk_create_records!(ChatMessageContent, actor)
 
     :ok
+  end
+
+  defp item_create_attributes(item, step_id, linked_id) do
+    %{
+      chat_message_step_id: step_id,
+      sequence: positive_int(Map.get(item, :sequence), 1),
+      type: Map.get(item, :type, :other),
+      tool_call_item_id: linked_id
+    }
+  end
+
+  defp bulk_create_records!([], _resource, _actor), do: []
+
+  defp bulk_create_records!(attrs, resource, actor) do
+    result =
+      Ash.bulk_create!(attrs, resource, :create,
+        actor: actor,
+        return_records?: true,
+        return_errors?: true,
+        stop_on_error?: true,
+        transaction: :all,
+        batch_size: 250
+      )
+
+    result.records
   end
 
   defp create_tool_result_contents!(item, %ToolResult{} = result, responses_item, actor) do
@@ -1474,12 +1424,20 @@ defmodule IntellectualClub.Generation.Persistence do
   defp retry_attempt_from_metadata(_metadata), do: nil
 
   defp create_contents!(%ChatMessageItem{} = item, contents, actor) when is_list(contents) do
+    item.id
+    |> content_create_attributes(contents)
+    |> bulk_create_records!(ChatMessageContent, actor)
+
+    :ok
+  end
+
+  defp content_create_attributes(item_id, contents) do
     contents
     |> Enum.filter(&is_map/1)
     |> Enum.sort_by(&positive_int(Map.get(&1, :sequence), 0))
-    |> Enum.each(fn content ->
-      attrs = %{
-        chat_message_item_id: item.id,
+    |> Enum.map(fn content ->
+      %{
+        chat_message_item_id: item_id,
         external_id: Map.get(content, :external_id) || Ash.UUID.generate(),
         sequence: positive_int(Map.get(content, :sequence), 1),
         kind: Map.get(content, :kind, :text),
@@ -1487,10 +1445,6 @@ defmodule IntellectualClub.Generation.Persistence do
         content_json: normalize_optional_json(Map.get(content, :content_json)),
         file_id: Map.get(content, :file_id)
       }
-
-      ChatMessageContent
-      |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-      |> Ash.create!(actor: actor)
     end)
   end
 
@@ -1572,7 +1526,7 @@ defmodule IntellectualClub.Generation.Persistence do
         target_generation_message_id == ^message_id
     )
     |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.load(:contents)
     |> Ash.read!(authorize?: false)
   end
@@ -1587,7 +1541,17 @@ defmodule IntellectualClub.Generation.Persistence do
       |> Enum.map(&%{id: Map.get(&1, :id), text: to_string(Map.get(&1, :text) || "")})
       |> Enum.sort_by(& &1.id)
 
-    if actual == expected, do: :ok, else: {:error, :queued_steering_changed}
+    revisions_match? =
+      Enum.all?(queued_messages, fn queued_message ->
+        spec = Enum.find(specs, &(Map.get(&1, :id) == queued_message.id))
+
+        not Map.has_key?(spec || %{}, :updated_at) or
+          Map.get(spec, :updated_at) == queued_message.updated_at
+      end)
+
+    if actual == expected and revisions_match?,
+      do: :ok,
+      else: {:error, :queued_steering_changed}
   end
 
   defp queued_steering_text(%QueuedMessage{} = queued_message) do
@@ -1629,30 +1593,38 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  defp upsert_waiting_provider_step!(message_id, sequence, raw_request, actor) do
-    attrs = %{
-      status: :waiting_provider,
-      raw_request: raw_request,
-      raw_response: nil,
-      response_final: false,
-      input_tokens: nil,
-      output_tokens: nil,
-      cached_input_tokens: nil,
-      reasoning_tokens: nil,
-      cost: nil,
-      first_token_at: nil,
-      last_token_at: nil,
-      finished_at: nil
-    }
+  defp prepare_request_step!(message_id, sequence, prepared, actor, opts) do
+    {changeset, snapshot} =
+      StepRequests.prepare_create!(
+        %{
+          chat_message_id: message_id,
+          sequence: sequence,
+          status: :waiting_provider,
+          raw_response: nil,
+          response_final: false
+        },
+        prepared.request,
+        Keyword.put(opts, :actor, actor)
+      )
 
-    case get_step_by_sequence(message_id, sequence, actor) do
-      nil ->
-        create_step!(Map.merge(attrs, %{chat_message_id: message_id, sequence: sequence}), actor)
+    # Preserve image staging and any future preparation metadata. A supplied
+    # snapshot is only a hint; the resource derives its authoritative one above.
+    prepared
+    |> Map.put(:request_changeset, changeset)
+    |> Map.put(:request, snapshot.request)
+    |> Map.put(:request_snapshot, snapshot)
+  end
 
-      %ChatMessageStep{} = existing ->
-        replace_step_items!(existing, [], actor)
-        update_step!(existing, attrs, actor)
-    end
+  defp prepared_result(prepared), do: Map.delete(prepared, :request_changeset)
+
+  defp insert_request_step!(prepared, actor) do
+    step = Ash.create!(prepared.request_changeset, actor: actor, authorize?: true)
+
+    prepared.bindings
+    |> RequestImages.attach_staged_bindings_transactional(step.id)
+    |> request_images_ok!()
+
+    step
   end
 
   defp steering_item_payload(%ChatMessageItem{} = item) do
@@ -1702,12 +1674,6 @@ defmodule IntellectualClub.Generation.Persistence do
     raise ArgumentError, "Step does not belong to message"
   end
 
-  defp create_step!(attrs, actor) when is_map(attrs) do
-    ChatMessageStep
-    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
   defp update_step!(%ChatMessageStep{} = step, attrs, actor) when is_map(attrs) do
     step
     |> Ash.Changeset.for_update(:update, attrs, actor: actor)
@@ -1726,78 +1692,86 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Ash.update!(actor: actor)
   end
 
-  defp persist_usage_record!(step_id, raw_usage, step_status, occurred_at, actor, opts \\ [])
-       when is_integer(step_id) and is_list(opts) do
+  defp persist_usage_record!(step_or_id, raw_usage, step_status, occurred_at, actor, opts \\ []) do
     step =
-      ChatMessageStep
-      |> Ash.get!(step_id,
-        authorize?: false,
-        load: [owner: [], chat_message: [llm_configuration: [:provider]]]
-      )
-
-    message = step.chat_message
-    configuration = message && message.llm_configuration
-
-    if message && message.role == :assistant && configuration do
-      provider = configuration.provider
-      existing = usage_record_for_step(step_id)
-      raw_usage = raw_usage || (existing && existing.raw_usage)
-
-      attrs = %{
-        usage_user_id: step.owner_id,
-        usage_user_id_snapshot: step.owner_id,
-        usage_username_snapshot: username_snapshot(step.owner, step.owner_id),
-        configuration_owner_id: configuration.owner_id,
-        configuration_owner_id_snapshot: configuration.owner_id,
-        llm_configuration_id: configuration.id,
-        llm_configuration_id_snapshot: configuration.id,
-        llm_configuration_external_id_snapshot: configuration.external_id,
-        llm_configuration_label_snapshot:
-          configuration_label(configuration.model_name, configuration.note, configuration.id),
-        provider_id: provider && provider.id,
-        provider_id_snapshot: provider && provider.id,
-        provider_name_snapshot: provider && provider.name,
-        provider_type_snapshot: provider && to_string(provider.type),
-        chat_id: message.chat_id,
-        chat_id_snapshot: message.chat_id,
-        chat_message_id: message.id,
-        chat_message_id_snapshot: message.id,
-        chat_message_step_id: step.id,
-        chat_message_step_id_snapshot: step.id,
-        step_sequence: step.sequence,
-        status: step_status,
-        response_final: step.response_final == true,
-        occurred_at: occurred_at || DateTime.utc_now(),
-        input_tokens: step.input_tokens,
-        output_tokens: step.output_tokens,
-        cached_input_tokens: step.cached_input_tokens,
-        reasoning_tokens: step.reasoning_tokens,
-        cost: step.cost,
-        raw_usage: normalize_optional_json(raw_usage)
-      }
-
-      if usage_present?(attrs) do
-        create_if_missing? = Keyword.get(opts, :create_if_missing?, true)
-
-        case existing do
-          nil when create_if_missing? ->
-            LlmUsageRecord
-            |> Ash.Changeset.for_create(
-              :create,
-              Map.put(attrs, :external_id, Ash.UUID.generate()),
-              actor: actor
-            )
-            |> Ash.create!(actor: actor)
-
-          %LlmUsageRecord{} = record ->
-            record
-            |> Ash.Changeset.for_update(:update, attrs, actor: actor)
-            |> Ash.update!(actor: actor)
-
-          nil ->
-            :ok
-        end
+      case step_or_id do
+        %ChatMessageStep{} = step -> step
+        step_id when is_integer(step_id) -> load_step!(step_id, actor)
       end
+
+    existing = usage_record_for_step(step.id)
+
+    attrs = %{
+      status: step_status,
+      response_final: step.response_final == true,
+      occurred_at: occurred_at || DateTime.utc_now(),
+      input_tokens: step.input_tokens,
+      output_tokens: step.output_tokens,
+      cached_input_tokens: step.cached_input_tokens,
+      reasoning_tokens: step.reasoning_tokens,
+      cost: step.cost,
+      raw_usage: normalize_optional_json(raw_usage || (existing && existing.raw_usage))
+    }
+
+    cond do
+      not usage_present?(attrs) ->
+        :ok
+
+      existing ->
+        existing
+        |> Ash.Changeset.for_update(:update, attrs, actor: actor)
+        |> Ash.update!(actor: actor)
+
+      Keyword.get(opts, :create_if_missing?, true) ->
+        step =
+          Ash.load!(step, [owner: [], chat_message: [llm_configuration: [:provider]]],
+            actor: actor,
+            authorize?: false
+          )
+
+        message = step.chat_message
+        configuration = message && message.llm_configuration
+
+        if message && message.role == :assistant && configuration do
+          provider = configuration.provider
+
+          attrs =
+            Map.merge(attrs, %{
+              external_id: Ash.UUID.generate(),
+              usage_user_id: step.owner_id,
+              usage_user_id_snapshot: step.owner_id,
+              usage_username_snapshot: username_snapshot(step.owner, step.owner_id),
+              configuration_owner_id: configuration.owner_id,
+              configuration_owner_id_snapshot: configuration.owner_id,
+              llm_configuration_id: configuration.id,
+              llm_configuration_id_snapshot: configuration.id,
+              llm_configuration_external_id_snapshot: configuration.external_id,
+              llm_configuration_label_snapshot:
+                configuration_label(
+                  configuration.model_name,
+                  configuration.note,
+                  configuration.id
+                ),
+              provider_id: provider && provider.id,
+              provider_id_snapshot: provider && provider.id,
+              provider_name_snapshot: provider && provider.name,
+              provider_type_snapshot: provider && to_string(provider.type),
+              chat_id: message.chat_id,
+              chat_id_snapshot: message.chat_id,
+              chat_message_id: message.id,
+              chat_message_id_snapshot: message.id,
+              chat_message_step_id: step.id,
+              chat_message_step_id_snapshot: step.id,
+              step_sequence: step.sequence
+            })
+
+          LlmUsageRecord
+          |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+          |> Ash.create!(actor: actor)
+        end
+
+      true ->
+        :ok
     end
 
     :ok
@@ -1823,7 +1797,7 @@ defmodule IntellectualClub.Generation.Persistence do
   defp lock_message!(message_id, actor) when is_integer(message_id) do
     ChatMessage
     |> Ash.Query.filter(id == ^message_id)
-    |> Ash.Query.lock(:for_update)
+    |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one!(actor: actor)
     |> case do
       %ChatMessage{} = message -> message
@@ -1835,26 +1809,37 @@ defmodule IntellectualClub.Generation.Persistence do
     Ash.get!(ChatMessageStep, step_id, actor: actor)
   end
 
-  defp load_step_with_items!(%ChatMessageStep{id: step_id}, actor) when is_integer(step_id) do
-    load_step_with_items!(step_id, actor)
-  end
+  defp load_step_with_items!(step_or_id, actor, opts \\ [])
 
-  defp load_step_with_items!(step_id, actor) when is_integer(step_id) do
-    ChatMessageStep
-    |> Ash.get!(step_id,
-      actor: actor,
-      load: [
-        :raw_request,
-        :raw_response,
-        items: [
-          :tool_call_item_id,
-          contents: [
-            :file_id,
-            file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
-          ]
+  defp load_step_with_items!(%ChatMessageStep{} = step, actor, opts) do
+    loads = [
+      items: [
+        :tool_call_item_id,
+        contents: [
+          :file_id,
+          file: [:id, :external_id, :filename, :mime_type, :size_bytes, :sha256]
         ]
       ]
-    )
+    ]
+
+    loads = if Keyword.get(opts, :response?, false), do: [:raw_response | loads], else: loads
+    Ash.load!(step, loads, actor: actor, lazy?: false)
+  end
+
+  defp load_step_with_items!(step_id, actor, opts) when is_integer(step_id) do
+    step_id |> load_step!(actor) |> load_step_with_items!(actor, opts)
+  end
+
+  defp load_step_for_runtime!(step_id, actor, opts) do
+    response? = Keyword.get(opts, :response?, true)
+    step = load_step_with_items!(step_id, actor, response?: response?)
+
+    request =
+      Keyword.get_lazy(opts, :raw_request, fn ->
+        StepRequests.request_for_step!(step_id, actor: actor)
+      end)
+
+    %{step | raw_request: request, raw_response: if(response?, do: step.raw_response, else: nil)}
   end
 
   defp load_item_with_contents!(%ChatMessageItem{} = item, actor) do
@@ -1902,16 +1887,6 @@ defmodule IntellectualClub.Generation.Persistence do
   end
 
   defp maybe_filter_step_statuses(query, _statuses), do: query
-
-  defp list_tool_calls_for_step!(step_id) when is_integer(step_id) do
-    actor = actor_for_step!(step_id)
-
-    step_id
-    |> load_step_with_items!(actor)
-    |> persisted_tool_calls_by_item_id()
-    |> Map.values()
-    |> Enum.sort_by(& &1.sequence)
-  end
 
   defp missing_tool_calls(%ChatMessageStep{} = step) do
     calls_by_item_id = persisted_tool_calls_by_item_id(step)
@@ -2422,12 +2397,6 @@ defmodule IntellectualClub.Generation.Persistence do
   defp normalize_list(value) when is_list(value), do: value
   defp normalize_list(_value), do: []
 
-  defp request_images_value!({:ok, value}), do: value
-
-  defp request_images_value!({:error, reason}) do
-    raise "Failed to stage request files: #{inspect(reason)}"
-  end
-
   defp request_images_ok!(:ok), do: :ok
 
   defp request_images_ok!({:error, reason}) do
@@ -2467,10 +2436,60 @@ defmodule IntellectualClub.Generation.Persistence do
     %User{id: step.owner_id}
   end
 
+  defp ensure_request_step_creation_allowed!(
+         %ChatMessage{status: :generating, id: message_id},
+         sequence,
+         opts
+       )
+       when sequence > 1 do
+    require_generation_lease!(message_id, opts)
+  end
+
+  defp ensure_request_step_creation_allowed!(%ChatMessage{}, _sequence, _opts), do: :ok
+
+  defp require_generation_lease!(message_id, opts) do
+    case Keyword.get(opts, :lease) do
+      %Lease{message_id: ^message_id, fence_token: token} when is_binary(token) -> :ok
+      _other -> raise ArgumentError, "Generation step transition requires a fenced lease"
+    end
+  end
+
+  defp request_transaction!(message_id, opts, fun) do
+    # Retry is owned by the actual Ash transaction boundary, not preparation or
+    # cleanup. Nested transactions propagate to that owner without local retry.
+    case Keyword.get(opts, :lease) do
+      nil ->
+        transaction!(fun)
+
+      %Lease{message_id: ^message_id} = lease ->
+        cond do
+          Lease.registered?(lease) ->
+            case Lease.with_fence(lease, fn -> transaction!(fun) end, require_generating?: true) do
+              {:ok, result} ->
+                result
+
+              {:error, reason} ->
+                if PersistenceFailure.lease_lost?(reason),
+                  do: exit({:generation_lease_lost, reason}),
+                  else: raise(PersistenceFailure.new(reason, operation: :request_publication))
+            end
+
+          Lease.authorizes?(lease) and Ash.DataLayer.in_transaction?(ChatMessageStep) ->
+            transaction!(fun)
+
+          true ->
+            exit({:generation_lease_lost, :lease_lost})
+        end
+
+      _other ->
+        raise ArgumentError, "Publication lease does not belong to the message"
+    end
+  end
+
   defp transaction!(fun) when is_function(fun, 0) do
-    case Ash.transaction(@transaction_resources, fun) do
+    case PersistenceFailure.ash_transaction(@transaction_resources, fun) do
       {:ok, result} -> result
-      {:error, error} -> raise inspect(error)
+      {:error, error} -> raise PersistenceFailure.new(error, operation: :persistence)
     end
   end
 

@@ -13,6 +13,7 @@ defmodule IntellectualClub.Chat do
     resource(IntellectualClub.Chat.ChatShare)
     resource(IntellectualClub.Chat.ChatUploadSession)
     resource(IntellectualClub.Chat.ChatMessage)
+    resource(IntellectualClub.Chat.ChatMessagePollRevision)
     resource(IntellectualClub.Chat.MessageBookmark)
     resource(IntellectualClub.Chat.ChatKnowledgeBlock)
     resource(IntellectualClub.Chat.ChatMessageStep)

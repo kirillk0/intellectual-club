@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.AnthropicMessages.ImageMapper
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Api
@@ -67,6 +68,16 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       %{"type" => "web_search_20250305", "name" => "web_search"},
       "name"
     )
+  end
+
+  @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    version = request |> Map.get("anthropic_version") |> to_string() |> String.trim()
+    Map.put(request, "anthropic_version", if(version == "", do: "2023-06-01", else: version))
   end
 
   @impl true
@@ -202,10 +213,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      opts
-      |> Map.get(:request_payload, %{})
-      |> RequestPayload.stringify_keys()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)
@@ -243,6 +251,9 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

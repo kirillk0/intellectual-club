@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
 
   @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
 
+  alias IntellectualClub.Llm.Providers.Common.ChatCompletions.ImageMapper
   alias IntellectualClub.Generation.CacheControl
   alias IntellectualClub.Generation.RequestPayload
   alias IntellectualClub.Llm.Providers.Common.AuthValidation
@@ -59,6 +60,18 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
+  def map_request_images(request, acc, mapper),
+    do: ImageMapper.map_request_images(request, acc, mapper)
+
+  @impl true
+  def prepare_request(request, _context) when is_map(request) do
+    request
+    |> Map.delete("session_id")
+    |> strip_cache_control()
+    |> include_stream_usage()
+  end
+
+  @impl true
   def build_initial_request(opts) when is_map(opts) do
     messages =
       opts
@@ -73,7 +86,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request()
 
     %{
       raw_request: raw_request,
@@ -103,7 +115,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
         followup.messages,
         tools: Map.get(opts, :tools, [])
       )
-      |> prepare_request()
 
     %{
       runtime_step: followup.runtime_step,
@@ -127,7 +138,6 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
     raw_request =
       payload
       |> Map.put("messages", messages)
-      |> prepare_request()
 
     %{raw_request: raw_request, request_snapshot: request_snapshot(raw_request)}
   end
@@ -139,10 +149,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   def stream_generate(opts, emit) when is_map(opts) and is_function(emit, 1) do
     context = Map.get(opts, :context, %{})
 
-    request_payload =
-      (Map.get(opts, :request_payload) || %{})
-      |> RequestPayload.stringify_keys()
-      |> prepare_request()
+    request_payload = Map.get(opts, :request_payload, %{}) || %{}
 
     base_url = Map.get(context, :provider_base_url)
     api_key = Map.get(context, :provider_api_key)
@@ -181,6 +188,9 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
             api_key: api_key,
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
+            image_mapper: &map_request_images/3,
+            image_cache: Map.get(opts, :image_cache, %{}),
+            image_cache_update: Map.get(opts, :image_cache_update),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000),
             retryable_http_status_codes: @retryable_http_status_codes
           },
@@ -209,18 +219,11 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   defp include_stream_usage(%{} = raw_request) do
     stream_options =
       case Map.get(raw_request, "stream_options") do
-        %{} = options -> RequestPayload.stringify_keys(options)
+        %{} = options -> options
         _other -> %{}
       end
 
     Map.put(raw_request, "stream_options", Map.put(stream_options, "include_usage", true))
-  end
-
-  defp prepare_request(%{} = raw_request) do
-    raw_request
-    |> Map.delete("session_id")
-    |> strip_cache_control()
-    |> include_stream_usage()
   end
 
   defp strip_cache_control(%{"messages" => messages} = raw_request) when is_list(messages) do

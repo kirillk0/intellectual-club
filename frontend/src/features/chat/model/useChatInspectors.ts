@@ -1,6 +1,6 @@
 import { computed, ref, type Ref } from 'vue';
 
-import { api, getApiErrorMessage } from '@/api/client';
+import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
   buildMessageContentFileUrl,
   buildQueuedMessageContentFileUrl,
@@ -110,7 +110,8 @@ export function useChatInspectors(params: Params) {
     searchParams.set('kind', payload.kind);
 
     const response = await api.get<{ step: { raw_request?: unknown; raw_response?: unknown } }>(
-      `/api/bff/chat-messages/${payload.messageId}/steps/${payload.stepId}/raw?${searchParams.toString()}`
+      `/api/bff/chat-messages/${payload.messageId}/steps/${payload.stepId}/raw?${searchParams.toString()}`,
+      { showErrorBanner: false }
     );
 
     return payload.kind === 'request' ? response.step?.raw_request ?? null : response.step?.raw_response ?? null;
@@ -168,8 +169,15 @@ export function useChatInspectors(params: Params) {
         stepDetailsResponsePayload.value = rawPayload;
       }
     } catch (error) {
-      const errorText =
-        error instanceof Error && error.message === 'Step is not available'
+      const unavailableRequest =
+        isHttpError(error) &&
+        typeof error.bodyJson === 'object' &&
+        error.bodyJson !== null &&
+        'code' in error.bodyJson &&
+        error.bodyJson.code === 'request_unavailable';
+      const errorText = unavailableRequest
+        ? 'Stored request could not be reconstructed'
+        : error instanceof Error && error.message === 'Step is not available'
           ? error.message
           : 'Failed to load payload';
 

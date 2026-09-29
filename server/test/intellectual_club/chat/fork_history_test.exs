@@ -33,6 +33,27 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
     %{actor: actor}
   end
 
+  test "a linked fork publishes its prepared prefix after a source content edit", %{actor: actor} do
+    source = source!(actor)
+    child = child!(source, actor)
+    assert {:ok, preparation} = Context.prepare(child.id, actor: actor)
+    assert preparation.parent_id == nil
+    assert Enum.any?(preparation.context.history, &(&1.content =~ "Parent completed response"))
+
+    update_content!(source.answer, :text, %{content_text: "Edited parent response"}, actor)
+
+    context = Context.publish!(preparation, actor: actor)
+    assert context.history == preparation.context.history
+    assert context.request_payload == preparation.context.request_payload
+    assert context.parent_message_id == nil
+    assert context.chat_id == child.id
+
+    assert Enum.all?(
+             context.history,
+             &(not String.contains?(&1.content, "Edited parent response"))
+           )
+  end
+
   test "boundary payloads preserve exact text, raw metadata and call identity" do
     selected = %ToolCall{item_id: 11, call_id: "selected", name: "agent__fork", args: nil}
 

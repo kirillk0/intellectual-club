@@ -112,10 +112,11 @@ defmodule IntellectualClub.Chat.Chat do
              strict?: true
            ),
          {:ok, _source_branch} <-
-           MessageTreeCopy.materialize_loaded_messages(source_branch, actor) do
+           MessageTreeCopy.prepare_loaded_messages(source_branch, actor) do
       changeset
       |> Ash.Changeset.change_attributes(Continuation.target_attrs(source))
       |> Ash.Changeset.put_context(:source_chat_id, source.id)
+      |> Ash.Changeset.put_context(:source_branch_snapshot, source_branch)
     else
       {:error, error} ->
         add_action_error(changeset, :id, error)
@@ -126,7 +127,14 @@ defmodule IntellectualClub.Chat.Chat do
     Ash.Changeset.after_action(changeset, fn changeset, chat ->
       actor = changeset.context[:private][:actor]
       source = Ash.get!(__MODULE__, changeset.context[:source_chat_id], actor: actor)
-      {:ok, Continuation.copy_active_branch_to_target!(source, chat, actor)}
+
+      {:ok,
+       Continuation.copy_loaded_branch_to_target!(
+         source,
+         changeset.context[:source_branch_snapshot],
+         chat,
+         actor
+       )}
     end)
   end
 
@@ -148,10 +156,11 @@ defmodule IntellectualClub.Chat.Chat do
          :ok <- mutable_history(selection.source),
          :ok <- Branching.validate_replacement_contents(selection, replacement_contents),
          {:ok, _prefix} <-
-           MessageTreeCopy.materialize_loaded_messages(selection.prefix, actor) do
+           MessageTreeCopy.prepare_loaded_messages(selection.prefix, actor) do
       changeset
       |> Ash.Changeset.change_attributes(Continuation.branch_target_attrs(selection.source))
       |> Ash.Changeset.put_context(:source_chat_id, selection.source.id)
+      |> Ash.Changeset.put_context(:branch_selection_snapshot, selection)
       |> Ash.Changeset.put_context(:replacement_contents, replacement_contents)
     else
       {:error, :message_not_in_active_branch} ->
@@ -212,9 +221,9 @@ defmodule IntellectualClub.Chat.Chat do
     Ash.Changeset.after_action(changeset, fn changeset, chat ->
       actor = changeset.context[:private][:actor]
       source = Ash.get!(__MODULE__, changeset.context[:source_chat_id], actor: actor)
-      message_id = Ash.Changeset.get_argument(changeset, :message_id)
+      selection = Map.put(changeset.context[:branch_selection_snapshot], :source, source)
 
-      Continuation.copy_branch_to_target(source, chat, message_id, actor,
+      Continuation.copy_selected_branch_to_target(selection, chat, actor,
         replacement_contents: List.wrap(changeset.context[:replacement_contents])
       )
     end)
@@ -370,50 +379,58 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   relationships do
-    belongs_to :owner, IntellectualClub.Accounts.User,
+    belongs_to(:owner, IntellectualClub.Accounts.User,
       allow_nil?: false,
       attribute_type: :integer
+    )
 
-    belongs_to :bot, IntellectualClub.Bots.Bot,
+    belongs_to(:bot, IntellectualClub.Bots.Bot,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :llm_configuration, IntellectualClub.Llm.LlmConfiguration,
+    belongs_to(:llm_configuration, IntellectualClub.Llm.LlmConfiguration,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :last_message, IntellectualClub.Chat.ChatMessage,
+    belongs_to(:last_message, IntellectualClub.Chat.ChatMessage,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :parent_chat, __MODULE__,
+    belongs_to(:parent_chat, __MODULE__,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :parent_message, IntellectualClub.Chat.ChatMessage,
+    belongs_to(:parent_message, IntellectualClub.Chat.ChatMessage,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :parent_tool_call_item, IntellectualClub.Chat.ChatMessageItem,
+    belongs_to(:parent_tool_call_item, IntellectualClub.Chat.ChatMessageItem,
       allow_nil?: true,
       attribute_type: :integer
+    )
 
-    belongs_to :fork_source_step, IntellectualClub.Chat.ChatMessageStep,
+    belongs_to(:fork_source_step, IntellectualClub.Chat.ChatMessageStep,
       allow_nil?: true,
       public?: false,
       attribute_type: :integer
+    )
 
     has_many :child_chats, __MODULE__ do
       destination_attribute(:parent_chat_id)
     end
 
-    has_many :messages, IntellectualClub.Chat.ChatMessage
+    has_many(:messages, IntellectualClub.Chat.ChatMessage)
 
-    has_many :queued_messages, IntellectualClub.Chat.QueuedMessage
+    has_many(:queued_messages, IntellectualClub.Chat.QueuedMessage)
 
     has_many :root_messages, IntellectualClub.Chat.ChatMessage do
       destination_attribute(:chat_id)
-      filter expr(is_nil(parent_id))
+      filter(expr(is_nil(parent_id)))
     end
 
     has_many :knowledge_block_bindings, IntellectualClub.Chat.ChatKnowledgeBlock do
@@ -480,7 +497,7 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   json_api do
-    type "chats"
+    type("chats")
   end
 
   actions do
@@ -746,20 +763,22 @@ defmodule IntellectualClub.Chat.Chat do
 
   policies do
     policy action_type(:read) do
-      authorize_if relates_to_actor_via(:owner)
+      authorize_if(relates_to_actor_via(:owner))
 
-      authorize_if expr(
-                     not exists(knowledge_block_bindings) and not exists(tool_bindings) and
-                       exists(shares.user_group.memberships, user_id == ^actor(:id))
-                   )
+      authorize_if(
+        expr(
+          not exists(knowledge_block_bindings) and not exists(tool_bindings) and
+            exists(shares.user_group.memberships, user_id == ^actor(:id))
+        )
+      )
     end
 
     policy action_type(:create) do
-      authorize_if actor_present()
+      authorize_if(actor_present())
     end
 
     policy action_type([:update, :destroy]) do
-      authorize_if relates_to_actor_via(:owner)
+      authorize_if(relates_to_actor_via(:owner))
     end
   end
 end

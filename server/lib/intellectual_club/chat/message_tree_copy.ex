@@ -10,40 +10,53 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.RequestImages
-  alias IntellectualClub.Generation.RequestImages.Walker
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Llm.LlmConfiguration
 
   require Ash.Query
 
-  @doc """
-  Materializes request-image markers for already loaded source messages.
+  @request_fields [
+    :request_mode,
+    :raw_request,
+    :request_patch,
+    :request_hash,
+    :request_base_hash,
+    :request_base_sequence,
+    :request_checkpoint_distance
+  ]
 
-  Callers must run this before opening any transaction that copies or moves the
-  messages. The source message and every source step are re-authorized for the
-  supplied actor before the internal materializer is invoked.
+  @doc """
+  Checks read access to a loaded copy snapshot without repairing its source.
+  Request files are immutable pins; copying must never materialize source steps.
   """
-  @spec materialize_loaded_messages([ChatMessage.t()], map()) ::
+  @spec prepare_loaded_messages([ChatMessage.t()], map()) ::
           {:ok, [ChatMessage.t()]} | {:error, term()}
-  def materialize_loaded_messages(messages, actor) when is_list(messages) and is_map(actor) do
-    Enum.reduce_while(messages, {:ok, messages}, fn message, {:ok, messages} ->
-      case materialize_loaded_message(message, actor) do
-        :ok -> {:cont, {:ok, messages}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+  def prepare_loaded_messages(messages, actor) when is_list(messages) and is_map(actor) do
+    message_ids = Enum.map(messages, & &1.id)
+
+    readable_ids =
+      ChatMessage
+      |> Ash.Query.filter(id in ^message_ids)
+      |> Ash.Query.select([:id])
+      |> Ash.read!(actor: actor)
+      |> MapSet.new(& &1.id)
+
+    if MapSet.equal?(readable_ids, MapSet.new(message_ids)) do
+      {:ok, messages}
+    else
+      {:error, :copy_source_unavailable}
+    end
+  rescue
+    error -> {:error, error}
   end
 
-  def materialize_loaded_messages(_messages, _actor),
-    do: {:error, :invalid_loaded_messages}
+  def prepare_loaded_messages(_messages, _actor), do: {:error, :invalid_loaded_messages}
 
-  @spec materialize_loaded_messages!([ChatMessage.t()], map()) :: [ChatMessage.t()]
-  def materialize_loaded_messages!(messages, actor) do
-    case materialize_loaded_messages(messages, actor) do
-      {:ok, messages} ->
-        messages
-
-      {:error, reason} ->
-        raise "Failed to materialize copied request files: #{inspect(reason)}"
+  @spec prepare_loaded_messages!([ChatMessage.t()], map()) :: [ChatMessage.t()]
+  def prepare_loaded_messages!(messages, actor) do
+    case prepare_loaded_messages(messages, actor) do
+      {:ok, messages} -> messages
+      {:error, reason} -> raise "Copy source is unavailable: #{inspect(reason)}"
     end
   end
 
@@ -56,8 +69,29 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
           %{integer() => integer()}
   def copy_messages!(messages, %Chat{} = target, copied_ids, actor)
       when is_list(messages) and is_map(copied_ids) do
+    messages = prepare_loaded_messages!(messages, actor)
+    steps = Enum.flat_map(messages, &ordered(&1.steps))
+    requests = StepRequests.requests_for_steps!(steps, actor: actor)
+
+    # Cache only this copy's configuration selection. The message create action
+    # still authorizes every related configuration before persisting its ID.
+    configuration_ids =
+      messages
+      |> Enum.map(& &1.llm_configuration_id)
+      |> Enum.uniq()
+      |> Map.new(&{&1, readable_llm_configuration_id(&1, actor)})
+
     Enum.reduce(messages, copied_ids, fn message, copied_ids ->
-      copied = copy_message!(message, target, copied_ids, actor)
+      copied =
+        copy_message!(
+          message,
+          target,
+          copied_ids,
+          actor,
+          requests,
+          Map.fetch!(configuration_ids, message.llm_configuration_id)
+        )
+
       Map.put(copied_ids, message.id, copied.id)
     end)
   end
@@ -76,7 +110,12 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
         :id,
         :sequence,
         :status,
-        :raw_request,
+        :request_mode,
+        :request_patch,
+        :request_hash,
+        :request_base_hash,
+        :request_base_sequence,
+        :request_checkpoint_distance,
         :raw_response,
         :response_final,
         :input_tokens,
@@ -110,7 +149,14 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
     ]
   end
 
-  defp copy_message!(%ChatMessage{} = message, %Chat{} = target, copied_ids, actor) do
+  defp copy_message!(
+         %ChatMessage{} = message,
+         %Chat{} = target,
+         copied_ids,
+         actor,
+         requests,
+         configuration_id
+       ) do
     copied =
       ChatMessage
       |> Ash.Changeset.for_create(
@@ -119,8 +165,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
           chat_id: target.id,
           role: message.role,
           parent_id: mapped_parent_id(message.parent_id, copied_ids),
-          llm_configuration_id:
-            readable_llm_configuration_id(message.llm_configuration_id, actor),
+          llm_configuration_id: configuration_id,
           status: copy_message_status(message.status),
           error_detail: copy_error_detail(message),
           token_count: message.token_count || 0
@@ -129,7 +174,14 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
       )
       |> Ash.create!()
 
-    Enum.each(ordered(message.steps), &copy_step!(&1, copied, actor))
+    {item_groups, _previous} =
+      Enum.map_reduce(ordered(message.steps), nil, fn step, previous ->
+        request = Map.fetch!(requests, step.id)
+        copied_step = copy_step!(step, copied, actor, request, previous)
+        {{copied_step.id, ordered(step.items)}, %{step: copied_step, request: request}}
+      end)
+
+    copy_message_items!(item_groups, actor)
     copied
   end
 
@@ -149,18 +201,9 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
 
   defp copy_error_detail(%ChatMessage{error_detail: error_detail}), do: error_detail
 
-  defp copy_step!(%ChatMessageStep{} = step, %ChatMessage{} = copied_message, actor) do
-    source_step =
-      Ash.get!(ChatMessageStep, step.id,
-        actor: actor,
-        load: [
-          :raw_request,
-          :raw_response,
-          request_files: [:reference_key, :source_file_external_id]
-        ]
-      )
-
-    ensure_request_markers_bound!(source_step)
+  defp copy_step!(%ChatMessageStep{} = source_step, copied_message, actor, request, previous) do
+    ensure_request_markers_bound!(source_step, request)
+    request_attrs = copy_request_attributes(source_step, request, previous)
 
     copied =
       ChatMessageStep
@@ -170,7 +213,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
           chat_message_id: copied_message.id,
           sequence: source_step.sequence,
           status: copy_step_status(source_step.status),
-          raw_request: source_step.raw_request || %{},
           raw_response: source_step.raw_response,
           response_final: source_step.response_final || false,
           input_tokens: source_step.input_tokens,
@@ -180,55 +222,142 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
           cost: source_step.cost,
           first_token_at: source_step.first_token_at,
           last_token_at: source_step.last_token_at
-        },
-        actor: actor
+        }
+        |> Map.merge(request_attrs),
+        actor: actor,
+        private_arguments: %{request_base: previous && previous.request}
       )
       |> Ash.create!()
 
     :ok = clone_request_files!(source_step.id, copied.id)
+    :ok = ensure_copied_request_files!(source_step, copied, request, actor)
 
-    items = ordered(step.items)
+    copied
+  end
 
-    {copied_items_by_source_id, copied_tool_call_ids_by_sequence} =
+  defp copy_request_attributes(step, request, previous) do
+    previous_step = previous && previous.step
+
+    closed_chain? =
+      step.request_mode == :full or
+        (not is_nil(previous_step) and step.request_base_sequence == previous_step.sequence and
+           step.request_base_hash == previous_step.request_hash and
+           step.request_checkpoint_distance == previous_step.request_checkpoint_distance + 1)
+
+    if closed_chain? do
+      # The authorized reader already loaded and verified this logical request.
+      # Keep its physical encoding without loading large full bodies twice.
+      Map.take(step, @request_fields)
+      |> Map.put(:raw_request, if(step.request_mode == :full, do: request, else: %{}))
+    else
+      StepRequests.create_attributes(request,
+        sequence: step.sequence,
+        previous_request: previous && previous.request,
+        previous_step: previous_step,
+        force_full: is_nil(previous_step)
+      )
+    end
+  end
+
+  defp copy_message_items!(item_groups, actor) do
+    ordinary_copies =
+      item_groups
+      |> Enum.flat_map(fn {step_id, items} ->
+        items
+        |> Enum.reject(&(item_type(&1) == :tool_result))
+        |> Enum.map(&item_attrs(&1, step_id, nil))
+      end)
+      |> bulk_create!(ChatMessageItem, actor)
+
+    ordinary_by_step = Enum.group_by(ordinary_copies, & &1.chat_message_step_id)
+
+    result_copies =
+      item_groups
+      |> Enum.flat_map(fn {step_id, items} ->
+        tool_result_inputs(items, Map.get(ordinary_by_step, step_id, []), step_id)
+      end)
+      |> bulk_create!(ChatMessageItem, actor)
+
+    # Bulk results need not preserve input order, and item sequences repeat in
+    # each step. Resolve both contents and tool links within their copied step.
+    copies_by_step_sequence =
+      Map.new(ordinary_copies ++ result_copies, &{{&1.chat_message_step_id, &1.sequence}, &1})
+
+    item_groups
+    |> Enum.flat_map(fn {step_id, items} ->
+      Enum.flat_map(items, fn item ->
+        case Map.get(copies_by_step_sequence, {step_id, item.sequence}) do
+          nil -> []
+          copied_item -> Enum.map(ordered(item.contents), &content_attrs(&1, copied_item.id))
+        end
+      end)
+    end)
+    |> bulk_create!(ChatMessageContent, actor)
+
+    :ok
+  end
+
+  defp tool_result_inputs(items, ordinary_copies, step_id) do
+    ordinary_by_sequence = Map.new(ordinary_copies, &{&1.sequence, &1})
+
+    copied_by_source_id =
       items
       |> Enum.reject(&(item_type(&1) == :tool_result))
-      |> Enum.reduce({%{}, %{}}, fn item, {by_source_id, by_sequence} ->
-        copied_item = copy_item!(item, copied, actor, nil)
-
-        by_sequence =
-          if item_type(item) == :tool_call do
-            Map.put(by_sequence, item.sequence, copied_item.id)
-          else
-            by_sequence
-          end
-
-        {Map.put(by_source_id, item.id, copied_item), by_sequence}
+      |> Map.new(fn item ->
+        {item.id, Map.fetch!(ordinary_by_sequence, item.sequence)}
       end)
+
+    tool_call_ids =
+      ordinary_copies
+      |> Enum.filter(&(&1.type == :tool_call))
+      |> Map.new(&{&1.sequence, &1.id})
 
     items
     |> Enum.filter(&(item_type(&1) == :tool_result))
-    |> Enum.each(fn item ->
-      tool_call_item_id =
-        item
-        |> Map.get(:tool_call_item_id)
-        |> case do
-          source_id when is_integer(source_id) ->
-            case Map.get(copied_items_by_source_id, source_id) do
-              %ChatMessageItem{id: copied_id} -> copied_id
-              _other -> nil
-            end
+    |> Enum.flat_map(fn item ->
+      copied_call = Map.get(copied_by_source_id, item.tool_call_item_id)
 
-          _other ->
-            nil
-        end
+      call_id =
+        (copied_call && copied_call.id) || preceding_tool_call_item_id(item, tool_call_ids)
 
-      tool_call_item_id =
-        tool_call_item_id || preceding_tool_call_item_id(item, copied_tool_call_ids_by_sequence)
-
-      if is_integer(tool_call_item_id) do
-        copy_item!(item, copied, actor, tool_call_item_id)
-      end
+      if is_integer(call_id), do: [item_attrs(item, step_id, call_id)], else: []
     end)
+  end
+
+  defp item_attrs(item, step_id, call_id) do
+    %{
+      chat_message_step_id: step_id,
+      sequence: item.sequence,
+      type: item.type,
+      tool_call_item_id: call_id
+    }
+  end
+
+  defp content_attrs(content, item_id) do
+    %{
+      chat_message_item_id: item_id,
+      sequence: content.sequence,
+      kind: content.kind,
+      content_text: content.content_text || "",
+      content_json: content.content_json,
+      file_id: duplicate_file_id!(content.file_id)
+    }
+  end
+
+  defp bulk_create!([], _resource, _actor), do: []
+
+  defp bulk_create!(inputs, resource, actor) do
+    case Ash.bulk_create(inputs, resource, :create,
+           actor: actor,
+           return_records?: true,
+           return_errors?: true,
+           stop_on_error?: true,
+           transaction: :all,
+           batch_size: 250
+         ) do
+      %Ash.BulkResult{status: :success, records: records} -> records
+      result -> raise "Failed to copy trace records: #{inspect(result.errors)}"
+    end
   end
 
   defp copy_step_status(status) when status in [:waiting_provider, :waiting_tools],
@@ -237,62 +366,20 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
   defp copy_step_status(status) when status in [:done, :canceled, :error], do: status
   defp copy_step_status(_status), do: :done
 
-  defp materialize_loaded_message(%ChatMessage{id: message_id}, actor)
-       when is_integer(message_id) do
-    with {:ok, %ChatMessage{}} <- Ash.get(ChatMessage, message_id, actor: actor),
-         {:ok, steps} <- authorized_steps_for_message(message_id, actor) do
-      Enum.reduce_while(ordered(steps), :ok, fn step, :ok ->
-        case materialize_authorized_step(step, message_id, actor) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
-    end
-  end
-
-  defp materialize_loaded_message(_message, _actor),
-    do: {:error, :invalid_loaded_message}
-
-  defp authorized_steps_for_message(message_id, actor) do
-    ChatMessageStep
-    |> Ash.Query.filter(chat_message_id == ^message_id)
-    |> Ash.Query.sort(sequence: :asc, id: :asc)
-    |> Ash.read(actor: actor)
-  end
-
-  defp materialize_authorized_step(%ChatMessageStep{id: step_id}, message_id, actor)
-       when is_integer(step_id) do
-    with {:ok, %ChatMessageStep{} = step} <-
-           ChatMessageStep
-           |> Ash.Query.filter(id == ^step_id)
-           |> Ash.Query.select([:id, :chat_message_id, :raw_request])
-           |> Ash.read_one(actor: actor),
-         true <- step.chat_message_id == message_id,
-         {:ok, _compact_request} <-
-           RequestImages.materialize_and_persist(step.raw_request || %{}, step.id) do
-      :ok
-    else
-      false -> {:error, {:request_step_message_mismatch, step_id, message_id}}
-      {:error, reason} -> {:error, {:request_file_materialization_failed, step_id, reason}}
-    end
-  end
-
-  defp materialize_authorized_step(_step, message_id, _actor),
-    do: {:error, {:invalid_request_step, message_id}}
-
-  defp ensure_request_markers_bound!(%ChatMessageStep{} = step) do
-    {_request, descriptors} =
-      Walker.map_images(step.raw_request || %{}, %{}, fn _shape, block, marker, descriptors ->
+  defp ensure_request_markers_bound!(%ChatMessageStep{} = step, request) do
+    descriptors =
+      RequestImages.inspect_stored_images(request, %{}, fn reference, descriptors ->
+        marker = reference.marker
         reference_key = Map.get(marker, "reference_key")
         source_file_external_id = Map.get(marker, "source_file_external_id")
 
         if is_binary(reference_key) and is_binary(source_file_external_id) do
           case Map.get(descriptors, reference_key) do
             nil ->
-              {block, Map.put(descriptors, reference_key, source_file_external_id)}
+              Map.put(descriptors, reference_key, source_file_external_id)
 
             ^source_file_external_id ->
-              {block, descriptors}
+              descriptors
 
             other_source_file_external_id ->
               raise "Conflicting source files for copied request reference #{reference_key}: #{other_source_file_external_id} and #{source_file_external_id}"
@@ -326,35 +413,46 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
     :ok
   end
 
+  defp ensure_copied_request_files!(%{request_files: []}, _copied, _request, _actor), do: :ok
+
+  defp ensure_copied_request_files!(source, copied, request, actor) do
+    target =
+      Ash.load!(
+        copied,
+        [
+          request_files: [
+            :reference_key,
+            :source_file_external_id,
+            :variant_key,
+            file: [:id, :sha256, :size_bytes]
+          ]
+        ],
+        actor: actor
+      )
+
+    ensure_request_markers_bound!(target, request)
+
+    unless request_pin_identity(source.request_files) ==
+             request_pin_identity(target.request_files) do
+      raise "Request file snapshot changed while copying step #{source.id}"
+    end
+
+    :ok
+  end
+
+  defp request_pin_identity(bindings) do
+    Map.new(bindings, fn binding ->
+      {to_string(binding.reference_key),
+       {to_string(binding.source_file_external_id), binding.variant_key, binding.file.sha256,
+        binding.file.size_bytes}}
+    end)
+  end
+
   defp clone_request_files!(source_step_id, target_step_id) do
     case RequestImages.clone_bindings(source_step_id, target_step_id) do
       :ok -> :ok
       {:error, reason} -> raise "Failed to copy request files: #{inspect(reason)}"
     end
-  end
-
-  defp copy_item!(
-         %ChatMessageItem{} = item,
-         %ChatMessageStep{} = copied_step,
-         actor,
-         tool_call_item_id
-       ) do
-    copied =
-      ChatMessageItem
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          chat_message_step_id: copied_step.id,
-          sequence: item.sequence,
-          type: item.type,
-          tool_call_item_id: tool_call_item_id
-        },
-        actor: actor
-      )
-      |> Ash.create!()
-
-    Enum.each(ordered(item.contents), &copy_content!(&1, copied, actor))
-    copied
   end
 
   defp item_type(%ChatMessageItem{type: type}), do: type
@@ -367,25 +465,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
       {_sequence, id} -> id
       nil -> nil
     end
-  end
-
-  defp copy_content!(%ChatMessageContent{} = content, %ChatMessageItem{} = copied_item, actor) do
-    file_id = duplicate_file_id!(content.file_id)
-
-    ChatMessageContent
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        chat_message_item_id: copied_item.id,
-        sequence: content.sequence,
-        kind: content.kind,
-        content_text: content.content_text || "",
-        content_json: content.content_json,
-        file_id: file_id
-      },
-      actor: actor
-    )
-    |> Ash.create!()
   end
 
   defp duplicate_file_id!(file_id) when is_integer(file_id) do
