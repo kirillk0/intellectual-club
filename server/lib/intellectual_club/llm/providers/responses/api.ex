@@ -8,6 +8,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
 
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
+  alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
   alias IntellectualClub.Llm.Providers.Responses.HttpPool
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
   alias Req.Response
@@ -67,6 +68,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             {"content-type", "application/json"},
             {"accept", "text/event-stream"}
           ]
+          |> CodexHeaders.put_account_id(url, api_key)
           |> maybe_put_session_id(wire_request)
 
         request_opts =

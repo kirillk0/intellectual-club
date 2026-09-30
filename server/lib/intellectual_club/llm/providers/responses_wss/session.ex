@@ -7,6 +7,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
+  alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
   alias IntellectualClub.Llm.Providers.Responses.Endpoint
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
 
@@ -327,10 +328,12 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   end
 
   defp upgrade_connection(conn, url, api_key) do
-    headers = [
-      {"authorization", "Bearer " <> api_key},
-      {"openai-beta", @openai_beta_header}
-    ]
+    headers =
+      [
+        {"authorization", "Bearer " <> api_key},
+        {"openai-beta", @openai_beta_header}
+      ]
+      |> CodexHeaders.put_account_id(URI.to_string(url.uri), api_key)
 
     Mint.WebSocket.upgrade(url.upgrade_scheme, conn, url.path, headers,
       extensions: [Mint.WebSocket.PerMessageDeflate]

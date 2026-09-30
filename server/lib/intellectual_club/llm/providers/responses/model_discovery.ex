@@ -5,6 +5,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ModelDiscovery do
 
   alias IntellectualClub.Llm.Auth
   alias IntellectualClub.Llm.Providers.Common.ModelDiscovery, as: CommonModelDiscovery
+  alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
   alias IntellectualClub.Llm.Providers.Responses.Endpoint
 
   @type model_option :: CommonModelDiscovery.model_option()
@@ -19,10 +20,17 @@ defmodule IntellectualClub.Llm.Providers.Responses.ModelDiscovery do
              %{"client_version" => "1.0.0"}
            ),
          {:ok, body} <-
-           CommonModelDiscovery.request_json(url, [
-             {"authorization", "Bearer " <> token},
-             {"accept", "application/json"}
-           ]) do
+           CommonModelDiscovery.request_json(
+             url,
+             CodexHeaders.put_account_id(
+               [
+                 {"authorization", "Bearer " <> token},
+                 {"accept", "application/json"}
+               ],
+               url,
+               token
+             )
+           ) do
       parse_models(body)
     end
   end
