@@ -102,7 +102,9 @@ export function preserveStreamingMessageContent(
 
 /** The UI chooses which block to follow; cursors for other blocks are discarded. */
 export function selectRuntimeCursor(response: PollResponse): RuntimeCursor | null | undefined {
-  const targets = response.runtime_targets || [];
+  // Targets are ordered by item/content sequence. A response may hold several
+  // blocks of a type (e.g. commentary, then the final answer); follow the newest.
+  const targets = [...(response.runtime_targets || [])].reverse();
   return (targets.find((target) => target.item_type === 'answer') ||
     targets.find((target) => target.item_type === 'handoff_summary') ||
     targets.find((target) => target.item_type === 'reasoning'))?.cursor ?? response.runtime_cursor;

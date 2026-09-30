@@ -45,6 +45,12 @@ defmodule IntellectualClubWeb.Bff.ChatPollPayload do
         end
 
       true ->
+        # The trace revision was read before the worker poll. A step committed
+        # since then would retire the runtime step below without its canonical
+        # content, so re-read it before any trace metadata.
+        message = Ash.load!(message, [:poll_revision], actor: actor)
+        persisted_revision = persisted_revision(message)
+
         # Full projection is paid for only by a reader crossing a UI boundary.
         runtime =
           if runtime_step(runtime) && not Map.get(stream, :reset, false) do

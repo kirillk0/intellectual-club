@@ -433,6 +433,18 @@ describe('client-owned runtime cursors', () => {
         { item_type: 'answer', cursor }] })).toEqual(cursor);
   });
 
+  it('follows the newest answer when a step holds several answer blocks', () => {
+    const commentary = { ...cursor, item: 'commentary' };
+    const reasoning = { ...cursor, item: 'reasoning-2' };
+    expect(selectRuntimeCursor({ ...initial, runtime_cursor: commentary,
+      runtime_targets: [{ item_type: 'answer', cursor: commentary },
+        { item_type: 'reasoning', cursor: reasoning },
+        { item_type: 'answer', cursor }] })).toEqual(cursor);
+    expect(selectRuntimeCursor({ ...initial, runtime_cursor: commentary,
+      runtime_targets: [{ item_type: 'reasoning', cursor: { ...cursor, item: 'reasoning-1' } },
+        { item_type: 'reasoning', cursor: reasoning }] })).toEqual(reasoning);
+  });
+
   it('checks UTF-8 bytes from the acknowledged cursor, not JavaScript character counts', () => {
     expect(validRuntimeDelta(cursor, delta)).toBe(true);
     expect(validRuntimeDelta({ ...cursor, offset: 7 }, delta)).toBe(false);

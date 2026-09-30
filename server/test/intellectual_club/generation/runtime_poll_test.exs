@@ -46,6 +46,25 @@ defmodule IntellectualClub.Generation.RuntimePollTest do
     assert RuntimePoll.poll(next, "epoch", response.stream.cursor).stream.delta.text == ""
   end
 
+  test "a new block of the followed type moves the cursor to the newest block" do
+    step = step()
+    cursor = RuntimePoll.poll(step, "epoch", %{}).stream.cursor
+    assert cursor["item"] == "answer"
+
+    final =
+      step
+      |> RuntimeTrace.apply_event({:append_text, "reasoning-2", :reasoning, 1, "Planning"})
+      |> RuntimeTrace.apply_event({:append_text, "final", :answer, 1, "Итог"})
+
+    reset = RuntimePoll.poll(final, "epoch", cursor)
+    assert reset.stream.reset
+    assert Enum.map(reset.stream.targets, & &1.item_type) == ~w(reasoning answer reasoning answer)
+    assert reset.stream.cursor["item"] == "final"
+
+    next = RuntimeTrace.apply_event(final, {:append_text, "final", :answer, 1, " дня"})
+    assert RuntimePoll.poll(next, "epoch", reset.stream.cursor).stream.delta.text == " дня"
+  end
+
   test "an existing unselected block can change without rebuilding the step" do
     step = step()
     cursor = RuntimePoll.poll(step, "epoch", %{}).stream.cursor

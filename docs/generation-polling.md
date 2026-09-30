@@ -17,7 +17,9 @@ navigation, and incompatible deltas discard all polling revisions.
 
 Structural changes reset the runtime step and return candidate `runtime_targets`.
 The client chooses which text block to follow, preferring `answer`, then
-`handoff_summary`, then `reasoning`. Only that cursor is sent back. Ordinary
+`handoff_summary`, then `reasoning`. Within a type it follows the newest block:
+one provider response may contain several (e.g. commentary before the final
+answer), and earlier blocks are complete. Only that cursor is sent back. Ordinary
 polling returns `runtime_delta` with `[from, to)` byte offsets and the new suffix.
 A text replacement advances its generation even if the byte length is unchanged.
 The server slices binaries; it does not compare or hash the old text prefix.
@@ -44,6 +46,10 @@ trace metadata or reading completed bodies. Subchat costs retain their existing
 authorized, parent-phase-based refresh policy. Runtime summary changes do not
 require full content projection. A successful `204` does not scan persisted
 items/contents or serialize/hash accumulated runtime text.
+
+The full projection re-reads the trace revision before step metadata: a step
+committed after the request first read the message must arrive as canonical
+content, not merely retire its runtime cursor until the next (slow) poll.
 
 After a persisted revision changes, the response supplies canonical content for
 the whole message, not just the completed step. This conservative boundary reload

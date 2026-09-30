@@ -64,9 +64,11 @@ defmodule IntellectualClub.Generation.RuntimePoll do
 
         targets = targets(step, base)
 
+        # One response may contain several blocks of a type (e.g. commentary and
+        # the final answer); earlier ones are complete, so follow the newest.
         preferred =
-          Enum.find(targets, &(&1.item_type in ["answer", "handoff_summary"])) ||
-            Enum.find(targets, &(&1.item_type == "reasoning")) || List.first(targets)
+          latest(targets, ["answer", "handoff_summary"]) || latest(targets, ["reasoning"]) ||
+            List.last(targets)
 
         next = if preferred, do: preferred.cursor, else: base
         %{step: snapshot, stream: %{reset: true, cursor: next, targets: targets}}
@@ -107,6 +109,9 @@ defmodule IntellectualClub.Generation.RuntimePoll do
   end
 
   defp selected(_step, _cursor, _base), do: :reset
+
+  defp latest(targets, types),
+    do: targets |> Enum.filter(&(&1.item_type in types)) |> List.last()
 
   # A UTF-8 offset must not point at a continuation byte. Never scan the prefix.
   defp boundary?(text, offset) when byte_size(text) == offset, do: true

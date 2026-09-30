@@ -566,6 +566,72 @@ defmodule IntellectualClubWeb.Bff.ChatPollRevisionsTest do
     assert final["content_revision"] != next["content_revision"]
   end
 
+  test "a step committed after the message was read is delivered, not silently retired", %{
+    conn: conn
+  } do
+    {conn, actor, chat, parent} = fixture(conn)
+    message = generating_message(chat, parent, actor)
+
+    step =
+      create!(
+        ChatMessageStep,
+        %{chat_message_id: message.id, sequence: 1, status: :waiting_provider},
+        actor
+      )
+
+    runtime =
+      IntellectualClub.Generation.RuntimeTrace.new_step(id: step.id, sequence: 1)
+      |> IntellectualClub.Generation.RuntimeTrace.apply_event(
+        {:append_text, "answer", :answer, 1, "Привет"}
+      )
+
+    start_supervised!({IntellectualClub.Test.RuntimePollStub, {message.id, runtime}})
+    first = poll(conn, message.id, %{"poll_protocol" => "cursor"}) |> json_response(200)
+    params = cursor_params(first)
+    # The controller reads the message before polling the worker and the trace.
+    stale = Ash.get!(ChatMessage, message.id, actor: actor, load: [:poll_revision])
+
+    item =
+      create!(
+        IntellectualClub.Chat.ChatMessageItem,
+        %{chat_message_step_id: step.id, sequence: 1, type: :answer},
+        actor
+      )
+
+    create!(
+      ChatMessageContent,
+      %{chat_message_item_id: item.id, sequence: 1, kind: :text, content_text: "Привет, мир"},
+      actor
+    )
+
+    step
+    |> Ash.Changeset.for_update(:update, %{response_final: true}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    runtime_reply =
+      IntellectualClub.Generation.Supervisor.poll_generation(
+        message.id,
+        Jason.decode!(params["runtime_cursor"]),
+        protocol: :cursor
+      )
+
+    # A phase change forces the full projection branch.
+    params = Map.delete(params, "view_revision")
+
+    assert {:ok, payload} =
+             IntellectualClubWeb.Bff.ChatPollPayload.cursor_response(
+               stale,
+               actor,
+               runtime_reply,
+               params,
+               %{queued_messages: [], active_generation_message_id: message.id}
+             )
+
+    assert payload.runtime_cursor["retired"]
+    assert hd(payload.content.parts).text == "Привет, мир"
+    assert payload.content_revision != params["content_revision"]
+  end
+
   test "a new inspector sync resets body and details once, then resumes suffix polling", %{
     conn: conn
   } do
