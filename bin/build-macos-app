@@ -9,6 +9,7 @@ Usage: bin/build-macos-app --mode <dev|prod> --output <directory>
 Environment variables:
   IC_BUNDLE_BUILD_ID       Human-readable build identifier stored in Info.plist
   IC_BUNDLE_BUILD_VERSION  Numeric CFBundleVersion value (defaults to Unix time)
+  IC_PREBUILT_STATIC_DIR   Optional static artifact exported for the current commit
 EOF
 }
 
@@ -109,7 +110,16 @@ RELEASE_DEST="${RESOURCES_DIR}/${RELEASE_NAME}"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 ICONSET_DIR="${STAGING_DIR}/AppIcon.iconset"
 
-npm --prefix "${FRONTEND_DIR}" ci
+if [[ -n "${IC_PREBUILT_STATIC_DIR:-}" ]]; then
+  if [[ "${MODE}" != prod ]]; then
+    echo "Prebuilt static assets can only be used for production builds" >&2
+    exit 1
+  fi
+  node "${SCRIPT_DIR}/static-assets.mjs" install \
+    "${IC_PREBUILT_STATIC_DIR}" "$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+else
+  npm --prefix "${FRONTEND_DIR}" ci
+fi
 
 pushd "${SERVER_DIR}" >/dev/null
 if [[ "${MODE}" == "prod" ]]; then
@@ -121,7 +131,9 @@ MIX_ENV="${MODE}" mix deps.compile
 MIX_ENV="${MODE}" mix picosat.sync
 MIX_ENV="${MODE}" mix compile
 if [[ "${MODE}" == "prod" ]]; then
-  MIX_ENV=prod mix assets.deploy
+  if [[ -z "${IC_PREBUILT_STATIC_DIR:-}" ]]; then
+    MIX_ENV=prod mix assets.deploy
+  fi
 else
   IC_DEV_RELEASE=1 MIX_ENV=dev mix assets.build
 fi

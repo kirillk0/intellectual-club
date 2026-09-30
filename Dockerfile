@@ -1,6 +1,15 @@
+# syntax=docker/dockerfile:1
 ARG NODE_VERSION=24.16.0
+ARG STATIC_ASSETS=local
+
+FROM scratch AS web-static
 
 FROM node:${NODE_VERSION}-slim AS node
+
+FROM node AS frontend-dependencies
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 FROM elixir:1.20-slim AS build
 
@@ -23,19 +32,28 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY server/mix.exs server/mix.lock ./
 COPY server/config ./config
-COPY frontend/package.json frontend/package-lock.json ../frontend/
 
 RUN mix deps.get --only prod
 RUN mix deps.compile
-RUN npm --prefix ../frontend ci
 
 COPY server/priv ./priv
 COPY server/lib ./lib
 COPY server/assets ./assets
-COPY frontend ../frontend
 
 RUN mix compile
+
+FROM build AS assets-local
+COPY --from=frontend-dependencies /app/frontend ../frontend
+COPY frontend ../frontend
 RUN mix assets.deploy
+
+FROM build AS assets-prebuilt
+COPY bin/static-assets.mjs ../bin/static-assets.mjs
+COPY --from=web-static / /app/prebuilt-static/
+ARG BUILD_COMMIT_SHA
+RUN node ../bin/static-assets.mjs install /app/prebuilt-static "${BUILD_COMMIT_SHA}"
+
+FROM assets-${STATIC_ASSETS} AS release
 COPY server/rel ./rel
 RUN mix release
 
@@ -52,7 +70,7 @@ WORKDIR /app
 
 RUN useradd --create-home --shell /bin/bash app
 
-COPY --from=build /app/server/_build/prod/rel/intellectual_club /app
+COPY --from=release /app/server/_build/prod/rel/intellectual_club /app
 
 RUN mkdir -p /app/data/files && chown -R app:app /app
 USER app

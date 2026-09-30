@@ -3,6 +3,7 @@ param(
   [string]$ReleaseId,
   [string]$OutputDirectory,
   [string]$BuildDirectory,
+  [string]$PrebuiltStaticDirectory,
   [switch]$SkipTests,
   [switch]$SelfTest
 )
@@ -1063,8 +1064,13 @@ $env:MIX_ESBUILD_PATH = $dependencies.EsbuildBin
 Invoke-Native 'mix' @('local.hex', '--if-missing', '--force') (Join-Path $script:RepositoryRoot 'server')
 Invoke-Native 'mix' @('local.rebar', '--if-missing', '--force') (Join-Path $script:RepositoryRoot 'server')
 
-if (-not $SkipTests) {
-  Write-Step 'Testing and building the frontend'
+if ($PrebuiltStaticDirectory) {
+  Write-Step 'Installing shared production static assets'
+  $commitSha = Invoke-CaptureNative 'git' @('rev-parse', 'HEAD')
+  Invoke-Native 'node' @((Join-Path $PSScriptRoot 'static-assets.mjs'), 'install', (Get-FullPath $PrebuiltStaticDirectory), $commitSha)
+}
+else {
+  Write-Step 'Installing frontend dependencies'
   $env:npm_config_fetch_retries = '5'
   $env:npm_config_fetch_timeout = '600000'
   # Keep installation deterministic without coupling the release job to the
@@ -1073,12 +1079,14 @@ if (-not $SkipTests) {
   # Worker startup is slow under Windows Defender after a clean npm install.
   # Four sequential shards keep Vitest's per-file isolation while bounding
   # the number of worker handshakes in each process.
-  foreach ($shard in 1..4) {
-    Invoke-VitestShard $shard (Join-Path $script:RepositoryRoot 'frontend')
+  if (-not $SkipTests) {
+    foreach ($shard in 1..4) {
+      Invoke-VitestShard $shard (Join-Path $script:RepositoryRoot 'frontend')
+    }
   }
-  Invoke-Native 'npm.cmd' @('run', 'typecheck') (Join-Path $script:RepositoryRoot 'frontend')
-  Invoke-Native 'npm.cmd' @('run', 'build') (Join-Path $script:RepositoryRoot 'frontend')
+}
 
+if (-not $SkipTests) {
   Write-Step 'Checking and testing the Rust workspace'
   Invoke-Native 'cargo' @('check', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
   Invoke-Native 'cargo' @('test', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
@@ -1092,7 +1100,6 @@ if (-not $SkipTests) {
     Invoke-Native 'mix' @('compile', '--warnings-as-errors') $server
     Invoke-Native 'mix' @('format', '--check-formatted') $server
     Invoke-Native 'mix' @('test') $server
-    Invoke-Native 'mix' @('precommit') $server
   }
 }
 
@@ -1116,7 +1123,9 @@ $env:MIX_ENV = 'prod'
 Invoke-Native 'mix' @('deps.get', '--only', 'prod') $serverRoot
 Invoke-Native 'mix' @('picosat.sync') $serverRoot
 Invoke-Native 'mix' @('compile', '--warnings-as-errors') $serverRoot
-Invoke-Native 'mix' @('assets.deploy') $serverRoot
+if (-not $PrebuiltStaticDirectory) {
+  Invoke-Native 'mix' @('assets.deploy') $serverRoot
+}
 Invoke-Native 'mix' @('release', '--overwrite') $serverRoot
 $beamRelease = Join-Path $serverRoot '_build\prod\rel\intellectual_club'
 $applicationPriv = Get-ChildItem -LiteralPath (Join-Path $beamRelease 'lib') -Directory -Filter 'intellectual_club-*' |

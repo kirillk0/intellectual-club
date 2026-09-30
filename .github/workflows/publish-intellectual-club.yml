@@ -6,6 +6,19 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      build_desktop:
+        description: Build and publish desktop packages
+        type: boolean
+        default: true
+      build_app:
+        description: Build and publish the app image
+        type: boolean
+        default: true
+      build_shell_outlet:
+        description: Build and publish the shell outlet image
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -14,12 +27,19 @@ concurrency:
   group: publish-intellectual-club-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  REGISTRY: ghcr.io
+  APP_IMAGE: ghcr.io/kirillk0/intellectual-club
+  SHELL_OUTLET_IMAGE: ghcr.io/kirillk0/intellectual-club-shell-outlet
+
 jobs:
   prepare:
     name: Prepare release metadata
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      app: ${{ steps.filter.outputs.app }}
+      shell_outlet: ${{ steps.filter.outputs.shell_outlet }}
       app_version: ${{ steps.release.outputs.app_version }}
       commit_epoch: ${{ steps.release.outputs.commit_epoch }}
       commit_sha: ${{ steps.release.outputs.commit_sha }}
@@ -33,7 +53,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Generate release metadata
         id: release
@@ -71,10 +91,193 @@ jobs:
             echo "short_sha=${short_sha}"
           } >>"${GITHUB_OUTPUT}"
 
+      - name: Detect changed image inputs
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          INPUT_BUILD_APP: ${{ inputs.build_app }}
+          INPUT_BUILD_SHELL_OUTLET: ${{ inputs.build_shell_outlet }}
+        run: |
+          set -euo pipefail
+
+          app=false
+          shell_outlet=false
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            app="${INPUT_BUILD_APP:-true}"
+            shell_outlet="${INPUT_BUILD_SHELL_OUTLET:-true}"
+          elif [ "${EVENT_NAME}" = "pull_request" ]; then
+            app=false
+            shell_outlet=false
+          else
+            zero_sha="0000000000000000000000000000000000000000"
+            base="${BEFORE_SHA}"
+
+            if [ -z "${base}" ] || [ "${base}" = "${zero_sha}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              if git rev-parse "${AFTER_SHA}^" >/dev/null 2>&1; then
+                base="$(git rev-parse "${AFTER_SHA}^")"
+              else
+                base="$(git rev-list --max-parents=0 "${AFTER_SHA}")"
+              fi
+            fi
+
+            echo "Changed files between ${base} and ${AFTER_SHA}:"
+            git diff --name-only "${base}" "${AFTER_SHA}" | tee /tmp/changed-files
+
+            while IFS= read -r path; do
+              case "${path}" in
+                Dockerfile|.dockerignore|bin/static-assets.mjs|server/*|frontend/*|.github/workflows/publish-intellectual-club.yml)
+                  app=true
+                  ;;
+              esac
+
+              case "${path}" in
+                .dockerignore|native_tools/*|.github/workflows/publish-intellectual-club.yml)
+                  shell_outlet=true
+                  ;;
+              esac
+            done </tmp/changed-files
+          fi
+
+          echo "app=${app}" >>"${GITHUB_OUTPUT}"
+          echo "shell_outlet=${shell_outlet}" >>"${GITHUB_OUTPUT}"
+          echo "app=${app}"
+          echo "shell_outlet=${shell_outlet}"
+
+  frontend:
+    name: Test frontend and build shared static assets
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MIX_ENV: prod
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test static artifact transfer
+        run: node --test bin/tests/static-assets-test.mjs
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29.0"
+          elixir-version: "1.20.2"
+
+      - name: Cache production Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: Linux-X64-prod-mix-elixir-1.20.2-otp-29-${{ hashFiles('server/mix.lock') }}
+          restore-keys: |
+            Linux-X64-prod-mix-elixir-1.20.2-otp-29-
+
+      - name: Build production static assets
+        working-directory: server
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --only prod
+          mix compile
+          mix assets.deploy
+
+      - name: Export static assets for the release commit
+        env:
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+        run: node bin/static-assets.mjs export build/ci-static "${COMMIT_SHA}"
+
+      - name: Upload shared static assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-static-${{ needs.prepare.outputs.commit_sha }}
+          path: build/ci-static/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  test-server:
+    name: Run server tests on Linux
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MIX_ENV: test
+      IC_TEST_DATABASE_URL: ecto://postgres:postgres@localhost:5432/intellectual_club_ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29.0"
+          elixir-version: "1.20.2"
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29-${{ hashFiles('server/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-elixir-1.20.2-otp-29-
+
+      - name: Install dependencies
+        working-directory: server
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --only test
+
+      - name: Run tests
+        working-directory: server
+        run: mix test
+
   build-macos:
     name: Build macOS arm64
-    if: github.event_name != 'pull_request'
-    needs: prepare
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.build_desktop)
+    needs: [prepare, frontend]
     runs-on: macos-15
     timeout-minutes: 60
     env:
@@ -90,8 +293,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24.16.0"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -123,8 +324,15 @@ jobs:
       - name: Install packaging dependencies
         run: brew install openssl@3
 
+      - name: Download shared static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-static-${{ needs.prepare.outputs.commit_sha }}
+          path: build/ci-static
+
       - name: Build application bundle
         env:
+          IC_PREBUILT_STATIC_DIR: ${{ github.workspace }}/build/ci-static
           IC_BUNDLE_BUILD_ID: ${{ needs.prepare.outputs.release_id }}
           IC_BUNDLE_BUILD_VERSION: ${{ needs.prepare.outputs.commit_epoch }}
         run: ./bin/build-macos-app --mode prod --output build/release
@@ -377,7 +585,8 @@ jobs:
 
   build-windows:
     name: Build and smoke test Windows x64
-    needs: prepare
+    if: github.event_name != 'workflow_dispatch' || inputs.build_desktop
+    needs: [prepare, frontend]
     runs-on: windows-2025
     timeout-minutes: 120
     env:
@@ -393,8 +602,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24.16.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Set up Erlang and Elixir
         uses: erlef/setup-beam@v1
@@ -429,6 +636,12 @@ jobs:
         shell: pwsh
         run: ./bin/tests/build-windows-release-test.ps1
 
+      - name: Download shared static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-static-${{ needs.prepare.outputs.commit_sha }}
+          path: build/ci-static
+
       - name: Build, test, validate, and package
         shell: pwsh
         env:
@@ -436,6 +649,7 @@ jobs:
         run: |
           ./bin/build-windows-release.ps1 `
             -ReleaseId $env:RELEASE_ID `
+            -PrebuiltStaticDirectory "build/ci-static" `
             -OutputDirectory "dist\windows\$env:RELEASE_ID"
 
       - name: Upload four release assets
@@ -454,6 +668,7 @@ jobs:
       - prepare
       - build-macos
       - build-windows
+      - test-server
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -525,3 +740,262 @@ jobs:
 
           gh release upload "${RELEASE_TAG}" dist/* --clobber
           gh release edit "${RELEASE_TAG}" --draft=false
+
+  build-app:
+    name: Build app ${{ matrix.platform_key }}
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    needs:
+      - prepare
+      - test-server
+      - frontend
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            platform_key: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Download shared static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-static-${{ needs.prepare.outputs.commit_sha }}
+          path: build/ci-static
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.APP_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-contexts: |
+            web-static=./build/ci-static
+          build-args: |
+            STATIC_ASSETS=prebuilt
+            BUILD_COMMIT_SHA=${{ needs.prepare.outputs.commit_sha }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.APP_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=app-${{ matrix.platform_key }}
+          cache-to: type=gha,scope=app-${{ matrix.platform_key }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/app
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/app/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-app-${{ matrix.platform_key }}
+          path: /tmp/digests/app/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-app:
+    name: Publish app manifest
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-app
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.app == 'true'
+
+    steps:
+      - name: Download app digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-app-*
+          path: /tmp/digests/app
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        env:
+          PUSH_MAIN_TAG: ${{ github.ref == 'refs/heads/main' }}
+          IMAGE: ${{ env.APP_IMAGE }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          tags=("-t" "${IMAGE}:sha-${GITHUB_SHA}")
+          if [ "${PUSH_MAIN_TAG}" = "true" ]; then
+            tags+=("-t" "${IMAGE}:main")
+            tags+=("-t" "${IMAGE}:latest")
+          fi
+
+          refs=()
+          for digest_file in /tmp/digests/app/*; do
+            refs+=("${IMAGE}@sha256:$(basename "${digest_file}")")
+          done
+
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "Expected 2 digests for ${IMAGE}, got ${#refs[@]}" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+
+  build-shell-outlet:
+    name: Build shell outlet ${{ matrix.platform_key }}
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    needs:
+      - prepare
+      - test-server
+      - frontend
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.shell_outlet == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            platform_key: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SHELL_OUTLET_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./native_tools/outlet-shell-image/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.SHELL_OUTLET_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=shell-outlet-${{ matrix.platform_key }}
+          cache-to: type=gha,scope=shell-outlet-${{ matrix.platform_key }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/shell-outlet
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/shell-outlet/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-shell-outlet-${{ matrix.platform_key }}
+          path: /tmp/digests/shell-outlet/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-shell-outlet:
+    name: Publish shell outlet manifest
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-shell-outlet
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.shell_outlet == 'true'
+
+    steps:
+      - name: Download shell outlet digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-shell-outlet-*
+          path: /tmp/digests/shell-outlet
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        env:
+          PUSH_MAIN_TAG: ${{ github.ref == 'refs/heads/main' }}
+          IMAGE: ${{ env.SHELL_OUTLET_IMAGE }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          tags=("-t" "${IMAGE}:sha-${GITHUB_SHA}")
+          if [ "${PUSH_MAIN_TAG}" = "true" ]; then
+            tags+=("-t" "${IMAGE}:main")
+            tags+=("-t" "${IMAGE}:latest")
+          fi
+
+          refs=()
+          for digest_file in /tmp/digests/shell-outlet/*; do
+            refs+=("${IMAGE}@sha256:$(basename "${digest_file}")")
+          done
+
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "Expected 2 digests for ${IMAGE}, got ${#refs[@]}" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"

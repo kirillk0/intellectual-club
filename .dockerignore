@@ -5,7 +5,9 @@
 .pytest_cache
 __pycache__
 assets
+build
 data
+dist
 frontend/dist
 frontend/node_modules
 native_tools/target
