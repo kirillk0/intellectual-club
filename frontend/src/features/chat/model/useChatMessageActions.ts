@@ -59,7 +59,6 @@ export type OpenWorkingState = {
   selectedStepId: number | null;
   selectedStep: ChatMessageStep | null;
   revision?: string;
-  followLatest: boolean;
   open: boolean;
   loading: boolean;
   error: string;
@@ -300,7 +299,6 @@ export function useChatMessageActions(params: Params) {
         selectedStepId,
         selectedStep: payload.step || null,
         revision: payload.revision,
-        followLatest: stepId === 'latest',
         open: true,
         loading: false,
         error: '',
@@ -333,7 +331,6 @@ export function useChatMessageActions(params: Params) {
       steps: current?.messageId === id ? current.steps : [],
       selectedStepId: current?.messageId === id ? current.selectedStepId : null,
       selectedStep: current?.messageId === id ? current.selectedStep : null,
-      followLatest: true,
       revision: undefined,
       open: false,
       loading: true,
@@ -355,7 +352,6 @@ export function useChatMessageActions(params: Params) {
     const state = openWorking.value;
     if (!state || state.messageId !== messageId) return null;
     if (!state.open || state.loading || state.error) return null;
-    if (state.followLatest) return 'latest';
     return state.selectedStepId && state.selectedStepId > 0
       ? String(state.selectedStepId)
       : 'latest';
@@ -401,8 +397,8 @@ export function useChatMessageActions(params: Params) {
         ? payload.selected_step_id
         : (payload.step?.id ?? current.selectedStepId);
     const steps = Array.isArray(payload.steps) ? payload.steps : current.steps;
+    // Keep the reader on the selected step; new steps only extend the list.
     if (
-      !current.followLatest &&
       current.selectedStepId &&
       selectedStepId &&
       selectedStepId !== current.selectedStepId
@@ -840,10 +836,7 @@ export function useChatMessageActions(params: Params) {
       workingLoadVersion += 1;
       openWorking.value = { ...current, revision: undefined, loading: false };
       if (current.open && params.branch.value.some((message) => message.id === current.messageId)) {
-        void loadWorking(
-          current.messageId,
-          current.followLatest ? 'latest' : current.selectedStepId || 'latest'
-        );
+        void loadWorking(current.messageId, current.selectedStepId || 'latest');
       }
     },
     { flush: 'sync' }

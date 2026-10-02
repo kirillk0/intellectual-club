@@ -60,7 +60,7 @@ describe('working panel polling revisions', () => {
     cleanups.splice(0).forEach((cleanup) => cleanup());
   });
 
-  it('follows latest across boundaries but preserves omitted details at the same ID', async () => {
+  it('stays on the opened step while new steps extend the list', async () => {
     mocks.get.mockResolvedValue({
       message_id: 10,
       steps: [step(1)],
@@ -71,20 +71,53 @@ describe('working panel polling revisions', () => {
     const { actions } = setupActions();
     actions.toggleWorking(10);
     await nextTick();
-    expect(actions.getOpenWorkingPollRequest(10)).toBe('latest');
+    expect(actions.getOpenWorkingPollRequest(10)).toBe('1');
     expect(actions.getOpenWorkingPollRevision(10)).toBe('d1');
     actions.applyWorkingPoll(10, undefined);
     expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
-    actions.applyWorkingPoll(10, { selected_step_id: 1, revision: 'd1' });
+    actions.applyWorkingPoll(10, { selected_step_id: 1, steps: [step(1), step(2)], revision: 'd1' });
     expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
+    expect(actions.workingStateFor(10)?.steps).toHaveLength(2);
+    actions.applyWorkingPoll(10, {
+      selected_step_id: 3,
+      step: step(3),
+      steps: [step(1), step(2), step(3)],
+      revision: 'd3',
+    });
+    expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
+    expect(actions.workingStateFor(10)?.steps).toHaveLength(3);
+    expect(actions.getOpenWorkingPollRequest(10)).toBe('1');
+    expect(actions.getOpenWorkingPollRevision(10)).toBe('d1');
+  });
+
+  it('picks up the first step when opened before any step exists, then stays on it', async () => {
+    mocks.get.mockResolvedValue({
+      message_id: 10,
+      steps: [],
+      selected_step_id: null,
+      step: null,
+      revision: 'empty',
+    });
+    const { actions } = setupActions();
+    actions.toggleWorking(10);
+    await nextTick();
+    expect(actions.getOpenWorkingPollRequest(10)).toBe('latest');
+    actions.applyWorkingPoll(10, {
+      selected_step_id: 1,
+      step: step(1),
+      steps: [step(1)],
+      revision: 'd1',
+    });
+    expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
+    expect(actions.getOpenWorkingPollRequest(10)).toBe('1');
     actions.applyWorkingPoll(10, {
       selected_step_id: 2,
       step: step(2),
       steps: [step(1), step(2)],
       revision: 'd2',
     });
-    expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(2);
-    expect(actions.getOpenWorkingPollRevision(10)).toBe('d2');
+    expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
+    expect(actions.workingStateFor(10)?.steps).toHaveLength(2);
   });
 
   it('keeps historical selection while accepting summary changes', async () => {
@@ -112,7 +145,7 @@ describe('working panel polling revisions', () => {
     expect(actions.workingStateFor(10)?.selectedStep?.id).toBe(1);
   });
 
-  it('does not reuse an old detail after a selection change or explicit clearing', async () => {
+  it('does not reuse an old detail after explicit clearing and a new selection', async () => {
     mocks.get.mockResolvedValue({
       message_id: 10,
       steps: [step(1)],
@@ -123,11 +156,13 @@ describe('working panel polling revisions', () => {
     const { actions } = setupActions();
     actions.toggleWorking(10);
     await nextTick();
-    actions.applyWorkingPoll(10, { selected_step_id: 2, revision: 'two' });
-    expect(actions.workingStateFor(10)?.selectedStep).toBeNull();
     actions.applyWorkingPoll(10, { selected_step_id: null, step: null, revision: 'empty' });
     expect(actions.workingStateFor(10)?.selectedStepId).toBeNull();
     expect(actions.workingStateFor(10)?.selectedStep).toBeNull();
+    actions.applyWorkingPoll(10, { selected_step_id: 2, revision: 'two' });
+    expect(actions.workingStateFor(10)?.selectedStepId).toBe(2);
+    expect(actions.workingStateFor(10)?.selectedStep).toBeNull();
+    expect(actions.getOpenWorkingPollRevision(10)).toBeUndefined();
   });
 
   it('reloads detail after full reload and clears revision on route switches', async () => {

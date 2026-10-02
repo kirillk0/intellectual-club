@@ -269,7 +269,7 @@ describe('useChatViewModel loading', () => {
       const sync = synchronized.query.get('working_sync')!;
       expect(sync).toBeTruthy();
       expect(sync).not.toBe(initialSync);
-      expect(synchronized.query.get('working_step_id')).toBe('latest');
+      expect(synchronized.query.get('working_step_id')).toBe('200');
       // /working can have the same revision as the last poll yet a different cursor position.
       expect(synchronized.query.has('working_revision')).toBe(false);
       synchronized.resolve(projection('ABC', sync));
