@@ -14,6 +14,7 @@ defmodule IntellectualClub.Chat.Subagent do
   alias IntellectualClub.Chat.Media
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Lease
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Tools.ExecutionContext
@@ -615,17 +616,20 @@ defmodule IntellectualClub.Chat.Subagent do
         )
 
       {:ok, %{status: :retry}} ->
-        receive do
-        after
-          wait_retry_delay(retry_attempt) ->
-            do_await_snapshot(
-              reference,
-              normalized_reference,
-              actor,
-              snapshot_fun,
-              retry_attempt + 1
-            )
-        end
+        ToolExecution.interruptible(fn ->
+          receive do
+          after
+            wait_retry_delay(retry_attempt) -> :ok
+          end
+        end)
+
+        do_await_snapshot(
+          reference,
+          normalized_reference,
+          actor,
+          snapshot_fun,
+          retry_attempt + 1
+        )
 
       {:ok, %{status: status}} when status in [:completed, :failed, :canceled] ->
         case snapshot_fun.(reference, actor, nil) do
@@ -657,10 +661,13 @@ defmodule IntellectualClub.Chat.Subagent do
 
     case resolve_wait_chain(normalized_reference.generation_message_id, actor) do
       {:ok, %{status: :running, generation_message_id: ^message_id, pid: ^pid}} ->
-        receive do
-          {:DOWN, ^monitor_ref, :process, ^pid, _reason} ->
-            do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, 0)
-        end
+        ToolExecution.interruptible(fn ->
+          receive do
+            {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> :ok
+          end
+        end)
+
+        do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, 0)
 
       other ->
         Process.demonitor(monitor_ref, [:flush])

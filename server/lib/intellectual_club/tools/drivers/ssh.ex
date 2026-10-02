@@ -6,6 +6,10 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   """
 
   @behaviour IntellectualClub.Tools.Driver
+
+  @impl true
+  def interruptible?, do: false
+
   @compile {:no_warn_undefined,
             [
               {:ssh, :connect, 4},
@@ -24,6 +28,7 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Secrets.Prompt, as: SecretPrompt
   alias IntellectualClub.Secrets.Resolver, as: SecretResolver
   alias IntellectualClub.TokenCounter
@@ -285,13 +290,15 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          {:ok, request} <- inject_secret_env(request, secret_env),
          :ok <- ensure_ssh_started(),
          {:ok, result} <-
-           execute_request(
-             cfg,
-             auth,
-             request,
-             redact_progress_callback(progress_callback, Map.values(secret_env)),
-             collector_options
-           ) do
+           ToolExecution.interruptible(fn ->
+             execute_request(
+               cfg,
+               auth,
+               request,
+               redact_progress_callback(progress_callback, Map.values(secret_env)),
+               collector_options
+             )
+           end) do
       {:ok, redact_value(result, Map.values(secret_env))}
     end
   end
@@ -581,7 +588,8 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          {:ok, auth} <- read_auth(tool_instance),
          {:ok, remote_path} <- read_required_path_arg(args, "local_path"),
          :ok <- ensure_ssh_started(),
-         {:ok, payload} <- read_remote_file(cfg, auth, remote_path),
+         {:ok, payload} <-
+           ToolExecution.interruptible(fn -> read_remote_file(cfg, auth, remote_path) end),
          {:ok, mime_type} <- detect_image_mime(payload),
          {:ok, file} <- Files.create_from_binary(Path.basename(remote_path), mime_type, payload) do
       {:ok,
@@ -620,7 +628,10 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          :ok <- ensure_ssh_started(),
          {:ok, {_content, file, payload}} <-
            ContentFiles.load_payload_for_execution(file_external_id, execution_context),
-         :ok <- write_remote_file(cfg, auth, remote_path, payload) do
+         :ok <-
+           ToolExecution.interruptible(fn ->
+             write_remote_file(cfg, auth, remote_path, payload)
+           end) do
       {:ok,
        %ExecutionResult{
          text: "File #{file.external_id} downloaded to #{remote_path}",
@@ -645,7 +656,8 @@ defmodule IntellectualClub.Tools.Drivers.Ssh do
          {:ok, auth} <- read_auth(tool_instance),
          {:ok, remote_path} <- read_required_path_arg(args, "local_path"),
          :ok <- ensure_ssh_started(),
-         {:ok, payload} <- read_remote_file(cfg, auth, remote_path),
+         {:ok, payload} <-
+           ToolExecution.interruptible(fn -> read_remote_file(cfg, auth, remote_path) end),
          mime_type <- MIME.from_path(remote_path),
          {:ok, file} <- Files.create_from_binary(Path.basename(remote_path), mime_type, payload) do
       {:ok,

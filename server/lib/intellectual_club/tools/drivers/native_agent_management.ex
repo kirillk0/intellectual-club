@@ -8,6 +8,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   @behaviour IntellectualClub.Tools.Driver
 
+  @impl true
+  def interruptible?, do: false
+
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.Fork, as: AgentFork
@@ -398,7 +401,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     with {:ok, seconds, timeout_ms} <- read_sleep_seconds(args) do
       {elapsed_ms, remaining_ms} = sleep_timing(timeout_ms, context)
 
-      Process.sleep(remaining_ms)
+      IntellectualClub.Generation.ToolExecution.interruptible(fn ->
+        Process.sleep(remaining_ms)
+      end)
 
       {:ok,
        %ExecutionResult{

@@ -17,6 +17,9 @@ defmodule IntellectualClub.Tools.Driver do
   @callback supports_artifacts?() :: boolean()
   @callback supports_handoff?() :: boolean()
 
+  @doc "Whether the whole driver call can be interrupted without abandoning local SQL work."
+  @callback interruptible?() :: boolean()
+
   @callback config_schema() :: map()
   @callback secrets_schema() :: map() | nil
   @callback default_config() :: map()
@@ -52,6 +55,7 @@ defmodule IntellectualClub.Tools.Driver do
                       instance_prompt_context: 1,
                       normalize_config: 1,
                       supports_handoff?: 0,
+                      interruptible?: 0,
                       unavailable_functions: 3,
                       validate_config: 3
 end

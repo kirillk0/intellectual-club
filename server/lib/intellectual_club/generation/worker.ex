@@ -27,6 +27,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Generation.RuntimePoll
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Generation.ToolResult
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Generation.UsageCost
   alias IntellectualClub.Llm.Providers.Common.Registry, as: ProviderRegistry
   alias IntellectualClub.Notifications
@@ -82,6 +83,8 @@ defmodule IntellectualClub.Generation.Worker do
     cancel_requested?: false,
     lease_lost?: false,
     cancel_waiters: [],
+    tool_executions: %{},
+    tool_cancel_requested?: false,
     queue_dirty?: false
   ]
 
@@ -302,6 +305,7 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def terminate(_reason, state) do
     _ = cancel_tasks(state)
+    if state.tool_task, do: Task.shutdown(state.tool_task, :brutal_kill)
     PersistenceOperation.shutdown(state.persistence_op)
     _ = stop_provider_session(state)
 
@@ -540,6 +544,10 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
+  def handle_info({:tool_batch_failed, pid}, %{tool_task: %Task{pid: pid}} = state) do
+    {:noreply, cancel_tool_task(state)}
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{stream_task: %Task{ref: ref}} = state) do
     if reason in [:normal, :shutdown] do
@@ -559,8 +567,8 @@ defmodule IntellectualClub.Generation.Worker do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{tool_task: %Task{ref: ref}} = state) do
-    if reason in [:normal, :shutdown] do
-      {:noreply, %{state | tool_task: nil}}
+    if state.cancel_requested? or state.lease_lost? or reason in [:normal, :shutdown] do
+      advance(%{state | tool_task: nil, tool_result_opts: nil}, :idle)
     else
       error_text = Exception.format_exit(reason)
       state = %{state | tool_task: nil, tool_result_opts: nil}
@@ -570,6 +578,17 @@ defmodule IntellectualClub.Generation.Worker do
       else
         finalize_error(state, error_text)
       end
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state)
+      when is_map_key(state.tool_executions, pid) do
+    case state.tool_executions[pid] do
+      {^ref, _phase} ->
+        {:noreply, %{state | tool_executions: Map.delete(state.tool_executions, pid)}}
+
+      _other ->
+        {:noreply, state}
     end
   end
 
@@ -587,7 +606,7 @@ defmodule IntellectualClub.Generation.Worker do
       state = %{state | persistence_op: nil, persistence_action: nil}
 
       if state.lease_lost? and not terminal_acknowledgement?(action, result) do
-        stop_obsolete_owner(state)
+        advance(state, :idle)
       else
         persistence_finished(state, action, result)
       end
@@ -716,9 +735,9 @@ defmodule IntellectualClub.Generation.Worker do
   def handle_cast(:generation_fence_lost, state) do
     state = state |> cancel_tasks() |> stop_provider_session()
 
-    if state.persistence_op do
+    if state.persistence_op || state.tool_task do
       # Terminal commit clears the fence before the writer's aftermath/ACK.
-      # Drain that writer instead of killing an active SQL borrower. No new
+      # Drain writers and protected tool phases before stopping. No new
       # work may start; the Lease manager's existing force-stop grace remains.
       {:noreply,
        %{
@@ -740,6 +759,19 @@ defmodule IntellectualClub.Generation.Worker do
 
   @impl true
   def handle_call(:cancel_and_wait, from, state), do: request_cancel(state, from)
+
+  def handle_call({:tool_execution_phase, pid, phase}, {pid, _ref}, state)
+      when phase in [:protected, :interruptible] do
+    if state.tool_cancel_requested? or state.cancel_requested? or state.lease_lost? do
+      {:reply, :canceled, state}
+    else
+      {monitor, _previous} =
+        Map.get_lazy(state.tool_executions, pid, fn -> {Process.monitor(pid), phase} end)
+
+      executions = Map.put(state.tool_executions, pid, {monitor, phase})
+      {:reply, :ok, %{state | tool_executions: executions}}
+    end
+  end
 
   @impl true
   def handle_call(:get_current_state, _from, state) do
@@ -1663,9 +1695,15 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp cancel_tool_task(%{tool_task: nil} = state), do: state
 
-  defp cancel_tool_task(%{tool_task: task} = state) do
-    _ = Task.shutdown(task, :brutal_kill)
-    %{state | tool_task: nil}
+  defp cancel_tool_task(state) do
+    # Keep the batch alive until protected SQL borrowers have returned their
+    # connections. Killing its async_stream owner would kill every child too.
+    Enum.each(state.tool_executions, fn
+      {pid, {_monitor, :interruptible}} -> Process.exit(pid, :kill)
+      {_pid, {_monitor, :protected}} -> :ok
+    end)
+
+    %{state | tool_cancel_requested?: true}
   end
 
   defp start_provider_session(adapter, context) do
@@ -2108,15 +2146,20 @@ defmodule IntellectualClub.Generation.Worker do
     message_id = state.context.message_id
     step_id = state.runtime_step.id
     lease = state.lease
+    owner = self()
 
     task =
       Task.async(fn ->
+        Process.flag(:trap_exit, true)
+
         Enum.each(prebuilt_results, fn result ->
           call =
             tool_call_from_result(result) ||
               raise ArgumentError, "Tool result has no persisted call"
 
-          persist_tool_result!(lease, message_id, step_id, call, result)
+          ToolExecution.run(owner, fn ->
+            persist_tool_result!(lease, message_id, step_id, call, result)
+          end)
         end)
 
         {:tool_results,
@@ -2126,13 +2169,20 @@ defmodule IntellectualClub.Generation.Worker do
            tool_calls,
            tool_instances_by_alias,
            execution_context,
-           lease
+           lease,
+           owner
          )
          |> Kernel.++(prebuilt_results)
          |> order_tool_results()}
       end)
 
-    %{state | tool_task: task, tool_result_opts: opts, phase: :tools}
+    %{
+      state
+      | tool_task: task,
+        tool_result_opts: opts,
+        tool_cancel_requested?: false,
+        phase: :tools
+    }
   end
 
   defp execute_and_persist_tool_calls(
@@ -2141,7 +2191,8 @@ defmodule IntellectualClub.Generation.Worker do
          tool_calls,
          tool_instances_by_alias,
          execution_context,
-         lease
+         lease,
+         owner
        )
        when is_integer(message_id) and is_integer(step_id) and is_list(tool_calls) do
     max_concurrency =
@@ -2153,27 +2204,41 @@ defmodule IntellectualClub.Generation.Worker do
     tool_calls
     |> Task.async_stream(
       fn call ->
-        execution_context = execution_context_for_tool_call(execution_context, call)
+        ToolExecution.run(owner, fn ->
+          execution_context = execution_context_for_tool_call(execution_context, call)
 
-        result =
-          Executor.execute_llm_tool(
-            tool_instances_by_alias,
-            call.name,
-            call.args || %{},
-            execution_context
-          )
+          result =
+            Executor.execute_llm_tool(
+              tool_instances_by_alias,
+              call.name,
+              call.args || %{},
+              execution_context
+            )
 
-        result = decorate_tool_result(call, result)
-        persist_tool_result!(lease, message_id, step_id, call, result)
-        result
+          result = decorate_tool_result(call, result)
+          ToolExecution.checkpoint()
+          persist_tool_result!(lease, message_id, step_id, call, result)
+          result
+        end)
       end,
       max_concurrency: max_concurrency,
-      ordered: true,
+      ordered: false,
       timeout: :infinity
     )
-    |> Enum.map(fn
-      {:ok, result} -> result
-      {:exit, reason} -> exit(reason)
+    |> Enum.reduce({[], nil}, fn
+      {:ok, {:completed, result}}, {results, error} ->
+        {[result | results], error}
+
+      {:ok, :canceled}, acc ->
+        acc
+
+      {:exit, reason}, {results, error} ->
+        send(owner, {:tool_batch_failed, self()})
+        {results, error || reason}
+    end)
+    |> then(fn
+      {results, nil} -> results
+      {_results, reason} -> exit(reason)
     end)
   end
 
@@ -2848,6 +2913,9 @@ defmodule IntellectualClub.Generation.Worker do
   # Steering before a provider-completion commit interrupts the source; its
   # deferred response is accounted separately before the receiving step runs.
   # In particular, a canceled follow-up cancels its NEW step, never the old raw.
+  defp advance(%{lease_lost?: true, persistence_op: nil, tool_task: nil} = state, _continuation),
+    do: stop_obsolete_owner(state)
+
   defp advance(%{lease_lost?: true} = state, _continuation), do: {:noreply, state}
 
   defp advance(%{persistence_op: %PersistenceOperation{}} = state, continuation) do
@@ -2859,6 +2927,9 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp advance(%{failure_plan: plan} = state, _continuation) when not is_nil(plan),
     do: {:noreply, state}
+
+  defp advance(%{cancel_requested?: true, tool_task: %Task{}} = state, _continuation),
+    do: {:noreply, %{cancel_tool_task(state) | continuation: :idle}}
 
   defp advance(%{cancel_requested?: true} = state, _continuation) do
     state = %{cancel_tasks(state) | continuation: :idle}

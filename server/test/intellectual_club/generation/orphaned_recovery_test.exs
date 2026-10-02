@@ -1229,7 +1229,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
 
     :ok = GenerationSupervisor.recover_orphaned_generations()
-    Process.sleep(100)
+    wait_for_status!(parent.message.id, actor, [:done], 6_000)
 
     generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
     assert generation_message.status == :canceled
@@ -1659,7 +1659,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert GenerationSupervisor.get_generation_state(generation_message.id) == :not_found
 
     :ok = GenerationSupervisor.recover_orphaned_generations()
-    Process.sleep(100)
+    wait_for_status!(parent.message.id, actor, [:done], 6_000)
 
     generation_message = Ash.get!(ChatMessage, reference.generation_message_id, actor: actor)
     assert generation_message.status == :canceled

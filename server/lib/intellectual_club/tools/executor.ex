@@ -8,6 +8,7 @@ defmodule IntellectualClub.Tools.Executor do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.BackgroundTasks
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Secrets.DriverSecrets
   alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.ExecutionResult
@@ -109,7 +110,7 @@ defmodule IntellectualClub.Tools.Executor do
     result =
       case function_execution_spec(tool_instance, function_name, execution_context) do
         {:ok, execution_spec} ->
-          case RateLimiter.await_slot(tool_instance) do
+          case ToolExecution.interruptible(fn -> RateLimiter.await_slot(tool_instance) end) do
             :ok ->
               execute_by_mode(
                 execution_spec,
@@ -199,7 +200,17 @@ defmodule IntellectualClub.Tools.Executor do
     result =
       try do
         driver = Registry.driver_for_type!(tool_type)
-        driver.execute(tool_instance, function_name, args || %{}, execution_context)
+
+        execute = fn ->
+          driver.execute(tool_instance, function_name, args || %{}, execution_context)
+        end
+
+        if function_exported?(driver, :interruptible?, 0) and
+             not apply(driver, :interruptible?, []) do
+          execute.()
+        else
+          ToolExecution.interruptible(execute)
+        end
       rescue
         exception -> {:error, Exception.message(exception)}
       catch

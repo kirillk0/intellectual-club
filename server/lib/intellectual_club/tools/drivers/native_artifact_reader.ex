@@ -9,8 +9,12 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
   @behaviour IntellectualClub.Tools.Driver
 
+  @impl true
+  def interruptible?, do: false
+
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Files
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Tools.DocumentReader
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -457,18 +461,20 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
     cache_root = cache_root(tool_instance)
     doc_id = DocumentReader.doc_id(to_string(file.external_id))
 
-    DocumentReader.ensure_cache_ready(cache_root, tool_instance.id, doc_id, cfg, fn ->
-      {:ok,
-       {payload,
-        %{
-          "tool_type" => type(),
-          "file_id" => file.external_id,
-          "filename" => file.filename,
-          "mime_type" => file.mime_type,
-          "size_bytes" => file.size_bytes,
-          "sha256" => file.sha256,
-          "source_extension" => Path.extname(file.filename || "")
-        }}}
+    ToolExecution.interruptible(fn ->
+      DocumentReader.ensure_cache_ready(cache_root, tool_instance.id, doc_id, cfg, fn ->
+        {:ok,
+         {payload,
+          %{
+            "tool_type" => type(),
+            "file_id" => file.external_id,
+            "filename" => file.filename,
+            "mime_type" => file.mime_type,
+            "size_bytes" => file.size_bytes,
+            "sha256" => file.sha256,
+            "source_extension" => Path.extname(file.filename || "")
+          }}}
+      end)
     end)
   end
 

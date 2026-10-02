@@ -24,16 +24,28 @@ defmodule IntellectualClub.Test.AsyncPersistenceAdapter do
 
     receive do
       {:complete, :tools} ->
-        emit.(
-          {:trace,
-           {:set_opaque, "call", :tool_call, 1,
+        calls =
+          Map.get(context, :test_tool_calls, [
             %{
-              "type" => "function_call",
-              "call_id" => "call_async",
-              "name" => Map.get(context, :test_tool_name, "missing__run"),
-              "arguments" => Jason.encode!(Map.get(context, :test_tool_args, %{}))
-            }}}
-        )
+              name: Map.get(context, :test_tool_name, "missing__run"),
+              args: Map.get(context, :test_tool_args, %{})
+            }
+          ])
+
+        calls
+        |> Enum.with_index(1)
+        |> Enum.each(fn {call, index} ->
+          emit.(
+            {:trace,
+             {:set_opaque, "call_#{index}", :tool_call, index,
+              %{
+                "type" => "function_call",
+                "call_id" => if(index == 1, do: "call_async", else: "call_async_#{index}"),
+                "name" => call.name,
+                "arguments" => Jason.encode!(call.args)
+              }}}
+          )
+        end)
 
         complete(emit)
 

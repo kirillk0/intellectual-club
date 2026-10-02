@@ -6,11 +6,119 @@ defmodule IntellectualClub.Generation.SandboxCleanupTest do
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Generation.Worker
   alias IntellectualClub.SandboxCleanup
   alias IntellectualClub.Test.AsyncPersistenceAdapter
 
   @persistence_start [:intellectual_club, :generation, :persistence, :start]
   @repo_query [:intellectual_club, :repo, :query]
+
+  test "cancel interrupts an external tool but drains its sibling SQL transaction before releasing the lease" do
+    %{actor: actor, message: message, context: context} = fixture()
+    tasks = start_supervised!({Task.Supervisor, []})
+    test = self()
+
+    server =
+      start_supervised!(
+        {Bandit,
+         plug:
+           {IntellectualClub.TestSupport.WebSearchServer,
+            handler: fn _path, _payload -> {:wait, test} end, test_pid: test},
+         scheme: :http,
+         port: 0}
+      )
+
+    {:ok, {_host, port}} = ThousandIsland.listener_info(server)
+
+    tool = %IntellectualClub.Tools.ToolInstance{
+      type: "native-web-search",
+      config: %{
+        "providers" => ["brave"],
+        "provider_options" => %{"brave" => %{"api_base_url" => "http://127.0.0.1:#{port}/brave"}}
+      },
+      secrets: %{"brave_api_key" => "test-key"}
+    }
+
+    context =
+      Map.merge(context, %{
+        tool_instances_by_alias: %{"web" => tool},
+        test_tool_calls: [
+          %{name: "missing__run", args: %{}},
+          %{name: "web__web_search", args: %{"query" => "cancel while another tool writes"}}
+        ]
+      })
+
+    manager = Process.whereis(Lease)
+    manager_monitor = Process.monitor(manager)
+    assert {:ok, _context} = GenerationSupervisor.start_prepared_context(context)
+    worker = GenerationSupervisor.generation_worker_pid(message.id)
+    worker_monitor = Process.monitor(worker)
+    assert_receive {:provider_started, _, provider, _request}, 5_000
+
+    gate = make_ref()
+    handler = {__MODULE__, gate}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        @repo_query,
+        &__MODULE__.tool_sql_barrier/4,
+        {self(), worker, gate}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    send(provider, {:complete, :tools})
+    assert_receive {:tool_checked_out, writer}, 5_000
+    assert_receive {:waiting, request}, 5_000
+    writer_monitor = Process.monitor(writer)
+
+    {external, _phase} =
+      Enum.find(:sys.get_state(worker).tool_executions, fn {_pid, {_ref, phase}} ->
+        phase == :interruptible
+      end)
+
+    external_monitor = Process.monitor(external)
+    :erlang.trace(worker, true, [:receive])
+
+    try do
+      cancel = Task.Supervisor.async_nolink(tasks, fn -> Worker.cancel_and_wait(worker) end)
+      assert_receive {:trace, ^worker, :receive, {:"$gen_call", _, :cancel_and_wait}}, 5_000
+      state = :sys.get_state(worker)
+      assert state.cancel_requested?
+      refute is_nil(state.tool_task)
+      assert Task.yield(cancel, 0) == nil
+      assert_receive {:DOWN, ^external_monitor, :process, ^external, :killed}, 5_000
+      refute_received {:DOWN, ^writer_monitor, :process, ^writer, _}
+      send(writer, {gate, :continue})
+
+      assert :ok = Task.await(cancel, 5_000)
+      assert_receive {:DOWN, ^writer_monitor, :process, ^writer, :normal}, 5_000
+      assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :normal}, 5_000
+      assert :ok = SandboxCleanup.stop_background_tasks!()
+      assert Process.whereis(Lease) == manager
+      refute_received {:DOWN, ^manager_monitor, :process, ^manager, _}
+      canceled = Ash.get!(ChatMessage, message.id, actor: actor)
+      assert canceled.status == :canceled
+      assert canceled.generation_fence_token == nil
+      assert [_missing_external_call] = Persistence.list_missing_tool_calls!(context.step_id)
+      assert [_saved_result] = Persistence.load_step_for_followup!(context.step_id).results
+      refute_received {:provider_started, _, _, _}
+    after
+      send(request, :continue)
+      send(writer, {gate, :continue})
+      :telemetry.detach(handler)
+      Process.demonitor(manager_monitor, [:flush])
+    end
+  end
+
+  def tool_sql_barrier(@repo_query, _measurements, %{query: query}, {test, worker, gate}) do
+    callers = List.wrap(Process.get(:"$callers"))
+
+    if worker in callers and List.first(callers) != worker and
+         String.contains?(query, "FOR NO KEY UPDATE") do
+      await_test_release(test, gate, :tool_checked_out)
+    end
+  end
 
   test "drain preserves SQL ownership through an active writer and the original lease cleanup ACK" do
     %{actor: actor, message: message, context: context} = fixture()
@@ -133,6 +241,7 @@ defmodule IntellectualClub.Generation.SandboxCleanupTest do
       request_payload: request,
       timeout_ms: 5_000,
       chunk_delay_ms: 0,
+      max_tool_rounds: 5,
       test_pid: self(),
       tool_instances_by_alias: %{},
       tools_payload: []

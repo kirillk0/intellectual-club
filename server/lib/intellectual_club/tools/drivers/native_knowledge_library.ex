@@ -10,7 +10,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
   @behaviour IntellectualClub.Tools.Driver
 
+  @impl true
+  def interruptible?, do: false
+
   alias IntellectualClub.Knowledge.KnowledgeBlock
+  alias IntellectualClub.Generation.ToolExecution
   alias IntellectualClub.Knowledge.KnowledgeTag
   alias IntellectualClub.Knowledge.PromptContent
   alias IntellectualClub.Knowledge.TagTree
@@ -728,14 +732,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       "source_extension" => ".md"
     }
 
-    DocumentReader.ensure_text_cache_ready(
-      cache_root,
-      tool_instance.id,
-      doc_id,
-      content,
-      meta,
-      cfg
-    )
+    ToolExecution.interruptible(fn ->
+      DocumentReader.ensure_text_cache_ready(
+        cache_root,
+        tool_instance.id,
+        doc_id,
+        content,
+        meta,
+        cfg
+      )
+    end)
   end
 
   defp block_doc_id(%KnowledgeBlock{} = block, cfg) when is_map(cfg) do
