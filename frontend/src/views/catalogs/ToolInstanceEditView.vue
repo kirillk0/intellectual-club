@@ -421,18 +421,28 @@
               </div>
 
               <div v-if="isOutletTokenField(field.key)" class="stack" style="gap: 8px; margin-top: 8px">
+                <input
+                  v-model="(form.secrets_patch as any)[field.key]"
+                  type="password"
+                  class="full"
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  :aria-label="fieldLabel(field.key, field.schema)"
+                  :placeholder="translate('Paste an existing token')"
+                  @input="handleSecretInput(field.key)"
+                />
                 <div class="flex" style="gap: 8px; align-items: center; flex-wrap: wrap">
                   <button
                     type="button"
                     :disabled="saving || loading"
                     @click="generateAndCopyOutletToken(field.key)"
                   >
-                    {{ outletTokenButtonText(field.key) }}
+                    {{ translate(outletTokenButtonText(field.key)) }}
                   </button>
                   <button
                     type="button"
                     class="danger"
-                    :disabled="(!isSecretPresent(field.key) && !Boolean((form.secrets_clear as any)[field.key])) || saving || loading"
+                    :disabled="(!isSecretPresent(field.key) && !outletTokenHasDraft(field.key) && !Boolean((form.secrets_clear as any)[field.key])) || saving || loading"
                     @click="markSecretForClear(field.key)"
                     title="Remove the stored credential on the server."
                   >
@@ -440,7 +450,7 @@
                   </button>
                 </div>
                 <div v-if="outletTokenHasDraft(field.key)" class="muted" style="font-size: 0.85rem">
-                  Generated token copied. Save to activate it.
+                  {{ translate('Save to activate this token.') }}
                 </div>
               </div>
               <template v-else>
