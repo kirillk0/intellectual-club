@@ -381,6 +381,7 @@ export const ruMessages: Record<string, string> = {
   'From': 'С',
   'Full-screen editor': 'Полноэкранный редактор',
   'Functions': 'Функции',
+  'Functions are discovered automatically after saving.': 'Функции обнаруживаются автоматически после сохранения.',
   'General': 'Основное',
   'Generate and copy': 'Сгенерировать и скопировать',
   'Generating': 'Генерация',

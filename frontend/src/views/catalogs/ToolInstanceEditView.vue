@@ -8,7 +8,7 @@
       :navDisabled="navDisabled"
       :showDelete="!isNew && !sharedReadonly"
       :showDuplicate="!isNew"
-      :saving="saving"
+      :saving="saving || discovering"
       @save="saveWithValidation"
       @cancel="reset"
       @close="goList"
@@ -525,7 +525,7 @@
               v-if="supportsDiscovery"
               class="icon-button icon-button--labeled crud-icon-button tool-discover-button"
               type="button"
-              @click="runDiscover"
+              @click="runDiscover()"
               :disabled="isNew || discovering || dirty || loading || saving"
               :aria-label="discovering ? 'Discovering…' : 'Discover'"
               :title="
@@ -553,19 +553,24 @@
           <p v-if="toolTypesError" class="error-text">{{ toolTypesError }}</p>
           <p v-else-if="toolTypesLoading" class="muted">Loading tool metadata…</p>
 
+          <p v-if="supportsDiscovery && isMcpHttp" class="muted">
+            {{ translate('Functions are discovered automatically after saving.') }}
+          </p>
           <p v-if="functionsMode === 'fixed'" class="muted">This tool provides fixed functions and does not use discovery.</p>
-          <p v-else-if="supportsDiscovery && isNew" class="muted">Save the tool before discovering functions.</p>
+          <p v-else-if="supportsDiscovery && isNew && !isMcpHttp" class="muted">Save the tool before discovering functions.</p>
           <p v-else-if="functionsLoading" class="muted">Loading…</p>
           <p v-else-if="functionsError" class="error-text">{{ functionsError }}</p>
 
           <div v-if="!functionsLoading && !functionsError && !(supportsDiscovery && isNew)" class="stack" style="gap: 10px">
             <p v-if="!functions.length" class="muted">
               {{
-                functionsMode === 'stored'
-                  ? supportsDiscovery
-                    ? 'No functions yet. Run discovery.'
-                    : 'No functions yet.'
-                  : 'Fixed functions are provided by the driver.'
+                discovering
+                  ? 'Discovering…'
+                  : functionsMode === 'stored'
+                    ? supportsDiscovery
+                      ? 'No functions yet. Run discovery.'
+                      : 'No functions yet.'
+                    : 'Fixed functions are provided by the driver.'
               }}
             </p>
 
@@ -663,7 +668,7 @@ import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
 import { useEditorTabState } from '@/features/catalogs/model/useEditorUiState';
 import { useResourceGroupSharing } from '@/features/catalogs/model/useResourceGroupSharing';
 import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChangesGuard';
-import { serverStateKeys } from '@/features/serverState/queryClient';
+import { serverStateKeys, serverStateQueryClient } from '@/features/serverState/queryClient';
 import { LOADING_NOTICE_DELAY_MS } from '@/features/app/delayedVisibility';
 import { translate } from '@/i18n';
 import { copyTextWithFallback } from '@/utils/clipboard';
@@ -1067,6 +1072,14 @@ const editor = useCrudEditor<ToolInstanceForm>({
   },
   onDocument: (payload) => {
     applyToolDocument(payload);
+    syncDefaultsForFormAndBase();
+    resetConfigText();
+  },
+  documentRefetchInterval: (payload) => payload?.data.attributes?.type === 'outlet' ? 5_000 : false,
+  afterSave: async (payload) => {
+    if (payload.data.attributes?.type === 'mcp-http') {
+      await runDiscover(toIntId(payload.data.id) ?? undefined);
+    }
   },
 });
 
@@ -1805,6 +1818,7 @@ const needsFunctionDiscovery = computed(
     loaded.value &&
     !isNew.value &&
     supportsDiscovery.value &&
+    !discovering.value &&
     !functionsLoading.value &&
     !functionsError.value &&
     functions.value.length === 0
@@ -1920,14 +1934,14 @@ watch(
   { immediate: true }
 );
 
-async function runDiscover() {
-  const toolId = editor.numericId.value;
+async function runDiscover(toolId = editor.numericId.value) {
   if (!toolId) return;
   if (!supportsDiscovery.value) return;
   if (discovering.value) return;
 
   discovering.value = true;
   discoverStats.value = null;
+  const recordId = editor.numericId.value;
 
   try {
     const payload = await api.post<{
@@ -1939,6 +1953,8 @@ async function runDiscover() {
       functions: Array<{ id: number }>;
     }>(`/api/bff/tools/${toolId}/discover`, {});
 
+    if (editor.numericId.value !== recordId) return;
+
     discoverStats.value = {
       created: Number(payload.created || 0),
       updated: Number(payload.updated || 0),
@@ -1946,9 +1962,13 @@ async function runDiscover() {
       total: Number(payload.total || 0),
     };
 
-    await editor.reloadRemoteDocument();
+    await serverStateQueryClient.invalidateQueries({
+      queryKey: serverStateKeys.detail('tool-instances', toolId, 'editor-document'),
+      exact: true,
+    });
   } catch (e) {
     console.error(e);
+    if (editor.numericId.value !== recordId) return;
     const message =
       isHttpError(e) && e.bodyJson && typeof (e.bodyJson as any)?.error === 'string'
         ? String((e.bodyJson as any).error)
@@ -2007,6 +2027,8 @@ async function toggleFunction(fn: ToolFunctionRow, event: Event) {
 }
 
 const saveWithValidation = async () => {
+  if (discovering.value) return;
+
   if (configError.value) {
     alert('Fix JSON errors before saving.');
     return;

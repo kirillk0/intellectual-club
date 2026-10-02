@@ -66,6 +66,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   duplicatePath?: (id: number) => string;
   preserveQueryKeys?: string[];
   documentQuery?: (context: { mode: 'load' | 'save' | 'duplicate' }) => URLSearchParams | undefined;
+  documentRefetchInterval?: (payload: JsonApiSingleResponse | undefined) => number | false;
+  afterSave?: (payload: JsonApiSingleResponse) => Promise<void>;
   onDocument?: (
     payload: JsonApiSingleResponse,
     context: { mode: 'load' | 'save' | 'duplicate' }
@@ -197,6 +199,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   const detailQuery = useQuery<JsonApiSingleResponse>({
     queryKey: detailQueryKey,
     enabled: computed(() => numericId.value !== undefined && !deleting.value),
+    refetchInterval: (query) => options.documentRefetchInterval?.(query.state.data) ?? false,
     queryFn: ({ queryKey, signal }) => {
       const requestedId = toIntId(String(queryKey[3] ?? ''));
       if (!requestedId) throw new Error('Invalid id.');
@@ -367,6 +370,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
       if (isNew.value) {
         const created = await jsonApiCreate(options.basePath, options.type, attrs, documentQuery('save'));
         if (sessionVersion !== writeSession) return false;
+        if (options.afterSave) await options.afterSave(created);
+        if (sessionVersion !== writeSession) return false;
         const newId = toIntId(created.data.id);
         const canonical = newId ? await readCanonicalDocument(newId, created) : created;
         if (sessionVersion !== writeSession) return false;
@@ -392,6 +397,8 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
           attrs,
           documentQuery('save')
         );
+        if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
+        if (options.afterSave) await options.afterSave(updated);
         if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
         const canonical = refreshedUpdateDocument(writeId, updated);
         serverStateQueryClient.setQueryData(detailQueryKey.value, canonical);

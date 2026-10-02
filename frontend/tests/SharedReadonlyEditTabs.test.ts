@@ -69,6 +69,8 @@ import KnowledgeBlockMainFields from '@/features/catalogs/components/knowledge-b
 import KnowledgeBlockTabsNav from '@/features/catalogs/components/knowledge-block/KnowledgeBlockTabsNav.vue';
 import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import CrudHeader from '@/components/CrudHeader.vue';
+import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
+import type { JsonApiSingleResponse } from '@/api/jsonApi';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import { serverStateQueryClient } from '@/features/serverState/queryClient';
 import KnowledgeBlockEditView from '@/views/catalogs/KnowledgeBlockEditView.vue';
@@ -194,6 +196,27 @@ function editableToolDocument(attributes: Record<string, unknown>) {
   };
 }
 
+function discoveredToolDocument(attributes: Record<string, unknown> = {}): JsonApiSingleResponse {
+  const document: JsonApiSingleResponse = editableToolDocument({
+    config: { server_url: 'https://mcp.example.com' },
+    last_discovered_at: '2026-10-02T12:00:00Z',
+    last_discovery_error: '',
+    ...attributes,
+  });
+  document.data.relationships!.functions = { data: [{ id: '101', type: 'tool-functions' }] };
+  document.included = [{
+    id: '101',
+    type: 'tool-functions',
+    attributes: {
+      name: 'search',
+      description: 'Search tool',
+      enabled: true,
+      parameters_schema: { type: 'object', properties: {} },
+    },
+  }];
+  return document;
+}
+
 let wrapper: VueWrapper | null = null;
 
 async function mountView(component: Component, path: string) {
@@ -263,6 +286,7 @@ describe('shared read-only editor tabs', () => {
     wrapper = null;
     serverStateQueryClient.clear();
     useNavigationStack().reset();
+    vi.useRealTimers();
   });
 
   it('switches LLM provider tabs while keeping its fields disabled', async () => {
@@ -481,6 +505,155 @@ describe('shared read-only editor tabs', () => {
     await tabByText(view, 'Functions').trigger('click');
     expect(view.get('.tool-discover-button').find('.tool-discovery-warning').exists()).toBe(true);
     expect(view.findAll('.tool-discovery-warning')).toHaveLength(2);
+  });
+
+  it.each(['new', '27'])('discovers MCP functions after saving %s and clears the warning', async (id) => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    const saved = editableToolDocument({ config: { server_url: 'https://mcp.example.com' } });
+    jsonApiMocks.get.mockResolvedValue(saved);
+    jsonApiMocks.create.mockResolvedValue(saved);
+    jsonApiMocks.update.mockResolvedValue(saved);
+    let finishDiscovery!: () => void;
+    clientMocks.post.mockImplementation(() => new Promise((resolve) => {
+      finishDiscovery = () => {
+        jsonApiMocks.get.mockResolvedValue(discoveredToolDocument());
+        resolve({ created: 1, updated: 0, deleted: 0, total: 1 });
+      };
+    }));
+
+    const view = await mountView(ToolInstanceEditView, `/catalogs/tools/${id}`);
+    await tabByText(view, 'General').trigger('click');
+    await view.get<HTMLInputElement>('input.full').setValue('MCP tool');
+    await view.get<HTMLInputElement>('input[type="url"]').setValue('https://mcp.example.com');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await vi.waitFor(() => expect(clientMocks.post).toHaveBeenCalledExactlyOnceWith('/api/bff/tools/27/discover', {}));
+    const save = id === 'new' ? jsonApiMocks.create : jsonApiMocks.update;
+    expect(view.vm.$route.params.id).toBe(id);
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.invocationCallOrder[0]).toBeLessThan(clientMocks.post.mock.invocationCallOrder[0]!);
+    expect(view.find('.tool-discovery-warning').exists()).toBe(false);
+    expect(view.getComponent(CrudHeader).props('saving')).toBe(true);
+
+    finishDiscovery();
+    await flushPromises();
+    expect(tabByText(view, 'Functions').text()).toBe('Functions (1)');
+    expect(view.find('.tool-discovery-warning').exists()).toBe(false);
+    expect(view.getComponent(CrudHeader).props('saving')).toBe(false);
+    expect(view.getComponent(CrudHeader).props('dirty')).toBe(false);
+    expect(view.vm.$route.params.id).toBe('27');
+  });
+
+  it('keeps saved MCP settings when automatic discovery fails and allows a manual retry', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    const saved = editableToolDocument({ config: { server_url: 'https://mcp.example.com' } });
+    jsonApiMocks.get.mockResolvedValue(saved);
+    jsonApiMocks.update.mockResolvedValue(saved);
+    clientMocks.post.mockImplementationOnce(async () => {
+      jsonApiMocks.get.mockResolvedValue(editableToolDocument({
+        config: { server_url: 'https://mcp.example.com' },
+        last_discovery_error: 'MCP unavailable',
+      }));
+      throw new Error('MCP unavailable');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'General').trigger('click');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await vi.waitFor(() => expect(view.text()).toContain('Discovery error: MCP unavailable'));
+    expect(view.get<HTMLInputElement>('input[type="url"]').element.value).toBe('https://mcp.example.com');
+    expect(view.getComponent(CrudHeader).props('dirty')).toBe(false);
+    expect(view.getComponent(CrudHeader).props('saving')).toBe(false);
+
+    clientMocks.post.mockImplementation(async () => {
+      jsonApiMocks.get.mockResolvedValue(discoveredToolDocument());
+      return { created: 1, updated: 0, deleted: 0, total: 1 };
+    });
+    await tabByText(view, 'Functions').trigger('click');
+    await view.get('.tool-discover-button').trigger('click');
+    await flushPromises();
+    expect(tabByText(view, 'Functions').text()).toBe('Functions (1)');
+    expect(view.find('.tool-discovery-warning').exists()).toBe(false);
+  });
+
+  it('does not discover MCP functions when saving fails', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    jsonApiMocks.get.mockResolvedValue(editableToolDocument({ config: { server_url: 'https://mcp.example.com' } }));
+    jsonApiMocks.update.mockRejectedValue(new Error('Save failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await view.get<HTMLInputElement>('input.full').setValue('Unsaved MCP');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await flushPromises();
+    expect(jsonApiMocks.update).toHaveBeenCalledOnce();
+    expect(clientMocks.post).not.toHaveBeenCalled();
+    expect(view.getComponent(CrudHeader).props('dirty')).toBe(true);
+  });
+
+  it('preserves edits made while manual MCP discovery is running', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    const saved = editableToolDocument({ config: { server_url: 'https://mcp.example.com' } });
+    jsonApiMocks.get.mockResolvedValue(saved);
+    jsonApiMocks.update.mockResolvedValue(saved);
+    let finishDiscovery!: () => void;
+    clientMocks.post.mockImplementation(() => new Promise((resolve) => {
+      finishDiscovery = () => resolve({ created: 1, updated: 0, deleted: 0, total: 1 });
+    }));
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'Functions').trigger('click');
+    await view.get('.tool-discover-button').trigger('click');
+    await vi.waitFor(() => expect(clientMocks.post).toHaveBeenCalledOnce());
+    await view.get<HTMLInputElement>('input.full').setValue('Draft during discovery');
+    jsonApiMocks.get.mockResolvedValue(discoveredToolDocument());
+    finishDiscovery();
+    await flushPromises();
+    expect(view.get<HTMLInputElement>('input.full').element.value).toBe('Draft during discovery');
+    expect(view.getComponent(CrudHeader).props('dirty')).toBe(true);
+    expect(view.findComponent(RemoteUpdateNotice).exists()).toBe(true);
+  });
+
+  it.each([false, true])('refreshes outlet discovery without overwriting a dirty draft (%s)', async (dirty) => {
+    vi.useFakeTimers();
+    const outletType = {
+      ...toolTypes[0],
+      type: 'outlet',
+      functions_mode: 'stored',
+      supports_discovery: true,
+      default_config: { ...toolTypes[0]!.default_config, max_concurrency: 20 },
+      config_schema: {
+        ...toolTypes[0]!.config_schema,
+        properties: {
+          ...toolTypes[0]!.config_schema.properties,
+          max_concurrency: { type: 'integer', title: 'Max concurrency' },
+        },
+      },
+    };
+    activeToolTypes = [outletType];
+    const saved = editableToolDocument({ type: 'outlet', config: {} });
+    jsonApiMocks.get.mockResolvedValue(saved);
+    jsonApiMocks.update.mockResolvedValue(saved);
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await flushPromises();
+    await tabByText(view, 'General').trigger('click');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await flushPromises();
+    expect(clientMocks.post).not.toHaveBeenCalled();
+    expect(view.find('.tool-discovery-warning').exists()).toBe(true);
+    if (dirty) await view.get<HTMLInputElement>('input.full').setValue('Outlet draft');
+    jsonApiMocks.get.mockResolvedValue(discoveredToolDocument({ type: 'outlet', config: {} }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushPromises();
+    if (dirty) {
+      expect(view.get<HTMLInputElement>('input.full').element.value).toBe('Outlet draft');
+      expect(view.findComponent(RemoteUpdateNotice).exists()).toBe(true);
+    } else {
+      expect(tabByText(view, 'Functions').text()).toBe('Functions (1)');
+      expect(view.find('.tool-discovery-warning').exists()).toBe(false);
+    }
+    expect(clientMocks.post).not.toHaveBeenCalled();
+    const concurrency = view.findAll('label').find((label) => label.text().includes('Max concurrency'))!;
+    expect(concurrency.get<HTMLInputElement>('input').element.value).toBe('20');
   });
 
   it('loads the managed secrets count before opening the tool tab', async () => {
