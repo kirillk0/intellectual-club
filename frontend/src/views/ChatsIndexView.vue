@@ -81,7 +81,10 @@
                     :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
                     :generation-state="generationStateForChat(c)"
                     :row-role="chatResultRole(c)"
+                    :actions="canEditChat(c)"
+                    :actions-open="chatActionsMenu?.chat.id === c.id"
                     @navigate="openChat"
+                    @open-actions="openChatActions(c, $event)"
                   >
                     <template #meta-extra>
                       <ContinuationNav
@@ -134,7 +137,10 @@
                       :preview-text="!hasChatSearch && subchat.first_message_preview ? formatPreview(subchat.first_message_preview) : null"
                       :preview-role="!hasChatSearch ? subchat.first_message_role : null"
                       :generation-state="generationStateForChat(subchat)"
+                      :actions="canEditChat(subchat)"
+                      :actions-open="chatActionsMenu?.chat.id === subchat.id"
                       @navigate="openChat"
+                      @open-actions="openChatActions(subchat, $event)"
                     >
                       <template #badges>
                         <span class="badge">{{ translate('Subchat') }}</span>
@@ -212,6 +218,22 @@
         @save="createChat"
       />
     </Teleport>
+
+    <ChatListActionsMenu
+      :anchor="chatActionsMenu?.anchor ?? null"
+      :deleting="deletingChatId != null && deletingChatId === chatActionsMenu?.chat.id"
+      @close="closeChatActions"
+      @edit-note="openChatNoteModal"
+      @delete="deleteChatFromMenu"
+    />
+
+    <ChatNoteModal
+      :open="noteChat != null"
+      v-model="noteModalValue"
+      :saving="savingNote"
+      @cancel="closeChatNoteModal"
+      @save="saveChatNote"
+    />
   </div>
 </template>
 
@@ -222,7 +244,9 @@ import { useRoute, type RouteLocationRaw } from 'vue-router';
 import { api } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
-import ChatListRow from '@/components/ChatListRow.vue';
+import ChatListActionsMenu, { type ChatListActionsAnchor } from '@/components/ChatListActionsMenu.vue';
+import ChatListRow, { type ChatListRowActionsRequest } from '@/components/ChatListRow.vue';
+import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
 import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
@@ -230,7 +254,7 @@ import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
-import { createChatRecord } from '@/features/chat/chatAshApi';
+import { createChatRecord, deleteChatRecord, updateChatRecord } from '@/features/chat/chatAshApi';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
 import { useChatChanges } from '@/features/chat/chatEvents';
 import {
@@ -314,6 +338,11 @@ type ChatListPayload = {
 
 type GenerationState = 'generating' | 'reconnecting' | 'done';
 
+type ChatActionsMenuState = {
+  chat: ChatSummary;
+  anchor: ChatListActionsAnchor;
+};
+
 const CHAT_LIST_POLL_SUCCESS_DELAY_MS = 1_500;
 const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
 const CHAT_LIST_IDLE_POLL_DELAY_MS = 30_000;
@@ -392,6 +421,11 @@ const chatListStats = ref<ChatListStats>({
 });
 const botModalOpen = ref(false);
 const botModalValue = ref<number | ''>('');
+const chatActionsMenu = ref<ChatActionsMenuState | null>(null);
+const noteChat = ref<ChatSummary | null>(null);
+const noteModalValue = ref('');
+const savingNote = ref(false);
+const deletingChatId = ref<number | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
   get: () => botSortMode.value,
@@ -962,6 +996,92 @@ function chatResultLink(chat: ChatSummary | ChatSearchResult) {
 
 function openChat(to: RouteLocationRaw) {
   stackNav.open(to);
+}
+
+function canEditChat(chat: ChatSummary) {
+  return chat.can_edit === true;
+}
+
+function openChatActions(chat: ChatSummary, request: ChatListRowActionsRequest) {
+  if (!canEditChat(chat)) return;
+  if (request.source === 'button' && chatActionsMenu.value?.chat.id === chat.id) {
+    closeChatActions();
+    return;
+  }
+  chatActionsMenu.value = { chat, anchor: request.anchor };
+}
+
+function closeChatActions() {
+  chatActionsMenu.value = null;
+}
+
+function patchChatRowsById<T extends ChatSummary>(items: T[], chatId: number, patch: Partial<ChatSummary>): T[] {
+  let changed = false;
+
+  const next = items.map((chat) => {
+    const subchats = directSubchats(chat);
+    const ownsSubchat = subchats.some((item) => item.id === chatId);
+    if (chat.id !== chatId && !ownsSubchat) return chat;
+
+    changed = true;
+    return {
+      ...chat,
+      ...(chat.id === chatId ? patch : {}),
+      ...(ownsSubchat
+        ? { subchats: subchats.map((item) => (item.id === chatId ? { ...item, ...patch } : item)) }
+        : {}),
+    };
+  });
+
+  return changed ? next : items;
+}
+
+function openChatNoteModal() {
+  const chat = chatActionsMenu.value?.chat;
+  closeChatActions();
+  if (!chat) return;
+  noteModalValue.value = chat.note || '';
+  noteChat.value = chat;
+}
+
+function closeChatNoteModal() {
+  if (savingNote.value) return;
+  noteChat.value = null;
+}
+
+async function saveChatNote() {
+  const chat = noteChat.value;
+  if (!chat || savingNote.value) return;
+  savingNote.value = true;
+  try {
+    const note = noteModalValue.value.trim();
+    await updateChatRecord(chat.id, { note });
+    chats.value = patchChatRowsById(chats.value, chat.id, { note });
+    chatSearchResults.value = patchChatRowsById(chatSearchResults.value, chat.id, { note });
+    noteChat.value = null;
+  } catch (e) {
+    // Write failures are already surfaced by the API error banner; keep the modal open for a retry.
+    console.error(e);
+  } finally {
+    savingNote.value = false;
+  }
+}
+
+async function deleteChatFromMenu() {
+  const chat = chatActionsMenu.value?.chat;
+  if (!chat || deletingChatId.value === chat.id) return;
+  closeChatActions();
+  if (!window.confirm(translate('Delete this chat? All messages will be removed.'))) return;
+
+  deletingChatId.value = chat.id;
+  try {
+    // The published delete change removes the row through useChatChanges.
+    await deleteChatRecord(chat.id);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    if (deletingChatId.value === chat.id) deletingChatId.value = null;
+  }
 }
 
 function formatPreview(text: string) {
@@ -1637,6 +1757,7 @@ watch(
   () => layer.active.value,
   (active, wasActive) => {
     if (!active) {
+      closeChatActions();
       stopChatListPolling();
       stopChatListIdlePolling();
       return;

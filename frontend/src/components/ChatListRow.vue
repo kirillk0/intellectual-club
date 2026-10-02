@@ -1,8 +1,8 @@
 <template>
-  <article class="row chat-list-row" :class="rowToneClass">
+  <article class="row chat-list-row" :class="rowToneClass" @contextmenu="handleContextMenu">
     <div class="chat-list-row__content">
       <RouterLink custom :to="to" v-slot="{ href, navigate }">
-        <a class="chat-list-row__primary" :href="href" @click="handleClick($event, navigate)">
+        <a ref="primaryLinkRef" class="chat-list-row__primary" :href="href" @click="handleClick($event, navigate)">
           <div class="chat-result-main">
             <div class="chat-result-title">
               <span class="chat-result-name">{{ title }}</span>
@@ -29,16 +29,36 @@
 
     <div class="chat-result-badges">
       <slot name="badges"></slot>
+      <button
+        v-if="actions"
+        type="button"
+        class="chat-list-row__actions-button"
+        data-chat-actions-trigger
+        aria-label="Chat actions"
+        title="Chat actions"
+        aria-haspopup="menu"
+        :aria-expanded="actionsOpen"
+        @click.stop="openActionsFromButton"
+      >
+        <SvgIcon name="more-horizontal" size="16" />
+      </button>
     </div>
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { RouterLink, type RouteLocationRaw } from 'vue-router';
+import type { ChatListActionsAnchor } from '@/components/ChatListActionsMenu.vue';
 import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
+import SvgIcon from '@/components/icons/SvgIcon.vue';
 
 type GenerationState = 'generating' | 'reconnecting' | 'done';
+
+export type ChatListRowActionsRequest = {
+  anchor: ChatListActionsAnchor;
+  source: 'button' | 'contextmenu';
+};
 
 interface Props {
   to: RouteLocationRaw;
@@ -52,6 +72,8 @@ interface Props {
   snippet?: string | null;
   generationState?: GenerationState | null;
   rowRole?: 'user' | 'assistant' | null;
+  actions?: boolean;
+  actionsOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -63,11 +85,50 @@ const props = withDefaults(defineProps<Props>(), {
   snippet: null,
   generationState: null,
   rowRole: null,
+  actions: false,
+  actionsOpen: false,
 });
 
 const emit = defineEmits<{
   navigate: [to: RouteLocationRaw, event: MouseEvent];
+  'open-actions': [request: ChatListRowActionsRequest];
 }>();
+
+const primaryLinkRef = ref<HTMLAnchorElement | null>(null);
+
+function openActionsFromButton(event: MouseEvent) {
+  const button = event.currentTarget as HTMLElement;
+  const rect = button.getBoundingClientRect();
+  emit('open-actions', {
+    anchor: { x: rect.right, y: rect.bottom + 4, flipY: rect.top - 4, align: 'end' },
+    source: 'button',
+  });
+}
+
+function handleContextMenu(event: MouseEvent) {
+  if (!props.actions) return;
+
+  // Nested links (e.g. continuation navigation) point at other chats: keep the native menu there.
+  const link = (event.target as Element | null)?.closest('a');
+  if (link && link !== primaryLinkRef.value) return;
+
+  event.preventDefault();
+
+  // Keyboard-invoked context menus report zero coordinates; anchor to the row instead.
+  if (event.clientX === 0 && event.clientY === 0) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    emit('open-actions', {
+      anchor: { x: rect.left + 12, y: rect.top + 12, align: 'start' },
+      source: 'contextmenu',
+    });
+    return;
+  }
+
+  emit('open-actions', {
+    anchor: { x: event.clientX, y: event.clientY, align: 'start' },
+    source: 'contextmenu',
+  });
+}
 
 const isPlainLeftClick = (event: MouseEvent) =>
   event.button === 0 && !event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey;
@@ -155,6 +216,43 @@ const previewToneClass = computed(() => ({
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.chat-list-row__actions-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.chat-list-row__actions-button:hover,
+.chat-list-row__actions-button[aria-expanded='true'] {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.chat-list-row__actions-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-list-row__actions-button {
+    opacity: 0;
+  }
+
+  .chat-list-row:hover .chat-list-row__actions-button,
+  .chat-list-row:focus-within .chat-list-row__actions-button,
+  .chat-list-row__actions-button[aria-expanded='true'] {
+    opacity: 1;
+  }
 }
 
 .chat-search-snippet {
