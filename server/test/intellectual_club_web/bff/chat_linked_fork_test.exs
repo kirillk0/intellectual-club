@@ -128,28 +128,35 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     context = payload["fork_context"]
     assert context["status"] == "available"
     assert context["live"] and context["read_only"]
-    assert Enum.map(context["messages"], & &1["source_message_id"]) == [f.root.id, f.source.id]
-    text = Jason.encode!(context)
+    # The live state summarizes the prefix; the parent relation links to the source.
+    assert context["task"] == "child task"
+    assert context["message_count"] == 2
+    assert context["step_count"] == 1
+    refute Map.has_key?(context, "messages")
+    refute Jason.encode!(context) =~ "source request"
+
+    export = f.conn |> get(~p"/api/bff/chat-state/#{f.child.id}/export") |> json_response(200)
+    assert export["root_chat_id"] == f.child.id
+    assert Enum.map(export["chats"], & &1["id"]) == [f.child.id]
+    exported = hd(export["chats"])["fork_context"]
+    assert exported["status"] == "available"
+    assert exported["task"] == "child task"
+    assert exported["message_count"] == 2
+    assert Enum.map(exported["messages"], & &1["source_message_id"]) == [f.root.id, f.source.id]
+    text = Jason.encode!(exported)
     assert text =~ "source request"
     assert text =~ "source response"
-    assert text =~ "child task"
     assert text =~ "Fork branch initialized"
     refute text =~ "LATE TOOL RESULT"
-    refute text =~ "FUTURE STEP"
-    refute text =~ "FUTURE MESSAGE"
 
-    for message <- context["messages"] do
-      assert message["source_url"] == "/chats/#{f.parent.id}"
+    for message <- exported["messages"] do
+      assert message["source_url"] == nil
       refute Map.has_key?(message, "id")
       refute Map.has_key?(message, "status")
       refute Map.has_key?(message, "usage")
       refute Map.has_key?(message, "working")
     end
 
-    export = f.conn |> get(~p"/api/bff/chat-state/#{f.child.id}/export") |> json_response(200)
-    assert export["root_chat_id"] == f.child.id
-    assert Enum.map(export["chats"], & &1["id"]) == [f.child.id]
-    assert hd(export["chats"])["fork_context"]["status"] == "available"
     refute Jason.encode!(export) =~ "FUTURE STEP"
     refute Jason.encode!(export) =~ "FUTURE MESSAGE"
   end
@@ -184,27 +191,32 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
       |> Ash.Changeset.force_change_attribute(:fork_task, "nested task")
       |> Ash.create!(actor: f.actor)
 
-    payload = state(%{f | child: nested})
+    nested_fixture = %{f | child: nested}
+    payload = state(nested_fixture)
     assert payload["branch"] == []
     assert payload["active_generation_message_id"] == nil
     assert payload["fork_context"]["status"] == "available"
+    assert payload["fork_context"]["task"] == "nested task"
+    assert payload["fork_context"]["message_count"] == 4
+    assert payload["fork_context"]["step_count"] == 2
 
-    assert Enum.map(payload["fork_context"]["messages"], & &1["source_message_id"]) == [
+    exported = export_context(nested_fixture)
+
+    assert Enum.map(exported["messages"], & &1["source_message_id"]) == [
              f.root.id,
              f.source.id,
              f.local_user.id,
              f.local.id
            ]
 
-    assert Jason.encode!(payload["fork_context"]) =~ "nested task"
-    assert Jason.encode!(payload["fork_context"]) =~ "child task"
-    nested_fixture = %{f | child: nested}
+    assert Jason.encode!(exported) =~ "nested task"
+    assert Jason.encode!(exported) =~ "child task"
     assert idle(nested_fixture, payload["idle_revision"]) |> response(204) == ""
     update!(first_content!(f.root, f.actor), %{content_text: "edited nested ancestor"}, f.actor)
     changed = idle(nested_fixture, payload["idle_revision"]) |> json_response(200)
     refreshed = state(nested_fixture)
     assert refreshed["idle_revision"] == changed["revision"]
-    assert Jason.encode!(refreshed["fork_context"]) =~ "edited nested ancestor"
+    assert Jason.encode!(export_context(nested_fixture)) =~ "edited nested ancestor"
   end
 
   test "idle revision follows included source edits but ignores source future", f do
@@ -228,7 +240,7 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     assert changed["revision"] != revision
     next = state(f)
     assert next["idle_revision"] == changed["revision"]
-    assert Jason.encode!(next["fork_context"]) =~ "edited source"
+    assert Jason.encode!(export_context(f)) =~ "edited source"
 
     late = item!(f.step, :tool_result, 3, f.actor, f.call.id)
     content!(late, %{kind: :text, content_text: "late result"}, f.actor)
@@ -255,7 +267,7 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     after_edit = state(f)
     assert changed["revision"] == after_edit["idle_revision"]
     assert after_edit["fork_context"]["revision"] != before["fork_context"]["revision"]
-    assert Jason.encode!(after_edit["fork_context"]) =~ "content-only source edit"
+    assert Jason.encode!(export_context(f)) =~ "content-only source edit"
     assert idle(f, changed["revision"]) |> response(204) == ""
   end
 
@@ -299,7 +311,7 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     missing = idle(f, before["idle_revision"]) |> json_response(200)
     unavailable = state(f)
     assert unavailable["fork_context"]["status"] == "unavailable"
-    assert unavailable["fork_context"]["messages"] == []
+    assert unavailable["fork_context"]["message_count"] == nil
     assert unavailable["idle_revision"] == missing["revision"]
     assert idle(f, missing["revision"]) |> response(204) == ""
 
@@ -349,7 +361,7 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     # unexpected read/serialization exception without changing persisted data.
     {failed, log} =
       ExUnit.CaptureLog.with_log(fn ->
-        ChatForkContext.build(f.child, f.actor, links?: :invalid)
+        ChatForkContext.build(f.child, f.actor, messages?: true, links?: :invalid)
       end)
 
     assert log =~ "Linked fork context for chat #{f.child.id} raised"
@@ -376,12 +388,10 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     on_exit(fn -> :telemetry.detach(handler) end)
     stale_presentation = state(f)
     assert_receive {:source_edited, ^handler}
-    assert Jason.encode!(stale_presentation["fork_context"]) =~ marker
-    refute Jason.encode!(stale_presentation["fork_context"]) =~ "REVISION-RACE-NEW-SOURCE"
     changed = idle(f, stale_presentation["idle_revision"]) |> json_response(200)
     refreshed = state(f)
     assert refreshed["idle_revision"] == changed["revision"]
-    assert Jason.encode!(refreshed["fork_context"]) =~ "REVISION-RACE-NEW-SOURCE"
+    assert Jason.encode!(export_context(f)) =~ "REVISION-RACE-NEW-SOURCE"
   end
 
   test "all BFF history mutations reject local user and assistant messages", f do
@@ -460,8 +470,11 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     Ash.destroy!(f.call_content, actor: f.actor)
     payload = state(f)
     assert payload["fork_context"]["status"] == "unavailable"
-    assert payload["fork_context"]["messages"] == []
+    assert payload["fork_context"]["message_count"] == nil
+    # The task is stored on the child, so it survives an unavailable source.
+    assert payload["fork_context"]["task"] == "child task"
     assert length(payload["branch"]) == 2
+    assert export_context(f)["messages"] == []
   end
 
   test "sharing the child alone never grants access to its private source", f do
@@ -508,7 +521,7 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
     conn = build_conn() |> sign_in_conn(recipient.username, password)
     payload = conn |> get(~p"/api/bff/chat-state/#{f.child.id}") |> json_response(200)
     assert payload["fork_context"]["status"] == "unavailable"
-    assert payload["fork_context"]["messages"] == []
+    assert payload["fork_context"]["message_count"] == nil
     assert length(payload["branch"]) == 2
     refute Jason.encode!(payload["fork_context"]) =~ "source request"
 
@@ -782,6 +795,16 @@ defmodule IntellectualClubWeb.Bff.ChatLinkedForkTest do
   end
 
   defp state(f), do: f.conn |> get(~p"/api/bff/chat-state/#{f.child.id}") |> json_response(200)
+
+  defp export_context(f) do
+    f.conn
+    |> get(~p"/api/bff/chat-state/#{f.child.id}/export")
+    |> json_response(200)
+    |> Map.fetch!("chats")
+    |> hd()
+    |> Map.fetch!("fork_context")
+  end
+
   defp create_chat!(actor, attrs \\ %{}), do: create!(Chat, attrs, actor, :create_empty)
 
   defp create!(resource, attrs, actor, action \\ :create),

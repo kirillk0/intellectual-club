@@ -151,9 +151,6 @@
             </RouterLink>
 
             <ChatForkContext v-if="vm.forkContext" :context="vm.forkContext" />
-            <p v-if="vm.chat.history_read_only" class="muted" role="note">
-              {{ translate('Linked fork history is read-only. Send a follow-up instead.') }}
-            </p>
             <template v-for="(msg, idx) in vm.branch" :key="msg.id ?? idx">
               <ChatMessageBubble
                 :message="msg"

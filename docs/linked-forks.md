@@ -3,6 +3,11 @@
 New `fork` and `fork_background` chats inherit context by reference. Existing copied
 forks are not migrated and keep their previous behavior.
 
+Both tools require `brief` and `prompt`, matching the spawn tool arguments.
+`brief` is stored in the existing chat `note` used as its title. `prompt` replaces
+the former `task` argument and is stored in the existing private `fork_task`
+attribute. The storage schema and historical chats do not need migration.
+
 ## Storage and boundary
 
 A linked child has private `fork_source_step_id` and `fork_task` attributes. Its

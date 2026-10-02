@@ -31,16 +31,17 @@ defmodule IntellectualClub.Chat.Fork do
 
   def relation_kind, do: @relation_kind
 
-  @spec create_and_run(ToolInstance.t(), String.t(), ExecutionContext.t(), User.t()) ::
+  @spec create_and_run(ToolInstance.t(), String.t(), String.t(), ExecutionContext.t(), User.t()) ::
           {:ok, ExecutionResult.t()} | {:error, term()}
   def create_and_run(
         %ToolInstance{} = tool_instance,
-        task,
+        brief,
+        prompt,
         %ExecutionContext{} = context,
         %User{} = actor
       )
-      when is_binary(task) do
-    with {:ok, reference} <- start_or_resume(tool_instance, task, context, actor),
+      when is_binary(brief) and is_binary(prompt) do
+    with {:ok, reference} <- start_or_resume(tool_instance, brief, prompt, context, actor),
          {:ok, snapshot} <- await_snapshot(reference, actor),
          result = Subagent.sync_execution_result_from_snapshot(snapshot, actor) do
       {:ok, result}
@@ -53,52 +54,66 @@ defmodule IntellectualClub.Chat.Fork do
     end
   end
 
-  def create_and_run(_tool_instance, _task, _context, _actor),
+  def create_and_run(_tool_instance, _brief, _prompt, _context, _actor),
     do: {:error, :invalid_fork_context}
 
   @doc """
   Starts a forked subagent or resumes the subagent already linked to this tool call.
 
-  Unlike `create_and_run/4`, this function never waits for the subagent to finish.
+  Unlike `create_and_run/5`, this function never waits for the subagent to finish.
   The returned reference is durable: the generation message and its steps remain the
   source of truth across application restarts.
   """
-  @spec start_or_resume(ToolInstance.t(), String.t(), ExecutionContext.t(), User.t()) ::
+  @spec start_or_resume(ToolInstance.t(), String.t(), String.t(), ExecutionContext.t(), User.t()) ::
           {:ok, map()} | {:error, term()}
   def start_or_resume(
         %ToolInstance{} = tool_instance,
-        task,
+        brief,
+        prompt,
         %ExecutionContext{} = context,
         %User{} = actor
       )
-      when is_binary(task) do
-    start_or_resume(tool_instance, task, context, actor, [])
+      when is_binary(brief) and is_binary(prompt) do
+    start_or_resume(tool_instance, brief, prompt, context, actor, [])
   end
 
-  def start_or_resume(_tool_instance, _task, _context, _actor),
+  def start_or_resume(_tool_instance, _brief, _prompt, _context, _actor),
     do: {:error, :invalid_fork_context}
 
   @doc false
-  @spec start_or_resume(ToolInstance.t(), String.t(), ExecutionContext.t(), User.t(), keyword()) ::
+  @spec start_or_resume(
+          ToolInstance.t(),
+          String.t(),
+          String.t(),
+          ExecutionContext.t(),
+          User.t(),
+          keyword()
+        ) ::
           {:ok, map()} | {:error, term()}
   def start_or_resume(
         %ToolInstance{} = tool_instance,
-        task,
+        brief,
+        prompt,
         %ExecutionContext{} = context,
         %User{} = actor,
         opts
       )
-      when is_binary(task) and is_list(opts) do
-    with :ok <- validate_context(context),
+      when is_binary(brief) and is_binary(prompt) and is_list(opts) do
+    brief = String.trim(brief)
+    prompt = String.trim(prompt)
+
+    with :ok <- validate_text(brief, "brief"),
+         :ok <- validate_text(prompt, "prompt"),
+         :ok <- validate_context(context),
          {:ok, source} <- fetch_owned_chat(context.chat_id, actor),
          {:ok, fork_ref} <-
-           find_or_prepare_subagent(tool_instance, source, task, context, actor, opts),
+           find_or_prepare_subagent(tool_instance, source, brief, prompt, context, actor, opts),
          {:ok, reference} <- start_subagent_reference(fork_ref, context, actor, opts) do
       {:ok, reference}
     end
   end
 
-  def start_or_resume(_tool_instance, _task, _context, _actor, _opts),
+  def start_or_resume(_tool_instance, _brief, _prompt, _context, _actor, _opts),
     do: {:error, :invalid_fork_context}
 
   @doc """
@@ -130,19 +145,20 @@ defmodule IntellectualClub.Chat.Fork do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    task = args |> Map.get("task", "") |> to_string() |> String.trim()
+    brief = args |> Map.get("brief", "") |> to_string() |> String.trim()
+    prompt = args |> Map.get("prompt", "") |> to_string() |> String.trim()
 
-    with true <- task != "",
+    with :ok <- validate_text(brief, "brief"),
+         :ok <- validate_text(prompt, "prompt"),
          task_id when is_binary(task_id) <- task_record_value(task_record, :id),
          %User{} = actor <- actor_from_context(context),
          {:ok, reference} <-
-           start_or_resume(tool_instance, task, context, actor,
+           start_or_resume(tool_instance, brief, prompt, context, actor,
              background_task_authority: task_record,
              on_reference: &set_background_reference(task_record, &1)
            ) do
       {:waiting, reference}
     else
-      false -> {:error, "task is required"}
       nil -> {:error, "Background task context is invalid."}
       {:error, _reason} = error -> error
       _other -> {:error, "Background task context is invalid."}
@@ -231,6 +247,9 @@ defmodule IntellectualClub.Chat.Fork do
 
   def ensure_handoff_allowed(_tool_instance, _context), do: :ok
 
+  defp validate_text("", field), do: {:error, "#{field} is required"}
+  defp validate_text(_value, _field), do: :ok
+
   defp validate_context(%ExecutionContext{} = context) do
     cond do
       not is_integer(context.chat_id) ->
@@ -250,19 +269,19 @@ defmodule IntellectualClub.Chat.Fork do
     end
   end
 
-  defp find_or_prepare_subagent(tool_instance, source, task, context, actor, opts) do
+  defp find_or_prepare_subagent(tool_instance, source, brief, prompt, context, actor, opts) do
     case fetch_fork_chat_by_tool_call_item_id(context.tool_call_item_id, actor) do
       %Chat{} = chat ->
         {:ok, {:existing, chat}}
 
       nil ->
-        with {:ok, source_context} <- build_source_context(source, task, context, actor) do
+        with {:ok, source_context} <- build_source_context(source, brief, prompt, context, actor) do
           find_or_create_subagent(tool_instance, source_context, context, actor, opts)
         end
     end
   end
 
-  defp build_source_context(%Chat{} = source, task, %ExecutionContext{} = context, actor) do
+  defp build_source_context(%Chat{} = source, brief, prompt, %ExecutionContext{} = context, actor) do
     assistant_message_id = context.assistant_message_id || context.message_id
 
     with {:ok, %ChatMessage{} = source_message} <-
@@ -281,7 +300,8 @@ defmodule IntellectualClub.Chat.Fork do
          source_message: source_message,
          source_call: source_call,
          followup_state: followup_state,
-         task: task
+         brief: brief,
+         prompt: prompt
        }}
     else
       false -> {:error, :invalid_fork_source}
@@ -402,7 +422,7 @@ defmodule IntellectualClub.Chat.Fork do
   end
 
   defp legacy_fork_candidate_matches?(%Chat{} = chat, source_context) do
-    String.trim(to_string(chat.note || "")) == String.trim(to_string(source_context.task || "")) and
+    String.trim(to_string(chat.note || "")) == String.trim(to_string(source_context.prompt || "")) and
       Enum.any?(List.wrap(Map.get(chat, :messages)), fn message ->
         Enum.any?(List.wrap(Map.get(message, :steps)), fn step ->
           legacy_step_matches?(step, source_context)
@@ -414,7 +434,7 @@ defmodule IntellectualClub.Chat.Fork do
     items = List.wrap(Map.get(step, :items))
 
     Enum.any?(items, &legacy_tool_call_matches?(&1, source_context.source_call)) and
-      Enum.any?(items, &legacy_fork_instruction_matches?(&1, source_context.task))
+      Enum.any?(items, &legacy_fork_instruction_matches?(&1, source_context.prompt))
   end
 
   defp legacy_tool_call_matches?(item, %ToolCall{} = call) do
@@ -595,7 +615,7 @@ defmodule IntellectualClub.Chat.Fork do
       )
 
     results =
-      ForkBoundary.results(state.tool_calls, source_context.source_call, source_context.task)
+      ForkBoundary.results(state.tool_calls, source_context.source_call, source_context.prompt)
 
     followup =
       generation_context.adapter_module.build_followup_request(%{
@@ -611,7 +631,7 @@ defmodule IntellectualClub.Chat.Fork do
       inject_fork_steering!(
         generation_context.adapter_module,
         followup,
-        [%{text: ForkBoundary.steering(source_context.task), placement: :after_response}],
+        [%{text: ForkBoundary.steering(source_context.prompt), placement: :after_response}],
         generation_context
       )
 
@@ -845,7 +865,7 @@ defmodule IntellectualClub.Chat.Fork do
     |> Ash.Changeset.for_create(
       :create_empty,
       %{
-        note: source_context.task,
+        note: source_context.brief,
         bot_id: source.bot_id,
         llm_configuration_id: source.llm_configuration_id,
         parent_chat_id: source.id,
@@ -858,7 +878,7 @@ defmodule IntellectualClub.Chat.Fork do
     )
     |> Ash.Changeset.force_change_attributes(%{
       fork_source_step_id: source_context.followup_state.step.id,
-      fork_task: source_context.task
+      fork_task: source_context.prompt
     })
     |> Ash.create!()
   end

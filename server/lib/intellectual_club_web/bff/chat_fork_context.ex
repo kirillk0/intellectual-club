@@ -2,6 +2,10 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
   @moduledoc """
   Read-only presentation of the live linked-fork prefix.
 
+  The live chat state carries only the fork task and a summary of the inherited
+  history: the source conversation is reachable through the parent relation.
+  Exports pass `messages?: true` to also serialize the projected messages.
+
   Only the projected tree is serialized: reloading source message steps would
   cross the fork boundary. Source access is checked independently of child access.
   """
@@ -36,17 +40,20 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
          {:ok, messages} <- ForkHistory.prefix(chat, actor),
          true <- is_list(messages),
          true <- Enum.all?(messages, &known_source?(&1, sources)) do
-      context("available", serialize_messages(messages, sources, actor, opts), revision)
+      chat
+      |> context("available", revision)
+      |> Map.merge(summary(messages))
+      |> put_messages(opts, fn -> serialize_messages(messages, sources, actor, opts) end)
     else
       {:error, reason} when is_struct(reason) ->
         Logger.warning(
           "Linked fork context for chat #{chat.id} failed to load: #{describe(reason)}"
         )
 
-        retry_context(revision)
+        retry_context(chat, revision, opts)
 
       _other ->
-        context("unavailable", [], revision)
+        unavailable(chat, revision, opts)
     end
   rescue
     # A transient payload/read failure must not acknowledge a healthy metadata
@@ -58,15 +65,15 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
           Exception.format(:error, error, __STACKTRACE__)
       )
 
-      retry_context(revision)
+      retry_context(chat, revision, opts)
   end
 
   defp describe(reason) when is_exception(reason), do: Exception.message(reason)
   defp describe(reason), do: inspect(reason)
 
-  defp retry_context(revision) do
+  defp retry_context(chat, revision, opts) do
     bucket = div(System.system_time(:second), @retry_bucket_seconds)
-    context("unavailable", [], digest({:fork_context_retry, revision, bucket}))
+    unavailable(chat, digest({:fork_context_retry, revision, bucket}), opts)
   end
 
   def combine_revision(revision, nil), do: revision
@@ -76,13 +83,42 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
 
   def combine_revision(revision, context), do: combine_revision(revision, context.revision)
 
-  defp context(status, messages, revision) do
+  # The task belongs to the child itself, so it stays visible even when the
+  # inherited source history is unavailable to the actor.
+  defp context(chat, status, revision) do
     %{
       status: status,
       live: true,
       read_only: true,
       revision: revision,
-      messages: messages
+      task: Map.get(chat, :fork_task),
+      message_count: nil,
+      step_count: nil
+    }
+  end
+
+  defp unavailable(chat, revision, opts) do
+    chat
+    |> context("unavailable", revision)
+    |> put_messages(opts, fn -> [] end)
+  end
+
+  defp put_messages(context, opts, messages_fun) do
+    if Keyword.get(opts, :messages?, false),
+      do: Map.put(context, :messages, messages_fun.()),
+      else: context
+  end
+
+  # Steps are counted for assistant messages only: they are the provider steps
+  # of the source conversation, not the input steps of user messages.
+  defp summary(messages) do
+    %{
+      message_count: length(messages),
+      step_count:
+        messages
+        |> Enum.filter(&(string(Map.get(&1, :role)) == "assistant"))
+        |> Enum.map(&count(Map.get(&1, :steps)))
+        |> Enum.sum()
     }
   end
 
@@ -230,6 +266,8 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
     do: Enum.sort_by(values, &{Map.get(&1, :sequence) || 0, Map.get(&1, :id) || 0})
 
   defp ordered(_values), do: []
+  defp count(values) when is_list(values), do: length(values)
+  defp count(_values), do: 0
   defp string(value) when is_atom(value) or is_binary(value), do: to_string(value)
   defp string(_value), do: ""
 end

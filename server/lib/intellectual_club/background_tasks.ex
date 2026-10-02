@@ -57,11 +57,11 @@ defmodule IntellectualClub.BackgroundTasks do
     )
   end
 
-  @spec start_fork(ToolInstance.t(), String.t(), ExecutionContext.t()) ::
+  @spec start_fork(ToolInstance.t(), String.t(), String.t(), ExecutionContext.t()) ::
           {:ok, ExecutionResult.t()} | {:error, term()}
-  def start_fork(%ToolInstance{} = tool_instance, task, %ExecutionContext{} = context)
-      when is_binary(task) do
-    start_envelope(tool_instance, "fork", %{"task" => task}, context,
+  def start_fork(%ToolInstance{} = tool_instance, brief, prompt, %ExecutionContext{} = context)
+      when is_binary(brief) and is_binary(prompt) do
+    start_envelope(tool_instance, "fork", %{"brief" => brief, "prompt" => prompt}, context,
       adapter: "fork",
       kind: "fork"
     )

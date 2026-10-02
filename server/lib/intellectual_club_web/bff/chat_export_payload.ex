@@ -91,7 +91,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
 
         payload =
           serialize_chat(chat, family_ids, Map.fetch!(active_branches, chat.id),
-            fork_context: ChatForkContext.build(chat, actor, links?: false),
+            fork_context: ChatForkContext.build(chat, actor, links?: false, messages?: true),
             context_blocks: context_blocks,
             context_tools: context_tools,
             chat_blocks: chat_blocks,

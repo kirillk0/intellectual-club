@@ -267,6 +267,7 @@ it('exports inherited context as a marked read-only snapshot without source link
   const data = payload();
   data.chats[0]!.fork_context = {
     status: 'available', live: true, read_only: true, revision: 'prefix-1',
+    task: 'FORK_TASK_TEXT', message_count: 1, step_count: 0,
     messages: [{
       key: 'inherited-0', role: 'user', source_chat_id: 999, source_message_id: 888, source_url: '/chats/999',
       content: [{ type: 'input', step_sequence: 1, item_sequence: 1, parts: [{ text: 'INHERITED_ONLY <script>evil()</script>' }], attachments: [] }],
@@ -275,8 +276,14 @@ it('exports inherited context as a marked read-only snapshot without source link
   const { html } = await buildChatHtmlExport(data, { locale: 'en' });
   const document = new DOMParser().parseFromString(html, 'text/html');
   const inherited = document.querySelector('.fork-context');
+  expect(inherited?.querySelector('summary')?.textContent).toBe('Inherited context · Messages: 1 · Steps: 0');
+  expect(inherited?.querySelector('details')?.hasAttribute('open')).toBe(false);
   expect(inherited?.textContent).toContain('Inherited context snapshot — read-only');
   expect(inherited?.textContent).toContain('INHERITED_ONLY');
+  const task = document.querySelector('.messages > .message:first-child');
+  expect(task?.classList.contains('fork-task')).toBe(true);
+  expect(task?.textContent).toContain('Fork task');
+  expect(task?.textContent).toContain('FORK_TASK_TEXT');
   expect(inherited?.querySelector('script')).toBeNull();
   expect(inherited?.querySelector('a[href="/chats/999"]')).toBeNull();
   expect(inherited?.querySelector('.working, .badge.active')).toBeNull();

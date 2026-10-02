@@ -110,23 +110,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
             "full conversation are copied into a new branch, where the copied model becomes " <>
             "the subagent. In that branch it must discard every pending intention from the " <>
             "parent turn, including plans and tool calls before or after this fork; perform " <>
-            "only the task argument; write one final answer; and stop. It must not continue " <>
+            "only the prompt argument; write one final answer; and stop. It must not continue " <>
             "the parent agent's task. The parent alone continues the original work, using the " <>
             "subagent's final answer, which becomes this tool call's result.",
-        "schema" => %{
-          "type" => "object",
-          "properties" => %{
-            "task" => %{
-              "type" => "string",
-              "description" =>
-                "Complete instructions for the only task the copied subagent must perform. " <>
-                  "When this task appears in the copied branch, abandon the parent turn's plan, " <>
-                  "complete only these instructions, answer once, and stop."
-            }
-          },
-          "required" => ["task"],
-          "additionalProperties" => false
-        },
+        "schema" => fork_schema(),
         "enabled" => false,
         "enabled_by_default" => false
       },
@@ -138,23 +125,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
             "and full conversation are copied into a new branch, where the copied model becomes " <>
             "the subagent. In that branch it must discard every pending intention from the " <>
             "parent turn, including plans and tool calls before or after this fork; perform " <>
-            "only the task argument; write one final answer; and stop. It must not continue the " <>
+            "only the prompt argument; write one final answer; and stop. It must not continue the " <>
             "parent agent's task. The parent alone continues the original work. This call " <>
             "returns a background task id; check it to retrieve the subagent's final answer.",
-        "schema" => %{
-          "type" => "object",
-          "properties" => %{
-            "task" => %{
-              "type" => "string",
-              "description" =>
-                "Complete instructions for the only task the copied subagent must perform. " <>
-                  "When this task appears in the copied branch, abandon the parent turn's plan, " <>
-                  "complete only these instructions, answer once, and stop."
-            }
-          },
-          "required" => ["task"],
-          "additionalProperties" => false
-        },
+        "schema" => fork_schema(),
         "is_background_function" => true,
         "enabled" => false,
         "enabled_by_default" => false
@@ -298,10 +272,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = tool_instance, "fork", args, %ExecutionContext{} = context)
       when is_map(args) do
-    with {:ok, task} <- required_task(args),
+    with {:ok, brief, prompt} <- required_subagent_args(args, "fork"),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          actor = %User{id: owner_id},
-         {:ok, result} <- AgentFork.create_and_run(tool_instance, task, context, actor) do
+         {:ok, result} <- AgentFork.create_and_run(tool_instance, brief, prompt, context, actor) do
       {:ok, result}
     else
       {:error, reason} ->
@@ -320,9 +294,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    with {:ok, task} <- required_task(args),
+    with {:ok, brief, prompt} <- required_subagent_args(args, "fork"),
          :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
-         {:ok, result} <- BackgroundTasks.start_fork(tool_instance, task, context) do
+         {:ok, result} <- BackgroundTasks.start_fork(tool_instance, brief, prompt, context) do
       {:ok, result}
     else
       {:error, reason} -> {:error, error_message(reason)}
@@ -335,7 +309,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = tool_instance, "spawn", args, %ExecutionContext{} = context)
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_spawn_args(args),
+    with {:ok, brief, prompt} <- required_subagent_args(args, "spawn"),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          actor = %User{id: owner_id},
          {:ok, result} <- AgentSpawn.create_and_run(tool_instance, brief, prompt, context, actor) do
@@ -356,7 +330,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_spawn_args(args),
+    with {:ok, brief, prompt} <- required_subagent_args(args, "spawn"),
          :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
          {:ok, result} <- BackgroundTasks.start_spawn(tool_instance, brief, prompt, context) do
       {:ok, result}
@@ -460,19 +434,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     end
   end
 
-  defp required_task(args) when is_map(args) do
-    args
-    |> Map.get("task", "")
-    |> to_string()
-    |> String.trim()
-    |> case do
-      "" -> {:error, "task is required"}
-      task -> {:ok, task}
-    end
-  end
-
-  defp required_spawn_args(args) when is_map(args) do
-    with :ok <- reject_extra_spawn_args(args),
+  defp required_subagent_args(args, primitive) when is_map(args) do
+    with :ok <- reject_extra_subagent_args(args, primitive),
          {:ok, brief} <- required_trimmed_string(args, "brief"),
          {:ok, prompt} <- required_trimmed_string(args, "prompt") do
       {:ok, brief, prompt}
@@ -495,16 +458,28 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     end
   end
 
-  defp reject_extra_spawn_args(args) when is_map(args) do
+  defp reject_extra_subagent_args(args, primitive) when is_map(args) do
     extras = Map.keys(args) -- ["brief", "prompt"]
 
     case extras do
       [] -> :ok
-      _other -> {:error, "spawn arguments contain unsupported fields"}
+      _other -> {:error, "#{primitive} arguments contain unsupported fields"}
     end
   end
 
+  defp fork_schema do
+    subagent_schema(
+      "Complete instructions for the only task the copied subagent must perform. " <>
+        "When this prompt appears in the copied branch, abandon the parent turn's plan, " <>
+        "complete only these instructions, answer once, and stop."
+    )
+  end
+
   defp spawn_schema do
+    subagent_schema("First user message sent to the spawned subagent.")
+  end
+
+  defp subagent_schema(prompt_description) do
     %{
       "type" => "object",
       "properties" => %{
@@ -514,7 +489,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         },
         "prompt" => %{
           "type" => "string",
-          "description" => "First user message sent to the spawned subagent."
+          "description" => prompt_description
         }
       },
       "required" => ["brief", "prompt"],

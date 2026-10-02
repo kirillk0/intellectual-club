@@ -454,7 +454,12 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       }
 
       assert {:ok, %ExecutionResult{} = result} =
-               Fork.create_and_run(parent.tool_instance, task, context, actor)
+               IntellectualClub.Tools.Drivers.NativeAgentManagement.execute(
+                 parent.tool_instance,
+                 "fork",
+                 %{"brief" => "  Fork summary  ", "prompt" => "  " <> task <> "  "},
+                 context
+               )
 
       assert %{
                "chat_id" => child_chat_id,
@@ -463,6 +468,10 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
                "final_chat_id" => child_chat_id,
                "final_message_id" => child_message_id
              } = result.raw["fork"]
+
+      child_chat = Ash.get!(Chat, child_chat_id, actor: actor)
+      assert child_chat.note == "Fork summary"
+      assert child_chat.fork_task == task
 
       refute result.raw["isError"]
       assert fork_child_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
@@ -515,6 +524,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert {:error, :invalid_fork_source} =
              Fork.start_or_resume(
                parent.tool_instance,
+               "Fork summary",
                task,
                fork_execution_context(parent, actor),
                actor
@@ -535,7 +545,12 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     starter =
       Task.async(fn ->
-        Fork.start_or_resume(parent.tool_instance, selected_task, context, actor,
+        Fork.start_or_resume(
+          parent.tool_instance,
+          "Selected branch",
+          selected_task,
+          context,
+          actor,
           on_reference: fn reference ->
             send(test_process, {:parallel_fork_prepared, self(), reference})
 
@@ -567,6 +582,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert child_chat.fork_source_step_id == parent.step_id
     assert child_chat.parent_tool_call_item_id == parent.call.item_id
     assert child_chat.fork_task == selected_task
+    assert child_chat.note == "Selected branch"
 
     assert Ash.count!(ChatMessage |> Ash.Query.filter(chat_id == ^child_chat.id), actor: actor) ==
              1
@@ -614,7 +630,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     parent = create_parent_fork_call!(actor, task)
     context = fork_execution_context(parent, actor)
 
-    assert {:ok, first} = Fork.start_or_resume(parent.tool_instance, task, context, actor)
+    assert {:ok, first} =
+             Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor)
+
     original = wait_for_status!(first.generation_message_id, actor, [:done], 6_000)
     assert {:ok, original_snapshot} = Fork.snapshot(first, actor)
     assert original_snapshot.status == :completed
@@ -632,7 +650,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert followup_message.error_detail == nil
     refute followup.message_id == original.id
 
-    assert {:ok, resumed} = Fork.start_or_resume(parent.tool_instance, task, context, actor)
+    assert {:ok, resumed} =
+             Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor)
+
     assert resumed.generation_message_id == original.id
     assert {:ok, resumed_snapshot} = Fork.snapshot(resumed, actor)
     assert resumed_snapshot.result.text == original_snapshot.result.text
@@ -661,7 +681,12 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         fn call ->
           context = %{fork_execution_context(parent, actor) | tool_call_item_id: call.item_id}
 
-          Fork.start_or_resume(parent.tool_instance, call.args["task"], context, actor,
+          Fork.start_or_resume(
+            parent.tool_instance,
+            call.args["brief"],
+            call.args["prompt"],
+            context,
+            actor,
             on_reference: fn reference ->
               send(test_process, {:linked_prepared, reference})
               {:error, :prepared_only}
@@ -746,7 +771,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert :ok = Lease.release(lease)
 
     assert {:error, :parent_generation_stale} =
-             Fork.start_or_resume(parent.tool_instance, task, context, actor)
+             Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor)
 
     assert fork_child_ids_for_call(actor, parent.call.item_id) == []
   end
@@ -1337,7 +1362,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     context = fork_execution_context(parent, actor)
 
     assert {:ok, reference} =
-             Fork.start_or_resume(parent.tool_instance, task, context, actor)
+             Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor)
 
     assert reference.chat_id == child_chat.id
     assert reference.generation_message_id == child_message.id
@@ -1373,7 +1398,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     starters =
       for label <- [:first, :second] do
         Task.async(fn ->
-          Fork.start_or_resume(parent.tool_instance, task, context, actor,
+          Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor,
             on_reference: fn reference ->
               send(test_process, {:fork_start_ready, label, self(), reference})
 
@@ -1511,7 +1536,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     context = fork_execution_context(parent, actor)
 
     assert {:error, :reference_write_failed} =
-             Fork.start_or_resume(parent.tool_instance, task, context, actor,
+             Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor,
                on_reference: fn _reference -> {:error, :reference_write_failed} end
              )
 
@@ -1533,7 +1558,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
     starter =
       Task.async(fn ->
-        Fork.start_or_resume(parent.tool_instance, task, context, actor,
+        Fork.start_or_resume(parent.tool_instance, "Fork summary", task, context, actor,
           on_reference: fn reference ->
             send(test_process, {:fork_prepared, self(), reference})
 
@@ -1596,7 +1621,14 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     parent = create_parent_fork_call!(actor, task)
     context = fork_execution_context(parent, actor)
 
-    assert {:ok, launch} = BackgroundTasks.start_fork(parent.tool_instance, task, context)
+    assert {:ok, launch} =
+             IntellectualClub.Tools.Drivers.NativeAgentManagement.execute(
+               parent.tool_instance,
+               "fork_background",
+               %{"brief" => "  Background summary  ", "prompt" => "  " <> task <> "  "},
+               context
+             )
+
     task_id = launch.raw["background_task_id"]
     assert is_binary(task_id)
 
@@ -1605,6 +1637,11 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     snapshot = wait_for_background_status!(task_id, actor.id, "completed", 6_000)
 
     assert is_integer(snapshot["target_chat_id"])
+    child_chat = Ash.get!(Chat, snapshot["target_chat_id"], actor: actor)
+    assert child_chat.note == "Background summary"
+    assert child_chat.fork_task == task
+    envelope = Ash.get!(BackgroundTask, task_id, actor: actor)
+    assert envelope.arguments == %{"brief" => "Background summary", "prompt" => task}
 
     assert get_in(snapshot, ["result", "raw", "fork", "chat_id"]) ==
              snapshot["target_chat_id"]
@@ -2098,7 +2135,12 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   end
 
   defp create_parent_fork_call!(actor, task) do
-    create_parent_subagent_call!(actor, "fork", %{"task" => task}, "Fork now")
+    create_parent_subagent_call!(
+      actor,
+      "fork",
+      %{"brief" => "Fork summary", "prompt" => task},
+      "Fork now"
+    )
   end
 
   defp create_parent_parallel_fork_calls!(actor, sibling_task, selected_task) do
@@ -2153,7 +2195,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           "type" => "function",
           "function" => %{
             "name" => "agent_management__fork",
-            "arguments" => Jason.encode!(%{"task" => task})
+            "arguments" => Jason.encode!(%{"brief" => "Fork summary", "prompt" => task})
           }
         }
       end)
@@ -2164,7 +2206,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           "type" => "function_call",
           "id" => call_id,
           "name" => "agent_management__fork",
-          "arguments" => %{"task" => task}
+          "arguments" => %{"brief" => "Fork summary", "prompt" => task}
         }
         |> then(fn step ->
           if sequence == 1, do: Map.put(step, "signature", "batch-signature"), else: step
@@ -2195,7 +2237,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
               runtime_step,
               call_id,
               "agent_management__fork",
-              %{"task" => task},
+              %{"brief" => "Fork summary", "prompt" => task},
               sequence
             )
         end
@@ -2400,7 +2442,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         adapter: "fork",
         status: status,
         function_name: "fork",
-        arguments: %{"task" => task},
+        arguments: %{"brief" => "Fork summary", "prompt" => task},
         execution_context: %{
           "owner_id" => context.owner_id,
           "chat_id" => context.chat_id,

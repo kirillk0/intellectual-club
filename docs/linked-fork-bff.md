@@ -12,18 +12,21 @@ messages; the SPA must never insert inherited messages into the local `branch`.
   This is independent of `chat.can_edit`: owners can still send/queue follow-ups,
   steer/cancel a running generation, inspect local steps, and export.
 - `fork_context`: `null` for legacy chats, otherwise
-  `{status, live: true, read_only: true, revision, messages}`. Status is `available`
-  or `unavailable`. An unavailable prefix contains no messages or exception details.
-- `fork_context.messages`: presentation-only entries with `key`, `role`, optional
-  source chat/message references and `source_url`, and an ordered `content` list.
-  Each content item contains text `parts` and attachment descriptors. Entries have
-  no local message ID, generation status, usage, bookmarks, or working-step IDs.
+  `{status, live: true, read_only: true, revision, task, message_count, step_count}`.
+  Status is `available` or `unavailable`. The live state does not copy inherited
+  messages: the parent relation banner already links to the source conversation.
+- `fork_context.task`: the child's own `fork_task`. It is stored on the child, so
+  it is returned even when the inherited prefix is unavailable. The UI renders it
+  as the first, action-less user-style message of the fork.
+- `fork_context.message_count` / `step_count`: size of the projected prefix,
+  including nested ancestors. Steps count assistant provider steps only, up to and
+  including the fork anchor. Both are `null` for an unavailable prefix, which
+  carries no exception details.
 
-`ChatForkContext` calls `ForkHistory.prefix(chat, actor)` and serializes only its
+`ChatForkContext` calls `ForkHistory.prefix(chat, actor)` and summarizes only its
 already projected `steps/items/contents`. It must **not** use
 `ChatBranchPayload.branch/4`, reload source steps, or expose raw provider payloads:
-that would discard the projection cutoff. Synthetic fork results and steering
-are displayed as context, not as live/pending tool activity.
+that would discard the projection cutoff.
 
 The full state `idle_revision` and idle endpoint revision combine the normal local
 revision with the same metadata-only inherited token. Idle probes do not call
@@ -53,13 +56,16 @@ Ordinary actor access is required for every source in the chain. Sharing only a
 child does not grant broader source access: its prefix is unavailable. There is no
 owner impersonation or scoped source-access resolver.
 
-Source links are emitted for the source owner only. Projected media may use the
-existing authenticated `/api/bff/chat-messages/:source_message_id/contents/:content_id/file`
-endpoint. That endpoint independently verifies actor access and message/content
-membership. No new file-grant endpoint or child-local content ID is introduced.
-Missing file metadata renders a placeholder. The live UI renders inherited text
-literally, without interpreting HTML or Markdown file/external-image links, and
-only embeds allowlisted raster image types through source content URLs.
+The live UI does not render inherited content, and exports disable source and
+attachment URLs. When `ChatForkContext.serialize_messages/4` is called with links
+enabled, source links are emitted for the source owner only and projected media
+uses the existing authenticated
+`/api/bff/chat-messages/:source_message_id/contents/:content_id/file` endpoint.
+That endpoint independently verifies actor access and message/content membership.
+No new file-grant endpoint or child-local content ID is introduced. Missing file
+metadata renders a placeholder. The fork task is the child's own text and is
+rendered with the ordinary sanitized chat Markdown renderer, without attachment
+reference resolution.
 
 ## History mutations
 
@@ -80,8 +86,15 @@ navigation, polling, counters, or bookmarks.
 
 Each exported chat has a separate `fork_context` field. Exporting a selected linked
 fork does not automatically expand to the full source conversation or future
-source steps: the selected linked fork is the export root. HTML labels the prefix
-as a read-only snapshot of live context. Source and attachment URLs are disabled;
+source steps: the selected linked fork is the export root. Because the export has
+no live links, its `fork_context` additionally contains `messages`: presentation-only
+entries with `key`, `role`, optional source chat/message references and
+`source_url`, and an ordered `content` list of text `parts` and attachment
+descriptors. Entries have no local message ID, generation status, usage, bookmarks,
+or working-step IDs; synthetic fork results and steering are context, not live tool
+activity. An unavailable prefix exports an empty list. HTML shows the summary with
+the prefix collapsed and labelled as a read-only snapshot of live context, and the
+task as the first message. Source and attachment URLs are disabled;
 attachment metadata is retained as placeholders. Exporting ordinary parents keeps
 the pre-existing family-export behavior.
 

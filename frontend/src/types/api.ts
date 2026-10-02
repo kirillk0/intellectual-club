@@ -153,8 +153,14 @@ export type ForkContext = {
   live: true;
   read_only: true;
   revision: string;
-  messages: ForkContextMessage[];
+  // The fork's own task stays available even when the inherited history is not.
+  task: string | null;
+  message_count: number | null;
+  step_count: number | null;
 };
+
+// Exports have no live source links, so they keep a read-only copy of the prefix.
+export type ChatExportForkContext = ForkContext & { messages: ForkContextMessage[] };
 
 export type Chat = {
   id: number;
@@ -488,7 +494,7 @@ export type ChatExportMessage = {
 };
 
 export type ChatExportChat = {
-  fork_context?: ForkContext | null;
+  fork_context?: ChatExportForkContext | null;
   id: number;
   title: string;
   note: string;

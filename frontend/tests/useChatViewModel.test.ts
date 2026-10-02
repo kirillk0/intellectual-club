@@ -510,7 +510,7 @@ describe('useChatViewModel loading', () => {
     state.branch = [{ id: 10, role: 'assistant', status: 'done', content: { items: [], parts: [], media: [] } }];
     state.fork_context = {
       status: 'available', live: true, read_only: true, revision: 'prefix-1',
-      messages: [{ key: 'inherited-0', role: 'user', source_chat_id: 2, source_message_id: 999, source_url: '/chats/2', content: [] }],
+      task: 'fork task', message_count: 1, step_count: 0,
     };
     apiMocks.get.mockImplementation((path: string) => {
       if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
@@ -525,15 +525,16 @@ describe('useChatViewModel loading', () => {
     expect(viewModel.sharedReadonly.value).toBe(false);
     expect(viewModel.canEdit.value).toBe(true);
     expect(viewModel.branch.value.map((message) => message.id)).toEqual([10]);
-    expect(viewModel.forkContext.value?.messages[0]?.source_message_id).toBe(999);
+    expect(viewModel.forkContext.value?.task).toBe('fork task');
     expect(viewModel.activeGenerationId.value).toBeNull();
     viewModel.draft.value = 'follow-up';
     expect(viewModel.hasSendPayload.value).toBe(true);
     state.fork_context.revision = 'prefix-2';
-    state.fork_context.messages = [];
+    state.fork_context.message_count = 2;
     await vi.advanceTimersByTimeAsync(31_000);
     await flushPromises();
     expect(viewModel.forkContext.value?.revision).toBe('prefix-2');
+    expect(viewModel.forkContext.value?.message_count).toBe(2);
     expect(viewModel.branch.value.map((message) => message.id)).toEqual([10]);
     await router.push('/chats/2');
     await flushPromises();

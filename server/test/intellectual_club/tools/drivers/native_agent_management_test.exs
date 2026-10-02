@@ -51,8 +51,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     assert fork_function["enabled"] == false
     assert fork_function["enabled_by_default"] == false
-    assert fork_schema["required"] == ["task"]
-    assert fork_schema["properties"]["task"]["type"] == "string"
+    assert fork_schema["required"] == ["brief", "prompt"]
+    assert fork_schema["properties"]["prompt"]["type"] == "string"
+    assert fork_schema["properties"]["brief"]["type"] == "string"
+    assert fork_schema["additionalProperties"] == false
+    refute Map.has_key?(fork_schema["properties"], "task")
     assert String.contains?(fork_function["description"], "exactly one task")
     assert String.contains?(fork_function["description"], "copied model becomes the subagent")
     assert String.contains?(fork_function["description"], "discard every pending intention")
@@ -60,7 +63,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert String.contains?(fork_function["description"], "becomes this tool call's result")
 
     assert String.contains?(
-             fork_schema["properties"]["task"]["description"],
+             fork_schema["properties"]["prompt"]["description"],
              "the only task"
            )
 
@@ -78,7 +81,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
     fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
     assert fork_background["is_background_function"] == true
-    assert fork_background["schema"]["required"] == ["task"]
+    assert fork_background["schema"] == fork_schema
     assert String.contains?(fork_background["description"], "exactly one task")
     assert String.contains?(fork_background["description"], "copied model becomes the subagent")
     assert String.contains?(fork_background["description"], "discard every pending intention")
@@ -138,7 +141,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       Executor.execute_llm_tool(
         %{"agent_management" => tool_instance},
         "agent_management__fork",
-        %{"task" => "Check one thing."},
+        %{"brief" => "Research", "prompt" => "Check one thing."},
         %ExecutionContext{owner_id: actor.id}
       )
 
@@ -203,12 +206,34 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
              )
   end
 
+  test "both fork functions require string brief and prompt and reject legacy or extra fields" do
+    %{user: actor} = user_fixture()
+    tool_instance = create_tool_instance!(actor)
+    context = %ExecutionContext{owner_id: actor.id}
+
+    for name <- ["fork", "fork_background"],
+        {args, error} <- [
+          {%{"prompt" => "Do work"}, "brief is required"},
+          {%{"brief" => "  ", "prompt" => "Do work"}, "brief is required"},
+          {%{"brief" => "Work"}, "prompt is required"},
+          {%{"brief" => "Work", "prompt" => "  "}, "prompt is required"},
+          {%{"brief" => 42, "prompt" => "Do work"}, "brief must be a string"},
+          {%{"brief" => "Work", "prompt" => %{}}, "prompt must be a string"},
+          {%{"task" => "Do work"}, "fork arguments contain unsupported fields"},
+          {%{"brief" => "Work", "prompt" => "Do work", "extra" => true},
+           "fork arguments contain unsupported fields"}
+        ] do
+      assert {:error, ^error} = NativeAgentManagement.execute(tool_instance, name, args, context)
+    end
+  end
+
   test "background management functions are rejected by executor while disabled by default" do
     %{user: actor} = user_fixture()
     tool_instance = create_tool_instance!(actor)
 
     calls = [
-      {"agent_management__fork_background", %{"task" => "Check one thing."}},
+      {"agent_management__fork_background",
+       %{"brief" => "Research", "prompt" => "Check one thing."}},
       {"agent_management__check_background_task_status",
        %{"background_task_id" => Ash.UUID.generate()}},
       {"agent_management__cancel_background_task", %{"background_task_id" => Ash.UUID.generate()}}
@@ -240,7 +265,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       })
 
     calls = [
-      {"fork_background", %{"task" => "Check one thing."}},
+      {"fork_background", %{"brief" => "Research", "prompt" => "Check one thing."}},
       {"spawn_background", %{"brief" => "Research", "prompt" => "Check one thing."}}
     ]
 
