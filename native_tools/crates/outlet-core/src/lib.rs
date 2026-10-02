@@ -1744,7 +1744,7 @@ async fn handle_call<P: ToolProvider>(
         }
         Err(error) => {
             status = "error".to_string();
-            error_text = error.to_string();
+            error_text = format!("{error:#}");
             result.raw = json!({
                 "error": error_text,
             });
