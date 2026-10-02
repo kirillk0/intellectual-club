@@ -192,19 +192,23 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     assert meta.error_kind == "timeout"
   end
 
-  test "returns retryable metadata on transient refresh HTTP status" do
-    refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
+  for status <- [503, 520] do
+    @status status
 
-    Req.Test.expect(OpenAIOAuth, 1, fn conn ->
-      Plug.Conn.send_resp(conn, 503, "temporarily unavailable")
-    end)
+    test "returns retryable metadata on transient refresh HTTP #{status}" do
+      refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
 
-    assert {:error, message, meta} = OpenAIOAuth.get_access_token_with_meta(refresh_token)
+      Req.Test.expect(OpenAIOAuth, 1, fn conn ->
+        Plug.Conn.send_resp(conn, @status, "temporarily unavailable")
+      end)
 
-    assert message =~ "OAuth token refresh failed (status 503)"
-    assert meta.status_code == 503
-    assert meta.error_kind == "http"
-    assert meta.retryable == true
+      assert {:error, message, meta} = OpenAIOAuth.get_access_token_with_meta(refresh_token)
+
+      assert message =~ "OAuth token refresh failed (status #{@status})"
+      assert meta.status_code == @status
+      assert meta.error_kind == "http"
+      assert meta.retryable == true
+    end
   end
 
   test "uses refresh token auth method in Auth.get_bearer_token/1" do

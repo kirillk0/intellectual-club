@@ -47,21 +47,21 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
         emit.(
           {:response_error,
            %{
-             retryable: true,
+             retryable: Map.get(context, :retryable_hint, true),
              error_kind: "http",
-             status_code: 429,
+             status_code: Map.get(context, :status_code, 429),
              error_text: "Upstream provider is temporarily rate-limited",
              raw_request: request_payload,
              raw_response: %{
                "error" => %{
-                 "code" => 429,
+                 "code" => Map.get(context, :status_code, 429),
                  "message" => "Provider returned error",
                  "metadata" => %{
                    "raw" => "Upstream provider is temporarily rate-limited",
                    "provider_name" => "Test Provider"
                  }
                },
-               "status_code" => 429
+               "status_code" => Map.get(context, :status_code, 429)
              }
            }}
         )
@@ -278,88 +278,94 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
     assert canceled.status == :canceled
   end
 
-  test "generation keeps retry error step when a later attempt succeeds" do
-    %{user: actor} = user_fixture()
-    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+  for status <- [429, 520] do
+    @status status
 
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          note: ""
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+    test "generation keeps HTTP #{status} retry error step when a later attempt succeeds" do
+      %{user: actor} = user_fixture()
+      attempts = start_supervised!({Agent, fn -> 0 end})
 
-    {:ok, user_message} =
-      Threads.add_message_to_end(chat, :user, "Please recover after retry", actor: actor)
+      chat =
+        Chat
+        |> Ash.Changeset.for_create(
+          :create,
+          %{
+            note: ""
+          },
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
 
-    assistant_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+      {:ok, user_message} =
+        Threads.add_message_to_end(chat, :user, "Please recover after retry", actor: actor)
 
-    raw_request = %{
-      "model" => "test-model",
-      "messages" => [%{"role" => "user", "content" => "Please recover after retry"}],
-      "stream" => true
-    }
+      assistant_message =
+        ChatMessage
+        |> Ash.Changeset.for_create(
+          :create_generating_assistant,
+          %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
 
-    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
+      raw_request = %{
+        "model" => "test-model",
+        "messages" => [%{"role" => "user", "content" => "Please recover after retry"}],
+        "stream" => true
+      }
 
-    context = %{
-      owner_id: actor.id,
-      chat_id: chat.id,
-      message_id: assistant_message.id,
-      step_id: step_id,
-      provider_type: "test",
-      adapter_module: FlakyAdapter,
-      request_payload: raw_request,
-      timeout_ms: 1_000,
-      chunk_delay_ms: 0,
-      cold_input_price_per_million_tokens: 2.0,
-      cached_input_price_per_million_tokens: 0.5,
-      output_price_per_million_tokens: 4.0,
-      attempts: attempts
-    }
+      step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
 
-    {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
+      context = %{
+        owner_id: actor.id,
+        chat_id: chat.id,
+        message_id: assistant_message.id,
+        step_id: step_id,
+        provider_type: "test",
+        adapter_module: FlakyAdapter,
+        request_payload: raw_request,
+        timeout_ms: 1_000,
+        chunk_delay_ms: 0,
+        cold_input_price_per_million_tokens: 2.0,
+        cached_input_price_per_million_tokens: 0.5,
+        output_price_per_million_tokens: 4.0,
+        status_code: @status,
+        retryable_hint: @status == 429,
+        attempts: attempts
+      }
 
-    message = wait_for_status!(assistant_message.id, actor, [:done], 12_000)
-    steps = ordered_steps(message)
+      {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
 
-    assert Agent.get(attempts, & &1) == 2
-    assert message.status == :done
-    assert message.error_detail == nil
-    assert Enum.map(steps, & &1.sequence) == [1, 2]
-    assert Enum.map(steps, & &1.status) == [:error, :done]
-    assert_in_delta Enum.at(steps, 1).cost, 0.000036, 1.0e-12
+      message = wait_for_status!(assistant_message.id, actor, [:done], 12_000)
+      steps = ordered_steps(message)
 
-    assert Enum.at(steps, 0).raw_response == %{
-             "error" => %{
-               "code" => 429,
-               "message" => "Provider returned error",
-               "metadata" => %{
-                 "raw" => "Upstream provider is temporarily rate-limited",
-                 "provider_name" => "Test Provider"
-               }
-             },
-             "status_code" => 429
-           }
+      assert Agent.get(attempts, & &1) == 2
+      assert message.status == :done
+      assert message.error_detail == nil
+      assert Enum.map(steps, & &1.sequence) == [1, 2]
+      assert Enum.map(steps, & &1.status) == [:error, :done]
+      assert_in_delta Enum.at(steps, 1).cost, 0.000036, 1.0e-12
 
-    retry_text = single_error_item_text!(Enum.at(steps, 0))
-    final_answer_text = answer_item_text(Enum.at(steps, 1))
+      assert Enum.at(steps, 0).raw_response == %{
+               "error" => %{
+                 "code" => @status,
+                 "message" => "Provider returned error",
+                 "metadata" => %{
+                   "raw" => "Upstream provider is temporarily rate-limited",
+                   "provider_name" => "Test Provider"
+                 }
+               },
+               "status_code" => @status
+             }
 
-    assert retry_text =~ "Transient provider error on attempt 1."
-    assert retry_text =~ "Upstream provider is temporarily rate-limited"
-    refute retry_text =~ "Partial text that must not be persisted."
-    assert final_answer_text == "Recovered answer."
+      retry_text = single_error_item_text!(Enum.at(steps, 0))
+      final_answer_text = answer_item_text(Enum.at(steps, 1))
+
+      assert retry_text =~ "Transient provider error on attempt 1."
+      assert retry_text =~ "Upstream provider is temporarily rate-limited"
+      refute retry_text =~ "Partial text that must not be persisted."
+      assert final_answer_text == "Recovered answer."
+    end
   end
 
   test "generation repeats the last configured retry backoff for later attempts" do

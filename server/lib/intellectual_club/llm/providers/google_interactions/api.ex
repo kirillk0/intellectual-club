@@ -9,7 +9,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Api do
   alias Req.Response
 
   @default_base_url "https://generativelanguage.googleapis.com/v1"
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 

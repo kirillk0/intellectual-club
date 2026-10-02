@@ -13,7 +13,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
   alias Req.Response
 
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 

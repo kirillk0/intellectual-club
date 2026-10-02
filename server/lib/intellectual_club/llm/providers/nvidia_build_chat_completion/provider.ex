@@ -16,7 +16,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion.ModelDiscovery
 
   @type_id "nvidia_build_chat_completion"
-  @retryable_http_status_codes [429, 502, 503, 504, 529]
+  @retryable_http_status_codes [429, 502, 503, 504, 520, 529]
 
   @impl true
   def type, do: @type_id

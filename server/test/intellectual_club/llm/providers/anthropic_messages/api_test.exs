@@ -340,41 +340,45 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
     assert error.error_text == "Overloaded"
   end
 
-  test "includes HTTP status in non-JSON error raw response and marks 503 retryable" do
-    body = "temporarily overloaded"
+  for status <- [503, 520] do
+    @status status
 
-    scripts = %{
-      "/messages" => [
-        {503, [body]}
-      ]
-    }
+    test "includes HTTP status in non-JSON error raw response and marks #{status} retryable" do
+      body = "temporarily overloaded"
 
-    {base_url, _agent} = start_scripted_server!(scripts)
+      scripts = %{
+        "/messages" => [
+          {@status, [body]}
+        ]
+      }
 
-    error =
-      run_and_capture_error!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{
-          "model" => "claude-sonnet-4-20250514",
-          "anthropic_version" => "2025-01-01",
-          "anthropic_beta" => ["beta-a"],
-          "max_tokens" => 128,
-          "messages" => []
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
+      {base_url, _agent} = start_scripted_server!(scripts)
 
-    assert error.status_code == 503
-    assert error.retryable == true
-    assert error.error_kind == "http"
-    assert error.error_text == body
+      error =
+        run_and_capture_error!(%{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "claude-sonnet-4-20250514",
+            "anthropic_version" => "2025-01-01",
+            "anthropic_beta" => ["beta-a"],
+            "max_tokens" => 128,
+            "messages" => []
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        })
 
-    assert error.raw_response == %{
-             "raw_text" => body,
-             "status_code" => 503
-           }
+      assert error.status_code == @status
+      assert error.retryable == true
+      assert error.error_kind == "http"
+      assert error.error_text == body
+
+      assert error.raw_response == %{
+               "raw_text" => body,
+               "status_code" => @status
+             }
+    end
   end
 
   defp run_usage_stream!(initial_usage) when is_map(initial_usage) do

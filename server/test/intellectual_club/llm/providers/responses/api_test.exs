@@ -702,38 +702,78 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     assert error.error_text == "Our servers are currently overloaded. Please try again later."
   end
 
-  test "includes HTTP status in non-JSON error raw response and marks 503 retryable" do
-    body = "upstream connect error or disconnect/reset before headers"
+  for status <- [503, 520] do
+    @status status
 
-    scripts = %{
-      "/responses" => [
-        {503, [body]}
-      ]
-    }
+    test "includes HTTP status in non-JSON error raw response and marks #{status} retryable" do
+      body = "upstream connect error or disconnect/reset before headers"
 
-    {base_url, _agent} = start_scripted_server!(scripts)
+      scripts = %{
+        "/responses" => [
+          {@status, [body]}
+        ]
+      }
 
-    error =
-      run_and_capture_error!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{
-          "model" => "gpt-4.1",
-          "input" => []
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
+      {base_url, _agent} = start_scripted_server!(scripts)
 
-    assert error.status_code == 503
-    assert error.retryable == true
-    assert error.error_kind == "http"
-    assert error.error_text == body
+      error =
+        run_and_capture_error!(%{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "gpt-4.1",
+            "input" => []
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        })
 
-    assert error.raw_response == %{
-             "raw_text" => body,
-             "status_code" => 503
-           }
+      assert error.status_code == @status
+      assert error.retryable == true
+      assert error.error_kind == "http"
+      assert error.error_text == body
+
+      assert error.raw_response == %{
+               "raw_text" => body,
+               "status_code" => @status
+             }
+    end
+  end
+
+  for transport <- [:stream] do
+    @transport transport
+
+    test "marks 520 errors as retryable over #{transport}" do
+      response =
+        case @transport do
+          :http ->
+            {520, ["Unknown upstream error"]}
+
+          :stream ->
+            {200,
+             sse_chunks([
+               %{
+                 "type" => "error",
+                 "error" => %{"code" => 520, "message" => "Unknown upstream error"}
+               }
+             ])}
+        end
+
+      {base_url, _agent} = start_scripted_server!(%{"/responses" => [response]})
+
+      error =
+        run_and_capture_error!(%{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{"model" => "gpt-4.1", "input" => []},
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        })
+
+      assert error.status_code == 520
+      assert error.retryable == true
+      assert error.error_text == "Unknown upstream error"
+    end
   end
 
   defp run_and_capture_error!(opts) when is_map(opts) do

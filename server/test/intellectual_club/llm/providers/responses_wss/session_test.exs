@@ -367,6 +367,30 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert length(requests_for(agent)) == 1
   end
 
+  test "HTTP 520 during WebSocket handshake remains retryable during fallback" do
+    handler = fn conn, _opts -> Plug.Conn.send_resp(conn, 520, "Unknown upstream error") end
+    port = free_port()
+    start_supervised!({Bandit, plug: handler, scheme: :http, port: port})
+    {:ok, session} = Session.start(%{provider_type: "responses_wss"})
+    on_exit(fn -> Session.stop(session) end)
+
+    opts = %{
+      base_url: "ws://127.0.0.1:#{port}",
+      api_key: "test-key",
+      request_payload: %{"model" => "gpt-4.1", "input" => []},
+      timeout_ms: 1_000,
+      connect_timeout_ms: 1_000,
+      provider: "responses_wss"
+    }
+
+    assert {:fallback_to_http, fallback, _cache} =
+             Session.stream_generate(session, opts, fn _event -> :ok end)
+
+    assert fallback.status_code == 520
+    assert fallback.retryable == true
+    assert fallback.failure_phase == "handshake"
+  end
+
   test "handshake failure before sending requests immediate HTTP fallback" do
     port = free_port()
     parent = self()

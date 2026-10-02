@@ -12,7 +12,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
 
   @openai_beta_header "responses_websockets=2026-02-06"
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
 
   @type trace_event :: IntellectualClub.Generation.RuntimeTrace.trace_event()
 

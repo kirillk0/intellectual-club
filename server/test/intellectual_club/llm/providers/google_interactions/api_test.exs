@@ -278,6 +278,47 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ApiTest do
     assert get_in(error.raw_response, ["error", "code"]) == "api_error"
   end
 
+  for transport <- [:http, :stream] do
+    @transport transport
+
+    test "marks 520 errors as retryable over #{transport}" do
+      response =
+        case @transport do
+          :http ->
+            {520, ["Unknown upstream error"]}
+
+          :stream ->
+            {200,
+             sse_chunks([
+               %{
+                 "event_type" => "error",
+                 "error" => %{"code" => 520, "message" => "Unknown upstream error"}
+               }
+             ])}
+        end
+
+      {base_url, _agent} = start_scripted_server!(%{"/interactions" => [response]})
+
+      error =
+        run_and_capture_error!(%{
+          base_url: base_url,
+          api_key: "test-key",
+          request_payload: %{
+            "model" => "gemini-2.5-flash-lite",
+            "input" => "Hello",
+            "stream" => true,
+            "store" => false
+          },
+          timeout_ms: 1_000,
+          connect_timeout_ms: 1_000
+        })
+
+      assert error.status_code == 520
+      assert error.retryable == true
+      assert error.error_text == "Unknown upstream error"
+    end
+  end
+
   defp run_and_capture_error!(opts) when is_map(opts) do
     parent = self()
 

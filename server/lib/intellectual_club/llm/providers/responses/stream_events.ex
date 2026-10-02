@@ -5,7 +5,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
 
   @opaque_sequence 10_000
   @raw_reasoning_offset 1_000
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
   @retryable_provider_error_codes MapSet.new([
                                     "server_error",
                                     "server_is_overloaded",

@@ -10,7 +10,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
 
   @anthropic_version "2023-06-01"
   @opaque_sequence 10_000
-  @retryable_http_status_codes MapSet.new([429, 500, 502, 503, 529])
+  @retryable_http_status_codes MapSet.new([429, 500, 502, 503, 520, 529])
   @retryable_error_types MapSet.new([
                            "api_error",
                            "overloaded_error",

@@ -45,7 +45,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   @default_auto_retry_backoff_ms [500, 1_500, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000]
   @default_auto_retry_jitter_ratio 0.2
-  @auto_retry_http_status_codes MapSet.new([429, 502, 503])
+  @auto_retry_http_status_codes MapSet.new([429, 502, 503, 520])
   @auto_retry_error_kinds MapSet.new(["network", "timeout", "transport"])
   @max_refusal_rounds 3
   @max_parallel_tool_calls 8

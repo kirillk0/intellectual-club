@@ -6,7 +6,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.StreamEvents do
   alias IntellectualClub.Llm.Providers.GoogleInteractions.Payload
 
   @opaque_sequence 10_000
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
   @retryable_error_codes MapSet.new([
                            "resource_exhausted",
                            "unavailable",

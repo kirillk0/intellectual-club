@@ -6,7 +6,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias Req.Response
 
-  @default_retryable_http_status_codes MapSet.new([429, 502, 503])
+  @default_retryable_http_status_codes MapSet.new([429, 502, 503, 520])
   @non_append_string_keys ~w(format role name id type tool_call_id)
 
   @type event ::

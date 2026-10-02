@@ -13,7 +13,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
 
   @default_lock_timeout_ms 15_000
   @default_lock_stale_after_ms 60_000
-  @retryable_http_status_codes MapSet.new([429, 502, 503])
+  @retryable_http_status_codes MapSet.new([429, 502, 503, 520])
 
   @type error_meta :: %{
           optional(:retryable) => boolean(),

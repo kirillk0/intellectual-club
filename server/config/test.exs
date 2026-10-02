@@ -3,6 +3,8 @@ import Config
 # Tests require PostgreSQL.
 import_config "test_database.exs"
 
+config :plug, :statuses, %{520 => "Unknown Error"}
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :intellectual_club, IntellectualClubWeb.Endpoint,
