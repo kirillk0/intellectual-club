@@ -303,7 +303,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
     assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
   end
 
-  test "prepared generation preserves its message while canceling other orphans" do
+  test "prepared generation preserves its message while failing other orphans" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor)
 
@@ -360,12 +360,12 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       assert target_message.status == :generating
       assert target_message.error_detail == nil
 
-      assert orphan_message.status == :canceled
+      assert orphan_message.status == :error
       assert orphan_message.error_detail == "Orphaned generation (worker not found)"
 
       assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
       assert blocked.status == :blocked
-      assert blocked.blocked_reason == "generation_canceled"
+      assert blocked.blocked_reason == "generation_error"
 
       assert {:ok, %{status: :generating}} =
                GenerationSupervisor.get_generation_state(target_message.id)

@@ -167,8 +167,41 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     assert blocked.status == :blocked
     assert blocked.blocked_reason == "generation_canceled"
 
-    assert [%WebPushGenerationEvent{suppressed: false, delivered_count: -1}] =
+    assert [%WebPushGenerationEvent{suppressed: true, delivered_count: 0}] =
              canceled_events_for(generation.id, actor)
+
+    assert wait_for_background_status!(background_task.id, actor, :canceled).cancel_requested ==
+             true
+  end
+
+  test "fail_generation atomically fails the assistant, blocks its queue, and records an event" do
+    %{user: actor} = user_fixture()
+    {chat, _root, _anchor} = create_chat_with_anchor!(actor)
+    generation = create_generating_assistant!(chat, actor)
+    background_task = create_background_task!(generation, actor)
+
+    assert {:ok, queued} =
+             QueuedMessages.enqueue_follow_up(chat.id, %{content: "After failure"}, actor)
+
+    assert :failed =
+             QueueCoordinator.fail_generation(generation.id,
+               error_detail: "Orphaned generation (worker not found)"
+             )
+
+    failed = Ash.get!(ChatMessage, generation.id, actor: actor)
+    assert failed.status == :error
+    assert failed.error_detail == "Orphaned generation (worker not found)"
+    assert failed.finished_at
+
+    assert {:ok, blocked} = QueuedMessages.get(queued.id, actor)
+    assert blocked.status == :blocked
+    assert blocked.blocked_reason == "generation_error"
+
+    assert [%WebPushGenerationEvent{suppressed: false}] =
+             terminal_events_for(generation.id, :error, actor)
+
+    assert [] == canceled_events_for(generation.id, actor)
+    assert :not_generating = QueueCoordinator.fail_generation(generation.id)
 
     assert wait_for_background_status!(background_task.id, actor, :canceled).cancel_requested ==
              true
@@ -672,8 +705,12 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
   end
 
   defp canceled_events_for(message_id, actor) do
+    terminal_events_for(message_id, :canceled, actor)
+  end
+
+  defp terminal_events_for(message_id, status, actor) do
     WebPushGenerationEvent
-    |> Ash.Query.filter(chat_message_id == ^message_id and status == :canceled)
+    |> Ash.Query.filter(chat_message_id == ^message_id and status == ^status)
     |> Ash.read!(actor: actor)
   end
 

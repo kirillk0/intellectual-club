@@ -831,40 +831,23 @@ defmodule IntellectualClub.Generation.Persistence do
     |> Enum.map(&%{id: &1.id, owner_id: &1.owner_id})
   end
 
-  def cancel_orphaned_generating_messages!(chat_id, opts \\ [])
-
-  def cancel_orphaned_generating_messages!(chat_id, opts)
-      when is_integer(chat_id) and is_list(opts) do
-    except_message_ids =
-      opts
-      |> Keyword.get(:except_message_ids, [])
-      |> List.wrap()
-      |> Enum.filter(&is_integer/1)
-      |> MapSet.new()
-
-    cancel_opts =
-      opts
-      |> Keyword.delete(:except_message_ids)
-      |> Keyword.put_new(:error_detail, "Orphaned generation (worker not found)")
-
-    ChatMessage
-    |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
-    |> Ash.Query.select([:id])
-    |> Ash.read!(authorize?: false)
-    |> Enum.reject(&MapSet.member?(except_message_ids, &1.id))
-    |> Enum.reduce([], fn message, canceled_ids ->
-      case cancel_generating_message!(message.id, cancel_opts) do
-        :canceled -> [message.id | canceled_ids]
-        _other -> canceled_ids
-      end
-    end)
-    |> Enum.reverse()
-  end
-
   def cancel_generating_message!(message_id, opts \\ [])
 
   def cancel_generating_message!(message_id, opts)
       when is_integer(message_id) and is_list(opts) do
+    terminate_generating_message!(message_id, :canceled, opts)
+  end
+
+  @doc "Marks a generation that can no longer run as failed."
+  def fail_generating_message!(message_id, opts \\ [])
+
+  def fail_generating_message!(message_id, opts)
+      when is_integer(message_id) and is_list(opts) do
+    terminate_generating_message!(message_id, :error, opts)
+  end
+
+  defp terminate_generating_message!(message_id, status, opts)
+       when status in [:canceled, :error] do
     case Ash.get(ChatMessage, message_id, authorize?: false) do
       {:ok, %ChatMessage{owner_id: owner_id}} when is_integer(owner_id) ->
         actor = %User{id: owner_id}
@@ -880,13 +863,13 @@ defmodule IntellectualClub.Generation.Persistence do
             message_id
             |> steps_for_message(actor, statuses: [:waiting_provider, :waiting_tools])
             |> Enum.each(fn step ->
-              update_step!(step, %{status: :canceled, finished_at: now}, actor)
+              update_step!(step, %{status: status, finished_at: now}, actor)
             end)
 
             update_message!(
               message,
               %{
-                status: :canceled,
+                status: status,
                 error_detail: error_detail,
                 generation_fence_token: nil,
                 finished_at: now
@@ -894,7 +877,7 @@ defmodule IntellectualClub.Generation.Persistence do
               actor
             )
 
-            :canceled
+            terminated_result(status)
           else
             :not_generating
           end
@@ -905,14 +888,8 @@ defmodule IntellectualClub.Generation.Persistence do
     end
   end
 
-  def cancel_orphaned_generating_message!(message_id, opts \\ [])
-
-  def cancel_orphaned_generating_message!(message_id, opts)
-      when is_integer(message_id) and is_list(opts) do
-    opts = Keyword.put_new(opts, :error_detail, "Orphaned generation (worker not found)")
-    _result = cancel_generating_message!(message_id, opts)
-    :ok
-  end
+  defp terminated_result(:canceled), do: :canceled
+  defp terminated_result(:error), do: :failed
 
   defp fence_token_matches?(_actual, :any), do: true
   defp fence_token_matches?(actual, {:expected, expected}), do: actual == expected

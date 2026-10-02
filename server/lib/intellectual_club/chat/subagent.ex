@@ -429,10 +429,10 @@ defmodule IntellectualClub.Chat.Subagent do
           :ok
 
         {:error, :no_steps_to_retry} ->
-          case QueueCoordinator.cancel_generation(message.id,
+          case QueueCoordinator.fail_generation(message.id,
                  error_detail: "Orphaned generation (worker not found)"
                ) do
-            result when result in [:canceled, :not_generating, :not_found] -> :ok
+            result when result in [:failed, :not_generating, :not_found] -> :ok
             {:error, reason} -> {:error, reason}
           end
 

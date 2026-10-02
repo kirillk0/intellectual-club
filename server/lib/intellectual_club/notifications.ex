@@ -21,6 +21,8 @@ defmodule IntellectualClub.Notifications do
   @default_vapid_subject "mailto:admin@example.com"
   @notification_body_preview_length 180
   @default_generation_delivery_delay_ms 7_000
+  # User cancellation is intentional, so only these terminal statuses reach devices.
+  @push_notified_generation_statuses [:done, :error]
 
   resources do
     resource(WebPushSettings)
@@ -240,6 +242,7 @@ defmodule IntellectualClub.Notifications do
 
     suppressed? =
       Keyword.get(opts, :suppressed?, false) == true or
+        status not in @push_notified_generation_statuses or
         match?(%{subagent: true}, message.chat)
 
     create_generation_event(message, status, actor, suppressed?)
@@ -327,7 +330,9 @@ defmodule IntellectualClub.Notifications do
       current = lock_generation_event!(event.id)
 
       if current.delivered_count < 0 and current.suppressed == false do
-        if ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
+        # Events recorded before a status stopped notifying are settled without sending.
+        if status not in @push_notified_generation_statuses or
+             ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
           mark_event_delivered(current, 0, actor)
         else
           dispatch_generation_event(current, message, status, actor)
@@ -777,10 +782,8 @@ defmodule IntellectualClub.Notifications do
 
   defp notification_title(:done, "ru"), do: "Генерация завершена"
   defp notification_title(:error, "ru"), do: "Ошибка генерации"
-  defp notification_title(:canceled, "ru"), do: "Генерация отменена"
   defp notification_title(:done, _locale), do: "Generation finished"
   defp notification_title(:error, _locale), do: "Generation failed"
-  defp notification_title(:canceled, _locale), do: "Generation canceled"
 
   defp notification_body(%ChatMessage{} = message, _status, _locale) do
     [chat_label(message), answer_preview(message)]
@@ -825,7 +828,6 @@ defmodule IntellectualClub.Notifications do
   defp answer_item_text(_item), do: nil
 
   defp fallback_notification_body(%{status: :error}), do: "Generation failed."
-  defp fallback_notification_body(%{status: :canceled}), do: "Generation canceled."
   defp fallback_notification_body(_message), do: "Generation finished."
 
   defp normalize_notification_text(value) when is_binary(value) do

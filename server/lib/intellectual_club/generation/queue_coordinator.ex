@@ -21,6 +21,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   alias IntellectualClub.Generation.Context.{PublicationError, StalePreparationError}
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Notifications
+  alias IntellectualClub.Notifications.Dispatcher, as: NotificationsDispatcher
   alias IntellectualClub.Notifications.WebPushGenerationEvent
 
   require Ash.Query
@@ -143,6 +144,33 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   def cancel_generation(message_id, opts \\ [])
 
   def cancel_generation(message_id, opts) when is_integer(message_id) and is_list(opts) do
+    terminate_generation(message_id, :canceled, opts)
+  end
+
+  def cancel_generation(_message_id, _opts), do: :not_found
+
+  @doc """
+  Atomically fails a generation that can no longer run, blocks its queue, and
+  records its terminal event. The failure notification is dispatched after commit.
+  """
+  @spec fail_generation(integer(), keyword()) ::
+          :failed | :not_generating | :not_found | {:error, term()}
+  def fail_generation(message_id, opts \\ [])
+
+  def fail_generation(message_id, opts) when is_integer(message_id) and is_list(opts) do
+    case terminate_generation(message_id, :error, opts) do
+      :failed = result ->
+        NotificationsDispatcher.notify_generation_finished(message_id, :error)
+        result
+
+      result ->
+        result
+    end
+  end
+
+  def fail_generation(_message_id, _opts), do: :not_found
+
+  defp terminate_generation(message_id, status, opts) do
     case message_chat_owner(message_id) do
       {:ok, %{chat_id: chat_id, owner_id: owner_id}} ->
         transact(fn ->
@@ -151,16 +179,16 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
           if message.chat_id == chat_id and message.role == :assistant and
                message.status == :generating do
-            case Persistence.cancel_generating_message!(message_id, opts) do
-              :canceled ->
-                canceled_message = lock_message!(message_id)
+            case persist_terminal_generation!(message_id, status, opts) do
+              result when result in [:canceled, :failed] ->
+                terminated_message = lock_message!(message_id)
                 queue = lock_active_queue!(chat_id)
                 actor = %User{id: owner_id}
-                _ = convert_pending_steers!(queue, canceled_message, :canceled, actor)
-                _ = apply_follow_up_boundary!(queue, canceled_message, :canceled, actor)
+                _ = convert_pending_steers!(queue, terminated_message, status, actor)
+                _ = apply_follow_up_boundary!(queue, terminated_message, status, actor)
                 _ = BackgroundTasks.request_cancel_for_lifecycle_message!(message_id)
-                record_canceled_event!(message_id)
-                :canceled
+                record_terminal_event!(message_id, status)
+                result
 
               result ->
                 result
@@ -169,9 +197,9 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
             :not_generating
           end
         end)
-        |> unwrap_cancel_result()
+        |> unwrap_terminate_result()
         |> then(fn
-          :canceled = result ->
+          result when result in [:canceled, :failed] ->
             BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
             result
 
@@ -188,7 +216,11 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  def cancel_generation(_message_id, _opts), do: :not_found
+  defp persist_terminal_generation!(message_id, :canceled, opts),
+    do: Persistence.cancel_generating_message!(message_id, opts)
+
+  defp persist_terminal_generation!(message_id, :error, opts),
+    do: Persistence.fail_generating_message!(message_id, opts)
 
   @doc "Atomically prepares a tool-handoff child generation and moves the source backlog."
   @spec prepare_terminal_handoff(integer(), integer()) ::
@@ -918,8 +950,8 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     |> Ash.update!(actor: actor, authorize?: false)
   end
 
-  defp record_canceled_event!(message_id) do
-    case Notifications.record_generation_finished(message_id, :canceled) do
+  defp record_terminal_event!(message_id, status) do
+    case Notifications.record_generation_finished(message_id, status) do
       {:ok, _event} ->
         :ok
 
@@ -927,7 +959,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
         :ok
 
       {:error, reason} ->
-        raise "Failed to record canceled generation event: #{inspect(reason)}"
+        raise "Failed to record #{status} generation event: #{inspect(reason)}"
     end
   end
 
@@ -960,6 +992,6 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp unwrap_result({:ok, result}), do: {:ok, result}
   defp unwrap_result({:error, reason}), do: {:error, reason}
 
-  defp unwrap_cancel_result({:ok, result}), do: result
-  defp unwrap_cancel_result({:error, reason}), do: {:error, reason}
+  defp unwrap_terminate_result({:ok, result}), do: result
+  defp unwrap_terminate_result({:error, reason}), do: {:error, reason}
 end

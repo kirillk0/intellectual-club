@@ -29,6 +29,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
@@ -205,7 +206,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     assert inspect(hydrated_request) =~ "data:image/png;base64,"
   end
 
-  test "recover_orphaned_generations cancels generating message without steps" do
+  test "recover_orphaned_generations fails generating message without steps" do
     %{user: actor} = user_fixture()
 
     chat =
@@ -236,9 +237,14 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         load: [:steps]
       )
 
-    assert message.status == :canceled
+    assert message.status == :error
     assert message.error_detail == "Orphaned generation (worker not found)"
     assert message.steps == []
+
+    assert [%WebPushGenerationEvent{status: :error, suppressed: false}] =
+             WebPushGenerationEvent
+             |> Ash.Query.filter(chat_message_id == ^generating_message.id)
+             |> Ash.read!(actor: actor)
   end
 
   test "recover_orphaned_generations finalizes generating message with completed final step" do

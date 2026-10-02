@@ -27,6 +27,7 @@ defmodule IntellectualClub.Generation.Supervisor do
   @retry_from_step_statuses [:done, :error, :canceled]
   @resume_retry_statuses [:generating]
   @cancel_wait_timeout_ms 5_000
+  @orphaned_generation_error "Orphaned generation (worker not found)"
 
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -350,14 +351,12 @@ defmodule IntellectualClub.Generation.Supervisor do
 
           {:error, :no_steps_to_retry} ->
             _ =
-              QueueCoordinator.cancel_generation(message_id,
-                error_detail: "Orphaned generation (worker not found)"
+              QueueCoordinator.fail_generation(message_id,
+                error_detail: @orphaned_generation_error
               )
 
-            NotificationsDispatcher.notify_generation_finished(message_id, :canceled)
-
             Logger.info(
-              "Canceled orphaned generation without retryable steps message_id=#{message_id}"
+              "Failed orphaned generation without retryable steps message_id=#{message_id}"
             )
 
           {:error, reason} ->
@@ -674,9 +673,11 @@ defmodule IntellectualClub.Generation.Supervisor do
              except_message_ids: orphan_exception_message_ids
            ),
          :ok <- cancel_descendant_generations_for_chat(chat_id) do
-      cancel_orphaned_generating_messages_for_chat(
+      # A generation left without a worker died on its own, so it fails rather than cancels.
+      terminate_orphaned_generating_messages_for_chat(
         chat_id,
-        Enum.uniq(active_message_ids ++ orphan_exception_message_ids)
+        Enum.uniq(active_message_ids ++ orphan_exception_message_ids),
+        :error
       )
     end
   end
@@ -742,9 +743,10 @@ defmodule IntellectualClub.Generation.Supervisor do
       case cancel_active_workers_for_chat(descendant_chat_id) do
         {:ok, active_message_ids} ->
           result =
-            cancel_orphaned_generating_messages_for_chat(
+            terminate_orphaned_generating_messages_for_chat(
               descendant_chat_id,
-              active_message_ids
+              active_message_ids,
+              :canceled
             )
 
           {:cont, result}
@@ -757,8 +759,13 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   defp cancel_descendant_generations_for_chat(_chat_id, _opts), do: :ok
 
-  defp cancel_orphaned_generating_messages_for_chat(chat_id, except_message_ids)
-       when is_integer(chat_id) and is_list(except_message_ids) do
+  defp terminate_orphaned_generating_messages_for_chat(
+         chat_id,
+         except_message_ids,
+         terminal_status
+       )
+       when is_integer(chat_id) and is_list(except_message_ids) and
+              terminal_status in [:canceled, :error] do
     except_message_ids = MapSet.new(except_message_ids)
 
     ChatMessage
@@ -767,20 +774,26 @@ defmodule IntellectualClub.Generation.Supervisor do
     |> Ash.read!(authorize?: false)
     |> Enum.reject(&MapSet.member?(except_message_ids, &1.id))
     |> Enum.reduce_while(:ok, fn message, :ok ->
-      case QueueCoordinator.cancel_generation(message.id,
-             error_detail: "Orphaned generation (worker not found)"
-           ) do
+      case terminate_orphaned_generation(message.id, terminal_status) do
         :canceled ->
           finish_canceled_generation(message.id)
           {:cont, :ok}
 
-        result when result in [:not_generating, :not_found] ->
+        result when result in [:failed, :not_generating, :not_found] ->
           {:cont, :ok}
 
         {:error, _reason} = error ->
           {:halt, error}
       end
     end)
+  end
+
+  defp terminate_orphaned_generation(message_id, :canceled) do
+    QueueCoordinator.cancel_generation(message_id, error_detail: @orphaned_generation_error)
+  end
+
+  defp terminate_orphaned_generation(message_id, :error) do
+    QueueCoordinator.fail_generation(message_id, error_detail: @orphaned_generation_error)
   end
 
   defp message_chat_id(message_id) when is_integer(message_id) do

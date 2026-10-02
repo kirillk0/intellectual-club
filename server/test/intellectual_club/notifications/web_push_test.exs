@@ -189,6 +189,66 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     assert [_event] = events_for(message.id, :done, actor)
   end
 
+  test "canceled generation does not send while failed generation does" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture(%{preferred_locale: "en"})
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+    canceled = assistant_message!(actor, "Canceled answer")
+
+    assert {:ok, %WebPushGenerationEvent{suppressed: true, delivered_count: 0}} =
+             Notifications.record_generation_finished(canceled.id, :canceled)
+
+    assert :ok = Notifications.deliver_generation_finished(canceled.id, :canceled)
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{suppressed: true, delivered_count: 0}] =
+             events_for(canceled.id, :canceled, actor)
+
+    failed = assistant_message!(actor, "Failed answer")
+    assert :ok = Notifications.deliver_generation_finished(failed.id, :error)
+
+    assert_receive {:web_push_send, "https://push.example/one", payload, 1}
+    assert payload.status == "error"
+    assert payload.message_id == failed.id
+    assert payload.title == "Generation failed"
+  end
+
+  test "recovery settles legacy pending canceled events without sending" do
+    %{user: admin} = user_fixture(%{is_admin: true})
+    %{user: actor} = user_fixture()
+
+    _settings = enable_settings!(admin)
+
+    {:ok, _subscription} =
+      Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+    message = assistant_message!(actor, "Canceled before upgrade")
+
+    WebPushGenerationEvent
+    |> Ash.Changeset.for_create(
+      :create,
+      %{
+        chat_message_id: message.id,
+        status: :canceled,
+        suppressed: false,
+        delivered_count: -1
+      },
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+
+    assert :ok = Notifications.recover_pending_generation_events()
+    refute_receive {:web_push_send, _, _, _}, 100
+
+    assert [%WebPushGenerationEvent{suppressed: false, delivered_count: 0}] =
+             events_for(message.id, :canceled, actor)
+  end
+
   test "unsuppressed generation event remains pending until delivery starts" do
     %{user: actor} = user_fixture()
     message = assistant_message!(actor, "Pending answer")
