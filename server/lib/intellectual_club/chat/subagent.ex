@@ -23,6 +23,7 @@ defmodule IntellectualClub.Chat.Subagent do
   require Ash.Query
 
   @creation_relation_kinds [:fork, :spawn]
+  @creation_functions ["fork", "fork_background", "spawn", "spawn_background"]
   @max_parent_hops 64
   @max_wait_retry_ms 5_000
   @progress_page_max_bytes 48_000
@@ -207,6 +208,32 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   def ensure_handoff_allowed(_tool_instance, _context), do: :ok
+
+  @doc """
+  Returns agent management functions that subchat policy rejects in the chat.
+
+  The chat may be a not yet persisted child that already carries its parent link
+  and relation kind. Chats outside a subagent lineage are never restricted.
+  """
+  @spec unavailable_functions(ToolInstance.t(), map(), term()) :: [String.t()]
+  def unavailable_functions(
+        %ToolInstance{} = tool_instance,
+        %Chat{subagent: true} = chat,
+        %{id: actor_id} = actor
+      )
+      when is_integer(actor_id) do
+    handoff = if allow_handoff_in_subchats?(tool_instance), do: [], else: ["handoff"]
+
+    creation =
+      case ensure_creation_allowed(tool_instance, chat, actor) do
+        :ok -> []
+        {:error, _reason} -> @creation_functions
+      end
+
+    handoff ++ creation
+  end
+
+  def unavailable_functions(_tool_instance, _chat, _actor), do: []
 
   @spec await_snapshot(map(), map(), (map(), map(), nil -> {:ok, map()} | {:error, term()})) ::
           {:ok, map()} | {:error, term()}

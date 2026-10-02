@@ -1938,7 +1938,7 @@ defmodule IntellectualClub.Generation.Worker do
          soft_limit
        )
        when is_integer(max_tool_rounds) do
-    handoff_available = handoff_tools_payload(state) != []
+    handoff_available = handoff_available?(state)
 
     %{
       text:
@@ -1992,16 +1992,38 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp handoff_tool_payload?(state, payload) when is_map(payload) do
-    name =
-      case Map.get(payload, "function") do
-        %{} = function -> Map.get(function, "name")
-        _other -> Map.get(payload, "name")
-      end
-
-    handoff_tool_name?(state, name)
+    handoff_tool_name?(state, tool_payload_name(payload))
   end
 
   defp handoff_tool_payload?(_state, _payload), do: false
+
+  # Linked forks keep the parent's tool list, including a handoff tool that subchat
+  # policy may reject, so availability also checks that policy.
+  defp handoff_available?(state) do
+    state
+    |> handoff_tools_payload()
+    |> Enum.any?(&handoff_tool_allowed?(state, &1))
+  end
+
+  defp handoff_tool_allowed?(state, payload) do
+    # Only payloads accepted by handoff_tool_payload?/2 reach this check.
+    {alias_value, "handoff"} = payload |> tool_payload_name() |> split_tool_name()
+    tool_instance = Map.fetch!(state.context.tool_instances_by_alias, alias_value)
+
+    context = %ExecutionContext{
+      owner_id: state.context.owner_id,
+      chat_id: state.context.chat_id
+    }
+
+    Subagent.ensure_handoff_allowed(tool_instance, context) == :ok
+  end
+
+  defp tool_payload_name(payload) do
+    case Map.get(payload, "function") do
+      %{} = function -> Map.get(function, "name")
+      _other -> Map.get(payload, "name")
+    end
+  end
 
   defp handoff_tool_call?(state, call) do
     call

@@ -572,6 +572,102 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
            end)
   end
 
+  test "linked fork context soft limit does not offer a handoff rejected by subchat policy" do
+    tool_call = %{
+      "id" => "fc_1",
+      "type" => "function_call",
+      "call_id" => "call_web_1",
+      "name" => "web__read_url",
+      "arguments" => Jason.encode!(%{"url" => "https://example.com"})
+    }
+
+    refusal_text =
+      "[tool error] Context limit reached (7/10 > 5). " <>
+        "Please proceed to the final answer using the information already available."
+
+    scripts = %{
+      "/responses" => [
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp-tool",
+               "object" => "response",
+               "model" => "test-responses-model",
+               "output" => [tool_call],
+               "usage" => %{"input_tokens" => 4, "output_tokens" => 3}
+             }
+           }
+         ])},
+        {200,
+         sse_chunks([
+           %{
+             "type" => "response.completed",
+             "response" => %{
+               "id" => "resp-final",
+               "object" => "response",
+               "model" => "test-responses-model",
+               "output" => [
+                 %{
+                   "id" => "msg_1",
+                   "type" => "message",
+                   "role" => "assistant",
+                   "status" => "completed",
+                   "content" => [
+                     %{"type" => "output_text", "text" => "Final answer.", "annotations" => []}
+                   ]
+                 }
+               ],
+               "usage" => %{"input_tokens" => 5, "output_tokens" => 4}
+             }
+           }
+         ])}
+      ]
+    }
+
+    %{user: actor} = user_fixture()
+    {base_url, agent} = start_scripted_server!(scripts)
+
+    root =
+      Chat
+      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
+      |> Ash.create!()
+
+    chat =
+      create_chat_with_tool!(actor, base_url, :responses,
+        max_tool_rounds: 5,
+        context_length: 10,
+        context_soft_limit_percent: 50,
+        handoff_tool?: true,
+        chat_attrs: %{parent_chat_id: root.id, parent_relation_kind: :fork, subagent: true}
+      )
+
+    Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+    {:ok, _user_message} =
+      Threads.add_message_to_end(chat, :user, "Need a web lookup", actor: actor)
+
+    {:ok, context} =
+      GenerationSupervisor.start_generation(chat.id, actor: actor, chunk_delay_ms: 0)
+
+    message_id = context.message_id
+    assert_receive {:done, ^message_id}, 2_000
+
+    message =
+      wait_for_message!(message_id, actor, fn msg ->
+        msg.status == :done and length(msg.steps) == 2
+      end)
+
+    assert refusal_text in tool_result_texts(message)
+
+    [tool_step, _final_step] = Enum.sort_by(message.steps, & &1.sequence)
+    assert_soft_refusal_result_linked!(tool_step, refusal_text, handoff_available: false)
+
+    [first_request, _second_request] = Agent.get(agent, & &1.requests) |> Map.fetch!("/responses")
+    assert "agent_management__handoff" in request_tool_names(first_request)
+  end
+
   test "handoff tool finalizes parent message with the tool step only" do
     handoff_summary = "Continue from the handoff tool summary."
 
@@ -1085,11 +1181,14 @@ defmodule IntellectualClub.Generation.WorkerSoftLimitsTest do
     Chat
     |> Ash.Changeset.for_create(
       :create,
-      %{
-        bot_id: bot.id,
-        llm_configuration_id: llm_configuration.id,
-        note: ""
-      },
+      Map.merge(
+        %{
+          bot_id: bot.id,
+          llm_configuration_id: llm_configuration.id,
+          note: ""
+        },
+        Keyword.get(opts, :chat_attrs, %{})
+      ),
       actor: actor
     )
     |> Ash.create!()

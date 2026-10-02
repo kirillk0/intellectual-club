@@ -20,6 +20,7 @@ defmodule IntellectualClub.Chat.Fork do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Repo
+  alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -554,7 +555,10 @@ defmodule IntellectualClub.Chat.Fork do
   defp create_subagent_state(source_context, %ExecutionContext{} = context, actor, opts) do
     # Build the provider payload before acquiring the short parent publication fence.
     # Only the response at the fork boundary is read; no historical message is copied.
-    {raw_request, request_context} = prepare_fork_request(source_context, context, actor)
+    {raw_request, request_context, unavailable_functions} =
+      prepare_fork_request(source_context, context, actor)
+
+    source_context = Map.put(source_context, :unavailable_functions, unavailable_functions)
 
     Subagent.with_invocation_authority(context, opts, fn ->
       Repo.transaction(fn ->
@@ -617,26 +621,64 @@ defmodule IntellectualClub.Chat.Fork do
     results =
       ForkBoundary.results(state.tool_calls, source_context.source_call, source_context.prompt)
 
+    tools =
+      generation_context.tools_payload ||
+        RequestPayload.tools(state.runtime_step.raw_request || %{})
+
     followup =
       generation_context.adapter_module.build_followup_request(%{
         context: generation_context,
         runtime_step: state.runtime_step,
         results: results,
-        tools:
-          generation_context.tools_payload ||
-            RequestPayload.tools(state.runtime_step.raw_request || %{})
+        tools: tools
       })
+
+    unavailable_functions =
+      child_unavailable_functions(source_context, generation_context, tools, actor)
+
+    steering = ForkBoundary.steering(source_context.prompt, unavailable_functions)
 
     injected =
       inject_fork_steering!(
         generation_context.adapter_module,
         followup,
-        [%{text: ForkBoundary.steering(source_context.prompt), placement: :after_response}],
+        [%{text: steering, placement: :after_response}],
         generation_context
       )
 
-    {injected.raw_request || %{}, generation_context}
+    {injected.raw_request || %{}, generation_context, unavailable_functions}
   end
+
+  # The child keeps the source request's tools to reuse its cached prefix, so the
+  # functions its own subchat policy rejects can only be announced in steering.
+  defp child_unavailable_functions(source_context, generation_context, tools, actor) do
+    child = %Chat{
+      owner_id: actor.id,
+      parent_chat_id: source_context.source.id,
+      parent_relation_kind: @relation_kind,
+      subagent: true
+    }
+
+    unavailable =
+      generation_context.tool_instances_by_alias
+      |> BindingResolver.unavailable_function_names(child, actor)
+      |> MapSet.new()
+
+    tools
+    |> List.wrap()
+    |> RequestPayload.stringify_keys()
+    |> Enum.map(&request_tool_name/1)
+    |> Enum.filter(&MapSet.member?(unavailable, &1))
+    |> Enum.uniq()
+    |> case do
+      [] -> nil
+      names -> names
+    end
+  end
+
+  defp request_tool_name(%{"function" => %{"name" => name}}) when is_binary(name), do: name
+  defp request_tool_name(%{"name" => name}) when is_binary(name), do: name
+  defp request_tool_name(_tool), do: nil
 
   defp start_subagent_reference(
          {:new, fork_state},
@@ -878,7 +920,8 @@ defmodule IntellectualClub.Chat.Fork do
     )
     |> Ash.Changeset.force_change_attributes(%{
       fork_source_step_id: source_context.followup_state.step.id,
-      fork_task: source_context.prompt
+      fork_task: source_context.prompt,
+      fork_unavailable_functions: source_context.unavailable_functions
     })
     |> Ash.create!()
   end

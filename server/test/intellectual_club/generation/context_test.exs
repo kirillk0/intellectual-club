@@ -1060,6 +1060,88 @@ defmodule IntellectualClub.Generation.ContextTest do
     assert "agent__fork" in names
   end
 
+  test "subchats without inherited history omit functions rejected by subchat policy" do
+    %{user: actor} = user_fixture()
+
+    create_chat! = fn attrs ->
+      Chat
+      |> Ash.Changeset.for_create(:create_empty, Map.put(attrs, :note, ""), actor: actor)
+      |> Ash.create!(actor: actor)
+    end
+
+    root = create_chat!.(%{})
+
+    spawn_child =
+      create_chat!.(%{parent_chat_id: root.id, parent_relation_kind: :spawn, subagent: true})
+
+    fork_child =
+      create_chat!.(%{parent_chat_id: root.id, parent_relation_kind: :fork, subagent: true})
+
+    agent_tool =
+      ToolInstance
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          type: "native-agent-management",
+          name: "Agent management",
+          alias: "agent",
+          config: %{"nested_subchats_limit" => 0},
+          secrets: %{}
+        },
+        actor: actor
+      )
+      |> Ash.create!()
+
+    for name <- [
+          "fork",
+          "fork_background",
+          "spawn",
+          "spawn_background",
+          "check_background_task_status"
+        ] do
+      create_context_tool_function!(actor, agent_tool, %{name: name})
+    end
+
+    for chat <- [root, spawn_child, fork_child] do
+      create_chat_tool_binding!(actor, chat, agent_tool, 0)
+    end
+
+    all_names = [
+      "agent__handoff",
+      "agent__fork",
+      "agent__fork_background",
+      "agent__spawn",
+      "agent__spawn_background",
+      "agent__check_background_task_status",
+      "agent__sleep"
+    ]
+
+    for chat <- [root, fork_child] do
+      resolution = BindingResolver.resolve_for_chat(chat, actor)
+      assert tool_payload_names(resolution) == all_names
+      assert resolution.tool_context =~ "`agent__spawn`"
+    end
+
+    resolution = BindingResolver.resolve_for_chat(spawn_child, actor)
+
+    assert tool_payload_names(resolution) == [
+             "agent__check_background_task_status",
+             "agent__sleep"
+           ]
+
+    refute resolution.tool_context =~ "`agent__spawn`"
+    refute resolution.tool_context =~ "`agent__handoff`"
+
+    assert BindingResolver.unavailable_function_names(%{"agent" => agent_tool}, fork_child, actor) ==
+             [
+               "agent__handoff",
+               "agent__fork",
+               "agent__fork_background",
+               "agent__spawn",
+               "agent__spawn_background"
+             ]
+  end
+
   test "fixed background functions require an enabled status provider" do
     %{user: actor} = user_fixture()
 

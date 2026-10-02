@@ -2,7 +2,7 @@ defmodule IntellectualClub.Chat.Changes.ValidateLinkedFork do
   @moduledoc """
   Validates private live-fork anchors, including attributes set with force_change.
 
-  Callers create linked forks with `create_empty` and force-change the two private
+  Callers create linked forks with `create_empty` and force-change the private anchor
   attributes before executing the action. Public create/update inputs cannot set
   them. Legacy copies without an anchor retain their existing behavior.
   """
@@ -18,6 +18,7 @@ defmodule IntellectualClub.Chat.Changes.ValidateLinkedFork do
   @anchor_fields [
     :fork_source_step_id,
     :fork_task,
+    :fork_unavailable_functions,
     :parent_chat_id,
     :parent_message_id,
     :parent_tool_call_item_id,
@@ -33,6 +34,7 @@ defmodule IntellectualClub.Chat.Changes.ValidateLinkedFork do
   defp validate(changeset) do
     source_id = Changeset.get_attribute(changeset, :fork_source_step_id)
     task = Changeset.get_attribute(changeset, :fork_task)
+    unavailable_functions = Changeset.get_attribute(changeset, :fork_unavailable_functions)
 
     cond do
       changeset.action_type == :update and
@@ -45,12 +47,12 @@ defmodule IntellectualClub.Chat.Changes.ValidateLinkedFork do
 
       changeset.action_type == :update and
           Enum.any?(
-            [:fork_source_step_id, :fork_task],
+            [:fork_source_step_id, :fork_task, :fork_unavailable_functions],
             &Changeset.changing_attribute?(changeset, &1)
           ) ->
         invalid(changeset, "cannot change a live fork anchor or task")
 
-      is_nil(source_id) and is_nil(task) ->
+      is_nil(source_id) and is_nil(task) and is_nil(unavailable_functions) ->
         changeset
 
       changeset.action_type == :create and changeset.action.name != :create_empty ->

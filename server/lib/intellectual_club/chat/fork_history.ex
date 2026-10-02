@@ -94,7 +94,9 @@ defmodule IntellectualClub.Chat.ForkHistory do
          {:ok, anchor} <- read_one(ChatMessageStep, step_id, actor),
          true <- anchor.chat_message_id == chat.parent_message_id,
          {:ok, branch} <- source_branch(source, anchor.chat_message_id, actor),
-         {:ok, projected} <- project_branch(branch, source.id, step_id, call_id, task),
+         unavailable_functions = Map.get(chat, :fork_unavailable_functions),
+         fork_boundary = %{task: task, unavailable_functions: unavailable_functions},
+         {:ok, projected} <- project_branch(branch, source.id, step_id, call_id, fork_boundary),
          {:ok, ancestors} <- inherited_prefix(source, actor, visited, depth + 1) do
       {:ok, ancestors ++ projected}
     else
@@ -120,13 +122,13 @@ defmodule IntellectualClub.Chat.ForkHistory do
     _error in Ash.Error.Forbidden -> @unavailable
   end
 
-  defp project_branch(branch, source_chat_id, step_id, call_id, task) do
+  defp project_branch(branch, source_chat_id, step_id, call_id, fork_boundary) do
     boundary = List.last(branch)
 
     with %ChatMessage{role: :assistant} <- boundary,
          %ChatMessageStep{response_final: true} = step <-
            Enum.find(History.steps(boundary), &(&1.id == step_id)),
-         {:ok, projected_step} <- project_step(step, call_id, task) do
+         {:ok, projected_step} <- project_step(step, call_id, fork_boundary) do
       steps =
         boundary
         |> History.steps()
@@ -174,7 +176,7 @@ defmodule IntellectualClub.Chat.ForkHistory do
     %{message | steps: steps}
   end
 
-  defp project_step(step, selected_item_id, task) do
+  defp project_step(step, selected_item_id, fork_boundary) do
     items =
       step
       |> History.items()
@@ -188,13 +190,13 @@ defmodule IntellectualClub.Chat.ForkHistory do
 
       results =
         calls
-        |> Enum.zip(ForkBoundary.results(calls, selected, task))
+        |> Enum.zip(ForkBoundary.results(calls, selected, fork_boundary.task))
         |> Enum.with_index(first_sequence)
         |> Enum.map(fn {{call, result}, sequence} ->
           result_item(step, call, result, sequence)
         end)
 
-      steering = steering_item(step, task, first_sequence + length(results))
+      steering = steering_item(step, fork_boundary, first_sequence + length(results))
       {:ok, %{step | status: :done, items: items ++ results ++ [steering]}}
     else
       _other -> @unavailable
@@ -320,7 +322,7 @@ defmodule IntellectualClub.Chat.ForkHistory do
     }
   end
 
-  defp steering_item(step, task, sequence) do
+  defp steering_item(step, fork_boundary, sequence) do
     %ChatMessageItem{
       id: -2 * step.id - 1,
       chat_message_step_id: step.id,
@@ -328,7 +330,9 @@ defmodule IntellectualClub.Chat.ForkHistory do
       type: :steering,
       tool_call_item_id: nil,
       contents: [
-        text_content(ForkBoundary.steering(task)),
+        text_content(
+          ForkBoundary.steering(fork_boundary.task, fork_boundary.unavailable_functions)
+        ),
         opaque_content(%{"placement" => "after_response"})
       ]
     }

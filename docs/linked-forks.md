@@ -31,6 +31,22 @@ The task is then appended as synthetic steering. These records are context only:
 never persist or execute them. The boundary is virtually complete regardless of
 the source message's subsequent completion/cancellation status.
 
+## Unavailable agent functions
+
+Agent-management policy can reject functions inside subchats: `fork`,
+`fork_background`, `spawn` and `spawn_background` once `nested_subchats_limit` is
+exhausted, and `handoff` unless `allow_handoff_in_subchats` is enabled. A linked fork
+keeps the parent's tool list unchanged so the inherited request prefix stays
+cacheable. Instead, its boundary steering names the model-visible functions
+(`<alias>__<function>`) that are present in that list and rejected for the child.
+The names are computed once at fork creation and stored in the private
+`fork_unavailable_functions` attribute, so every reconstruction of the steering is
+identical. Forks without such functions keep the original steering text.
+
+Chats that do not inherit a request prefix (spawn subchats and handoff continuations
+of subchats) omit rejected functions from both the tool payload and the system prompt
+tool context. Execution-time policy checks remain authoritative in every case.
+
 ## Live semantics and follow-ups
 
 The inherited prefix is live, not a frozen snapshot. A later canonical follow-up

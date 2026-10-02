@@ -182,6 +182,35 @@ defmodule IntellectualClub.Chat.SubagentTest do
     end
   end
 
+  test "unavailable functions follow the nested limit and handoff policy" do
+    %{user: actor} = user_fixture()
+    root = create_chat!(actor, nil, nil, false)
+    spawn_child = create_chat!(actor, root, :spawn, true)
+    creation = ["fork", "fork_background", "spawn", "spawn_background"]
+
+    disabled = create_tool_instance!(actor, %{"nested_subchats_limit" => 0})
+
+    assert Subagent.unavailable_functions(disabled, root, actor) == []
+    assert Subagent.unavailable_functions(disabled, spawn_child, actor) == ["handoff" | creation]
+
+    one_level =
+      create_tool_instance!(actor, %{
+        "nested_subchats_limit" => 1,
+        "allow_handoff_in_subchats" => true
+      })
+
+    assert Subagent.unavailable_functions(one_level, spawn_child, actor) == []
+
+    unsaved_fork = %Chat{
+      owner_id: actor.id,
+      parent_chat_id: spawn_child.id,
+      parent_relation_kind: :fork,
+      subagent: true
+    }
+
+    assert Subagent.unavailable_functions(one_level, unsaved_fork, actor) == creation
+  end
+
   test "handoff setting applies to every subagent relation kind" do
     %{user: actor} = user_fixture()
     root = create_chat!(actor, nil, nil, false)

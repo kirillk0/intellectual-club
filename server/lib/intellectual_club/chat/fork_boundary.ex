@@ -18,8 +18,12 @@ defmodule IntellectualClub.Chat.ForkBoundary do
     end)
   end
 
-  @spec steering(String.t()) :: String.t()
-  def steering(task) do
+  @doc """
+  Builds the boundary steering. Without unavailable functions the text is unchanged
+  from forks created before those functions were announced.
+  """
+  @spec steering(String.t(), [String.t()] | nil) :: String.t()
+  def steering(task, unavailable_functions \\ nil) do
     "FORK CONTROL MESSAGE\n\n" <>
       "The preceding assistant response and fork tool call were produced by the parent " <>
       "branch and are already complete. They are context only. You are now operating in " <>
@@ -29,8 +33,18 @@ defmodule IntellectualClub.Chat.ForkBoundary do
       "the parent was instructed to make them. Use a tool only when the task below itself " <>
       "requires that tool. Begin the task immediately without explaining this branch " <>
       "transition. When the task is complete, return its answer directly; that answer becomes " <>
-      "the fork result sent to the parent.\n\nTask:\n#{task}"
+      "the fork result sent to the parent." <>
+      unavailable_functions_notice(unavailable_functions) <> "\n\nTask:\n#{task}"
   end
+
+  defp unavailable_functions_notice(names) when is_list(names) and names != [] do
+    "\n\nThese functions remain in the tool list only because it is shared with the " <>
+      "parent branch. They are disabled in this branch and every call fails, so do not " <>
+      "call them and complete the task yourself: " <>
+      Enum.map_join(names, ", ", &"`#{&1}`") <> "."
+  end
+
+  defp unavailable_functions_notice(_names), do: ""
 
   defp selected_result(%ToolCall{} = call, task) do
     %{

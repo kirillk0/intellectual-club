@@ -26,6 +26,7 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
   @load [steps: [:raw_request, :raw_response, items: [contents: [:file]]]]
   @task "Inspect just this branch.\nPreserve task whitespace.  "
   @selected_text "Fork branch initialized. The parent response is complete; follow only the next user instruction."
+  @internal_fork_attributes [:fork_source_step_id, :fork_task, :fork_unavailable_functions]
   @skipped_text "Skipped in this forked branch because this call is unrelated to the selected subagent task. Do not retry it."
 
   setup do
@@ -388,6 +389,27 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
     assert History.project_user_input_text(root) == "Live ancestor edit"
   end
 
+  test "stored unavailable functions are announced in reconstructed steering", %{actor: actor} do
+    names = ["agent__fork", "agent__handoff"]
+    source = source!(actor)
+    child = child!(source, actor, unavailable_functions: names)
+    assert {:ok, history} = ForkHistory.prefix(child, actor)
+
+    steering = List.last(history) |> History.project_text_for_item_type(:steering)
+    assert steering == ForkBoundary.steering(@task, names)
+    assert steering =~ "every call fails, so do not call them and complete the task yourself: "
+    assert steering =~ "`agent__fork`, `agent__handoff`.\n\nTask:\n#{@task}"
+    assert String.ends_with?(steering, "\n\nTask:\n#{@task}")
+    assert ForkBoundary.steering(@task, []) == ForkBoundary.steering(@task)
+
+    error =
+      assert_raise Ash.Error.Invalid, fn ->
+        update_chat!(child, %{fork_unavailable_functions: ["agent__spawn"]}, actor)
+      end
+
+    assert Exception.message(error) =~ "cannot change a live fork source"
+  end
+
   test "cycles fail closed without returning partial inherited data", %{actor: actor} do
     source = source!(actor)
     child = child!(source, actor)
@@ -626,7 +648,8 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
     create_chat!(
       Map.merge(attrs, %{
         bot_id: source.chat.bot_id,
-        llm_configuration_id: source.chat.llm_configuration_id
+        llm_configuration_id: source.chat.llm_configuration_id,
+        fork_unavailable_functions: Keyword.get(opts, :unavailable_functions)
       }),
       actor
     )
@@ -645,7 +668,7 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
   end
 
   defp create_chat!(attrs, actor) do
-    {internal, public} = Map.split(attrs, [:fork_source_step_id, :fork_task])
+    {internal, public} = Map.split(attrs, @internal_fork_attributes)
 
     Chat
     |> Ash.Changeset.for_create(:create_empty, public, actor: actor)
@@ -654,7 +677,7 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
   end
 
   defp update_chat!(chat, attrs, actor) do
-    {internal, public} = Map.split(attrs, [:fork_source_step_id, :fork_task])
+    {internal, public} = Map.split(attrs, @internal_fork_attributes)
 
     chat
     |> Ash.Changeset.for_update(:update, public, actor: actor)

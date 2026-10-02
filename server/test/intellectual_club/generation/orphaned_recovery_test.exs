@@ -9,6 +9,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
   alias IntellectualClub.Chat.ChatMessageStepRequestFile
   alias IntellectualClub.Chat.ChatShare
   alias IntellectualClub.Chat.Fork
+  alias IntellectualClub.Chat.ForkBoundary
+  alias IntellectualClub.Chat.ForkHistory
   alias IntellectualClub.Chat.Spawn
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.BackgroundTasks
@@ -512,6 +514,72 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       assert [persisted] = parent_tool_result_items(parent_message, parent.call.item_id)
       assert persisted.id == receipt.item_id
       assert fork_tool_result_raw!(parent_message, parent.call.item_id) == result.raw
+    after
+      Lease.release(lease)
+    end
+  end
+
+  test "fork announces functions rejected by child policy without changing its tools" do
+    %{user: actor} = user_fixture()
+    task = "Work without nested subchats"
+
+    tools =
+      Enum.map(["fork", "handoff", "sleep"], fn name ->
+        %{
+          "type" => "function",
+          "function" => %{
+            "name" => "agent_management__#{name}",
+            "description" => "",
+            "parameters" => %{"type" => "object", "properties" => %{}}
+          }
+        }
+      end)
+
+    parent =
+      create_parent_subagent_call!(
+        actor,
+        "fork",
+        %{"brief" => "Fork summary", "prompt" => task},
+        "Fork now",
+        tools: tools
+      )
+
+    assert {:ok, lease} = Lease.acquire(parent.message.id)
+
+    try do
+      context = %{
+        fork_execution_context(parent, actor)
+        | generation_fence_token: lease.fence_token
+      }
+
+      assert {:ok, %ExecutionResult{} = result} =
+               IntellectualClub.Tools.Drivers.NativeAgentManagement.execute(
+                 parent.tool_instance,
+                 "fork",
+                 %{"brief" => "Fork summary", "prompt" => task},
+                 context
+               )
+
+      unavailable = ["agent_management__fork", "agent_management__handoff"]
+      steering = ForkBoundary.steering(task, unavailable)
+      child_chat = Ash.get!(Chat, result.raw["fork"]["chat_id"], actor: actor)
+      assert child_chat.fork_unavailable_functions == unavailable
+
+      first_step =
+        ChatMessageStep
+        |> Ash.Query.filter(
+          chat_message_id == ^result.raw["fork"]["message_id"] and sequence == 1
+        )
+        |> Ash.read_one!(actor: actor)
+        |> Ash.load!([:raw_request], actor: actor)
+
+      assert List.last(first_step.raw_request["messages"]) == %{
+               "role" => "user",
+               "content" => steering
+             }
+
+      assert {:ok, history} = ForkHistory.prefix(child_chat, actor)
+      assert History.project_text_for_item_type(List.last(history), :steering) == steering
     after
       Lease.release(lease)
     end
@@ -2274,7 +2342,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
     )
   end
 
-  defp create_parent_subagent_call!(actor, primitive, args, user_prompt) do
+  defp create_parent_subagent_call!(actor, primitive, args, user_prompt, opts \\ []) do
     chat =
       Chat
       |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
@@ -2295,11 +2363,18 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       )
       |> Ash.create!(actor: actor)
 
-    raw_request = %{
-      "model" => "demo-model",
-      "messages" => [%{"role" => "user", "content" => user_prompt}],
-      "stream" => true
-    }
+    raw_request =
+      %{
+        "model" => "demo-model",
+        "messages" => [%{"role" => "user", "content" => user_prompt}],
+        "stream" => true
+      }
+      |> then(fn request ->
+        case Keyword.fetch(opts, :tools) do
+          {:ok, tools} -> Map.put(request, "tools", tools)
+          :error -> request
+        end
+      end)
 
     step_id = Persistence.ensure_step_started!(message.id, 1, raw_request, [])
 

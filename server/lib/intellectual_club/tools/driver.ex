@@ -30,6 +30,12 @@ defmodule IntellectualClub.Tools.Driver do
   @callback fixed_functions(IntellectualClub.Tools.ToolInstance.t()) :: list(map())
   @callback instance_prompt_context(IntellectualClub.Tools.ToolInstance.t()) :: String.t() | nil
 
+  @doc """
+  Returns fixed function names that execution policy always rejects in the given chat.
+  """
+  @callback unavailable_functions(IntellectualClub.Tools.ToolInstance.t(), map(), term()) ::
+              [String.t()]
+
   @callback discover(IntellectualClub.Tools.ToolInstance.t()) ::
               {:ok, list(map())} | {:error, term()}
 
@@ -46,5 +52,6 @@ defmodule IntellectualClub.Tools.Driver do
                       instance_prompt_context: 1,
                       normalize_config: 1,
                       supports_handoff?: 0,
+                      unavailable_functions: 3,
                       validate_config: 3
 end

@@ -219,6 +219,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   end
 
   @impl true
+  def unavailable_functions(%ToolInstance{} = tool_instance, chat, actor) do
+    Subagent.unavailable_functions(tool_instance, chat, actor)
+  end
+
+  @impl true
   def discover(%ToolInstance{} = _tool_instance) do
     {:error, "Discovery is not supported for this tool type."}
   end

@@ -368,6 +368,13 @@ defmodule IntellectualClub.Chat.Chat do
       constraints(trim?: false, allow_empty?: true)
     end
 
+    # Model-visible tool names announced as disabled in a linked fork's boundary
+    # steering. Stored so every reconstruction of that steering stays identical.
+    attribute :fork_unavailable_functions, {:array, :string} do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :subagent, :boolean do
       allow_nil?(false)
       public?(true)

@@ -34,6 +34,7 @@ defmodule IntellectualClub.Tools.BindingResolver do
     {tool_groups, background_unavailable_aliases} =
       entries
       |> build_tool_groups(actor)
+      |> gate_unavailable_functions(chat, actor)
       |> gate_background_functions()
 
     entries = annotate_background_availability(entries, background_unavailable_aliases)
@@ -65,6 +66,24 @@ defmodule IntellectualClub.Tools.BindingResolver do
       active_tool_instances: []
     }
   end
+
+  @doc """
+  Returns model-visible names of bound functions that policy rejects in the chat,
+  ordered by tool alias.
+  """
+  @spec unavailable_function_names(map(), map(), term()) :: [String.t()]
+  def unavailable_function_names(tool_instances_by_alias, %{} = chat, actor)
+      when is_map(tool_instances_by_alias) do
+    tool_instances_by_alias
+    |> Enum.sort_by(fn {alias_value, _tool_instance} -> alias_value end)
+    |> Enum.flat_map(fn {alias_value, tool_instance} ->
+      tool_instance
+      |> unavailable_functions(chat, actor)
+      |> Enum.map(&"#{alias_value}__#{&1}")
+    end)
+  end
+
+  def unavailable_function_names(_tool_instances_by_alias, _chat, _actor), do: []
 
   @doc false
   def describe_tool_instance(%{} = tool_instance, actor) do
@@ -230,6 +249,42 @@ defmodule IntellectualClub.Tools.BindingResolver do
   end
 
   defp build_tool_groups(_other, _actor), do: []
+
+  # Linked forks reuse the parent's cached request prefix, so their tool list must
+  # stay unchanged. Fork steering announces their unavailable functions instead.
+  defp gate_unavailable_functions(groups, %{parent_relation_kind: :fork}, _actor), do: groups
+
+  defp gate_unavailable_functions(groups, chat, actor) when is_list(groups) do
+    Enum.flat_map(groups, fn group ->
+      case unavailable_functions(group.tool_instance, chat, actor) do
+        [] ->
+          [group]
+
+        unavailable ->
+          functions = Enum.reject(group.functions, &(&1.name in unavailable))
+          if functions == [], do: [], else: [%{group | functions: functions}]
+      end
+    end)
+  end
+
+  defp gate_unavailable_functions(_other, _chat, _actor), do: []
+
+  defp unavailable_functions(%{} = tool_instance, chat, actor) do
+    driver =
+      tool_instance
+      |> Map.get(:type)
+      |> to_string()
+      |> String.trim()
+      |> Registry.driver_for_type!()
+
+    if Code.ensure_loaded?(driver) and function_exported?(driver, :unavailable_functions, 3) do
+      apply(driver, :unavailable_functions, [tool_instance, chat, actor])
+    else
+      []
+    end
+  end
+
+  defp unavailable_functions(_tool_instance, _chat, _actor), do: []
 
   defp gate_background_functions(groups) when is_list(groups) do
     if background_task_status_available?(groups) do
