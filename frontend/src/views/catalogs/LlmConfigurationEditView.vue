@@ -105,187 +105,241 @@
           </button>
         </div>
 
-        <div v-if="configTab === 'settings'" class="stack">
-          <div :class="{ 'field-error': errors.hasField('temperature') }">
-            <label for="llm-configuration-temperature-mode">Temperature</label>
-            <select
-              id="llm-configuration-temperature-mode"
-              v-model="temperatureMode"
-              class="full"
-              :disabled="sharedReadonly"
-            >
-              <option value="default">Default</option>
-              <option value="custom">Custom</option>
-            </select>
-            <input
-              v-if="temperatureMode === 'custom'"
-              v-model.number="temperatureModel"
-              class="full standard-parameter-value"
-              type="number"
-              min="0"
-              max="2"
-              step="any"
-              aria-label="Temperature"
-              :disabled="sharedReadonly"
-            />
-            <div v-if="errors.hasField('temperature')" class="error-text">
-              {{ errors.messageFor('temperature') }}
-            </div>
-          </div>
+        <div v-if="configTab === 'settings'" class="settings-sections">
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Generation</h3>
+              <p class="settings-section__description">
+                Default leaves the parameter out of the request, so a value from the Parameters tab applies.
+              </p>
+            </header>
 
-          <label :class="{ 'field-error': errors.hasField('reasoning_effort') }">
-            Reasoning effort
-            <select
-              id="llm-configuration-reasoning-effort"
-              v-model="reasoningEffortModel"
-              class="full"
-              :disabled="sharedReadonly"
-            >
-              <option value="">Default</option>
-              <option v-for="option in reasoningEffortOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </option>
-            </select>
-            <div v-if="errors.hasField('reasoning_effort')" class="error-text">
-              {{ errors.messageFor('reasoning_effort') }}
-            </div>
-          </label>
-
-          <div class="muted small-text">
-            Default leaves the corresponding request parameter unset, so values from Advanced JSON remain unchanged.
-          </div>
-          <div class="muted small-text">Available reasoning effort levels depend on the selected model.</div>
-
-          <div class="stack" style="gap: 4px">
-            <label style="display: flex; align-items: center; gap: 10px">
-              <input
-                id="llm-configuration-web-search-enabled"
-                v-model="form.web_search_enabled"
-                type="checkbox"
-                :disabled="webSearchDisabled"
-              />
-              Hosted web search
-            </label>
-            <div class="muted small-text">Uses the provider's hosted web search tool.</div>
-            <div v-if="selectedProviderType && !hostedWebSearchSupported" class="muted small-text">
-              Hosted web search is not available for this provider type.
-            </div>
-          </div>
-
-          <label :class="{ 'field-error': errors.hasField('timeout_seconds') }">
-            Timeout (seconds)
-            <input
-              v-model.number="form.timeout_seconds"
-              type="number"
-              min="1"
-              class="full"
-              :disabled="sharedReadonly"
-              @input="errors.clearField('timeout_seconds')"
-            />
-            <div v-if="errors.hasField('timeout_seconds')" class="error-text">
-              {{ errors.messageFor('timeout_seconds') }}
-            </div>
-          </label>
-
-          <label :class="{ 'field-error': errors.hasField('context_length') }">
-            Context length
-            <input
-              v-model.number="contextLengthModel"
-              type="number"
-              min="1"
-              class="full"
-              placeholder="Auto"
-              :disabled="sharedReadonly"
-              @input="errors.clearField('context_length')"
-            />
-            <div v-if="errors.hasField('context_length')" class="error-text">
-              {{ errors.messageFor('context_length') }}
-            </div>
-          </label>
-
-          <div class="stack manual-pricing-section">
-            <div>
-              <strong>Manual pricing</strong>
-              <div class="muted small-text">USD per 1M tokens. Used only when the provider does not report cost.</div>
-              <div class="muted small-text">Fill all three prices or leave all three empty.</div>
-            </div>
-
-            <label :class="{ 'field-error': errors.hasField('cold_input_price_per_million_tokens') }">
-              Cold input (USD / 1M tokens)
-              <input
-                id="llm-configuration-cold-input-price"
-                v-model.number="coldInputPriceModel"
-                type="number"
-                min="0"
-                step="any"
-                class="full"
-                placeholder="Optional"
-                :disabled="sharedReadonly"
-                @input="clearManualPricingError('cold_input_price_per_million_tokens')"
-              />
-              <div v-if="errors.hasField('cold_input_price_per_million_tokens')" class="error-text">
-                {{ errors.messageFor('cold_input_price_per_million_tokens') }}
+            <div class="settings-grid">
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('temperature') }">
+                <label class="settings-field__label" for="llm-configuration-temperature-mode">Temperature</label>
+                <div class="settings-field__inline">
+                  <select
+                    id="llm-configuration-temperature-mode"
+                    v-model="temperatureMode"
+                    :disabled="sharedReadonly"
+                  >
+                    <option value="default">Default</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input
+                    v-if="temperatureMode === 'custom'"
+                    v-model.number="temperatureModel"
+                    class="settings-field__number"
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="any"
+                    aria-label="Temperature"
+                    :disabled="sharedReadonly"
+                  />
+                </div>
+                <div v-if="errors.hasField('temperature')" class="error-text">
+                  {{ errors.messageFor('temperature') }}
+                </div>
               </div>
-            </label>
 
-            <label :class="{ 'field-error': errors.hasField('cached_input_price_per_million_tokens') }">
-              Cached input (USD / 1M tokens)
-              <input
-                id="llm-configuration-cached-input-price"
-                v-model.number="cachedInputPriceModel"
-                type="number"
-                min="0"
-                step="any"
-                class="full"
-                placeholder="Optional"
-                :disabled="sharedReadonly"
-                @input="clearManualPricingError('cached_input_price_per_million_tokens')"
-              />
-              <div v-if="errors.hasField('cached_input_price_per_million_tokens')" class="error-text">
-                {{ errors.messageFor('cached_input_price_per_million_tokens') }}
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('reasoning_effort') }">
+                <label class="settings-field__label" for="llm-configuration-reasoning-effort">Reasoning effort</label>
+                <select
+                  id="llm-configuration-reasoning-effort"
+                  v-model="reasoningEffortModel"
+                  class="full"
+                  :disabled="sharedReadonly"
+                >
+                  <option value="">Default</option>
+                  <option v-for="option in reasoningEffortOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
+                <div class="settings-field__hint">Available levels depend on the selected model.</div>
+                <div v-if="errors.hasField('reasoning_effort')" class="error-text">
+                  {{ errors.messageFor('reasoning_effort') }}
+                </div>
               </div>
-            </label>
+            </div>
+          </section>
 
-            <label :class="{ 'field-error': errors.hasField('output_price_per_million_tokens') }">
-              Output (USD / 1M tokens)
-              <input
-                id="llm-configuration-output-price"
-                v-model.number="outputPriceModel"
-                type="number"
-                min="0"
-                step="any"
-                class="full"
-                placeholder="Optional"
-                :disabled="sharedReadonly"
-                @input="clearManualPricingError('output_price_per_million_tokens')"
-              />
-              <div v-if="errors.hasField('output_price_per_million_tokens')" class="error-text">
-                {{ errors.messageFor('output_price_per_million_tokens') }}
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Capabilities</h3>
+            </header>
+
+            <div class="settings-checks">
+              <label class="settings-check" :class="{ 'settings-check--unavailable': hostedWebSearchUnavailable }">
+                <input
+                  id="llm-configuration-web-search-enabled"
+                  v-model="form.web_search_enabled"
+                  type="checkbox"
+                  :disabled="webSearchDisabled"
+                />
+                <span class="settings-check__body">
+                  <span class="settings-check__title">Hosted web search</span>
+                  <span v-if="hostedWebSearchUnavailable" class="settings-field__hint">
+                    Hosted web search is not available for this provider type.
+                  </span>
+                  <span v-else class="settings-field__hint">Uses the provider's hosted web search tool.</span>
+                </span>
+              </label>
+
+              <label class="settings-check">
+                <input v-model="form.supports_cache_control" type="checkbox" :disabled="sharedReadonly" />
+                <span class="settings-check__body">
+                  <span class="settings-check__title">Supports cache control</span>
+                  <span class="settings-field__hint">
+                    Adds explicit prompt cache breakpoints to requests if the provider supports them.
+                  </span>
+                </span>
+              </label>
+
+              <label class="settings-check">
+                <input v-model="form.supports_image_input" type="checkbox" :disabled="sharedReadonly" />
+                <span class="settings-check__body">
+                  <span class="settings-check__title">Supports image input</span>
+                  <span class="settings-field__hint">Images from messages are passed to the model.</span>
+                </span>
+              </label>
+
+              <label class="settings-check">
+                <input v-model="form.fix_role_alteration" type="checkbox" :disabled="sharedReadonly" />
+                <span class="settings-check__body">
+                  <span class="settings-check__title">Fix role alteration</span>
+                  <span class="settings-field__hint">
+                    Makes the history start and end with a non-empty user message, for models that require strict
+                    role alternation.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Limits</h3>
+            </header>
+
+            <div class="settings-grid">
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('timeout_seconds') }">
+                <label class="settings-field__label" for="llm-configuration-timeout">Timeout (seconds)</label>
+                <input
+                  id="llm-configuration-timeout"
+                  v-model.number="form.timeout_seconds"
+                  type="number"
+                  min="1"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="errors.clearField('timeout_seconds')"
+                />
+                <div v-if="errors.hasField('timeout_seconds')" class="error-text">
+                  {{ errors.messageFor('timeout_seconds') }}
+                </div>
               </div>
-            </label>
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('context_length') }">
+                <label class="settings-field__label" for="llm-configuration-context-length">Context length</label>
+                <input
+                  id="llm-configuration-context-length"
+                  v-model.number="contextLengthModel"
+                  type="number"
+                  min="1"
+                  class="full"
+                  placeholder="Auto"
+                  :disabled="sharedReadonly"
+                  @input="errors.clearField('context_length')"
+                />
+                <div v-if="errors.hasField('context_length')" class="error-text">
+                  {{ errors.messageFor('context_length') }}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Manual pricing</h3>
+              <p class="settings-section__description">
+                USD per 1M tokens. Used only when the provider does not report cost. Fill all three prices or leave
+                all three empty.
+              </p>
+            </header>
+
+            <div class="settings-grid settings-grid--pricing">
+              <div
+                class="settings-field"
+                :class="{ 'field-error': errors.hasField('cached_input_price_per_million_tokens') }"
+              >
+                <label class="settings-field__label" for="llm-configuration-cached-input-price">
+                  Cached input price
+                </label>
+                <input
+                  id="llm-configuration-cached-input-price"
+                  v-model.number="cachedInputPriceModel"
+                  type="number"
+                  min="0"
+                  step="any"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="clearManualPricingError('cached_input_price_per_million_tokens')"
+                />
+                <div v-if="errors.hasField('cached_input_price_per_million_tokens')" class="error-text">
+                  {{ errors.messageFor('cached_input_price_per_million_tokens') }}
+                </div>
+              </div>
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('cold_input_price_per_million_tokens') }">
+                <label class="settings-field__label" for="llm-configuration-cold-input-price">Cold input price</label>
+                <input
+                  id="llm-configuration-cold-input-price"
+                  v-model.number="coldInputPriceModel"
+                  type="number"
+                  min="0"
+                  step="any"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="clearManualPricingError('cold_input_price_per_million_tokens')"
+                />
+                <div v-if="errors.hasField('cold_input_price_per_million_tokens')" class="error-text">
+                  {{ errors.messageFor('cold_input_price_per_million_tokens') }}
+                </div>
+              </div>
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('output_price_per_million_tokens') }">
+                <label class="settings-field__label" for="llm-configuration-output-price">Output price</label>
+                <input
+                  id="llm-configuration-output-price"
+                  v-model.number="outputPriceModel"
+                  type="number"
+                  min="0"
+                  step="any"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="clearManualPricingError('output_price_per_million_tokens')"
+                />
+                <div v-if="errors.hasField('output_price_per_million_tokens')" class="error-text">
+                  {{ errors.messageFor('output_price_per_million_tokens') }}
+                </div>
+              </div>
+            </div>
 
             <div v-if="manualPricingError" class="error-text">{{ manualPricingError }}</div>
-          </div>
+          </section>
 
-          <label style="display: flex; align-items: center; gap: 10px">
-            <input v-model="form.enabled" type="checkbox" :disabled="sharedReadonly" />
-            Enabled
-          </label>
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Status</h3>
+            </header>
 
-          <label style="display: flex; align-items: center; gap: 10px">
-            <input v-model="form.supports_cache_control" type="checkbox" :disabled="sharedReadonly" />
-            Supports cache control
-          </label>
-
-          <label style="display: flex; align-items: center; gap: 10px">
-            <input v-model="form.supports_image_input" type="checkbox" :disabled="sharedReadonly" />
-            Supports image input
-          </label>
-
-          <label style="display: flex; align-items: center; gap: 10px">
-            <input v-model="form.fix_role_alteration" type="checkbox" :disabled="sharedReadonly" />
-            Fix role alteration
-          </label>
+            <label class="settings-check">
+              <input v-model="form.enabled" type="checkbox" :disabled="sharedReadonly" />
+              <span class="settings-check__body">
+                <span class="settings-check__title">Enabled</span>
+              </span>
+            </label>
+          </section>
         </div>
 
         <div v-else-if="configTab === 'parameters'" class="stack">
@@ -933,6 +987,7 @@ const hostedWebSearchSupported = computed(() => {
   return metadata?.supports_hosted_web_search === true;
 });
 
+const hostedWebSearchUnavailable = computed(() => Boolean(selectedProviderType.value) && !hostedWebSearchSupported.value);
 const webSearchDisabled = computed(() => sharedReadonly.value || !hostedWebSearchSupported.value);
 
 function mergeProviderOptions(options: ProviderOption[]) {
@@ -1402,7 +1457,122 @@ async function saveSharing(groupIds: number[]) {
   font-size: 0.85rem;
 }
 
-.standard-parameter-value {
-  margin-top: 8px;
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.settings-section:first-child {
+  padding-top: 4px;
+}
+
+.settings-section:last-child {
+  padding-bottom: 0;
+}
+
+.settings-section + .settings-section {
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-section__header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-section__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.settings-section__description {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--color-text-muted);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+
+.settings-grid--pricing {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-field__inline {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-field__inline select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-field__number {
+  flex: 0 0 96px;
+  width: 96px;
+}
+
+.settings-field__hint {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--color-text-subtle);
+}
+
+.settings-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.settings-check input[type='checkbox'] {
+  margin: 3px 0 0;
+}
+
+.settings-check__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-check__title {
+  color: var(--color-text);
+}
+
+.settings-check:has(input:disabled) {
+  cursor: default;
+}
+
+.settings-check--unavailable .settings-check__title {
+  color: var(--color-text-muted);
 }
 </style>

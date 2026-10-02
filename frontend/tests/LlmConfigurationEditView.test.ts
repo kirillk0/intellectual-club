@@ -223,13 +223,10 @@ describe('LlmConfigurationEditView standard parameters', () => {
     const view = await mountView('/catalogs/llm-configurations/new');
     const temperatureMode = view.get<HTMLSelectElement>('#llm-configuration-temperature-mode');
     const reasoningEffort = view.get<HTMLSelectElement>('#llm-configuration-reasoning-effort');
-    const timeout = view
-      .findAll('label')
-      .find((label) => label.text().includes('Timeout (seconds)'))
-      ?.get<HTMLInputElement>('input');
+    const timeout = view.find<HTMLInputElement>('#llm-configuration-timeout');
 
     expect(temperatureMode.element.value).toBe('default');
-    expect(timeout?.element.value).toBe('120');
+    expect(timeout.element.value).toBe('120');
     expect(view.find('input[aria-label="Temperature"]').exists()).toBe(false);
     expect(Array.from(reasoningEffort.element.options).map((option) => option.value)).toEqual([
       '',
@@ -476,27 +473,34 @@ describe('LlmConfigurationEditView standard parameters', () => {
 
   it('has Russian translations for every new label and explanation', () => {
     const keys = [
-      'Available reasoning effort levels depend on the selected model.',
-      'Cached input (USD / 1M tokens)',
-      'Cold input (USD / 1M tokens)',
+      'Adds explicit prompt cache breakpoints to requests if the provider supports them.',
+      'Available levels depend on the selected model.',
+      'Cached input price',
+      'Capabilities',
+      'Cold input price',
       'Default',
-      'Default leaves the corresponding request parameter unset, so values from Advanced JSON remain unchanged.',
+      'Default leaves the parameter out of the request, so a value from the Parameters tab applies.',
+      'Generation',
       'High',
       'Hosted web search',
       'Hosted web search is not available for this provider type.',
+      'Images from messages are passed to the model.',
+      'Limits',
       'Low',
       'Manual prices must be non-negative.',
+      'Makes the history start and end with a non-empty user message, for models that require strict role alternation.',
       'Manual pricing',
       'Max',
       'Medium',
       'Minimal',
       'None',
-      'Output (USD / 1M tokens)',
+      'Output price',
       'Reasoning effort',
       'Temperature',
       'XHigh',
       'Fill all three prices or leave all three empty.',
-      'USD per 1M tokens. Used only when the provider does not report cost.',
+      'Status',
+      'USD per 1M tokens. Used only when the provider does not report cost. Fill all three prices or leave all three empty.',
       "Uses the provider's hosted web search tool.",
     ];
 
