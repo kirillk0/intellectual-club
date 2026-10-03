@@ -396,9 +396,20 @@ defmodule IntellectualClub.Generation.PersistenceTest do
     assert usage.output_tokens == 7
     assert usage.cost == 0.015
     assert usage.raw_usage["responses"] == %{"total_tokens" => 18}
+
+    changed_runtime_step =
+      RuntimeTrace.apply_event(
+        runtime_step,
+        {:set_step_usage, %{input_tokens: 999, output_tokens: 999, cost: 999.0}}
+      )
+
+    :ok = Persistence.persist_completed!(assistant_message.id, changed_runtime_step)
+    fields = Enum.map(Ash.Resource.Info.attributes(LlmUsageRecord), & &1.name)
+    persisted_usage = Ash.get!(LlmUsageRecord, usage.id, actor: actor)
+    assert Map.take(persisted_usage, fields) == Map.take(usage, fields)
   end
 
-  test "status-only transitions update provider usage without accounting copied step usage" do
+  test "status-only transitions preserve immutable provider usage without accounting copied steps" do
     %{user: actor} = user_fixture()
     provider = create_provider!(actor, "Usage lifecycle provider")
     configuration = create_configuration!(actor, provider, "usage-lifecycle-model")
@@ -492,8 +503,8 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       |> Ash.read!(actor: actor)
 
     assert done_usage.id == waiting_usage.id
-    assert done_usage.status == :done
-    assert done_usage.cost == 0.03
+    fields = Enum.map(Ash.Resource.Info.attributes(LlmUsageRecord), & &1.name)
+    assert Map.take(done_usage, fields) == Map.take(waiting_usage, fields)
   end
 
   test "persist_step_trace_only! does not create usage records for user messages" do

@@ -1687,7 +1687,7 @@ defmodule IntellectualClub.Generation.Persistence do
       cached_input_tokens: step.cached_input_tokens,
       reasoning_tokens: step.reasoning_tokens,
       cost: step.cost,
-      raw_usage: normalize_optional_json(raw_usage || (existing && existing.raw_usage))
+      raw_usage: normalize_optional_json(raw_usage)
     }
 
     cond do
@@ -1695,9 +1695,7 @@ defmodule IntellectualClub.Generation.Persistence do
         :ok
 
       existing ->
-        existing
-        |> Ash.Changeset.for_update(:update, attrs, actor: actor)
-        |> Ash.update!(actor: actor)
+        :ok
 
       Keyword.get(opts, :create_if_missing?, true) ->
         step =

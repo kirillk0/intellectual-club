@@ -228,7 +228,7 @@ defmodule IntellectualClub.Chat.BranchMove do
         |> Ash.read!(actor: actor)
         |> Enum.each(fn record ->
           record
-          |> Ash.Changeset.for_update(:update, %{chat_id: target_chat_id}, actor: actor)
+          |> Ash.Changeset.for_update(:move_to_chat, %{chat_id: target_chat_id}, actor: actor)
           |> Ash.update!(actor: actor)
         end)
       end

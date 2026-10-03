@@ -206,8 +206,8 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
         reasoning_tokens: Map.get(attrs, :reasoning_tokens, 0),
         cost: Map.fetch!(attrs, :cost)
       },
-      authorize?: false
+      actor: usage_user
     )
-    |> Ash.create!(authorize?: false)
+    |> Ash.create!(actor: usage_user)
   end
 end

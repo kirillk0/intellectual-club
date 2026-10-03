@@ -340,7 +340,11 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocksConcurrencyTest do
           nested.message.generation_fence_token,
           fn ->
             usage
-            |> Ash.Changeset.for_update(:update, %{output_tokens: 73, cost: 0.75}, actor: actor)
+            |> Ash.Changeset.for_update(
+              :detach_deleted_references,
+              %{step_ids: [nested.step.id]},
+              actor: actor
+            )
             |> Ash.update!(actor: actor)
 
             :persisted
@@ -360,8 +364,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocksConcurrencyTest do
 
     Sandbox.unboxed_run(Repo, fn ->
       retained = Ash.get!(LlmUsageRecord, usage.id, actor: actor)
-      assert retained.output_tokens == 73
-      assert retained.cost == 0.75
+      assert retained.output_tokens == usage.output_tokens
+      assert retained.cost == usage.cost
       assert retained.chat_id == nil
       assert retained.chat_message_id == nil
       assert retained.chat_message_step_id == nil

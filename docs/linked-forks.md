@@ -81,6 +81,14 @@ rollback must not cancel a surviving generation. Accounting ledger snapshots and
 background-task envelopes survive with live foreign keys cleared where needed.
 New child statistics count only the child's own actual provider steps.
 
+Usage creation requires both the live usage user and its historical ID to match
+the current actor. The configuration owner is separate and can read shared usage,
+but cannot edit it. Provider accounting is written once per step: later lifecycle
+transitions and repeated persistence leave costs, tokens, timestamps, statuses,
+and historical snapshots unchanged. There is no general update or destroy action;
+private maintenance actions only move or detach live chat references and require
+the usage user's authorization.
+
 Deletion and retry prepare one operation-wide plan. Explicit scopes distinguish
 whole chats, message subtrees, single messages, keep-children reparenting, and
 retry step ranges. Deleted records and surviving lock-only dependencies are separate;

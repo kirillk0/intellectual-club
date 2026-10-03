@@ -4,6 +4,7 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
 
   Chat message steps keep usage fields as a local trace snapshot. This resource is
   the long-lived accounting surface used for cross-user configuration usage.
+  Billing snapshots are immutable; private updates only maintain live references.
   """
 
   use IntellectualClub.Resource,
@@ -245,6 +246,9 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
         :cost,
         :raw_usage
       ])
+
+      validate(attribute_equals(:usage_user_id, actor(:id)))
+      validate(attribute_equals(:usage_user_id_snapshot, actor(:id)))
     end
 
     update :detach_deleted_references do
@@ -270,40 +274,15 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
       )
     end
 
-    update :update do
-      accept([
-        :usage_user_id,
-        :usage_user_id_snapshot,
-        :usage_username_snapshot,
-        :configuration_owner_id,
-        :configuration_owner_id_snapshot,
-        :llm_configuration_id,
-        :llm_configuration_id_snapshot,
-        :llm_configuration_external_id_snapshot,
-        :llm_configuration_label_snapshot,
-        :provider_id,
-        :provider_id_snapshot,
-        :provider_name_snapshot,
-        :provider_type_snapshot,
-        :chat_id,
-        :chat_id_snapshot,
-        :chat_message_id,
-        :chat_message_id_snapshot,
-        :chat_message_step_id,
-        :chat_message_step_id_snapshot,
-        :step_sequence,
-        :status,
-        :response_final,
-        :occurred_at,
-        :input_tokens,
-        :output_tokens,
-        :cached_input_tokens,
-        :reasoning_tokens,
-        :cost,
-        :raw_usage
-      ])
-
+    update :move_to_chat do
+      public?(false)
+      accept([:chat_id])
       require_atomic?(false)
+
+      change(
+        {IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor,
+         relationships: [:chat], access: :writable}
+      )
     end
   end
 
@@ -314,12 +293,11 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
     end
 
     policy action_type(:create) do
-      authorize_if actor_present()
+      authorize_if expr(usage_user_id == ^actor(:id) and usage_user_id_snapshot == ^actor(:id))
     end
 
-    policy action_type(:update) do
+    policy action([:detach_deleted_references, :move_to_chat]) do
       authorize_if expr(usage_user_id_snapshot == ^actor(:id))
-      authorize_if expr(configuration_owner_id_snapshot == ^actor(:id))
     end
   end
 end

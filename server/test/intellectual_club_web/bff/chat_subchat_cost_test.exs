@@ -3,6 +3,7 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.SubchatCostCache
   alias IntellectualClub.Generation.Persistence
@@ -38,6 +39,15 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
 
     child_message = persist_cost!(child, configuration, actor, 0.02)
 
+    next_step =
+      ChatMessageStep
+      |> Ash.Changeset.for_create(
+        :create,
+        %{chat_message_id: child_message.id, sequence: 2, status: :done},
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     initial_state =
       conn
       |> get(~p"/api/bff/chat-state/#{root.id}")
@@ -48,12 +58,26 @@ defmodule IntellectualClubWeb.Bff.ChatSubchatCostTest do
     assert initial_source["usage"]["subchat_cost"] == 0.02
     assert initial_source["usage"]["combined_total_cost"] == 0.03
 
-    # Change only the ledger: child lifecycle and parent phase stay unchanged.
+    # Append only to the ledger: child lifecycle and parent phase stay unchanged.
+    previous_usage =
+      LlmUsageRecord
+      |> Ash.Query.filter(chat_message_id == ^child_message.id)
+      |> Ash.read_one!(actor: actor)
+
+    attrs =
+      previous_usage
+      |> Map.take(Ash.Resource.Info.action(LlmUsageRecord, :create).accept)
+      |> Map.delete(:external_id)
+      |> Map.merge(%{
+        chat_message_step_id: next_step.id,
+        chat_message_step_id_snapshot: next_step.id,
+        step_sequence: next_step.sequence,
+        cost: 0.01
+      })
+
     LlmUsageRecord
-    |> Ash.Query.filter(chat_message_id == ^child_message.id)
-    |> Ash.read_one!(actor: actor)
-    |> Ash.Changeset.for_update(:update, %{cost: 0.03}, actor: actor)
-    |> Ash.update!(actor: actor)
+    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+    |> Ash.create!(actor: actor)
 
     for _poll <- 1..3 do
       assert conn

@@ -11,6 +11,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchMoveTest do
   alias IntellectualClub.Chat.MessageBookmark
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
+  alias IntellectualClub.Llm.LlmUsageRecord
 
   require Ash.Query
 
@@ -199,6 +200,32 @@ defmodule IntellectualClubWeb.Bff.ChatBranchMoveTest do
     moved_step_id = moved_before.steps |> List.first() |> Map.get(:id)
     media_file_id = moved_before.steps |> media_file_id_from_steps()
 
+    usage =
+      LlmUsageRecord
+      |> Ash.Changeset.for_create(
+        :create,
+        %{
+          usage_user_id: actor.id,
+          usage_user_id_snapshot: actor.id,
+          usage_username_snapshot: actor.username,
+          configuration_owner_id_snapshot: actor.id,
+          llm_configuration_id_snapshot: 1,
+          llm_configuration_label_snapshot: "Moved configuration",
+          chat_id: source.id,
+          chat_id_snapshot: source.id,
+          chat_message_id: moved.id,
+          chat_message_id_snapshot: moved.id,
+          chat_message_step_id: moved_step_id,
+          chat_message_step_id_snapshot: moved_step_id,
+          step_sequence: 1,
+          occurred_at: DateTime.utc_now(),
+          cost: 0.15,
+          input_tokens: 100
+        },
+        actor: actor
+      )
+      |> Ash.create!(actor: actor)
+
     payload =
       conn
       |> post(~p"/api/bff/chat-branches/#{source.id}/move-to-new-chat", %{
@@ -221,6 +248,19 @@ defmodule IntellectualClubWeb.Bff.ChatBranchMoveTest do
     assert moved_after.steps |> List.first() |> Map.get(:id) == moved_step_id
     assert moved_after.steps |> media_file_id_from_steps() == media_file_id
     assert media_file_id == file.id
+
+    moved_usage = Ash.get!(LlmUsageRecord, usage.id, actor: actor)
+    assert moved_usage.chat_id == target_id
+
+    for field <- [
+          :cost,
+          :input_tokens,
+          :occurred_at,
+          :chat_id_snapshot,
+          :chat_message_step_id_snapshot
+        ] do
+      assert Map.fetch!(moved_usage, field) == Map.fetch!(usage, field)
+    end
 
     assert [_bookmark] =
              MessageBookmark
