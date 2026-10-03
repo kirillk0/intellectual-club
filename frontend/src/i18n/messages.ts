@@ -911,7 +911,7 @@ export const ruMessages: Record<string, string> = {
   "Default results count must not exceed maximum results count.": "Количество результатов по умолчанию не должно превышать максимальное.",
   "User agent must be a string.": "User-Agent должен быть строкой.",
   "Provider options must contain valid HTTP(S) API URLs without credentials.": "Укажите корректные HTTP(S)-адреса API без учётных данных в URL.",
-  "Search the web and return ranked links and snippets. Provider failures are retried through the configured fallback chain; warnings report failed attempts.": "Поиск в интернете с выдачей ссылок и фрагментов. При ошибках запрос передаётся резервным провайдерам; неудачные попытки отмечаются предупреждениями.",
+  "Search the web and return ranked links and snippets. Provider failures and empty results proceed through the configured fallback chain; warnings report failed or empty attempts.": "Поиск в интернете с выдачей ссылок и фрагментов. При ошибках или пустой выдаче запрос передаётся резервным провайдерам; неудачные и пустые попытки отмечаются предупреждениями.",
   "Read the contents of 1–10 HTTP(S) URLs as clean text or Markdown. Failed URLs are retried with the configured fallback providers. Brave uses the built-in Web Reader. Does not follow links to crawl a site.": "Чтение содержимого 1–10 HTTP(S)-адресов в виде очищенного текста или Markdown. Неудавшиеся адреса передаются резервным провайдерам. Brave использует встроенный Web Reader. Обход сайта по ссылкам не выполняется.",
   'Timeout (seconds)': 'Таймаут (секунды)',
   'To': 'По',

@@ -212,7 +212,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
       %{
         "name" => "web_search",
         "description" =>
-          "Search the web and return ranked links and snippets. Provider failures are retried through the configured fallback chain; warnings report failed attempts.",
+          "Search the web and return ranked links and snippets. Provider failures and empty results proceed through the configured fallback chain; warnings report failed or empty attempts.",
         "enabled" => true,
         "schema" => %{
           "type" => "object",
@@ -382,6 +382,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
             end
 
           case outcome do
+            {:ok, %{results: []} = result} ->
+              attempt =
+                attempt(provider, "web_search", started, "empty")
+                |> Map.put("message", "Provider returned no search results.")
+
+              warnings =
+                state.warnings ++
+                  provider_warnings(result.warnings, provider, tool) ++ [warning(attempt)]
+
+              {:cont,
+               %{
+                 state
+                 | success: true,
+                   attempts: state.attempts ++ [attempt],
+                   warnings: warnings
+               }}
+
             {:ok, result} ->
               attempt = attempt(provider, "web_search", started, "success")
               warnings = state.warnings ++ provider_warnings(result.warnings, provider, tool)

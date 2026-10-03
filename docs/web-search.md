@@ -23,8 +23,14 @@ standalone Web Reader; the complete extracted document is returned within the
 configured output limit. The built-in reader does not render JavaScript.
 
 Every invocation starts at the first provider. A failed request proceeds to the
-next provider without hidden HTTP retries. Valid empty search results stop the
-chain. For fetch, empty content is a failure, and only failed URLs proceed to
+next provider without hidden HTTP retries. Valid empty search results also
+proceed to the next provider, with the original query and filters unchanged.
+Search stops at the first nonempty result. Empty attempts have status `empty`
+and a model-visible warning. If the chain yields no results but at least one
+provider returned a valid empty response, the result is `(no results)` without
+`isError`; errors from other providers remain in the warnings. Only a chain
+where every provider failed sets `isError` for search.
+For fetch, empty content is a failure, and only failed URLs proceed to
 the next provider. A partially successful fetch returns its successful pages
 and reports the remaining failures. Each URL has at most one attempt per
 provider. Fetches of different URLs run concurrently within a provider stage.

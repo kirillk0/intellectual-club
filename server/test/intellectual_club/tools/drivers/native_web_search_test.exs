@@ -44,21 +44,117 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     refute_receive {:web_request, "/brave/web/search", _, _}
   end
 
-  test "valid empty results stop fallback while malformed results do not" do
+  test "Brave 429 and empty TinyFish results fall through to Firecrawl without changing the query" do
+    query = ~s("Василий Казуров" "интервью" "Коррозия" "год")
+
     base =
       server(fn
-        "/brave/web/search", %{"q" => "empty"} -> {200, %{"web" => %{"results" => []}}}
-        "/brave/web/search", _ -> {200, %{"unexpected" => true}}
-        "/tavily/search", _ -> {200, %{"results" => []}}
+        "/brave/web/search", params ->
+          assert params["q"] == query
+          {429, %{"error" => "Rate limited"}}
+
+        "/tinyfish", params ->
+          assert params["query"] == query
+          {200, %{"results" => [], "total_results" => 0}}
+
+        "/firecrawl/search", params ->
+          assert params["query"] == query
+
+          {200,
+           %{
+             "data" => %{
+               "web" => [%{"url" => "https://example.org/interview", "title" => "Interview"}]
+             }
+           }}
       end)
 
-    tool = tool(base, ~w(brave tavily))
-    assert {:ok, empty} = Driver.execute(tool, "web_search", %{"query" => "empty"})
-    refute empty.raw["isError"]
-    assert length(empty.raw["attempts"]) == 1
-    assert {:ok, malformed} = Driver.execute(tool, "web_search", %{"query" => "malformed"})
-    refute malformed.raw["isError"]
-    assert length(malformed.raw["attempts"]) == 2
+    assert {:ok, result} =
+             Driver.execute(tool(base, ~w(brave tinyfish firecrawl)), "web_search", %{
+               "query" => query
+             })
+
+    refute result.raw["isError"]
+    assert Enum.map(result.raw["attempts"], & &1["provider"]) == ~w(brave tinyfish firecrawl)
+    assert Enum.map(result.raw["attempts"], & &1["status"]) == ~w(error empty success)
+    assert hd(result.raw["attempts"])["http_status"] == 429
+    assert length(result.raw["warnings"]) == 2
+    assert result.text =~ "tinyfish (tinyfish): Provider returned no search results."
+    assert hd(result.raw["results"])["url"] == "https://example.org/interview"
+
+    limited = Executor.limit_execution_result(result, 20)
+    assert limited.raw["attempts"] == result.raw["attempts"]
+    assert limited.raw["warnings"] == result.raw["warnings"]
+
+    for path <- ["/brave/web/search", "/tinyfish", "/firecrawl/search"] do
+      assert_receive {:web_request, ^path, _, _}
+      refute_receive {:web_request, ^path, _, _}
+    end
+  end
+
+  test "nonempty search results stop fallback" do
+    base =
+      server(fn "/brave/web/search", _ ->
+        {200, %{"web" => %{"results" => [%{"url" => "https://example.org"}]}}}
+      end)
+
+    assert {:ok, result} =
+             Driver.execute(tool(base, ~w(brave tavily)), "web_search", %{"query" => "q"})
+
+    refute result.raw["isError"]
+    assert length(result.raw["attempts"]) == 1
+    assert result.raw["warnings"] == []
+    assert_receive {:web_request, "/brave/web/search", _, _}
+    refute_receive {:web_request, "/tavily/search", _, _}
+  end
+
+  test "all empty responses exhaust the chain without becoming an error" do
+    base =
+      server(fn
+        "/brave/web/search", _ -> {200, %{"type" => "search", "query" => %{}}}
+        "/tavily/search", _ -> {200, %{"results" => [], "warning" => "Provider warning"}}
+        "/exa/search", _ -> {200, %{"results" => []}}
+      end)
+
+    for providers <- [~w(brave), ~w(brave tavily exa)] do
+      assert {:ok, result} =
+               Driver.execute(tool(base, providers), "web_search", %{"query" => "empty"})
+
+      refute result.raw["isError"]
+      assert result.raw["results"] == []
+      assert result.text =~ "(no results)"
+      refute result.text =~ "All configured providers failed."
+      assert Enum.map(result.raw["attempts"], & &1["provider"]) == providers
+      assert Enum.all?(result.raw["attempts"], &(&1["status"] == "empty"))
+      if "tavily" in providers, do: assert(result.text =~ "tavily: Provider warning")
+    end
+  end
+
+  test "valid empty responses remain distinct from errors in either provider order" do
+    base =
+      server(fn
+        "/brave/web/search", %{"q" => "malformed"} -> {200, %{"unexpected" => true}}
+        "/brave/web/search", _ -> {429, %{}}
+        "/tavily/search", _ -> {200, %{"results" => []}}
+        "/exa/search", _ -> {500, %{}}
+      end)
+
+    for providers <- [~w(brave tavily exa), ~w(tavily brave exa)],
+        query <- ["rate limited", "malformed"] do
+      assert {:ok, result} =
+               Driver.execute(tool(base, providers), "web_search", %{"query" => query})
+
+      refute result.raw["isError"]
+      assert result.raw["results"] == []
+      assert result.text =~ "(no results)"
+      assert Enum.map(result.raw["attempts"], & &1["provider"]) == providers
+      assert length(result.raw["warnings"]) == 3
+    end
+
+    assert {:ok, failed} =
+             Driver.execute(tool(base, ~w(brave exa)), "web_search", %{"query" => "q"})
+
+    assert failed.raw["isError"]
+    assert failed.text =~ "All configured providers failed."
   end
 
   test "filters are not silently dropped and invalid arguments make no requests" do
