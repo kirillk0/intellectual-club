@@ -180,6 +180,35 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         "enabled_by_default" => false
       },
       %{
+        "name" => "wait_backround_tasks",
+        "description" =>
+          "Wait until all listed background tasks finish or the optional timeout expires, " <>
+            "then return their current statuses. Completed, failed, and canceled tasks are " <>
+            "finished. Use check_background_task_status to retrieve results and progress.",
+        "schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "background_task_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string", "format" => "uuid"},
+              "minItems" => 1,
+              "description" => "Background task ids returned by background tools."
+            },
+            "timeout_seconds" => %{
+              "type" => "number",
+              "minimum" => 0,
+              "description" =>
+                "Maximum wait in seconds, including fractional seconds. Omit to wait " <>
+                  "without a time limit; 0 returns current statuses immediately."
+            }
+          },
+          "required" => ["background_task_ids"],
+          "additionalProperties" => false
+        },
+        "enabled" => false,
+        "enabled_by_default" => false
+      },
+      %{
         "name" => "cancel_background_task",
         "description" => "Cancel a background task owned by the current user.",
         "schema" => %{
@@ -379,6 +408,33 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(
         %ToolInstance{} = _tool_instance,
+        "wait_backround_tasks",
+        args,
+        %ExecutionContext{} = context
+      )
+      when is_map(args) do
+    with {:ok, task_ids} <- required_background_task_ids(args),
+         {:ok, timeout_ms} <- background_wait_timeout(args, context),
+         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
+         {:ok, statuses} <- BackgroundTasks.wait(task_ids, owner_id, timeout_ms) do
+      {:ok,
+       %ExecutionResult{
+         text: Jason.encode!(statuses, pretty: true),
+         raw: statuses,
+         media: [],
+         artifacts: []
+       }}
+    else
+      {:error, reason} -> {:error, error_message(reason)}
+    end
+  end
+
+  def execute(%ToolInstance{} = _tool_instance, "wait_backround_tasks", _args, _context) do
+    {:error, "Waiting for background tasks requires generation execution context."}
+  end
+
+  def execute(
+        %ToolInstance{} = _tool_instance,
         "cancel_background_task",
         args,
         %ExecutionContext{} = context
@@ -523,6 +579,45 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       nil -> {:ok, nil}
       cursor when is_binary(cursor) -> {:ok, cursor}
       _other -> {:error, "cursor must be a string"}
+    end
+  end
+
+  defp required_background_task_ids(args) do
+    case Map.get(args, "background_task_ids") do
+      [_ | _] = task_ids ->
+        Enum.reduce_while(task_ids, {:ok, []}, fn task_id, {:ok, ids} ->
+          cast =
+            if is_binary(task_id) and byte_size(task_id) == 36,
+              do: Ecto.UUID.cast(task_id),
+              else: :error
+
+          case cast do
+            {:ok, id} -> {:cont, {:ok, [id | ids]}}
+            :error -> {:halt, {:error, "background_task_ids must contain valid UUID strings"}}
+          end
+        end)
+        |> case do
+          {:ok, ids} -> {:ok, ids |> Enum.reverse() |> Enum.uniq()}
+          error -> error
+        end
+
+      _other ->
+        {:error, "background_task_ids must be a non-empty list of UUID strings"}
+    end
+  end
+
+  defp background_wait_timeout(args, context) do
+    case Map.get(args, "timeout_seconds") do
+      nil ->
+        {:ok, :infinity}
+
+      value when is_number(value) and value >= 0 ->
+        timeout_ms = ceil(value * 1000)
+        {_elapsed_ms, remaining_ms} = sleep_timing(timeout_ms, context)
+        {:ok, remaining_ms}
+
+      _other ->
+        {:error, "timeout_seconds must be a non-negative number"}
     end
   end
 

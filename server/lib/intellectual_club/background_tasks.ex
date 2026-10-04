@@ -33,6 +33,7 @@ defmodule IntellectualClub.BackgroundTasks do
   @event_page_size 500
   @event_page_max_bytes 48_000
   @maintenance_retry_limit 12
+  @wait_poll_interval_ms 250
 
   resources do
     resource(BackgroundTask)
@@ -101,6 +102,59 @@ defmodule IntellectualClub.BackgroundTasks do
   end
 
   def snapshot(_task_id, _cursor, _owner_id), do: {:error, :not_found}
+
+  @doc "Waits for all owned tasks to finish, returning their statuses when done or timed out."
+  @spec wait([Ecto.UUID.t()], pos_integer(), non_neg_integer() | :infinity) ::
+          {:ok, map()} | {:error, term()}
+  def wait(task_ids, owner_id, timeout_ms \\ :infinity)
+      when is_list(task_ids) and is_integer(owner_id) and owner_id > 0 and
+             (timeout_ms == :infinity or (is_integer(timeout_ms) and timeout_ms >= 0)) do
+    deadline =
+      if timeout_ms == :infinity,
+        do: :infinity,
+        else: System.monotonic_time(:millisecond) + timeout_ms
+
+    do_wait(Enum.uniq(task_ids), actor(owner_id), deadline)
+  end
+
+  defp do_wait(task_ids, actor, deadline) do
+    query =
+      BackgroundTask
+      |> Ash.Query.filter(id in ^task_ids)
+      |> Ash.Query.select([:id, :status])
+
+    with {:ok, tasks} <- Ash.read(query, actor: actor) do
+      if length(tasks) != length(task_ids) do
+        {:error, :not_found}
+      else
+        tasks_by_id = Map.new(tasks, &{&1.id, &1})
+        finished? = Enum.all?(tasks, &(&1.status in @terminal_statuses))
+
+        remaining_ms =
+          if deadline == :infinity,
+            do: @wait_poll_interval_ms,
+            else: Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
+
+        if finished? or remaining_ms == 0 do
+          statuses =
+            Enum.map(task_ids, fn task_id ->
+              %{
+                "background_task_id" => task_id,
+                "status" => Atom.to_string(Map.fetch!(tasks_by_id, task_id).status)
+              }
+            end)
+
+          {:ok, %{"background_tasks" => statuses, "timed_out" => not finished?}}
+        else
+          IntellectualClub.Generation.ToolExecution.interruptible(fn ->
+            Process.sleep(Kernel.min(remaining_ms, @wait_poll_interval_ms))
+          end)
+
+          do_wait(task_ids, actor, deadline)
+        end
+      end
+    end
+  end
 
   @spec cancel(Ecto.UUID.t(), pos_integer()) :: {:ok, map()} | {:error, :not_found | term()}
   def cancel(task_id, owner_id)

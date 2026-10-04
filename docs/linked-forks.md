@@ -65,6 +65,18 @@ or canceling the parent cancels its unfinished tasks. The parent must await thei
 status before finishing, or transfer them with a handoff. Linked storage does not
 make these tasks detached jobs.
 
+Agent Management also exposes `wait_backround_tasks` (disabled by default).
+Pass a non-empty `background_task_ids` array and optionally `timeout_seconds`
+(a non-negative number; fractional seconds are supported). Omitting the timeout
+waits without a time limit; zero returns immediately. The function waits until
+**all** tasks are `completed`, `failed`, or `canceled`, or until the timeout expires.
+It returns `background_tasks` entries with `background_task_id` and `status`, plus
+`timed_out`. Duplicate IDs are returned once, in their first occurrence order.
+Missing tasks and tasks owned by another user fail with `not_found`.
+Use `check_background_task_status` separately to fetch progress and results.
+Stopping generation interrupts the wait; timing out does not cancel the tasks.
+Recovery counts time already elapsed since the persisted tool call toward the timeout.
+
 Nested forks recursively compose these prefixes. Reading checks every source
 with the same actor, rejects cycles and limits inheritance to 32 sources. Sharing
 a child does not implicitly share a private source. Missing or unreadable context

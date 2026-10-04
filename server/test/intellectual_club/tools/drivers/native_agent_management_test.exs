@@ -36,6 +36,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
              "spawn",
              "spawn_background",
              "check_background_task_status",
+             "wait_backround_tasks",
              "cancel_background_task",
              "sleep"
            ]
@@ -72,6 +73,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         function["name"] in [
           "fork_background",
           "check_background_task_status",
+          "wait_backround_tasks",
           "cancel_background_task"
         ]
       end)
@@ -105,6 +107,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert check_background["schema"]["required"] == ["background_task_id"]
     assert check_background["schema"]["properties"]["background_task_id"]["format"] == "uuid"
     assert check_background["schema"]["properties"]["cursor"]["type"] == "string"
+
+    wait_background = Enum.find(functions, &(&1["name"] == "wait_backround_tasks"))
+    assert wait_background["schema"]["required"] == ["background_task_ids"]
+
+    assert wait_background["schema"]["properties"]["background_task_ids"]["items"] ==
+             %{"type" => "string", "format" => "uuid"}
+
+    assert wait_background["schema"]["properties"]["timeout_seconds"]["minimum"] == 0
+    refute Map.get(wait_background, "is_background_function", false)
+    refute Map.get(wait_background, "provides_background_task_status", false)
 
     cancel_background = Enum.find(functions, &(&1["name"] == "cancel_background_task"))
     assert cancel_background["schema"]["required"] == ["background_task_id"]
@@ -236,6 +248,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
        %{"brief" => "Research", "prompt" => "Check one thing."}},
       {"agent_management__check_background_task_status",
        %{"background_task_id" => Ash.UUID.generate()}},
+      {"agent_management__wait_backround_tasks",
+       %{"background_task_ids" => [Ash.UUID.generate()]}},
       {"agent_management__cancel_background_task", %{"background_task_id" => Ash.UUID.generate()}}
     ]
 
@@ -772,6 +786,178 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
              |> Ash.read!(actor: actor)
   end
 
+  test "background wait returns all terminal statuses in requested order without output" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor)
+    enable_fixed_function!(tool, "wait_backround_tasks", actor)
+    tasks = Enum.map([:failed, :completed, :canceled], &create_background_task!(actor, &1))
+    ids = Enum.map(tasks, & &1.id)
+
+    result =
+      Executor.execute_llm_tool(
+        %{"agent_management" => tool},
+        "agent_management__wait_backround_tasks",
+        %{"background_task_ids" => ids ++ [hd(ids)]},
+        %ExecutionContext{owner_id: actor.id}
+      )
+
+    expected = %{
+      "background_tasks" =>
+        Enum.map(tasks, &%{"background_task_id" => &1.id, "status" => Atom.to_string(&1.status)}),
+      "timed_out" => false
+    }
+
+    assert Jason.decode!(result.text) == expected
+    assert result.raw == expected
+  end
+
+  test "background wait without timeout waits for every task, including failures and cancellations" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor)
+    first = create_background_task!(actor, :running)
+    second = create_background_task!(actor, :queued)
+    third = create_background_task!(actor, :running)
+
+    waiter = start_background_wait(tool, [first.id, second.id, third.id], actor)
+    acknowledge_wait_phase(waiter, :protected)
+
+    assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, :interruptible}}, 1_000
+    assert pid == waiter.pid
+    assert {:ok, _} = BackgroundTasks.mark_completed(first, %ExecutionResult{text: "Done"})
+    GenServer.reply(from, :ok)
+    acknowledge_wait_phase(waiter, :protected)
+
+    # Reaching another wait proves that the first completion did not finish the call.
+    assert_receive {:"$gen_call", from, {:tool_execution_phase, ^pid, :interruptible}}, 1_000
+    assert {:ok, _} = BackgroundTasks.mark_failed(second, "test_failure", %{}, "known")
+    assert {:ok, _} = BackgroundTasks.mark_canceled(third)
+    GenServer.reply(from, :ok)
+    acknowledge_wait_phase(waiter, :protected)
+
+    assert {:completed, {:ok, result}} = Task.await(waiter, 1_000)
+    assert result.raw["timed_out"] == false
+
+    assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+             ["completed", "failed", "canceled"]
+  end
+
+  test "background wait returns current statuses at a fractional timeout without canceling tasks" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor)
+    tasks = Enum.map([:queued, :running, :completed], &create_background_task!(actor, &1))
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok, result} =
+             NativeAgentManagement.execute(
+               tool,
+               "wait_backround_tasks",
+               %{"background_task_ids" => Enum.map(tasks, & &1.id), "timeout_seconds" => 0.03},
+               %ExecutionContext{owner_id: actor.id}
+             )
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    assert elapsed_ms >= 30
+    assert elapsed_ms < 1_000
+    assert result.raw["timed_out"] == true
+
+    assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+             ["queued", "running", "completed"]
+
+    for task <- tasks do
+      assert {:ok, current} = Ash.get(BackgroundTask, task.id, actor: actor)
+      assert current.cancel_requested == false
+      assert current.status == task.status
+    end
+  end
+
+  test "background wait returns immediately for zero or already elapsed timeouts" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor)
+    task = create_background_task!(actor, :running)
+
+    for {timeout, created_at} <- [{0, nil}, {10, DateTime.add(DateTime.utc_now(), -20, :second)}] do
+      assert {:ok, result} =
+               NativeAgentManagement.execute(
+                 tool,
+                 "wait_backround_tasks",
+                 %{"background_task_ids" => [task.id], "timeout_seconds" => timeout},
+                 %ExecutionContext{owner_id: actor.id, tool_call_created_at: created_at}
+               )
+
+      assert result.raw == %{
+               "background_tasks" => [%{"background_task_id" => task.id, "status" => "running"}],
+               "timed_out" => true
+             }
+    end
+  end
+
+  test "background wait rejects missing and foreign tasks before waiting" do
+    %{user: actor} = user_fixture()
+    %{user: other} = user_fixture()
+    tool = create_tool_instance!(actor)
+    own = create_background_task!(actor, :running)
+    foreign = create_background_task!(other, :completed)
+
+    for task_id <- [Ash.UUID.generate(), foreign.id] do
+      assert {:error, "not_found"} =
+               NativeAgentManagement.execute(
+                 tool,
+                 "wait_backround_tasks",
+                 %{"background_task_ids" => [own.id, task_id]},
+                 %ExecutionContext{owner_id: actor.id}
+               )
+    end
+  end
+
+  test "background wait can be canceled at its interruption boundary" do
+    %{user: actor} = user_fixture()
+    task = create_background_task!(actor, :running)
+    waiter = start_background_wait(create_tool_instance!(actor), [task.id], actor)
+    acknowledge_wait_phase(waiter, :protected)
+    acknowledge_wait_phase(waiter, :interruptible, :canceled)
+    assert Task.await(waiter, 1_000) == :canceled
+  end
+
+  test "background wait validates task ids, timeout and owner context" do
+    tool = %ToolInstance{type: "native-agent-management"}
+    context = %ExecutionContext{owner_id: 1}
+
+    for value <- [nil, [], "invalid", [123], [nil], [%{}], ["invalid"], ["warehouse worker"]] do
+      assert {:error, message} =
+               NativeAgentManagement.execute(
+                 tool,
+                 "wait_backround_tasks",
+                 %{"background_task_ids" => value},
+                 context
+               )
+
+      assert message =~ "background_task_ids"
+    end
+
+    for value <- [-1, "1", true, [], %{}] do
+      assert {:error, "timeout_seconds must be a non-negative number"} =
+               NativeAgentManagement.execute(
+                 tool,
+                 "wait_backround_tasks",
+                 %{"background_task_ids" => [Ash.UUID.generate()], "timeout_seconds" => value},
+                 context
+               )
+    end
+
+    args = %{"background_task_ids" => [Ash.UUID.generate()]}
+
+    assert {:error, "owner_id is required"} =
+             NativeAgentManagement.execute(
+               tool,
+               "wait_backround_tasks",
+               args,
+               %ExecutionContext{}
+             )
+
+    assert {:error, "Waiting for background tasks requires generation execution context."} =
+             NativeAgentManagement.execute(tool, "wait_backround_tasks", args, nil)
+  end
+
   test "sleep pauses without execution context" do
     %{user: actor} = user_fixture()
     tool_instance = create_tool_instance!(actor)
@@ -825,6 +1011,38 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
              NativeAgentManagement.execute(tool_instance, "sleep", %{}, nil)
 
     assert String.contains?(message, "seconds")
+  end
+
+  defp create_background_task!(actor, status) do
+    BackgroundTask
+    |> Ash.Changeset.for_create(
+      :create,
+      %{kind: "test", adapter: "test", status: status, function_name: "test"},
+      actor: actor
+    )
+    |> Ash.create!(actor: actor)
+  end
+
+  defp start_background_wait(tool, ids, actor) do
+    owner = self()
+    supervisor = start_supervised!(Task.Supervisor)
+
+    Task.Supervisor.async_nolink(supervisor, fn ->
+      IntellectualClub.Generation.ToolExecution.run(owner, fn ->
+        NativeAgentManagement.execute(
+          tool,
+          "wait_backround_tasks",
+          %{"background_task_ids" => ids},
+          %ExecutionContext{owner_id: actor.id}
+        )
+      end)
+    end)
+  end
+
+  defp acknowledge_wait_phase(waiter, phase, reply \\ :ok) do
+    assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, ^phase}}, 1_000
+    assert pid == waiter.pid
+    GenServer.reply(from, reply)
   end
 
   defp create_chat!(actor, _title) do

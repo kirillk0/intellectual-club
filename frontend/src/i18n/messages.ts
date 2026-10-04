@@ -220,6 +220,8 @@ export const ruMessages: Record<string, string> = {
     'Запустить связанный сабчат того же бота с теми же настройками, но без копирования истории, и дождаться завершения.',
   'Start a linked subagent chat with an empty conversation without waiting for it to finish. Save the returned background task id and check it explicitly.':
     'Запустить связанный сабчат с пустой историей, не дожидаясь завершения. Сохраните идентификатор фоновой задачи и проверяйте её явно.',
+  'Wait until all listed background tasks finish or the optional timeout expires, then return their current statuses. Completed, failed, and canceled tasks are finished. Use check_background_task_status to retrieve results and progress.':
+    'Дождаться завершения всех перечисленных фоновых задач или истечения необязательного таймаута и вернуть их текущие статусы. Успешно выполненные, завершившиеся с ошибкой и отменённые задачи считаются завершёнными. Для получения результатов и хода выполнения используйте check_background_task_status.',
   'Subchat': 'Сабчат',
   'Confirm new password': 'Подтвердите новый пароль',
   'Confirm password': 'Подтвердите пароль',
