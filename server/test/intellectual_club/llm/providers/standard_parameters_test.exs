@@ -203,7 +203,7 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
   test "anthropic uses adaptive thinking for literal efforts without endpoint branching" do
     parameters = %{
       "temperature" => 1,
-      "thinking" => %{"type" => "enabled", "budget_tokens" => 2_048},
+      "thinking" => %{"type" => "enabled", "budget_tokens" => 2_048, "display" => "summarized"},
       "output_config" => %{"effort" => "old", "verbosity" => "verbose"}
     }
 
@@ -215,7 +215,12 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
         })
 
       assert result["temperature"] == 0.4
-      assert result["thinking"] == %{"type" => "adaptive"}
+
+      assert result["thinking"] == %{
+               "type" => "adaptive",
+               "budget_tokens" => 2_048,
+               "display" => "summarized"
+             }
 
       assert result["output_config"] == %{
                "effort" => Atom.to_string(effort),
@@ -224,9 +229,40 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
     end
   end
 
+  test "anthropic preserves manual thinking when effort is unset" do
+    parameters = %{"thinking" => %{"type" => "adaptive", "display" => "summarized"}}
+
+    assert AnthropicMessages.apply_standard_parameters(parameters, %{reasoning_effort: nil}) ==
+             parameters
+  end
+
+  test "anthropic merges thinking fields after stringifying keys" do
+    parameters = %{thinking: %{type: "enabled", display: "summarized", custom: true}}
+
+    result = AnthropicMessages.apply_standard_parameters(parameters, %{reasoning_effort: :high})
+
+    assert result["thinking"] == %{
+             "type" => "adaptive",
+             "display" => "summarized",
+             "custom" => true
+           }
+  end
+
+  test "anthropic initializes missing or invalid thinking for selected efforts" do
+    for parameters <- [%{}, %{"thinking" => nil}, %{"thinking" => "invalid"}],
+        effort <- @efforts do
+      result =
+        AnthropicMessages.apply_standard_parameters(parameters, %{reasoning_effort: effort})
+
+      type = if effort == :none, do: "disabled", else: "adaptive"
+
+      assert result["thinking"] == %{"type" => type}
+    end
+  end
+
   test "anthropic disables thinking for none and removes only output effort" do
     parameters = %{
-      "thinking" => %{"type" => "adaptive"},
+      "thinking" => %{"type" => "adaptive", "display" => "summarized"},
       "output_config" => %{"effort" => "high", "verbosity" => "verbose"}
     }
 
@@ -236,7 +272,7 @@ defmodule IntellectualClub.Llm.Providers.StandardParametersTest do
         reasoning_effort: :none
       })
 
-    assert result["thinking"] == %{"type" => "disabled"}
+    assert result["thinking"] == %{"type" => "disabled", "display" => "summarized"}
     assert result["output_config"] == %{"verbosity" => "verbose"}
 
     result_without_output_config =

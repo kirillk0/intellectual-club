@@ -176,7 +176,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
     parameters = RequestPayload.stringify_keys(parameters)
 
     parameters
-    |> Map.put("thinking", %{"type" => "disabled"})
+    |> put_thinking_type("disabled")
     |> delete_output_effort()
   end
 
@@ -189,8 +189,18 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
       |> Map.put("effort", to_string(effort))
 
     parameters
-    |> Map.put("thinking", %{"type" => "adaptive"})
+    |> put_thinking_type("adaptive")
     |> Map.put("output_config", output_config)
+  end
+
+  defp put_thinking_type(parameters, type) do
+    thinking =
+      case Map.get(parameters, "thinking") do
+        %{} = value -> Map.put(value, "type", type)
+        _other -> %{"type" => type}
+      end
+
+    Map.put(parameters, "thinking", thinking)
   end
 
   defp output_config(parameters) do
