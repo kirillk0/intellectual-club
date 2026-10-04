@@ -310,7 +310,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
     if is_integer(index) and is_map(block) do
       block = Payload.stringify_keys(block)
       state = put_content_block(state, index, block)
-      maybe_emit_tool_call(state, index, emit)
+      emit_content_block(state, index, emit)
     else
       state
     end
@@ -332,8 +332,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
         text = Map.get(delta, "text")
 
         if is_binary(text) and text != "" do
-          emit.({:trace, {:ensure_item, "answer", :answer, nil}})
-          emit.({:trace, {:append_text, "answer", :answer, idx + 1, text}})
+          emit.({:trace, {:ensure_item, "answer:#{idx}", :answer, idx + 1}})
+          emit.({:trace, {:append_text, "answer:#{idx}", :answer, 1, text}})
         end
 
         append_content_block_text(state, idx, "text", text)
@@ -342,14 +342,14 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
         thinking = Map.get(delta, "thinking")
 
         if is_binary(thinking) and thinking != "" do
-          emit.({:trace, {:ensure_item, "reasoning", :reasoning, 1}})
-          emit.({:trace, {:append_text, "reasoning", :reasoning, idx + 1, thinking}})
+          emit.({:trace, {:ensure_item, "reasoning:#{idx}", :reasoning, idx + 1}})
+          emit.({:trace, {:append_text, "reasoning:#{idx}", :reasoning, 1, thinking}})
         end
 
         append_content_block_text(state, idx, "thinking", thinking)
 
       {idx, "signature_delta"} when is_integer(idx) ->
-        put_content_block_value(state, idx, "signature", Map.get(delta, "signature"))
+        append_content_block_text(state, idx, "signature", Map.get(delta, "signature"))
 
       {idx, "input_json_delta"} when is_integer(idx) ->
         partial = Map.get(delta, "partial_json")
@@ -382,7 +382,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
 
     if is_integer(index) do
       state = finalize_content_block(state, index)
-      maybe_emit_tool_call(state, index, emit)
+      emit_content_block(state, index, emit)
     else
       state
     end
@@ -400,6 +400,11 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   end
 
   defp handle_stream_event(state, %{"type" => "message_stop"}, raw_request, _url, emit) do
+    state.content_blocks
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.each(&emit_content_block(state, &1, emit))
+
     raw_response = build_raw_response(state)
     usage = normalized_trace_usage(raw_response)
 
@@ -530,6 +535,34 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   end
 
   defp maybe_emit_tool_call(state, _index, _emit), do: state
+
+  defp emit_content_block(state, index, emit) do
+    case Map.get(state.content_blocks, index) do
+      %{"type" => type} = block when type in ["thinking", "redacted_thinking"] ->
+        key = "reasoning:#{index}"
+        emit.({:trace, {:ensure_item, key, :reasoning, index + 1}})
+
+        if is_binary(block["thinking"]) and block["thinking"] != "" do
+          emit.({:trace, {:set_text, key, :reasoning, 1, block["thinking"]}})
+        end
+
+        emit.(
+          {:trace,
+           {:set_opaque, key, :reasoning, @opaque_sequence, %{"anthropic_content_block" => block}}}
+        )
+
+        state
+
+      %{"type" => "text", "text" => text} when is_binary(text) ->
+        key = "answer:#{index}"
+        emit.({:trace, {:ensure_item, key, :answer, index + 1}})
+        emit.({:trace, {:set_text, key, :answer, 1, text}})
+        state
+
+      _other ->
+        maybe_emit_tool_call(state, index, emit)
+    end
+  end
 
   defp tool_input_for_trace(block, state, index) when is_map(block) do
     case Map.get(block, "input") do

@@ -68,6 +68,7 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
         :create,
         %{
           name: "Knowledge bot",
+          history_mode: :full,
           handoff_message_block_id: handoff_block.id,
           compatible_configuration_tag_bindings: [
             %{llm_configuration_tag_id: tag_a.id},
@@ -98,6 +99,8 @@ defmodule IntellectualClubWeb.AshJsonApi.BotsDuplicationTest do
     duplicated_bot = Ash.get!(Bot, duplicated_bot_id, actor: actor)
 
     assert duplicated_bot.handoff_message_block_id == handoff_block.id
+    assert duplicated_bot.history_mode == :full
+    assert response["data"]["attributes"]["history_mode"] == "full"
 
     duplicated_bindings =
       BotKnowledgeBlock

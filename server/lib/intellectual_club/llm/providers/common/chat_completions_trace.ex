@@ -38,6 +38,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletionsTrace do
         raw_response = Map.get(meta, :raw_response)
         usage = Map.get(meta, :usage)
 
+        emit_reasoning_payload(emit, raw_response)
         emit.({:trace, {:set_step_raw_response, raw_response}})
         emit.({:trace, {:set_step_usage, usage}})
         emit.({:trace, {:set_step_response_final, true}})
@@ -56,6 +57,36 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletionsTrace do
 
     ChatCompletions.stream_generate(opts, emit_old)
   end
+
+  defp emit_reasoning_payload(emit, %{"choices" => [%{"message" => message} | _]})
+       when is_map(message) do
+    payload = Map.take(message, ["reasoning_details", "reasoning", "reasoning_content"])
+
+    if Enum.any?(payload, fn {_key, value} -> value not in [nil, "", []] end) do
+      # Reserve the reasoning position even when the provider sends no text deltas.
+      emit.({:trace, {:ensure_item, "reasoning", :reasoning, 1}})
+      emit.({:trace, {:ensure_item, "answer", :answer, 2}})
+
+      message
+      |> Map.get("tool_calls", [])
+      |> List.wrap()
+      |> Enum.with_index(3)
+      |> Enum.each(fn
+        {%{"id" => id}, sequence} when is_binary(id) ->
+          emit.({:trace, {:ensure_item, "tc:" <> id, :tool_call, sequence}})
+
+        _other ->
+          :ok
+      end)
+
+      emit.(
+        {:trace,
+         {:set_opaque, "reasoning", :reasoning, 10_000, %{"chat_completion_reasoning" => payload}}}
+      )
+    end
+  end
+
+  defp emit_reasoning_payload(_emit, _response), do: :ok
 
   defp emit_tool_call_trace(emit, %{call_id: call_id, name: name} = tool_call)
        when is_function(emit, 1) and is_binary(call_id) and call_id != "" and is_binary(name) and

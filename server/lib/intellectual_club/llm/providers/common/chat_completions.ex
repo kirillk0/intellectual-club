@@ -1062,12 +1062,32 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
 
   defp merge_dict(target, incoming) when is_map(target) and is_map(incoming) do
     Enum.reduce(incoming, target, fn {key, value}, target ->
-      if key == "tool_calls" do
-        merge_tool_calls(target, value)
-      else
-        merge_value(target, key, value)
+      case key do
+        "tool_calls" -> merge_tool_calls(target, value)
+        "reasoning_details" when is_list(value) -> merge_reasoning_details(target, value)
+        _other -> merge_value(target, key, value)
       end
     end)
+  end
+
+  defp merge_reasoning_details(target, incoming) do
+    details =
+      Enum.reduce(incoming, List.wrap(Map.get(target, "reasoning_details")), fn detail, acc ->
+        index = if is_map(detail), do: Map.get(detail, "index")
+
+        position =
+          if is_integer(index) do
+            Enum.find_index(acc, &(is_map(&1) and Map.get(&1, "index") == index))
+          end
+
+        if is_integer(position) do
+          List.update_at(acc, position, &merge_dict(&1, detail))
+        else
+          acc ++ [detail]
+        end
+      end)
+
+    Map.put(target, "reasoning_details", details)
   end
 
   defp merge_value(target, _key, nil), do: target

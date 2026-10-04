@@ -169,8 +169,8 @@ defmodule IntellectualClub.Bots.Bot do
     attribute :history_mode, :atom do
       allow_nil?(false)
       public?(true)
-      default(:chat)
-      constraints(one_of: [:chat, :agent])
+      default(:agent)
+      constraints(one_of: [:chat, :agent, :full])
     end
 
     create_timestamp(:created_at)

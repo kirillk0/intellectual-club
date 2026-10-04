@@ -1,4 +1,10 @@
 export const ruMessages: Record<string, string> = {
+  'History mode': 'Режим истории',
+  'Agent — dialogue and tools': 'Agent — диалог и инструменты',
+  'Chat — visible dialogue': 'Chat — видимый диалог',
+  'Full — dialogue, tools and reasoning': 'Full — диалог, инструменты и рассуждения',
+  'Full reuses reasoning only from the same configuration. Chat keeps user messages, steering and answers. Agent is the default.':
+    'Full повторно использует рассуждения только той же конфигурации. Chat сохраняет сообщения пользователя, уточнения во время генерации и ответы. По умолчанию используется Agent.',
   'This shared fork cannot be copied into an independent conversation.':
     'Этот общий fork нельзя скопировать в независимую беседу.',
   'Inherited context': 'Унаследованный контекст',

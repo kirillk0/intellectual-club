@@ -71,9 +71,12 @@ export type KnowledgeBlockAttachment = {
   url: string;
 };
 
+export type HistoryMode = 'agent' | 'chat' | 'full';
+
 export type Bot = {
   id: number;
   name: string;
+  history_mode?: HistoryMode;
   image?: ImageAsset | null;
   default_llm_configuration_id?: number | null;
   handoff_message_block_id?: number | null;

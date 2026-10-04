@@ -85,6 +85,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
     {system, messages} =
       opts
       |> Map.put(:provider_type, type())
+      |> Map.put(:assistant_message_builder, &Payload.history_assistant_message/3)
       |> ChatAdapterHelpers.build_initial_messages()
       |> Payload.from_chat_messages()
 

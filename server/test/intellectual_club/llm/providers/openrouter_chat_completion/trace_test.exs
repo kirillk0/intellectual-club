@@ -237,6 +237,141 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.TraceTest do
            ]
   end
 
+  test "both chat adapters persist fragmented opaque-only reasoning details for replay" do
+    chunk = fn delta, finish ->
+      %{"choices" => [%{"index" => 0, "delta" => delta, "finish_reason" => finish}]}
+    end
+
+    chunks =
+      sse_chunks([
+        chunk.(
+          %{
+            "reasoning" => "",
+            "reasoning_details" => [
+              %{"type" => "reasoning.encrypted", "id" => "r0", "index" => 2, "data" => "part-"}
+            ]
+          },
+          nil
+        ),
+        chunk.(
+          %{
+            "reasoning_details" => [
+              %{"type" => "reasoning.encrypted", "id" => "r0", "index" => 2, "data" => "one"},
+              %{"type" => "reasoning.encrypted", "index" => 3, "data" => "two"}
+            ]
+          },
+          nil
+        ),
+        chunk.(%{"content" => "Answer"}, "stop")
+      ])
+
+    {base_url, _agent} =
+      start_scripted_server!(%{"/chat/completions" => [{200, chunks}, {200, chunks}]})
+
+    for adapter <- [Trace, IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion] do
+      parent = self()
+
+      adapter.stream_generate(
+        %{
+          base_url: base_url,
+          api_key: "k",
+          context: %{provider_base_url: base_url, provider_api_key: "k"},
+          request_payload: %{"model" => "test", "messages" => [], "stream" => true}
+        },
+        &send(parent, {:provider_event, &1})
+      )
+
+      runtime =
+        Enum.reduce(
+          collect_provider_events([]),
+          IntellectualClub.Generation.RuntimeTrace.new_step(),
+          fn
+            {:trace, event}, step ->
+              IntellectualClub.Generation.RuntimeTrace.apply_event(step, event)
+
+            _, step ->
+              step
+          end
+        )
+
+      stored = IntellectualClub.Generation.RuntimeTrace.persistable(runtime)
+      reasoning = Enum.find(stored.items, &(&1.type == :reasoning))
+      assert reasoning
+
+      assert [%{kind: :opaque, content_json: %{"chat_completion_reasoning" => fields}}] =
+               reasoning.contents
+
+      assert fields["reasoning_details"] == [
+               %{
+                 "type" => "reasoning.encrypted",
+                 "id" => "r0",
+                 "index" => 2,
+                 "data" => "part-one"
+               },
+               %{"type" => "reasoning.encrypted", "index" => 3, "data" => "two"}
+             ]
+
+      assert fields["reasoning"] == ""
+      assert Map.has_key?(fields, "reasoning")
+
+      history = [
+        %{role: :assistant, llm_configuration_id: 4, steps: [Map.delete(stored, :raw_response)]}
+      ]
+
+      full = IntellectualClub.Generation.History.for_mode(history, :full, 4)
+      [message] = IntellectualClub.Llm.Providers.Common.ChatHistory.build_messages(full)
+      assert message["reasoning_details"] == fields["reasoning_details"]
+      assert message["content"] == "Answer"
+    end
+  end
+
+  test "native reasoning and reasoning_content remain distinct from display text" do
+    chunks =
+      sse_chunks([
+        %{
+          "choices" => [
+            %{"delta" => %{"reasoning" => "Reason ", "reasoning_content" => "Native "}}
+          ]
+        },
+        %{
+          "choices" => [
+            %{
+              "delta" => %{
+                "reasoning" => "one",
+                "reasoning_content" => "two",
+                "content" => "Answer"
+              },
+              "finish_reason" => "stop"
+            }
+          ]
+        }
+      ])
+
+    {base_url, _agent} = start_scripted_server!(%{"/chat/completions" => [{200, chunks}]})
+    parent = self()
+
+    Trace.stream_generate(
+      %{
+        base_url: base_url,
+        api_key: "k",
+        request_payload: %{"model" => "test", "messages" => [], "stream" => true}
+      },
+      &send(parent, {:provider_event, &1})
+    )
+
+    events = collect_provider_events([])
+
+    assert Enum.any?(events, fn
+             {:trace,
+              {:set_opaque, "reasoning", :reasoning, 10_000,
+               %{"chat_completion_reasoning" => payload}}} ->
+               payload == %{"reasoning" => "Reason one", "reasoning_content" => "Native two"}
+
+             _ ->
+               false
+           end)
+  end
+
   defp collect_provider_events(acc) do
     receive do
       {:provider_event, event} ->

@@ -3,6 +3,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   Payload projection for Anthropic Messages API.
   """
 
+  alias IntellectualClub.Generation.History
+
   @default_max_tokens 32_768
   @cache_control_payload %{"type" => "ephemeral"}
   @cacheable_block_types MapSet.new([
@@ -59,6 +61,48 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   end
 
   def from_chat_messages(_messages), do: {nil, []}
+
+  @doc """
+  Projects allowed canonical items in their original order, including opaque thinking.
+  """
+  def history_assistant_message(items, _answer_text, tool_calls_with_items) do
+    content =
+      Enum.flat_map(items, fn item ->
+        case History.item_type(item) do
+          type when type in [:answer, :handoff_summary] ->
+            content_blocks(History.item_text(item))
+
+          :reasoning ->
+            item
+            |> History.opaque_payloads()
+            |> Enum.flat_map(fn payload ->
+              case Map.get(payload, "anthropic_content_block") do
+                %{"type" => "thinking", "thinking" => text, "signature" => signature} = block
+                when is_binary(text) and is_binary(signature) and signature != "" ->
+                  [block]
+
+                %{"type" => "redacted_thinking", "data" => data} = block
+                when is_binary(data) and data != "" ->
+                  [block]
+
+                _other ->
+                  []
+              end
+            end)
+
+          :tool_call ->
+            Enum.flat_map(tool_calls_with_items, fn
+              {^item, call} -> tool_use_block(call)
+              _other -> []
+            end)
+
+          _other ->
+            []
+        end
+      end)
+
+    %{"role" => "assistant", "content" => content}
+  end
 
   @spec request_snapshot(map()) :: map()
   def request_snapshot(%{} = raw_request) do
@@ -402,6 +446,10 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
   end
 
   defp content_block(%{"type" => "image"} = block), do: [block]
+
+  defp content_block(%{"type" => type} = block)
+       when type in ["thinking", "redacted_thinking", "tool_use"],
+       do: [block]
 
   defp content_block(%{"type" => "image_url"} = block) do
     url =

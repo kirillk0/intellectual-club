@@ -127,6 +127,7 @@ defmodule IntellectualClub.Generation.Context do
 
     source_branch
     |> history_branch_for_generation()
+    |> History.for_mode(history_mode_for_chat(chat), chat.llm_configuration_id)
     |> Enum.map(fn message ->
       %{
         role: history_message_role(message),
@@ -211,7 +212,7 @@ defmodule IntellectualClub.Generation.Context do
         parent_message_id: message.parent_id,
         step_id: retry_step.id,
         llm_configuration_id: llm_configuration && llm_configuration.id,
-        history_mode: :agent,
+        history_mode: history_mode_for_chat(chat),
         history: [],
         system_prompt: request_snapshot.system_prompt,
         provider_id: provider_id,
@@ -688,7 +689,12 @@ defmodule IntellectualClub.Generation.Context do
     source_branch = effective_history_branch!(chat, target_parent_id, actor)
     source_branch = append_pending_user(source_branch, opts)
 
-    history = history_branch_for_generation(source_branch)
+    history_mode = history_mode_for_chat(chat)
+
+    history =
+      source_branch
+      |> history_branch_for_generation()
+      |> History.for_mode(history_mode, chat.llm_configuration_id)
 
     fix_role_alteration =
       ash_boolean_true?(
@@ -701,8 +707,6 @@ defmodule IntellectualClub.Generation.Context do
       else
         history
       end
-
-    history_mode = :agent
 
     history_entries =
       Enum.map(history, fn message ->
@@ -1406,6 +1410,7 @@ defmodule IntellectualClub.Generation.Context do
   defp turn_aborted_marker(previous_message) when is_map(previous_message) do
     %{
       role: :user,
+      history_marker: :turn_aborted,
       content: turn_aborted_marker_text(previous_message)
     }
   end
@@ -1494,12 +1499,18 @@ defmodule IntellectualClub.Generation.Context do
   end
 
   defp load_history_chat!(%Chat{} = chat, actor) do
-    Ash.load!(chat, [:last_message], actor: actor, strict?: true)
+    Ash.load!(chat, [:bot, :last_message], actor: actor, strict?: true)
   end
 
   defp load_history_chat!(chat_id, actor) when is_integer(chat_id) do
-    Ash.get!(Chat, chat_id, actor: actor, load: [:last_message])
+    Ash.get!(Chat, chat_id, actor: actor, load: [:bot, :last_message])
   end
+
+  defp history_mode_for_chat(%{bot: %{history_mode: mode}})
+       when mode in [:chat, :agent, :full],
+       do: mode
+
+  defp history_mode_for_chat(_chat), do: :agent
 
   defp generation_parent_id(opts, chat) do
     case Keyword.fetch(opts, :parent_id) do

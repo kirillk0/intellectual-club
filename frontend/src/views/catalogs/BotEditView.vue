@@ -270,6 +270,19 @@
             </div>
           </div>
 
+          <label :class="{ 'field-error': errors.hasField('history_mode') }">
+            History mode
+            <select id="bot-history-mode" v-model="form.history_mode" class="full" :disabled="sharedReadonly" @change="errors.clearField('history_mode')">
+              <option value="agent">Agent — dialogue and tools</option>
+              <option value="chat">Chat — visible dialogue</option>
+              <option value="full">Full — dialogue, tools and reasoning</option>
+            </select>
+            <div v-if="errors.hasField('history_mode')" class="error-text">{{ errors.messageFor('history_mode') }}</div>
+          </label>
+          <p class="muted">
+            Full reuses reasoning only from the same configuration. Chat keeps user messages, steering and answers. Agent is the default.
+          </p>
+
           <label :class="{ 'field-error': errors.hasField('max_tool_rounds') }">
             Max tool rounds
             <input
@@ -438,10 +451,11 @@ import {
   type JsonApiResource,
   type JsonApiSingleResponse,
 } from '@/api/jsonApi';
-import type { Group, ImageAsset, KnowledgeBlock, ToolInstanceOption } from '@/types/api';
+import type { Group, HistoryMode, ImageAsset, KnowledgeBlock, ToolInstanceOption } from '@/types/api';
 
 type BotForm = {
   name: string;
+  history_mode: HistoryMode;
   image: ImageAsset | null;
   first_messages: string[];
   default_llm_configuration_id: number | null;
@@ -487,6 +501,7 @@ function fromApi(resource: JsonApiResource): Partial<BotForm> {
   const first_messages = rawFirst.map((m) => String(m || '')).filter((m) => m.trim() !== '');
   return {
     name: String(attrs.name || ''),
+    history_mode: attrs.history_mode === 'chat' || attrs.history_mode === 'full' ? attrs.history_mode : 'agent',
     image: parseImageAsset(attrs.image),
     first_messages,
     default_llm_configuration_id:
@@ -594,6 +609,7 @@ const editor = useCrudEditor<BotForm>({
   editPath: (id) => `/catalogs/bots/${id}`,
   defaultForm: () => ({
     name: '',
+    history_mode: 'agent',
     image: null,
     first_messages: [],
     default_llm_configuration_id: null,
@@ -608,6 +624,7 @@ const editor = useCrudEditor<BotForm>({
   fromApi,
   toAttributes: (form) => ({
     name: form.name,
+    history_mode: form.history_mode,
     first_messages: (form.first_messages || []).map((m) => String(m || '').trim()).filter((m) => m !== ''),
     default_llm_configuration_id: form.default_llm_configuration_id,
     handoff_message_block_id: form.handoff_message_block_id,
@@ -622,6 +639,7 @@ const editor = useCrudEditor<BotForm>({
   }),
   normalizeForDirty: (form) => ({
     name: form.name,
+    history_mode: form.history_mode,
     first_messages: form.first_messages,
     default_llm_configuration_id: form.default_llm_configuration_id,
     handoff_message_block_id: form.handoff_message_block_id,

@@ -311,6 +311,35 @@ defmodule IntellectualClub.Chat.ForkHistoryTest do
     end
   end
 
+  test "history modes preserve the fork boundary and select inherited opaque by configuration", %{
+    actor: actor
+  } do
+    configuration = configuration!(actor)
+    bot = create!(Bot, :create, %{name: "Full fork bot", history_mode: :full}, actor)
+    source = source!(actor, chat_attrs: %{bot_id: bot.id, llm_configuration_id: configuration.id})
+
+    item!(source.step, 6, :reasoning, "Summary", actor, %{
+      "type" => "reasoning",
+      "encrypted_content" => "fork-encrypted",
+      "summary" => []
+    })
+
+    later = step!(source.message, source.step.sequence + 1, actor)
+    item!(later, 1, :answer, "After fork boundary", actor)
+    child = child!(source, actor)
+
+    for mode <- [:full, :agent, :chat] do
+      update!(Ash.get!(Bot, bot.id, actor: actor), :update, %{history_mode: mode}, actor)
+      assert {:ok, preparation} = Context.prepare(child.id, actor: actor, parent_id: nil)
+      payload = inspect(preparation.context.request_payload)
+      assert String.contains?(payload, "fork-encrypted") == (mode == :full)
+      assert String.contains?(payload, @selected_text) == (mode != :chat)
+      assert payload =~ "FORK CONTROL MESSAGE"
+      assert payload =~ "Parent completed response"
+      refute payload =~ "After fork boundary"
+    end
+  end
+
   test "first generation and followups use inherited plus only the selected local branch", %{
     actor: actor
   } do

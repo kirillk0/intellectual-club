@@ -125,7 +125,7 @@ defmodule IntellectualClub.Generation.ContextTest do
           first_messages: [],
           max_tool_rounds: 10,
           context_soft_limit_percent: 80,
-          history_mode: :chat
+          history_mode: :agent
         },
         actor: actor
       )
@@ -3644,6 +3644,97 @@ defmodule IntellectualClub.Generation.ContextTest do
   defp provider_base_url(:responses), do: "https://api.openai.com/v1"
   defp provider_base_url(:openrouter_chat_completion), do: "https://openrouter.ai/api/v1"
   defp provider_base_url(_type), do: "https://example.com/v1"
+
+  test "bot modes control persisted history with exact configuration identity and no raw replay" do
+    %{user: actor} = user_fixture()
+
+    create = fn resource, attrs ->
+      resource
+      |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+      |> Ash.create!(actor: actor)
+    end
+
+    provider =
+      create.(LlmProvider, %{
+        name: "History provider",
+        type: :responses,
+        base_url: "https://api.openai.com/v1",
+        api_key: "k"
+      })
+
+    first = create.(LlmConfiguration, %{provider_id: provider.id, model_name: "same-model"})
+    second = create.(LlmConfiguration, %{provider_id: provider.id, model_name: "same-model"})
+    bot = create.(Bot, %{name: "History modes"})
+    assert bot.history_mode == :agent
+
+    assert {:error, _} =
+             Bot
+             |> Ash.Changeset.for_create(:create, %{name: "Invalid mode", history_mode: :unknown},
+               actor: actor
+             )
+             |> Ash.create(actor: actor)
+
+    chat = create.(Chat, %{bot_id: bot.id, llm_configuration_id: first.id})
+    {:ok, user} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+
+    assistant =
+      create_assistant_message!(chat, user, actor, llm_configuration_id: first.id, status: :done)
+
+    step =
+      create_step!(assistant.id, 1, actor, %{
+        status: :done,
+        raw_response: %{"encrypted_content" => "stale-raw-response"}
+      })
+
+    create_item_with_text_and_opaque!(
+      step.id,
+      1,
+      :reasoning,
+      "Visible summary",
+      %{"type" => "reasoning", "summary" => [], "encrypted_content" => "canonical-reasoning"},
+      actor
+    )
+
+    create_item_with_text!(step.id, 2, :answer, "Edited answer", actor)
+    create_item_with_text!(step.id, 3, :steering, "User steering", actor)
+    {:ok, last_user} = Threads.add_message_to_end(chat, :user, "Continue", actor: actor)
+
+    for {mode, config, expected} <- [
+          {:agent, first, false},
+          {:chat, first, false},
+          {:full, first, true},
+          {:full, second, false},
+          {:full, first, true}
+        ] do
+      Ash.get!(Bot, bot.id, actor: actor)
+      |> Ash.Changeset.for_update(:update, %{history_mode: mode}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      Ash.get!(Chat, chat.id, actor: actor)
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: config.id}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      {:ok, preparation} = Context.prepare(chat.id, actor: actor, parent_id: last_user.id)
+      context = preparation.context
+      assert context.history_mode == mode
+      input = Jason.encode!(context.messages)
+      assert String.contains?(input, "canonical-reasoning") == expected
+      assert input =~ "Edited answer"
+      assert input =~ "User steering"
+      refute input =~ "stale-raw-response"
+    end
+
+    first
+    |> Ash.Changeset.for_update(
+      :update,
+      %{model_name: "edited-model", parameters: %{"temperature" => 0.5}},
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    {:ok, preparation} = Context.prepare(chat.id, actor: actor, parent_id: last_user.id)
+    assert inspect(preparation.context.request_payload) =~ "canonical-reasoning"
+  end
 
   defp create_step!(message_id, sequence, actor, attrs \\ %{}) do
     ChatMessageStep

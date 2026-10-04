@@ -20,7 +20,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatAdapterHelpers do
     history_messages =
       ChatHistory.build_messages(history,
         supports_image_input: supports_image_input,
-        provider_type: provider_type
+        provider_type: provider_type,
+        assistant_message_builder: Map.get(opts, :assistant_message_builder)
       )
 
     messages = prepend_system_prompt(history_messages, system_prompt)

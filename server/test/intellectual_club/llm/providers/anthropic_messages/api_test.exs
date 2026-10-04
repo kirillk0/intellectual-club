@@ -100,7 +100,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
     events = collect_provider_events([])
 
     assert Enum.any?(events, fn
-             {:trace, {:append_text, "answer", :answer, 1, "Checking."}} -> true
+             {:trace, {:append_text, "answer:0", :answer, 1, "Checking."}} -> true
              _other -> false
            end)
 
@@ -379,6 +379,99 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ApiTest do
                "status_code" => @status
              }
     end
+  end
+
+  test "persists thinking signatures and opaque-only blocks for full history in native order" do
+    objects = [
+      %{"type" => "message_start", "message" => %{"role" => "assistant", "content" => []}},
+      %{
+        "type" => "content_block_start",
+        "index" => 0,
+        "content_block" => %{"type" => "thinking", "thinking" => ""}
+      },
+      %{
+        "type" => "content_block_delta",
+        "index" => 0,
+        "delta" => %{"type" => "thinking_delta", "thinking" => "Think "}
+      },
+      %{
+        "type" => "content_block_delta",
+        "index" => 0,
+        "delta" => %{"type" => "thinking_delta", "thinking" => "carefully"}
+      },
+      %{
+        "type" => "content_block_delta",
+        "index" => 0,
+        "delta" => %{"type" => "signature_delta", "signature" => "sig-"}
+      },
+      %{
+        "type" => "content_block_delta",
+        "index" => 0,
+        "delta" => %{"type" => "signature_delta", "signature" => "complete"}
+      },
+      %{"type" => "content_block_stop", "index" => 0},
+      %{
+        "type" => "content_block_start",
+        "index" => 1,
+        "content_block" => %{"type" => "text", "text" => "Answer"}
+      },
+      %{"type" => "content_block_stop", "index" => 1},
+      %{
+        "type" => "content_block_start",
+        "index" => 2,
+        "content_block" => %{"type" => "redacted_thinking", "data" => "encrypted-data"}
+      },
+      %{"type" => "content_block_stop", "index" => 2},
+      %{"type" => "message_stop"}
+    ]
+
+    {base_url, _agent} = start_scripted_server!(%{"/messages" => [{200, sse_chunks(objects)}]})
+    parent = self()
+
+    Api.stream_generate(
+      %{
+        base_url: base_url,
+        api_key: "k",
+        request_payload: %{"model" => "test", "messages" => [], "stream" => true}
+      },
+      &send(parent, {:provider_event, &1})
+    )
+
+    runtime =
+      Enum.reduce(collect_provider_events([]), RuntimeTrace.new_step(), fn
+        {:trace, event}, step -> RuntimeTrace.apply_event(step, event)
+        _, step -> step
+      end)
+
+    stored = RuntimeTrace.persistable(runtime)
+    assert Enum.map(stored.items, & &1.type) == [:reasoning, :answer, :reasoning]
+
+    assert Enum.all?(Enum.filter(stored.items, &(&1.type == :reasoning)), fn item ->
+             Enum.any?(item.contents, &(&1.kind == :opaque))
+           end)
+
+    history = [
+      %{role: :assistant, llm_configuration_id: 4, steps: [Map.delete(stored, :raw_response)]}
+    ]
+
+    full = IntellectualClub.Generation.History.for_mode(history, :full, 4)
+
+    request =
+      IntellectualClub.Llm.Providers.AnthropicMessages.build_initial_request(%{
+        history: full,
+        model_name: "test"
+      }).raw_request
+
+    assert [%{"content" => [thinking, answer, redacted]}] = request["messages"]
+
+    assert thinking == %{
+             "type" => "thinking",
+             "thinking" => "Think carefully",
+             "signature" => "sig-complete"
+           }
+
+    assert answer == %{"type" => "text", "text" => "Answer"}
+    assert redacted == %{"type" => "redacted_thinking", "data" => "encrypted-data"}
   end
 
   defp run_usage_stream!(initial_usage) when is_map(initial_usage) do

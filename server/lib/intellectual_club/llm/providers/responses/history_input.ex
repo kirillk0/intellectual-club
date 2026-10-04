@@ -158,7 +158,14 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
   defp project_indexed_item({item, item_index}, result_refs, last_answer_index) do
     case History.item_type(item) do
       :reasoning ->
-        []
+        case extract_responses_item(item) do
+          %{"type" => "reasoning", "encrypted_content" => encrypted} = payload
+          when is_binary(encrypted) and encrypted != "" ->
+            [sanitize_item(payload)]
+
+          _other ->
+            []
+        end
 
       type when type in [:answer, :handoff_summary] ->
         text = History.item_text(item)

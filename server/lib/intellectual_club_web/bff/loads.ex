@@ -98,6 +98,7 @@ defmodule IntellectualClubWeb.Bff.Loads do
     [
       :id,
       :name,
+      :history_mode,
       :default_llm_configuration_id,
       :context_soft_limit_percent,
       :max_file_size_bytes,

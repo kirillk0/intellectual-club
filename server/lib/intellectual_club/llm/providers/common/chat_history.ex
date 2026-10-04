@@ -191,8 +191,15 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
     tool_results = Enum.reverse(tool_results)
 
     assistant_message =
-      %{"role" => "assistant", "content" => answer_text}
-      |> maybe_put("tool_calls", tool_calls, tool_calls != [])
+      case Keyword.get(opts, :assistant_message_builder) do
+        builder when is_function(builder, 3) ->
+          builder.(items, answer_text, tool_calls_with_items)
+
+        _other ->
+          %{"role" => "assistant", "content" => answer_text}
+          |> maybe_put("tool_calls", tool_calls, tool_calls != [])
+          |> Map.merge(reasoning_fields(items))
+      end
 
     tool_call_ids =
       tool_calls
@@ -268,11 +275,31 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistory do
 
     tool_messages = tool_messages ++ media_messages
 
-    if String.trim(answer_text) == "" and tool_calls == [] do
+    if assistant_message["content"] in [nil, "", []] and tool_calls == [] and
+         map_size(Map.drop(assistant_message, ["role", "content"])) == 0 do
       tool_messages
     else
       [assistant_message | tool_messages]
     end
+  end
+
+  defp reasoning_fields(items) do
+    items
+    |> Enum.filter(&(History.item_type(&1) == :reasoning))
+    |> Enum.flat_map(&History.opaque_payloads/1)
+    |> Enum.reduce(%{}, fn payload, acc ->
+      case Map.get(payload, "chat_completion_reasoning") do
+        %{} = fields ->
+          fields = Map.take(fields, ["reasoning_details", "reasoning", "reasoning_content"])
+
+          if Enum.any?(fields, fn {_key, value} -> value not in [nil, "", []] end),
+            do: Map.merge(acc, fields),
+            else: acc
+
+        _other ->
+          acc
+      end
+    end)
   end
 
   defp tool_call_id(call) when is_map(call) do

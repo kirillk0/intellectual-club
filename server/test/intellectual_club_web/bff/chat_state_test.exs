@@ -356,6 +356,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
     cfg_payload = Enum.find(llm_configs, fn item -> item["id"] == config.id end) || %{}
 
     assert bot_payload["context_soft_limit_percent"] == 75
+    assert bot_payload["history_mode"] == "agent"
     assert is_binary(bot_payload["created_at"])
     assert is_binary(bot_payload["updated_at"])
     assert bot_payload["sort_activity_at"] == bot_payload["updated_at"]

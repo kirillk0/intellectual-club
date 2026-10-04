@@ -165,7 +165,7 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
   end
 
   test "canonical steering is projected at its exact position for every history format" do
-    history = canonical_history()
+    history = IntellectualClub.Generation.History.for_mode(canonical_history(), :agent, nil)
 
     assert HistoryInput.build_input_items(history) == [
              assistant_responses_message("Checking", "commentary"),

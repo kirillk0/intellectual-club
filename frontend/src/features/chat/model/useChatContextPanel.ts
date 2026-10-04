@@ -100,7 +100,13 @@ export function useChatContextPanel(params: Params) {
     linkedBlocks.value.reduce((sum, item) => sum + (item.block.token_count || 0), 0)
   );
   const historyTokenCount = computed(() =>
-    params.branch.value.reduce((sum, msg) => sum + (msg.token_count || 0), 0)
+    params.branch.value.reduce((sum, msg) => {
+      const steering = (msg.content?.parts || [])
+        .filter((part) => part.item_type === 'steering')
+        .map((part) => part.text)
+        .join('\n');
+      return sum + (msg.token_count || 0) + Math.ceil(new TextEncoder().encode(steering).length / 3.5);
+    }, 0)
   );
   const totalTokenCount = computed(() => promptTokenCount.value + historyTokenCount.value);
 
@@ -112,7 +118,7 @@ export function useChatContextPanel(params: Params) {
     return null;
   };
 
-  const isAgentHistoryMode = computed(() => true);
+  const isAgentHistoryMode = computed(() => params.currentBotInfo.value?.history_mode !== 'chat');
   const agentContextTokenCount = computed<number | null>(() => {
     const step = findLatestStepWithUsage(params.branch.value);
     if (!step) return null;
@@ -130,7 +136,7 @@ export function useChatContextPanel(params: Params) {
   });
 
   const contextUsedTokens = computed(() => {
-    const used = agentContextTokenCount.value;
+    const used = isAgentHistoryMode.value ? agentContextTokenCount.value : totalTokenCount.value;
     if (typeof used !== 'number' || !Number.isFinite(used)) return 0;
     return Math.max(0, used);
   });

@@ -279,7 +279,14 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
   defp step_from_trace_item(item, opts, result_refs) do
     case History.item_type(item) do
       :reasoning ->
-        []
+        case google_step_from_opaque(item) do
+          %{"type" => "thought", "signature" => signature} = step
+          when is_binary(signature) and signature != "" ->
+            [step]
+
+          _other ->
+            []
+        end
 
       :tool_call ->
         item

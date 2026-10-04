@@ -39,6 +39,45 @@ defmodule IntellectualClub.Generation.History do
   @content_kinds [:text, :opaque, :media]
 
   @doc """
+  Selects model-visible history without reading historical raw responses.
+
+  Reasoning is reusable only in full mode with the exact same configuration id.
+  Opaque payload validation and wire projection belong to the provider adapters.
+  """
+  def for_mode(history, mode, configuration_id) when is_list(history) do
+    Enum.flat_map(history, fn message ->
+      cond do
+        mode == :chat and Map.get(message, :history_marker) == :turn_aborted ->
+          []
+
+        trace_message?(message) and message_role(message) == "assistant" ->
+          replay_reasoning? =
+            mode == :full and is_integer(configuration_id) and
+              Map.get(message, :llm_configuration_id) == configuration_id
+
+          steps =
+            Enum.flat_map(steps(message), fn step ->
+              items =
+                Enum.filter(items(step), fn item ->
+                  case item_type(item) do
+                    :reasoning -> replay_reasoning? and opaque_payloads(item) != []
+                    type when mode == :chat -> type in [:answer, :handoff_summary, :steering]
+                    _other -> true
+                  end
+                end)
+
+              if items == [], do: [], else: [Map.put(step, :items, items)]
+            end)
+
+          if steps == [], do: [], else: [Map.put(message, :steps, steps)]
+
+        true ->
+          [message]
+      end
+    end)
+  end
+
+  @doc """
   Returns item types that project as user input in provider histories.
   """
   def user_input_item_types, do: @user_input_item_types
