@@ -1108,13 +1108,31 @@ defmodule IntellectualClub.Chat.Subagent do
     |> trace_value(:items, [])
     |> List.wrap()
     |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
-    |> Enum.filter(&History.assistant_answer_item?/1)
-    |> Enum.map(&History.item_text/1)
+    |> Enum.filter(fn item ->
+      History.assistant_answer_item?(item) or
+        trace_value(item, :type) in ["answer", "handoff_summary"]
+    end)
+    |> Enum.map(&answer_item_text/1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n\n")
   end
 
   defp answer_text_from_trace(_step), do: ""
+
+  defp answer_item_text(item) do
+    item
+    |> trace_value(:contents, [])
+    |> List.wrap()
+    |> Enum.sort_by(&(trace_value(&1, :sequence) || 0))
+    |> Enum.flat_map(fn content ->
+      text = trace_value(content, :content_text)
+
+      if trace_value(content, :kind) in [:text, "text"] and is_binary(text),
+        do: [text],
+        else: []
+    end)
+    |> Enum.join("")
+  end
 
   defp append_answer(answers, answer) when is_binary(answer) do
     if String.trim(answer) == "", do: answers, else: answers ++ [answer]

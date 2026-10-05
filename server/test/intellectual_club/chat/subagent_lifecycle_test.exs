@@ -17,6 +17,7 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
       await_gated_generation!: 0,
       create_gated_configuration!: 1,
       gate_generations!: 0,
+      partial_answer: 0,
       release_gated_generation: 1
     ]
 
@@ -1133,14 +1134,20 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
 
   # While the child generation is held by the gate the task is running and its
   # snapshot is resolved against the live generation process.
-  #
-  # NOTE: the live runtime step reaches `Subagent` in its client-normalized form
-  # (string item types), so the partial answer is not part of `progress` yet;
-  # see the stage 2 report.
   defp assert_in_flight_snapshot!(task_id, actor) do
     assert {:ok, snapshot} = BackgroundTasks.snapshot(task_id, nil, actor.id)
     assert snapshot["status"] == "running"
     assert snapshot["result"] == nil
+    assert [progress] = snapshot["progress"]
+    assert progress["type"] == "answer"
+    assert progress["text"] == partial_answer()
+    assert progress["mode"] == "replace"
+
+    assert {:ok, unchanged} =
+             BackgroundTasks.snapshot(task_id, snapshot["next_cursor"], actor.id)
+
+    assert unchanged["status"] == "running"
+    assert unchanged["progress"] == []
   end
 
   # The worker must wait on the generation process (monitor), not poll it from
