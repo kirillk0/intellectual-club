@@ -1,7 +1,10 @@
 defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
   use ExUnit.Case, async: true
 
+  import IntellectualClub.ProviderStreamHelpers
+
   alias IntellectualClub.Generation.RequestPayload
+  alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.MissingProvider
   alias IntellectualClub.Llm.Providers.Common.PreparedRequest
@@ -208,5 +211,61 @@ defmodule IntellectualClub.Llm.Providers.Common.PreparedRequestTest do
 
     assert_receive {:provider_event, {:response_complete, %{raw_request: ^prepared}}}
     refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
+  end
+
+  describe "Demo streaming multimodal messages" do
+    test "echoes text blocks in order and ignores images" do
+      prepared =
+        PreparedRequest.prepare(
+          Demo,
+          %{
+            messages: [
+              %{role: "user", content: "Previous prompt"},
+              %{
+                role: "user",
+                content: [
+                  %{type: "text", text: "Before the image. "},
+                  %{type: "image_url", image_url: %{url: "data:image/png;base64,cG5n"}},
+                  %{type: "text", text: "After the image."}
+                ]
+              },
+              %{role: "assistant", content: "Previous answer"}
+            ]
+          },
+          %{}
+        )
+
+      events = run_and_capture_events!(Demo, %{request_payload: prepared, chunk_delay_ms: 0})
+      answer = RuntimeTrace.text_for_item_type(trace_step(events), :answer)
+
+      assert {:response_complete, %{provider: :demo, raw_request: ^prepared}} = List.last(events)
+      assert answer =~ "You said: Before the image. After the image."
+      refute answer =~ "Previous prompt"
+      refute answer =~ "data:image"
+    end
+
+    test "uses the empty prompt response when the last user message contains only images" do
+      prepared =
+        PreparedRequest.prepare(
+          Demo,
+          %{
+            messages: [
+              %{role: "user", content: "Previous prompt"},
+              %{
+                role: "user",
+                content: [%{type: "image_url", image_url: %{url: "data:image/png;base64,cG5n"}}]
+              }
+            ]
+          },
+          %{}
+        )
+
+      events = run_and_capture_events!(Demo, %{request_payload: prepared, chunk_delay_ms: 0})
+      answer = RuntimeTrace.text_for_item_type(trace_step(events), :answer)
+
+      assert {:response_complete, %{provider: :demo, raw_request: ^prepared}} = List.last(events)
+      assert answer =~ "Send a message to see an echo."
+      refute answer =~ "Previous prompt"
+    end
   end
 end

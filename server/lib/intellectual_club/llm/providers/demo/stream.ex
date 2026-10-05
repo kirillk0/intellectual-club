@@ -60,10 +60,23 @@ defmodule IntellectualClub.Llm.Providers.Demo.Stream do
       role = Map.get(message, "role")
 
       if role == "user" do
-        Map.get(message, "content") |> to_string()
+        message |> Map.get("content") |> prompt_text()
       else
         nil
       end
     end)
   end
+
+  defp prompt_text(content) when is_binary(content), do: content
+
+  defp prompt_text(content) when is_list(content) do
+    content
+    |> Enum.map(fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      _other -> ""
+    end)
+    |> Enum.join("")
+  end
+
+  defp prompt_text(_content), do: ""
 end
