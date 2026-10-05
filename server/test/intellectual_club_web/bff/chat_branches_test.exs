@@ -47,6 +47,11 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesTest do
   end
 
   describe "POST /api/bff/chat-branches/:id/move-to-new-chat" do
+    setup do
+      put_app_env(:missed_notifications, :raise, :ash)
+      :ok
+    end
+
     test "moves the active sibling branch",
          %{conn: conn} do
       %{user: actor, password: password} = user_fixture()

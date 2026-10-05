@@ -9,7 +9,6 @@ defmodule IntellectualClub.Chat.BranchMove do
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.Continuation
   alias IntellectualClub.Chat.MessageTreeCopy
-  alias IntellectualClub.Repo
   alias IntellectualClub.Llm.LlmUsageRecord
 
   require Ash.Query
@@ -26,8 +25,7 @@ defmodule IntellectualClub.Chat.BranchMove do
          messages <- load_messages(source.id, actor),
          {:ok, context} <- build_move_context(source, messages, message_id),
          {:ok, context} <- materialize_move_context(context, actor) do
-      Repo.transaction(fn -> perform_move!(context, actor) end)
-      |> unwrap_transaction()
+      Ash.transact(Chat, fn -> perform_move!(context, actor) end)
     end
   end
 
@@ -308,7 +306,4 @@ defmodule IntellectualClub.Chat.BranchMove do
   end
 
   defp sort_timestamp(_value), do: -1
-
-  defp unwrap_transaction({:ok, result}), do: {:ok, result}
-  defp unwrap_transaction({:error, reason}), do: {:error, reason}
 end

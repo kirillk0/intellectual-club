@@ -88,7 +88,7 @@ defmodule IntellectualClub.Chat.Threads do
   end
 
   @doc """
-  Adds a message whose persisted trace contains multiple typed items.
+  Atomically adds a message whose persisted trace contains multiple typed items.
   """
   def add_message_with_items(chat_or_id, role, item_specs, opts \\ [])
       when is_list(item_specs) and is_list(opts) do
@@ -114,19 +114,17 @@ defmodule IntellectualClub.Chat.Threads do
       token_count: token_count
     }
 
-    message =
-      ChatMessage
-      |> Ash.Changeset.for_create(:add_message, params, actor: actor)
-      |> Ash.create!()
+    Ash.transact(Chat, fn ->
+      message =
+        ChatMessage
+        |> Ash.Changeset.for_create(:add_message, params, actor: actor)
+        |> Ash.create!()
 
-    case persist_message_items_trace!(message, items, actor) do
-      {:ok, _items} ->
+      with {:ok, _items} <- persist_message_items_trace!(message, items, actor) do
         _chat = set_last_message!(chat, message.id, actor)
-        {:ok, message}
-
-      {:error, error} ->
-        {:error, error}
-    end
+        message
+      end
+    end)
   end
 
   @doc """

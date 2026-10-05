@@ -11,6 +11,108 @@ defmodule IntellectualClub.Chat.ThreadsTest do
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Files.GarbageCollector
 
+  require Ash.Query
+
+  describe "add_message_with_items/4" do
+    setup do
+      put_app_env(:missed_notifications, :raise, :ash)
+      :ok
+    end
+
+    test "persists typed items and activates the complete message" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+
+      assert {:ok, message} =
+               Threads.add_message_with_items(
+                 chat,
+                 :user,
+                 [
+                   %{type: :handoff_history, contents: [%{kind: :text, content_text: "History"}]},
+                   %{type: :handoff_message, contents: [%{kind: :text, content_text: "Summary"}]}
+                 ],
+                 actor: actor,
+                 token_count: 42
+               )
+
+      assert message.token_count == 42
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == message.id
+
+      message = Ash.load!(message, [steps: [items: [:contents]]], actor: actor)
+      assert [step] = message.steps
+      items = Enum.sort_by(step.items, & &1.sequence)
+      assert Enum.map(items, & &1.type) == [:handoff_history, :handoff_message]
+
+      assert Enum.map(items, fn item -> hd(item.contents).content_text end) == [
+               "History",
+               "Summary"
+             ]
+    end
+
+    test "preserves all notifications for the caller's Ash transaction" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+
+      assert {:ok, {:ok, message}, notifications} =
+               Ash.transact(
+                 Chat,
+                 fn ->
+                   Threads.add_message_with_items(
+                     chat,
+                     :user,
+                     [%{type: :input, contents: [%{kind: :text, content_text: "Input"}]}],
+                     actor: actor
+                   )
+                 end,
+                 return_notifications?: true
+               )
+
+      assert Enum.any?(notifications, fn notification ->
+               notification.resource == Chat and notification.data.last_message_id == message.id
+             end)
+
+      for resource <- [ChatMessage, ChatMessageStep, ChatMessageItem, ChatMessageContent] do
+        assert Enum.count(notifications, &(&1.resource == resource)) == 1
+      end
+
+      assert Ash.Notifier.notify(notifications) == []
+    end
+
+    test "rolls back the whole message when an item cannot be persisted" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      {:ok, previous} = Threads.add_message_to_end(chat, :user, "Previous", actor: actor)
+
+      assert {:error, %Ash.Error.Invalid{}} =
+               Threads.add_message_with_items(
+                 chat,
+                 :user,
+                 [
+                   %{type: :input, contents: [%{kind: :text, content_text: "Valid item"}]},
+                   %{type: :invalid, contents: []}
+                 ],
+                 actor: actor,
+                 parent_id: previous.id
+               )
+
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == previous.id
+
+      assert [remaining] =
+               ChatMessage
+               |> Ash.Query.filter(chat_id == ^chat.id)
+               |> Ash.read!(actor: actor)
+
+      assert remaining.id == previous.id
+
+      assert Enum.map(Ash.read!(ChatMessageStep, actor: actor), & &1.chat_message_id) == [
+               previous.id
+             ]
+
+      assert length(Ash.read!(ChatMessageItem, actor: actor)) == 1
+      assert length(Ash.read!(ChatMessageContent, actor: actor)) == 1
+    end
+  end
+
   test "branch metadata and switching to rightmost leaf" do
     %{user: actor} = user_fixture()
 

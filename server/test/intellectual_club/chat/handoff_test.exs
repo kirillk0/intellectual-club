@@ -20,6 +20,11 @@ defmodule IntellectualClub.Chat.HandoffTest do
   alias IntellectualClub.TokenCounter
 
   describe "create_handoff_chat/4 and manual completion" do
+    setup do
+      put_app_env(:missed_notifications, :raise, :ash)
+      :ok
+    end
+
     test "creates the linked continuation chat with the rendered history and the source chat settings" do
       %{user: actor} = user_fixture()
 

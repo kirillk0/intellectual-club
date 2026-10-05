@@ -9,7 +9,6 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Repo
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.QueueCoordinator
@@ -156,30 +155,24 @@ defmodule IntellectualClub.Chat.Handoff do
          source_message_id,
          parent_tool_call_item_id
        ) do
-    Repo.transaction(fn ->
+    Ash.transact(Chat, fn ->
       target =
         create_target_chat!(source, actor, source_message_id, parent_tool_call_item_id)
 
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
-      item_specs =
-        case rolloff_item_specs(rolloff) do
-          {:ok, item_specs} -> item_specs
-          {:error, error} -> Repo.rollback(error)
-        end
-
-      {:ok, message} =
-        Threads.add_message_with_items(target, :user, item_specs,
-          actor: actor,
-          parent_id: nil,
-          status: :done,
-          token_count: rolloff.token_count
-        )
-
-      chat = Ash.get!(Chat, target.id, actor: actor, load: [:last_message])
-      %{chat: chat, message: message}
+      with {:ok, item_specs} <- rolloff_item_specs(rolloff),
+           {:ok, message} <-
+             Threads.add_message_with_items(target, :user, item_specs,
+               actor: actor,
+               parent_id: nil,
+               status: :done,
+               token_count: rolloff.token_count
+             ) do
+        chat = Ash.get!(Chat, target.id, actor: actor, load: [:last_message])
+        %{chat: chat, message: message}
+      end
     end)
-    |> unwrap_transaction()
   end
 
   defp existing_handoff_result(source_chat_id, source_message_id, actor) do
@@ -471,7 +464,4 @@ defmodule IntellectualClub.Chat.Handoff do
 
     normalize_summary(summary)
   end
-
-  defp unwrap_transaction({:ok, %{chat: %Chat{}} = result}), do: {:ok, result}
-  defp unwrap_transaction({:error, error}), do: {:error, error}
 end
