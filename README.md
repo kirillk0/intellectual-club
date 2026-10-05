@@ -6,6 +6,12 @@ Intellectual Club is a general-purpose environment for working with language mod
 
 The project is designed primarily for local or self-hosted use by individuals and small teams who want direct control over the agent harness—not a black-box assistant or a centrally managed enterprise chat portal.
 
+## How to start
+
+Documentation for humans lives in [wiki](https://github.com/kirillk0/intellectual-club/wiki). You can start with the ["Getting started"](https://github.com/kirillk0/intellectual-club/wiki/Getting-started) page.
+
+Or just give your agent the repository link and ask it to install and explain everything for you.
+
 ## Core values
 
 ### Reliability
