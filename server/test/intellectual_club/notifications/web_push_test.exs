@@ -4,7 +4,11 @@ defmodule IntellectualClub.Notifications.FakeWebPushSender do
   def send(subscription, payload, settings) do
     test_pid = Application.fetch_env!(:intellectual_club, :web_push_test_pid)
     Kernel.send(test_pid, {:web_push_send, subscription.endpoint, payload, settings.key_revision})
-    Application.get_env(:intellectual_club, :web_push_test_result, :ok)
+
+    case Application.get_env(:intellectual_club, :web_push_test_result, :ok) do
+      callback when is_function(callback, 0) -> callback.()
+      result -> result
+    end
   end
 end
 
@@ -309,6 +313,270 @@ defmodule IntellectualClub.Notifications.WebPushTest do
 
     assert [%WebPushGenerationEvent{delivered_count: 1, suppressed: false}] =
              events_for(message.id, :done, actor)
+  end
+
+  describe "delivery claims" do
+    setup do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+      _settings = enable_settings!(admin)
+
+      {:ok, _subscription} =
+        Notifications.upsert_subscription(
+          actor,
+          subscription_payload("https://push.example/claim")
+        )
+
+      message = assistant_message!(actor, "Claimed answer")
+      {:ok, event} = Notifications.record_generation_finished(message.id, :done)
+
+      %{actor: actor, message: message, event: event}
+    end
+
+    test "duplicate delivery and recovery skip a sender still in flight", %{
+      actor: actor,
+      message: message
+    } do
+      parent = self()
+
+      put_app_env(:web_push_test_result, fn ->
+        send(parent, {:sender_waiting, self()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+      supervisor = start_supervised!(Task.Supervisor)
+
+      delivery =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Notifications.deliver_generation_finished(message.id, :done)
+        end)
+
+      assert_receive {:sender_waiting, sender}, 5_000
+      on_exit(fn -> send(sender, :finish) end)
+      assert_receive {:web_push_send, "https://push.example/claim", _payload, 1}
+
+      assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+      assert :ok = Notifications.recover_pending_generation_events()
+      refute_received {:web_push_send, _, _, _}
+
+      assert [%WebPushGenerationEvent{delivered_count: -1, delivery_token: token}] =
+               events_for(message.id, :done, actor)
+
+      assert is_binary(token)
+      send(sender, :finish)
+      assert :ok = Task.await(delivery, 5_000)
+
+      assert [%WebPushGenerationEvent{delivered_count: 1, delivery_token: nil}] =
+               events_for(message.id, :done, actor)
+    end
+
+    test "a sender exception releases its claim for recovery", %{actor: actor, message: message} do
+      put_app_env(:web_push_test_result, fn -> raise "sender unavailable" end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+      end)
+
+      assert_receive {:web_push_send, "https://push.example/claim", _payload, 1}
+
+      assert [%WebPushGenerationEvent{delivered_count: -1, delivery_token: nil}] =
+               events_for(message.id, :done, actor)
+
+      put_app_env(:web_push_test_result, :ok)
+      assert :ok = Notifications.recover_pending_generation_events()
+      assert_receive {:web_push_send, "https://push.example/claim", _payload, 1}
+
+      assert [%WebPushGenerationEvent{delivered_count: 1, delivery_token: nil}] =
+               events_for(message.id, :done, actor)
+    end
+
+    test "a timed out sender is stopped and its expired claim can be recovered", %{
+      actor: actor,
+      message: message
+    } do
+      parent = self()
+      put_app_env(:web_push_generation_delivery_timeout_ms, 1_000)
+
+      put_app_env(:web_push_test_result, fn ->
+        send(parent, {:sender_waiting, self()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+      supervisor = start_supervised!(Task.Supervisor)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        delivery =
+          Task.Supervisor.async_nolink(supervisor, fn ->
+            Notifications.deliver_generation_finished(message.id, :done)
+          end)
+
+        assert_receive {:sender_waiting, sender}, 5_000
+        monitor = Process.monitor(sender)
+        assert :ok = Task.await(delivery, 5_000)
+        assert_receive {:DOWN, ^monitor, :process, ^sender, :killed}
+      end)
+
+      assert_receive {:web_push_send, "https://push.example/claim", _payload, 1}
+      assert [event] = events_for(message.id, :done, actor)
+      assert event.delivered_count == -1
+      assert is_binary(event.delivery_token)
+
+      assert :ok = Notifications.recover_pending_generation_events()
+      refute_received {:web_push_send, _, _, _}
+
+      event
+      |> Ash.Changeset.for_update(
+        :claim_delivery,
+        %{delivery_expires_at: DateTime.add(DateTime.utc_now(), -1, :second)},
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+      put_app_env(:web_push_test_result, :ok)
+      assert :ok = Notifications.recover_pending_generation_events()
+      assert_receive {:web_push_send, "https://push.example/claim", _payload, 1}
+
+      assert [%WebPushGenerationEvent{delivered_count: 1, delivery_token: nil}] =
+               events_for(message.id, :done, actor)
+    end
+
+    test "an old sender cannot acknowledge or release a replacement claim", %{
+      actor: actor,
+      message: message,
+      event: event
+    } do
+      parent = self()
+
+      put_app_env(:web_push_test_result, fn ->
+        send(parent, {:sender_waiting, self()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+      supervisor = start_supervised!(Task.Supervisor)
+
+      delivery =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Notifications.deliver_generation_finished(message.id, :done)
+        end)
+
+      assert_receive {:sender_waiting, sender}, 5_000
+      on_exit(fn -> send(sender, :finish) end)
+      replacement_token = Ash.UUID.generate()
+
+      event
+      |> Ash.Changeset.for_update(
+        :claim_delivery,
+        %{
+          delivery_token: replacement_token,
+          delivery_expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+        },
+        actor: actor
+      )
+      |> Ash.update!(actor: actor)
+
+      send(sender, :finish)
+      assert :ok = Task.await(delivery, 5_000)
+
+      assert [%WebPushGenerationEvent{delivered_count: -1, delivery_token: ^replacement_token}] =
+               events_for(message.id, :done, actor)
+    end
+  end
+
+  describe "delivery across database sessions" do
+    @describetag :whitebox
+    @describetag sandbox: false
+
+    test "a blocked sender holds neither a transaction nor an event row lock" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+      original_settings = Ash.read_one!(WebPushSettings, authorize?: false)
+      _settings = enable_settings!(admin)
+      settings = Notifications.ensure_settings!()
+      endpoint = "https://push.example/row-lock"
+
+      {:ok, _subscription} =
+        Notifications.upsert_subscription(actor, subscription_payload(endpoint))
+
+      message = assistant_message!(actor, "Unlocked answer")
+      {:ok, event} = Notifications.record_generation_finished(message.id, :done)
+
+      on_exit(fn ->
+        IntellectualClub.DataCase.stop_background_test_tasks()
+
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+          :ok = Notifications.delete_subscription(actor, endpoint)
+          Ash.destroy!(Ash.get!(Chat, message.chat_id, actor: actor), actor: actor)
+
+          if original_settings do
+            Notifications.ensure_settings!()
+            |> Ash.Changeset.for_update(
+              :update_settings,
+              Map.take(original_settings, [:enabled, :public_origin, :vapid_subject]),
+              actor: admin
+            )
+            |> Ash.update!(actor: admin)
+          else
+            # The singleton has no destroy action; remove only this test's committed fixture.
+            Repo.delete_all(from(s in WebPushSettings, where: s.id == ^settings.id))
+          end
+
+          Enum.each([actor, admin], fn user ->
+            user
+            |> Ash.Changeset.for_destroy(:destroy, %{}, authorize?: false)
+            |> Ash.destroy!(authorize?: false)
+          end)
+        end)
+      end)
+
+      parent = self()
+
+      put_app_env(:web_push_test_result, fn ->
+        send(parent, {:sender_waiting, self(), backend_pid!(), Repo.in_transaction?()})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+      supervisor = start_supervised!(Task.Supervisor)
+
+      delivery =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Notifications.deliver_generation_finished(message.id, :done)
+        end)
+
+      assert_receive {:sender_waiting, sender, sender_backend, in_transaction?}, 5_000
+      on_exit(fn -> send(sender, :finish) end)
+      refute in_transaction?
+
+      assert {:ok, %WebPushGenerationEvent{id: id}} =
+               Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+                 assert sender_backend != backend_pid!()
+
+                 Ash.transaction(WebPushGenerationEvent, fn ->
+                   WebPushGenerationEvent
+                   |> Ash.Query.filter(id == ^event.id)
+                   |> Ash.Query.lock("FOR NO KEY UPDATE")
+                   |> Ash.read_one!(actor: actor, timeout: 1_000)
+                 end)
+               end)
+
+      assert id == event.id
+      send(sender, :finish)
+      assert :ok = Task.await(delivery, 5_000)
+
+      assert [%WebPushGenerationEvent{delivered_count: 1, delivery_token: nil}] =
+               events_for(message.id, :done, actor)
+    end
   end
 
   test "recovery preserves the notification grace window for fresh events" do

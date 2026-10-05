@@ -11,6 +11,7 @@ defmodule IntellectualClub.Notifications do
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Notifications.ActiveWebPushClients
+  alias IntellectualClub.Notifications.Dispatcher
   alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.Notifications.WebPushSender
   alias IntellectualClub.Notifications.WebPushSettings
@@ -21,6 +22,8 @@ defmodule IntellectualClub.Notifications do
   @default_vapid_subject "mailto:admin@example.com"
   @notification_body_preview_length 180
   @default_generation_delivery_delay_ms 7_000
+  @default_generation_delivery_timeout_ms 60_000
+  @generation_delivery_claim_grace_ms 5_000
   # User cancellation is intentional, so only these terminal statuses reach devices.
   @push_notified_generation_statuses [:done, :error]
 
@@ -262,7 +265,10 @@ defmodule IntellectualClub.Notifications do
     now = DateTime.utc_now()
 
     WebPushGenerationEvent
-    |> Ash.Query.filter(suppressed == false and delivered_count < 0)
+    |> Ash.Query.filter(
+      suppressed == false and delivered_count < 0 and
+        (is_nil(delivery_token) or delivery_expires_at <= ^now)
+    )
     |> Ash.Query.sort(id: :asc)
     |> Ash.read!(authorize?: false)
     |> Enum.filter(&generation_event_due?(&1, now, minimum_age_ms))
@@ -303,44 +309,140 @@ defmodule IntellectualClub.Notifications do
     end
   end
 
-  defp dispatch_generation_event(event, message, status, actor) do
+  defp dispatch_generation_event(message, status, actor) do
     settings = ensure_settings!()
 
     if settings.enabled do
       subscriptions = list_current_subscriptions(actor, settings.key_revision)
       payload = generation_payload(message, status)
 
-      delivered_count =
-        subscriptions
-        |> Enum.map(&maybe_send_generation_payload(&1, payload, settings, actor, message.chat_id))
-        |> Enum.count(&(&1 == :ok))
-
-      mark_event_delivered(event, delivered_count, actor)
+      subscriptions
+      |> Enum.map(&maybe_send_generation_payload(&1, payload, settings, actor, message.chat_id))
+      |> Enum.count(&(&1 == :ok))
     else
-      mark_event_delivered(event, 0, actor)
+      0
+    end
+  end
+
+  defp maybe_dispatch_generation_event(event, message, status, actor, opts) do
+    maybe_wait_before_dispatch(opts)
+    timeout_ms = generation_delivery_timeout_ms()
+
+    task =
+      Task.Supervisor.async_nolink(Dispatcher, fn ->
+        # Bound the sender even if its caller dies, before another worker can reclaim the event.
+        {:ok, timer} = :timer.kill_after(timeout_ms)
+
+        try do
+          deliver_claimed_generation_event(event, message, status, actor, timeout_ms)
+        after
+          :timer.cancel(timer)
+        end
+      end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, _result} ->
+        :ok
+
+      result ->
+        Logger.warning("Web push delivery interrupted event_id=#{event.id}: #{inspect(result)}")
     end
 
     :ok
   end
 
-  defp maybe_dispatch_generation_event(event, message, status, actor, opts) do
-    maybe_wait_before_dispatch(opts)
+  defp deliver_claimed_generation_event(event, message, status, actor, timeout_ms) do
+    case claim_generation_event(event, message, status, actor, timeout_ms) do
+      {:ok, {:claimed, claimed}} ->
+        try do
+          delivered_count = dispatch_generation_event(message, status, actor)
 
+          update_delivery_claim(claimed, actor, :mark_delivered, %{
+            delivered_count: delivered_count
+          })
+        after
+          update_delivery_claim(claimed, actor, :release_delivery, %{})
+        end
+
+      {:ok, :skip} ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning("Failed to claim web push event event_id=#{event.id}: #{inspect(error)}")
+    end
+  end
+
+  defp claim_generation_event(event, message, status, actor, timeout_ms) do
     Ash.transaction([WebPushGenerationEvent], fn ->
-      current = lock_generation_event!(event.id)
+      current = lock_generation_event!(event.id, actor)
+      now = DateTime.utc_now()
 
-      if current.delivered_count < 0 and current.suppressed == false do
+      if current.delivered_count < 0 and current.suppressed == false and
+           delivery_claim_available?(current, now) do
         # Events recorded before a status stopped notifying are settled without sending.
         if status not in @push_notified_generation_statuses or
              ActiveWebPushClients.generation_seen?(actor.id, message.chat_id, message.id, status) do
           mark_event_delivered(current, 0, actor)
+          :skip
         else
-          dispatch_generation_event(current, message, status, actor)
+          claimed =
+            current
+            |> Ash.Changeset.for_update(
+              :claim_delivery,
+              %{
+                delivery_token: Ash.UUID.generate(),
+                delivery_expires_at:
+                  DateTime.add(
+                    now,
+                    timeout_ms + @generation_delivery_claim_grace_ms,
+                    :millisecond
+                  )
+              },
+              actor: actor
+            )
+            |> Ash.update!(actor: actor)
+
+          {:claimed, claimed}
         end
+      else
+        :skip
       end
     end)
+  end
 
-    :ok
+  defp delivery_claim_available?(%{delivery_token: nil}, _now), do: true
+
+  defp delivery_claim_available?(%{delivery_expires_at: %DateTime{} = expires_at}, now) do
+    DateTime.compare(expires_at, now) != :gt
+  end
+
+  defp delivery_claim_available?(_event, _now), do: false
+
+  defp update_delivery_claim(event, actor, action, params) do
+    Ash.transaction([WebPushGenerationEvent], fn ->
+      current =
+        WebPushGenerationEvent
+        |> Ash.Query.filter(id == ^event.id and delivery_token == ^event.delivery_token)
+        |> Ash.Query.lock("FOR NO KEY UPDATE")
+        |> Ash.read_one!(actor: actor)
+
+      if current do
+        current
+        |> Ash.Changeset.for_update(action, params, actor: actor)
+        |> Ash.update!(actor: actor)
+      end
+    end)
+    |> case do
+      {:ok, _result} -> :ok
+      {:error, error} -> raise Ash.Error.to_error_class(error)
+    end
+  end
+
+  defp generation_delivery_timeout_ms do
+    case Application.get_env(:intellectual_club, :web_push_generation_delivery_timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _ -> @default_generation_delivery_timeout_ms
+    end
   end
 
   defp maybe_wait_before_dispatch(opts) do
@@ -739,12 +841,12 @@ defmodule IntellectualClub.Notifications do
     |> Ash.read_one!(actor: actor)
   end
 
-  defp lock_generation_event!(event_id) do
+  defp lock_generation_event!(event_id, actor) do
     WebPushGenerationEvent
     |> Ash.Query.filter(id == ^event_id)
     |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.Query.limit(1)
-    |> Ash.read_one!(authorize?: false)
+    |> Ash.read_one!(actor: actor)
     |> case do
       %WebPushGenerationEvent{} = event -> event
       nil -> raise ArgumentError, "Web push generation event not found"

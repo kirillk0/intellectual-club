@@ -43,6 +43,9 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
       constraints(min: -1)
     end
 
+    attribute(:delivery_token, :uuid)
+    attribute(:delivery_expires_at, :utc_datetime_usec)
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -69,8 +72,22 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
       change(relate_actor(:owner))
     end
 
+    update :claim_delivery do
+      accept([:delivery_token, :delivery_expires_at])
+      require_atomic?(false)
+    end
+
+    update :release_delivery do
+      accept([])
+      change(set_attribute(:delivery_token, nil))
+      change(set_attribute(:delivery_expires_at, nil))
+      require_atomic?(false)
+    end
+
     update :mark_delivered do
       accept([:delivered_count])
+      change(set_attribute(:delivery_token, nil))
+      change(set_attribute(:delivery_expires_at, nil))
       require_atomic?(false)
     end
   end
@@ -86,7 +103,7 @@ defmodule IntellectualClub.Notifications.WebPushGenerationEvent do
     end
 
     policy action_type(:update) do
-      authorize_if actor_present()
+      authorize_if relates_to_actor_via(:owner)
     end
   end
 end
