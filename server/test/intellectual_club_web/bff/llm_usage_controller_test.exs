@@ -1,9 +1,5 @@
 defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
-  use IntellectualClubWeb.ConnCase, async: false
-
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmConfigurationShare
-  alias IntellectualClub.Llm.LlmProvider
+  use IntellectualClubWeb.ConnCase, async: true
   alias IntellectualClub.Llm.LlmUsageRecord
 
   test "GET /api/bff/llm-usage returns owner-visible usage by configuration and user", %{
@@ -14,8 +10,8 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     %{user: other_user} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    provider = create_provider!(owner, "Usage provider")
-    configuration = create_configuration!(owner, provider, "usage-model")
+    provider = create_provider!(owner, name: "Usage provider")
+    configuration = create_configuration!(owner, provider: provider, model_name: "usage-model")
     share_configuration!(owner, configuration, group)
 
     create_usage_record!(%{
@@ -120,52 +116,6 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     [recipient_row] = recipient_payload["rows"]
     refute Map.has_key?(recipient_row["cells"], Integer.to_string(other_user.id))
     assert recipient_row["cells"][Integer.to_string(recipient.id)]["step_count"] == 3
-  end
-
-  defp create_provider!(actor, name) do
-    LlmProvider
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: name,
-        type: :demo,
-        auth_method: :api_key,
-        base_url: nil,
-        api_key: nil
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_configuration!(actor, provider, model_name) do
-    LlmConfiguration
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        provider_id: provider.id,
-        model_name: model_name,
-        note: "cfg",
-        parameters: %{},
-        enabled: true,
-        timeout_seconds: 30,
-        context_length: 2048,
-        supports_cache_control: false,
-        supports_image_input: false
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp share_configuration!(actor, configuration, group) do
-    LlmConfigurationShare
-    |> Ash.Changeset.for_create(
-      :create,
-      %{llm_configuration_id: configuration.id, user_group_id: group.id},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
   end
 
   defp create_usage_record!(attrs) do

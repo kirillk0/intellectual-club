@@ -10,6 +10,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
     MessageTreeCopy
   }
 
+  alias IntellectualClub.SqlCapture
+
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Generation.StepRequests
@@ -36,8 +38,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
     target = create_empty_chat!(actor)
 
-    {{:ok, copied_ids}, queries} =
-      capture_queries(fn ->
+    {{:ok, copied_ids}, %{queries: queries}} =
+      SqlCapture.measure(fn ->
         Repo.transaction(fn ->
           MessageTreeCopy.copy_messages!(
             [reverse_trace(first), reverse_trace(second)],
@@ -73,19 +75,27 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
   test "step and sequence mapping survives the 250-row item and content batch boundaries" do
     %{user: actor} = user_fixture()
-    source = source_message!(actor, steps: 2, ordinary_count: 126)
+    # Only calls and results get a second (opaque) content: 256 items and 264 contents.
+    source =
+      source_message!(actor,
+        steps: 2,
+        ordinary_count: 126,
+        opaque?: &(&1.type in [:tool_call, :tool_result])
+      )
+
     target = create_empty_chat!(actor)
 
-    {{:ok, _copied_ids}, queries} =
-      capture_queries(fn ->
+    {{:ok, _copied_ids}, %{queries: queries}} =
+      SqlCapture.measure(fn ->
         Repo.transaction(fn ->
           MessageTreeCopy.copy_messages!([reverse_trace(source)], target, actor)
         end)
       end)
 
-    # 252 ordinary items, four results and 512 contents cross independent batch boundaries.
+    # 252 ordinary items and four results (3 batches) and 264 contents (2 batches) cross
+    # independent batch boundaries.
     assert insert_count(queries, "chat_message_items") == 3
-    assert insert_count(queries, "chat_message_contents") == 3
+    assert insert_count(queries, "chat_message_contents") == 2
     [copied] = messages_for_chat(target.id, actor)
     assert trace_signature(copied) == trace_signature(source)
   end
@@ -258,8 +268,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
     snapshot = [first, second]
     target = create_empty_chat!(actor)
 
-    {{:ok, _}, queries} =
-      capture_queries(fn ->
+    {{:ok, _}, %{queries: queries}} =
+      SqlCapture.measure(fn ->
         Repo.transaction(fn -> MessageTreeCopy.copy_messages!(snapshot, target, actor) end)
       end)
 
@@ -414,21 +424,24 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
       end
       |> create_batch!(ChatMessageItem, actor)
 
+    opaque? = Keyword.get(opts, :opaque?, fn _item -> true end)
+
     Enum.flat_map(ordinary ++ results, fn item ->
-      contents = [
-        %{
-          chat_message_item_id: item.id,
-          sequence: 1,
-          kind: :text,
-          content_text: "  step #{item.chat_message_step_id}, item #{item.sequence}\n"
-        },
-        %{
-          chat_message_item_id: item.id,
-          sequence: 3,
-          kind: :opaque,
-          content_json: %{"source_step" => item.chat_message_step_id, "source_item" => item.id}
-        }
-      ]
+      text = %{
+        chat_message_item_id: item.id,
+        sequence: 1,
+        kind: :text,
+        content_text: "  step #{item.chat_message_step_id}, item #{item.sequence}\n"
+      }
+
+      opaque = %{
+        chat_message_item_id: item.id,
+        sequence: 3,
+        kind: :opaque,
+        content_json: %{"source_step" => item.chat_message_step_id, "source_item" => item.id}
+      }
+
+      contents = if opaque?.(item), do: [text, opaque], else: [text]
 
       if opts[:file_id] && item.type == :answer do
         contents ++
@@ -449,10 +462,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
     loaded_message!(message.id, actor)
   end
 
-  defp create!(resource, action, attrs, actor) do
-    resource |> Ash.Changeset.for_create(action, attrs, actor: actor) |> Ash.create!(actor: actor)
-  end
-
   defp create_batch!(attrs, resource, actor) do
     assert %Ash.BulkResult{status: :success, records: records} =
              Ash.bulk_create(attrs, resource, :create,
@@ -465,8 +474,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
     records
   end
-
-  defp create_empty_chat!(actor), do: create!(Chat, :create_empty, %{note: ""}, actor)
 
   defp loaded_message!(id, actor) do
     ChatMessage
@@ -582,41 +589,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
   end
 
   defp ordered(records), do: Enum.sort_by(records, & &1.sequence)
-
-  defp capture_queries(fun) do
-    ref = make_ref()
-    handler = {__MODULE__, ref}
-
-    :ok =
-      :telemetry.attach(
-        handler,
-        [:intellectual_club, :repo, :query],
-        &__MODULE__.handle_query/4,
-        %{owner: self(), ref: ref}
-      )
-
-    try do
-      result = fun.()
-      {result, drain_queries(ref, [])}
-    after
-      :telemetry.detach(handler)
-    end
-  end
-
-  @doc false
-  def handle_query(_event, _measurements, metadata, %{owner: owner, ref: ref}) do
-    if self() == owner or owner in Process.get(:"$callers", []) or metadata[:caller] == owner do
-      send(owner, {ref, %{source: metadata[:source], sql: IO.iodata_to_binary(metadata.query)}})
-    end
-  end
-
-  defp drain_queries(ref, queries) do
-    receive do
-      {^ref, query} -> drain_queries(ref, [query | queries])
-    after
-      0 -> Enum.reverse(queries)
-    end
-  end
 
   defp insert_count(queries, table) do
     Enum.count(queries, &(&1.source == table and String.starts_with?(&1.sql, "INSERT")))

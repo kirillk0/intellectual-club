@@ -1,7 +1,5 @@
 defmodule IntellectualClub.Llm.LlmUsageRecordTest do
-  use IntellectualClub.DataCase, async: false
-
-  alias IntellectualClub.Chat.Chat
+  use IntellectualClub.DataCase, async: true
   alias IntellectualClub.Llm.LlmUsageRecord
 
   setup do
@@ -123,8 +121,8 @@ defmodule IntellectualClub.Llm.LlmUsageRecordTest do
 
   test "only the consumer can maintain references and the target chat must be writable", f do
     record = create!(f.attrs, f.consumer)
-    target = create_chat!(f.consumer)
-    foreign_target = create_chat!(f.owner)
+    target = create_empty_chat!(f.consumer)
+    foreign_target = create_empty_chat!(f.owner)
 
     for actor <- [f.owner, f.outsider, f.admin] do
       changeset =
@@ -177,11 +175,5 @@ defmodule IntellectualClub.Llm.LlmUsageRecordTest do
   defp create!(attrs, actor) do
     {:ok, record} = create(attrs, actor)
     record
-  end
-
-  defp create_chat!(actor) do
-    Chat
-    |> Ash.Changeset.for_create(:create_empty, %{}, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 end

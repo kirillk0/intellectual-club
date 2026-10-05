@@ -18,1009 +18,927 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Executor
-  alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
 
-  test "exposes fixed management functions" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
+  describe "function catalog" do
+    test "exposes fixed management functions" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
 
-    functions = NativeAgentManagement.fixed_functions(tool_instance)
+      functions = NativeAgentManagement.fixed_functions(tool_instance)
 
-    assert Enum.map(functions, & &1["name"]) == [
-             "handoff",
-             "fork",
-             "fork_background",
-             "spawn",
-             "spawn_background",
-             "check_background_task_status",
-             "wait_backround_tasks",
-             "cancel_background_task",
-             "sleep"
-           ]
+      assert Enum.map(functions, & &1["name"]) == [
+               "handoff",
+               "fork",
+               "fork_background",
+               "spawn",
+               "spawn_background",
+               "check_background_task_status",
+               "wait_backround_tasks",
+               "cancel_background_task",
+               "sleep"
+             ]
 
-    assert %{"schema" => handoff_schema} =
-             Enum.find(functions, &(&1["name"] == "handoff"))
+      assert %{"schema" => handoff_schema} =
+               Enum.find(functions, &(&1["name"] == "handoff"))
 
-    assert handoff_schema["required"] == ["summary"]
-    assert Enum.find(functions, &(&1["name"] == "handoff"))["enabled_by_default"] == true
+      assert handoff_schema["required"] == ["summary"]
+      assert Enum.find(functions, &(&1["name"] == "handoff"))["enabled_by_default"] == true
 
-    assert %{"schema" => fork_schema} =
-             fork_function = Enum.find(functions, &(&1["name"] == "fork"))
+      assert %{"schema" => fork_schema} =
+               fork_function = Enum.find(functions, &(&1["name"] == "fork"))
 
-    assert fork_function["enabled"] == false
-    assert fork_function["enabled_by_default"] == false
-    assert fork_schema["required"] == ["brief", "prompt"]
-    assert fork_schema["properties"]["prompt"]["type"] == "string"
-    assert fork_schema["properties"]["brief"]["type"] == "string"
-    assert fork_schema["additionalProperties"] == false
-    refute Map.has_key?(fork_schema["properties"], "task")
-    assert String.contains?(fork_function["description"], "exactly one task")
-    assert String.contains?(fork_function["description"], "copied model becomes the subagent")
-    assert String.contains?(fork_function["description"], "discard every pending intention")
-    assert String.contains?(fork_function["description"], "must not continue")
-    assert String.contains?(fork_function["description"], "becomes this tool call's result")
+      assert fork_function["enabled"] == false
+      assert fork_function["enabled_by_default"] == false
+      assert fork_schema["required"] == ["brief", "prompt"]
+      assert fork_schema["properties"]["prompt"]["type"] == "string"
+      assert fork_schema["properties"]["brief"]["type"] == "string"
+      assert fork_schema["additionalProperties"] == false
+      refute Map.has_key?(fork_schema["properties"], "task")
+      assert String.contains?(fork_function["description"], "exactly one task")
+      assert String.contains?(fork_function["description"], "copied model becomes the subagent")
+      assert String.contains?(fork_function["description"], "discard every pending intention")
+      assert String.contains?(fork_function["description"], "must not continue")
+      assert String.contains?(fork_function["description"], "becomes this tool call's result")
 
-    assert String.contains?(
-             fork_schema["properties"]["prompt"]["description"],
-             "the only task"
-           )
+      assert String.contains?(
+               fork_schema["properties"]["prompt"]["description"],
+               "the only task"
+             )
 
-    background_functions =
-      Enum.filter(functions, fn function ->
-        function["name"] in [
-          "fork_background",
-          "check_background_task_status",
-          "wait_backround_tasks",
-          "cancel_background_task"
-        ]
+      background_functions =
+        Enum.filter(functions, fn function ->
+          function["name"] in [
+            "fork_background",
+            "check_background_task_status",
+            "wait_backround_tasks",
+            "cancel_background_task"
+          ]
+        end)
+
+      assert Enum.all?(background_functions, &(&1["enabled"] == false))
+      assert Enum.all?(background_functions, &(&1["enabled_by_default"] == false))
+
+      fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
+      assert fork_background["is_background_function"] == true
+      assert fork_background["schema"] == fork_schema
+      assert String.contains?(fork_background["description"], "exactly one task")
+      assert String.contains?(fork_background["description"], "copied model becomes the subagent")
+      assert String.contains?(fork_background["description"], "discard every pending intention")
+      assert String.contains?(fork_background["description"], "must not continue")
+      assert String.contains?(fork_background["description"], "background task id")
+
+      for name <- ["spawn", "spawn_background"] do
+        function = Enum.find(functions, &(&1["name"] == name))
+        assert function["enabled"] == false
+        assert function["enabled_by_default"] == false
+        assert Map.get(function, "is_background_function", false) == (name == "spawn_background")
+        assert function["schema"]["required"] == ["brief", "prompt"]
+        assert function["schema"]["additionalProperties"] == false
+      end
+
+      check_background =
+        Enum.find(functions, &(&1["name"] == "check_background_task_status"))
+
+      assert check_background["provides_background_task_status"] == true
+      refute Map.get(check_background, "is_background_function", false)
+      assert check_background["schema"]["required"] == ["background_task_id"]
+      assert check_background["schema"]["properties"]["background_task_id"]["format"] == "uuid"
+      assert check_background["schema"]["properties"]["cursor"]["type"] == "string"
+
+      wait_background = Enum.find(functions, &(&1["name"] == "wait_backround_tasks"))
+      assert wait_background["schema"]["required"] == ["background_task_ids"]
+
+      assert wait_background["schema"]["properties"]["background_task_ids"]["items"] ==
+               %{"type" => "string", "format" => "uuid"}
+
+      assert wait_background["schema"]["properties"]["timeout_seconds"]["minimum"] == 0
+      refute Map.get(wait_background, "is_background_function", false)
+      refute Map.get(wait_background, "provides_background_task_status", false)
+
+      cancel_background = Enum.find(functions, &(&1["name"] == "cancel_background_task"))
+      assert cancel_background["schema"]["required"] == ["background_task_id"]
+
+      assert %{"schema" => sleep_schema} =
+               Enum.find(functions, &(&1["name"] == "sleep"))
+
+      assert sleep_schema["required"] == ["seconds"]
+      assert sleep_schema["properties"]["seconds"]["type"] == "number"
+      assert Enum.find(functions, &(&1["name"] == "sleep"))["enabled_by_default"] == true
+    end
+
+    test "uses generic subchat configuration keys" do
+      assert NativeAgentManagement.default_config() == %{
+               "nested_subchats_limit" => 0,
+               "allow_handoff_in_subchats" => false
+             }
+
+      schema = NativeAgentManagement.config_schema()
+      properties = schema["properties"]
+
+      assert Map.keys(properties) |> Enum.sort() ==
+               ["allow_handoff_in_subchats", "nested_subchats_limit"]
+
+      assert properties["nested_subchats_limit"]["title"] == "Nested subchats limit"
+      assert properties["allow_handoff_in_subchats"]["title"] == "Allow handoff in subchats"
+    end
+  end
+
+  describe "executor gating" do
+    for {name, args} <- [
+          {"fork", %{"brief" => "Research", "prompt" => "Check one thing."}},
+          {"fork_background", %{"brief" => "Research", "prompt" => "Check one thing."}},
+          {"spawn", %{"brief" => "Research", "prompt" => "Check one thing."}},
+          {"spawn_background", %{"brief" => "Research", "prompt" => "Check one thing."}},
+          {"check_background_task_status", %{"background_task_id" => Ash.UUID.generate()}},
+          {"wait_backround_tasks", %{"background_task_ids" => [Ash.UUID.generate()]}},
+          {"cancel_background_task", %{"background_task_id" => Ash.UUID.generate()}}
+        ] do
+      test "#{name} is rejected by the executor while disabled by default" do
+        %{user: actor} = user_fixture()
+        tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+        name = unquote(name)
+
+        result =
+          Executor.execute_llm_tool(
+            %{"agent_management" => tool_instance},
+            "agent_management__#{name}",
+            unquote(Macro.escape(args)),
+            %ExecutionContext{owner_id: actor.id}
+          )
+
+        assert result.text == "Tool function `#{name}` is disabled."
+        assert result.raw["isError"] == true
+        assert result.raw["code"] == "tool_function_disabled"
+      end
+    end
+
+    test "background subagent launch rejects an exhausted nesting limit before queueing" do
+      %{user: actor} = user_fixture()
+      root = create_empty_chat!(actor)
+      source = create_subchat!(actor, root, :spawn)
+
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "native-agent-management",
+          config: %{
+            "nested_subchats_limit" => 0,
+            "allow_handoff_in_subchats" => true
+          }
+        )
+
+      calls = [
+        {"fork_background", %{"brief" => "Research", "prompt" => "Check one thing."}},
+        {"spawn_background", %{"brief" => "Research", "prompt" => "Check one thing."}}
+      ]
+
+      Enum.each(calls, fn {name, args} ->
+        create_tool_function!(actor, tool_instance, name: name, parameters_schema: %{})
+
+        result =
+          Executor.execute_llm_tool(
+            %{"agent_management" => tool_instance},
+            "agent_management__#{name}",
+            args,
+            %ExecutionContext{owner_id: actor.id, chat_id: source.id}
+          )
+
+        assert result.text ==
+                 "Nested subchat creation is unavailable for this subagent. " <>
+                   "Continue working on the task yourself without creating another subchat."
+
+        assert result.raw["isError"] == true
       end)
 
-    assert Enum.all?(background_functions, &(&1["enabled"] == false))
-    assert Enum.all?(background_functions, &(&1["enabled_by_default"] == false))
-
-    fork_background = Enum.find(functions, &(&1["name"] == "fork_background"))
-    assert fork_background["is_background_function"] == true
-    assert fork_background["schema"] == fork_schema
-    assert String.contains?(fork_background["description"], "exactly one task")
-    assert String.contains?(fork_background["description"], "copied model becomes the subagent")
-    assert String.contains?(fork_background["description"], "discard every pending intention")
-    assert String.contains?(fork_background["description"], "must not continue")
-    assert String.contains?(fork_background["description"], "background task id")
-
-    for name <- ["spawn", "spawn_background"] do
-      function = Enum.find(functions, &(&1["name"] == name))
-      assert function["enabled"] == false
-      assert function["enabled_by_default"] == false
-      assert Map.get(function, "is_background_function", false) == (name == "spawn_background")
-      assert function["schema"]["required"] == ["brief", "prompt"]
-      assert function["schema"]["additionalProperties"] == false
-    end
-
-    check_background =
-      Enum.find(functions, &(&1["name"] == "check_background_task_status"))
-
-    assert check_background["provides_background_task_status"] == true
-    refute Map.get(check_background, "is_background_function", false)
-    assert check_background["schema"]["required"] == ["background_task_id"]
-    assert check_background["schema"]["properties"]["background_task_id"]["format"] == "uuid"
-    assert check_background["schema"]["properties"]["cursor"]["type"] == "string"
-
-    wait_background = Enum.find(functions, &(&1["name"] == "wait_backround_tasks"))
-    assert wait_background["schema"]["required"] == ["background_task_ids"]
-
-    assert wait_background["schema"]["properties"]["background_task_ids"]["items"] ==
-             %{"type" => "string", "format" => "uuid"}
-
-    assert wait_background["schema"]["properties"]["timeout_seconds"]["minimum"] == 0
-    refute Map.get(wait_background, "is_background_function", false)
-    refute Map.get(wait_background, "provides_background_task_status", false)
-
-    cancel_background = Enum.find(functions, &(&1["name"] == "cancel_background_task"))
-    assert cancel_background["schema"]["required"] == ["background_task_id"]
-
-    assert %{"schema" => sleep_schema} =
-             Enum.find(functions, &(&1["name"] == "sleep"))
-
-    assert sleep_schema["required"] == ["seconds"]
-    assert sleep_schema["properties"]["seconds"]["type"] == "number"
-    assert Enum.find(functions, &(&1["name"] == "sleep"))["enabled_by_default"] == true
-  end
-
-  test "uses generic subchat configuration keys" do
-    assert NativeAgentManagement.default_config() == %{
-             "nested_subchats_limit" => 0,
-             "allow_handoff_in_subchats" => false
-           }
-
-    schema = NativeAgentManagement.config_schema()
-    properties = schema["properties"]
-
-    assert Map.keys(properties) |> Enum.sort() ==
-             ["allow_handoff_in_subchats", "nested_subchats_limit"]
-
-    assert properties["nested_subchats_limit"]["title"] == "Nested subchats limit"
-    assert properties["allow_handoff_in_subchats"]["title"] == "Allow handoff in subchats"
-  end
-
-  test "fork is rejected by executor while disabled by default" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-
-    result =
-      Executor.execute_llm_tool(
-        %{"agent_management" => tool_instance},
-        "agent_management__fork",
-        %{"brief" => "Research", "prompt" => "Check one thing."},
-        %ExecutionContext{owner_id: actor.id}
-      )
-
-    assert result.text == "Tool function `fork` is disabled."
-    assert result.raw["isError"] == true
-    assert result.raw["code"] == "tool_function_disabled"
-  end
-
-  test "spawn functions are rejected by executor while disabled by default" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-
-    for name <- ["spawn", "spawn_background"] do
-      result =
-        Executor.execute_llm_tool(
-          %{"agent_management" => tool_instance},
-          "agent_management__#{name}",
-          %{"brief" => "Research", "prompt" => "Check one thing."},
-          %ExecutionContext{owner_id: actor.id}
-        )
-
-      assert result.text == "Tool function `#{name}` is disabled."
-      assert result.raw["isError"] == true
-      assert result.raw["code"] == "tool_function_disabled"
+      assert [] =
+               BackgroundTask
+               |> Ash.Query.filter(owner_id == ^actor.id)
+               |> Ash.read!(actor: actor)
     end
   end
 
-  test "spawn validates brief and prompt before generation context" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
+  describe "subagent arguments" do
+    for name <- ["fork", "fork_background", "spawn", "spawn_background"] do
+      test "#{name} requires string brief and prompt and rejects legacy or extra fields" do
+        %{user: actor} = user_fixture()
+        tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+        context = %ExecutionContext{owner_id: actor.id}
+        name = unquote(name)
 
-    assert {:error, "brief is required"} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "spawn",
-               %{"brief" => "  ", "prompt" => "Do work"},
-               %ExecutionContext{owner_id: actor.id}
-             )
+        unsupported =
+          "#{String.replace_suffix(name, "_background", "")} arguments contain unsupported fields"
 
-    assert {:error, "prompt is required"} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "spawn_background",
-               %{"brief" => "Work", "prompt" => "  "},
-               %ExecutionContext{owner_id: actor.id}
-             )
-
-    assert {:error, "brief must be a string"} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "spawn",
-               %{"brief" => 42, "prompt" => "Do work"},
-               %ExecutionContext{owner_id: actor.id}
-             )
-
-    assert {:error, "spawn arguments contain unsupported fields"} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "spawn",
-               %{"brief" => "Work", "prompt" => "Do work", "extra" => true},
-               %ExecutionContext{owner_id: actor.id}
-             )
-  end
-
-  test "both fork functions require string brief and prompt and reject legacy or extra fields" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-    context = %ExecutionContext{owner_id: actor.id}
-
-    for name <- ["fork", "fork_background"],
-        {args, error} <- [
-          {%{"prompt" => "Do work"}, "brief is required"},
-          {%{"brief" => "  ", "prompt" => "Do work"}, "brief is required"},
-          {%{"brief" => "Work"}, "prompt is required"},
-          {%{"brief" => "Work", "prompt" => "  "}, "prompt is required"},
-          {%{"brief" => 42, "prompt" => "Do work"}, "brief must be a string"},
-          {%{"brief" => "Work", "prompt" => %{}}, "prompt must be a string"},
-          {%{"task" => "Do work"}, "fork arguments contain unsupported fields"},
-          {%{"brief" => "Work", "prompt" => "Do work", "extra" => true},
-           "fork arguments contain unsupported fields"}
-        ] do
-      assert {:error, ^error} = NativeAgentManagement.execute(tool_instance, name, args, context)
+        for {args, error} <- [
+              {%{"prompt" => "Do work"}, "brief is required"},
+              {%{"brief" => "  ", "prompt" => "Do work"}, "brief is required"},
+              {%{"brief" => "Work"}, "prompt is required"},
+              {%{"brief" => "Work", "prompt" => "  "}, "prompt is required"},
+              {%{"brief" => 42, "prompt" => "Do work"}, "brief must be a string"},
+              {%{"brief" => "Work", "prompt" => %{}}, "prompt must be a string"},
+              {%{"task" => "Do work"}, unsupported},
+              {%{"brief" => "Work", "prompt" => "Do work", "extra" => true}, unsupported}
+            ] do
+          assert {:error, ^error} =
+                   NativeAgentManagement.execute(tool_instance, name, args, context)
+        end
+      end
     end
   end
 
-  test "background management functions are rejected by executor while disabled by default" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
+  describe "background task status" do
+    test "background status check preserves terminal media and artifacts" do
+      %{user: actor} = user_fixture()
 
-    calls = [
-      {"agent_management__fork_background",
-       %{"brief" => "Research", "prompt" => "Check one thing."}},
-      {"agent_management__check_background_task_status",
-       %{"background_task_id" => Ash.UUID.generate()}},
-      {"agent_management__wait_backround_tasks",
-       %{"background_task_ids" => [Ash.UUID.generate()]}},
-      {"agent_management__cancel_background_task", %{"background_task_id" => Ash.UUID.generate()}}
-    ]
-
-    Enum.each(calls, fn {name, args} ->
-      result =
-        Executor.execute_llm_tool(
-          %{"agent_management" => tool_instance},
-          name,
-          args,
-          %ExecutionContext{owner_id: actor.id}
-        )
-
-      assert result.raw["isError"] == true
-      assert result.raw["code"] == "tool_function_disabled"
-    end)
-  end
-
-  test "background subagent launch rejects an exhausted nesting limit before queueing" do
-    %{user: actor} = user_fixture()
-    root = create_chat!(actor, "Root")
-    source = create_subagent_chat!(actor, root)
-
-    tool_instance =
-      create_tool_instance!(actor, %{
-        "nested_subchats_limit" => 0,
-        "allow_handoff_in_subchats" => true
-      })
-
-    calls = [
-      {"fork_background", %{"brief" => "Research", "prompt" => "Check one thing."}},
-      {"spawn_background", %{"brief" => "Research", "prompt" => "Check one thing."}}
-    ]
-
-    Enum.each(calls, fn {name, args} ->
-      enable_fixed_function!(tool_instance, name, actor)
-
-      result =
-        Executor.execute_llm_tool(
-          %{"agent_management" => tool_instance},
-          "agent_management__#{name}",
-          args,
-          %ExecutionContext{owner_id: actor.id, chat_id: source.id}
-        )
-
-      assert result.text ==
-               "Nested subchat creation is unavailable for this subagent. " <>
-                 "Continue working on the task yourself without creating another subchat."
-
-      assert result.raw["isError"] == true
-    end)
-
-    assert [] =
-             BackgroundTask |> Ash.Query.filter(owner_id == ^actor.id) |> Ash.read!(actor: actor)
-  end
-
-  test "background status check preserves terminal media and artifacts" do
-    %{user: actor} = user_fixture()
-
-    task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
+      task =
+        create_background_task!(actor, %{
           kind: "test",
           adapter: "test",
           status: :running,
           function_name: "test",
           arguments: %{},
           execution_context: %{}
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+        })
 
-    media = [
-      %{
-        file_id: 41,
-        file_external_id: "media-file",
-        filename: "image.png",
-        mime_type: "image/png",
-        size_bytes: 128,
-        sha256: "media-digest"
-      }
-    ]
-
-    artifacts = [
-      %{
-        file_id: 42,
-        file_external_id: "artifact-file",
-        filename: "result.txt",
-        mime_type: "text/plain",
-        size_bytes: 4,
-        sha256: "artifact-digest"
-      }
-    ]
-
-    assert {:ok, event} = BackgroundTasks.append_event(task, :stdout, "partial output")
-
-    assert {:ok, _task} =
-             BackgroundTasks.mark_completed(task, %ExecutionResult{
-               text: "Finished",
-               raw: %{"ok" => true},
-               media: media,
-               artifacts: artifacts
-             })
-
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(
-               create_tool_instance!(actor),
-               "check_background_task_status",
-               %{"background_task_id" => task.id},
-               %ExecutionContext{owner_id: actor.id}
-             )
-
-    assert result.media == media
-    assert result.artifacts == artifacts
-    assert result.text =~ "completed"
-    assert get_in(result.raw, ["background_task", "result", "text"]) == "Finished"
-
-    snapshot = decode_background_snapshot!(result.text)
-
-    assert snapshot["background_task_id"] == task.id
-    assert snapshot["kind"] == "test"
-    assert snapshot["status"] == "completed"
-    assert snapshot["status_detail"] == nil
-    assert is_binary(snapshot["created_at"])
-    assert Map.has_key?(snapshot, "started_at")
-    assert is_binary(snapshot["finished_at"])
-    assert is_binary(snapshot["updated_at"])
-
-    assert snapshot["progress"] == [
-             %{
-               "cursor" => Integer.to_string(event.id),
-               "type" => "stdout",
-               "text" => "partial output"
-             }
-           ]
-
-    assert snapshot["result"]["text"] == "Finished"
-    assert snapshot["error"] == nil
-    assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => nil}
-  end
-
-  test "background cancellation exposes a complete structured snapshot in text" do
-    %{user: actor} = user_fixture()
-
-    task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
+      media = [
         %{
+          file_id: 41,
+          file_external_id: "media-file",
+          filename: "image.png",
+          mime_type: "image/png",
+          size_bytes: 128,
+          sha256: "media-digest"
+        }
+      ]
+
+      artifacts = [
+        %{
+          file_id: 42,
+          file_external_id: "artifact-file",
+          filename: "result.txt",
+          mime_type: "text/plain",
+          size_bytes: 4,
+          sha256: "artifact-digest"
+        }
+      ]
+
+      assert {:ok, event} = BackgroundTasks.append_event(task, :stdout, "partial output")
+
+      assert {:ok, _task} =
+               BackgroundTasks.mark_completed(task, %ExecutionResult{
+                 text: "Finished",
+                 raw: %{"ok" => true},
+                 media: media,
+                 artifacts: artifacts
+               })
+
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(
+                 create_tool_instance!(actor, type: "native-agent-management"),
+                 "check_background_task_status",
+                 %{"background_task_id" => task.id},
+                 %ExecutionContext{owner_id: actor.id}
+               )
+
+      assert result.media == media
+      assert result.artifacts == artifacts
+      assert result.text =~ "completed"
+      assert get_in(result.raw, ["background_task", "result", "text"]) == "Finished"
+
+      snapshot = decode_background_snapshot!(result.text)
+
+      assert snapshot["background_task_id"] == task.id
+      assert snapshot["kind"] == "test"
+      assert snapshot["status"] == "completed"
+      assert snapshot["status_detail"] == nil
+      assert is_binary(snapshot["created_at"])
+      assert Map.has_key?(snapshot, "started_at")
+      assert is_binary(snapshot["finished_at"])
+      assert is_binary(snapshot["updated_at"])
+
+      assert snapshot["progress"] == [
+               %{
+                 "cursor" => Integer.to_string(event.id),
+                 "type" => "stdout",
+                 "text" => "partial output"
+               }
+             ]
+
+      assert snapshot["result"]["text"] == "Finished"
+      assert snapshot["error"] == nil
+      assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => nil}
+    end
+
+    test "background cancellation exposes a complete structured snapshot in text" do
+      %{user: actor} = user_fixture()
+
+      task =
+        create_background_task!(actor, %{
           kind: "test",
           adapter: "test",
           status: :queued,
           function_name: "test",
           arguments: %{},
           execution_context: %{}
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+        })
 
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(
-               create_tool_instance!(actor),
-               "cancel_background_task",
-               %{"background_task_id" => task.id},
-               %ExecutionContext{owner_id: actor.id}
-             )
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(
+                 create_tool_instance!(actor, type: "native-agent-management"),
+                 "cancel_background_task",
+                 %{"background_task_id" => task.id},
+                 %ExecutionContext{owner_id: actor.id}
+               )
 
-    snapshot = decode_background_snapshot!(result.text)
+      snapshot = decode_background_snapshot!(result.text)
 
-    assert snapshot["background_task_id"] == task.id
-    assert snapshot["status"] == "canceled"
-    assert snapshot["cancel_requested"] == true
-    assert snapshot["progress"] == []
-    assert snapshot["result"] == nil
-    assert snapshot["error"] == nil
-    assert Map.has_key?(snapshot, "status_detail")
-    assert Map.has_key?(snapshot, "created_at")
-    assert Map.has_key?(snapshot, "finished_at")
-    assert result.raw["background_task_request"] == %{"operation" => "cancel", "cursor" => nil}
-  end
+      assert snapshot["background_task_id"] == task.id
+      assert snapshot["status"] == "canceled"
+      assert snapshot["cancel_requested"] == true
+      assert snapshot["progress"] == []
+      assert snapshot["result"] == nil
+      assert snapshot["error"] == nil
+      assert Map.has_key?(snapshot, "status_detail")
+      assert Map.has_key?(snapshot, "created_at")
+      assert Map.has_key?(snapshot, "finished_at")
+      assert result.raw["background_task_request"] == %{"operation" => "cancel", "cursor" => nil}
+    end
 
-  test "background status text preserves a structured terminal error" do
-    %{user: actor} = user_fixture()
+    test "background status text preserves a structured terminal error" do
+      %{user: actor} = user_fixture()
 
-    task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
+      task =
+        create_background_task!(actor, %{
           kind: "ssh_command",
           adapter: "test",
           status: :running,
           function_name: "run_command",
           arguments: %{},
           execution_context: %{}
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+        })
 
-    assert {:ok, _task} =
-             BackgroundTasks.mark_failed(
-               task,
-               "execution_lost",
-               %{"message" => "SSH channel disconnected", "transport" => "ssh"},
-               "unknown"
-             )
+      assert {:ok, _task} =
+               BackgroundTasks.mark_failed(
+                 task,
+                 "execution_lost",
+                 %{"message" => "SSH channel disconnected", "transport" => "ssh"},
+                 "unknown"
+               )
 
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(
-               create_tool_instance!(actor),
-               "check_background_task_status",
-               %{"background_task_id" => task.id, "cursor" => "17"},
-               %ExecutionContext{owner_id: actor.id}
-             )
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(
+                 create_tool_instance!(actor, type: "native-agent-management"),
+                 "check_background_task_status",
+                 %{"background_task_id" => task.id, "cursor" => "17"},
+                 %ExecutionContext{owner_id: actor.id}
+               )
 
-    snapshot = decode_background_snapshot!(result.text)
+      snapshot = decode_background_snapshot!(result.text)
 
-    assert snapshot["status"] == "failed"
-    assert snapshot["result"] == nil
-    assert snapshot["error"]["code"] == "execution_lost"
-    assert snapshot["error"]["outcome"] == "unknown"
-    assert snapshot["error"]["message"] == "SSH channel disconnected"
+      assert snapshot["status"] == "failed"
+      assert snapshot["result"] == nil
+      assert snapshot["error"]["code"] == "execution_lost"
+      assert snapshot["error"]["outcome"] == "unknown"
+      assert snapshot["error"]["message"] == "SSH channel disconnected"
 
-    assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => "17"}
-  end
+      assert result.raw["background_task_request"] == %{"operation" => "check", "cursor" => "17"}
+    end
 
-  test "repeated checks of oversized terminal results do not request the same cursor forever" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
+    test "repeated checks of oversized terminal results do not request the same cursor forever" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
 
-    for kind <- ["fork", "ssh_command", "outlet_function"] do
-      task =
-        BackgroundTask
-        |> Ash.Changeset.for_create(
-          :create,
-          %{
+      for kind <- ["fork", "ssh_command", "outlet_function"] do
+        task =
+          create_background_task!(actor, %{
             kind: kind,
             adapter: "test",
             status: :running,
             function_name: "test",
             arguments: %{},
             execution_context: %{}
-          },
-          actor: actor
+          })
+
+        assert {:ok, _task} =
+                 BackgroundTasks.mark_completed(task, %ExecutionResult{
+                   text: String.duplicate("terminal answer ", 2_000),
+                   raw: %{
+                     "exit_code" => 0,
+                     "stdout" => String.duplicate("command output ", 2_000)
+                   }
+                 })
+
+        assert {:ok, %ExecutionResult{} = first_check} =
+                 NativeAgentManagement.execute(
+                   tool_instance,
+                   "check_background_task_status",
+                   %{"background_task_id" => task.id},
+                   %ExecutionContext{owner_id: actor.id}
+                 )
+
+        first_limited = Executor.limit_execution_result(first_check, 600)
+        first_snapshot = first_limited.raw["background_task"]
+
+        assert first_snapshot["status"] == "completed"
+        assert first_snapshot["page_consumed"] == true
+        assert first_snapshot["result"]["truncated"] == true
+        refute Map.has_key?(first_snapshot, "retry")
+        refute first_limited.text =~ "RETRY THE STATUS CHECK"
+
+        assert {:ok, %ExecutionResult{} = repeated_check} =
+                 NativeAgentManagement.execute(
+                   tool_instance,
+                   "check_background_task_status",
+                   %{
+                     "background_task_id" => task.id,
+                     "cursor" => first_snapshot["next_cursor"]
+                   },
+                   %ExecutionContext{owner_id: actor.id}
+                 )
+
+        repeated_limited = Executor.limit_execution_result(repeated_check, 600)
+        repeated_snapshot = repeated_limited.raw["background_task"]
+
+        assert repeated_snapshot["status"] == "completed"
+        assert repeated_snapshot["page_consumed"] == true
+        assert repeated_snapshot["next_cursor"] == first_snapshot["next_cursor"]
+        refute Map.has_key?(repeated_snapshot, "retry")
+        refute repeated_limited.text =~ "RETRY THE STATUS CHECK"
+
+        assert repeated_limited.raw["background_task_request"] == %{
+                 "operation" => "check",
+                 "cursor" => first_snapshot["next_cursor"]
+               }
+      end
+    end
+  end
+
+  describe "handoff" do
+    test "handoff creates one child chat and defers generation until the terminal boundary" do
+      %{user: actor} = user_fixture()
+      source = create_empty_chat!(actor)
+      {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+
+      {:ok, assistant} =
+        Threads.add_message(source, :assistant, "Working",
+          actor: actor,
+          parent_id: user_message.id
         )
-        |> Ash.create!(actor: actor)
 
-      assert {:ok, _task} =
-               BackgroundTasks.mark_completed(task, %ExecutionResult{
-                 text: String.duplicate("terminal answer ", 2_000),
-                 raw: %{
-                   "exit_code" => 0,
-                   "stdout" => String.duplicate("command output ", 2_000)
-                 }
-               })
+      tool_call_item = create_tool_call_item!(assistant, actor)
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
 
-      assert {:ok, %ExecutionResult{} = first_check} =
+      context = %ExecutionContext{
+        owner_id: actor.id,
+        chat_id: source.id,
+        message_id: assistant.id,
+        assistant_message_id: assistant.id,
+        tool_call_item_id: tool_call_item.id
+      }
+
+      assert {:ok, %ExecutionResult{} = result} =
                NativeAgentManagement.execute(
                  tool_instance,
-                 "check_background_task_status",
-                 %{"background_task_id" => task.id},
-                 %ExecutionContext{owner_id: actor.id}
+                 "handoff",
+                 %{"summary" => "Continue in the new chat."},
+                 context
                )
 
-      first_limited = Executor.limit_execution_result(first_check, 600)
-      first_snapshot = first_limited.raw["background_task"]
+      payload = result.raw["handoff"]
+      assert is_integer(payload["chat_id"])
+      assert is_integer(payload["message_id"])
+      refute Map.has_key?(payload, "generation_message_id")
 
-      assert first_snapshot["status"] == "completed"
-      assert first_snapshot["page_consumed"] == true
-      assert first_snapshot["result"]["truncated"] == true
-      refute Map.has_key?(first_snapshot, "retry")
-      refute first_limited.text =~ "RETRY THE STATUS CHECK"
+      target =
+        Chat
+        |> Ash.get!(payload["chat_id"], actor: actor, load: [:last_message])
 
-      assert {:ok, %ExecutionResult{} = repeated_check} =
+      assert target.parent_chat_id == source.id
+      assert target.parent_message_id == assistant.id
+      assert target.parent_relation_kind == :handoff
+
+      [first_message | _] = messages_for_chat!(actor, target.id)
+
+      first_message_types =
+        first_message.steps
+        |> Enum.flat_map(& &1.items)
+        |> Enum.sort_by(& &1.sequence)
+        |> Enum.map(& &1.type)
+
+      assert first_message_types == [:handoff_history, :handoff_message]
+
+      first_message_text = History.project_user_input_text(first_message)
+      assert String.starts_with?(first_message_text, "History")
+      assert String.contains?(first_message_text, "Continue in the new chat.")
+      assert String.contains?(first_message_text, "Start")
+      assert String.contains?(first_message_text, "Working")
+
+      assert [] ==
+               ChatMessage
+               |> Ash.Query.filter(chat_id == ^target.id and role == :assistant)
+               |> Ash.read!(actor: actor)
+
+      assert {:ok, %ExecutionResult{} = repeated} =
                NativeAgentManagement.execute(
                  tool_instance,
-                 "check_background_task_status",
-                 %{
-                   "background_task_id" => task.id,
-                   "cursor" => first_snapshot["next_cursor"]
-                 },
-                 %ExecutionContext{owner_id: actor.id}
+                 "handoff",
+                 %{"summary" => "Continue in the new chat."},
+                 context
                )
 
-      repeated_limited = Executor.limit_execution_result(repeated_check, 600)
-      repeated_snapshot = repeated_limited.raw["background_task"]
+      assert repeated.raw["handoff"] == payload
 
-      assert repeated_snapshot["status"] == "completed"
-      assert repeated_snapshot["page_consumed"] == true
-      assert repeated_snapshot["next_cursor"] == first_snapshot["next_cursor"]
-      refute Map.has_key?(repeated_snapshot, "retry")
-      refute repeated_limited.text =~ "RETRY THE STATUS CHECK"
+      second_tool_call_item = create_tool_call_item!(assistant, actor)
 
-      assert repeated_limited.raw["background_task_request"] == %{
-               "operation" => "check",
-               "cursor" => first_snapshot["next_cursor"]
-             }
+      second_context = %{
+        context
+        | tool_call_item_id: second_tool_call_item.id
+      }
+
+      assert {:ok, %ExecutionResult{} = second_call} =
+               NativeAgentManagement.execute(
+                 tool_instance,
+                 "handoff",
+                 %{"summary" => "A concurrent duplicate handoff."},
+                 second_context
+               )
+
+      assert second_call.raw["handoff"] == payload
+
+      assert [target.id] ==
+               Chat
+               |> Ash.Query.filter(
+                 parent_tool_call_item_id == ^tool_call_item.id and
+                   parent_relation_kind == :handoff
+               )
+               |> Ash.Query.select([:id])
+               |> Ash.read!(actor: actor)
+               |> Enum.map(& &1.id)
+    end
+
+    test "cancel after handoff tool execution leaves the source queue blocked and child idle" do
+      %{user: actor} = user_fixture()
+      source = create_empty_chat!(actor)
+      {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+
+      assistant = create_generating_message!(actor, source, parent_id: user_message.id)
+
+      assert {:ok, lease} = Lease.acquire(assistant.id)
+      tool_call_item = create_tool_call_item!(assistant, actor)
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_follow_up(
+                 source.id,
+                 %{content: "Must remain paused"},
+                 actor
+               )
+
+      context = %ExecutionContext{
+        owner_id: actor.id,
+        chat_id: source.id,
+        message_id: assistant.id,
+        assistant_message_id: assistant.id,
+        tool_call_item_id: tool_call_item.id,
+        generation_fence_token: lease.fence_token
+      }
+
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(
+                 tool_instance,
+                 "handoff",
+                 %{"summary" => "This result loses the cancel race."},
+                 context
+               )
+
+      child_chat_id = result.raw["handoff"]["chat_id"]
+
+      assert [] ==
+               ChatMessage
+               |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
+               |> Ash.read!(actor: actor)
+
+      assert :canceled = QueueCoordinator.cancel_generation(assistant.id)
+      assert :ok = Lease.release(lease)
+      assert :ok = GenerationSupervisor.recover_orphaned_generations()
+
+      assert {:ok, blocked} = QueuedMessages.get(queued.id, actor)
+      assert blocked.chat_id == source.id
+      assert blocked.status == :blocked
+      assert blocked.blocked_reason == "generation_canceled"
+
+      assert [] ==
+               ChatMessage
+               |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
+               |> Ash.read!(actor: actor)
+    end
+
+    test "handoff requires summary and execution context" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
+      assert {:error, message} =
+               NativeAgentManagement.execute(tool_instance, "handoff", %{}, %ExecutionContext{})
+
+      assert String.contains?(message, "summary")
+
+      assert {:error, "Handoff requires generation execution context."} =
+               NativeAgentManagement.execute(tool_instance, "handoff", %{"summary" => "ok"}, nil)
+    end
+
+    test "handoff cannot create a child from a stale parent generation epoch" do
+      %{user: actor} = user_fixture()
+      source = create_empty_chat!(actor)
+      {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+
+      assistant = create_generating_message!(actor, source, parent_id: user_message.id)
+
+      assert {:ok, lease} = Lease.acquire(assistant.id)
+      tool_call_item = create_tool_call_item!(assistant, actor)
+
+      context = %ExecutionContext{
+        owner_id: actor.id,
+        chat_id: source.id,
+        message_id: assistant.id,
+        assistant_message_id: assistant.id,
+        tool_call_item_id: tool_call_item.id,
+        generation_fence_token: lease.fence_token
+      }
+
+      assert :canceled = Persistence.cancel_generating_message!(assistant.id, error_detail: nil)
+      assert :ok = Lease.release(lease)
+
+      assert {:error, "parent_generation_stale"} =
+               NativeAgentManagement.execute(
+                 create_tool_instance!(actor, type: "native-agent-management"),
+                 "handoff",
+                 %{"summary" => "Must not continue."},
+                 context
+               )
+
+      assert [] =
+               Chat
+               |> Ash.Query.filter(
+                 parent_chat_id == ^source.id and parent_relation_kind == :handoff
+               )
+               |> Ash.read!(actor: actor)
     end
   end
 
-  test "handoff creates one child chat and defers generation until the terminal boundary" do
-    %{user: actor} = user_fixture()
-    source = create_chat!(actor, "Tool source")
-    {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+  describe "wait_backround_tasks" do
+    test "background wait returns all terminal statuses in requested order without output" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      create_tool_function!(actor, tool, name: "wait_backround_tasks", parameters_schema: %{})
+      tasks = Enum.map([:failed, :completed, :canceled], &create_test_task!(actor, &1))
+      ids = Enum.map(tasks, & &1.id)
 
-    {:ok, assistant} =
-      Threads.add_message(source, :assistant, "Working", actor: actor, parent_id: user_message.id)
+      result =
+        Executor.execute_llm_tool(
+          %{"agent_management" => tool},
+          "agent_management__wait_backround_tasks",
+          %{"background_task_ids" => ids ++ [hd(ids)]},
+          %ExecutionContext{owner_id: actor.id}
+        )
 
-    tool_call_item = create_tool_call_item!(assistant, actor)
-    tool_instance = create_tool_instance!(actor)
+      expected = %{
+        "background_tasks" =>
+          Enum.map(
+            tasks,
+            &%{"background_task_id" => &1.id, "status" => Atom.to_string(&1.status)}
+          ),
+        "timed_out" => false
+      }
 
-    context = %ExecutionContext{
-      owner_id: actor.id,
-      chat_id: source.id,
-      message_id: assistant.id,
-      assistant_message_id: assistant.id,
-      tool_call_item_id: tool_call_item.id
-    }
-
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "handoff",
-               %{"summary" => "Continue in the new chat."},
-               context
-             )
-
-    payload = result.raw["handoff"]
-    assert is_integer(payload["chat_id"])
-    assert is_integer(payload["message_id"])
-    refute Map.has_key?(payload, "generation_message_id")
-
-    target =
-      Chat
-      |> Ash.get!(payload["chat_id"], actor: actor, load: [:last_message])
-
-    assert target.parent_chat_id == source.id
-    assert target.parent_message_id == assistant.id
-    assert target.parent_relation_kind == :handoff
-
-    [first_message | _] = messages_for_chat!(target.id, actor)
-
-    first_message_types =
-      first_message.steps
-      |> Enum.flat_map(& &1.items)
-      |> Enum.sort_by(& &1.sequence)
-      |> Enum.map(& &1.type)
-
-    assert first_message_types == [:handoff_history, :handoff_message]
-
-    first_message_text = History.project_user_input_text(first_message)
-    assert String.starts_with?(first_message_text, "History")
-    assert String.contains?(first_message_text, "Continue in the new chat.")
-    assert String.contains?(first_message_text, "Start")
-    assert String.contains?(first_message_text, "Working")
-
-    stored_text =
-      first_message.steps
-      |> Enum.flat_map(& &1.items)
-      |> Enum.flat_map(& &1.contents)
-      |> Enum.filter(&(&1.kind == :text))
-      |> Enum.map_join("\n", &(&1.content_text || ""))
-
-    refute String.contains?(stored_text, "Work continued")
-    refute String.contains?(stored_text, "<details>")
-    refute String.contains?(stored_text, "<summary>")
-
-    assert [] ==
-             ChatMessage
-             |> Ash.Query.filter(chat_id == ^target.id and role == :assistant)
-             |> Ash.read!(actor: actor)
-
-    assert {:ok, %ExecutionResult{} = repeated} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "handoff",
-               %{"summary" => "Continue in the new chat."},
-               context
-             )
-
-    assert repeated.raw["handoff"] == payload
-
-    second_tool_call_item = create_tool_call_item!(assistant, actor)
-
-    second_context = %{
-      context
-      | tool_call_item_id: second_tool_call_item.id
-    }
-
-    assert {:ok, %ExecutionResult{} = second_call} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "handoff",
-               %{"summary" => "A concurrent duplicate handoff."},
-               second_context
-             )
-
-    assert second_call.raw["handoff"] == payload
-
-    assert [target.id] ==
-             Chat
-             |> Ash.Query.filter(
-               parent_tool_call_item_id == ^tool_call_item.id and
-                 parent_relation_kind == :handoff
-             )
-             |> Ash.Query.select([:id])
-             |> Ash.read!(actor: actor)
-             |> Enum.map(& &1.id)
-  end
-
-  test "cancel after handoff tool execution leaves the source queue blocked and child idle" do
-    %{user: actor} = user_fixture()
-    source = create_chat!(actor, "Canceled handoff source")
-    {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
-
-    assistant =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: source.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    assert {:ok, lease} = Lease.acquire(assistant.id)
-    tool_call_item = create_tool_call_item!(assistant, actor)
-    tool_instance = create_tool_instance!(actor)
-
-    assert {:ok, queued} =
-             QueuedMessages.enqueue_follow_up(
-               source.id,
-               %{content: "Must remain paused"},
-               actor
-             )
-
-    context = %ExecutionContext{
-      owner_id: actor.id,
-      chat_id: source.id,
-      message_id: assistant.id,
-      assistant_message_id: assistant.id,
-      tool_call_item_id: tool_call_item.id,
-      generation_fence_token: lease.fence_token
-    }
-
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(
-               tool_instance,
-               "handoff",
-               %{"summary" => "This result loses the cancel race."},
-               context
-             )
-
-    child_chat_id = result.raw["handoff"]["chat_id"]
-
-    assert [] ==
-             ChatMessage
-             |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
-             |> Ash.read!(actor: actor)
-
-    assert :canceled = QueueCoordinator.cancel_generation(assistant.id)
-    assert :ok = Lease.release(lease)
-    assert :ok = GenerationSupervisor.recover_orphaned_generations()
-
-    assert {:ok, blocked} = QueuedMessages.get(queued.id, actor)
-    assert blocked.chat_id == source.id
-    assert blocked.status == :blocked
-    assert blocked.blocked_reason == "generation_canceled"
-
-    assert [] ==
-             ChatMessage
-             |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
-             |> Ash.read!(actor: actor)
-  end
-
-  test "handoff requires summary and execution context" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-
-    assert {:error, message} =
-             NativeAgentManagement.execute(tool_instance, "handoff", %{}, %ExecutionContext{})
-
-    assert String.contains?(message, "summary")
-
-    assert {:error, "Handoff requires generation execution context."} =
-             NativeAgentManagement.execute(tool_instance, "handoff", %{"summary" => "ok"}, nil)
-  end
-
-  test "handoff cannot create a child from a stale parent generation epoch" do
-    %{user: actor} = user_fixture()
-    source = create_chat!(actor, "Stale handoff source")
-    {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
-
-    assistant =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: source.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    assert {:ok, lease} = Lease.acquire(assistant.id)
-    tool_call_item = create_tool_call_item!(assistant, actor)
-
-    context = %ExecutionContext{
-      owner_id: actor.id,
-      chat_id: source.id,
-      message_id: assistant.id,
-      assistant_message_id: assistant.id,
-      tool_call_item_id: tool_call_item.id,
-      generation_fence_token: lease.fence_token
-    }
-
-    assert :canceled = Persistence.cancel_generating_message!(assistant.id, error_detail: nil)
-    assert :ok = Lease.release(lease)
-
-    assert {:error, "parent_generation_stale"} =
-             NativeAgentManagement.execute(
-               create_tool_instance!(actor),
-               "handoff",
-               %{"summary" => "Must not continue."},
-               context
-             )
-
-    assert [] =
-             Chat
-             |> Ash.Query.filter(
-               parent_chat_id == ^source.id and parent_relation_kind == :handoff
-             )
-             |> Ash.read!(actor: actor)
-  end
-
-  test "background wait returns all terminal statuses in requested order without output" do
-    %{user: actor} = user_fixture()
-    tool = create_tool_instance!(actor)
-    enable_fixed_function!(tool, "wait_backround_tasks", actor)
-    tasks = Enum.map([:failed, :completed, :canceled], &create_background_task!(actor, &1))
-    ids = Enum.map(tasks, & &1.id)
-
-    result =
-      Executor.execute_llm_tool(
-        %{"agent_management" => tool},
-        "agent_management__wait_backround_tasks",
-        %{"background_task_ids" => ids ++ [hd(ids)]},
-        %ExecutionContext{owner_id: actor.id}
-      )
-
-    expected = %{
-      "background_tasks" =>
-        Enum.map(tasks, &%{"background_task_id" => &1.id, "status" => Atom.to_string(&1.status)}),
-      "timed_out" => false
-    }
-
-    assert Jason.decode!(result.text) == expected
-    assert result.raw == expected
-  end
-
-  test "background wait without timeout waits for every task, including failures and cancellations" do
-    %{user: actor} = user_fixture()
-    tool = create_tool_instance!(actor)
-    first = create_background_task!(actor, :running)
-    second = create_background_task!(actor, :queued)
-    third = create_background_task!(actor, :running)
-
-    waiter = start_background_wait(tool, [first.id, second.id, third.id], actor)
-    acknowledge_wait_phase(waiter, :protected)
-
-    assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, :interruptible}}, 1_000
-    assert pid == waiter.pid
-    assert {:ok, _} = BackgroundTasks.mark_completed(first, %ExecutionResult{text: "Done"})
-    GenServer.reply(from, :ok)
-    acknowledge_wait_phase(waiter, :protected)
-
-    # Reaching another wait proves that the first completion did not finish the call.
-    assert_receive {:"$gen_call", from, {:tool_execution_phase, ^pid, :interruptible}}, 1_000
-    assert {:ok, _} = BackgroundTasks.mark_failed(second, "test_failure", %{}, "known")
-    assert {:ok, _} = BackgroundTasks.mark_canceled(third)
-    GenServer.reply(from, :ok)
-    acknowledge_wait_phase(waiter, :protected)
-
-    assert {:completed, {:ok, result}} = Task.await(waiter, 1_000)
-    assert result.raw["timed_out"] == false
-
-    assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
-             ["completed", "failed", "canceled"]
-  end
-
-  test "background wait returns current statuses at a fractional timeout without canceling tasks" do
-    %{user: actor} = user_fixture()
-    tool = create_tool_instance!(actor)
-    tasks = Enum.map([:queued, :running, :completed], &create_background_task!(actor, &1))
-    started_at = System.monotonic_time(:millisecond)
-
-    assert {:ok, result} =
-             NativeAgentManagement.execute(
-               tool,
-               "wait_backround_tasks",
-               %{"background_task_ids" => Enum.map(tasks, & &1.id), "timeout_seconds" => 0.03},
-               %ExecutionContext{owner_id: actor.id}
-             )
-
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
-    assert elapsed_ms >= 30
-    assert elapsed_ms < 1_000
-    assert result.raw["timed_out"] == true
-
-    assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
-             ["queued", "running", "completed"]
-
-    for task <- tasks do
-      assert {:ok, current} = Ash.get(BackgroundTask, task.id, actor: actor)
-      assert current.cancel_requested == false
-      assert current.status == task.status
+      assert Jason.decode!(result.text) == expected
+      assert result.raw == expected
     end
-  end
 
-  test "background wait returns immediately for zero or already elapsed timeouts" do
-    %{user: actor} = user_fixture()
-    tool = create_tool_instance!(actor)
-    task = create_background_task!(actor, :running)
+    test "background wait without timeout waits for every task, including failures and cancellations" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      first = create_test_task!(actor, :running)
+      second = create_test_task!(actor, :queued)
+      third = create_test_task!(actor, :running)
 
-    for {timeout, created_at} <- [{0, nil}, {10, DateTime.add(DateTime.utc_now(), -20, :second)}] do
+      waiter = start_background_wait(tool, [first.id, second.id, third.id], actor)
+      acknowledge_wait_phase(waiter, :protected)
+
+      assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, :interruptible}}, 1_000
+      assert pid == waiter.pid
+      assert {:ok, _} = BackgroundTasks.mark_completed(first, %ExecutionResult{text: "Done"})
+      GenServer.reply(from, :ok)
+      acknowledge_wait_phase(waiter, :protected)
+
+      # Reaching another wait proves that the first completion did not finish the call.
+      assert_receive {:"$gen_call", from, {:tool_execution_phase, ^pid, :interruptible}}, 1_000
+      assert {:ok, _} = BackgroundTasks.mark_failed(second, "test_failure", %{}, "known")
+      assert {:ok, _} = BackgroundTasks.mark_canceled(third)
+      GenServer.reply(from, :ok)
+      acknowledge_wait_phase(waiter, :protected)
+
+      assert {:completed, {:ok, result}} = Task.await(waiter, 1_000)
+      assert result.raw["timed_out"] == false
+
+      assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+               ["completed", "failed", "canceled"]
+    end
+
+    test "background wait returns current statuses at a fractional timeout without canceling tasks" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      tasks = Enum.map([:queued, :running, :completed], &create_test_task!(actor, &1))
+      started_at = System.monotonic_time(:millisecond)
+
       assert {:ok, result} =
                NativeAgentManagement.execute(
                  tool,
                  "wait_backround_tasks",
-                 %{"background_task_ids" => [task.id], "timeout_seconds" => timeout},
-                 %ExecutionContext{owner_id: actor.id, tool_call_created_at: created_at}
-               )
-
-      assert result.raw == %{
-               "background_tasks" => [%{"background_task_id" => task.id, "status" => "running"}],
-               "timed_out" => true
-             }
-    end
-  end
-
-  test "background wait rejects missing and foreign tasks before waiting" do
-    %{user: actor} = user_fixture()
-    %{user: other} = user_fixture()
-    tool = create_tool_instance!(actor)
-    own = create_background_task!(actor, :running)
-    foreign = create_background_task!(other, :completed)
-
-    for task_id <- [Ash.UUID.generate(), foreign.id] do
-      assert {:error, "not_found"} =
-               NativeAgentManagement.execute(
-                 tool,
-                 "wait_backround_tasks",
-                 %{"background_task_ids" => [own.id, task_id]},
+                 %{"background_task_ids" => Enum.map(tasks, & &1.id), "timeout_seconds" => 0.03},
                  %ExecutionContext{owner_id: actor.id}
                )
+
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+      assert elapsed_ms >= 30
+      assert elapsed_ms < 1_000
+      assert result.raw["timed_out"] == true
+
+      assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+               ["queued", "running", "completed"]
+
+      for task <- tasks do
+        assert {:ok, current} = Ash.get(BackgroundTask, task.id, actor: actor)
+        assert current.cancel_requested == false
+        assert current.status == task.status
+      end
+    end
+
+    test "background wait returns immediately for zero or already elapsed timeouts" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      task = create_test_task!(actor, :running)
+
+      for {timeout, created_at} <- [
+            {0, nil},
+            {10, DateTime.add(DateTime.utc_now(), -20, :second)}
+          ] do
+        assert {:ok, result} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{"background_task_ids" => [task.id], "timeout_seconds" => timeout},
+                   %ExecutionContext{owner_id: actor.id, tool_call_created_at: created_at}
+                 )
+
+        assert result.raw == %{
+                 "background_tasks" => [%{"background_task_id" => task.id, "status" => "running"}],
+                 "timed_out" => true
+               }
+      end
+    end
+
+    test "background wait rejects missing and foreign tasks before waiting" do
+      %{user: actor} = user_fixture()
+      %{user: other} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      own = create_test_task!(actor, :running)
+      foreign = create_test_task!(other, :completed)
+
+      for task_id <- [Ash.UUID.generate(), foreign.id] do
+        assert {:error, "not_found"} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{"background_task_ids" => [own.id, task_id]},
+                   %ExecutionContext{owner_id: actor.id}
+                 )
+      end
+    end
+
+    test "background wait can be canceled at its interruption boundary" do
+      %{user: actor} = user_fixture()
+      task = create_test_task!(actor, :running)
+
+      waiter =
+        start_background_wait(
+          create_tool_instance!(actor, type: "native-agent-management"),
+          [task.id],
+          actor
+        )
+
+      acknowledge_wait_phase(waiter, :protected)
+      acknowledge_wait_phase(waiter, :interruptible, :canceled)
+      assert Task.await(waiter, 1_000) == :canceled
+    end
+
+    test "background wait validates task ids, timeout and owner context" do
+      tool = %ToolInstance{type: "native-agent-management"}
+      context = %ExecutionContext{owner_id: 1}
+
+      for value <- [nil, [], "invalid", [123], [nil], [%{}], ["invalid"], ["warehouse worker"]] do
+        assert {:error, message} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{"background_task_ids" => value},
+                   context
+                 )
+
+        assert message =~ "background_task_ids"
+      end
+
+      for value <- [-1, "1", true, [], %{}] do
+        assert {:error, "timeout_seconds must be a non-negative number"} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{"background_task_ids" => [Ash.UUID.generate()], "timeout_seconds" => value},
+                   context
+                 )
+      end
+
+      args = %{"background_task_ids" => [Ash.UUID.generate()]}
+
+      assert {:error, "owner_id is required"} =
+               NativeAgentManagement.execute(
+                 tool,
+                 "wait_backround_tasks",
+                 args,
+                 %ExecutionContext{}
+               )
+
+      assert {:error, "Waiting for background tasks requires generation execution context."} =
+               NativeAgentManagement.execute(tool, "wait_backround_tasks", args, nil)
     end
   end
 
-  test "background wait can be canceled at its interruption boundary" do
-    %{user: actor} = user_fixture()
-    task = create_background_task!(actor, :running)
-    waiter = start_background_wait(create_tool_instance!(actor), [task.id], actor)
-    acknowledge_wait_phase(waiter, :protected)
-    acknowledge_wait_phase(waiter, :interruptible, :canceled)
-    assert Task.await(waiter, 1_000) == :canceled
-  end
+  describe "sleep" do
+    test "sleep pauses without execution context" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+      started_at = System.monotonic_time(:millisecond)
 
-  test "background wait validates task ids, timeout and owner context" do
-    tool = %ToolInstance{type: "native-agent-management"}
-    context = %ExecutionContext{owner_id: 1}
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.02}, nil)
 
-    for value <- [nil, [], "invalid", [123], [nil], [%{}], ["invalid"], ["warehouse worker"]] do
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+      assert elapsed_ms >= 15
+      assert result.text == "Paused for 0.02 seconds."
+      assert result.raw["sleep"]["seconds"] == 0.02
+      assert result.raw["sleep"]["milliseconds"] == 20
+      assert result.raw["sleep"]["elapsed_milliseconds"] == 0
+      assert result.raw["sleep"]["remaining_milliseconds"] == 20
+    end
+
+    test "sleep skips already elapsed persisted duration" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
+      context = %ExecutionContext{
+        tool_call_created_at: DateTime.add(DateTime.utc_now(), -1, :second)
+      }
+
+      started_at = System.monotonic_time(:millisecond)
+
+      assert {:ok, %ExecutionResult{} = result} =
+               NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.2}, context)
+
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+      assert elapsed_ms < 80
+      assert result.raw["sleep"]["seconds"] == 0.2
+      assert result.raw["sleep"]["milliseconds"] == 200
+      assert result.raw["sleep"]["elapsed_milliseconds"] == 200
+      assert result.raw["sleep"]["remaining_milliseconds"] == 0
+    end
+
+    test "sleep validates duration" do
+      %{user: actor} = user_fixture()
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
       assert {:error, message} =
-               NativeAgentManagement.execute(
-                 tool,
-                 "wait_backround_tasks",
-                 %{"background_task_ids" => value},
-                 context
-               )
+               NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => -1}, nil)
 
-      assert message =~ "background_task_ids"
+      assert String.contains?(message, "seconds")
+
+      assert {:error, message} =
+               NativeAgentManagement.execute(tool_instance, "sleep", %{}, nil)
+
+      assert String.contains?(message, "seconds")
     end
-
-    for value <- [-1, "1", true, [], %{}] do
-      assert {:error, "timeout_seconds must be a non-negative number"} =
-               NativeAgentManagement.execute(
-                 tool,
-                 "wait_backround_tasks",
-                 %{"background_task_ids" => [Ash.UUID.generate()], "timeout_seconds" => value},
-                 context
-               )
-    end
-
-    args = %{"background_task_ids" => [Ash.UUID.generate()]}
-
-    assert {:error, "owner_id is required"} =
-             NativeAgentManagement.execute(
-               tool,
-               "wait_backround_tasks",
-               args,
-               %ExecutionContext{}
-             )
-
-    assert {:error, "Waiting for background tasks requires generation execution context."} =
-             NativeAgentManagement.execute(tool, "wait_backround_tasks", args, nil)
   end
 
-  test "sleep pauses without execution context" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-    started_at = System.monotonic_time(:millisecond)
-
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.02}, nil)
-
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
-
-    assert elapsed_ms >= 15
-    assert result.text == "Paused for 0.02 seconds."
-    assert result.raw["sleep"]["seconds"] == 0.02
-    assert result.raw["sleep"]["milliseconds"] == 20
-    assert result.raw["sleep"]["elapsed_milliseconds"] == 0
-    assert result.raw["sleep"]["remaining_milliseconds"] == 20
-  end
-
-  test "sleep skips already elapsed persisted duration" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-
-    context = %ExecutionContext{
-      tool_call_created_at: DateTime.add(DateTime.utc_now(), -1, :second)
-    }
-
-    started_at = System.monotonic_time(:millisecond)
-
-    assert {:ok, %ExecutionResult{} = result} =
-             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => 0.2}, context)
-
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
-
-    assert elapsed_ms < 80
-    assert result.raw["sleep"]["seconds"] == 0.2
-    assert result.raw["sleep"]["milliseconds"] == 200
-    assert result.raw["sleep"]["elapsed_milliseconds"] == 200
-    assert result.raw["sleep"]["remaining_milliseconds"] == 0
-  end
-
-  test "sleep validates duration" do
-    %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor)
-
-    assert {:error, message} =
-             NativeAgentManagement.execute(tool_instance, "sleep", %{"seconds" => -1}, nil)
-
-    assert String.contains?(message, "seconds")
-
-    assert {:error, message} =
-             NativeAgentManagement.execute(tool_instance, "sleep", %{}, nil)
-
-    assert String.contains?(message, "seconds")
-  end
-
-  defp create_background_task!(actor, status) do
-    BackgroundTask
-    |> Ash.Changeset.for_create(
-      :create,
-      %{kind: "test", adapter: "test", status: status, function_name: "test"},
-      actor: actor
+  defp create_test_task!(actor, status) do
+    create_background_task!(actor,
+      kind: "test",
+      adapter: "test",
+      status: status,
+      function_name: "test",
+      arguments: %{},
+      execution_context: %{}
     )
-    |> Ash.create!(actor: actor)
   end
 
   defp start_background_wait(tool, ids, actor) do
@@ -1043,12 +961,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, ^phase}}, 1_000
     assert pid == waiter.pid
     GenServer.reply(from, reply)
-  end
-
-  defp create_chat!(actor, _title) do
-    Chat
-    |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 
   defp create_tool_call_item!(assistant, actor) do
@@ -1084,65 +996,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     |> Ash.create!(actor: actor)
   end
 
-  defp create_subagent_chat!(actor, parent) do
-    Chat
-    |> Ash.Changeset.for_create(
-      :create_empty,
-      %{
-        note: "",
-        parent_chat_id: parent.id,
-        parent_relation_kind: :spawn,
-        subagent: true
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_tool_instance!(actor, config \\ %{}) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        type: "native-agent-management",
-        name: "Agent management",
-        description: "",
-        alias: "agent_management",
-        config: config,
-        secrets: %{},
-        max_output_tokens: 20_000
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp enable_fixed_function!(tool_instance, name, actor) do
-    ToolFunction
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        tool_instance_id: tool_instance.id,
-        name: name,
-        description: "",
-        parameters_schema: %{},
-        enabled: true
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
   defp decode_background_snapshot!(text) do
     [json] = String.split(text, "Background task snapshot:\n", parts: 2, trim: true) |> tl()
     Jason.decode!(json)
-  end
-
-  defp messages_for_chat!(chat_id, actor) do
-    ChatMessage
-    |> Ash.Query.filter(chat_id == ^chat_id)
-    |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.load(steps: [items: [:contents]])
-    |> Ash.read!(actor: actor)
   end
 end

@@ -10,6 +10,9 @@ defmodule IntellectualClubWeb.ConnCase do
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
   are reverted at the end of every test.
+
+  Imports the shared fixtures and helpers listed in `IntellectualClub.DataCase`
+  plus `IntellectualClubWeb.JsonApiHelpers`.
   """
 
   use ExUnit.CaseTemplate
@@ -26,6 +29,20 @@ defmodule IntellectualClubWeb.ConnCase do
       import Phoenix.ConnTest
       import Phoenix.LiveViewTest
       import IntellectualClub.AccountsFixtures
+      import IntellectualClub.Fixtures
+      import IntellectualClub.ChatFixtures
+      import IntellectualClub.BotsFixtures
+      import IntellectualClub.LlmFixtures
+      import IntellectualClub.ToolsFixtures
+      import IntellectualClub.KnowledgeFixtures
+      import IntellectualClub.BackgroundTasksFixtures
+      import IntellectualClub.FilesFixtures
+      import IntellectualClub.ImageFixtures
+      import IntellectualClub.WaitHelpers
+      import IntellectualClub.TestHttpServer
+      import IntellectualClub.RepoTestHelpers
+      import IntellectualClub.TestEnv
+      import IntellectualClubWeb.JsonApiHelpers
       import IntellectualClubWeb.ConnCase
     end
   end

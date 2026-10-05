@@ -5,130 +5,147 @@ defmodule IntellectualClub.Tools.RegistryTest do
   alias IntellectualClub.Tools.DriverMetadata
   alias IntellectualClub.Tools.Registry
 
-  test "lists canonical MCP HTTP tool type" do
-    assert "mcp-http" in Registry.list_types()
-    refute "mcp_http" in Registry.list_types()
+  # {type, supports_artifacts?, supports_handoff?}
+  @capabilities [
+    {"mcp-http", false, false},
+    {"native-agent-management", false, true},
+    {"native-artifact-reader", true, false},
+    {"native-game-tools", false, false},
+    {"native-knowledge-library", false, false},
+    {"native-web-reader", false, false},
+    {"native-web-search", false, false},
+    {"outlet", true, false},
+    {"ssh", true, false}
+  ]
+
+  describe "Registry" do
+    test "lists every canonical tool type and hides the legacy MCP HTTP type" do
+      types = Registry.list_types()
+
+      for {type, _artifacts?, _handoff?} <- @capabilities do
+        assert type in types
+      end
+
+      refute "mcp_http" in types
+    end
+
+    test "resolves legacy MCP HTTP tool type for existing data" do
+      assert Registry.driver_for_type!("mcp_http") == McpHttp
+    end
+
+    for {type, artifacts?, handoff?} <- @capabilities do
+      @type_name type
+      @artifacts? artifacts?
+      @handoff? handoff?
+
+      test "#{type} reports artifacts=#{artifacts?} and handoff=#{handoff?} consistently" do
+        assert Registry.supports_artifacts?(@type_name) == @artifacts?
+        assert Registry.supports_handoff?(@type_name) == @handoff?
+        assert Registry.supports_handoff?(%{type: @type_name}) == @handoff?
+        assert DriverMetadata.for_type(@type_name)["supports_artifacts"] == @artifacts?
+      end
+    end
+
+    test "unknown types support neither artifacts nor handoff" do
+      refute Registry.supports_artifacts?("unknown")
+      refute Registry.supports_handoff?("unknown")
+    end
   end
 
-  test "lists native artifact reader tool type" do
-    assert "native-artifact-reader" in Registry.list_types()
-  end
+  describe "DriverMetadata" do
+    test "list/0 reports artifact support for every driver" do
+      by_type = DriverMetadata.list() |> Map.new(&{&1["type"], &1["supports_artifacts"]})
 
-  test "lists native agent management tool type" do
-    assert "native-agent-management" in Registry.list_types()
-  end
+      for {type, artifacts?, _handoff?} <- @capabilities do
+        assert by_type[type] == artifacts?
+      end
+    end
 
-  test "lists native game tools tool type" do
-    assert "native-game-tools" in Registry.list_types()
-  end
+    test "artifact reader exposes default config and fixed functions" do
+      metadata = DriverMetadata.for_type("native-artifact-reader")
 
-  test "resolves legacy MCP HTTP tool type for existing data" do
-    assert Registry.driver_for_type!("mcp_http") == McpHttp
-  end
+      assert metadata["type"] == "native-artifact-reader"
+      assert metadata["title"] == "Artifact Reader"
+      assert metadata["functions_mode"] == "fixed"
+      assert metadata["supports_artifacts"] == true
+      assert metadata["default_config"]["chunk_size_tokens"] == 5_000
 
-  test "reports artifact support for known driver types" do
-    artifact_types = ["native-artifact-reader", "ssh", "outlet"]
+      assert metadata["fixed_functions"]
+             |> Enum.map(& &1["name"])
+             |> Enum.sort() == ["read_file", "read_image", "search_file", "upload_file"]
+    end
 
-    non_artifact_types = [
-      "mcp-http",
-      "native-agent-management",
-      "native-web-search",
-      "native-game-tools",
-      "native-knowledge-library",
-      "native-web-reader"
-    ]
+    test "game tools expose the random_select schema" do
+      metadata = DriverMetadata.for_type("native-game-tools")
 
-    assert Enum.all?(artifact_types, &Registry.supports_artifacts?/1)
-    refute Enum.any?(non_artifact_types, &Registry.supports_artifacts?/1)
-    refute Registry.supports_artifacts?("unknown")
-  end
+      assert metadata["type"] == "native-game-tools"
+      assert metadata["title"] == "Game Tools"
+      assert metadata["functions_mode"] == "fixed"
+      assert metadata["supports_discovery"] == false
+      assert metadata["supports_artifacts"] == false
 
-  test "reports handoff support for known driver types" do
-    non_handoff_types = [
-      "mcp-http",
-      "native-artifact-reader",
-      "native-web-search",
-      "native-game-tools",
-      "native-knowledge-library",
-      "native-web-reader",
-      "outlet",
-      "ssh"
-    ]
+      assert %{"parameters_schema" => schema} =
+               Enum.find(metadata["fixed_functions"], &(&1["name"] == "random_select"))
 
-    assert Registry.supports_handoff?("native-agent-management")
-    assert Registry.supports_handoff?(%{type: "native-agent-management"})
-    refute Enum.any?(non_handoff_types, &Registry.supports_handoff?/1)
-    refute Registry.supports_handoff?("unknown")
-  end
+      assert schema["required"] == ["options"]
+      assert schema["properties"]["options"]["type"] == "array"
+    end
 
-  test "driver metadata exposes artifact support" do
-    by_type = DriverMetadata.list() |> Map.new(&{&1["type"], &1["supports_artifacts"]})
+    test "agent management exposes fixed handoff, fork and sleep schemas" do
+      metadata = DriverMetadata.for_type("native-agent-management")
 
-    assert by_type["native-artifact-reader"] == true
-    assert by_type["ssh"] == true
-    assert by_type["outlet"] == true
-    assert by_type["mcp-http"] == false
-    assert by_type["native-agent-management"] == false
-    assert by_type["native-web-search"] == false
-    assert by_type["native-game-tools"] == false
-    assert by_type["native-knowledge-library"] == false
-    assert by_type["native-web-reader"] == false
-  end
+      assert metadata["functions_mode"] == "fixed"
+      assert metadata["supports_discovery"] == false
+      assert metadata["supports_artifacts"] == false
+      assert metadata["supports_handoff"] == true
 
-  test "driver metadata exposes fixed agent management functions" do
-    metadata = DriverMetadata.for_type("native-agent-management")
+      assert %{"parameters_schema" => schema} =
+               Enum.find(metadata["fixed_functions"], &(&1["name"] == "handoff"))
 
-    assert metadata["functions_mode"] == "fixed"
-    assert metadata["supports_discovery"] == false
-    assert metadata["supports_artifacts"] == false
-    assert metadata["supports_handoff"] == true
+      assert schema["required"] == ["summary"]
+      assert schema["properties"]["summary"]["type"] == "string"
 
-    assert %{"parameters_schema" => schema} =
-             Enum.find(metadata["fixed_functions"], &(&1["name"] == "handoff"))
+      assert %{"parameters_schema" => schema} =
+               fork_function = Enum.find(metadata["fixed_functions"], &(&1["name"] == "fork"))
 
-    assert schema["required"] == ["summary"]
-    assert schema["properties"]["summary"]["type"] == "string"
+      assert fork_function["enabled"] == false
+      assert fork_function["enabled_by_default"] == false
+      assert schema["required"] == ["brief", "prompt"]
+      assert schema["properties"]["prompt"]["type"] == "string"
 
-    assert %{"parameters_schema" => schema} =
-             fork_function = Enum.find(metadata["fixed_functions"], &(&1["name"] == "fork"))
+      assert %{"parameters_schema" => schema} =
+               Enum.find(metadata["fixed_functions"], &(&1["name"] == "sleep"))
 
-    assert fork_function["enabled"] == false
-    assert fork_function["enabled_by_default"] == false
-    assert schema["required"] == ["brief", "prompt"]
-    assert schema["properties"]["prompt"]["type"] == "string"
+      assert schema["required"] == ["seconds"]
+      assert schema["properties"]["seconds"]["type"] == "number"
+    end
 
-    assert %{"parameters_schema" => schema} =
-             Enum.find(metadata["fixed_functions"], &(&1["name"] == "sleep"))
+    test "background function capabilities are normalized" do
+      ssh_functions = DriverMetadata.for_type("ssh")["fixed_functions"]
 
-    assert schema["required"] == ["seconds"]
-    assert schema["properties"]["seconds"]["type"] == "number"
-  end
+      assert %{
+               "is_background_function" => false,
+               "provides_background_task_status" => false
+             } = Enum.find(ssh_functions, &(&1["name"] == "run_command"))
 
-  test "driver metadata exposes normalized background function capabilities" do
-    ssh_functions = DriverMetadata.for_type("ssh")["fixed_functions"]
-
-    assert %{
-             "is_background_function" => false,
-             "provides_background_task_status" => false
-           } = Enum.find(ssh_functions, &(&1["name"] == "run_command"))
-
-    assert %{
-             "is_background_function" => true,
-             "provides_background_task_status" => false
-           } = Enum.find(ssh_functions, &(&1["name"] == "run_command_background"))
-
-    agent_functions = DriverMetadata.for_type("native-agent-management")["fixed_functions"]
-
-    for name <- ["fork_background", "spawn_background"] do
       assert %{
                "is_background_function" => true,
                "provides_background_task_status" => false
-             } = Enum.find(agent_functions, &(&1["name"] == name))
-    end
+             } = Enum.find(ssh_functions, &(&1["name"] == "run_command_background"))
 
-    assert %{
-             "is_background_function" => false,
-             "provides_background_task_status" => true
-           } = Enum.find(agent_functions, &(&1["name"] == "check_background_task_status"))
+      agent_functions = DriverMetadata.for_type("native-agent-management")["fixed_functions"]
+
+      for name <- ["fork_background", "spawn_background"] do
+        assert %{
+                 "is_background_function" => true,
+                 "provides_background_task_status" => false
+               } = Enum.find(agent_functions, &(&1["name"] == name))
+      end
+
+      assert %{
+               "is_background_function" => false,
+               "provides_background_task_status" => true
+             } = Enum.find(agent_functions, &(&1["name"] == "check_background_task_status"))
+    end
   end
 end

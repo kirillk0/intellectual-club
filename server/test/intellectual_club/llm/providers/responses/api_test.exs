@@ -1,11 +1,21 @@
 defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
   use ExUnit.Case, async: true
 
+  import IntellectualClub.ProviderStreamHelpers
+  import IntellectualClub.TestHttpServer
+
   import Plug.Conn
 
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Responses.Api
+  alias IntellectualClub.Llm.Providers.Responses.Endpoint
   alias IntellectualClub.Llm.Providers.Responses.HttpPool
+
+  @hydration_opts %{
+    model_name: "gpt-4.1",
+    request_payload: %{"model" => "gpt-4.1", "input" => [], "instructions" => ""},
+    connect_timeout_ms: provider_deadline_ms()
+  }
 
   @base_opts %{
     base_url: "http://127.0.0.1:9",
@@ -38,18 +48,17 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       )
     end
 
-    server = start_supervised!({Bandit, plug: handler, scheme: :http, port: 0})
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    {_base_url, port} = start_http_server!(handler)
 
     for key <- ["intellectual-club:user:1", "intellectual-club:user:2", "other-cache-key"] do
       payload = %{"model" => "test-model", "input" => [], "prompt_cache_key" => key}
 
       events =
-        run_and_capture_events!(%{
+        run_and_capture_events!(Api, %{
           base_url: "http://127.0.0.1:#{port}",
           api_key: "test-key",
           request_payload: payload,
-          timeout_ms: 1_000
+          timeout_ms: provider_deadline_ms()
         })
 
       assert_receive {:wire_payload, ^payload}
@@ -67,8 +76,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       send_resp(conn, 400, Jason.encode!(%{"error" => %{"message" => "Test rejection"}}))
     end
 
-    server = start_supervised!({Bandit, plug: handler, scheme: :http, port: 0})
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    {_base_url, port} = start_http_server!(handler)
 
     for key <- [
           :missing,
@@ -84,11 +92,11 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       payload = if key == :missing, do: payload, else: Map.put(payload, "prompt_cache_key", key)
 
       error =
-        run_and_capture_error!(%{
+        run_and_capture_error!(Api, %{
           base_url: "http://127.0.0.1:#{port}",
           api_key: "test-key",
           request_payload: payload,
-          timeout_ms: 1_000
+          timeout_ms: provider_deadline_ms()
         })
 
       assert_receive {:wire_payload_without_session, ^payload}
@@ -98,99 +106,35 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
   end
 
   test "uses the dedicated Finch pool with the default connection timeout" do
-    scripts = %{
-      "/responses" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "response.completed",
-             "response" => %{
-               "id" => "resp_pool",
-               "object" => "response",
-               "model" => "gpt-4.1",
-               "status" => "completed",
-               "output" => []
-             }
-           }
-         ])}
-      ]
-    }
-
-    {base_url, _agent} = start_scripted_server!(scripts)
+    base_url = completed_response_server!("resp_pool")
     pool = Finch.Pool.new(base_url)
     assert Finch.find_pool(HttpPool, pool) == :error
 
-    events =
-      run_and_capture_events!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{"model" => "gpt-4.1", "input" => []},
-        timeout_ms: 1_000
-      })
-
-    assert Enum.any?(events, &match?({:response_complete, _meta}, &1))
+    assert %{} = base_url |> stream_events!() |> response_complete!()
     assert {:ok, pool_pid} = Finch.find_pool(HttpPool, pool)
     assert is_pid(pool_pid)
   end
 
   test "preserves the provider identity supplied by the transport coordinator" do
-    scripts = %{
-      "/responses" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "response.completed",
-             "response" => %{
-               "id" => "resp_legacy",
-               "object" => "response",
-               "model" => "gpt-4.1",
-               "status" => "completed",
-               "output" => []
-             }
-           }
-         ])}
-      ]
-    }
+    base_url = completed_response_server!("resp_legacy")
 
-    {base_url, _agent} = start_scripted_server!(scripts)
-
-    events =
-      run_and_capture_events!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        provider: "responses_wss",
-        request_payload: %{"model" => "gpt-4.1", "input" => []},
-        timeout_ms: 1_000
-      })
-
-    assert {:response_complete, %{provider: "responses_wss"}} =
-             Enum.find(events, &match?({:response_complete, _meta}, &1))
+    events = stream_events!(base_url, %{provider: "responses_wss"})
+    assert %{provider: "responses_wss"} = response_complete!(events)
   end
 
-  test "passes request payload through unchanged" do
-    payload = %{
-      "model" => "gpt-4.1",
-      "input" => []
-    }
-
-    error =
-      run_and_capture_error!(Map.put(@base_opts, :request_payload, payload))
-
-    assert error.raw_request == payload
-  end
-
-  test "preserves provided request payload values" do
-    payload = %{
-      "model" => "gpt-4.1",
-      "input" => [],
-      "instructions" => "You are a careful assistant.",
-      "store" => true
-    }
-
-    error =
-      run_and_capture_error!(Map.put(@base_opts, :request_payload, payload))
-
-    assert error.raw_request == payload
+  test "connection failures echo the request payload unchanged" do
+    for payload <- [
+          %{"model" => "gpt-4.1", "input" => []},
+          %{
+            "model" => "gpt-4.1",
+            "input" => [],
+            "instructions" => "You are a careful assistant.",
+            "store" => true
+          }
+        ] do
+      error = run_and_capture_error!(Api, Map.put(@base_opts, :request_payload, payload))
+      assert error.raw_request == payload
+    end
   end
 
   test "hydrates completed response output from stream items when terminal response omits it" do
@@ -252,28 +196,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     }
 
     {base_url, _agent} = start_scripted_server!(scripts)
-    parent = self()
-
-    :ok =
-      Api.stream_generate(
-        %{
-          base_url: base_url,
-          api_key: "test-key",
-          model_name: "gpt-4.1",
-          request_payload: %{
-            "model" => "gpt-4.1",
-            "input" => [],
-            "instructions" => ""
-          },
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000
-        },
-        fn event ->
-          send(parent, {:provider_event, event})
-        end
-      )
-
-    assert_receive {:provider_event, {:response_complete, meta}}, 2_000
+    meta = base_url |> stream_events!(@hydration_opts) |> response_complete!()
 
     assert meta.usage == %{
              input_tokens: 3,
@@ -403,20 +326,10 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
 
     {base_url, _agent} = start_scripted_server!(scripts)
 
-    events =
-      run_and_capture_events!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{"model" => "gpt-4.1", "input" => []},
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
-
     meta =
-      Enum.find_value(events, fn
-        {:response_complete, meta} -> meta
-        _other -> nil
-      end)
+      base_url
+      |> stream_events!(%{connect_timeout_ms: provider_deadline_ms()})
+      |> response_complete!()
 
     assert meta.raw_response["output"] == [
              %{
@@ -536,34 +449,13 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
 
     {base_url, _agent} = start_scripted_server!(scripts)
 
-    events =
-      run_and_capture_events!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        model_name: "gpt-4.1",
-        request_payload: %{
-          "model" => "gpt-4.1",
-          "input" => [],
-          "instructions" => ""
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
-
-    meta =
-      Enum.find_value(events, fn
-        {:response_complete, meta} -> meta
-        _other -> nil
-      end)
+    events = stream_events!(base_url, @hydration_opts)
+    meta = response_complete!(events)
 
     assert get_in(meta.raw_response, ["output", Access.at(0), "content", Access.at(0), "text"]) ==
              "Full answer."
 
-    runtime_step =
-      Enum.reduce(events, RuntimeTrace.new_step(), fn
-        {:trace, trace_event}, step -> RuntimeTrace.apply_event(step, trace_event)
-        _event, step -> step
-      end)
+    runtime_step = trace_step(events)
 
     assert RuntimeTrace.text_for_item_type(runtime_step, :answer) == "Full answer."
 
@@ -583,318 +475,108 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
            end)
   end
 
-  test "marks overloaded streamed provider errors as retryable" do
-    scripts = %{
-      "/responses" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "error",
-             "error" => %{
-               "code" => "server_is_overloaded",
-               "type" => "service_unavailable_error",
-               "message" => "Our servers are currently overloaded. Please try again later."
-             }
-           }
-         ])}
-      ]
-    }
+  describe "Endpoint.resolve/2" do
+    for {url, opts, transport, http_base_url, websocket_base_url} <- [
+          {nil, [], :http, "https://api.openai.com/v1", "wss://api.openai.com/v1"},
+          {"http://example.com/api/", [], :http, "http://example.com/api",
+           "ws://example.com/api"},
+          {"https://example.com/api", [], :http, "https://example.com/api",
+           "wss://example.com/api"},
+          {"ws://example.com/api", [], :websocket, "http://example.com/api",
+           "ws://example.com/api"},
+          {"wss://example.com/api/", [], :websocket, "https://example.com/api",
+           "wss://example.com/api"},
+          {"https://api.openai.com/v1", [force_websocket?: true], :websocket,
+           "https://api.openai.com/v1", "wss://api.openai.com/v1"}
+        ] do
+      @url url
+      @opts opts
+      @expected {transport, http_base_url, websocket_base_url}
 
-    {base_url, _agent} = start_scripted_server!(scripts)
+      test "resolves #{inspect(url)} #{inspect(opts)} to #{transport}" do
+        assert {:ok, endpoint} = Endpoint.resolve(@url, @opts)
 
-    error =
-      run_and_capture_error!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{
-          "model" => "gpt-4.1",
-          "input" => []
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
+        assert {endpoint.transport, endpoint.http_base_url, endpoint.websocket_base_url} ==
+                 @expected
+      end
+    end
 
-    assert error.status_code == nil
-    assert error.retryable == true
-    assert error.error_text == "Our servers are currently overloaded. Please try again later."
-  end
-
-  test "marks streamed server errors with an explicit retry hint as retryable" do
-    message =
-      "An error occurred while processing your request. You can retry your request, " <>
-        "or contact us through our help center if the error persists."
-
-    scripts = %{
-      "/responses" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "error",
-             "sequence_number" => 2,
-             "error" => %{
-               "code" => "server_error",
-               "type" => "server_error",
-               "message" => message,
-               "param" => nil
-             }
-           }
-         ])}
-      ]
-    }
-
-    {base_url, _agent} = start_scripted_server!(scripts)
-
-    error =
-      run_and_capture_error!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{
-          "model" => "gpt-4.1",
-          "input" => []
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
-
-    assert error.status_code == nil
-    assert error.retryable == true
-    assert error.error_text == message
-    assert error.raw_response["sequence_number"] == 2
-  end
-
-  test "marks overloaded failed responses as retryable" do
-    scripts = %{
-      "/responses" => [
-        {200,
-         sse_chunks([
-           %{
-             "type" => "response.failed",
-             "response" => %{
-               "id" => "resp_failed",
-               "status" => "failed",
-               "error" => %{
-                 "code" => "server_is_overloaded",
-                 "type" => "service_unavailable_error",
-                 "message" => "Our servers are currently overloaded. Please try again later."
-               }
-             }
-           }
-         ])}
-      ]
-    }
-
-    {base_url, _agent} = start_scripted_server!(scripts)
-
-    error =
-      run_and_capture_error!(%{
-        base_url: base_url,
-        api_key: "test-key",
-        request_payload: %{
-          "model" => "gpt-4.1",
-          "input" => []
-        },
-        timeout_ms: 1_000,
-        connect_timeout_ms: 1_000
-      })
-
-    assert error.status_code == nil
-    assert error.retryable == true
-    assert error.error_text == "Our servers are currently overloaded. Please try again later."
-  end
-
-  for status <- [503, 520] do
-    @status status
-
-    test "includes HTTP status in non-JSON error raw response and marks #{status} retryable" do
-      body = "upstream connect error or disconnect/reset before headers"
-
-      scripts = %{
-        "/responses" => [
-          {@status, [body]}
-        ]
-      }
-
-      {base_url, _agent} = start_scripted_server!(scripts)
-
-      error =
-        run_and_capture_error!(%{
-          base_url: base_url,
-          api_key: "test-key",
-          request_payload: %{
-            "model" => "gpt-4.1",
-            "input" => []
-          },
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000
-        })
-
-      assert error.status_code == @status
-      assert error.retryable == true
-      assert error.error_kind == "http"
-      assert error.error_text == body
-
-      assert error.raw_response == %{
-               "raw_text" => body,
-               "status_code" => @status
-             }
+    test "rejects unsupported or hostless URLs" do
+      assert {:error, :invalid_base_url} = Endpoint.resolve("ftp://example.com/v1")
+      assert {:error, :invalid_base_url} = Endpoint.resolve("wss:///v1")
     end
   end
 
-  for transport <- [:stream] do
-    @transport transport
+  describe "HttpPool" do
+    test "starts a named Finch with the configured default pool" do
+      assert is_pid(Process.whereis(HttpPool))
 
-    test "marks 520 errors as retryable over #{transport}" do
-      response =
-        case @transport do
-          :http ->
-            {520, ["Unknown upstream error"]}
+      assert %{
+               id: HttpPool,
+               start:
+                 {Finch, :start_link,
+                  [
+                    [
+                      name: HttpPool,
+                      pools: %{
+                        default: [
+                          size: configured_size,
+                          count: 1,
+                          conn_opts: [transport_opts: [timeout: configured_timeout]]
+                        ]
+                      }
+                    ]
+                  ]}
+             } = HttpPool.child_spec([])
 
-          :stream ->
-            {200,
-             sse_chunks([
-               %{
-                 "type" => "error",
-                 "error" => %{"code" => 520, "message" => "Unknown upstream error"}
-               }
-             ])}
-        end
+      assert configured_size == HttpPool.pool_size()
+      assert configured_timeout == HttpPool.connect_timeout_ms()
+    end
 
-      {base_url, _agent} = start_scripted_server!(%{"/responses" => [response]})
+    test "uses the named pool only for the standard connection timeout" do
+      assert HttpPool.req_options(HttpPool.connect_timeout_ms()) == [finch: HttpPool]
+      assert HttpPool.req_options(1_234) == [connect_options: [timeout: 1_234]]
+      assert HttpPool.req_options(0) == [connect_options: [timeout: 0]]
+    end
+  end
 
-      error =
-        run_and_capture_error!(%{
+  # Without `connect_timeout_ms` the request goes through the shared HttpPool.
+  defp stream_events!(base_url, opts \\ %{}) do
+    run_and_capture_events!(
+      Api,
+      Map.merge(
+        %{
           base_url: base_url,
           api_key: "test-key",
           request_payload: %{"model" => "gpt-4.1", "input" => []},
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000
-        })
-
-      assert error.status_code == 520
-      assert error.retryable == true
-      assert error.error_text == "Unknown upstream error"
-    end
-  end
-
-  defp run_and_capture_error!(opts) when is_map(opts) do
-    parent = self()
-
-    :ok =
-      Api.stream_generate(opts, fn event ->
-        send(parent, {:provider_event, event})
-      end)
-
-    assert_receive {:provider_event, {:response_error, error}}, 2_000
-    assert error.raw_request == opts.request_payload
-    refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
-    error
-  end
-
-  defp run_and_capture_events!(opts) when is_map(opts) do
-    parent = self()
-
-    :ok =
-      Api.stream_generate(opts, fn event ->
-        send(parent, {:provider_event, event})
-      end)
-
-    events = drain_provider_events([])
-    refute Enum.any?(events, &match?({:trace, {:set_step_raw_request, _}}, &1))
-
-    for {event, meta} <- events, event in [:response_complete, :response_error] do
-      assert meta.raw_request == opts.request_payload
-    end
-
-    events
-  end
-
-  defp drain_provider_events(acc) do
-    receive do
-      {:provider_event, event} -> drain_provider_events([event | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
-  end
-
-  defp start_scripted_server!(scripts) when is_map(scripts) do
-    {:ok, agent} =
-      start_supervised(
-        {Agent,
-         fn ->
-           %{
-             scripts: scripts,
-             requests: %{}
-           }
-         end}
+          timeout_ms: provider_deadline_ms()
+        },
+        opts
       )
-
-    port = free_port()
-
-    {:ok, _server} =
-      start_supervised(
-        {Bandit, plug: {__MODULE__.ScriptedSSEPlug, agent: agent}, scheme: :http, port: port}
-      )
-
-    {"http://127.0.0.1:#{port}", agent}
+    )
   end
 
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
-    port
+  defp completed_response_server!(response_id) do
+    response = %{
+      "id" => response_id,
+      "object" => "response",
+      "model" => "gpt-4.1",
+      "status" => "completed",
+      "output" => []
+    }
+
+    {base_url, _agent} =
+      start_scripted_server!(%{
+        "/responses" => [
+          {200, sse_chunks([%{"type" => "response.completed", "response" => response}])}
+        ]
+      })
+
+    base_url
   end
 
-  defp sse_chunks(objects) when is_list(objects) do
-    Enum.map(objects, fn object -> "data: " <> Jason.encode!(object) <> "\n\n" end) ++
-      ["data: [DONE]\n\n"]
-  end
-
-  defmodule ScriptedSSEPlug do
-    import Plug.Conn
-
-    def init(opts), do: opts
-
-    def call(conn, opts) do
-      agent = Keyword.fetch!(opts, :agent)
-      {:ok, body, conn} = read_body(conn)
-
-      payload =
-        case Jason.decode(body) do
-          {:ok, %{} = decoded} -> decoded
-          _other -> %{"raw_body" => body}
-        end
-
-      {response_chunks, status_code} =
-        Agent.get_and_update(agent, fn state ->
-          request_path = conn.request_path
-
-          requests =
-            Map.update(state.requests, request_path, [payload], fn existing ->
-              existing ++ [payload]
-            end)
-
-          case Map.get(state.scripts, request_path, []) do
-            [{code, chunks} | rest] ->
-              {{chunks, code},
-               %{state | scripts: Map.put(state.scripts, request_path, rest), requests: requests}}
-
-            [] ->
-              {{"No scripted response for #{request_path}", 500}, %{state | requests: requests}}
-          end
-        end)
-
-      conn =
-        conn
-        |> put_resp_content_type("text/event-stream")
-        |> send_chunked(status_code)
-
-      Enum.reduce_while(List.wrap(response_chunks), conn, fn chunk, conn ->
-        case Plug.Conn.chunk(conn, chunk) do
-          {:ok, conn} -> {:cont, conn}
-          {:error, _reason} -> {:halt, conn}
-        end
-      end)
-    end
+  defp response_complete!(events) do
+    assert [meta] = for({:response_complete, meta} <- events, do: meta)
+    meta
   end
 end

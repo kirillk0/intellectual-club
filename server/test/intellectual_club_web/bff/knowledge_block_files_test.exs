@@ -19,14 +19,14 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
   } do
     %{user: actor, password: password} = user_fixture()
     %{user: other_actor, password: other_password} = user_fixture()
-    block = create_block!(actor)
+    block = create_knowledge_block!(actor, name: "Files block")
 
     unauthorized_conn =
       conn
       |> recycle()
       |> sign_in_conn(other_actor.username, other_password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
-        "file" => upload_fixture("other.txt", "text/plain", "other")
+        "file" => plug_upload("other.txt", "text/plain", "other")
       })
 
     assert unauthorized_conn.status == 404
@@ -36,7 +36,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
-        "file" => upload_fixture("empty.txt", "text/plain", "")
+        "file" => plug_upload("empty.txt", "text/plain", "")
       })
 
     assert %{"error" => "File is empty."} = json_response(empty_conn, 422)
@@ -46,7 +46,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
-        "file" => upload_fixture("", "text/plain", "body")
+        "file" => plug_upload("", "text/plain", "body")
       })
 
     assert %{"error" => "Filename is required."} = json_response(unnamed_conn, 422)
@@ -56,7 +56,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
-        "file" => upload_fixture("first.txt", "text/plain", "first payload")
+        "file" => plug_upload("first.txt", "text/plain", "first payload")
       })
 
     assert %{"attachment" => first, "attachments" => [first]} = json_response(first_conn, 200)
@@ -87,7 +87,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
-        "file" => upload_fixture("second.txt", "text/plain", "second payload")
+        "file" => plug_upload("second.txt", "text/plain", "second payload")
       })
 
     assert %{"attachments" => [listed_first, second]} = json_response(second_conn, 200)
@@ -147,7 +147,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
     conn: _conn
   } do
     %{user: actor} = user_fixture()
-    block = create_block!(actor)
+    block = create_knowledge_block!(actor, name: "Files block")
     {:ok, file} = Files.create_from_binary("source.txt", "text/plain", "same payload")
 
     KnowledgeBlockFile
@@ -185,7 +185,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
   test "upload can create a disabled knowledge block file binding", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
-    block = create_block!(actor)
+    block = create_knowledge_block!(actor, name: "Files block")
 
     upload_conn =
       conn
@@ -193,7 +193,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/files", %{
         "enabled" => "false",
-        "file" => upload_fixture("disabled.txt", "text/plain", "disabled payload")
+        "file" => plug_upload("disabled.txt", "text/plain", "disabled payload")
       })
 
     assert %{"attachment" => attachment, "attachments" => [attachment]} =
@@ -201,32 +201,6 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlockFilesTest do
 
     assert attachment["filename"] == "disabled.txt"
     assert attachment["enabled"] == false
-  end
-
-  defp create_block!(actor) do
-    KnowledgeBlock
-    |> Ash.Changeset.for_create(
-      :create,
-      %{name: "Files block", version: "v1", content: "content"},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp upload_fixture(filename, content_type, body) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "ic-kb-file-#{System.unique_integer([:positive])}-#{String.replace(filename, ~r/[^a-zA-Z0-9_.-]/, "_")}"
-      )
-
-    File.write!(path, body)
-
-    %Plug.Upload{
-      path: path,
-      filename: filename,
-      content_type: content_type
-    }
   end
 
   defp file_count(sha256) do

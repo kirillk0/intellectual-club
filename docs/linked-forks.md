@@ -138,12 +138,15 @@ context payload, revision updates and export behavior.
 
 ## Regression checks
 
-Focused coverage lives in `fork_history_test.exs`, `linked_fork_cleanup_test.exs`,
-`linked_fork_files_test.exs`, `linked_fork_cleanup_locks_concurrency_test.exs`,
-`linked_fork_reparent_concurrency_test.exs`, `linked_fork_cleanup_plan_test.exs`,
-`linked_fork_cleanup_operation_test.exs`, `linked_fork_cleanup_performance_test.exs`,
-`linked_fork_cleanup_commit_test.exs`, `retry_cleanup_transaction_test.exs`,
-`orphaned_recovery_test.exs` and
-`chat_linked_fork_test.exs`, plus frontend view/export tests. It covers source edits,
+Focused coverage lives in `fork_history_test.exs` and `fork_history_revision_test.exs`
+(inherited prefix, revisions, unavailable history), `linked_fork_cleanup_test.exs`
+(anchors, source and keep-children deletion, cleanup plan and operation capability,
+dependency cycles), `linked_fork_cleanup_transactions_test.exs` (outer transaction
+commit/rollback, reparenting races and fence order), `linked_fork_files_test.exs`,
+`subagent_lifecycle_test.exs` (fork start/resume), the retry cleanup cases in
+`generation/supervisor_test.exs`, `orphaned_recovery_test.exs` and
+`chat_linked_fork_test.exs`, plus frontend view/export tests. Query-count and scaling
+checks (`fork_history_revision_performance_test.exs`,
+`linked_fork_cleanup_performance_test.exs`) are tagged `:whitebox`. It covers source edits,
 branch switches, continuation, nested/cyclic/unavailable anchors, canonical provider
 formats, attachments, cancellation, cleanup commit/rollback and legacy behavior.

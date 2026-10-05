@@ -1,21 +1,15 @@
 defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Bots.Bot
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmProvider
-  alias IntellectualClub.Tools.BotToolBinding
-  alias IntellectualClub.Tools.ToolInstance
 
   test "responses_wss session is stateful within one assistant message and rebuilt for the next message" do
     %{user: actor} = user_fixture()
 
     {base_url, agent} =
-      start_scripted_server!(fn base_url ->
+      start_wss_server!(fn base_url ->
         tool_url = base_url <> "/page"
 
         [
@@ -134,7 +128,7 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     %{user: actor} = user_fixture()
 
     {base_url, agent} =
-      start_scripted_server!(fn base_url ->
+      start_wss_server!(fn base_url ->
         tool_url = base_url <> "/page"
 
         %{
@@ -233,24 +227,13 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
   end
 
   test "responses provider keeps HTTP selected for common retries after fallback" do
-    previous_backoff =
-      Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
-
-    previous_jitter =
-      Application.get_env(:intellectual_club, :generation_auto_retry_jitter_ratio)
-
-    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0])
-    Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
-
-    on_exit(fn ->
-      restore_env(:generation_auto_retry_backoff_ms, previous_backoff)
-      restore_env(:generation_auto_retry_jitter_ratio, previous_jitter)
-    end)
+    put_app_env(:generation_auto_retry_backoff_ms, [0])
+    put_app_env(:generation_auto_retry_jitter_ratio, 0.0)
 
     %{user: actor} = user_fixture()
 
     {base_url, agent} =
-      start_scripted_server!(fn _base_url ->
+      start_wss_server!(fn _base_url ->
         %{
           websocket: [{:close, 1009, "message too big"}],
           http: [
@@ -319,7 +302,7 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     %{user: actor} = user_fixture()
 
     {base_url, agent} =
-      start_scripted_server!(fn _base_url ->
+      start_wss_server!(fn _base_url ->
         %{
           websocket: :reject_upgrade,
           http: [
@@ -374,100 +357,41 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     }
   end
 
+  # A chat with an agent-mode bot bound to a web reader tool, configured for
+  # a Responses provider (`provider_type`) at `base_url`.
   defp create_chat_with_web_tool!(actor, base_url, provider_type \\ :responses_wss) do
-    provider =
-      LlmProvider
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "WSS provider #{System.unique_integer([:positive])}",
-          type: provider_type,
-          auth_method: :api_key,
-          base_url: base_url,
-          api_key: "test-key"
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+    configuration =
+      create_configuration!(actor, %{
+        model_name: "test-model",
+        parameters: %{"reasoning" => %{"summary" => "auto"}},
+        temperature: 0,
+        reasoning_effort: :low,
+        timeout_seconds: 5,
+        context_length: nil,
+        provider_attrs: %{type: provider_type, base_url: base_url}
+      })
 
-    llm_configuration =
-      LlmConfiguration
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          provider_id: provider.id,
-          model_name: "test-model",
-          parameters: %{"reasoning" => %{"summary" => "auto"}},
-          temperature: 0,
-          reasoning_effort: :low,
-          timeout_seconds: 5
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+    bot = create_bot!(actor, %{max_tool_rounds: 5, history_mode: :agent})
 
-    bot =
-      Bot
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "WSS bot #{System.unique_integer([:positive])}",
-          first_messages: [],
-          max_tool_rounds: 5,
-          history_mode: :agent
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    tool_instance =
-      ToolInstance
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          type: "native-web-reader",
-          name: "Web reader",
-          alias: "web",
-          description: "",
-          config: %{"http_timeout_seconds" => 2.0},
-          secrets: %{},
-          max_output_tokens: 20_000
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    BotToolBinding
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        bot_id: bot.id,
-        tool_instance_id: tool_instance.id,
+    tool =
+      create_tool_instance!(actor, %{
+        type: "native-web-reader",
+        name: "Web reader",
         alias: "web",
-        sharing_mode: :shared,
-        enabled: true,
-        sequence: 0
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
+        description: "",
+        config: %{"http_timeout_seconds" => 2.0},
+        max_output_tokens: 20_000
+      })
 
-    Chat
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        bot_id: bot.id,
-        llm_configuration_id: llm_configuration.id,
-        note: ""
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
+    create_bot_tool_binding!(actor, bot, tool, %{alias: "web"})
+    create_chat!(actor, %{bot_id: bot.id, llm_configuration_id: configuration.id})
   end
 
-  defp start_scripted_server!(scripts_fun) when is_function(scripts_fun, 1) do
-    port = free_port()
-    base_url = "http://127.0.0.1:#{port}"
+  defp start_wss_server!(scripts_fun) when is_function(scripts_fun, 1) do
+    # The scripts may embed the server URL, so the server starts first and the
+    # plug reads its state only when a request arrives.
+    {:ok, agent} = start_supervised({Agent, fn -> nil end})
+    {base_url, _port} = start_http_server!({__MODULE__.ScriptedPlug, agent: agent})
 
     {websocket_scripts, http_scripts, reject_upgrade?} =
       case scripts_fun.(base_url) do
@@ -481,28 +405,18 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
           {websocket_scripts, [], false}
       end
 
-    {:ok, agent} =
-      start_supervised(
-        {Agent,
-         fn ->
-           %{
-             scripts: websocket_scripts,
-             http_scripts: http_scripts,
-             requests: [],
-             http_requests: [],
-             websocket_headers: [],
-             http_headers: [],
-             reject_upgrade?: reject_upgrade?
-           }
-         end}
-      )
+    Agent.update(agent, fn nil ->
+      %{
+        scripts: websocket_scripts,
+        http_scripts: http_scripts,
+        requests: [],
+        http_requests: [],
+        websocket_headers: [],
+        http_headers: [],
+        reject_upgrade?: reject_upgrade?
+      }
+    end)
 
-    {:ok, _server} =
-      start_supervised(
-        {Bandit, plug: {__MODULE__.ScriptedPlug, agent: agent}, scheme: :http, port: port}
-      )
-
-    wait_for_server!(port)
     {base_url, agent}
   end
 
@@ -522,91 +436,23 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
     Agent.get(agent, & &1.http_headers)
   end
 
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
-    port
-  end
-
-  defp wait_for_server!(port) when is_integer(port) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    do_wait_for_server!(port, deadline)
-  end
-
-  defp do_wait_for_server!(port, deadline) do
-    case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 50) do
-      {:ok, socket} ->
-        :gen_tcp.close(socket)
-
-      {:error, _reason} ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          flunk("Worker WSS test server did not start before timeout")
-        else
-          Process.sleep(5)
-          do_wait_for_server!(port, deadline)
-        end
-    end
-  end
-
   defp wait_for_message!(message_id, actor, predicate, timeout_ms \\ 5_000)
        when is_function(predicate, 1) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_message(message_id, actor, predicate, deadline)
-  end
-
-  defp do_wait_for_message(message_id, actor, predicate, deadline) do
     message =
-      Ash.get!(ChatMessage, message_id,
-        actor: actor,
-        load: [steps: [items: [:contents]]]
+      wait_until(
+        fn ->
+          message =
+            Ash.get!(ChatMessage, message_id, actor: actor, load: [steps: [items: [:contents]]])
+
+          predicate.(message) && message
+        end,
+        timeout: timeout_ms,
+        interval: 20
       )
 
-    if predicate.(message) do
-      wait_for_generation_worker_to_stop!(message_id)
-      message
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(20)
-        do_wait_for_message(message_id, actor, predicate, deadline)
-      else
-        flunk("Condition was not met before timeout")
-      end
-    end
-  end
-
-  defp wait_for_generation_worker_to_stop!(message_id) do
-    deadline = System.monotonic_time(:millisecond) + 2_000
-    do_wait_for_generation_worker_to_stop!(message_id, deadline)
-  end
-
-  defp do_wait_for_generation_worker_to_stop!(message_id, deadline) do
-    if GenerationSupervisor.get_generation_state(message_id) == :not_found do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(20)
-        do_wait_for_generation_worker_to_stop!(message_id, deadline)
-      else
-        flunk("Generation worker did not stop before timeout")
-      end
-    end
-  end
-
-  defp message_answer_text(message) do
+    wait_for_generation_worker_to_stop!(message_id)
     message
-    |> Map.get(:steps, [])
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.flat_map(&Map.get(&1, :items, []))
-    |> Enum.filter(&(&1.type == :answer))
-    |> Enum.flat_map(&Map.get(&1, :contents, []))
-    |> Enum.filter(&(&1.kind == :text))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map_join("", fn content -> content.content_text || "" end)
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
-  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
 
   defmodule ScriptedPlug do
     import Plug.Conn

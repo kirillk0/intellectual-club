@@ -1,16 +1,12 @@
 defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
-
-  alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessages
-  alias IntellectualClub.Chat.Threads
 
   test "queue CRUD is durable, ordered, and exposed through chat state", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     chat = create_chat!(actor)
-    generating = create_generating_message!(chat, actor)
+    generating = create_generating_message!(actor, chat, user_text: "Question")
 
     before_state =
       conn
@@ -67,7 +63,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: outsider, password: outsider_password} = user_fixture()
     owner_conn = sign_in_conn(conn, owner.username, owner_password)
     chat = create_chat!(owner)
-    _generating = create_generating_message!(chat, owner)
+    _generating = create_generating_message!(owner, chat, user_text: "Question")
 
     queued_message =
       owner_conn
@@ -89,7 +85,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     chat = create_chat!(actor)
-    _generating = create_generating_message!(chat, actor)
+    _generating = create_generating_message!(actor, chat, user_text: "Question")
 
     conn = post(conn, ~p"/api/bff/chat-generation/#{chat.id}/queue", %{"content" => ""})
 
@@ -100,7 +96,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     chat = create_chat!(actor)
-    _generating = create_generating_message!(chat, actor)
+    _generating = create_generating_message!(actor, chat, user_text: "Question")
 
     queued_message =
       conn
@@ -128,7 +124,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     chat = create_chat!(actor)
-    generation = create_generating_message!(chat, actor)
+    generation = create_generating_message!(actor, chat, user_text: "Question")
     {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Failed instruction", actor)
 
     assert {:ok, [_]} =
@@ -174,7 +170,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: actor} = user_fixture()
     %{user: outsider, password: password} = user_fixture()
     chat = create_chat!(actor)
-    generation = create_generating_message!(chat, actor)
+    generation = create_generating_message!(actor, chat, user_text: "Question")
     {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Private instruction", actor)
 
     assert {:ok, [_]} =
@@ -199,7 +195,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
     chat = create_chat!(actor)
-    generation = create_generating_message!(chat, actor)
+    generation = create_generating_message!(actor, chat, user_text: "Question")
     {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Retry later", actor)
 
     assert {:ok, [_]} =
@@ -229,23 +225,5 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     assert retried["blocked_reason"] == "generation_canceled"
     assert retried["anchor_message_id"] == generation.id
     assert retried["target_generation_message_id"] == nil
-  end
-
-  defp create_chat!(actor) do
-    Chat
-    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_generating_message!(chat, actor) do
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
-
-    ChatMessage
-    |> Ash.Changeset.for_create(
-      :create_generating_assistant,
-      %{chat_id: chat.id, parent_id: user_message.id},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
   end
 end

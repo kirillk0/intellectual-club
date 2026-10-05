@@ -1,23 +1,14 @@
 defmodule IntellectualClubWeb.Bff.ChatExportTest do
-  use IntellectualClubWeb.ConnCase, async: false
-
-  alias IntellectualClub.Chat.Chat
+  use IntellectualClubWeb.ConnCase, async: true
   alias IntellectualClub.Chat.ChatKnowledgeBlock
-  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
-  alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Bots.Bot
-  alias IntellectualClub.Bots.BotShare
   alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockFile
   alias IntellectualClub.Knowledge.KnowledgeBlockTag
   alias IntellectualClub.Knowledge.KnowledgeTag
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmConfigurationShare
-  alias IntellectualClub.Llm.LlmProvider
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolInstance
 
@@ -25,7 +16,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    root = create_chat!(actor, "Root")
+    root = create_empty_chat!(actor, note: "Root")
     {:ok, root_message} = Threads.add_message_to_end(root, :user, "Question", actor: actor)
 
     {:ok, inactive} =
@@ -43,47 +34,51 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     {:ok, _branch} = Threads.activate_branch(root.id, active.id, actor)
 
     child =
-      create_chat!(actor, "Fork", %{
+      create_empty_chat!(actor,
         parent_chat_id: root.id,
         parent_message_id: active.id,
         parent_relation_kind: :fork,
-        subagent: true
-      })
+        subagent: true,
+        note: "Fork"
+      )
 
     {:ok, child_message} =
       Threads.add_message_to_end(child, :user, "Child question", actor: actor)
 
     grandchild =
-      create_chat!(actor, "Spawn", %{
+      create_empty_chat!(actor,
         parent_chat_id: child.id,
         parent_message_id: child_message.id,
         parent_relation_kind: :spawn,
-        subagent: true
-      })
+        subagent: true,
+        note: "Spawn"
+      )
 
     {:ok, _grandchild_message} =
       Threads.add_message_to_end(grandchild, :assistant, "Child answer", actor: actor)
 
     handoff =
-      create_chat!(actor, "Handoff", %{
+      create_empty_chat!(actor,
         parent_chat_id: root.id,
         parent_message_id: active.id,
         parent_relation_kind: :handoff,
-        subagent: true
-      })
+        subagent: true,
+        note: "Handoff"
+      )
 
     inactive_child =
-      create_chat!(actor, "Inactive fork", %{
+      create_empty_chat!(actor,
         parent_chat_id: root.id,
         parent_message_id: inactive.id,
         parent_relation_kind: :fork,
-        subagent: true
-      })
+        subagent: true,
+        note: "Inactive fork"
+      )
 
     {:ok, _inactive_child_message} =
       Threads.add_message_to_end(inactive_child, :assistant, "Hidden child", actor: actor)
 
-    independent = create_chat!(actor, "Independent")
+    independent = create_empty_chat!(actor, note: "Independent")
 
     payload =
       conn
@@ -140,7 +135,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    chat = create_chat!(actor, "Safe export")
+    chat = create_empty_chat!(actor, note: "Safe export")
     {:ok, attached_file} = Files.create_from_binary("brief.txt", "text/plain", "FILE_SECRET")
 
     {:ok, user_message} =
@@ -159,11 +154,11 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
         parent_id: user_message.id
       )
 
-    first_step = first_step!(assistant_message.id, actor)
-    reasoning = create_item!(first_step.id, 20, :reasoning, actor)
+    first_step = first_step!(actor, assistant_message.id)
+    reasoning = create_item!(actor, first_step.id, sequence: 20, type: :reasoning)
     _reasoning_content = create_text_content!(reasoning.id, 1, "Visible reasoning", actor)
 
-    tool_call = create_item!(first_step.id, 21, :tool_call, actor)
+    tool_call = create_item!(actor, first_step.id, sequence: 21, type: :tool_call)
 
     _tool_call_content =
       create_opaque_content!(
@@ -177,7 +172,13 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
         actor
       )
 
-    tool_result = create_item!(first_step.id, 22, :tool_result, actor, tool_call.id)
+    tool_result =
+      create_item!(actor, first_step.id,
+        sequence: 22,
+        type: :tool_result,
+        tool_call_item_id: tool_call.id
+      )
+
     long_result = Enum.map_join(1..8, "\n", &"line #{&1} #{String.duplicate("x", 120)}")
     _tool_result_content = create_text_content!(tool_result.id, 1, long_result, actor)
 
@@ -199,7 +200,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
       )
       |> Ash.create!(actor: actor)
 
-    error_item = create_item!(second_step.id, 1, :error, actor)
+    error_item = create_item!(actor, second_step.id, sequence: 1, type: :error)
     _error_content = create_text_content!(error_item.id, 1, "Retry failed", actor)
 
     tag =
@@ -360,7 +361,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
   test "export is owner-only and rejects shared read-only access", %{conn: conn} do
     %{user: owner} = user_fixture()
     %{user: other, password: password} = user_fixture()
-    chat = create_chat!(owner, "Private")
+    chat = create_empty_chat!(owner, note: "Private")
 
     response =
       conn
@@ -374,16 +375,20 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     %{user: owner, password: owner_password} = user_fixture()
     %{user: actor, password: password} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, actor]})
-    bot = create_bot!(owner)
-    configuration = create_configuration!(owner)
+    bot = create_bot!(owner, name: "Export parent bot", max_tool_rounds: 300)
+
+    configuration =
+      create_configuration!(owner, provider_attrs: %{name: "Export parent provider"}, note: nil)
+
     share_bot!(owner, bot, group)
     share_configuration!(owner, configuration, group)
 
     parent =
-      create_chat!(owner, "Former parent", %{
+      create_empty_chat!(owner,
         bot_id: bot.id,
-        llm_configuration_id: configuration.id
-      })
+        llm_configuration_id: configuration.id,
+        note: "Former parent"
+      )
 
     owner_conn = sign_in_conn(conn, owner.username, owner_password)
 
@@ -392,10 +397,11 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     |> json_response(200)
 
     child =
-      create_chat!(actor, "Owned child", %{
+      create_empty_chat!(actor,
         parent_chat_id: parent.id,
-        parent_relation_kind: :fork
-      })
+        parent_relation_kind: :fork,
+        note: "Owned child"
+      )
 
     owner_conn
     |> recycle()
@@ -418,13 +424,14 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    first = create_chat!(actor, "First")
+    first = create_empty_chat!(actor, note: "First")
 
     second =
-      create_chat!(actor, "Second", %{
+      create_empty_chat!(actor,
         parent_chat_id: first.id,
-        parent_relation_kind: :handoff
-      })
+        parent_relation_kind: :handoff,
+        note: "Second"
+      )
 
     _updated =
       first
@@ -444,38 +451,6 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
              Enum.sort([first.id, second.id])
   end
 
-  defp create_chat!(actor, note, attrs \\ %{}) do
-    Chat
-    |> Ash.Changeset.for_create(
-      :create_empty,
-      attrs |> Map.new() |> Map.put(:note, note),
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp first_step!(message_id, actor) do
-    ChatMessage
-    |> Ash.get!(message_id, actor: actor, load: [steps: [:id, :sequence]])
-    |> Map.fetch!(:steps)
-    |> Enum.min_by(& &1.sequence)
-  end
-
-  defp create_item!(step_id, sequence, type, actor, tool_call_item_id \\ nil) do
-    ChatMessageItem
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        chat_message_step_id: step_id,
-        sequence: sequence,
-        type: type,
-        tool_call_item_id: tool_call_item_id
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
   defp create_text_content!(item_id, sequence, text, actor) do
     ChatMessageContent
     |> Ash.Changeset.for_create(
@@ -491,58 +466,6 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     |> Ash.Changeset.for_create(
       :create,
       %{chat_message_item_id: item_id, sequence: sequence, kind: :opaque, content_json: json},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_bot!(actor) do
-    Bot
-    |> Ash.Changeset.for_create(
-      :create,
-      %{name: "Export parent bot", first_messages: [], history_mode: :chat},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_configuration!(actor) do
-    provider =
-      LlmProvider
-      |> Ash.Changeset.for_create(
-        :create,
-        %{name: "Export parent provider", type: :demo, auth_method: :api_key},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    LlmConfiguration
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        provider_id: provider.id,
-        model_name: "demo-model",
-        parameters: %{},
-        enabled: true,
-        timeout_seconds: 30,
-        context_length: 2048
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp share_bot!(actor, bot, group) do
-    BotShare
-    |> Ash.Changeset.for_create(:create, %{bot_id: bot.id, user_group_id: group.id}, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
-  defp share_configuration!(actor, configuration, group) do
-    LlmConfigurationShare
-    |> Ash.Changeset.for_create(
-      :create,
-      %{llm_configuration_id: configuration.id, user_group_id: group.id},
       actor: actor
     )
     |> Ash.create!(actor: actor)

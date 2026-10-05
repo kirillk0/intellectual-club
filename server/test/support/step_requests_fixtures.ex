@@ -1,11 +1,14 @@
 defmodule IntellectualClub.StepRequestsFixtures do
-  @moduledoc false
+  @moduledoc """
+  Fixtures for step request storage: assistant messages whose steps carry a
+  historical `raw_request` or an encoded (full, patch or checkpoint) request.
+  """
 
-  alias IntellectualClub.Bots.{Bot, BotShare}
+  alias IntellectualClub.{BotsFixtures, ChatFixtures, LlmFixtures}
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep}
   alias IntellectualClub.Generation.StepRequests
-  alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
 
+  @doc "Creates an assistant message (default `status: :done`) in `opts[:chat]` or a new chat."
   def request_message!(actor, opts \\ []) do
     chat = Keyword.get_lazy(opts, :chat, fn -> create!(Chat, :create, %{note: ""}, actor) end)
 
@@ -17,6 +20,7 @@ defmodule IntellectualClub.StepRequestsFixtures do
     )
   end
 
+  @doc "Creates a step with a legacy full `raw_request` (no encoding metadata)."
   def historical_request_step!(message, sequence, request, actor, attrs \\ %{}) do
     attrs =
       Map.merge(%{chat_message_id: message.id, sequence: sequence, raw_request: request}, attrs)
@@ -24,6 +28,7 @@ defmodule IntellectualClub.StepRequestsFixtures do
     create!(ChatMessageStep, :create, attrs, actor)
   end
 
+  @doc "Creates a step whose request is encoded by `StepRequests.create_attributes/2`."
   def encoded_request_step!(message, sequence, request, actor, opts \\ []) do
     request
     |> StepRequests.create_attributes(Keyword.put(opts, :sequence, sequence))
@@ -31,6 +36,7 @@ defmodule IntellectualClub.StepRequestsFixtures do
     |> then(&create!(ChatMessageStep, :create, &1, actor))
   end
 
+  @doc "Reads a step with its physical request columns and response."
   def stored_request_step!(id, actor) do
     Ash.get!(ChatMessageStep, id,
       actor: actor,
@@ -38,6 +44,7 @@ defmodule IntellectualClub.StepRequestsFixtures do
     )
   end
 
+  @doc "A request that compresses well into patches: large unchanged opaque data plus an index."
   def compact_request(index) do
     %{
       "opaque" => String.duplicate("unchanged", 256),
@@ -46,59 +53,25 @@ defmodule IntellectualClub.StepRequestsFixtures do
     }
   end
 
+  @doc """
+  Creates an assistant message in a chat of `owner` (with a bot and an LLM
+  configuration shared to a group of `owner` and `recipient`) that is shared
+  with that group.
+  """
   def shared_request_message!(owner, recipient) do
     %{group: group} =
       IntellectualClub.AccountsFixtures.user_group_fixture(%{users: [owner, recipient]})
 
-    bot =
-      create!(
-        Bot,
-        :create,
-        %{name: "Storage sharing", first_messages: [], history_mode: :chat},
-        owner
-      )
-
-    provider =
-      create!(
-        LlmProvider,
-        :create,
-        %{name: "Storage demo", type: :demo, auth_method: :api_key},
-        owner
-      )
+    bot = BotsFixtures.create_bot!(owner, name: "Storage sharing")
 
     configuration =
-      create!(
-        LlmConfiguration,
-        :create,
-        %{
-          provider_id: provider.id,
-          model_name: "demo",
-          note: "storage sharing",
-          parameters: %{},
-          enabled: true,
-          timeout_seconds: 30,
-          context_length: 2048
-        },
-        owner
-      )
+      LlmFixtures.create_configuration!(owner, model_name: "demo", note: "storage sharing")
 
-    _bot_share = create!(BotShare, :create, %{bot_id: bot.id, user_group_id: group.id}, owner)
-
-    _configuration_share =
-      create!(
-        LlmConfigurationShare,
-        :create,
-        %{llm_configuration_id: configuration.id, user_group_id: group.id},
-        owner
-      )
+    BotsFixtures.share_bot!(owner, bot, group)
+    LlmFixtures.share_configuration!(owner, configuration, group)
 
     chat =
-      create!(
-        Chat,
-        :create,
-        %{note: "", bot_id: bot.id, llm_configuration_id: configuration.id},
-        owner
-      )
+      ChatFixtures.create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
 
     {:ok, _state} = IntellectualClub.Sharing.replace_chat_share_state(chat.id, [group.id], owner)
     request_message!(owner, chat: chat)

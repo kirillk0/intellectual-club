@@ -2,16 +2,13 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
   use IntellectualClub.DataCase, async: true
 
   alias IntellectualClub.BackgroundTasks
-  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.BackgroundTasks.Supervisor, as: TaskSupervisor
   alias IntellectualClub.BackgroundTasks.Worker
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Tools.Drivers.Outlet
   alias IntellectualClub.Tools.Drivers.Ssh
-  alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClub.Tools.ExecutionResult
 
   test "worker retries an initial database claim failure" do
     %{user: actor} = user_fixture()
@@ -32,18 +29,21 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
 
     assert {:ok, worker_pid} = TaskSupervisor.start_task(task.id)
 
-    assert :ok = wait_until(fn -> :sys.get_state(worker_pid).claim_attempts > 0 end)
+    assert wait_until(fn -> :sys.get_state(worker_pid).claim_attempts > 0 end, timeout: 2000)
+
     assert {:ok, %{status: :queued}} = BackgroundTasks.fetch_internal(task.id)
 
     assert :ok = Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), worker_pid)
 
-    assert :ok =
-             wait_until(fn ->
+    assert wait_until(
+             fn ->
                case BackgroundTasks.fetch_internal(task.id) do
                  {:ok, %{status: :failed}} -> true
                  _other -> false
                end
-             end)
+             end,
+             timeout: 2000
+           )
   end
 
   test "cancel result persistence retries a transient database failure" do
@@ -155,14 +155,7 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
     source = create_source_message!(actor)
     target = create_source_message!(actor)
 
-    _done =
-      target.message
-      |> Ash.Changeset.for_update(
-        :set_generation_state,
-        %{status: :done, finished_at: DateTime.utc_now()},
-        actor: actor
-      )
-      |> Ash.update!(actor: actor)
+    set_message_status!(actor, target.message, :done, finished_at: DateTime.utc_now())
 
     task =
       create_background_task!(actor, %{
@@ -178,11 +171,7 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
         runner_ref: spawn_runner_ref(target)
       })
 
-    execution_task =
-      Task.Supervisor.async_nolink(
-        IntellectualClub.BackgroundTasks.ExecutionSupervisor,
-        fn -> Process.sleep(:infinity) end
-      )
+    execution_task = detached_waiting_task()
 
     reply_tag = make_ref()
 
@@ -206,19 +195,13 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      ToolInstance
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          type: "outlet",
-          name: "Offline outlet #{System.unique_integer([:positive])}",
-          alias: "offline_outlet_#{System.unique_integer([:positive])}",
-          config: Outlet.default_config(),
-          secrets: %{"token" => Ecto.UUID.generate()}
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+      create_tool_instance!(actor, %{
+        type: "outlet",
+        name: "Offline outlet #{System.unique_integer([:positive])}",
+        alias: "offline_outlet_#{System.unique_integer([:positive])}",
+        config: Outlet.default_config(),
+        secrets: %{"token" => Ecto.UUID.generate()}
+      })
 
     task =
       create_background_task!(actor, %{
@@ -245,51 +228,148 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
              BackgroundTasks.fetch_internal(task.id)
   end
 
-  defp create_background_task!(actor, attrs) do
-    {cancel_requested, attrs} = Map.pop(attrs, :cancel_requested, false)
-
-    base = %{
-      kind: "ssh_command",
-      adapter: "ssh",
-      status: :queued,
-      function_name: "run_command",
-      arguments: %{"command" => "echo test"},
-      execution_context: %{"owner_id" => actor.id},
-      runner_ref: %{}
-    }
+  test "a waiter execution_lost result cannot beat a durable cancel request" do
+    %{user: actor} = user_fixture()
 
     task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(:create, Map.merge(base, attrs), actor: actor)
-      |> Ash.create!(actor: actor)
+      create_background_task!(actor, %{
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now()
+      })
 
-    if cancel_requested do
-      task
-      |> Ash.Changeset.for_update(:update_state, %{cancel_requested: true}, actor: actor)
-      |> Ash.update!(actor: actor)
-    else
-      task
-    end
+    execution_task = detached_waiting_task()
+
+    state = %Worker{
+      task_id: task.id,
+      task: task,
+      execution_task: execution_task
+    }
+
+    assert {:stop, :normal, %Worker{}} =
+             Worker.handle_info(
+               {execution_task.ref,
+                {:failed,
+                 %{
+                   "code" => "execution_lost",
+                   "message" => "SSH channel closed during cancel.",
+                   "outcome" => "unknown"
+                 }}},
+               state
+             )
+
+    Process.exit(execution_task.pid, :kill)
+
+    assert {:ok, %{status: :canceled, error: nil}} = BackgroundTasks.fetch_internal(task.id)
+  end
+
+  test "a successful waiter result that won before cancel remains completed" do
+    %{user: actor} = user_fixture()
+
+    task =
+      create_background_task!(actor, %{
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now()
+      })
+
+    execution_task = detached_waiting_task()
+
+    state = %Worker{
+      task_id: task.id,
+      task: task,
+      execution_task: execution_task
+    }
+
+    result = %ExecutionResult{text: "already done", raw: %{"exit_code" => 0}}
+
+    assert {:stop, :normal, %Worker{}} =
+             Worker.handle_info({execution_task.ref, {:ok, result}}, state)
+
+    Process.exit(execution_task.pid, :kill)
+
+    assert {:ok, completed} = BackgroundTasks.fetch_internal(task.id)
+    assert completed.status == :completed
+    assert completed.result["text"] == "already done"
+    assert completed.cancel_requested == true
+  end
+
+  test "a successful result pending durable persistence survives a later cancel" do
+    %{user: actor} = user_fixture()
+
+    task =
+      create_background_task!(actor, %{
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now()
+      })
+
+    result = %ExecutionResult{text: "persist me", raw: %{"exit_code" => 0}}
+    reply_tag = make_ref()
+
+    state = %Worker{
+      task_id: task.id,
+      task: task,
+      pending_result: {:ok, result}
+    }
+
+    assert {:stop, :normal, %Worker{pending_result: nil}} =
+             Worker.handle_call(:cancel, {self(), reply_tag}, state)
+
+    assert_receive {^reply_tag, :ok}
+
+    assert {:ok, completed} = BackgroundTasks.fetch_internal(task.id)
+    assert completed.status == :completed
+    assert completed.result["text"] == "persist me"
+    assert completed.cancel_requested == true
+  end
+
+  test "a pending successful result survives an adapter cancel error" do
+    %{user: actor} = user_fixture()
+
+    task =
+      create_background_task!(actor, %{
+        adapter: "outlet",
+        kind: "outlet_function",
+        status: :running,
+        cancel_requested: true,
+        started_at: DateTime.utc_now(),
+        runner_ref: %{
+          "runner_id" => "missing-runner",
+          "runner_session_id" => "missing-session"
+        }
+      })
+
+    result = %ExecutionResult{text: "completed first", raw: %{"exit_code" => 0}}
+    reply_tag = make_ref()
+
+    state = %Worker{
+      task_id: task.id,
+      task: task,
+      pending_result: {:ok, result}
+    }
+
+    assert {:stop, :normal, %Worker{pending_result: nil}} =
+             Worker.handle_call(:cancel, {self(), reply_tag}, state)
+
+    assert_receive {^reply_tag, :ok}
+
+    assert {:ok, completed} = BackgroundTasks.fetch_internal(task.id)
+    assert completed.status == :completed
+    assert completed.result["text"] == "completed first"
+    assert completed.cancel_requested == true
   end
 
   defp create_source_message!(actor) do
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: actor)
-      |> Ash.create!(actor: actor)
+    chat = create_empty_chat!(actor)
+    %{chat: chat, message: create_generating_message!(actor, chat, user_text: "Run")}
+  end
 
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Run", actor: actor)
-
-    message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    %{chat: chat, message: message}
+  defp detached_waiting_task do
+    Task.Supervisor.async_nolink(
+      IntellectualClub.BackgroundTasks.ExecutionSupervisor,
+      fn -> Process.sleep(:infinity) end
+    )
   end
 
   defp spawn_runner_ref(%{message: %ChatMessage{} = message}) do
@@ -299,23 +379,5 @@ defmodule IntellectualClub.BackgroundTasksWorkerTest do
       "spawn_generation_message_id" => message.id,
       "spawn_url" => "/chats/#{message.chat_id}"
     }
-  end
-
-  defp wait_until(fun, timeout_ms \\ 2_000) when is_function(fun, 0) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_until(fun, deadline)
-  end
-
-  defp do_wait_until(fun, deadline) do
-    if fun.() do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(10)
-        do_wait_until(fun, deadline)
-      else
-        flunk("condition was not satisfied before timeout")
-      end
-    end
   end
 end

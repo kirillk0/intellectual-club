@@ -1,38 +1,20 @@
 defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Bots.Bot
-  alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.ChatMessageStep
-  alias IntellectualClub.Chat.ChatShare
-  alias IntellectualClub.Chat.SubchatCostCache
-  alias IntellectualClub.Chat.SubchatCosts
-  alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmProvider
-  alias IntellectualClub.Llm.LlmUsageRecord
+  import IntellectualClub.Chat.ForkFixtures,
+    only: [update_record!: 3, update_record!: 4]
 
-  @sql_event [:intellectual_club, :repo, :query]
+  alias IntellectualClub.Chat.{ChatMessage, SubchatCostCache, SubchatCosts}
+  alias IntellectualClub.SqlCapture
 
   setup do
     cache = start_supervised!({SubchatCostCache, name: __MODULE__.Cache})
     %{user: actor} = user_fixture()
-
-    provider =
-      create!(LlmProvider, %{name: "Cost snapshots", type: :demo, auth_method: :api_key}, actor)
-
-    configuration =
-      create!(
-        LlmConfiguration,
-        %{provider_id: provider.id, model_name: "cost-snapshots", parameters: %{}, enabled: true},
-        actor
-      )
-
-    bot = create!(Bot, %{name: "Cost snapshots", first_messages: []}, actor)
-    root = create!(Chat, %{bot_id: bot.id, llm_configuration_id: configuration.id}, actor)
+    configuration = create_configuration!(actor, model_name: "cost-snapshots")
+    bot = create_bot!(actor)
+    root = create_chat!(actor, bot_id: bot.id, llm_configuration_id: configuration.id)
     source = source!(root, configuration, actor)
-    step = step!(source, actor, :waiting_tools)
+    step = create_step!(actor, source, status: :waiting_tools)
     child = child!(root, source, configuration, actor)
 
     %{
@@ -102,11 +84,7 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
     initial = poll(f)
     record_cost!(f.child, f.configuration, f.actor, 0.05)
 
-    create!(
-      ChatMessageStep,
-      %{chat_message_id: f.source.id, sequence: 2, status: :waiting_provider},
-      f.actor
-    )
+    create_step!(f.actor, f.source, sequence: 2, status: :waiting_provider)
 
     {next, [query]} = measure(fn -> poll(f) end)
     assert_sum(query)
@@ -120,7 +98,7 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
 
     # This child has no tool/step anchor, so destroying the step retains it.
     Ash.destroy!(f.step, actor: f.actor)
-    replacement = step!(f.source, f.actor, :waiting_tools)
+    replacement = create_step!(f.actor, f.source, status: :waiting_tools)
     assert replacement.sequence == f.step.sequence
     refute replacement.id == f.step.id
 
@@ -171,8 +149,8 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
   test "actor caches never reuse an owner's known zero for a shared reader", f do
     %{user: reader} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [f.actor, reader]})
-    share!(f.root, group, f.actor)
-    share!(f.child, group, f.actor)
+    share_chat!(f.actor, f.root, group)
+    share_chat!(f.actor, f.child, group)
     record_cost!(f.child, f.configuration, f.actor, 0.0)
 
     {owner_summary, [_query]} = measure(fn -> poll(f) end)
@@ -194,8 +172,8 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
   test "cached totals do not survive descendant or root access revocation", f do
     %{user: reader} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [f.actor, reader]})
-    root_share = share!(f.root, group, f.actor)
-    child_share = share!(f.child, group, f.actor)
+    root_share = share_chat!(f.actor, f.root, group)
+    child_share = share_chat!(f.actor, f.child, group)
 
     # A durable owner snapshot can outlive current configuration ownership.
     record_cost!(f.child, f.configuration, f.actor, 0.07, reader)
@@ -205,7 +183,7 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
     Ash.destroy!(child_share, actor: f.actor)
     assert SubchatCosts.for_messages([f.source], reader, f.opts).costs_by_message_id == %{}
 
-    share!(f.child, group, f.actor)
+    share_chat!(f.actor, f.child, group)
 
     assert SubchatCosts.for_messages([f.source], reader, f.opts).costs_by_message_id[f.source.id] ==
              0.07
@@ -232,132 +210,51 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
   end
 
   defp source!(chat, configuration, actor) do
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Prompt", actor: actor)
-
-    ChatMessage
-    |> Ash.Changeset.for_create(
-      :create_generating_assistant,
-      %{chat_id: chat.id, parent_id: user_message.id, llm_configuration_id: configuration.id},
-      actor: actor
+    create_generating_message!(actor, chat,
+      user_text: "Prompt",
+      llm_configuration_id: configuration.id
     )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp step!(source, actor, status) do
-    create!(ChatMessageStep, %{chat_message_id: source.id, sequence: 1, status: status}, actor)
   end
 
   defp child!(parent, source, configuration, actor, kind \\ :spawn) do
-    create!(
-      Chat,
-      %{
-        bot_id: parent.bot_id,
-        llm_configuration_id: configuration.id,
-        parent_chat_id: parent.id,
-        parent_message_id: source.id,
-        parent_relation_kind: kind,
-        subagent: true
-      },
-      actor
-    )
+    create_subchat!(actor, parent, kind, %{
+      bot_id: parent.bot_id,
+      llm_configuration_id: configuration.id,
+      parent_message_id: source.id
+    })
   end
 
   defp record_cost!(chat, configuration, actor, cost, configuration_owner \\ nil) do
-    configuration_owner = configuration_owner || actor
+    owner = configuration_owner || actor
     message = source!(chat, configuration, actor)
-    step = step!(message, actor, :done)
+    step = create_step!(actor, message, status: :done)
 
     record =
-      create!(
-        LlmUsageRecord,
-        %{
-          usage_user_id: actor.id,
-          usage_user_id_snapshot: actor.id,
-          usage_username_snapshot: actor.username,
-          configuration_owner_id: configuration_owner.id,
-          configuration_owner_id_snapshot: configuration_owner.id,
-          llm_configuration_id: configuration.id,
-          llm_configuration_id_snapshot: configuration.id,
-          llm_configuration_label_snapshot: configuration.model_name,
-          chat_id: chat.id,
-          chat_id_snapshot: chat.id,
-          chat_message_id: message.id,
-          chat_message_id_snapshot: message.id,
-          chat_message_step_id: step.id,
-          chat_message_step_id_snapshot: step.id,
-          step_sequence: step.sequence,
-          occurred_at: DateTime.utc_now(),
-          cost: cost
-        },
-        actor
-      )
+      create_usage_record!(actor, %{chat: chat, message: message, step: step}, %{
+        configuration_owner_id: owner.id,
+        configuration_owner_id_snapshot: owner.id,
+        llm_configuration_id: configuration.id,
+        llm_configuration_id_snapshot: configuration.id,
+        llm_configuration_label_snapshot: configuration.model_name,
+        cost: cost
+      })
 
     {message, record}
   end
 
-  defp share!(chat, group, actor) do
-    create!(
-      ChatShare,
-      %{
-        chat_id: chat.id,
-        user_group_id: group.id,
-        bot_id: chat.bot_id,
-        llm_configuration_id: chat.llm_configuration_id
-      },
-      actor
-    )
-  end
+  defp update!(%ChatMessage{} = message, attrs, actor),
+    do: update_record!(actor, message, attrs, :set_generation_state)
 
-  defp create!(resource, attrs, actor) do
-    resource
-    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
-  defp update!(%ChatMessage{} = record, attrs, actor) do
-    record
-    |> Ash.Changeset.for_update(:set_generation_state, attrs, actor: actor)
-    |> Ash.update!(actor: actor)
-  end
-
-  defp update!(record, attrs, actor) do
-    record
-    |> Ash.Changeset.for_update(:update, attrs, actor: actor)
-    |> Ash.update!(actor: actor)
-  end
+  defp update!(record, attrs, actor), do: update_record!(actor, record, attrs)
 
   defp assert_sum(query) do
     assert query.sql =~ ~r/\bsum\s*\(/i
     refute query.sql =~ ~r/\bselect\s+\w+\."id"/i
   end
 
+  # Usage SUM queries issued by `fun` (including its tasks).
   defp measure(fun) do
-    ref = make_ref()
-    handler = {__MODULE__, ref}
-    :ok = :telemetry.attach(handler, @sql_event, &__MODULE__.handle_query/4, {self(), ref})
-
-    try do
-      result = fun.()
-      {result, drain_queries(ref, [])}
-    after
-      :telemetry.detach(handler)
-    end
-  end
-
-  @doc false
-  def handle_query(_event, _measurements, metadata, {pid, ref}) do
-    sql = IO.iodata_to_binary(metadata.query)
-
-    if String.starts_with?(sql, "SELECT") and String.contains?(sql, "\"llm_usage_records\"") do
-      send(pid, {ref, %{sql: sql, params: metadata.params}})
-    end
-  end
-
-  defp drain_queries(ref, acc) do
-    receive do
-      {^ref, query} -> drain_queries(ref, [query | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
+    {result, capture} = SqlCapture.measure(fun)
+    {result, Enum.filter(capture.queries, &(&1.select? and &1.sql =~ ~s("llm_usage_records")))}
   end
 end

@@ -5,7 +5,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
 
   use IntellectualClubWeb.ConnCase, async: false
 
-  alias IntellectualClub.Knowledge.{KnowledgeBlock, KnowledgeBlockTag, KnowledgeTag}
+  alias IntellectualClub.Knowledge.{KnowledgeBlock, KnowledgeBlockTag}
 
   require Ash.Query
 
@@ -16,7 +16,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
   test "POST /api/bff/knowledge-blocks/markdown-export returns requested blocks as Markdown ZIP",
        %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
-    tag = create_tag!(actor, "Export / Unsafe:Tag?")
+    tag = create_knowledge_tag!(actor, name: "Export / Unsafe:Tag?")
 
     exported =
       create_block!(actor, %{
@@ -56,7 +56,7 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
   test "preview matches external_id only within the current owner", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     %{user: other_actor} = user_fixture()
-    tag = create_tag!(actor, "Import")
+    tag = create_knowledge_tag!(actor, name: "Import")
 
     existing =
       create_block!(actor, %{
@@ -98,8 +98,8 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
     %{user: actor, password: password} = user_fixture()
     %{user: other_actor} = user_fixture()
 
-    selected_tag = create_tag!(actor, "Selected")
-    existing_tag = create_tag!(actor, "Existing")
+    selected_tag = create_knowledge_tag!(actor, name: "Selected")
+    existing_tag = create_knowledge_tag!(actor, name: "Existing")
 
     existing =
       create_block!(actor, %{
@@ -180,12 +180,6 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
     assert Enum.all?(created_blocks, &(tag_ids_for_block(&1.id, actor) == [selected_tag.id]))
   end
 
-  defp create_tag!(actor, name) do
-    KnowledgeTag
-    |> Ash.Changeset.for_create(:create, %{name: name, parent_id: nil}, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
   defp create_block!(actor, attrs) do
     tag_ids = Map.get(attrs, :tag_ids, [])
 
@@ -213,29 +207,13 @@ defmodule IntellectualClubWeb.Bff.KnowledgeBlocksMarkdownControllerTest do
   end
 
   defp markdown_upload(filename, body) do
-    upload_fixture(filename, "text/markdown", body)
+    plug_upload(filename, "text/markdown", body)
   end
 
   defp zip_upload(filename, entries) do
     files = Enum.map(entries, fn {path, body} -> {String.to_charlist(path), body} end)
     {:ok, {_name, payload}} = :zip.create(~c"blocks.zip", files, [:memory])
-    upload_fixture(filename, "application/zip", payload)
-  end
-
-  defp upload_fixture(filename, content_type, body) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "ic-markdown-transfer-#{System.unique_integer([:positive])}-#{String.replace(filename, ~r/[^a-zA-Z0-9_.-]/, "_")}"
-      )
-
-    File.write!(path, body)
-
-    %Plug.Upload{
-      path: path,
-      filename: filename,
-      content_type: content_type
-    }
+    plug_upload(filename, "application/zip", payload)
   end
 
   defp unzip_payload(payload) do

@@ -35,7 +35,9 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       conn
       |> recycle()
       |> sign_in_conn(actor.username, password)
-      |> post("/api/bff/bots/#{bot.id}/image", %{"file" => upload_fixture("bot.png", "image/png")})
+      |> post("/api/bff/bots/#{bot.id}/image", %{
+        "file" => plug_upload("bot.png", "image/png", png_1x1())
+      })
 
     assert %{"image" => image} = json_response(upload_conn, 200)
     assert image["filename"] == "bot.png"
@@ -54,7 +56,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       |> get("/api/bff/bots/#{bot.id}/image")
 
     assert show_conn.status == 200
-    assert show_conn.resp_body == image_payload()
+    assert show_conn.resp_body == png_1x1()
     assert List.first(get_resp_header(show_conn, "content-type")) =~ "image/png"
     assert List.first(get_resp_header(show_conn, "cache-control")) == "private, no-cache"
     etag = List.first(get_resp_header(show_conn, "etag"))
@@ -131,7 +133,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       |> recycle()
       |> sign_in_conn(other_actor.username, other_password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/image", %{
-        "file" => upload_fixture("other.png", "image/png")
+        "file" => plug_upload("other.png", "image/png", png_1x1())
       })
 
     assert unauthorized_conn.status == 404
@@ -141,7 +143,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/image", %{
-        "file" => upload_fixture("note.txt", "text/plain", "not-an-image")
+        "file" => plug_upload("note.txt", "text/plain", "not-an-image")
       })
 
     assert %{"error" => _message} = json_response(invalid_conn, 422)
@@ -151,7 +153,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       |> recycle()
       |> sign_in_conn(actor.username, password)
       |> post("/api/bff/knowledge-blocks/#{block.id}/image", %{
-        "file" => upload_fixture("block.png", "image/png")
+        "file" => plug_upload("block.png", "image/png", png_1x1())
       })
 
     assert %{"image" => image} = json_response(upload_conn, 200)
@@ -165,7 +167,7 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       |> get("/api/bff/knowledge-blocks/#{block.id}/image")
 
     assert show_conn.status == 200
-    assert show_conn.resp_body == image_payload()
+    assert show_conn.resp_body == png_1x1()
     assert List.first(get_resp_header(show_conn, "content-type")) =~ "image/png"
 
     show_payload =
@@ -190,34 +192,5 @@ defmodule IntellectualClubWeb.Bff.ResourceImagesTest do
       end) || %{}
 
     assert get_in(listed_block, ["attributes", "image", "sha256"]) == image["sha256"]
-  end
-
-  defp json_api_get(conn, path) do
-    conn
-    |> put_req_header("accept", "application/vnd.api+json")
-    |> put_req_header("content-type", "application/vnd.api+json")
-    |> get(path)
-  end
-
-  defp upload_fixture(filename, content_type, body \\ image_payload()) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "ic-upload-#{System.unique_integer([:positive])}-#{String.replace(filename, ~r/[^a-zA-Z0-9_.-]/, "_")}"
-      )
-
-    File.write!(path, body)
-
-    %Plug.Upload{
-      path: path,
-      filename: filename,
-      content_type: content_type
-    }
-  end
-
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
   end
 end

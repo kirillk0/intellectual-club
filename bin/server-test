@@ -2,12 +2,71 @@
 
 set -euo pipefail
 
+# Runs the server test suite.
+#
+#   bin/server-test [--partitions N] [--all] [mix test args...]
+#
+# --partitions N  run N `mix test --partitions` processes in parallel, each on
+#                 its own database (default: IC_TEST_PARTITIONS, or an automatic
+#                 value for whole-suite runs and 1 when test paths are given).
+# --all           include `:whitebox` tests (query counts, call traces, lock
+#                 order, scaling), which are excluded by default. CI runs them.
+#
+# The database comes from IC_TEST_DATABASE_URL, or else from the dev launcher.
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SERVER_DIR="${REPO_ROOT}/server"
 LAUNCHER="${REPO_ROOT}/build/dev/Intellectual Club.app/Contents/MacOS/intellectual-club-launcher"
 
-if [[ ! -x "${LAUNCHER}" ]]; then
+partitions="${IC_TEST_PARTITIONS:-}"
+mix_args=()
+has_paths=false
+
+while (($#)); do
+  case "$1" in
+    --partitions)
+      partitions="${2:?--partitions requires a value}"
+      shift 2
+      ;;
+    --partitions=*)
+      partitions="${1#*=}"
+      shift
+      ;;
+    --all)
+      mix_args+=(--include whitebox)
+      shift
+      ;;
+    *)
+      [[ "$1" == test/* || "$1" == *.exs || "$1" == *.exs:* ]] && has_paths=true
+      mix_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+cpu_count() {
+  getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2
+}
+
+if [[ -z "${partitions}" ]]; then
+  if [[ "${has_paths}" == true ]]; then
+    partitions=1
+  else
+    partitions=$(($(cpu_count) / 2))
+    ((partitions > 6)) && partitions=6
+    ((partitions < 1)) && partitions=1
+  fi
+fi
+
+if ! [[ "${partitions}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--partitions must be a positive integer, got: ${partitions}" >&2
+  exit 2
+fi
+
+if [[ -n "${IC_TEST_DATABASE_URL:-}" ]]; then
+  database_url="${IC_TEST_DATABASE_URL}"
+elif [[ ! -x "${LAUNCHER}" ]]; then
   cat >&2 <<EOF
 Missing dev launcher: ${LAUNCHER}
 
@@ -47,20 +106,77 @@ if isinstance(database_url, str) and database_url.strip():
 ' <<<"${status_json}"
 }
 
-database_url="$(launcher_database_url)"
-
-if [[ -z "${database_url}" ]]; then
-  "${LAUNCHER}" start
+if [[ -z "${database_url:-}" ]]; then
   database_url="$(launcher_database_url)"
-fi
 
-if [[ -z "${database_url}" ]]; then
-  echo "Failed to obtain PostgreSQL URL from the dev launcher." >&2
-  "${LAUNCHER}" status --json >&2 || true
-  exit 1
+  if [[ -z "${database_url}" ]]; then
+    "${LAUNCHER}" start
+    database_url="$(launcher_database_url)"
+  fi
+
+  if [[ -z "${database_url}" ]]; then
+    echo "Failed to obtain PostgreSQL URL from the dev launcher." >&2
+    "${LAUNCHER}" status --json >&2 || true
+    exit 1
+  fi
 fi
 
 export IC_TEST_DATABASE_URL="${database_url}"
+export MIX_ENV=test
 
 cd "${SERVER_DIR}"
-exec mix test "$@"
+
+if ((partitions == 1)); then
+  exec mix test ${mix_args[@]+"${mix_args[@]}"}
+fi
+
+# Compile once before starting partitions: concurrent `mix test` processes would
+# otherwise race on the build directory. Then prepare their databases.
+mix do deps.loadpaths + picosat.sync + compile
+for partition in $(seq 1 "${partitions}"); do
+  MIX_TEST_PARTITION="${partition}" mix do ecto.create --quiet + ecto.migrate --quiet &
+done
+wait
+
+cases=$(($(cpu_count) / partitions))
+((cases < 2)) && cases=2
+log_dir="$(mktemp -d "${TMPDIR:-/tmp}/ic-server-test.XXXXXX")"
+pids=()
+started_at=$(date +%s)
+
+echo "Running ${partitions} partitions (max_cases=${cases}); logs in ${log_dir}"
+
+for partition in $(seq 1 "${partitions}"); do
+  MIX_TEST_PARTITION="${partition}" EXUNIT_MAX_CASES="${EXUNIT_MAX_CASES:-${cases}}" \
+    mix test --partitions "${partitions}" ${mix_args[@]+"${mix_args[@]}"} \
+    >"${log_dir}/partition-${partition}.log" 2>&1 &
+  pids+=("$!")
+done
+
+status=0
+for index in "${!pids[@]}"; do
+  partition=$((index + 1))
+  log="${log_dir}/partition-${partition}.log"
+
+  if wait "${pids[${index}]}"; then
+    result="ok"
+  else
+    result="FAILED"
+    status=1
+  fi
+
+  summary="$(grep -E '^(Finished in|Result:|[0-9]+ (tests|doctests)?.*failures?)' "${log}" | tr '\n' ' ')"
+  echo "partition ${partition}: ${result} ${summary}"
+
+  if [[ "${result}" == "FAILED" ]]; then
+    # Print failure blocks; fall back to the log tail for crashes before ExUnit.
+    if grep -qE '^  [0-9]+\) ' "${log}"; then
+      awk '/^  [0-9]+\) / {printing = 1} printing && /^[^ ]/ {printing = 0} printing' "${log}"
+    else
+      tail -n 40 "${log}"
+    fi
+  fi
+done
+
+echo "Wall time: $(($(date +%s) - started_at))s"
+exit "${status}"

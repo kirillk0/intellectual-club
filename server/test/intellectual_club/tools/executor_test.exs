@@ -1,15 +1,11 @@
 defmodule IntellectualClub.Tools.ExecutorTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.Executor
-  alias IntellectualClub.Tools.RateLimiter
   alias IntellectualClub.Tools.ToolInstance
 
-  setup do
-    RateLimiter.reset()
-    :ok
-  end
+  # Limited tool instances get unique ids, so the shared RateLimiter needs no reset.
 
   test "sanitize_execution_result removes null bytes recursively" do
     result = %ExecutionResult{

@@ -272,7 +272,9 @@ jobs:
 
       - name: Run tests
         working-directory: server
-        run: mix test
+        # Partitions run in parallel on separate databases; --all includes the
+        # whitebox tests that local runs exclude by default.
+        run: ../bin/server-test --all
 
   build-macos:
     name: Build macOS arm64

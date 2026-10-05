@@ -1,34 +1,10 @@
 defmodule IntellectualClub.Tools.Drivers.NativeGameToolsTest do
   use ExUnit.Case, async: true
 
-  alias IntellectualClub.Tools.DriverMetadata
   alias IntellectualClub.Tools.Drivers.NativeGameTools
   alias IntellectualClub.Tools.ToolInstance
 
   @tool_instance %ToolInstance{type: "native-game-tools", config: %{}, secrets: %{}}
-
-  test "exposes fixed random_select function" do
-    functions = NativeGameTools.fixed_functions(@tool_instance)
-
-    assert is_list(functions)
-    assert Enum.any?(functions, fn spec -> Map.get(spec, "name") == "random_select" end)
-  end
-
-  test "driver metadata exposes fixed random_select function" do
-    metadata = DriverMetadata.for_type("native-game-tools")
-
-    assert metadata["type"] == "native-game-tools"
-    assert metadata["title"] == "Game Tools"
-    assert metadata["functions_mode"] == "fixed"
-    assert metadata["supports_discovery"] == false
-    assert metadata["supports_artifacts"] == false
-
-    assert %{"parameters_schema" => schema} =
-             Enum.find(metadata["fixed_functions"], &(&1["name"] == "random_select"))
-
-    assert schema["required"] == ["options"]
-    assert schema["properties"]["options"]["type"] == "array"
-  end
 
   test "random_select returns the only positive weighted option" do
     assert {:ok, {text, raw}} =
@@ -62,35 +38,19 @@ defmodule IntellectualClub.Tools.Drivers.NativeGameToolsTest do
     assert raw["selected_option"] == "Right"
   end
 
-  test "random_select rejects an empty options list" do
-    assert {:error, "Argument `options` must be a non-empty list."} =
-             NativeGameTools.execute(@tool_instance, "random_select", %{"options" => []})
-  end
+  for {options, message} <- [
+        {[], "Argument `options` must be a non-empty list."},
+        {[%{"option" => "A", "weight" => 0}, %{"option" => "B", "weight" => 0}],
+         "At least one option weight must be greater than 0."},
+        {[%{"option" => "", "weight" => 1}], "Option 1 `option` must be a non-empty string."},
+        {[%{"option" => "A", "weight" => -1}], "Option 1 `weight` must be a non-negative number."}
+      ] do
+    @options options
+    @message message
 
-  test "random_select rejects options without a positive weight" do
-    assert {:error, "At least one option weight must be greater than 0."} =
-             NativeGameTools.execute(@tool_instance, "random_select", %{
-               "options" => [
-                 %{"option" => "A", "weight" => 0},
-                 %{"option" => "B", "weight" => 0}
-               ]
-             })
-  end
-
-  test "random_select validates option shape" do
-    assert {:error, "Option 1 `option` must be a non-empty string."} =
-             NativeGameTools.execute(@tool_instance, "random_select", %{
-               "options" => [%{"option" => "", "weight" => 1}]
-             })
-
-    assert {:error, "Option 1 `weight` must be a non-negative number."} =
-             NativeGameTools.execute(@tool_instance, "random_select", %{
-               "options" => [%{"option" => "A", "weight" => -1}]
-             })
-  end
-
-  test "execute rejects unknown function" do
-    assert {:error, "Unknown function: unknown"} =
-             NativeGameTools.execute(@tool_instance, "unknown", %{})
+    test "random_select rejects #{inspect(options)}" do
+      assert {:error, @message} =
+               NativeGameTools.execute(@tool_instance, "random_select", %{"options" => @options})
+    end
   end
 end

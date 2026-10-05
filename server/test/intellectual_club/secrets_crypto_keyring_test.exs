@@ -1,23 +1,13 @@
 defmodule IntellectualClub.SecretsCryptoKeyringTest do
   use ExUnit.Case, async: false
 
+  import IntellectualClub.TestEnv
+
   alias IntellectualClub.Secrets.{Crypto, StartupMigrator}
 
   @aad_v1 "intellectual-club:managed-secret:v1"
 
   setup do
-    current = Application.get_env(:intellectual_club, :managed_secrets_encryption_key)
-    previous = Application.get_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
-
-    migrate_on_startup =
-      Application.get_env(:intellectual_club, :migrate_managed_secrets_on_startup)
-
-    on_exit(fn ->
-      restore_env(:managed_secrets_encryption_key, current)
-      restore_env(:managed_secrets_previous_encryption_keys, previous)
-      restore_env(:migrate_managed_secrets_on_startup, migrate_on_startup)
-    end)
-
     :ok
   end
 
@@ -25,21 +15,17 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
     old_material = String.duplicate("a", 48)
     new_material = String.duplicate("b", 48)
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, old_material)
-    Application.delete_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
+    put_app_env(:managed_secrets_encryption_key, old_material)
+    delete_app_env(:managed_secrets_previous_encryption_keys)
 
     old_v2 = Crypto.encrypt("old-v2-value")
     assert Crypto.current_ciphertext?(old_v2)
     old_v1 = encrypt_v1("old-v1-value", old_material)
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, new_material)
+    put_app_env(:managed_secrets_encryption_key, new_material)
     refute Crypto.current_ciphertext?(old_v2)
 
-    Application.put_env(
-      :intellectual_club,
-      :managed_secrets_previous_encryption_keys,
-      [old_material]
-    )
+    put_app_env(:managed_secrets_previous_encryption_keys, [old_material])
 
     assert {:ok, "old-v2-value", %{version: 2, current?: false}} =
              Crypto.decrypt_with_metadata(old_v2)
@@ -58,7 +44,7 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
 
     assert {:ok, ^upgraded_v2, false} = Crypto.reencrypt_if_needed(upgraded_v2)
 
-    Application.delete_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
+    delete_app_env(:managed_secrets_previous_encryption_keys)
 
     assert {:error, :invalid_ciphertext} = Crypto.decrypt(old_v2)
     assert {:error, :invalid_ciphertext} = Crypto.decrypt(old_v1)
@@ -70,16 +56,12 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
     old_material = String.duplicate("o", 48)
     intended_material = String.duplicate("n", 48)
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, old_material)
+    put_app_env(:managed_secrets_encryption_key, old_material)
     ciphertext = Crypto.encrypt("must-remain-on-old-key")
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, "too-short")
+    put_app_env(:managed_secrets_encryption_key, "too-short")
 
-    Application.put_env(
-      :intellectual_club,
-      :managed_secrets_previous_encryption_keys,
-      [old_material]
-    )
+    put_app_env(:managed_secrets_previous_encryption_keys, [old_material])
 
     assert_raise ArgumentError, ~r/current encryption key must be/, fn ->
       Crypto.validate_keyring!()
@@ -89,7 +71,7 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
       Crypto.encrypt("must-not-use-endpoint-fallback")
     end
 
-    Application.put_env(:intellectual_club, :migrate_managed_secrets_on_startup, true)
+    put_app_env(:migrate_managed_secrets_on_startup, true)
 
     assert_raise ArgumentError, ~r/current encryption key must be/, fn ->
       StartupMigrator.init([])
@@ -97,11 +79,7 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
 
     assert {:error, :invalid_ciphertext} = Crypto.reencrypt_if_needed(ciphertext)
 
-    Application.put_env(
-      :intellectual_club,
-      :managed_secrets_encryption_key,
-      intended_material
-    )
+    put_app_env(:managed_secrets_encryption_key, intended_material)
 
     assert {:ok, "must-remain-on-old-key"} = Crypto.decrypt(ciphertext)
   end
@@ -115,7 +93,4 @@ defmodule IntellectualClub.SecretsCryptoKeyringTest do
 
     <<1, nonce::binary-size(12), tag::binary-size(16), ciphertext::binary>>
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
-  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
 end

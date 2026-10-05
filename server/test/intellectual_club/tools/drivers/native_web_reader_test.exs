@@ -1,50 +1,14 @@
 defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
-  use IntellectualClub.DataCase, async: false
+  use IntellectualClub.DataCase, async: true
 
+  alias IntellectualClub.Tools.DocumentReader
   alias IntellectualClub.Tools.Drivers.NativeWebReader
-  alias IntellectualClub.Tools.ToolInstance
-
-  test "exposes fixed read_url and search_url functions" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
-
-    functions = NativeWebReader.fixed_functions(tool_instance)
-
-    assert is_list(functions)
-    assert Enum.any?(functions, fn spec -> Map.get(spec, "name") == "read_url" end)
-    assert Enum.any?(functions, fn spec -> Map.get(spec, "name") == "search_url" end)
-  end
-
-  test "execute requires url for read_url" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
-
-    assert {:error, "Argument `url` is required."} =
-             NativeWebReader.execute(tool_instance, "read_url", %{})
-  end
-
-  test "execute validates page argument for read_url" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
-
-    assert {:error, "Argument `page` must be a non-negative integer (1-based)."} =
-             NativeWebReader.execute(tool_instance, "read_url", %{
-               "url" => "https://example.com",
-               "page" => -1
-             })
-  end
 
   test "read_url rejects compressed bulk downloads before fetching" do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
 
     assert {:error, message} =
              NativeWebReader.execute(tool_instance, "read_url", %{
@@ -58,7 +22,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
 
     {:ok, server} = start_raw_http_server(200, "application/gzip", "not really gzip")
 
@@ -76,11 +40,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "Web Reader",
         type: "native-web-reader",
-        config: %{"chunk_size_tokens" => 100},
-        secrets: %{}
-      })
+        config: %{"chunk_size_tokens" => 100}
+      )
 
     body = "A gzip-compressed page with a readable needle."
 
@@ -104,11 +68,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "Web Reader",
         type: "native-web-reader",
-        config: %{"max_download_bytes" => 1_024},
-        secrets: %{}
-      })
+        config: %{"max_download_bytes" => 1_024}
+      )
 
     compressed = :zlib.gzip(:binary.copy("a", 1_000_000))
     assert byte_size(compressed) < 1_024
@@ -128,7 +92,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
 
     {:ok, server} =
       start_raw_http_server(200, "text/plain", "not really gzip", [
@@ -143,33 +107,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
              })
   end
 
-  test "execute requires regex for search_url" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
-
-    assert {:error, "Argument `regex` is required."} =
-             NativeWebReader.execute(tool_instance, "search_url", %{
-               "url" => "https://example.com"
-             })
-  end
-
-  test "execute rejects unknown function" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
-
-    assert {:error, "Unknown function: unknown"} =
-             NativeWebReader.execute(tool_instance, "unknown", %{})
-  end
-
   test "read_url returns a valid utf-8 error when upstream body is not utf-8" do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{type: "native-web-reader", config: %{}, secrets: %{}})
+      create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
 
     body =
       <<"<html><body><h1> HTTP/1.1 ", 208, 194, 189, 168, 187, 225, 187, 176, 202, 167, 176, 220,
@@ -193,11 +135,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "Web Reader",
         type: "native-web-reader",
-        config: %{"chunk_size_tokens" => 10},
-        secrets: %{}
-      })
+        config: %{"chunk_size_tokens" => 10}
+      )
 
     body = """
     alpha beta gamma delta epsilon zeta eta theta
@@ -226,11 +168,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "Web Reader",
         type: "native-web-reader",
-        config: %{"chunk_size_tokens" => 100},
-        secrets: %{}
-      })
+        config: %{"chunk_size_tokens" => 100}
+      )
 
     {:ok, server} = start_raw_http_server(200, "application/zip", docx_payload())
 
@@ -248,23 +190,46 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     assert raw["pages_total"] >= 1
   end
 
-  defp create_tool_instance!(actor, attrs) when is_map(attrs) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      Map.merge(
-        %{
-          type: "native-web-reader",
-          name: "Web Reader",
-          config: %{},
-          secrets: %{},
-          max_output_tokens: 20_000
-        },
-        attrs
-      ),
-      actor: actor
-    )
-    |> Ash.create!()
+  test "rebuilding a document cache evicts expired entries with or without a READY marker" do
+    cache_root =
+      Path.join(System.tmp_dir!(), "ic-document-cache-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(cache_root) end)
+    expired = {{2000, 1, 1}, {0, 0, 0}}
+
+    ready_dir = Path.join(cache_root, "expired-ready")
+    File.mkdir_p!(ready_dir)
+    File.touch!(Path.join(ready_dir, "READY"), expired)
+
+    unfinished_dir = Path.join(cache_root, "expired-unfinished")
+    File.mkdir_p!(unfinished_dir)
+    File.touch!(unfinished_dir, expired)
+
+    cfg = DocumentReader.config_from_map(%{"cache_ttl_seconds" => 60})
+
+    assert {:ok, {doc_dir, _meta, false}} =
+             DocumentReader.ensure_text_cache_ready(
+               cache_root,
+               {:test, self()},
+               "fresh",
+               "Fresh text",
+               %{},
+               cfg
+             )
+
+    assert doc_dir == Path.join(cache_root, "fresh")
+    refute File.exists?(ready_dir)
+    refute File.exists?(unfinished_dir)
+
+    assert {:ok, {^doc_dir, _meta, true}} =
+             DocumentReader.ensure_text_cache_ready(
+               cache_root,
+               {:test, self()},
+               "fresh",
+               "Fresh text",
+               %{},
+               cfg
+             )
   end
 
   defp start_raw_http_server(status, content_type, body, extra_headers \\ [])

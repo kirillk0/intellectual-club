@@ -1,8 +1,6 @@
 defmodule IntellectualClub.Chat.ChatSharingTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Bots.{Bot, BotShare}
-
   alias IntellectualClub.Chat.{
     Chat,
     ChatKnowledgeBlock,
@@ -13,10 +11,9 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
   }
 
   alias IntellectualClub.Files
-  alias IntellectualClub.Knowledge.KnowledgeBlock
-  alias IntellectualClub.Llm.{LlmConfiguration, LlmConfigurationShare, LlmProvider}
+  alias IntellectualClub.Llm.LlmConfigurationShare
   alias IntellectualClub.Sharing
-  alias IntellectualClub.Tools.{ChatToolBinding, ToolInstance}
+  alias IntellectualClub.Tools.ChatToolBinding
 
   require Ash.Query
 
@@ -25,9 +22,9 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner)
-    configuration = create_configuration!(owner)
-    chat = create_chat!(owner, bot, configuration)
+    bot = create_bot!(owner, max_tool_rounds: 300)
+    configuration = create_configuration!(owner, note: "shared")
+    chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
     {:ok, message} = Threads.add_message_to_end(chat, :user, "hello", actor: owner)
 
     share_bot!(owner, bot, group)
@@ -83,13 +80,13 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner)
-    configuration = create_configuration!(owner)
+    bot = create_bot!(owner, max_tool_rounds: 300)
+    configuration = create_configuration!(owner, note: "shared")
     share_bot!(owner, bot, group)
     share_configuration!(owner, configuration, group)
 
-    block_chat = create_chat!(owner, bot, configuration)
-    block = create_block!(owner)
+    block_chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
+    block = create_knowledge_block!(owner, name: "Block")
 
     ChatKnowledgeBlock
     |> Ash.Changeset.for_create(
@@ -104,8 +101,8 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
 
     assert message =~ "chat blocks"
 
-    tool_chat = create_chat!(owner, bot, configuration)
-    tool = create_tool!(owner)
+    tool_chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
+    tool = create_tool_instance!(owner, name: "Tool", alias: "tool")
 
     ChatToolBinding
     |> Ash.Changeset.for_create(
@@ -126,13 +123,13 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner)
-    configuration = create_configuration!(owner)
-    historical_configuration = create_configuration!(owner)
+    bot = create_bot!(owner, max_tool_rounds: 300)
+    configuration = create_configuration!(owner, note: "shared")
+    historical_configuration = create_configuration!(owner, note: "shared")
     share_bot!(owner, bot, group)
     share_configuration!(owner, configuration, group)
 
-    chat = create_chat!(owner, bot, configuration)
+    chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
     assert {:ok, _state} = Sharing.replace_chat_share_state(chat.id, [group.id], owner)
     {:ok, root} = Threads.add_message_to_end(chat, :user, "root", actor: owner)
 
@@ -213,106 +210,5 @@ defmodule IntellectualClub.Chat.ChatSharingTest do
     assert source_media_content.file_id == source_file.id
     assert is_integer(copied_media_content.file_id)
     assert copied_media_content.file_id != source_file.id
-  end
-
-  defp create_bot!(actor) do
-    Bot
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: "Shared chat bot #{System.unique_integer([:positive])}",
-        first_messages: [],
-        history_mode: :chat
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_configuration!(actor) do
-    provider =
-      LlmProvider
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "Provider #{System.unique_integer([:positive])}",
-          type: :demo,
-          auth_method: :api_key
-        },
-        actor: actor
-      )
-      |> Ash.create!()
-
-    LlmConfiguration
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        provider_id: provider.id,
-        model_name: "demo-model",
-        note: "shared",
-        parameters: %{},
-        enabled: true,
-        timeout_seconds: 30,
-        context_length: 2048
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_chat!(actor, bot, configuration) do
-    Chat
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        note: "",
-        bot_id: bot.id,
-        llm_configuration_id: configuration.id
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_block!(actor) do
-    KnowledgeBlock
-    |> Ash.Changeset.for_create(
-      :create,
-      %{name: "Block", version: "v1", content: "content"},
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_tool!(actor) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        type: "mcp-http",
-        name: "Tool",
-        alias: "tool",
-        config: %{"server_url" => "https://example.com/mcp"},
-        secrets: %{"bearer_token" => "token"}
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp share_bot!(actor, bot, group) do
-    BotShare
-    |> Ash.Changeset.for_create(:create, %{bot_id: bot.id, user_group_id: group.id}, actor: actor)
-    |> Ash.create!()
-  end
-
-  defp share_configuration!(actor, configuration, group) do
-    LlmConfigurationShare
-    |> Ash.Changeset.for_create(
-      :create,
-      %{llm_configuration_id: configuration.id, user_group_id: group.id},
-      actor: actor
-    )
-    |> Ash.create!()
   end
 end

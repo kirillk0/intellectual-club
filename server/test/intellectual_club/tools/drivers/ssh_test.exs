@@ -1,20 +1,20 @@
 defmodule IntellectualClub.Tools.Drivers.SshTest do
-  use IntellectualClub.DataCase, async: false
+  use IntellectualClub.DataCase, async: true
 
   alias IntellectualClub.Tools.Drivers.Ssh
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.Executor
-  alias IntellectualClub.Tools.ToolInstance
 
   test "exposes direct and disabled-by-default background run_command functions" do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "SSH",
         type: "ssh",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "secret"}
-      })
+      )
 
     functions = Ssh.fixed_functions(tool_instance)
 
@@ -48,11 +48,12 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "SSH",
         type: "ssh",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "secret"}
-      })
+      )
 
     download_file_spec =
       Enum.find(Ssh.fixed_functions(tool_instance), fn spec ->
@@ -70,64 +71,16 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     assert schema["required"] == ["file_id", "local_path"]
   end
 
-  test "execute validates required host" do
-    tool_instance = %ToolInstance{
-      type: "ssh",
-      config: %{"host" => "", "username" => "root"},
-      secrets: %{"password" => "secret"}
-    }
-
-    assert {:error, "Tool instance config.host is required."} =
-             Ssh.execute(tool_instance, "run_command", %{"command" => "echo ok"})
-  end
-
-  test "create validates required config fields declared by schema" do
-    %{user: actor} = user_fixture()
-
-    result =
-      ToolInstance
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          type: "ssh",
-          name: "SSH",
-          config: %{"host" => "", "username" => ""},
-          secrets: %{"password" => "secret"},
-          max_output_tokens: 20_000
-        },
-        actor: actor
-      )
-      |> Ash.create()
-
-    assert {:error, error} = result
-    message = Exception.message(error)
-    assert String.contains?(message, "Host is required.")
-    assert String.contains?(message, "Username is required.")
-  end
-
-  test "execute validates command arguments" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{
-        type: "ssh",
-        config: %{"host" => "example.com", "username" => "root"},
-        secrets: %{"password" => "secret"}
-      })
-
-    assert {:error, "Argument `command` or `argv` is required."} =
-             Ssh.execute(tool_instance, "run_command", %{})
-  end
-
   test "background command requires generation execution context" do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "SSH",
         type: "ssh",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "secret"}
-      })
+      )
 
     assert {:error, "Background SSH command requires generation execution context."} =
              Ssh.execute(tool_instance, "run_command_background", %{"command" => "echo ok"})
@@ -137,12 +90,13 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        name: "SSH",
         type: "ssh",
         alias: "ssh",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "secret"}
-      })
+      )
 
     result =
       Executor.execute_llm_tool(
@@ -154,44 +108,6 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
 
     assert result.raw["isError"] == true
     assert result.raw["code"] == "tool_function_disabled"
-  end
-
-  test "execute requires credentials" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{
-        type: "ssh",
-        config: %{"host" => "example.com", "username" => "root"},
-        secrets: %{}
-      })
-
-    assert {:error, message} =
-             Ssh.execute(tool_instance, "run_command", %{"command" => "echo ok"})
-
-    assert String.contains?(String.downcase(message), "credentials")
-  end
-
-  test "execute rejects unknown function" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_tool_instance!(actor, %{
-        type: "ssh",
-        config: %{"host" => "example.com", "username" => "root"},
-        secrets: %{"password" => "secret"}
-      })
-
-    assert {:error, "Unknown function: unknown"} = Ssh.execute(tool_instance, "unknown", %{})
-  end
-
-  test "detect_image_mime returns detected mime type for valid image payload" do
-    assert {:ok, "image/png"} = Ssh.detect_image_mime(image_payload())
-  end
-
-  test "detect_image_mime rejects invalid image payload" do
-    assert {:error, "File content is not a valid image."} =
-             Ssh.detect_image_mime("<html><body>404 Not Found</body></html>")
   end
 
   test "sftp_channel_options wraps timeout in a keyword list" do
@@ -283,30 +199,5 @@ defmodule IntellectualClub.Tools.Drivers.SshTest do
 
     assert_receive {:ssh_refs_closed, %{connection: :connection_ref, channel: 42}}
     send(owner, :stop)
-  end
-
-  defp create_tool_instance!(actor, attrs) when is_map(attrs) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      Map.merge(
-        %{
-          type: "ssh",
-          name: "SSH",
-          config: %{},
-          secrets: %{},
-          max_output_tokens: 20_000
-        },
-        attrs
-      ),
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
   end
 end

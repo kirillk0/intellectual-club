@@ -45,8 +45,9 @@ arguments, map-valued tool results, and unrelated JSON are opaque.
 package. It has no provider dispatch or image-shape patterns. ResponsesWss
 explicitly delegates to Responses. OpenRouter and NVIDIA explicitly delegate to
 `Common.ChatCompletions.ImageMapper`, the shared Chat Completions wire format.
-Demo and MissingProvider are no-ops. The test-only `ImageMapperDummy` demonstrates
-a new packet/picture shape and custom formatter without modifying shared code.
+Demo and MissingProvider are no-ops. The test-only `ImageMapperDummy`
+(`server/test/support/llm_tools/image_mapper_dummy.ex`) demonstrates a new
+packet/picture shape and custom formatter without modifying shared code.
 
 ## Hydration and transport
 

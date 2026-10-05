@@ -5,28 +5,19 @@ defmodule IntellectualClub.Files.UploadStagingTest do
 
   use ExUnit.Case, async: false
 
+  import IntellectualClub.TestEnv
+
   alias IntellectualClub.Files.UploadStaging
 
   setup do
-    previous_path = Application.get_env(:intellectual_club, :upload_staging_path)
-
     staging_path =
       Path.join(
         System.tmp_dir!(),
         "intellectual_club_upload_staging_test_#{System.unique_integer([:positive])}"
       )
 
-    Application.put_env(:intellectual_club, :upload_staging_path, staging_path)
-
-    on_exit(fn ->
-      if previous_path do
-        Application.put_env(:intellectual_club, :upload_staging_path, previous_path)
-      else
-        Application.delete_env(:intellectual_club, :upload_staging_path)
-      end
-
-      File.rm_rf(staging_path)
-    end)
+    put_app_env(:upload_staging_path, staging_path)
+    on_exit(fn -> File.rm_rf(staging_path) end)
 
     {:ok, staging_path: staging_path}
   end

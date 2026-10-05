@@ -1,5 +1,8 @@
 defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
-  use IntellectualClub.DataCase, async: false
+  use ExUnit.Case, async: true
+
+  # The test server reports each request before answering it and the driver is
+  # synchronous, so after `execute/3` returns every request is in the mailbox.
   alias IntellectualClub.Tools.{ToolInstance, Executor}
   alias IntellectualClub.Tools.Drivers.NativeWebSearch, as: Driver
   alias IntellectualClub.TestSupport.WebSearchServer
@@ -41,7 +44,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     assert limited.raw["warnings"] == result.raw["warnings"]
     assert_receive {:web_request, "/brave/web/search", _, _}
     assert_receive {:web_request, "/exa/search", _, _}
-    refute_receive {:web_request, "/brave/web/search", _, _}
+    refute_received {:web_request, "/brave/web/search", _, _}
   end
 
   test "Brave 429 and empty TinyFish results fall through to Firecrawl without changing the query" do
@@ -87,7 +90,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
 
     for path <- ["/brave/web/search", "/tinyfish", "/firecrawl/search"] do
       assert_receive {:web_request, ^path, _, _}
-      refute_receive {:web_request, ^path, _, _}
+      refute_received {:web_request, ^path, _, _}
     end
   end
 
@@ -104,7 +107,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     assert length(result.raw["attempts"]) == 1
     assert result.raw["warnings"] == []
     assert_receive {:web_request, "/brave/web/search", _, _}
-    refute_receive {:web_request, "/tavily/search", _, _}
+    refute_received {:web_request, "/tavily/search", _, _}
   end
 
   test "all empty responses exhaust the chain without becoming an error" do
@@ -168,7 +171,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     tool = tool(base, ~w(tavily brave))
     assert {:error, _} = Driver.execute(tool, "web_search", %{"query" => %{"bad" => true}})
     assert {:error, _} = Driver.execute(tool, "web_fetch", %{"urls" => ["file:///tmp/private"]})
-    refute_receive {:web_request, _, _, _}
+    refute_received {:web_request, _, _, _}
 
     assert {:ok, result} =
              Driver.execute(tool, "web_search", %{
@@ -231,7 +234,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
              key in ["x-subscription-token", "authorization", "x-api-key"]
            end)
 
-    refute_receive {:web_request, "/document", _, _}
+    refute_received {:web_request, "/document", _, _}
   end
 
   test "local reader failures fall through to a remote reader and vice versa" do
@@ -388,15 +391,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
   end
 
   defp server(handler) do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
+    {base_url, _port} =
+      IntellectualClub.TestHttpServer.start_http_server!(
+        {WebSearchServer, handler: handler, test_pid: self()}
+      )
 
-    start_supervised!(
-      {Bandit,
-       plug: {WebSearchServer, handler: handler, test_pid: self()}, scheme: :http, port: port}
-    )
-
-    "http://127.0.0.1:#{port}"
+    base_url
   end
 end

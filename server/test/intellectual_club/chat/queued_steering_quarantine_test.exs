@@ -1,10 +1,8 @@
 defmodule IntellectualClub.Chat.QueuedSteeringQuarantineTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessages
-  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.QueueCoordinator
 
   setup do
@@ -395,23 +393,8 @@ defmodule IntellectualClub.Chat.QueuedSteeringQuarantineTest do
   end
 
   defp create_generation!(actor, attrs \\ %{}) do
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(:create, Map.merge(%{note: ""}, attrs), actor: actor)
-      |> Ash.create!(actor: actor)
-
-    {:ok, root} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
-
-    generation =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: root.id},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    {chat, generation}
+    chat = create_chat!(actor, attrs)
+    {chat, create_generating_message!(actor, chat, user_text: "Question")}
   end
 
   defp set_status!(generation, status, actor) do

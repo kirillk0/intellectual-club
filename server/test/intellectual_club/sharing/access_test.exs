@@ -1,7 +1,7 @@
 defmodule IntellectualClub.Sharing.AccessTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Bots.{Bot, BotCompatibleConfigurationTag, BotKnowledgeBlock, BotShare}
+  alias IntellectualClub.Bots.{Bot, BotCompatibleConfigurationTag, BotKnowledgeBlock}
   alias IntellectualClub.Chat.{Chat, Threads}
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Knowledge.{KnowledgeBlock, KnowledgeBlockShare}
@@ -9,7 +9,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
   alias IntellectualClub.Llm.{
     LlmConfiguration,
     LlmConfigurationKnowledgeBlock,
-    LlmConfigurationShare,
     LlmConfigurationTag,
     LlmConfigurationTagBinding,
     LlmProvider
@@ -28,9 +27,16 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{user: outsider} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
-    block = create_block!(owner, "Direct block", "Direct block content")
-    tool = create_tool!(owner, "Direct tool", "direct_tool")
-    function = create_tool_function!(owner, tool, "direct_search")
+    block = create_knowledge_block!(owner, name: "Direct block", content: "Direct block content")
+
+    tool =
+      create_tool_instance!(owner,
+        name: "Direct tool",
+        alias: "direct_tool",
+        max_output_tokens: 2000
+      )
+
+    function = create_tool_function!(owner, tool, name: "direct_search", description: "Search")
 
     block_share =
       KnowledgeBlockShare
@@ -78,7 +84,7 @@ defmodule IntellectualClub.Sharing.AccessTest do
     assert {:error, _error} = Ash.get(KnowledgeBlock, block.id, actor: outsider)
     assert {:error, _error} = Ash.get(ToolInstance, tool.id, actor: outsider)
 
-    recipient_bot = create_bot!(recipient, "Recipient bot")
+    recipient_bot = create_bot!(recipient, name: "Recipient bot")
 
     direct_tool_binding =
       BotToolBinding
@@ -119,9 +125,15 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: owner} = user_fixture()
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
-    shared_bot = create_bot!(owner, "Shared source bot")
-    recipient_bot = create_bot!(recipient, "Recipient destination bot")
-    tool = create_tool!(owner, "Transitive tool", "transitive_tool")
+    shared_bot = create_bot!(owner, name: "Shared source bot")
+    recipient_bot = create_bot!(recipient, name: "Recipient destination bot")
+
+    tool =
+      create_tool_instance!(owner,
+        name: "Transitive tool",
+        alias: "transitive_tool",
+        max_output_tokens: 2000
+      )
 
     _binding =
       BotToolBinding
@@ -162,13 +174,22 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner, "Shared bot")
-    provider = create_provider!(owner, "Shared provider")
-    configuration = create_configuration!(owner, provider, "shared-model")
-    bot_block = create_block!(owner, "Bot block", "Bot block content")
-    config_block = create_block!(owner, "Config block", "Config block content")
-    tool = create_tool!(owner, "Shared MCP tool", "team_web")
-    tool_function = create_tool_function!(owner, tool, "search")
+    bot = create_bot!(owner, name: "Shared bot")
+    provider = create_provider!(owner, name: "Shared provider")
+    configuration = create_configuration!(owner, provider: provider, model_name: "shared-model")
+    bot_block = create_knowledge_block!(owner, name: "Bot block", content: "Bot block content")
+
+    config_block =
+      create_knowledge_block!(owner, name: "Config block", content: "Config block content")
+
+    tool =
+      create_tool_instance!(owner,
+        name: "Shared MCP tool",
+        alias: "team_web",
+        max_output_tokens: 2000
+      )
+
+    tool_function = create_tool_function!(owner, tool, name: "search", description: "Search")
 
     _ =
       BotKnowledgeBlock
@@ -330,8 +351,14 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner, "Per-user bot")
-    owner_tool = create_tool!(owner, "Owner private tool", "personal_web")
+    bot = create_bot!(owner, name: "Per-user bot")
+
+    owner_tool =
+      create_tool_instance!(owner,
+        name: "Owner private tool",
+        alias: "personal_web",
+        max_output_tokens: 2000
+      )
 
     per_user_binding =
       BotToolBinding
@@ -359,8 +386,18 @@ defmodule IntellectualClub.Sharing.AccessTest do
     assert recipient_contract.sharing_mode == :per_user
     assert {:error, _} = Ash.get(ToolInstance, owner_tool.id, actor: recipient)
 
-    recipient_tool = create_tool!(recipient, "Recipient own tool", "personal_web")
-    recipient_block = create_block!(recipient, "Recipient block", "Recipient block content")
+    recipient_tool =
+      create_tool_instance!(recipient,
+        name: "Recipient own tool",
+        alias: "personal_web",
+        max_output_tokens: 2000
+      )
+
+    recipient_block =
+      create_knowledge_block!(recipient,
+        name: "Recipient block",
+        content: "Recipient block content"
+      )
 
     user_binding =
       BotUserToolBinding
@@ -417,22 +454,35 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    shared_bot = create_bot!(owner, "Shared bot")
-    private_bot = create_bot!(owner, "Private bot")
+    shared_bot = create_bot!(owner, name: "Shared bot")
+    private_bot = create_bot!(owner, name: "Private bot")
 
-    shared_provider = create_provider!(owner, "Shared provider")
-    private_provider = create_provider!(owner, "Private provider")
+    shared_provider = create_provider!(owner, name: "Shared provider")
+    private_provider = create_provider!(owner, name: "Private provider")
 
-    shared_configuration = create_configuration!(owner, shared_provider, "shared-model")
-    private_configuration = create_configuration!(owner, private_provider, "private-model")
+    shared_configuration =
+      create_configuration!(owner, provider: shared_provider, model_name: "shared-model")
 
-    shared_tool = create_tool!(owner, "Shared tool")
-    private_tool = create_tool!(owner, "Private tool")
+    private_configuration =
+      create_configuration!(owner, provider: private_provider, model_name: "private-model")
 
-    private_bot_block = create_block!(owner, "Private bot block", "Private bot block content")
+    shared_tool =
+      create_tool_instance!(owner, name: "Shared tool", alias: nil, max_output_tokens: 2000)
+
+    private_tool =
+      create_tool_instance!(owner, name: "Private tool", alias: nil, max_output_tokens: 2000)
+
+    private_bot_block =
+      create_knowledge_block!(owner,
+        name: "Private bot block",
+        content: "Private bot block content"
+      )
 
     private_config_block =
-      create_block!(owner, "Private config block", "Private config block content")
+      create_knowledge_block!(owner,
+        name: "Private config block",
+        content: "Private config block content"
+      )
 
     _ =
       BotToolBinding
@@ -530,10 +580,10 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner, "Tagged shared bot")
-    provider = create_provider!(owner, "Tagged provider")
-    configuration = create_configuration!(owner, provider, "tagged-model")
-    tag = create_configuration_tag!(owner, "shared-tag")
+    bot = create_bot!(owner, name: "Tagged shared bot")
+    provider = create_provider!(owner, name: "Tagged provider")
+    configuration = create_configuration!(owner, provider: provider, model_name: "tagged-model")
+    tag = create_configuration_tag!(owner, name: "shared-tag")
 
     configuration_binding =
       LlmConfigurationTagBinding
@@ -580,11 +630,14 @@ defmodule IntellectualClub.Sharing.AccessTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    bot = create_bot!(owner, "Generation bot")
-    provider = create_provider!(owner, "Demo provider")
-    configuration = create_configuration!(owner, provider, "demo-model")
-    bot_block = create_block!(owner, "Bot prompt", "Bot prompt content")
-    config_block = create_block!(owner, "Config prompt", "Config prompt content")
+    bot = create_bot!(owner, name: "Generation bot")
+    provider = create_provider!(owner, name: "Demo provider")
+    configuration = create_configuration!(owner, provider: provider, model_name: "demo-model")
+    bot_block = create_knowledge_block!(owner, name: "Bot prompt", content: "Bot prompt content")
+
+    config_block =
+      create_knowledge_block!(owner, name: "Config prompt", content: "Config prompt content")
+
     shared_tool = create_fixed_tool!(owner, "Shared search tool", "team_web")
     per_user_tool = create_fixed_tool!(owner, "Per-user search tool", "personal_web")
 
@@ -718,95 +771,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
            end)
   end
 
-  defp create_bot!(actor, name) do
-    Bot
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: name,
-        first_messages: [],
-        max_tool_rounds: 20,
-        context_soft_limit_percent: 80,
-        history_mode: :chat
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_provider!(actor, name) do
-    LlmProvider
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: name,
-        type: :demo,
-        auth_method: :api_key,
-        base_url: nil,
-        api_key: nil
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_configuration!(actor, provider, model_name) do
-    LlmConfiguration
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        provider_id: provider.id,
-        model_name: model_name,
-        note: "cfg",
-        parameters: %{},
-        enabled: true,
-        timeout_seconds: 30,
-        context_length: 2048,
-        supports_cache_control: false,
-        supports_image_input: false
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_configuration_tag!(actor, name) do
-    LlmConfigurationTag
-    |> Ash.Changeset.for_create(:create, %{name: name}, actor: actor)
-    |> Ash.create!()
-  end
-
-  defp create_block!(actor, name, content) do
-    KnowledgeBlock
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: name,
-        version: "v1",
-        content: content
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_tool!(actor, name, alias_value \\ nil) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        type: "mcp-http",
-        name: name,
-        alias: alias_value,
-        config: %{"server_url" => "https://example.com/mcp"},
-        secrets: %{"bearer_token" => "token"},
-        max_output_tokens: 2000
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
   defp create_fixed_tool!(actor, name, alias_value) do
     ToolInstance
     |> Ash.Changeset.for_create(
@@ -819,43 +783,6 @@ defmodule IntellectualClub.Sharing.AccessTest do
         secrets: %{"token" => "token"},
         max_output_tokens: 2000
       },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_tool_function!(actor, tool, name) do
-    ToolFunction
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        tool_instance_id: tool.id,
-        name: name,
-        description: "Search",
-        parameters_schema: %{"type" => "object"},
-        enabled: true,
-        discovered_at: DateTime.utc_now()
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp share_bot!(actor, bot, group) do
-    BotShare
-    |> Ash.Changeset.for_create(
-      :create,
-      %{bot_id: bot.id, user_group_id: group.id},
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp share_configuration!(actor, configuration, group) do
-    LlmConfigurationShare
-    |> Ash.Changeset.for_create(
-      :create,
-      %{llm_configuration_id: configuration.id, user_group_id: group.id},
       actor: actor
     )
     |> Ash.create!()

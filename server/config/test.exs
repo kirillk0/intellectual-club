@@ -40,6 +40,8 @@ config :intellectual_club,
   queue_dispatcher_reconcile: false,
   web_push_dispatch_async: false,
   web_push_generation_delivery_delay_ms: 0,
+  # Production retry and timeout lengths add no coverage, only wall time.
+  generation_persistence_retry_delays_ms: [5, 10, 20],
   token_signing_secret: "test-token-signing-secret",
   openai_oauth_req_options: [
     plug: {Req.Test, IntellectualClub.Llm.Auth.OpenAIOAuth}

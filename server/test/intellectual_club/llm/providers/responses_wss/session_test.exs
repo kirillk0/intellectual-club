@@ -1,5 +1,8 @@
 defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  import IntellectualClub.ProviderStreamHelpers
+  import IntellectualClub.TestHttpServer
 
   alias IntellectualClub.Generation.RequestImages
   alias IntellectualClub.Generation.RuntimeTrace
@@ -142,7 +145,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       ]
     ]
 
-    {base_url, agent} = start_scripted_server!(scripts)
+    {base_url, agent} = start_wss_server!(scripts)
     payload = %{"model" => "gpt-4.1", "input" => [], "stream" => true}
 
     events = run_session_and_capture_events!(base_url, [payload])
@@ -233,7 +236,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       ]
     ]
 
-    {base_url, agent} = start_scripted_server!(scripts)
+    {base_url, agent} = start_wss_server!(scripts)
 
     run_session_and_capture_events!(base_url, [
       %{"model" => "gpt-4.1", "input" => input, "store" => false},
@@ -288,7 +291,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       ]
     ]
 
-    {base_url, agent} = start_scripted_server!(scripts)
+    {base_url, agent} = start_wss_server!(scripts)
 
     events =
       run_session_and_capture_events!(base_url, [
@@ -315,7 +318,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
   end
 
   test "close before response.completed emits retryable transport error" do
-    {base_url, _agent} = start_scripted_server!([:close])
+    {base_url, _agent} = start_wss_server!([:close])
 
     events = run_session_and_capture_events!(base_url, [%{"model" => "gpt-4.1", "input" => []}])
 
@@ -331,7 +334,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
   end
 
   test "close code 1009 before the first response event requests HTTP fallback and locks it" do
-    {base_url, agent} = start_scripted_server!([{:close, 1009, "message too big"}])
+    {base_url, agent} = start_wss_server!([{:close, 1009, "message too big"}])
     parent = self()
     {:ok, session} = Session.start(%{provider_type: "responses"})
     on_exit(fn -> Session.stop(session) end)
@@ -340,8 +343,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       base_url: base_url,
       api_key: "test-key",
       request_payload: %{"model" => "gpt-4.1", "input" => []},
-      timeout_ms: 1_000,
-      connect_timeout_ms: 1_000,
+      timeout_ms: provider_deadline_ms(),
+      connect_timeout_ms: provider_deadline_ms(),
       provider: "responses"
     }
 
@@ -369,8 +372,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
 
   test "HTTP 520 during WebSocket handshake remains retryable during fallback" do
     handler = fn conn, _opts -> Plug.Conn.send_resp(conn, 520, "Unknown upstream error") end
-    port = free_port()
-    start_supervised!({Bandit, plug: handler, scheme: :http, port: port})
+    {_base_url, port} = start_http_server!(handler)
     {:ok, session} = Session.start(%{provider_type: "responses_wss"})
     on_exit(fn -> Session.stop(session) end)
 
@@ -378,8 +380,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       base_url: "ws://127.0.0.1:#{port}",
       api_key: "test-key",
       request_payload: %{"model" => "gpt-4.1", "input" => []},
-      timeout_ms: 1_000,
-      connect_timeout_ms: 1_000,
+      timeout_ms: provider_deadline_ms(),
+      connect_timeout_ms: provider_deadline_ms(),
       provider: "responses_wss"
     }
 
@@ -392,7 +394,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
   end
 
   test "handshake failure before sending requests immediate HTTP fallback" do
-    port = free_port()
+    port = unused_port!()
     parent = self()
     {:ok, session} = Session.start(%{provider_type: "responses"})
     on_exit(fn -> Session.stop(session) end)
@@ -448,7 +450,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
        ], 1009, "message too big"}
     ]
 
-    {base_url, _agent} = start_scripted_server!(scripts)
+    {base_url, _agent} = start_wss_server!(scripts)
     parent = self()
     {:ok, session} = Session.start(%{provider_type: "responses"})
     on_exit(fn -> Session.stop(session) end)
@@ -460,8 +462,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
           base_url: base_url,
           api_key: "test-key",
           request_payload: %{"model" => "gpt-4.1", "input" => []},
-          timeout_ms: 1_000,
-          connect_timeout_ms: 1_000,
+          timeout_ms: provider_deadline_ms(),
+          connect_timeout_ms: provider_deadline_ms(),
           provider: "responses"
         },
         fn event -> send(parent, {:provider_event, event}) end
@@ -523,7 +525,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       ]
     ]
 
-    {base_url, agent} = start_scripted_server!(scripts)
+    {base_url, agent} = start_wss_server!(scripts)
     session = start_supervised!({Session, %{provider_type: "responses_wss"}})
 
     :sys.replace_state(session, fn state ->
@@ -543,8 +545,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
                  api_key: "test-key",
                  request_payload: current,
                  image_mapper: mapper,
-                 timeout_ms: 1_000,
-                 connect_timeout_ms: 1_000
+                 timeout_ms: provider_deadline_ms(),
+                 connect_timeout_ms: provider_deadline_ms()
                },
                fn event -> send(parent, {:provider_event, event}) end
              )
@@ -596,8 +598,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       end
     end
 
-    server = start_supervised!({Bandit, plug: handler, scheme: :http, port: 0})
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    {_base_url, port} = start_http_server!(handler)
     context = Map.put(context, :provider_base_url, "ws://127.0.0.1:#{port}")
     session = start_supervised!({Session, context})
 
@@ -607,8 +608,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
                  context: Map.put(context, :owner_id, 99),
                  request_payload: payload,
                  provider_session: session,
-                 timeout_ms: 1_000,
-                 connect_timeout_ms: 1_000
+                 timeout_ms: provider_deadline_ms(),
+                 connect_timeout_ms: provider_deadline_ms()
                },
                fn event -> send(parent, {:provider_event, event}) end
              )
@@ -641,14 +642,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
             base_url: base_url,
             api_key: "test-key",
             request_payload: payload,
-            timeout_ms: 1_000,
-            connect_timeout_ms: 1_000,
+            timeout_ms: provider_deadline_ms(),
+            connect_timeout_ms: provider_deadline_ms(),
             provider: "responses_wss"
           },
           fn event -> send(parent, {:provider_event, event}) end
         )
 
-      events = drain_provider_events([])
+      events = drain_provider_events()
       refute Enum.any?(events, &match?({:trace, {:set_step_raw_request, _}}, &1))
 
       for {event, meta} <- events, event in [:response_complete, :response_error] do
@@ -659,15 +660,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     end)
   end
 
-  defp drain_provider_events(acc) do
-    receive do
-      {:provider_event, event} -> drain_provider_events([event | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
-  end
-
-  defp start_scripted_server!(scripts) when is_list(scripts) do
+  defp start_wss_server!(scripts) when is_list(scripts) do
     {:ok, agent} =
       start_supervised(
         {Agent,
@@ -680,15 +673,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
          end}
       )
 
-    port = free_port()
-
-    {:ok, _server} =
-      start_supervised(
-        {Bandit, plug: {__MODULE__.ScriptedWssPlug, agent: agent}, scheme: :http, port: port}
-      )
-
-    wait_for_server!(port)
-    {"http://127.0.0.1:#{port}", agent}
+    {base_url, _port} = start_http_server!({__MODULE__.ScriptedWssPlug, agent: agent})
+    {base_url, agent}
   end
 
   defp requests_for(agent) do
@@ -697,33 +683,6 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
 
   defp beta_headers_for(agent) do
     Agent.get(agent, & &1.beta_headers)
-  end
-
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
-    port
-  end
-
-  defp wait_for_server!(port) when is_integer(port) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    do_wait_for_server!(port, deadline)
-  end
-
-  defp do_wait_for_server!(port, deadline) do
-    case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 50) do
-      {:ok, socket} ->
-        :gen_tcp.close(socket)
-
-      {:error, _reason} ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          flunk("WebSocket test server did not start before timeout")
-        else
-          Process.sleep(5)
-          do_wait_for_server!(port, deadline)
-        end
-    end
   end
 
   defmodule ScriptedWssPlug do

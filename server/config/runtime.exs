@@ -73,9 +73,12 @@ runtime_data_dir = trim_env.("DATA_DIR") || Path.expand("../../data", __DIR__)
 
 default_file_storage_path =
   if config_env() == :test do
+    # One directory per OS process: parallel test VMs (e.g. `bin/server-test`
+    # partitions, each with its own database) must not share payload blobs, and
+    # `System.unique_integer/1` alone repeats across freshly started VMs.
     Path.join(
       System.tmp_dir!(),
-      "intellectual_club_test_files_#{System.unique_integer([:positive])}"
+      "intellectual_club_test_files_#{System.pid()}_#{System.unique_integer([:positive])}"
     )
   else
     Path.join(runtime_data_dir, "files")

@@ -5,7 +5,7 @@ defmodule IntellectualClub.Chat.MediaTest do
   alias IntellectualClub.Files
 
   test "chat message projection emits a placeholder and compact image marker" do
-    content = image_content!(image_payload(), "image/png")
+    content = image_content!(png_1x1(), "image/png")
 
     assert [
              %{"type" => "text", "text" => placeholder},
@@ -22,7 +22,7 @@ defmodule IntellectualClub.Chat.MediaTest do
   end
 
   test "responses projection emits a placeholder and compact image marker" do
-    content = image_content!(image_payload(), "image/png")
+    content = image_content!(png_1x1(), "image/png")
 
     assert [
              %{"type" => "input_text", "text" => placeholder},
@@ -40,7 +40,7 @@ defmodule IntellectualClub.Chat.MediaTest do
 
   test "projection defers image validation and resizing until a request step exists" do
     invalid = image_content!("<html><body>404 Not Found</body></html>", "image/png")
-    oversized = image_content!(oversized_png_payload(), "image/png")
+    oversized = image_content!(oversized_png(), "image/png")
 
     for content <- [invalid, oversized] do
       assert [
@@ -135,15 +135,5 @@ defmodule IntellectualClub.Chat.MediaTest do
 
     assert {^expected_mime_type, ^expected_width, ^expected_height, _variant} =
              ExImageInfo.info(payload)
-  end
-
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
-  end
-
-  defp oversized_png_payload do
-    IntellectualClub.ImageFixtures.png(3_000, 1_500)
   end
 end

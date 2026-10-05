@@ -1,11 +1,12 @@
 defmodule IntellectualClub.Tools.Drivers.OutletTest do
   use IntellectualClub.DataCase, async: false
 
+  import IntellectualClub.OutletRunnerHelpers
+
   alias IntellectualClub.Outlets.Runtime
   alias IntellectualClub.Tools.Drivers.Outlet
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
-  alias IntellectualClub.Tools.ToolInstance
 
   setup do
     Runtime.reset!()
@@ -17,12 +18,11 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
         type: "outlet",
         name: "Shell2 outlet",
-        config: %{},
         secrets: %{"token" => "runner-token"}
-      })
+      )
 
     runner_payload = %{
       "runner_id" => "runner-discovery",
@@ -114,8 +114,10 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: tool_owner} = user_fixture()
     %{user: executing_user} = user_fixture()
 
-    tool_instance = create_tool_instance!(tool_owner, %{name: "Shared routing outlet"})
-    runner = connect_runner!(tool_instance, "routing-runner", "routing-session")
+    tool_instance =
+      create_tool_instance!(tool_owner, type: "outlet", name: "Shared routing outlet")
+
+    runner = connect_outlet_runner!(tool_instance, "routing-runner", "routing-session")
     supervisor = start_supervised!({Task.Supervisor, []})
 
     context = %ExecutionContext{
@@ -147,8 +149,13 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
 
   test "legacy execution contexts do not guess a routing root" do
     %{user: actor} = user_fixture()
-    tool_instance = create_tool_instance!(actor, %{name: "Legacy routing outlet"})
-    runner = connect_runner!(tool_instance, "legacy-routing-runner", "legacy-routing-session")
+
+    tool_instance =
+      create_tool_instance!(actor, type: "outlet", name: "Legacy routing outlet")
+
+    runner =
+      connect_outlet_runner!(tool_instance, "legacy-routing-runner", "legacy-routing-session")
+
     supervisor = start_supervised!({Task.Supervisor, []})
 
     execute =
@@ -204,13 +211,14 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        type: "outlet",
         name: "Attachment outlet",
         secrets: %{"token" => "attachment-token"}
-      })
+      )
 
     runner_payload =
-      connect_runner!(tool_instance, "attachment-runner", "attachment-session")
+      connect_outlet_runner!(tool_instance, "attachment-runner", "attachment-session")
 
     execute = Task.async(fn -> Outlet.execute(tool_instance, "read_image", %{}) end)
 
@@ -288,12 +296,11 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
         type: "outlet",
         name: "Background control outlet",
-        config: %{},
         secrets: %{"token" => "background-control-token"}
-      })
+      )
 
     runner_payload = %{
       "runner_id" => "runner-background-control",
@@ -355,12 +362,13 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        type: "outlet",
         name: "Session-bound control outlet",
         secrets: %{"token" => "session-bound-control-token"}
-      })
+      )
 
-    original = connect_runner!(tool_instance, "session-bound-runner", "session-original")
+    original = connect_outlet_runner!(tool_instance, "session-bound-runner", "session-original")
 
     control =
       Task.async(fn ->
@@ -379,7 +387,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
         )
       end)
 
-    wait_for_pending_operations(tool_instance.id, ["background_start"])
+    wait_for_pending_operations!(tool_instance.id, ["background_start"])
 
     replacement = %{
       "runner_id" => original["runner_id"],
@@ -404,21 +412,23 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        type: "outlet",
         name: "Control lane outlet",
         config: %{"max_concurrency" => 1},
         secrets: %{"token" => "control-lane-token"}
-      })
+      )
 
-    runner_payload = connect_runner!(tool_instance, "control-lane-runner", "control-lane-session")
+    runner_payload =
+      connect_outlet_runner!(tool_instance, "control-lane-runner", "control-lane-session")
 
     execute_waiter = enqueue_execute(tool_instance, "first")
-    wait_for_pending_operations(tool_instance.id, ["execute"])
+    wait_for_pending_operations!(tool_instance.id, ["execute"])
 
     status_waiter = enqueue_control(tool_instance, "background_status", "status-task")
     cancel_waiter = enqueue_control(tool_instance, "background_cancel", "cancel-task")
 
-    wait_for_pending_operations(tool_instance.id, [
+    wait_for_pending_operations!(tool_instance.id, [
       "execute",
       "background_status",
       "background_cancel"
@@ -453,14 +463,15 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        type: "outlet",
         name: "Legacy control outlet",
         secrets: %{"token" => "legacy-control-token"}
-      })
+      )
 
-    runner_payload = connect_runner!(tool_instance, "legacy-runner", "legacy-session")
+    runner_payload = connect_outlet_runner!(tool_instance, "legacy-runner", "legacy-session")
     control_waiter = enqueue_control(tool_instance, "background_status", "legacy-status-task")
-    wait_for_pending_operations(tool_instance.id, ["background_status"])
+    wait_for_pending_operations!(tool_instance.id, ["background_status"])
 
     assert {:ok, %{status: "idle", tasks: []}} =
              Runtime.poll(tool_instance, Map.put(runner_payload, "capacity", 1))
@@ -480,17 +491,22 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     %{user: actor} = user_fixture()
 
     tool_instance =
-      create_tool_instance!(actor, %{
+      create_tool_instance!(actor,
+        type: "outlet",
         name: "Separate capacity outlet",
         config: %{"max_concurrency" => 1},
         secrets: %{"token" => "separate-capacity-token"}
-      })
+      )
 
     runner_payload =
-      connect_runner!(tool_instance, "separate-capacity-runner", "separate-capacity-session")
+      connect_outlet_runner!(
+        tool_instance,
+        "separate-capacity-runner",
+        "separate-capacity-session"
+      )
 
     first_execute_waiter = enqueue_execute(tool_instance, "first")
-    wait_for_pending_operations(tool_instance.id, ["execute"])
+    wait_for_pending_operations!(tool_instance.id, ["execute"])
 
     assert {:ok, %{tasks: [first_execute]}} =
              Runtime.poll(
@@ -499,7 +515,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
              )
 
     control_waiter = enqueue_control(tool_instance, "background_status", "separate-status-task")
-    wait_for_pending_operations(tool_instance.id, ["background_status"])
+    wait_for_pending_operations!(tool_instance.id, ["background_status"])
 
     assert {:ok, %{tasks: [control_task]}} =
              Runtime.poll(
@@ -514,7 +530,7 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     assert {:ok, _result} = Task.await(first_execute_waiter, 5_000)
 
     second_execute_waiter = enqueue_execute(tool_instance, "second")
-    wait_for_pending_operations(tool_instance.id, ["execute"])
+    wait_for_pending_operations!(tool_instance.id, ["execute"])
 
     assert {:ok, %{tasks: [second_execute]}} =
              Runtime.poll(
@@ -552,22 +568,6 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
     end
   end
 
-  defp connect_runner!(tool_instance, runner_id, runner_session_id) do
-    runner_payload = %{
-      "runner_id" => runner_id,
-      "runner_session_id" => runner_session_id,
-      "capacity" => 1,
-      "max_wait_seconds" => 0
-    }
-
-    assert {:ok, %{status: "ok", tasks: [discovery]}} =
-             Runtime.poll(tool_instance, runner_payload)
-
-    assert discovery.function == "outlet.list_tools"
-    complete_task!(tool_instance, runner_payload, discovery)
-    runner_payload
-  end
-
   defp enqueue_execute(tool_instance, label) do
     Task.async(fn ->
       Runtime.enqueue_and_wait(tool_instance, "run_command", %{
@@ -591,67 +591,14 @@ defmodule IntellectualClub.Tools.Drivers.OutletTest do
   end
 
   defp complete_task!(tool_instance, runner_payload, task) do
-    assert :ok =
-             Runtime.complete(tool_instance, %{
-               "call_id" => task.call_id,
-               "runner_id" => runner_payload["runner_id"],
-               "runner_session_id" => runner_payload["runner_session_id"],
-               "status" => "done",
-               "result_text" => "ok",
-               "result_raw" => %{
-                 "background_task_id" => Map.get(task, :background_task_id),
-                 "status" => "running",
-                 "progress" => [],
-                 "next_cursor" => "0"
-               }
-             })
-  end
-
-  defp wait_for_pending_operations(tool_instance_id, expected, attempts \\ 100)
-
-  defp wait_for_pending_operations(_tool_instance_id, expected, 0) do
-    flunk("Timed out waiting for pending outlet operations: #{inspect(expected)}")
-  end
-
-  defp wait_for_pending_operations(tool_instance_id, expected, attempts) do
-    operations =
-      Runtime
-      |> :sys.get_state()
-      |> get_in([:instances, tool_instance_id, :pending])
-      |> List.wrap()
-      |> Enum.map(&Map.get(&1, :operation, "execute"))
-
-    available = Enum.frequencies(operations)
-
-    enough_pending? =
-      expected
-      |> Enum.frequencies()
-      |> Enum.all?(fn {operation, count} -> Map.get(available, operation, 0) >= count end)
-
-    if enough_pending? do
-      :ok
-    else
-      Process.sleep(10)
-      wait_for_pending_operations(tool_instance_id, expected, attempts - 1)
-    end
-  end
-
-  defp create_tool_instance!(actor, attrs) when is_map(attrs) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      Map.merge(
-        %{
-          type: "outlet",
-          name: "Outlet",
-          config: %{},
-          secrets: %{},
-          max_output_tokens: 20_000
-        },
-        attrs
-      ),
-      actor: actor
-    )
-    |> Ash.create!()
+    complete_outlet_call!(tool_instance, runner_payload, task, %{
+      "result_text" => "ok",
+      "result_raw" => %{
+        "background_task_id" => Map.get(task, :background_task_id),
+        "status" => "running",
+        "progress" => [],
+        "next_cursor" => "0"
+      }
+    })
   end
 end

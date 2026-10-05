@@ -1,15 +1,10 @@
 defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
   use IntellectualClub.DataCase, async: false
-
-  alias IntellectualClub.Bots.Bot
-  alias IntellectualClub.Bots.BotShare
   alias IntellectualClub.Chat.ContentFiles
   alias IntellectualClub.Files
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Knowledge.KnowledgeBlockFile
   alias IntellectualClub.Knowledge.KnowledgeBlockTag
-  alias IntellectualClub.Knowledge.KnowledgeTag
-  alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.BindingResolver
   alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary
   alias IntellectualClub.Tools.Executor
@@ -19,12 +14,16 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
   test "lists, reads, and searches owner blocks from a configured tag subtree" do
     %{user: owner} = user_fixture()
 
-    root = create_tag!(owner, "Library")
-    child = create_tag!(owner, "Child", root.id)
-    other = create_tag!(owner, "Other")
+    root = create_knowledge_tag!(owner, name: "Library")
+    child = create_knowledge_tag!(owner, name: "Child", parent_id: root.id)
+    other = create_knowledge_tag!(owner, name: "Other")
 
     root_block =
-      create_block!(owner, "Root Block", "v1", "Visible root text\n//// hidden root note")
+      create_knowledge_block!(owner,
+        name: "Root Block",
+        version: "v1",
+        content: "Visible root text\n//// hidden root note"
+      )
 
     attached_file =
       create_attachment!(owner, root_block, "root.txt", "text/plain", "root file payload")
@@ -39,10 +38,29 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
         false
       )
 
-    child_block = create_block!(owner, "Child Block", "v2", "Visible child text")
-    other_block = create_block!(owner, "Other Block", "v3", "Other text")
-    duplicate_a = create_block!(owner, "Duplicate", "a", "First duplicate text")
-    duplicate_b = create_block!(owner, "Duplicate", "b", "Second duplicate text")
+    child_block =
+      create_knowledge_block!(owner,
+        name: "Child Block",
+        version: "v2",
+        content: "Visible child text"
+      )
+
+    other_block =
+      create_knowledge_block!(owner, name: "Other Block", version: "v3", content: "Other text")
+
+    duplicate_a =
+      create_knowledge_block!(owner,
+        name: "Duplicate",
+        version: "a",
+        content: "First duplicate text"
+      )
+
+    duplicate_b =
+      create_knowledge_block!(owner,
+        name: "Duplicate",
+        version: "b",
+        content: "Second duplicate text"
+      )
 
     attach_tag!(owner, root_block, root)
     attach_tag!(owner, child_block, child)
@@ -122,7 +140,7 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
   test "lists parsed SKILL.md descriptions in tool output and prompt context" do
     %{user: owner} = user_fixture()
 
-    tag = create_tag!(owner, "Skill Library")
+    tag = create_knowledge_tag!(owner, name: "Skill Library")
 
     skill_description =
       "Use when the user asks for research: gather sources and summarize."
@@ -138,7 +156,13 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     Read sources and prepare a concise answer.
     """
 
-    block = create_block!(owner, "Research Skill", "v1", skill_content)
+    block =
+      create_knowledge_block!(owner,
+        name: "Research Skill",
+        version: "v1",
+        content: skill_content
+      )
+
     attach_tag!(owner, block, tag)
 
     tool = create_library_tool!(owner, tag.id)
@@ -169,18 +193,28 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
   test "search distributes limited snippets across matching blocks before filling extras" do
     %{user: owner} = user_fixture()
 
-    tag = create_tag!(owner, "Distributed Search Library")
+    tag = create_knowledge_tag!(owner, name: "Distributed Search Library")
 
     alpha_block =
-      create_block!(
-        owner,
-        "Alpha Block",
-        "v1",
-        "needle alpha first. #{String.duplicate("padding ", 16)} needle alpha second."
+      create_knowledge_block!(owner,
+        name: "Alpha Block",
+        version: "v1",
+        content: "needle alpha first. #{String.duplicate("padding ", 16)} needle alpha second."
       )
 
-    beta_block = create_block!(owner, "Beta Block", "v1", "needle beta only.")
-    gamma_block = create_block!(owner, "Gamma Block", "v1", "needle gamma only.")
+    beta_block =
+      create_knowledge_block!(owner,
+        name: "Beta Block",
+        version: "v1",
+        content: "needle beta only."
+      )
+
+    gamma_block =
+      create_knowledge_block!(owner,
+        name: "Gamma Block",
+        version: "v1",
+        content: "needle gamma only."
+      )
 
     attach_tag!(owner, alpha_block, tag)
     attach_tag!(owner, beta_block, tag)
@@ -220,8 +254,14 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    tag = create_tag!(owner, "Shared Library")
-    block = create_block!(owner, "Shared Block", "v1", "Owner-only library text")
+    tag = create_knowledge_tag!(owner, name: "Shared Library")
+
+    block =
+      create_knowledge_block!(owner,
+        name: "Shared Block",
+        version: "v1",
+        content: "Owner-only library text"
+      )
 
     attached_file =
       create_attachment!(owner, block, "shared.txt", "text/plain", "shared file payload")
@@ -229,8 +269,8 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     attach_tag!(owner, block, tag)
 
     tool = create_library_tool!(owner, tag.id)
-    bot = create_bot!(owner, "Shared library bot")
-    bind_tool!(owner, bot, tool)
+    bot = create_bot!(owner, max_tool_rounds: 10, name: "Shared library bot")
+    create_bot_tool_binding!(owner, bot, tool)
     share_bot!(owner, bot, group)
 
     assert {:error, _error} = Ash.get(KnowledgeBlock, block.id, actor: recipient)
@@ -271,7 +311,7 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     %{user: recipient} = user_fixture()
     %{group: group} = user_group_fixture(%{users: [owner, recipient]})
 
-    tag = create_tag!(owner, "Source Library")
+    tag = create_knowledge_tag!(owner, name: "Source Library")
     tool = create_library_tool!(owner, tag.id)
 
     owner_copy =
@@ -281,8 +321,8 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
 
     assert owner_copy.config["knowledge_tag_id"] == tag.id
 
-    bot = create_bot!(owner, "Shared duplicate bot")
-    bind_tool!(owner, bot, tool)
+    bot = create_bot!(owner, max_tool_rounds: 10, name: "Shared duplicate bot")
+    create_bot_tool_binding!(owner, bot, tool)
     share_bot!(owner, bot, group)
 
     recipient_copy =
@@ -298,7 +338,7 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
     %{user: owner} = user_fixture()
     %{user: other_owner} = user_fixture()
 
-    foreign_tag = create_tag!(other_owner, "Foreign Library")
+    foreign_tag = create_knowledge_tag!(other_owner, name: "Foreign Library")
 
     assert {:error, error} =
              ToolInstance
@@ -316,22 +356,6 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
              |> Ash.create()
 
     assert Exception.message(error) =~ "Knowledge tag is not available."
-  end
-
-  defp create_tag!(actor, name, parent_id \\ nil) do
-    KnowledgeTag
-    |> Ash.Changeset.for_create(:create, %{name: name, parent_id: parent_id}, actor: actor)
-    |> Ash.create!()
-  end
-
-  defp create_block!(actor, name, version, content) do
-    KnowledgeBlock
-    |> Ash.Changeset.for_create(
-      :create,
-      %{name: name, version: version, content: content},
-      actor: actor
-    )
-    |> Ash.create!()
   end
 
   defp attach_tag!(actor, block, tag) do
@@ -373,44 +397,6 @@ defmodule IntellectualClub.Tools.NativeKnowledgeLibraryTest do
       },
       actor: actor
     )
-    |> Ash.create!()
-  end
-
-  defp create_bot!(actor, name) do
-    Bot
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: name,
-        first_messages: [],
-        max_tool_rounds: 10,
-        context_soft_limit_percent: 80,
-        history_mode: :chat
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp bind_tool!(actor, bot, tool) do
-    BotToolBinding
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        bot_id: bot.id,
-        tool_instance_id: tool.id,
-        sharing_mode: :shared,
-        enabled: true,
-        sequence: 0
-      },
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp share_bot!(actor, bot, group) do
-    BotShare
-    |> Ash.Changeset.for_create(:create, %{bot_id: bot.id, user_group_id: group.id}, actor: actor)
     |> Ash.create!()
   end
 end

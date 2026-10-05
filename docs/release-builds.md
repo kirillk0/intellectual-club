@@ -15,7 +15,9 @@ artifact. Elixir dependencies, native libraries, Erlang runtimes, and Rust
 binaries remain platform-specific builds with separate caches. The platform
 builds can run in parallel after their prerequisites complete.
 
-Backend tests run once on Linux and once on Windows. Windows also runs Rust
+Backend tests run once on Linux and once on Windows, both including the
+`:whitebox` tests that local runs skip by default. Linux runs them through
+`bin/server-test --all` in parallel partitions. Windows also runs Rust
 tests and portable application smoke tests. macOS runs its bundle smoke test.
 The desktop GitHub release waits for both desktop builds and the Linux backend
 tests; Docker builds wait for Linux backend tests. Publication is disabled for

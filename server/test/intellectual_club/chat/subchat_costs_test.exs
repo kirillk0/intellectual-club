@@ -1,15 +1,11 @@
 defmodule IntellectualClub.Chat.SubchatCostsTest do
   use IntellectualClub.DataCase, async: false
-
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.SubchatCosts
   alias IntellectualClub.Chat.SubchatCostCache
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmProvider
 
   setup do
     if is_nil(Process.whereis(SubchatCostCache)), do: start_supervised!(SubchatCostCache)
@@ -19,64 +15,73 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
   test "aggregates direct subchat and descendant usage by source message" do
     %{user: actor} = user_fixture()
     provider = create_provider!(actor)
-    configuration = create_configuration!(actor, provider)
-    root = create_chat!(actor, configuration)
+
+    configuration =
+      create_configuration!(actor, provider: provider, model_name: "subchat-cost-model")
+
+    root = create_chat!(actor, llm_configuration_id: configuration.id)
 
     {:ok, source_one} = Threads.add_message_to_end(root, :user, "First", actor: actor)
     {:ok, source_two} = Threads.add_message_to_end(root, :assistant, "Second", actor: actor)
     {:ok, source_zero} = Threads.add_message_to_end(root, :user, "Zero", actor: actor)
 
     fork =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: root.id,
         parent_message_id: source_one.id,
         parent_relation_kind: :fork,
         subagent: true
-      })
+      )
 
     handoff =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: fork.id,
         parent_message_id: persist_cost!(fork, configuration, actor, 0.01).id,
         parent_relation_kind: :handoff,
         subagent: true
-      })
+      )
 
     nested_spawn =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: handoff.id,
         parent_message_id: persist_cost!(handoff, configuration, actor, 0.02).id,
         parent_relation_kind: :spawn,
         subagent: true
-      })
+      )
 
     _nested_message = persist_cost!(nested_spawn, configuration, actor, 0.03)
 
     direct_spawn =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: root.id,
         parent_message_id: source_two.id,
         parent_relation_kind: :spawn,
         subagent: true
-      })
+      )
 
     _direct_spawn_message = persist_cost!(direct_spawn, configuration, actor, 0.04)
 
     zero_spawn =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: root.id,
         parent_message_id: source_zero.id,
         parent_relation_kind: :spawn,
         subagent: true
-      })
+      )
 
     direct_handoff =
-      create_chat!(actor, configuration, %{
+      create_chat!(actor,
+        llm_configuration_id: configuration.id,
         parent_chat_id: root.id,
         parent_message_id: source_one.id,
         parent_relation_kind: :handoff,
         subagent: false
-      })
+      )
 
     _excluded_message = persist_cost!(direct_handoff, configuration, actor, 0.5)
 
@@ -130,49 +135,5 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
 
     :ok = Persistence.persist_completed!(assistant_message.id, runtime_step)
     assistant_message
-  end
-
-  defp create_chat!(actor, configuration, attrs \\ %{}) do
-    attrs = Map.merge(%{note: "", llm_configuration_id: configuration.id}, attrs)
-
-    Chat
-    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_provider!(actor) do
-    LlmProvider
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        name: "Subchat cost provider",
-        type: :demo,
-        auth_method: :api_key,
-        base_url: nil,
-        api_key: nil
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp create_configuration!(actor, provider) do
-    LlmConfiguration
-    |> Ash.Changeset.for_create(
-      :create,
-      %{
-        provider_id: provider.id,
-        model_name: "subchat-cost-model",
-        note: "cfg",
-        parameters: %{},
-        enabled: true,
-        timeout_seconds: 30,
-        context_length: 2048,
-        supports_cache_control: false,
-        supports_image_input: false
-      },
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
   end
 end

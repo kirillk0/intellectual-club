@@ -22,13 +22,13 @@ defmodule IntellectualClub.Chat.SubchatCostCacheTest do
 
     zero = fn keys -> Map.new(keys, &{&1, 0.0}) end
 
-    assert %{^reader => 0.0} =
+    assert %{^reader => +0.0} =
              SubchatCostCache.fetch_many(%{reader => :phase_one}, zero, cache: cache)
 
     assert %{^owner => nil} =
              SubchatCostCache.fetch_many(%{owner => :phase_one}, never, cache: cache)
 
-    assert %{^owner => 0.0} =
+    assert %{^owner => +0.0} =
              SubchatCostCache.fetch_many(%{owner => :phase_two}, zero, cache: cache)
   end
 

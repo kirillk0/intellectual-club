@@ -1,7 +1,5 @@
 defmodule IntellectualClub.Chat.QueuedMessagesTest do
   use IntellectualClub.DataCase, async: false
-
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessages
@@ -207,11 +205,5 @@ defmodule IntellectualClub.Chat.QueuedMessagesTest do
       assert {:error, %Ash.Error.Invalid{}} =
                Ash.get(QueuedMessage, queued_message.id, authorize?: false)
     end
-  end
-
-  defp create_chat!(actor) do
-    Chat
-    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 end

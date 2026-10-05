@@ -1,7 +1,5 @@
 defmodule IntellectualClub.Chat.MessageSearchSyncTest do
   use IntellectualClub.DataCase, async: false
-
-  alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageStep
@@ -13,7 +11,7 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
   test "message search tracks text updates and kind changes" do
     %{user: actor} = user_fixture()
 
-    chat = create_chat!(actor, "FTS sync chat")
+    chat = create_chat!(actor)
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Alpha beta", actor: actor)
     content = load_content_by_message!(message.id, actor)
 
@@ -44,7 +42,7 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
   test "content item type follows its parent item type" do
     %{user: actor} = user_fixture()
 
-    chat = create_chat!(actor, "Item type sync chat")
+    chat = create_chat!(actor)
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Searchable text", actor: actor)
     item = load_item_by_message!(message.id, actor)
 
@@ -62,7 +60,7 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
   test "message search excludes deleted text contents" do
     %{user: actor} = user_fixture()
 
-    chat = create_chat!(actor, "FTS delete chat")
+    chat = create_chat!(actor)
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Delete me", actor: actor)
     content = load_content_by_message!(message.id, actor)
 
@@ -73,12 +71,6 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
     Ash.destroy!(content, actor: actor)
 
     assert active_hit_ids(Search.search_messages_in_chat(chat.id, "delete", actor)) == []
-  end
-
-  defp create_chat!(actor, _title) do
-    Chat
-    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 
   defp load_content_by_message!(message_id, actor) do

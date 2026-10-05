@@ -1,7 +1,7 @@
-Code.require_file("../image_mapper_dummy_test.exs", __DIR__)
-
 defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
   use IntellectualClub.DataCase, async: false
+
+  import IntellectualClub.ProviderStreamHelpers, only: [provider_deadline_ms: 0]
 
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, ChatMessageStepRequestFile}
   alias IntellectualClub.Files
@@ -9,7 +9,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.PreparedRequest
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
-  alias IntellectualClub.Llm.Providers.ImageMapperDummy
+  alias IntellectualClub.TestSupport.LlmProviders.ImageMapperDummy
   alias IntellectualClub.Llm.Providers.GoogleInteractions
   alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
@@ -162,14 +162,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
         end
       end
 
-      server =
-        start_supervised!(
-          Supervisor.child_spec({Bandit, plug: handler, scheme: :http, port: 0},
-            id: {Bandit, adapter}
-          )
-        )
-
-      {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+      {_base_url, port} = start_http_server!(handler)
       context = Map.put(context, :provider_base_url, "http://127.0.0.1:#{port}")
       session = if adapter == ResponsesWss, do: start_supervised!({Session, context})
 
@@ -184,7 +177,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
                    image_cache_update: fn updated ->
                      send(parent, {:updated_cache, adapter, updated})
                    end,
-                   timeout_ms: 1_000
+                   timeout_ms: provider_deadline_ms()
                  },
                  fn event -> send(parent, {:provider_event, event}) end
                )
@@ -304,14 +297,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
         end
       end
 
-      server =
-        start_supervised!(
-          Supervisor.child_spec({Bandit, plug: handler, scheme: :http, port: 0},
-            id: {Bandit, adapter}
-          )
-        )
-
-      {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+      {_base_url, port} = start_http_server!(handler)
 
       context =
         Map.merge(context, %{
@@ -338,8 +324,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
                        provider_session: session,
                        image_cache: %{},
                        image_cache_update: on_cache,
-                       timeout_ms: 1_000,
-                       connect_timeout_ms: 1_000
+                       timeout_ms: provider_deadline_ms(),
+                       connect_timeout_ms: provider_deadline_ms()
                      },
                      fn event -> send(parent, {:provider_event, event}) end
                    )

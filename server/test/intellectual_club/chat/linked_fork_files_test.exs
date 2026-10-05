@@ -1,15 +1,7 @@
 defmodule IntellectualClub.Chat.LinkedForkFilesTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat.{
-    Chat,
-    ChatMessage,
-    ChatMessageContent,
-    ChatMessageItem,
-    ChatMessageStep,
-    ChatMessageStepRequestFile,
-    ContentFiles
-  }
+  alias IntellectualClub.Chat.{ChatMessage, ChatMessageStepRequestFile, ContentFiles}
 
   alias IntellectualClub.Files
   alias IntellectualClub.Generation.Persistence
@@ -22,10 +14,12 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6lq8AAAAASUVORK5CYII="
        )
   @invalid_fallback "[Image omitted: attached file could not be validated as an image.]"
+  @task "Read only the inherited files."
 
   test "an empty linked fork reads only files in its inherited provider-response prefix" do
     fixture = fork_fixture!()
     context = context(fixture.child, fixture.actor)
+    %{user: other_actor} = user_fixture()
 
     assert ContentFiles.handoff_chat_scope_ids(fixture.child.id, fixture.actor.id) == [
              fixture.child.id
@@ -38,6 +32,12 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
     assert_readable(context, fixture.allowed)
     assert_denied(context, fixture.denied)
+
+    # Another owner reads neither the inherited nor the fork's own files.
+    own =
+      attach!(fixture.actor, followup_step!(fixture.actor, fixture.child), :artifact, 1, "own")
+
+    assert_denied(context(fixture.child, other_actor), fixture.allowed ++ [own])
   end
 
   test "nested forks retain each inherited prefix without admitting either parent's future" do
@@ -61,10 +61,16 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     fixture = fork_fixture!()
 
     handoff =
-      chat!(fixture.actor, %{parent_chat_id: fixture.child.id, parent_relation_kind: :handoff})
+      create_empty_chat!(fixture.actor, %{
+        parent_chat_id: fixture.child.id,
+        parent_relation_kind: :handoff
+      })
 
     nested_handoff =
-      chat!(fixture.actor, %{parent_chat_id: handoff.id, parent_relation_kind: :handoff})
+      create_empty_chat!(fixture.actor, %{
+        parent_chat_id: handoff.id,
+        parent_relation_kind: :handoff
+      })
 
     own_step = followup_step!(fixture.actor, fixture.child)
     own = attach!(fixture.actor, own_step, :artifact, 1, "own-fork-artifact")
@@ -80,7 +86,10 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
     # Handoff itself still grants access to its whole owned source chat.
     ordinary_handoff =
-      chat!(fixture.actor, %{parent_chat_id: fixture.parent.id, parent_relation_kind: :handoff})
+      create_empty_chat!(fixture.actor, %{
+        parent_chat_id: fixture.parent.id,
+        parent_relation_kind: :handoff
+      })
 
     assert_readable(context(ordinary_handoff, fixture.actor), [fixture.future, fixture.result])
   end
@@ -123,17 +132,13 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     assert wire_image["image_url"] == "data:image/png;base64," <> Base.encode64(@png)
 
     # These older canonical images were not pinned on the fork's source step.
-    next_step = step!(fixture.actor, first_step.chat_message_id, first_step.sequence + 1)
+    next_step =
+      create_step!(fixture.actor, first_step.chat_message_id,
+        sequence: first_step.sequence + 1,
+        response_final: true
+      )
+
     assert_materialized(next_step, other_images, fixture.denied)
-  end
-
-  test "another owner cannot read a linked fork's inherited or own files" do
-    fixture = fork_fixture!()
-    %{user: other_actor} = user_fixture()
-    own_step = followup_step!(fixture.actor, fixture.child)
-    own = attach!(fixture.actor, own_step, :artifact, 1, "owned-local-file")
-
-    assert_denied(context(fixture.child, other_actor), fixture.allowed ++ [own])
   end
 
   test "an unavailable fork projection fails closed instead of opening its parent chat" do
@@ -149,8 +154,10 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
   test "handoff ancestry traversal terminates on a cycle" do
     %{user: actor} = user_fixture()
-    first = chat!(actor)
-    second = chat!(actor, %{parent_chat_id: first.id, parent_relation_kind: :handoff})
+    first = create_empty_chat!(actor)
+
+    second =
+      create_empty_chat!(actor, %{parent_chat_id: first.id, parent_relation_kind: :handoff})
 
     first
     |> Ash.Changeset.for_update(
@@ -168,15 +175,15 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
   defp fork_fixture!(opts \\ []) do
     %{user: actor} = user_fixture()
-    parent = chat!(actor)
-    input_message = message!(actor, parent, %{role: :user})
-    input_step = step!(actor, input_message.id, 1)
+    parent = create_empty_chat!(actor)
+    input_message = create_message!(actor, parent, %{role: :user})
+    input_step = create_step!(actor, input_message, response_final: true)
     input = attach!(actor, input_step, :input, 1, "prefix-input")
-    sibling_message = message!(actor, parent, %{parent_id: input_message.id})
-    sibling_step = step!(actor, sibling_message.id, 1)
+    sibling_message = create_message!(actor, parent, %{parent_id: input_message.id})
+    sibling_step = create_step!(actor, sibling_message, response_final: true)
     sibling = attach!(actor, sibling_step, :artifact, 1, "sibling-message")
-    message = message!(actor, parent, %{parent_id: input_message.id})
-    earlier_step = step!(actor, message.id, 1)
+    message = create_message!(actor, parent, %{parent_id: input_message.id})
+    earlier_step = create_step!(actor, message, response_final: true)
     earlier_call = call!(actor, earlier_step, 1)
 
     earlier_result =
@@ -199,7 +206,7 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
         |> Ash.Changeset.for_update(:update, %{status: :done, response_final: true}, actor: actor)
         |> Ash.update!(actor: actor)
       else
-        step!(actor, message.id, 2)
+        create_step!(actor, message, sequence: 2, response_final: true)
       end
 
     before_response = attach!(actor, boundary, :steering, 1, "before-response")
@@ -222,10 +229,10 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     artifact = attach!(actor, boundary, :artifact, 7, "boundary-artifact")
     after_response = attach!(actor, boundary, :steering, 8, "after-response")
     placement!(actor, after_response.item, "after_response")
-    future_step = step!(actor, message.id, 3)
+    future_step = create_step!(actor, message, sequence: 3, response_final: true)
     future = attach!(actor, future_step, :artifact, 1, "future-step")
-    later_message = message!(actor, parent, %{role: :user, parent_id: message.id})
-    later_step = step!(actor, later_message.id, 1)
+    later_message = create_message!(actor, parent, %{role: :user, parent_id: message.id})
+    later_step = create_step!(actor, later_message, response_final: true)
     later = attach!(actor, later_step, :input, 1, "future-message")
     sibling_chat = fork!(actor, parent, boundary, sibling_call)
     sibling_local_step = followup_step!(actor, sibling_chat)
@@ -255,14 +262,14 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
   defp nested_fork!(fixture) do
     actor = fixture.actor
-    input_message = message!(actor, fixture.child, %{role: :user})
-    input_step = step!(actor, input_message.id, 1)
+    input_message = create_message!(actor, fixture.child, %{role: :user})
+    input_step = create_step!(actor, input_message, response_final: true)
     input = attach!(actor, input_step, :input, 1, "nested-prefix")
-    message = message!(actor, fixture.child, %{parent_id: input_message.id})
-    boundary = step!(actor, message.id, 1)
+    message = create_message!(actor, fixture.child, %{parent_id: input_message.id})
+    boundary = create_step!(actor, message, response_final: true)
     call = call!(actor, boundary, 1)
     chat = fork!(actor, fixture.child, boundary, call)
-    future_step = step!(actor, message.id, 2)
+    future_step = create_step!(actor, message, sequence: 2, response_final: true)
     future = attach!(actor, future_step, :artifact, 1, "nested-future")
     %{chat: chat, input: input, future: future}
   end
@@ -336,76 +343,26 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     %ExecutionContext{owner_id: actor.id, chat_id: chat.id, available_file_external_ids: []}
   end
 
-  defp chat!(actor, attrs \\ %{}) do
-    create!(Chat, :create_empty, attrs, actor)
-  end
-
   defp fork!(actor, parent, boundary, call) do
-    Chat
-    |> Ash.Changeset.for_create(
-      :create_empty,
-      %{
-        parent_chat_id: parent.id,
-        parent_message_id: boundary.chat_message_id,
-        parent_tool_call_item_id: call.id,
-        parent_relation_kind: :fork,
-        subagent: true
-      },
-      actor: actor
-    )
-    |> Ash.Changeset.force_change_attributes(%{
-      fork_source_step_id: boundary.id,
-      fork_task: "Read only the inherited files."
-    })
-    |> Ash.create!(actor: actor)
-  end
-
-  defp message!(actor, chat, attrs \\ %{}) do
-    create!(
-      ChatMessage,
-      :add_message,
-      Map.merge(%{chat_id: chat.id, role: :assistant, status: :done}, attrs),
-      actor
-    )
-  end
-
-  defp step!(actor, message_id, sequence) do
-    create!(
-      ChatMessageStep,
-      :create,
-      %{chat_message_id: message_id, sequence: sequence, status: :done, response_final: true},
-      actor
-    )
+    anchor = %{chat: parent, message: %{id: boundary.chat_message_id}, step: boundary, item: call}
+    create_linked_chat!(actor, anchor, fork_task: @task)
   end
 
   defp followup_step!(actor, chat) do
-    message = message!(actor, chat)
-    step!(actor, message.id, 1)
+    message = create_message!(actor, chat)
+    create_step!(actor, message, response_final: true)
   end
 
   defp call!(actor, step, sequence) do
-    item =
-      create!(
-        ChatMessageItem,
-        :create,
-        %{chat_message_step_id: step.id, sequence: sequence, type: :tool_call},
-        actor
-      )
+    item = create_item!(actor, step, sequence: sequence, type: :tool_call)
 
-    create!(
-      ChatMessageContent,
-      :create,
-      %{
-        chat_message_item_id: item.id,
-        sequence: 1,
-        kind: :opaque,
-        content_json: %{
-          "call_id" => "call_#{item.id}",
-          "name" => "agent_management__fork",
-          "arguments" => %{"task" => "Read only the inherited files."}
-        }
-      },
-      actor
+    create_content!(actor, item,
+      kind: :opaque,
+      content_json: %{
+        "call_id" => "call_#{item.id}",
+        "name" => "agent_management__fork",
+        "arguments" => %{"task" => @task}
+      }
     )
 
     item
@@ -415,40 +372,21 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     {:ok, file} = Files.create_from_binary(name <> ".png", "image/png", @png)
 
     item =
-      create!(
-        ChatMessageItem,
-        :create,
-        %{
-          chat_message_step_id: step.id,
-          sequence: sequence,
-          type: type,
-          tool_call_item_id: Keyword.get(opts, :tool_call_item_id)
-        },
-        actor
+      create_item!(actor, step,
+        sequence: sequence,
+        type: type,
+        tool_call_item_id: Keyword.get(opts, :tool_call_item_id)
       )
 
-    content =
-      create!(
-        ChatMessageContent,
-        :create,
-        %{chat_message_item_id: item.id, sequence: 1, kind: :media, file_id: file.id},
-        actor
-      )
-
+    content = create_content!(actor, item, kind: :media, file_id: file.id)
     %{file: file, content: content, item: item}
   end
 
   defp placement!(actor, item, placement) do
-    create!(
-      ChatMessageContent,
-      :create,
-      %{
-        chat_message_item_id: item.id,
-        sequence: 2,
-        kind: :opaque,
-        content_json: %{"placement" => placement}
-      },
-      actor
+    create_content!(actor, item,
+      sequence: 2,
+      kind: :opaque,
+      content_json: %{"placement" => placement}
     )
   end
 
@@ -476,11 +414,5 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     ChatMessageStepRequestFile
     |> Ash.Query.filter(chat_message_step_id == ^step.id)
     |> Ash.read!(authorize?: false)
-  end
-
-  defp create!(resource, action, attrs, actor) do
-    resource
-    |> Ash.Changeset.for_create(action, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 end

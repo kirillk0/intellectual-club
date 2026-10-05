@@ -233,10 +233,4 @@ defmodule IntellectualClub.Chat.ChatMessagePollRevisionTest do
   defp assert_missing(resource, id, actor) do
     assert Ash.get!(resource, id, actor: actor, not_found_error?: false) == nil
   end
-
-  defp create!(resource, attrs, actor) do
-    resource
-    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
 end

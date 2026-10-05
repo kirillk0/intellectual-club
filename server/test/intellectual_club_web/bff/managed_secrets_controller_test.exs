@@ -1,5 +1,5 @@
 defmodule IntellectualClubWeb.Bff.ManagedSecretsControllerTest do
-  use IntellectualClubWeb.ConnCase, async: false
+  use IntellectualClubWeb.ConnCase, async: true
 
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Secrets.{Crypto, KnowledgeBlockSecret, Secret, ToolInstanceSecret}

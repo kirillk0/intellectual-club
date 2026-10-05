@@ -7,7 +7,6 @@ defmodule IntellectualClub.Chat.ThreadsTest do
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Files.GarbageCollector
@@ -154,7 +153,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
 
     {:ok, root} = Threads.add_message(chat, :user, "root", actor: actor, parent_id: nil)
 
-    file = create_file!("trace.txt", "text/plain", "trace payload")
+    file = create_file!(filename: "trace.txt", mime_type: "text/plain", payload: "trace payload")
 
     {:ok, a1} =
       Threads.add_message(chat, :assistant, "",
@@ -231,7 +230,7 @@ defmodule IntellectualClub.Chat.ThreadsTest do
       |> Ash.create!(actor: actor)
 
     {:ok, root} = Threads.add_message(chat, :user, "root", actor: actor, parent_id: nil)
-    file = create_file!("leaf.txt", "text/plain", "leaf payload")
+    file = create_file!(filename: "leaf.txt", mime_type: "text/plain", payload: "leaf payload")
 
     {:ok, message} =
       Threads.add_message(chat, :assistant, "",
@@ -342,16 +341,5 @@ defmodule IntellectualClub.Chat.ThreadsTest do
 
     assert first.parent_id == nil
     assert second.parent_id == first.id
-  end
-
-  defp create_file!(filename, mime_type, payload) do
-    {:ok, file} =
-      Files.create_from_upload(%{
-        filename: filename,
-        mime_type: mime_type,
-        payload: payload
-      })
-
-    file
   end
 end

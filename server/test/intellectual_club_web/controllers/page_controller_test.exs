@@ -1,5 +1,5 @@
 defmodule IntellectualClubWeb.PageControllerTest do
-  use IntellectualClubWeb.ConnCase
+  use IntellectualClubWeb.ConnCase, async: false
 
   test "GET / redirects anonymous user to /login", %{conn: conn} do
     conn = get(conn, ~p"/")
@@ -172,5 +172,30 @@ defmodule IntellectualClubWeb.PageControllerTest do
 
     assert response(conn, 200)
     assert get_resp_header(conn, "content-type") == ["image/png"]
+  end
+
+  describe "signed-in SPA routes" do
+    for {role, admin?, paths} <- [
+          {"admin", true, ~w(/administration /administration/users /administration/users/new
+              /administration/user-groups /administration/user-groups/new)},
+          {"user", false, ~w(/catalogs /catalogs/knowledge-blocks /catalogs/knowledge-blocks/new
+              /catalogs/knowledge-tags /catalogs/bots /catalogs/llm-providers
+              /catalogs/llm-configurations)}
+        ] do
+      test "serve the SPA shell for #{role} pages", %{conn: conn} do
+        %{user: user} = fixture = user_fixture(%{is_admin: unquote(admin?)})
+        conn = sign_in_conn(conn, fixture)
+
+        for path <- unquote(paths) do
+          html = conn |> get(path) |> html_response(200)
+          assert html =~ ~s(id="spa-root"), path
+          assert html =~ user.username, path
+
+          if unquote(admin?) do
+            assert html =~ ~s(data-current-user-is-admin="true"), path
+          end
+        end
+      end
+    end
   end
 end

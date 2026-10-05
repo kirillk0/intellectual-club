@@ -18,14 +18,6 @@ defmodule IntellectualClub.DriverSecretsTest do
   require Ash.Query
 
   setup do
-    current = Application.get_env(:intellectual_club, :managed_secrets_encryption_key)
-    previous = Application.get_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
-
-    on_exit(fn ->
-      restore_env(:managed_secrets_encryption_key, current)
-      restore_env(:managed_secrets_previous_encryption_keys, previous)
-    end)
-
     :ok
   end
 
@@ -76,7 +68,7 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     created =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "mcp-http",
         name: "Encrypted MCP",
         config: %{
@@ -87,7 +79,7 @@ defmodule IntellectualClub.DriverSecretsTest do
           "token" => "bearer-value",
           "secret_headers" => %{"X-API-Key" => "header-value"}
         }
-      })
+      )
 
     assert created.secrets == %{
              "bearer_token" => "bearer-value",
@@ -118,12 +110,12 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "native-web-search",
         name: "Brave",
         config: %{},
         secrets: %{"token" => "driver-token"}
-      })
+      )
 
     environment_secret = create_secret!(actor, "Prompt token", "environment-token")
 
@@ -159,7 +151,7 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "mcp-http",
         name: "Patched MCP",
         config: %{
@@ -170,7 +162,7 @@ defmodule IntellectualClub.DriverSecretsTest do
           "bearer_token" => "remove-me",
           "secret_headers" => %{"X-Keep" => "keep", "X-Remove" => "remove"}
         }
-      })
+      )
 
     reloaded = Ash.get!(ToolInstance, tool.id, actor: actor)
 
@@ -207,12 +199,12 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "ssh",
         name: "Atomic SSH",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "original-password"}
-      })
+      )
 
     reloaded = Ash.get!(ToolInstance, tool.id, actor: actor)
 
@@ -237,12 +229,12 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "ssh",
         name: "Overlapping SSH",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{"password" => "managed-value"}
-      })
+      )
 
     import Ecto.Query
 
@@ -268,19 +260,19 @@ defmodule IntellectualClub.DriverSecretsTest do
     old_key = String.duplicate("o", 48)
     new_key = String.duplicate("n", 48)
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, old_key)
-    Application.delete_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
+    put_app_env(:managed_secrets_encryption_key, old_key)
+    delete_app_env(:managed_secrets_previous_encryption_keys)
 
     %{user: actor} = user_fixture()
     standalone = create_secret!(actor, "Old key", "old-key-value")
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "ssh",
         name: "Legacy SSH",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{}
-      })
+      )
 
     import Ecto.Query
 
@@ -288,13 +280,9 @@ defmodule IntellectualClub.DriverSecretsTest do
       from(instance in "tool_instances", where: instance.id == ^tool.id)
       |> Repo.update_all(set: [secrets: %{"password" => "legacy-password"}])
 
-    Application.put_env(:intellectual_club, :managed_secrets_encryption_key, new_key)
+    put_app_env(:managed_secrets_encryption_key, new_key)
 
-    Application.put_env(
-      :intellectual_club,
-      :managed_secrets_previous_encryption_keys,
-      [old_key]
-    )
+    put_app_env(:managed_secrets_previous_encryption_keys, [old_key])
 
     assert {:ok, stats} = StartupMigrator.run()
     assert stats.backfilled == 1
@@ -311,7 +299,7 @@ defmodule IntellectualClub.DriverSecretsTest do
     assert {:ok, "old-key-value", %{version: 2, current?: true}} =
              Crypto.decrypt_with_metadata(reloaded_secret.encrypted_value)
 
-    Application.delete_env(:intellectual_club, :managed_secrets_previous_encryption_keys)
+    delete_app_env(:managed_secrets_previous_encryption_keys)
     assert {:ok, "old-key-value"} = Crypto.decrypt(reloaded_secret.encrypted_value)
 
     assert {:ok, second_stats} = StartupMigrator.run()
@@ -325,12 +313,12 @@ defmodule IntellectualClub.DriverSecretsTest do
     %{user: actor} = user_fixture()
 
     tool =
-      create_tool!(actor, %{
+      create_tool_instance!(actor,
         type: "ssh",
         name: "Invalid legacy SSH",
         config: %{"host" => "example.com", "username" => "root"},
         secrets: %{}
-      })
+      )
 
     import Ecto.Query
 
@@ -347,12 +335,6 @@ defmodule IntellectualClub.DriverSecretsTest do
 
     assert Ash.get!(ToolInstance, tool.id, actor: actor).secrets == legacy
     assert driver_bindings!(tool.id) == []
-  end
-
-  defp create_tool!(actor, attrs) do
-    ToolInstance
-    |> Ash.Changeset.for_create(:create, attrs, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 
   defp create_secret!(actor, name, value) do
@@ -372,7 +354,4 @@ defmodule IntellectualClub.DriverSecretsTest do
     |> Ash.Query.load(:secret)
     |> Ash.read!(authorize?: false)
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
-  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
 end

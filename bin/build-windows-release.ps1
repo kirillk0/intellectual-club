@@ -1099,7 +1099,7 @@ if (-not $SkipTests) {
     Invoke-Native 'mix' @('picosat.sync') $server
     Invoke-Native 'mix' @('compile', '--warnings-as-errors') $server
     Invoke-Native 'mix' @('format', '--check-formatted') $server
-    Invoke-Native 'mix' @('test') $server
+    Invoke-Native 'mix' @('test', '--include', 'whitebox') $server
   }
 }
 

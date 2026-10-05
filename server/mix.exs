@@ -109,7 +109,9 @@ defmodule IntellectualClub.MixProject do
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: [
-        "deps.compile",
+        # deps.loadpaths compiles only stale dependencies; deps.compile would
+        # rebuild several of them on every run.
+        "deps.loadpaths",
         "picosat.sync",
         "ecto.create --quiet",
         "ecto.migrate --quiet",

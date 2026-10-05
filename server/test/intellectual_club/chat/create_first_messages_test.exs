@@ -96,15 +96,4 @@ defmodule IntellectualClub.Chat.CreateFirstMessagesTest do
 
     assert messages == []
   end
-
-  defp message_answer_text(message) do
-    (message.steps || [])
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.flat_map(&(&1.items || []))
-    |> Enum.filter(&(&1.type == :answer))
-    |> Enum.flat_map(&(&1.contents || []))
-    |> Enum.filter(&(&1.kind == :text))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map_join("", fn content -> content.content_text || "" end)
-  end
 end

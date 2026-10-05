@@ -1,570 +1,320 @@
 defmodule IntellectualClub.Generation.SupervisorTest do
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.QueuedMessages
-  alias IntellectualClub.Chat.Threads
+  import IntellectualClub.Test.GenerationRuntime
+
   alias IntellectualClub.BackgroundTasks.BackgroundTask
-  alias IntellectualClub.Generation.Lease
-  alias IntellectualClub.Generation.LegacyGenerationSnapshotStub
-  alias IntellectualClub.Generation.Persistence
+  alias IntellectualClub.Chat.{ChatMessage, QueuedMessages, Threads}
+  alias IntellectualClub.Generation.{Lease, LegacyGenerationSnapshotStub, Persistence, Worker}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Generation.Worker
 
-  defmodule BlockingAdapter do
-    @moduledoc false
+  describe "cascading cancellation" do
+    for {relation, grandchild?} <- [fork: true, spawn: false] do
+      @tag relation: relation, grandchild?: grandchild?
+      test "canceling a parent cancels an active #{relation} descendant#{if grandchild?, do: " and its handoff child"}",
+           %{relation: relation, grandchild?: grandchild?} do
+        %{user: actor} = user_fixture()
+        parent = start_blocking_generation!(actor, create_empty_chat!(actor), "Parent")
+        child = start_blocking_generation!(actor, child_chat!(actor, parent, relation), "Child")
 
-    def stream_generate(%{context: context}, _emit) do
-      send(context.test_pid, {:adapter_started, context.message_id})
-      Process.sleep(:infinity)
+        descendants =
+          if grandchild? do
+            [
+              child,
+              start_blocking_generation!(actor, child_chat!(actor, child, :handoff), "Handoff")
+            ]
+          else
+            [child]
+          end
+
+        assert :ok = GenerationSupervisor.cancel_generation(parent.message.id)
+        for generation <- [parent | descendants], do: assert_canceled!(actor, generation)
+      end
+    end
+
+    for {kind, arguments} <- [
+          fork: %{"task" => "Background fork"},
+          spawn: %{"brief" => "Background spawn", "prompt" => "Continue"}
+        ] do
+      @tag kind: kind, arguments: arguments
+      test "canceling a parent cancels its active background #{kind} task and the child's nested work",
+           %{kind: kind, arguments: arguments} do
+        %{user: actor} = user_fixture()
+        parent = start_blocking_generation!(actor, create_empty_chat!(actor), "Parent")
+        child = start_blocking_generation!(actor, child_chat!(actor, parent, kind), "Child")
+        task = background_child_task!(actor, parent, child, Atom.to_string(kind), arguments)
+
+        nested_task =
+          create!(
+            BackgroundTask,
+            %{
+              kind: "ssh_command",
+              adapter: "ssh",
+              status: :queued,
+              function_name: "run_command",
+              arguments: %{"command" => "echo nested"},
+              execution_context: %{
+                "owner_id" => actor.id,
+                "chat_id" => child.chat.id,
+                "message_id" => child.message.id,
+                "assistant_message_id" => child.message.id
+              },
+              source_chat_id: child.chat.id,
+              source_message_id: child.message.id
+            },
+            actor
+          )
+
+        assert :ok = GenerationSupervisor.cancel_generation(parent.message.id)
+        for generation <- [parent, child], do: assert_canceled!(actor, generation)
+
+        for task <- [task, nested_task] do
+          assert wait_for_background_task_status!(task.id, actor, :canceled).cancel_requested
+        end
+      end
     end
   end
 
-  defmodule PartialBlockingAdapter do
-    @moduledoc false
+  describe "orphans and prepared generations" do
+    test "a prepared generation preserves its message while failing other orphans" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Prepared", actor: actor)
+      attrs = %{parent_id: user_message.id, token_count: 0}
+      target_message = create_generating_message!(actor, chat, attrs)
+      orphan_message = create_generating_message!(actor, chat, attrs)
 
-    def stream_generate(%{context: context}, emit) do
-      emit.({:trace, {:set_text, "reasoning", :reasoning, 1, "Partial reasoning"}})
-      emit.({:trace, {:set_text, "answer", :answer, 1, "Partial answer"}})
-      send(context.test_pid, {:partial_output_ready, context.message_id})
-      Process.sleep(:infinity)
+      raw_request = %{
+        "model" => "demo-model",
+        "messages" => [%{"role" => "user", "content" => "Prepared"}],
+        "stream" => true
+      }
+
+      target_step_id = Persistence.ensure_step_started!(target_message.id, 1, raw_request, [])
+      _orphan_step_id = Persistence.ensure_step_started!(orphan_message.id, 1, raw_request, [])
+
+      assert {:ok, queued_message} =
+               QueuedMessages.enqueue_follow_up(
+                 chat.id,
+                 %{content: "Continue after the orphan"},
+                 actor
+               )
+
+      assert {:ok, _context} =
+               GenerationSupervisor.start_prepared_generation(
+                 chat.id,
+                 target_message.id,
+                 target_step_id,
+                 raw_request,
+                 actor: actor,
+                 chunk_delay_ms: 60_000
+               )
+
+      try do
+        target_message = Ash.get!(ChatMessage, target_message.id, actor: actor)
+        orphan_message = Ash.get!(ChatMessage, orphan_message.id, actor: actor)
+        assert target_message.status == :generating
+        assert target_message.error_detail == nil
+        assert orphan_message.status == :error
+        assert orphan_message.error_detail == "Orphaned generation (worker not found)"
+
+        assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
+        assert blocked.status == :blocked
+        assert blocked.blocked_reason == "generation_error"
+
+        assert {:ok, %{status: :generating}} =
+                 GenerationSupervisor.get_generation_state(target_message.id)
+      after
+        _ = GenerationSupervisor.cancel_generation(target_message.id)
+      end
     end
   end
 
-  test "canceling a fenced worker preserves partial runtime output" do
-    %{user: actor} = user_fixture()
-    chat = create_chat!(actor)
+  describe "worker lookup and start lock" do
+    test "the generation start lock is released when its holder exits" do
+      message_id = System.unique_integer([:positive])
 
-    {:ok, user_message} =
-      Threads.add_message_to_end(chat, :user, "Generate a partial answer", actor: actor)
+      assert catch_throw(
+               GenerationSupervisor.with_generation_start_lock(message_id, fn ->
+                 throw(:simulated_lock_holder_exit)
+               end)
+             ) == :simulated_lock_holder_exit
 
-    assistant_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+      assert :ok = GenerationSupervisor.with_generation_start_lock(message_id, fn -> :ok end)
+    end
 
-    raw_request = %{
-      "model" => "test-model",
-      "messages" => [%{"role" => "user", "content" => "Generate a partial answer"}],
-      "stream" => true
-    }
+    test "generation controls find a worker registered only under its global name" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      message = create_generating_message!(actor, chat, %{user_text: "Global", token_count: 0})
 
-    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
-    assert {:ok, lease} = Lease.acquire(assistant_message.id)
+      step_id =
+        Persistence.ensure_step_started!(message.id, %{
+          "model" => "demo-model",
+          "messages" => [%{"role" => "user", "content" => "Global"}],
+          "stream" => true
+        })
 
-    context = %{
-      owner_id: actor.id,
-      chat_id: chat.id,
-      message_id: assistant_message.id,
-      step_id: step_id,
-      provider_type: "test",
-      adapter_module: PartialBlockingAdapter,
-      request_payload: raw_request,
-      timeout_ms: 5_000,
-      chunk_delay_ms: 0,
-      test_pid: self()
-    }
+      assert {:ok, queued_message} =
+               QueuedMessages.enqueue_follow_up(
+                 chat.id,
+                 %{content: "Continue after fallback cancellation"},
+                 actor
+               )
 
-    worker =
-      start_supervised!(%{
-        id: {Worker, assistant_message.id},
-        start: {Worker, :start_link, [%{context: context, lease: lease, lease_owner: self()}]},
-        restart: :temporary
-      })
+      assert {:ok, lease} = Lease.acquire(message.id)
+      on_exit(fn -> Lease.release(lease) end)
 
-    monitor_ref = Process.monitor(worker)
-    assert_receive {:partial_output_ready, message_id}, 1_000
-    assert message_id == assistant_message.id
+      stub = start_supervised!({LegacyGenerationSnapshotStub, self()})
+      assert :yes = :global.register_name(Worker.global_name(message.id), stub)
+      assert Registry.lookup(IntellectualClub.Generation.Registry, {:message, message.id}) == []
 
-    assert %{step: %{items: [_reasoning, _answer]}} = Worker.get_current_state(worker)
-    assert :ok = GenerationSupervisor.cancel_generation(assistant_message.id)
-    assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}, 1_000
+      assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
+               GenerationSupervisor.get_generation_state(message.id)
 
-    message =
-      Ash.get!(ChatMessage, assistant_message.id,
-        actor: actor,
-        load: [steps: [items: [:contents]]]
-      )
+      assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
+               GenerationSupervisor.poll_generation(message.id, %{step: 1})
 
-    assert message.status == :canceled
-    assert message.token_count > 0
-    assert message.generation_fence_token == nil
-    assert [step] = message.steps
-    assert step.status == :canceled
+      assert Ash.get!(ChatMessage, message.id, actor: actor).status == :generating
 
-    items = Enum.sort_by(step.items, & &1.sequence)
-    assert item_text(Enum.find(items, &(&1.type == :reasoning))) == "Partial reasoning"
-    assert item_text(Enum.find(items, &(&1.type == :answer))) == "Partial answer"
-  end
+      assert :ok =
+               GenServer.call(
+                 stub,
+                 {:publish_snapshot, message.id,
+                  %{
+                    status: :generating,
+                    phase: :persisting,
+                    step: %{id: step_id, sequence: 1, status: "waiting_provider", items: []}
+                  }}
+               )
 
-  test "canceling a parent generation cancels active subagent descendant generations" do
-    %{user: actor} = user_fixture()
-    test_pid = self()
+      assert {:ok, snapshot} = GenerationSupervisor.get_generation_state(message.id)
+      assert %{status: :generating, phase: :persisting, step: %{id: ^step_id}} = snapshot
 
-    parent_chat = create_chat!(actor)
-    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
+      # A suspended worker never answers; keep the busy fallback fast.
+      put_app_env(:generation_poll_timeout_ms, 100)
+      :ok = :sys.suspend(stub)
 
-    fork_chat =
-      create_chat!(actor, %{
-        note: "Fork child",
-        parent_chat_id: parent_chat.id,
-        parent_message_id: parent_message.id,
-        parent_relation_kind: :fork,
-        subagent: true
-      })
+      try do
+        assert {:busy, %{status: :generating}} =
+                 GenerationSupervisor.get_generation_state(message.id)
 
-    fork_message = start_blocking_generation!(fork_chat, actor, test_pid, "Fork")
+        assert {:busy, %{status: :generating}} =
+                 GenerationSupervisor.poll_generation(message.id, %{step: 1},
+                   include_working: true
+                 )
+      after
+        :sys.resume(stub)
+      end
 
-    handoff_chat =
-      create_chat!(actor, %{
-        note: "Handoff child",
-        parent_chat_id: fork_chat.id,
-        parent_message_id: fork_message.id,
-        parent_relation_kind: :handoff,
-        subagent: true
-      })
-
-    handoff_message = start_blocking_generation!(handoff_chat, actor, test_pid, "Handoff")
-
-    parent_message_id = parent_message.id
-    fork_message_id = fork_message.id
-    handoff_message_id = handoff_message.id
-
-    assert_receive {:adapter_started, ^parent_message_id}, 1_000
-    assert_receive {:adapter_started, ^fork_message_id}, 1_000
-    assert_receive {:adapter_started, ^handoff_message_id}, 1_000
-
-    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
-
-    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert wait_for_status!(fork_message.id, actor, :canceled).status == :canceled
-    assert wait_for_status!(handoff_message.id, actor, :canceled).status == :canceled
-
-    assert GenerationSupervisor.get_generation_state(parent_message.id) == :not_found
-    assert GenerationSupervisor.get_generation_state(fork_message.id) == :not_found
-    assert GenerationSupervisor.get_generation_state(handoff_message.id) == :not_found
-  end
-
-  test "canceling a parent generation cancels an active spawn descendant" do
-    %{user: actor} = user_fixture()
-    test_pid = self()
-
-    parent_chat = create_chat!(actor)
-    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
-
-    spawn_chat =
-      create_chat!(actor, %{
-        note: "Spawn child",
-        parent_chat_id: parent_chat.id,
-        parent_message_id: parent_message.id,
-        parent_relation_kind: :spawn,
-        subagent: true
-      })
-
-    spawn_message = start_blocking_generation!(spawn_chat, actor, test_pid, "Spawn")
-    parent_message_id = parent_message.id
-    spawn_message_id = spawn_message.id
-
-    assert_receive {:adapter_started, ^parent_message_id}, 1_000
-    assert_receive {:adapter_started, ^spawn_message_id}, 1_000
-
-    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
-    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert wait_for_status!(spawn_message.id, actor, :canceled).status == :canceled
-    assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
-  end
-
-  test "canceling a parent cancels an active background fork task" do
-    %{user: actor} = user_fixture()
-    test_pid = self()
-
-    parent_chat = create_chat!(actor)
-    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
-
-    fork_chat =
-      create_chat!(actor, %{
-        note: "Background fork child",
-        parent_chat_id: parent_chat.id,
-        parent_message_id: parent_message.id,
-        parent_relation_kind: :fork,
-        subagent: true
-      })
-
-    fork_message = start_blocking_generation!(fork_chat, actor, test_pid, "Background fork")
-
-    task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          kind: "fork",
-          adapter: "fork",
-          status: :running,
-          function_name: "fork",
-          arguments: %{"task" => "Background fork"},
-          execution_context: %{},
-          source_chat_id: parent_chat.id,
-          source_message_id: parent_message.id,
-          target_chat_id: fork_chat.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    nested_task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          kind: "ssh_command",
-          adapter: "ssh",
-          status: :queued,
-          function_name: "run_command",
-          arguments: %{"command" => "echo nested"},
-          execution_context: %{
-            "owner_id" => actor.id,
-            "chat_id" => fork_chat.id,
-            "message_id" => fork_message.id,
-            "assistant_message_id" => fork_message.id
-          },
-          source_chat_id: fork_chat.id,
-          source_message_id: fork_message.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    parent_message_id = parent_message.id
-    fork_message_id = fork_message.id
-
-    assert_receive {:adapter_started, ^parent_message_id}, 1_000
-    assert_receive {:adapter_started, ^fork_message_id}, 1_000
-
-    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
-    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert wait_for_status!(fork_message.id, actor, :canceled).status == :canceled
-    assert wait_for_background_status!(task.id, actor, :canceled).cancel_requested == true
-    assert wait_for_background_status!(nested_task.id, actor, :canceled).cancel_requested == true
-    assert GenerationSupervisor.get_generation_state(fork_message.id) == :not_found
-  end
-
-  test "canceling a parent cancels an active background spawn task" do
-    %{user: actor} = user_fixture()
-    test_pid = self()
-
-    parent_chat = create_chat!(actor)
-    parent_message = start_blocking_generation!(parent_chat, actor, test_pid, "Parent")
-
-    spawn_chat =
-      create_chat!(actor, %{
-        note: "Background spawn child",
-        parent_chat_id: parent_chat.id,
-        parent_message_id: parent_message.id,
-        parent_relation_kind: :spawn,
-        subagent: true
-      })
-
-    spawn_message = start_blocking_generation!(spawn_chat, actor, test_pid, "Background spawn")
-
-    task =
-      BackgroundTask
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          kind: "spawn",
-          adapter: "spawn",
-          status: :running,
-          function_name: "spawn",
-          arguments: %{"brief" => "Background spawn", "prompt" => "Continue"},
-          execution_context: %{},
-          source_chat_id: parent_chat.id,
-          source_message_id: parent_message.id,
-          target_chat_id: spawn_chat.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    parent_message_id = parent_message.id
-    spawn_message_id = spawn_message.id
-
-    assert_receive {:adapter_started, ^parent_message_id}, 1_000
-    assert_receive {:adapter_started, ^spawn_message_id}, 1_000
-
-    assert :ok = GenerationSupervisor.cancel_generation(parent_message.id)
-    assert wait_for_status!(parent_message.id, actor, :canceled).status == :canceled
-    assert wait_for_status!(spawn_message.id, actor, :canceled).status == :canceled
-    assert wait_for_background_status!(task.id, actor, :canceled).cancel_requested == true
-    assert GenerationSupervisor.get_generation_state(spawn_message.id) == :not_found
-  end
-
-  test "prepared generation preserves its message while failing other orphans" do
-    %{user: actor} = user_fixture()
-    chat = create_chat!(actor)
-
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Prepared", actor: actor)
-
-    target_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    orphan_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    raw_request = %{
-      "model" => "demo-model",
-      "messages" => [%{"role" => "user", "content" => "Prepared"}],
-      "stream" => true
-    }
-
-    target_step_id = Persistence.ensure_step_started!(target_message.id, 1, raw_request, [])
-    _orphan_step_id = Persistence.ensure_step_started!(orphan_message.id, 1, raw_request, [])
-
-    assert {:ok, queued_message} =
-             QueuedMessages.enqueue_follow_up(
-               chat.id,
-               %{content: "Continue after the orphan"},
-               actor
-             )
-
-    assert {:ok, _context} =
-             GenerationSupervisor.start_prepared_generation(
-               chat.id,
-               target_message.id,
-               target_step_id,
-               raw_request,
-               actor: actor,
-               chunk_delay_ms: 60_000
-             )
-
-    try do
-      target_message = Ash.get!(ChatMessage, target_message.id, actor: actor)
-      orphan_message = Ash.get!(ChatMessage, orphan_message.id, actor: actor)
-
-      assert target_message.status == :generating
-      assert target_message.error_detail == nil
-
-      assert orphan_message.status == :error
-      assert orphan_message.error_detail == "Orphaned generation (worker not found)"
+      monitor = Process.monitor(stub)
+      assert :ok = GenerationSupervisor.cancel_generation(message.id)
+      assert_receive :global_worker_canceled
+      assert_receive {:DOWN, ^monitor, :process, ^stub, :normal}
+      canceled = wait_for_message_status!(message.id, actor, :canceled)
+      assert canceled.generation_fence_token == nil
 
       assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
       assert blocked.status == :blocked
-      assert blocked.blocked_reason == "generation_error"
-
-      assert {:ok, %{status: :generating}} =
-               GenerationSupervisor.get_generation_state(target_message.id)
-    after
-      _ = GenerationSupervisor.cancel_generation(target_message.id)
+      assert blocked.blocked_reason == "generation_canceled"
+      assert GenerationSupervisor.get_generation_state(message.id) == :not_found
     end
   end
 
-  test "generation start lock is released when its holder exits" do
-    message_id = System.unique_integer([:positive])
+  describe "retry_from_step/3" do
+    test "a step disappearing before cleanup preflight cannot publish a retry fence" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      {:ok, _input} = Threads.add_message_to_end(chat, :user, "Reply briefly", actor: actor)
 
-    assert catch_throw(
-             GenerationSupervisor.with_generation_start_lock(message_id, fn ->
-               throw(:simulated_lock_holder_exit)
-             end)
-           ) == :simulated_lock_holder_exit
+      {:ok, message} =
+        Threads.add_message_to_end(chat, :assistant, "Original response", actor: actor)
 
-    assert :ok =
-             GenerationSupervisor.with_generation_start_lock(message_id, fn -> :ok end)
-  end
+      step =
+        create_step!(actor, message, %{
+          sequence: 2,
+          raw_request: %{
+            "model" => "demo-model",
+            "messages" => [%{"role" => "user", "content" => "Reply briefly"}],
+            "stream" => true
+          },
+          response_final: true
+        })
 
-  test "generation controls find a worker registered only under its global name" do
-    %{user: actor} = user_fixture()
-    chat = create_chat!(actor)
+      handler = {__MODULE__, make_ref()}
+      caller = self()
+      scope = {:steps, message.id, step.sequence}
 
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, "Global", actor: actor)
+      # Remove the already-read source at the exact preflight boundary. This
+      # deterministic fault injection needs no timing race or provider process.
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:intellectual_club, :linked_fork_cleanup, :plan],
+          fn _, _, metadata, _ ->
+            if self() == caller and metadata.scope == scope do
+              Ash.destroy!(step, actor: actor)
+              send(caller, :source_removed_before_retry_locks)
+            end
+          end,
+          nil
+        )
 
-    message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
+      on_exit(fn -> :telemetry.detach(handler) end)
 
-    step_id =
-      Persistence.ensure_step_started!(message.id, %{
-        "model" => "demo-model",
-        "messages" => [%{"role" => "user", "content" => "Global"}],
-        "stream" => true
-      })
+      assert {:error, :retry_step_not_found} =
+               GenerationSupervisor.retry_from_step(message.id, step.id, actor: actor)
 
-    assert {:ok, queued_message} =
-             QueuedMessages.enqueue_follow_up(
-               chat.id,
-               %{content: "Continue after fallback cancellation"},
-               actor
-             )
-
-    assert {:ok, lease} = Lease.acquire(message.id)
-    on_exit(fn -> Lease.release(lease) end)
-
-    stub = start_supervised!({LegacyGenerationSnapshotStub, self()})
-    assert :yes = :global.register_name(Worker.global_name(message.id), stub)
-    assert Registry.lookup(IntellectualClub.Generation.Registry, {:message, message.id}) == []
-
-    assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
-             GenerationSupervisor.get_generation_state(message.id)
-
-    assert {:busy, %{status: :generating, phase: :initializing, step: nil}} =
-             GenerationSupervisor.poll_generation(message.id, %{step: 1})
-
-    assert Ash.get!(ChatMessage, message.id, actor: actor).status == :generating
-
-    assert :ok =
-             GenServer.call(
-               stub,
-               {:publish_snapshot, message.id,
-                %{
-                  status: :generating,
-                  phase: :persisting,
-                  step: %{id: step_id, sequence: 1, status: "waiting_provider", items: []}
-                }}
-             )
-
-    assert {:ok, snapshot} = GenerationSupervisor.get_generation_state(message.id)
-    assert %{status: :generating, phase: :persisting, step: %{id: ^step_id}} = snapshot
-
-    :ok = :sys.suspend(stub)
-
-    try do
-      assert {:busy, %{status: :generating}} =
-               GenerationSupervisor.get_generation_state(message.id)
-
-      assert {:busy, %{status: :generating}} =
-               GenerationSupervisor.poll_generation(message.id, %{step: 1}, include_working: true)
-    after
-      :sys.resume(stub)
+      assert_received :source_removed_before_retry_locks
+      current = Ash.get!(ChatMessage, message.id, actor: actor)
+      assert current.generation_fence_token == nil
+      assert current.status == :done
+      assert GenerationSupervisor.get_generation_state(message.id) == :not_found
     end
-
-    monitor = Process.monitor(stub)
-    assert :ok = GenerationSupervisor.cancel_generation(message.id)
-    assert_receive :global_worker_canceled
-    assert_receive {:DOWN, ^monitor, :process, ^stub, :normal}
-    canceled = wait_for_status!(message.id, actor, :canceled)
-    assert canceled.generation_fence_token == nil
-
-    assert {:ok, blocked} = QueuedMessages.get(queued_message.id, actor)
-    assert blocked.status == :blocked
-    assert blocked.blocked_reason == "generation_canceled"
-    assert GenerationSupervisor.get_generation_state(message.id) == :not_found
   end
 
-  defp create_chat!(actor, attrs \\ %{}) do
-    Chat
-    |> Ash.Changeset.for_create(
-      :create_empty,
-      Map.merge(%{note: ""}, attrs),
-      actor: actor
+  # A generation in `chat` whose provider blocks until the Worker is canceled.
+  defp start_blocking_generation!(actor, chat, prompt) do
+    fixture = generation_fixture!(actor: actor, chat: chat, prompt: prompt)
+    start_worker!(fixture)
+    await_provider!(fixture)
+    fixture
+  end
+
+  # The durable status is committed before the Worker finishes stopping.
+  defp assert_canceled!(actor, generation) do
+    canceled =
+      wait_for_message_status!(generation.message.id, actor, :canceled, stop_worker: true)
+
+    assert canceled.status == :canceled
+    assert GenerationSupervisor.get_generation_state(generation.message.id) == :not_found
+  end
+
+  defp child_chat!(actor, parent, relation_kind) do
+    create_empty_chat!(actor, %{
+      note: "#{relation_kind} child",
+      parent_chat_id: parent.chat.id,
+      parent_message_id: parent.message.id,
+      parent_relation_kind: relation_kind,
+      subagent: true
+    })
+  end
+
+  defp background_child_task!(actor, parent, child, kind, arguments) do
+    create!(
+      BackgroundTask,
+      %{
+        kind: kind,
+        adapter: kind,
+        status: :running,
+        function_name: kind,
+        arguments: arguments,
+        execution_context: %{},
+        source_chat_id: parent.chat.id,
+        source_message_id: parent.message.id,
+        target_chat_id: child.chat.id
+      },
+      actor
     )
-    |> Ash.create!(actor: actor)
-  end
-
-  defp start_blocking_generation!(%Chat{} = chat, actor, test_pid, prompt) do
-    {:ok, user_message} = Threads.add_message_to_end(chat, :user, prompt, actor: actor)
-
-    assistant_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    raw_request = %{
-      "model" => "test-model",
-      "messages" => [%{"role" => "user", "content" => prompt}],
-      "stream" => true
-    }
-
-    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
-
-    context = %{
-      owner_id: actor.id,
-      chat_id: chat.id,
-      message_id: assistant_message.id,
-      step_id: step_id,
-      provider_type: "test",
-      adapter_module: BlockingAdapter,
-      request_payload: raw_request,
-      timeout_ms: 1_000,
-      chunk_delay_ms: 0,
-      test_pid: test_pid
-    }
-
-    assert {:ok, lease} = Lease.acquire(assistant_message.id)
-
-    {:ok, _pid} =
-      Worker.start_link(%{context: context, lease: lease, lease_owner: self()})
-
-    assistant_message
-  end
-
-  defp wait_for_status!(message_id, actor, wanted_status) do
-    deadline = System.monotonic_time(:millisecond) + 4_000
-    do_wait_for_status!(message_id, actor, wanted_status, deadline)
-  end
-
-  defp wait_for_background_status!(task_id, actor, wanted_status) do
-    deadline = System.monotonic_time(:millisecond) + 4_000
-    do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
-  end
-
-  defp item_text(item) do
-    item.contents
-    |> Enum.filter(&(&1.kind == :text))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map_join("", &to_string(&1.content_text || ""))
-  end
-
-  defp do_wait_for_status!(message_id, actor, wanted_status, deadline) do
-    message = Ash.get!(ChatMessage, message_id, actor: actor)
-
-    if message.status == wanted_status do
-      message
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(20)
-        do_wait_for_status!(message_id, actor, wanted_status, deadline)
-      else
-        flunk("Message #{message_id} did not reach #{inspect(wanted_status)}")
-      end
-    end
-  end
-
-  defp do_wait_for_background_status!(task_id, actor, wanted_status, deadline) do
-    task = Ash.get!(BackgroundTask, task_id, actor: actor)
-
-    if task.status == wanted_status do
-      task
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(20)
-        do_wait_for_background_status!(task_id, actor, wanted_status, deadline)
-      else
-        flunk("Background task #{task_id} did not reach #{inspect(wanted_status)}")
-      end
-    end
   end
 end

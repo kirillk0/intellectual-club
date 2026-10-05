@@ -25,7 +25,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     %{user: actor} = user_fixture()
 
     %{chat: source, step: source_step, file: canonical_file} =
-      create_source_with_request!(actor, image_payload())
+      create_source_with_request!(actor, png_1x1())
 
     [initial_binding] = request_bindings(source_step.id)
     source_updated_at = source_step.updated_at
@@ -90,7 +90,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
 
   test "copy refuses a stale pin snapshot instead of publishing markers without bindings" do
     %{user: actor} = user_fixture()
-    %{chat: source, step: source_step} = create_source_with_request!(actor, image_payload())
+    %{chat: source, step: source_step} = create_source_with_request!(actor, png_1x1())
 
     branch =
       Threads.active_branch(source.id, actor, load: MessageTreeCopy.load_spec(), strict?: true)
@@ -166,7 +166,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     %{user: actor} = user_fixture()
 
     %{chat: source, step: source_step} =
-      create_source_with_request!(actor, oversized_png_payload())
+      create_source_with_request!(actor, oversized_png())
 
     source_branch =
       Threads.active_branch(source.id, actor,
@@ -232,7 +232,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
   test "branch move preserves pre-existing pins when their canonical source stays behind" do
     %{user: actor} = user_fixture()
     source = create_empty_chat!(actor)
-    {:ok, canonical_file} = Files.create_from_binary("source.png", "image/png", image_payload())
+    {:ok, canonical_file} = Files.create_from_binary("source.png", "image/png", png_1x1())
 
     {:ok, root} =
       Threads.add_message_to_end(source, :user, "",
@@ -320,12 +320,6 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     |> Ash.load!([:raw_request], actor: actor)
   end
 
-  defp create_empty_chat!(actor) do
-    Chat
-    |> Ash.Changeset.for_create(:create_empty, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
-  end
-
   defp request_bindings(step_id) do
     ChatMessageStepRequestFile
     |> Ash.Query.filter(chat_message_step_id == ^step_id)
@@ -340,15 +334,5 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.load(:steps)
     |> Ash.read!(actor: actor)
-  end
-
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
-  end
-
-  defp oversized_png_payload do
-    IntellectualClub.ImageFixtures.png(3_000, 1_500)
   end
 end

@@ -3,12 +3,34 @@ defmodule IntellectualClub.DataCase do
   This module defines the setup for tests requiring
   access to the application's data layer.
 
-  You may define functions here to be used as helpers in
-  your tests.
-
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
   are reverted at the end of every test.
+
+  ## Shared helpers
+
+  Test modules get these imports, so shared fixtures are called without a
+  prefix. Do not copy `create_*!` helpers into test files: extend these modules
+  (or pass the scenario specifics through `attrs`) instead.
+
+    * `IntellectualClub.AccountsFixtures` — users, groups, signed-in conns;
+    * `IntellectualClub.Fixtures` — `create!/3,4`, `unique_name/1` and the
+      fixture conventions (actor first, `attrs` as map or keyword list);
+    * `IntellectualClub.ChatFixtures` — chats, subchats, linked forks, messages,
+      steps, items, contents, handoff results;
+    * `IntellectualClub.BotsFixtures`, `IntellectualClub.LlmFixtures`,
+      `IntellectualClub.ToolsFixtures`, `IntellectualClub.KnowledgeFixtures`,
+      `IntellectualClub.BackgroundTasksFixtures`, `IntellectualClub.FilesFixtures`;
+    * `IntellectualClub.ImageFixtures` — small image payloads;
+    * `IntellectualClub.WaitHelpers` — `wait_until/2` and status waits;
+    * `IntellectualClub.TestHttpServer` — local Bandit servers, scripted
+      provider responses, SSE encoders;
+    * `IntellectualClub.RepoTestHelpers` — backend pid, missing-record asserts;
+    * `IntellectualClub.TestEnv` — per-test application env overrides.
+
+  `IntellectualClubWeb.ConnCase` imports the same modules plus
+  `IntellectualClubWeb.JsonApiHelpers`. `ExUnit.Case` modules import what they
+  need explicitly (e.g. `IntellectualClub.ProviderStreamHelpers`).
   """
 
   use ExUnit.CaseTemplate
@@ -21,6 +43,19 @@ defmodule IntellectualClub.DataCase do
       import Ecto.Changeset
       import Ecto.Query
       import IntellectualClub.AccountsFixtures
+      import IntellectualClub.Fixtures
+      import IntellectualClub.ChatFixtures
+      import IntellectualClub.BotsFixtures
+      import IntellectualClub.LlmFixtures
+      import IntellectualClub.ToolsFixtures
+      import IntellectualClub.KnowledgeFixtures
+      import IntellectualClub.BackgroundTasksFixtures
+      import IntellectualClub.FilesFixtures
+      import IntellectualClub.ImageFixtures
+      import IntellectualClub.WaitHelpers
+      import IntellectualClub.TestHttpServer
+      import IntellectualClub.RepoTestHelpers
+      import IntellectualClub.TestEnv
       import IntellectualClub.DataCase
     end
   end

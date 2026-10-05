@@ -5,13 +5,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
 
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat
-
-  alias IntellectualClub.Chat.{
-    ChatMessage,
-    ChatMessageStep,
-    ChatMessageStepRequestFile
-  }
+  alias IntellectualClub.Chat.{ChatMessageStep, ChatMessageStepRequestFile}
 
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
@@ -20,7 +14,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
 
   test "step destroy cascades request bindings and deletes only their logical files" do
     %{user: actor} = user_fixture()
-    step = create_step!(actor)
+    step = create_request_step!(actor)
     {:ok, source_file} = Files.create_from_binary("source.png", "image/png", "image payload")
     {:ok, request_file} = Files.duplicate_file(source_file.id)
 
@@ -49,8 +43,8 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
 
   test "bindings enforce one reference per step and exclusive logical file ownership" do
     %{user: actor} = user_fixture()
-    first_step = create_step!(actor)
-    second_step = create_step!(actor)
+    first_step = create_request_step!(actor)
+    second_step = create_request_step!(actor)
     {:ok, first_file} = Files.create_from_binary("first.png", "image/png", "first payload")
     {:ok, second_file} = Files.create_from_binary("second.png", "image/png", "second payload")
     reference_key = Ash.UUID.generate()
@@ -79,7 +73,7 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
 
   test "binding destroy commits logical cleanup when payload GC must retry" do
     %{user: actor} = user_fixture()
-    step = create_step!(actor)
+    step = create_request_step!(actor)
     payload = "strict cleanup payload"
 
     {:ok, request_file} =
@@ -109,28 +103,8 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFileTest do
     refute FilesystemStorage.exists?(request_file.sha256)
   end
 
-  defp create_step!(actor) do
-    chat =
-      Chat.Chat
-      |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-      |> Ash.create!(actor: actor)
-
-    message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :add_message,
-        %{chat_id: chat.id, role: :assistant, status: :done},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    ChatMessageStep
-    |> Ash.Changeset.for_create(
-      :create,
-      %{chat_message_id: message.id, sequence: 1, status: :done},
-      actor: actor
-    )
-    |> Ash.create!(actor: actor)
+  defp create_request_step!(actor) do
+    create_step!(actor, create_message!(actor, create_chat!(actor)))
   end
 
   defp create_binding!(step, file, attrs) do

@@ -1,16 +1,12 @@
 defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
   use IntellectualClub.DataCase, async: false
 
+  import IntellectualClub.SubagentFixtures, only: [persist_receipt: 5, tool_result_items: 2]
+
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
 
-  alias IntellectualClub.Chat.{
-    Chat,
-    ChatMessage,
-    ChatMessageContent,
-    ChatMessageItem,
-    ChatMessageStep
-  }
+  alias IntellectualClub.Chat.{ChatMessage, ChatMessageContent, ChatMessageItem, ChatMessageStep}
 
   alias IntellectualClub.Chat.{ContentFiles, Subagent, Threads}
   alias IntellectualClub.Files
@@ -18,12 +14,9 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Tools.Drivers.{NativeAgentManagement, NativeArtifactReader}
-  alias IntellectualClub.Tools.{ExecutionContext, ToolInstance}
+  alias IntellectualClub.Tools.ExecutionContext
 
   @payload "The control word is amber-orbit."
-  @png Base.decode64!(
-         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6lq8AAAAASUVORK5CYII="
-       )
 
   for primitive <- [:fork, :spawn] do
     test "#{primitive} parent writer persists returned attachments for reading and history replay" do
@@ -32,7 +25,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       {parent, context} = parent_call!(actor, primitive)
       {child, message, step, reference} = child_answer!(actor, parent, primitive)
       file = file!("answer.txt", "text/plain", @payload)
-      image = file!("answer.png", "image/png", @png)
+      image = file!("answer.png", "image/png", png_1x1())
       attach!(actor, step, file, 2)
       attach!(actor, step, image, 3)
       attach!(actor, step, file, 4)
@@ -124,7 +117,8 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert [%{file_external_id: image_id}] = image_result.media
       assert image_id == image.external_id
 
-      continuation = chat!(actor, %{parent_chat_id: parent.id, parent_relation_kind: :handoff})
+      continuation =
+        create_empty_chat!(actor, %{parent_chat_id: parent.id, parent_relation_kind: :handoff})
 
       assert {:ok, {_content, loaded, @payload}} =
                ContentFiles.load_payload_for_execution(file.external_id, %{
@@ -142,7 +136,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
       assert File.read!(path) == @payload
 
-      unrelated = chat!(actor)
+      unrelated = create_empty_chat!(actor)
 
       assert {:error, :not_found} =
                ContentFiles.load_payload_for_execution(file.external_id, %{
@@ -237,18 +231,18 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     {parent, _context} = parent_call!(actor, :fork)
     {child, message, copied_step, reference} = child_answer!(actor, parent, :fork)
     copied = file!("copied.txt", "text/plain", "old")
-    viewed = file!("viewed.png", "image/png", @png)
+    viewed = file!("viewed.png", "image/png", png_1x1())
     first = file!("first.txt", "text/plain", "first")
     final = file!("final.txt", "text/plain", "final")
     attach!(actor, copied_step, copied, 2)
-    marker = step!(actor, message, 2)
+    marker = create_step!(actor, message, sequence: 2)
 
     opaque_item!(actor, marker, :tool_result, 1, %{
       "raw" => %{"fork_instruction" => %{"subagent" => true}}
     })
 
     attach!(actor, marker, copied, 2)
-    own_step = step!(actor, message, 3)
+    own_step = create_step!(actor, message, sequence: 3)
     attach!(actor, own_step, viewed, 1, :tool_result)
     attach!(actor, own_step, first, 2)
 
@@ -279,7 +273,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
   test "an attachment-only answer returns its files without requiring answer text" do
     %{user: actor} = user_fixture()
-    chat = chat!(actor, %{subagent: true})
+    chat = create_empty_chat!(actor, %{subagent: true})
 
     message =
       create!(
@@ -289,7 +283,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
         actor
       )
 
-    step = step!(actor, message, 1)
+    step = create_step!(actor, message, sequence: 1)
     file = file!("only.txt", "text/plain", @payload)
     attach!(actor, step, file, 1)
     reference = %{primitive: :spawn, chat_id: chat.id, generation_message_id: message.id}
@@ -303,38 +297,8 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     assert file_id == file.external_id
   end
 
-  defp persist_parent_receipt!(context, call, result) do
-    assert {:ok, lease} = Lease.acquire(context.message_id)
-
-    try do
-      assert {:ok, %ToolResult{} = receipt} =
-               Lease.with_fence(
-                 lease,
-                 fn ->
-                   Persistence.persist_tool_result!(
-                     context.message_id,
-                     context.step_id,
-                     call,
-                     ToolResult.execution_payload(result)
-                   )
-                 end,
-                 require_generating?: true
-               )
-
-      receipt
-    after
-      Lease.release(lease)
-    end
-  end
-
-  defp tool_result_items(message, tool_call_item_id) do
-    message.steps
-    |> Enum.flat_map(& &1.items)
-    |> Enum.filter(&(&1.type == :tool_result and &1.tool_call_item_id == tool_call_item_id))
-  end
-
   defp parent_call!(actor, primitive) do
-    chat = chat!(actor)
+    chat = create_empty_chat!(actor)
     message = create!(ChatMessage, :create_generating_assistant, %{chat_id: chat.id}, actor)
 
     step =
@@ -373,7 +337,11 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
   defp child_answer!(actor, parent, primitive) do
     chat =
-      chat!(actor, %{parent_chat_id: parent.id, parent_relation_kind: primitive, subagent: true})
+      create_empty_chat!(actor, %{
+        parent_chat_id: parent.id,
+        parent_relation_kind: primitive,
+        subagent: true
+      })
 
     {:ok, prompt} = Threads.add_message_to_end(chat, :user, "Work", actor: actor)
     {:ok, message} = Threads.add_message_to_end(chat, :assistant, "Done", actor: actor)
@@ -389,18 +357,6 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
     {chat, message, hd(message.steps), reference}
   end
-
-  defp chat!(actor, attrs \\ %{}),
-    do: create!(Chat, :create_empty, Map.merge(%{note: ""}, attrs), actor)
-
-  defp step!(actor, message, sequence),
-    do:
-      create!(
-        ChatMessageStep,
-        :create,
-        %{chat_message_id: message.id, sequence: sequence, status: :done},
-        actor
-      )
 
   defp attach!(actor, step, file, sequence, type \\ :artifact) do
     item =
@@ -468,19 +424,6 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     %{chat_message_step_id: step.id, sequence: sequence, type: type}
   end
 
-  defp tool!(actor, type) do
-    create!(
-      ToolInstance,
-      :create,
-      %{type: type, name: "Attachment test", alias: "attachments", config: %{}, secrets: %{}},
-      actor
-    )
-  end
-
-  defp create!(resource, action, attrs, actor) do
-    resource |> Ash.Changeset.for_create(action, attrs, actor: actor) |> Ash.create!(actor: actor)
-  end
-
   defp load_message!(id, actor),
     do: Ash.get!(ChatMessage, id, actor: actor, load: [steps: [items: [contents: [:file]]]])
 
@@ -492,5 +435,22 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     |> Enum.filter(&(&1.type == :artifact))
     |> Enum.flat_map(& &1.contents)
     |> Enum.map(& &1.file_id)
+  end
+
+  defp persist_parent_receipt!(context, call, result) do
+    assert {:ok, lease} = Lease.acquire(context.message_id)
+
+    try do
+      assert {:ok, %ToolResult{} = receipt} =
+               persist_receipt(lease, context.message_id, context.step_id, call, result)
+
+      receipt
+    after
+      Lease.release(lease)
+    end
+  end
+
+  defp tool!(actor, type) do
+    create_tool_instance!(actor, type: type, name: "Attachment test", alias: "attachments")
   end
 end

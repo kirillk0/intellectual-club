@@ -1,5 +1,3 @@
-Code.require_file("image_mapper_dummy_test.exs", __DIR__)
-
 defmodule IntellectualClub.Llm.Providers.ImageMapperTest do
   use ExUnit.Case, async: true
 
@@ -7,7 +5,7 @@ defmodule IntellectualClub.Llm.Providers.ImageMapperTest do
   alias IntellectualClub.Llm.Providers.Common.MissingProvider
   alias IntellectualClub.Llm.Providers.Demo
   alias IntellectualClub.Llm.Providers.GoogleInteractions
-  alias IntellectualClub.Llm.Providers.ImageMapperDummy
+  alias IntellectualClub.TestSupport.LlmProviders.ImageMapperDummy
   alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
   alias IntellectualClub.Llm.Providers.OpenRouterChatCompletion
   alias IntellectualClub.Llm.Providers.Responses

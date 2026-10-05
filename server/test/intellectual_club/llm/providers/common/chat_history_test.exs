@@ -1,16 +1,10 @@
 defmodule IntellectualClub.Llm.Providers.Common.ChatHistoryTest do
-  use IntellectualClub.DataCase, async: false
+  use ExUnit.Case, async: true
 
-  alias IntellectualClub.Files
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
 
   test "chat history includes tool-result media placeholder follow-up and ignores artifacts" do
-    assert {:ok, file} =
-             Files.create_from_upload(%{
-               filename: "result.png",
-               mime_type: "image/png",
-               payload: image_payload()
-             })
+    file = file(1, "result.png")
 
     history = [
       %{
@@ -67,7 +61,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistoryTest do
     assert Enum.any?(messages, fn message ->
              message["role"] == "user" and
                String.contains?(to_string(message["content"]), "[Attached file") and
-               String.contains?(to_string(message["content"]), "result.png")
+               String.contains?(to_string(message["content"]), "result.png") and
+               String.contains?(to_string(message["content"]), file.external_id)
            end)
 
     refute Enum.any?(messages, fn message ->
@@ -76,19 +71,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistoryTest do
   end
 
   test "chat history closes parallel tool calls before one combined media message" do
-    assert {:ok, first_file} =
-             Files.create_from_upload(%{
-               filename: "first.png",
-               mime_type: "image/png",
-               payload: image_payload()
-             })
-
-    assert {:ok, second_file} =
-             Files.create_from_upload(%{
-               filename: "second.png",
-               mime_type: "image/png",
-               payload: image_payload()
-             })
+    first_file = file(1, "first.png")
+    second_file = file(2, "second.png")
 
     history = [
       %{
@@ -180,9 +164,15 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatHistoryTest do
     }
   end
 
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
+  # Files are preloaded on history contents; the projection never reads the database.
+  defp file(id, filename) do
+    %{
+      id: id,
+      external_id: "00000000-0000-4000-8000-00000000000#{id}",
+      filename: filename,
+      mime_type: "image/png",
+      size_bytes: 68,
+      sha256: String.duplicate("a", 64)
+    }
   end
 end

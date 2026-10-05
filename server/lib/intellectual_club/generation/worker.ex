@@ -43,6 +43,7 @@ defmodule IntellectualClub.Generation.Worker do
     defexception [:message]
   end
 
+  @default_poll_timeout_ms 5_000
   @default_auto_retry_backoff_ms [500, 1_500, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000]
   @default_auto_retry_jitter_ratio 0.2
   @auto_retry_http_status_codes MapSet.new([429, 502, 503, 520])
@@ -97,7 +98,11 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   def poll(pid, cursor, opts \\ []) when is_map(cursor) and is_list(opts) do
-    GenServer.call(pid, {:poll, cursor, opts})
+    GenServer.call(pid, {:poll, cursor, opts}, poll_timeout_ms())
+  end
+
+  defp poll_timeout_ms do
+    Application.get_env(:intellectual_club, :generation_poll_timeout_ms, @default_poll_timeout_ms)
   end
 
   def cancel(pid) do

@@ -1,603 +1,264 @@
 defmodule IntellectualClub.Generation.AutoRetryTest do
+  @moduledoc """
+  Transient provider failures are persisted as durable error steps and the
+  Worker retries the same request in a new step after the configured backoff.
+  """
   use IntellectualClub.DataCase, async: false
 
-  alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Generation.Lease
-  alias IntellectualClub.Generation.Persistence
+  import IntellectualClub.Test.GenerationRuntime
+
+  alias IntellectualClub.Chat.{ChatMessage, Threads}
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Generation.Worker
-  alias IntellectualClub.Llm.LlmConfiguration
-  alias IntellectualClub.Llm.LlmProvider
 
-  defmodule AlwaysFailingAdapter do
-    @moduledoc false
-
-    def stream_generate(%{context: context, request_payload: request_payload}, emit) do
-      attempt = Agent.get_and_update(context.attempts, fn value -> {value + 1, value + 1} end)
-
-      emit.(
-        {:response_error,
-         %{
-           retryable: true,
-           error_kind: "network",
-           status_code: 503,
-           error_text: "Temporary network outage on attempt #{attempt}",
-           raw_request: request_payload
-         }}
-      )
-
-      :ok
-    end
-  end
-
-  defmodule FlakyAdapter do
-    @moduledoc false
-
-    def stream_generate(%{context: context, request_payload: request_payload}, emit) do
-      attempt = Agent.get_and_update(context.attempts, fn value -> {value + 1, value + 1} end)
-
-      if attempt == 1 do
-        emit.(
-          {:trace, {:set_text, "answer", :answer, 1, "Partial text that must not be persisted."}}
-        )
-
-        emit.(
-          {:response_error,
-           %{
-             retryable: Map.get(context, :retryable_hint, true),
-             error_kind: "http",
-             status_code: Map.get(context, :status_code, 429),
-             error_text: "Upstream provider is temporarily rate-limited",
-             raw_request: request_payload,
-             raw_response: %{
-               "error" => %{
-                 "code" => Map.get(context, :status_code, 429),
-                 "message" => "Provider returned error",
-                 "metadata" => %{
-                   "raw" => "Upstream provider is temporarily rate-limited",
-                   "provider_name" => "Test Provider"
-                 }
-               },
-               "status_code" => Map.get(context, :status_code, 429)
-             }
-           }}
-        )
-      else
-        emit.({:trace, {:set_text, "answer", :answer, 1, "Recovered answer."}})
-
-        emit.(
-          {:response_complete,
-           %{
-             raw_request: request_payload,
-             raw_response: %{"id" => "resp_retry_success", "output" => []},
-             usage: %{input_tokens: 12, output_tokens: 3}
-           }}
-        )
-      end
-
-      :ok
-    end
-  end
+  @steps_load [steps: [:raw_request, :raw_response, items: [:contents]]]
 
   setup do
-    previous_backoff = Application.get_env(:intellectual_club, :generation_auto_retry_backoff_ms)
-    previous_jitter = Application.get_env(:intellectual_club, :generation_auto_retry_jitter_ratio)
-
-    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0, 0, 60_000])
-    Application.put_env(:intellectual_club, :generation_auto_retry_jitter_ratio, 0.0)
-
+    put_app_env(:generation_auto_retry_backoff_ms, [0, 0, 60_000])
+    put_app_env(:generation_auto_retry_jitter_ratio, 0.0)
     IntellectualClub.Llm.Auth.OpenAIOAuthCache.clear()
-
-    on_exit(fn ->
-      restore_env(:generation_auto_retry_backoff_ms, previous_backoff)
-      restore_env(:generation_auto_retry_jitter_ratio, previous_jitter)
-    end)
-
     :ok
   end
 
-  test "generation preserves transient provider retry failures as durable error steps" do
-    %{user: actor} = user_fixture()
+  describe "transient provider failures" do
+    test "transport failures are preserved as durable error steps before each retry" do
+      %{context: context, actor: actor} =
+        start_provider_generation!(%{base_url: "http://127.0.0.1:9"}, "Please fail on transport")
 
-    provider =
-      LlmProvider
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "Retry provider",
-          type: :responses,
-          auth_method: :api_key,
-          base_url: "http://127.0.0.1:9",
-          api_key: "test-key"
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    configuration =
-      LlmConfiguration
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          provider_id: provider.id,
-          model_name: "gpt-4.1-mini",
-          note: "",
-          parameters: %{},
-          timeout_seconds: 1
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          note: "",
-          llm_configuration_id: configuration.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    {:ok, _user_message} =
-      Threads.add_message_to_end(chat, :user, "Please fail on transport", actor: actor)
-
-    {:ok, context} = GenerationSupervisor.start_generation(chat.id, actor: actor)
-
-    message = wait_for_retry_error_count!(context.message_id, actor, 3, 12_000)
-
-    steps = ordered_steps(message)
-    retry_steps = Enum.take(steps, 3)
-    retry_error_texts = Enum.map(retry_steps, &single_error_item_text!/1)
-    latest_step = List.last(steps)
-
-    assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
-    assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
-    requests = StepRequests.requests_for_steps!(steps, actor: actor)
-
-    assert Enum.map(steps, &Map.fetch!(requests, &1.id)) ==
-             List.duplicate(context.request_payload, 4)
-
-    assert Enum.all?(retry_steps, &is_nil(&1.raw_response))
-    assert is_nil(latest_step.raw_response)
-
-    assert Enum.at(retry_error_texts, 0) =~ "Transient provider error on attempt 1."
-    assert Enum.at(retry_error_texts, 0) =~ "Retrying."
-    assert Enum.at(retry_error_texts, 1) =~ "Transient provider error on attempt 2."
-    assert Enum.at(retry_error_texts, 1) =~ "Retrying."
-    assert Enum.at(retry_error_texts, 2) =~ "Transient provider error on attempt 3."
-    assert Enum.at(retry_error_texts, 2) =~ "Retrying in 60 seconds."
-    assert latest_step.id != context.step_id
-    assert latest_step.status == :waiting_provider
-    assert message.status == :generating
-    assert message.error_detail == nil
-
-    :ok = GenerationSupervisor.cancel_generation(context.message_id)
-
-    canceled = wait_for_status!(context.message_id, actor, [:canceled], 4_000)
-    assert canceled.status == :canceled
-  end
-
-  test "generation retries OAuth refresh transport errors through common retry path" do
-    %{user: actor} = user_fixture()
-
-    {:ok, attempts} = Agent.start_link(fn -> 0 end)
-    previous_req_options = Application.get_env(:intellectual_club, :openai_oauth_req_options)
-
-    Application.put_env(:intellectual_club, :openai_oauth_req_options,
-      plug: fn conn ->
-        Agent.update(attempts, &(&1 + 1))
-        Req.Test.transport_error(conn, :timeout)
-      end
-    )
-
-    on_exit(fn ->
-      if is_nil(previous_req_options) do
-        Application.delete_env(:intellectual_club, :openai_oauth_req_options)
-      else
-        Application.put_env(:intellectual_club, :openai_oauth_req_options, previous_req_options)
-      end
-    end)
-
-    oauth_refresh_token =
-      "rt_retry_transport_" <> Integer.to_string(System.unique_integer([:positive]))
-
-    provider =
-      LlmProvider
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          name: "OAuth retry provider",
-          type: :responses,
-          auth_method: :openai_oauth_refresh_token,
-          base_url: "https://api.openai.com/v1",
-          oauth_refresh_token: oauth_refresh_token
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    configuration =
-      LlmConfiguration
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          provider_id: provider.id,
-          model_name: "gpt-4.1-mini",
-          note: "",
-          parameters: %{},
-          timeout_seconds: 1
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          note: "",
-          llm_configuration_id: configuration.id
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    {:ok, _user_message} =
-      Threads.add_message_to_end(chat, :user, "Please fail OAuth refresh", actor: actor)
-
-    {:ok, context} = GenerationSupervisor.start_generation(chat.id, actor: actor)
-
-    message = wait_for_retry_error_count!(context.message_id, actor, 3, 12_000)
-
-    steps = ordered_steps(message)
-    retry_steps = Enum.take(steps, 3)
-    retry_error_texts = Enum.map(retry_steps, &single_error_item_text!/1)
-
-    assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
-    assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
-    assert Agent.get(attempts, & &1) == 3
-    assert Enum.at(retry_error_texts, 0) =~ "Transient provider error on attempt 1."
-    assert Enum.at(retry_error_texts, 0) =~ "OAuth token refresh failed"
-    assert Enum.at(retry_error_texts, 1) =~ "Transient provider error on attempt 2."
-    assert Enum.at(retry_error_texts, 1) =~ "OAuth token refresh failed"
-    assert Enum.at(retry_error_texts, 2) =~ "Transient provider error on attempt 3."
-    assert Enum.at(retry_error_texts, 2) =~ "OAuth token refresh failed"
-    assert message.error_detail == nil
-    assert message.status == :generating
-
-    :ok = GenerationSupervisor.cancel_generation(context.message_id)
-
-    canceled = wait_for_status!(context.message_id, actor, [:canceled], 4_000)
-    assert canceled.status == :canceled
-  end
-
-  for status <- [429, 520] do
-    @status status
-
-    test "generation keeps HTTP #{status} retry error step when a later attempt succeeds" do
-      %{user: actor} = user_fixture()
-      attempts = start_supervised!({Agent, fn -> 0 end})
-
-      chat =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create,
-          %{
-            note: ""
-          },
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      {:ok, user_message} =
-        Threads.add_message_to_end(chat, :user, "Please recover after retry", actor: actor)
-
-      assistant_message =
-        ChatMessage
-        |> Ash.Changeset.for_create(
-          :create_generating_assistant,
-          %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      raw_request = %{
-        "model" => "test-model",
-        "messages" => [%{"role" => "user", "content" => "Please recover after retry"}],
-        "stream" => true
-      }
-
-      step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
-
-      context = %{
-        owner_id: actor.id,
-        chat_id: chat.id,
-        message_id: assistant_message.id,
-        step_id: step_id,
-        provider_type: "test",
-        adapter_module: FlakyAdapter,
-        request_payload: raw_request,
-        timeout_ms: 1_000,
-        chunk_delay_ms: 0,
-        cold_input_price_per_million_tokens: 2.0,
-        cached_input_price_per_million_tokens: 0.5,
-        output_price_per_million_tokens: 4.0,
-        status_code: @status,
-        retryable_hint: @status == 429,
-        attempts: attempts
-      }
-
-      {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
-
-      message = wait_for_status!(assistant_message.id, actor, [:done], 12_000)
+      message = wait_for_retry_errors!(context.message_id, actor, 3)
       steps = ordered_steps(message)
+      retry_error_texts = steps |> Enum.take(3) |> Enum.map(&single_error_item_text!/1)
+      latest_step = List.last(steps)
 
-      assert Agent.get(attempts, & &1) == 2
-      assert message.status == :done
+      assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
+      assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
+      requests = StepRequests.requests_for_steps!(steps, actor: actor)
+
+      assert Enum.map(steps, &Map.fetch!(requests, &1.id)) ==
+               List.duplicate(context.request_payload, 4)
+
+      assert Enum.all?(steps, &is_nil(&1.raw_response))
+
+      for {text, attempt} <- Enum.with_index(retry_error_texts, 1) do
+        assert text =~ "Transient provider error on attempt #{attempt}."
+      end
+
+      assert Enum.at(retry_error_texts, 0) =~ "Retrying."
+      assert Enum.at(retry_error_texts, 1) =~ "Retrying."
+      assert Enum.at(retry_error_texts, 2) =~ "Retrying in 60 seconds."
+      assert latest_step.id != context.step_id
+      assert message.status == :generating
       assert message.error_detail == nil
-      assert Enum.map(steps, & &1.sequence) == [1, 2]
-      assert Enum.map(steps, & &1.status) == [:error, :done]
-      assert_in_delta Enum.at(steps, 1).cost, 0.000036, 1.0e-12
+      cancel_and_wait!(context.message_id, actor)
+    end
 
-      assert Enum.at(steps, 0).raw_response == %{
-               "error" => %{
-                 "code" => @status,
-                 "message" => "Provider returned error",
-                 "metadata" => %{
-                   "raw" => "Upstream provider is temporarily rate-limited",
-                   "provider_name" => "Test Provider"
-                 }
-               },
-               "status_code" => @status
-             }
+    test "OAuth refresh transport errors retry through the common path" do
+      attempts = :counters.new(1, [])
 
-      retry_text = single_error_item_text!(Enum.at(steps, 0))
-      final_answer_text = answer_item_text(Enum.at(steps, 1))
+      put_app_env(:openai_oauth_req_options,
+        plug: fn conn ->
+          :counters.add(attempts, 1, 1)
+          Req.Test.transport_error(conn, :timeout)
+        end
+      )
 
-      assert retry_text =~ "Transient provider error on attempt 1."
-      assert retry_text =~ "Upstream provider is temporarily rate-limited"
-      refute retry_text =~ "Partial text that must not be persisted."
-      assert final_answer_text == "Recovered answer."
+      %{context: context, actor: actor} =
+        start_provider_generation!(
+          %{
+            auth_method: :openai_oauth_refresh_token,
+            base_url: "https://api.openai.com/v1",
+            api_key: nil,
+            oauth_refresh_token: "rt_retry_transport_#{System.unique_integer([:positive])}"
+          },
+          "Please fail OAuth refresh"
+        )
+
+      message = wait_for_retry_errors!(context.message_id, actor, 3)
+      steps = ordered_steps(message)
+      retry_error_texts = steps |> Enum.take(3) |> Enum.map(&single_error_item_text!/1)
+
+      assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
+      assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
+      assert :counters.get(attempts, 1) == 3
+
+      for {text, attempt} <- Enum.with_index(retry_error_texts, 1) do
+        assert text =~ "Transient provider error on attempt #{attempt}."
+        assert text =~ "OAuth token refresh failed"
+      end
+
+      assert message.error_detail == nil
+      assert message.status == :generating
+      cancel_and_wait!(context.message_id, actor)
+    end
+
+    for status <- [429, 520] do
+      @tag status: status
+      test "an HTTP #{status} retry error step is kept when a later attempt succeeds",
+           %{status: status} do
+        raw_response = %{
+          "error" => %{
+            "code" => status,
+            "message" => "Provider returned error",
+            "metadata" => %{
+              "raw" => "Upstream provider is temporarily rate-limited",
+              "provider_name" => "Test Provider"
+            }
+          },
+          "status_code" => status
+        }
+
+        script = fn
+          1 ->
+            [
+              {:text, :answer, "Partial text that must not be persisted."},
+              {:error,
+               %{
+                 retryable: status == 429,
+                 error_kind: "http",
+                 status_code: status,
+                 error_text: "Upstream provider is temporarily rate-limited",
+                 raw_response: raw_response
+               }}
+            ]
+
+          _attempt ->
+            [
+              {:text, :answer, "Recovered answer."},
+              {:complete,
+               %{
+                 raw_response: %{"id" => "resp_retry_success", "output" => []},
+                 usage: %{input_tokens: 12, output_tokens: 3}
+               }}
+            ]
+        end
+
+        fixture =
+          generation_fixture!(
+            prompt: "Please recover after retry",
+            context: [
+              test_script: script,
+              cold_input_price_per_million_tokens: 2.0,
+              cached_input_price_per_million_tokens: 0.5,
+              output_price_per_million_tokens: 4.0
+            ]
+          )
+
+        start_worker!(fixture)
+        message = wait_for_status!(fixture.message.id, fixture.actor, :done)
+        steps = ordered_steps(message)
+
+        assert :counters.get(fixture.context.test_attempts, 1) == 2
+        assert message.error_detail == nil
+        assert Enum.map(steps, & &1.sequence) == [1, 2]
+        assert Enum.map(steps, & &1.status) == [:error, :done]
+        assert_in_delta Enum.at(steps, 1).cost, 0.000036, 1.0e-12
+        assert Enum.at(steps, 0).raw_response == raw_response
+
+        retry_text = single_error_item_text!(Enum.at(steps, 0))
+        assert retry_text =~ "Transient provider error on attempt 1."
+        assert retry_text =~ "Upstream provider is temporarily rate-limited"
+        refute retry_text =~ "Partial text that must not be persisted."
+        assert answer_item_text(Enum.at(steps, 1)) == "Recovered answer."
+      end
     end
   end
 
-  test "generation repeats the last configured retry backoff for later attempts" do
-    Application.put_env(:intellectual_club, :generation_auto_retry_backoff_ms, [0, 250])
+  describe "backoff" do
+    test "the last configured retry backoff repeats for later attempts" do
+      put_app_env(:generation_auto_retry_backoff_ms, [0, 20])
 
+      fixture =
+        generation_fixture!(
+          context: [
+            test_script: fn attempt ->
+              [{:error, %{error_text: "Temporary network outage on attempt #{attempt}"}}]
+            end
+          ]
+        )
+
+      start_worker!(fixture)
+      message = wait_for_retry_errors!(fixture.message.id, fixture.actor, 3)
+      retry_steps = message |> ordered_steps() |> Enum.take(3)
+      assert :counters.get(fixture.context.test_attempts, 1) >= 3
+      metadata = Enum.map(retry_steps, &retry_error_metadata!/1)
+      assert Enum.map(metadata, & &1["attempt"]) == [1, 2, 3]
+      assert Enum.map(metadata, & &1["retry_delay_ms"]) == [0, 20, 20]
+      cancel_and_wait!(fixture.message.id, fixture.actor)
+    end
+  end
+
+  # A chat generation started by GenerationSupervisor against a real Responses
+  # provider configuration (`provider_attrs` over an API-key provider).
+  defp start_provider_generation!(provider_attrs, prompt) do
     %{user: actor} = user_fixture()
-    {:ok, attempts} = Agent.start_link(fn -> 0 end)
 
-    %{message: assistant_message} = start_custom_worker!(actor, AlwaysFailingAdapter, attempts)
+    configuration =
+      create_configuration!(actor, %{
+        model_name: "gpt-4.1-mini",
+        timeout_seconds: 1,
+        provider_attrs: Map.merge(%{type: :responses}, provider_attrs)
+      })
 
-    message = wait_for_retry_error_count!(assistant_message.id, actor, 3, 4_000)
-    steps = ordered_steps(message)
-    retry_steps = Enum.take(steps, 3)
-
-    assert Agent.get(attempts, & &1) >= 3
-
-    assert Enum.map(retry_steps, &retry_error_metadata!/1) |> Enum.map(&Map.get(&1, "attempt")) ==
-             [1, 2, 3]
-
-    assert Enum.map(retry_steps, &retry_error_metadata!/1)
-           |> Enum.map(&Map.get(&1, "retry_delay_ms")) == [0, 250, 250]
-
-    :ok = GenerationSupervisor.cancel_generation(assistant_message.id)
-
-    canceled = wait_for_status!(assistant_message.id, actor, [:canceled], 4_000)
-    assert canceled.status == :canceled
+    chat = create_chat!(actor, %{llm_configuration_id: configuration.id})
+    {:ok, _user_message} = Threads.add_message_to_end(chat, :user, prompt, actor: actor)
+    {:ok, context} = GenerationSupervisor.start_generation(chat.id, actor: actor)
+    %{actor: actor, context: context}
   end
 
-  defp start_custom_worker!(actor, adapter, attempts) do
-    chat =
-      Chat
-      |> Ash.Changeset.for_create(
-        :create,
-        %{
-          note: ""
-        },
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    {:ok, user_message} =
-      Threads.add_message_to_end(chat, :user, "Please fail transiently", actor: actor)
-
-    assistant_message =
-      ChatMessage
-      |> Ash.Changeset.for_create(
-        :create_generating_assistant,
-        %{chat_id: chat.id, parent_id: user_message.id, token_count: 0},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    raw_request = %{
-      "model" => "test-model",
-      "messages" => [%{"role" => "user", "content" => "Please fail transiently"}],
-      "stream" => true
-    }
-
-    step_id = Persistence.ensure_step_started!(assistant_message.id, raw_request)
-
-    context = %{
-      owner_id: actor.id,
-      chat_id: chat.id,
-      message_id: assistant_message.id,
-      step_id: step_id,
-      provider_type: "test",
-      adapter_module: adapter,
-      request_payload: raw_request,
-      timeout_ms: 1_000,
-      chunk_delay_ms: 0,
-      attempts: attempts
-    }
-
-    {:ok, _pid} = start_worker_with_lease(assistant_message.id, context)
-
-    %{chat: chat, message: assistant_message}
+  defp cancel_and_wait!(message_id, actor) do
+    :ok = GenerationSupervisor.cancel_generation(message_id)
+    assert wait_for_status!(message_id, actor, :canceled).status == :canceled
   end
 
-  defp start_worker_with_lease(message_id, context) do
-    with {:ok, lease} <- Lease.acquire(message_id) do
-      Worker.start_link(%{context: context, lease: lease, lease_owner: self()})
-    end
+  defp wait_for_status!(message_id, actor, wanted) do
+    wait_for_message_status!(message_id, actor, wanted,
+      timeout: 5_000,
+      load: @steps_load,
+      stop_worker: true
+    )
   end
 
-  defp wait_for_status!(message_id, actor, wanted, timeout_ms)
-       when is_integer(message_id) and is_list(wanted) and is_integer(timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_status(message_id, actor, wanted, deadline)
+  # Waits until `count` retry error steps precede an active retry step.
+  defp wait_for_retry_errors!(message_id, actor, count) do
+    wait_until(
+      fn ->
+        message = Ash.get!(ChatMessage, message_id, actor: actor, load: @steps_load)
+        steps = ordered_steps(message)
+
+        message.status == :generating and Enum.count(steps, &retry_error_step?/1) >= count and
+          length(steps) >= count + 1 and List.last(steps).status == :waiting_provider and message
+      end,
+      timeout: 5_000,
+      interval: 20
+    )
   end
 
-  defp do_wait_for_status(message_id, actor, wanted, deadline) do
-    message =
-      Ash.get!(ChatMessage, message_id,
-        actor: actor,
-        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
-      )
-
-    if message.status in wanted do
-      wait_for_generation_worker_to_stop!(message_id)
-      message
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        # Avoid hammering the shared sandbox connection while generation runs in
-        # other processes.
-        Process.sleep(100)
-        do_wait_for_status(message_id, actor, wanted, deadline)
-      else
-        flunk("Generation did not reach expected status")
-      end
-    end
-  end
-
-  defp wait_for_retry_error_count!(message_id, actor, expected_count, timeout_ms)
-       when is_integer(message_id) and is_integer(expected_count) and expected_count > 0 do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_retry_error_count(message_id, actor, expected_count, deadline)
-  end
-
-  defp do_wait_for_retry_error_count(message_id, actor, expected_count, deadline) do
-    message =
-      Ash.get!(ChatMessage, message_id,
-        actor: actor,
-        load: [steps: [:raw_request, :raw_response, items: [:contents]]]
-      )
-
-    steps = ordered_steps(message)
-    retry_count = Enum.count(steps, &retry_error_step?/1)
-    latest_step = List.last(steps)
-
-    if message.status == :generating and retry_count >= expected_count and
-         length(steps) >= expected_count + 1 and active_retry_step?(latest_step) do
-      message
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(50)
-        do_wait_for_retry_error_count(message_id, actor, expected_count, deadline)
-      else
-        flunk("Generation did not persist expected retry errors")
-      end
-    end
-  end
-
-  defp wait_for_generation_worker_to_stop!(message_id) do
-    deadline = System.monotonic_time(:millisecond) + 2_000
-    do_wait_for_generation_worker_to_stop!(message_id, deadline)
-  end
-
-  defp do_wait_for_generation_worker_to_stop!(message_id, deadline) do
-    if GenerationSupervisor.get_generation_state(message_id) == :not_found do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(20)
-        do_wait_for_generation_worker_to_stop!(message_id, deadline)
-      else
-        flunk("Generation worker did not stop before timeout")
-      end
-    end
-  end
-
-  defp restore_env(key, nil), do: Application.delete_env(:intellectual_club, key)
-  defp restore_env(key, value), do: Application.put_env(:intellectual_club, key, value)
-
-  defp ordered_steps(%ChatMessage{} = message) do
-    message.steps
-    |> List.wrap()
-    |> Enum.sort_by(& &1.sequence)
-  end
+  defp ordered_steps(%ChatMessage{} = message), do: Enum.sort_by(message.steps, & &1.sequence)
 
   defp single_error_item_text!(step) do
-    step.items
-    |> List.wrap()
-    |> Enum.filter(&(&1.type == :error))
-    |> case do
-      [item] -> item_text(item)
-      other -> flunk("Expected exactly one error item, got #{length(other)}")
-    end
+    assert [item] = Enum.filter(step.items, &(&1.type == :error))
+    item_text(item)
   end
 
-  defp retry_error_step?(step) do
-    step.items
-    |> List.wrap()
-    |> Enum.any?(fn item ->
-      item.type == :error and
-        item.contents
-        |> List.wrap()
-        |> Enum.any?(fn content ->
-          content.kind == :opaque and retry_error_metadata?(content.content_json)
-        end)
-    end)
-  end
+  defp retry_error_step?(step), do: retry_error_metadata(step) != nil
 
   defp retry_error_metadata!(step) do
+    assert %{} = metadata = retry_error_metadata(step)
+    metadata
+  end
+
+  defp retry_error_metadata(step) do
     step.items
-    |> List.wrap()
     |> Enum.filter(&(&1.type == :error))
-    |> Enum.flat_map(fn item ->
-      item.contents
-      |> List.wrap()
-      |> Enum.filter(&(&1.kind == :opaque))
-      |> Enum.map(& &1.content_json)
-    end)
-    |> Enum.find(&retry_error_metadata?/1)
-    |> case do
-      %{} = metadata -> metadata
-      _other -> flunk("Expected retry error metadata")
-    end
+    |> Enum.flat_map(& &1.contents)
+    |> Enum.filter(&(&1.kind == :opaque))
+    |> Enum.map(& &1.content_json)
+    |> Enum.find(&(is_map(&1) and &1["retryable"] == true and is_integer(&1["attempt"])))
   end
-
-  defp retry_error_metadata?(%{} = metadata) do
-    Map.get(metadata, "retryable") == true and is_integer(Map.get(metadata, "attempt"))
-  end
-
-  defp retry_error_metadata?(_metadata), do: false
-
-  defp active_retry_step?(%{status: status}),
-    do: status in [:waiting_provider, "waiting_provider"]
-
-  defp active_retry_step?(_step), do: false
 
   defp answer_item_text(step) do
     step.items
-    |> List.wrap()
     |> Enum.filter(&(&1.type == :answer))
     |> Enum.map_join("\n\n", &item_text/1)
-  end
-
-  defp item_text(item) do
-    item.contents
-    |> List.wrap()
-    |> Enum.filter(&(&1.kind == :text))
-    |> Enum.sort_by(& &1.sequence)
-    |> Enum.map_join("", &to_string(&1.content_text || ""))
   end
 end

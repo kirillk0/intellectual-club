@@ -27,7 +27,7 @@ defmodule IntellectualClub.Outlets.Runtime do
   @runner_call_missing_error "Outlet runner no longer tracks this call; execution outcome is unknown."
   @auto_discovery_function "outlet.list_tools"
   @max_background_control_capacity 32
-  @background_control_timeout_ms 10_000
+  @default_background_control_timeout_ms 10_000
 
   @type tool_instance :: %{id: integer(), config: map()} | map()
 
@@ -117,7 +117,7 @@ defmodule IntellectualClub.Outlets.Runtime do
         __MODULE__,
         {:background_control_and_wait, tool_instance, operation, background_task_id,
          function_name, args, cursor, execution_context, expected_runner},
-        @background_control_timeout_ms
+        background_control_timeout_ms()
       )
     catch
       :exit, {:timeout, _details} ->
@@ -126,6 +126,14 @@ defmodule IntellectualClub.Outlets.Runtime do
       :exit, _reason ->
         {:error, :runtime_unavailable}
     end
+  end
+
+  defp background_control_timeout_ms do
+    Application.get_env(
+      :intellectual_club,
+      :outlet_background_control_timeout_ms,
+      @default_background_control_timeout_ms
+    )
   end
 
   @spec enqueue_if_absent(tool_instance(), String.t(), map()) :: :ok | :already_present

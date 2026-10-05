@@ -1,5 +1,7 @@
 defmodule IntellectualClub.Tools.Drivers.McpHttpTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  import IntellectualClub.TestHttpServer
 
   alias IntellectualClub.TestSupport.McpHttpJsonServer
   alias IntellectualClub.Tools.Drivers.McpHttp
@@ -112,11 +114,8 @@ defmodule IntellectualClub.Tools.Drivers.McpHttpTest do
   end
 
   defp start_json_server!(opts \\ []) do
-    port = free_port()
-
-    start_supervised!({Bandit, plug: {McpHttpJsonServer, opts}, scheme: :http, port: port})
-
-    "http://127.0.0.1:#{port}"
+    {base_url, _port} = start_http_server!({McpHttpJsonServer, opts})
+    base_url
   end
 
   defp assert_request_headers(method, expected_headers) do
@@ -125,12 +124,5 @@ defmodule IntellectualClub.Tools.Drivers.McpHttpTest do
     Enum.each(expected_headers, fn header ->
       assert header in headers
     end)
-  end
-
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
-    port
   end
 end

@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Tools.RateLimiterTest do
   use ExUnit.Case, async: false
 
+  import IntellectualClub.WaitHelpers
+
   alias IntellectualClub.Tools.RateLimiter
 
   setup do
@@ -43,17 +45,25 @@ defmodule IntellectualClub.Tools.RateLimiterTest do
     id = unique_id()
     parent = self()
 
-    assert :ok = RateLimiter.await_slot(%{id: id, rps_limit: 5})
+    granted = :counters.new(1, [])
+
+    assert :ok = RateLimiter.await_slot(%{id: id, rps_limit: 20})
 
     tasks =
       Enum.map(1..3, fn index ->
         task =
           Task.async(fn ->
-            result = RateLimiter.await_slot(%{id: id, rps_limit: 5})
+            result = RateLimiter.await_slot(%{id: id, rps_limit: 20})
+            :counters.add(granted, 1, 1)
             send(parent, {:granted, index, result})
           end)
 
-        wait_until(fn -> RateLimiter.queue_length(id) == index end)
+        # Under load an earlier caller may already be granted; it still counts
+        # as admitted before this one.
+        wait_until(fn -> RateLimiter.queue_length(id) + :counters.get(granted, 1) >= index end,
+          timeout: 500
+        )
+
         task
       end)
 
@@ -91,26 +101,13 @@ defmodule IntellectualClub.Tools.RateLimiterTest do
     assert :ok = RateLimiter.await_slot(%{id: id, rps_limit: 1})
 
     task = Task.async(fn -> RateLimiter.await_slot(%{id: id, rps_limit: 1}) end)
-    wait_until(fn -> RateLimiter.queue_length(id) == 1 end)
+    wait_until(fn -> RateLimiter.queue_length(id) == 1 end, timeout: 500)
 
     Task.shutdown(task, :brutal_kill)
-    wait_until(fn -> RateLimiter.queue_length(id) == 0 end)
+    wait_until(fn -> RateLimiter.queue_length(id) == 0 end, timeout: 500)
   end
 
   defp unique_id do
     System.unique_integer([:positive, :monotonic])
   end
-
-  defp wait_until(fun, attempts \\ 50)
-
-  defp wait_until(fun, attempts) when attempts > 0 do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(10)
-      wait_until(fun, attempts - 1)
-    end
-  end
-
-  defp wait_until(_fun, 0), do: flunk("condition was not met")
 end

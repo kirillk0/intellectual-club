@@ -3,9 +3,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
   Bookmark endpoint tests for the SPA.
   """
 
-  use IntellectualClubWeb.ConnCase, async: false
-
-  alias IntellectualClub.Chat.Chat
+  use IntellectualClubWeb.ConnCase, async: true
   alias IntellectualClub.Chat.Threads
 
   test "POST /api/bff/chat-messages/:id/bookmark toggles state and updates /state payload", %{
@@ -14,7 +12,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    chat = create_chat!(actor, "Bookmarks chat")
+    chat = create_chat!(actor)
     {:ok, message} = Threads.add_message_to_end(chat, :user, "Remember this", actor: actor)
 
     conn = post(conn, ~p"/api/bff/chat-messages/#{message.id}/bookmark", %{})
@@ -53,7 +51,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)
 
-    chat = create_chat!(actor, "Bookmarks branch chat")
+    chat = create_chat!(actor)
 
     {:ok, root} = Threads.add_message_to_end(chat, :user, "Root", actor: actor)
 
@@ -85,11 +83,5 @@ defmodule IntellectualClubWeb.Bff.BookmarksControllerTest do
     assert entry["preview"] == "Alpha reply"
     assert get_in(entry, ["chat", "id"]) == chat.id
     assert get_in(entry, ["chat", "message_count"]) == 3
-  end
-
-  defp create_chat!(actor, _title) do
-    Chat
-    |> Ash.Changeset.for_create(:create, %{note: ""}, actor: actor)
-    |> Ash.create!(actor: actor)
   end
 end

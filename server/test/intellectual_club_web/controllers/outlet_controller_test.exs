@@ -19,657 +19,679 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     :ok
   end
 
-  test "POST /api/outlet/poll auto-discovers once per runner session and reconciles functions" do
-    reset_runtime!()
+  describe "POST /api/outlet/poll" do
+    test "auto-discovers once per runner session and reconciles functions" do
+      reset_runtime!()
 
-    %{user: actor} = user_fixture()
+      %{user: actor} = user_fixture()
 
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Auto discovery outlet",
-        secrets: %{"token" => "runner-auto-discovery"}
-      })
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Auto discovery outlet",
+          secrets: %{"token" => "runner-auto-discovery"}
+        )
 
-    _existing =
-      create_tool_function!(actor, tool_instance.id, %{
-        name: "old_tool",
-        description: "Outdated tool",
-        parameters_schema: %{"type" => "object"},
-        enabled: true
-      })
+      _existing =
+        create_tool_function!(actor, tool_instance.id, %{
+          name: "old_tool",
+          description: "Outdated tool",
+          parameters_schema: %{"type" => "object"},
+          enabled: true
+        })
 
-    poll_response =
-      poll_outlet("runner-auto-discovery", %{
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-1",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
+      poll_response =
+        poll_outlet("runner-auto-discovery", %{
+          "runner_id" => "runner-auto",
+          "runner_session_id" => "runner-session-1",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    assert poll_response["status"] == "ok"
-    [task] = poll_response["tasks"]
-    assert task["function"] == "outlet.list_tools"
+      assert poll_response["status"] == "ok"
+      [task] = poll_response["tasks"]
+      assert task["function"] == "outlet.list_tools"
 
-    repeated_same_session =
-      poll_outlet("runner-auto-discovery", %{
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-1",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
+      repeated_same_session =
+        poll_outlet("runner-auto-discovery", %{
+          "runner_id" => "runner-auto",
+          "runner_session_id" => "runner-session-1",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    assert repeated_same_session["status"] == "idle"
-    assert repeated_same_session["tasks"] == []
+      assert repeated_same_session["status"] == "idle"
+      assert repeated_same_session["tasks"] == []
 
-    _complete_response =
-      complete_outlet("runner-auto-discovery", %{
-        "call_id" => task["call_id"],
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-1",
-        "status" => "done",
-        "result_text" => "{\"tools\":[]}",
-        "result_raw" => %{
-          "tools" => [
-            %{
-              "name" => "run_command",
-              "description" => "Run a shell command.",
-              "input_schema" => %{
-                "type" => "object",
-                "properties" => %{"command" => %{"type" => "string"}},
-                "required" => ["command"]
-              }
-            }
-          ]
-        }
-      })
-
-    same_session_after_sync =
-      poll_outlet("runner-auto-discovery", %{
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-1",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    assert same_session_after_sync["status"] == "idle"
-    assert same_session_after_sync["tasks"] == []
-
-    age_runner!(tool_instance.id, 100_000)
-
-    new_session_response =
-      poll_outlet("runner-auto-discovery", %{
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-2",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    assert new_session_response["status"] == "ok"
-    [new_session_task] = new_session_response["tasks"]
-    assert new_session_task["function"] == "outlet.list_tools"
-
-    _new_session_complete =
-      complete_outlet("runner-auto-discovery", %{
-        "call_id" => new_session_task["call_id"],
-        "runner_id" => "runner-auto",
-        "runner_session_id" => "runner-session-2",
-        "status" => "done",
-        "result_text" => "{\"tools\":[]}",
-        "result_raw" => %{
-          "tools" => [
-            %{
-              "name" => "run_script",
-              "description" => "Run a script.",
-              "input_schema" => %{
-                "type" => "object",
-                "properties" => %{"path" => %{"type" => "string"}},
-                "required" => ["path"]
-              }
-            }
-          ]
-        }
-      })
-
-    functions = list_tool_functions(tool_instance.id)
-
-    assert Enum.map(functions, & &1.name) == ["run_script"]
-    assert Enum.all?(functions, & &1.enabled)
-
-    refreshed = Ash.get!(ToolInstance, tool_instance.id, authorize?: false)
-    assert %DateTime{} = refreshed.last_discovered_at
-    assert refreshed.last_discovery_error == ""
-  end
-
-  test "GET /api/outlet/metadata returns outlet tool instance metadata" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Metadata API outlet",
-        secrets: %{"token" => "runner-metadata-api"}
-      })
-
-    response = metadata_outlet_response("runner-metadata-api", 200)
-
-    assert response["status"] == "ok"
-
-    assert response["metadata"]["tool_instance"] == %{
-             "id" => tool_instance.id,
-             "type" => "outlet",
-             "name" => "Metadata API outlet"
-           }
-
-    refute Map.has_key?(response["metadata"]["tool_instance"], "secrets")
-    refute Map.has_key?(response["metadata"]["tool_instance"], "owner_id")
-    refute Map.has_key?(response["metadata"], "runner")
-  end
-
-  test "GET /api/outlet/metadata rejects missing or invalid tokens" do
-    missing_response =
-      build_conn()
-      |> get("/api/outlet/metadata/")
-      |> json_response(401)
-
-    invalid_response = metadata_outlet_response("missing-token", 401)
-
-    assert missing_response["error"] == "Unauthorized."
-    assert invalid_response["error"] == "Unauthorized."
-  end
-
-  test "POST /api/outlet/poll replaces an online session for the same runner id" do
-    reset_runtime!()
-
-    %{user: actor} = user_fixture()
-
-    _tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Restartable outlet",
-        secrets: %{"token" => "runner-replacement"}
-      })
-
-    first_response =
-      poll_outlet("runner-replacement", %{
-        "runner_id" => "runner-replace",
-        "runner_session_id" => "runner-session-1",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    assert first_response["status"] == "ok"
-    [old_task] = first_response["tasks"]
-
-    second_response =
-      poll_outlet("runner-replacement", %{
-        "runner_id" => "runner-replace",
-        "runner_session_id" => "runner-session-2",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    assert second_response["status"] == "ok"
-    [new_task] = second_response["tasks"]
-    assert new_task["call_id"] != old_task["call_id"]
-
-    stale_complete =
-      complete_outlet_response(
-        "runner-replacement",
-        %{
-          "call_id" => old_task["call_id"],
-          "runner_id" => "runner-replace",
+      _complete_response =
+        complete_outlet("runner-auto-discovery", %{
+          "call_id" => task["call_id"],
+          "runner_id" => "runner-auto",
           "runner_session_id" => "runner-session-1",
           "status" => "done",
-          "result_raw" => %{"tools" => []}
-        },
-        404
-      )
+          "result_text" => "{\"tools\":[]}",
+          "result_raw" => %{
+            "tools" => [
+              %{
+                "name" => "run_command",
+                "description" => "Run a shell command.",
+                "input_schema" => %{
+                  "type" => "object",
+                  "properties" => %{"command" => %{"type" => "string"}},
+                  "required" => ["command"]
+                }
+              }
+            ]
+          }
+        })
 
-    assert stale_complete["error"] == "Call not found."
+      same_session_after_sync =
+        poll_outlet("runner-auto-discovery", %{
+          "runner_id" => "runner-auto",
+          "runner_session_id" => "runner-session-1",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    assert %{"status" => "ok"} =
-             complete_outlet("runner-replacement", %{
-               "call_id" => new_task["call_id"],
-               "runner_id" => "runner-replace",
-               "runner_session_id" => "runner-session-2",
-               "status" => "done",
-               "result_raw" => %{"tools" => []}
-             })
-  end
+      assert same_session_after_sync["status"] == "idle"
+      assert same_session_after_sync["tasks"] == []
 
-  test "POST /api/outlet/poll rejects a different runner id while online" do
-    reset_runtime!()
+      age_runner!(tool_instance.id, 100_000)
 
-    %{user: actor} = user_fixture()
+      new_session_response =
+        poll_outlet("runner-auto-discovery", %{
+          "runner_id" => "runner-auto",
+          "runner_session_id" => "runner-session-2",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    _tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Single runner outlet",
-        secrets: %{"token" => "runner-single-active"}
-      })
+      assert new_session_response["status"] == "ok"
+      [new_session_task] = new_session_response["tasks"]
+      assert new_session_task["function"] == "outlet.list_tools"
 
-    first_response =
-      poll_outlet("runner-single-active", %{
-        "runner_id" => "runner-a",
-        "runner_session_id" => "runner-a-session",
-        "capacity" => 0,
-        "max_wait_seconds" => 0
-      })
+      _new_session_complete =
+        complete_outlet("runner-auto-discovery", %{
+          "call_id" => new_session_task["call_id"],
+          "runner_id" => "runner-auto",
+          "runner_session_id" => "runner-session-2",
+          "status" => "done",
+          "result_text" => "{\"tools\":[]}",
+          "result_raw" => %{
+            "tools" => [
+              %{
+                "name" => "run_script",
+                "description" => "Run a script.",
+                "input_schema" => %{
+                  "type" => "object",
+                  "properties" => %{"path" => %{"type" => "string"}},
+                  "required" => ["path"]
+                }
+              }
+            ]
+          }
+        })
 
-    assert first_response["status"] == "idle"
+      functions = list_tool_functions(tool_instance.id)
 
-    conflict_response =
-      poll_outlet_response(
-        "runner-single-active",
-        %{
-          "runner_id" => "runner-b",
-          "runner_session_id" => "runner-b-session",
+      assert Enum.map(functions, & &1.name) == ["run_script"]
+      assert Enum.all?(functions, & &1.enabled)
+
+      refreshed = Ash.get!(ToolInstance, tool_instance.id, authorize?: false)
+      assert %DateTime{} = refreshed.last_discovered_at
+      assert refreshed.last_discovery_error == ""
+    end
+
+    test "replaces an online session for the same runner id" do
+      reset_runtime!()
+
+      %{user: actor} = user_fixture()
+
+      _tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Restartable outlet",
+          secrets: %{"token" => "runner-replacement"}
+        )
+
+      first_response =
+        poll_outlet("runner-replacement", %{
+          "runner_id" => "runner-replace",
+          "runner_session_id" => "runner-session-1",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
+
+      assert first_response["status"] == "ok"
+      [old_task] = first_response["tasks"]
+
+      second_response =
+        poll_outlet("runner-replacement", %{
+          "runner_id" => "runner-replace",
+          "runner_session_id" => "runner-session-2",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
+
+      assert second_response["status"] == "ok"
+      [new_task] = second_response["tasks"]
+      assert new_task["call_id"] != old_task["call_id"]
+
+      stale_complete =
+        complete_outlet_response(
+          "runner-replacement",
+          %{
+            "call_id" => old_task["call_id"],
+            "runner_id" => "runner-replace",
+            "runner_session_id" => "runner-session-1",
+            "status" => "done",
+            "result_raw" => %{"tools" => []}
+          },
+          404
+        )
+
+      assert stale_complete["error"] == "Call not found."
+
+      assert %{"status" => "ok"} =
+               complete_outlet("runner-replacement", %{
+                 "call_id" => new_task["call_id"],
+                 "runner_id" => "runner-replace",
+                 "runner_session_id" => "runner-session-2",
+                 "status" => "done",
+                 "result_raw" => %{"tools" => []}
+               })
+    end
+
+    test "rejects a different runner id while online" do
+      reset_runtime!()
+
+      %{user: actor} = user_fixture()
+
+      _tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Single runner outlet",
+          secrets: %{"token" => "runner-single-active"}
+        )
+
+      first_response =
+        poll_outlet("runner-single-active", %{
+          "runner_id" => "runner-a",
+          "runner_session_id" => "runner-a-session",
           "capacity" => 0,
           "max_wait_seconds" => 0
-        },
-        409
-      )
+        })
 
-    assert conflict_response["error"] == "Runner already connected."
+      assert first_response["status"] == "idle"
+
+      conflict_response =
+        poll_outlet_response(
+          "runner-single-active",
+          %{
+            "runner_id" => "runner-b",
+            "runner_session_id" => "runner-b-session",
+            "capacity" => 0,
+            "max_wait_seconds" => 0
+          },
+          409
+        )
+
+      assert conflict_response["error"] == "Runner already connected."
+    end
+
+    test "waits for positive capacity before scheduling auto-discovery" do
+      reset_runtime!()
+
+      %{user: actor} = user_fixture()
+
+      _tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Capacity-gated outlet",
+          secrets: %{"token" => "runner-capacity-gated"}
+        )
+
+      zero_capacity_response =
+        poll_outlet("runner-capacity-gated", %{
+          "runner_id" => "runner-capacity",
+          "runner_session_id" => "runner-capacity-session",
+          "capacity" => 0,
+          "max_wait_seconds" => 0
+        })
+
+      assert zero_capacity_response["status"] == "idle"
+      assert zero_capacity_response["tasks"] == []
+
+      positive_capacity_response =
+        poll_outlet("runner-capacity-gated", %{
+          "runner_id" => "runner-capacity",
+          "runner_session_id" => "runner-capacity-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
+
+      assert positive_capacity_response["status"] == "ok"
+
+      assert Enum.map(positive_capacity_response["tasks"], & &1["function"]) == [
+               "outlet.list_tools"
+             ]
+    end
   end
 
-  test "POST /api/outlet/poll waits for positive capacity before scheduling auto-discovery" do
-    reset_runtime!()
+  describe "outlet metadata" do
+    test "GET /api/outlet/metadata returns outlet tool instance metadata" do
+      %{user: actor} = user_fixture()
 
-    %{user: actor} = user_fixture()
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Metadata API outlet",
+          secrets: %{"token" => "runner-metadata-api"}
+        )
 
-    _tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Capacity-gated outlet",
-        secrets: %{"token" => "runner-capacity-gated"}
-      })
+      response = metadata_outlet_response("runner-metadata-api", 200)
 
-    zero_capacity_response =
-      poll_outlet("runner-capacity-gated", %{
-        "runner_id" => "runner-capacity",
-        "runner_session_id" => "runner-capacity-session",
-        "capacity" => 0,
-        "max_wait_seconds" => 0
-      })
+      assert response["status"] == "ok"
 
-    assert zero_capacity_response["status"] == "idle"
-    assert zero_capacity_response["tasks"] == []
+      assert response["metadata"]["tool_instance"] == %{
+               "id" => tool_instance.id,
+               "type" => "outlet",
+               "name" => "Metadata API outlet"
+             }
 
-    positive_capacity_response =
-      poll_outlet("runner-capacity-gated", %{
-        "runner_id" => "runner-capacity",
-        "runner_session_id" => "runner-capacity-session",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
+      refute Map.has_key?(response["metadata"]["tool_instance"], "secrets")
+      refute Map.has_key?(response["metadata"]["tool_instance"], "owner_id")
+      refute Map.has_key?(response["metadata"], "runner")
+    end
 
-    assert positive_capacity_response["status"] == "ok"
+    test "GET /api/outlet/metadata rejects missing or invalid tokens" do
+      missing_response =
+        build_conn()
+        |> get("/api/outlet/metadata/")
+        |> json_response(401)
 
-    assert Enum.map(positive_capacity_response["tasks"], & &1["function"]) == [
-             "outlet.list_tools"
-           ]
+      invalid_response = metadata_outlet_response("missing-token", 401)
+
+      assert missing_response["error"] == "Unauthorized."
+      assert invalid_response["error"] == "Unauthorized."
+    end
+
+    test "runtime exposes online runner metadata for outlet instance prompt context" do
+      reset_runtime!()
+
+      %{user: actor} = user_fixture()
+
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Metadata outlet",
+          secrets: %{"token" => "runner-metadata"}
+        )
+
+      _poll_response =
+        poll_outlet("runner-metadata", %{
+          "runner_id" => "runner-metadata",
+          "runner_session_id" => "runner-metadata-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0,
+          "metadata" => %{
+            "hostname" => "worker-1",
+            "platform" => "linux",
+            "sys_platform" => "linux",
+            "os_name" => "posix",
+            "shell_kind" => "bash",
+            "shell_display" => "/bin/bash -c"
+          }
+        })
+
+      assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+
+      assert {:error, :not_found} =
+               Runtime.complete(tool_instance, %{
+                 "runner_id" => "runner-metadata",
+                 "runner_session_id" => "runner-metadata-session",
+                 "call_id" => "missing-call"
+               })
+
+      assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+
+      context = IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance)
+
+      assert String.contains?(context, "Runner hostname: worker-1")
+      assert String.contains?(context, "Runner platform: linux")
+      assert String.contains?(context, "Runner shell: /bin/bash -c (kind: bash)")
+
+      age_runner!(tool_instance.id, 100_000)
+
+      assert Runtime.runner_metadata(tool_instance) == %{}
+      assert IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance) == nil
+    end
   end
 
-  test "POST /api/outlet/complete records auto-discovery errors without changing stored functions" do
-    reset_runtime!()
+  describe "POST /api/outlet/complete" do
+    test "records auto-discovery errors without changing stored functions" do
+      reset_runtime!()
 
-    %{user: actor} = user_fixture()
+      %{user: actor} = user_fixture()
 
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Auto discovery error outlet",
-        secrets: %{"token" => "runner-auto-error"}
-      })
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Auto discovery error outlet",
+          secrets: %{"token" => "runner-auto-error"}
+        )
 
-    _existing =
-      create_tool_function!(actor, tool_instance.id, %{
-        name: "keep_tool",
-        description: "Keep me",
-        parameters_schema: %{"type" => "object"},
-        enabled: true
-      })
+      _existing =
+        create_tool_function!(actor, tool_instance.id, %{
+          name: "keep_tool",
+          description: "Keep me",
+          parameters_schema: %{"type" => "object"},
+          enabled: true
+        })
 
-    poll_response =
-      poll_outlet("runner-auto-error", %{
-        "runner_id" => "runner-error",
-        "runner_session_id" => "runner-error-session",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
+      poll_response =
+        poll_outlet("runner-auto-error", %{
+          "runner_id" => "runner-error",
+          "runner_session_id" => "runner-error-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    assert poll_response["status"] == "ok"
-    [task] = poll_response["tasks"]
-    assert task["function"] == "outlet.list_tools"
+      assert poll_response["status"] == "ok"
+      [task] = poll_response["tasks"]
+      assert task["function"] == "outlet.list_tools"
 
-    _complete_response =
-      complete_outlet("runner-auto-error", %{
-        "call_id" => task["call_id"],
-        "runner_id" => "runner-error",
-        "runner_session_id" => "runner-error-session",
-        "status" => "done",
-        "result_text" => "{\"tools\":\"bad\"}",
-        "result_raw" => %{"tools" => "bad"}
-      })
+      _complete_response =
+        complete_outlet("runner-auto-error", %{
+          "call_id" => task["call_id"],
+          "runner_id" => "runner-error",
+          "runner_session_id" => "runner-error-session",
+          "status" => "done",
+          "result_text" => "{\"tools\":\"bad\"}",
+          "result_raw" => %{"tools" => "bad"}
+        })
 
-    functions = list_tool_functions(tool_instance.id)
-    assert Enum.map(functions, & &1.name) == ["keep_tool"]
+      functions = list_tool_functions(tool_instance.id)
+      assert Enum.map(functions, & &1.name) == ["keep_tool"]
 
-    refreshed = Ash.get!(ToolInstance, tool_instance.id, authorize?: false)
-    refute refreshed.last_discovered_at
-    assert refreshed.last_discovery_error == "Outlet discovery returned an invalid payload."
+      refreshed = Ash.get!(ToolInstance, tool_instance.id, authorize?: false)
+      refute refreshed.last_discovered_at
+      assert refreshed.last_discovery_error == "Outlet discovery returned an invalid payload."
+    end
   end
 
-  test "runtime exposes online runner metadata for outlet instance prompt context" do
-    reset_runtime!()
+  describe "call files" do
+    test "POST /api/outlet/calls/:call_id/files accepts unicode filename query parameter" do
+      reset_runtime!()
 
-    %{user: actor} = user_fixture()
+      %{user: actor} = user_fixture()
 
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Metadata outlet",
-        secrets: %{"token" => "runner-metadata"}
-      })
+      _tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Unicode upload outlet",
+          secrets: %{"token" => "runner-unicode-upload"}
+        )
 
-    _poll_response =
-      poll_outlet("runner-metadata", %{
-        "runner_id" => "runner-metadata",
-        "runner_session_id" => "runner-metadata-session",
+      poll_response =
+        poll_outlet("runner-unicode-upload", %{
+          "runner_id" => "runner-upload",
+          "runner_session_id" => "runner-upload-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
+
+      assert poll_response["status"] == "ok"
+      [task] = poll_response["tasks"]
+
+      filename = "отчет.txt"
+
+      response =
+        build_conn()
+        |> put_req_header("authorization", "Bearer runner-unicode-upload")
+        |> put_req_header("content-type", "text/plain")
+        |> post(
+          "/api/outlet/calls/#{task["call_id"]}/files?filename=#{URI.encode_www_form(filename)}",
+          "payload"
+        )
+        |> json_response(200)
+
+      assert response["file"]["filename"] == filename
+      assert response["file"]["mime_type"] == "text/plain"
+      assert response["file"]["size_bytes"] == 7
+    end
+
+    test "GET /api/outlet/calls/:call_id/files/:file_id streams an available file" do
+      reset_runtime!()
+
+      %{user: actor} = user_fixture()
+
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Download outlet",
+          secrets: %{"token" => "runner-download-file"}
+        )
+
+      {:ok, file} = Files.create_from_binary("download.txt", "text/plain", "download payload")
+
+      context = %ExecutionContext{
+        owner_id: actor.id,
+        chat_id: 1,
+        available_file_external_ids: [file.external_id]
+      }
+
+      assert :ok = Runtime.enqueue_if_absent(tool_instance, "download_file", %{}, context)
+
+      poll_response =
+        poll_outlet("runner-download-file", %{
+          "runner_id" => "runner-download",
+          "runner_session_id" => "runner-download-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
+
+      assert poll_response["status"] == "ok"
+      [task] = poll_response["tasks"]
+      assert task["function"] == "download_file"
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer runner-download-file")
+        |> get("/api/outlet/calls/#{task["call_id"]}/files/#{file.external_id}")
+
+      assert response(conn, 200) == "download payload"
+      assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
+      assert List.first(get_resp_header(conn, "content-disposition")) =~ "download.txt"
+    end
+
+    test "POST /api/outlet/calls/:call_id/files accepts a durable background task id after its control call completes" do
+      %{user: actor} = user_fixture()
+
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Durable upload outlet",
+          secrets: %{"token" => "runner-durable-upload"}
+        )
+
+      runner_payload = %{
+        "runner_id" => "runner-durable-upload",
+        "runner_session_id" => "runner-durable-upload-session",
         "capacity" => 1,
-        "max_wait_seconds" => 0,
-        "metadata" => %{
-          "hostname" => "worker-1",
-          "platform" => "linux",
-          "sys_platform" => "linux",
-          "os_name" => "posix",
-          "shell_kind" => "bash",
-          "shell_display" => "/bin/bash -c"
-        }
-      })
+        "control_capacity" => 1,
+        "max_wait_seconds" => 0
+      }
 
-    assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+      discovery_response = poll_outlet("runner-durable-upload", runner_payload)
+      [discovery_task] = discovery_response["tasks"]
 
-    assert {:error, :not_found} =
-             Runtime.complete(tool_instance, %{
-               "runner_id" => "runner-metadata",
-               "runner_session_id" => "runner-metadata-session",
-               "call_id" => "missing-call"
-             })
+      assert %{"status" => "ok"} =
+               complete_outlet("runner-durable-upload", %{
+                 "call_id" => discovery_task["call_id"],
+                 "runner_id" => runner_payload["runner_id"],
+                 "runner_session_id" => runner_payload["runner_session_id"],
+                 "status" => "done",
+                 "result_raw" => %{"tools" => []}
+               })
 
-    assert Runtime.runner_metadata(tool_instance)["platform"] == "linux"
+      background_task = create_outlet_background_task!(actor, tool_instance)
 
-    context = IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance)
+      control_waiter =
+        Task.async(fn ->
+          Runtime.background_control_and_wait(
+            tool_instance,
+            "background_start",
+            background_task.id,
+            "run_command",
+            %{"command" => "echo durable"},
+            nil,
+            nil
+          )
+        end)
 
-    assert String.contains?(context, "Runner hostname: worker-1")
-    assert String.contains?(context, "Runner platform: linux")
-    assert String.contains?(context, "Runner shell: /bin/bash -c (kind: bash)")
+      control_response =
+        poll_outlet(
+          "runner-durable-upload",
+          Map.merge(runner_payload, %{
+            "capacity" => 0,
+            "control_capacity" => 1,
+            "max_wait_seconds" => 1
+          })
+        )
 
-    age_runner!(tool_instance.id, 100_000)
+      [control_task] = control_response["tasks"]
+      assert control_task["operation"] == "background_start"
+      assert control_task["background_task_id"] == background_task.id
+      assert control_task["call_id"] != background_task.id
 
-    assert Runtime.runner_metadata(tool_instance) == %{}
-    assert IntellectualClub.Tools.Drivers.Outlet.instance_prompt_context(tool_instance) == nil
+      assert %{"status" => "ok"} =
+               complete_outlet("runner-durable-upload", %{
+                 "call_id" => control_task["call_id"],
+                 "runner_id" => runner_payload["runner_id"],
+                 "runner_session_id" => runner_payload["runner_session_id"],
+                 "status" => "done",
+                 "result_raw" => %{
+                   "background_task_id" => background_task.id,
+                   "status" => "running",
+                   "progress" => [],
+                   "next_cursor" => "0"
+                 }
+               })
+
+      assert {:ok, _result} = Task.await(control_waiter, 5_000)
+
+      assert {:error, :not_found} =
+               Runtime.fetch_running_call(tool_instance, control_task["call_id"])
+
+      response =
+        build_conn()
+        |> put_req_header("authorization", "Bearer runner-durable-upload")
+        |> put_req_header("content-type", "text/plain")
+        |> post(
+          "/api/outlet/calls/#{background_task.id}/files?filename=durable.txt",
+          "durable payload"
+        )
+        |> json_response(200)
+
+      assert response["file"]["filename"] == "durable.txt"
+      assert response["file"]["size_bytes"] == 15
+    end
+
+    test "GET /api/outlet/calls/:call_id/files/:file_id uses persisted background execution context" do
+      %{user: actor} = user_fixture()
+
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Durable download outlet",
+          secrets: %{"token" => "runner-durable-download"}
+        )
+
+      {:ok, file} =
+        Files.create_from_binary("durable-download.txt", "text/plain", "durable download payload")
+
+      background_task =
+        create_outlet_background_task!(actor, tool_instance, %{
+          execution_context: %{
+            "owner_id" => actor.id,
+            "available_file_external_ids" => [file.external_id]
+          }
+        })
+
+      assert {:error, :not_found} = Runtime.fetch_running_call(tool_instance, background_task.id)
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer runner-durable-download")
+        |> get("/api/outlet/calls/#{background_task.id}/files/#{file.external_id}")
+
+      assert response(conn, 200) == "durable download payload"
+      assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
+      assert List.first(get_resp_header(conn, "content-disposition")) =~ "durable-download.txt"
+    end
   end
 
-  test "POST /api/outlet/calls/:call_id/files accepts unicode filename query parameter" do
-    reset_runtime!()
+  describe "GET /api/outlet/calls/:call_id/secrets/:name" do
+    test "fetches only currently bound secrets" do
+      reset_runtime!()
+      %{user: actor} = user_fixture()
 
-    %{user: actor} = user_fixture()
+      tool_instance =
+        create_tool_instance!(actor,
+          type: "outlet",
+          name: "Secret outlet",
+          secrets: %{"token" => "runner-secret-fetch"}
+        )
 
-    _tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Unicode upload outlet",
-        secrets: %{"token" => "runner-unicode-upload"}
-      })
+      secret =
+        Secret
+        |> Ash.Changeset.for_create(
+          :create,
+          %{name: "API token", description: "API token", value: "managed-secret-value"},
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
 
-    poll_response =
-      poll_outlet("runner-unicode-upload", %{
-        "runner_id" => "runner-upload",
-        "runner_session_id" => "runner-upload-session",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
+      binding =
+        ToolInstanceSecret
+        |> Ash.Changeset.for_create(
+          :create,
+          %{tool_instance_id: tool_instance.id, secret_id: secret.id, env_name: "API_TOKEN"},
+          actor: actor
+        )
+        |> Ash.create!(actor: actor)
 
-    assert poll_response["status"] == "ok"
-    [task] = poll_response["tasks"]
+      context = %ExecutionContext{owner_id: actor.id}
+      assert :ok = Runtime.enqueue_if_absent(tool_instance, "run_command", %{}, context)
 
-    filename = "отчет.txt"
+      poll_response =
+        poll_outlet("runner-secret-fetch", %{
+          "runner_id" => "runner-secret-fetch",
+          "runner_session_id" => "runner-secret-fetch-session",
+          "capacity" => 1,
+          "max_wait_seconds" => 0
+        })
 
-    response =
-      build_conn()
-      |> put_req_header("authorization", "Bearer runner-unicode-upload")
-      |> put_req_header("content-type", "text/plain")
-      |> post(
-        "/api/outlet/calls/#{task["call_id"]}/files?filename=#{URI.encode_www_form(filename)}",
-        "payload"
-      )
-      |> json_response(200)
+      [task] = poll_response["tasks"]
 
-    assert response["file"]["filename"] == filename
-    assert response["file"]["mime_type"] == "text/plain"
-    assert response["file"]["size_bytes"] == 7
-  end
+      response =
+        build_conn()
+        |> put_req_header("authorization", "Bearer runner-secret-fetch")
+        |> get("/api/outlet/calls/#{task["call_id"]}/secrets/API_TOKEN")
+        |> json_response(200)
 
-  test "GET /api/outlet/calls/:call_id/secrets/:name fetches only currently bound secrets" do
-    reset_runtime!()
-    %{user: actor} = user_fixture()
+      assert response == %{"name" => "API_TOKEN", "value" => "managed-secret-value"}
 
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Secret outlet",
-        secrets: %{"token" => "runner-secret-fetch"}
-      })
+      binding
+      |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
+      |> Ash.destroy!(actor: actor)
 
-    secret =
-      Secret
-      |> Ash.Changeset.for_create(
-        :create,
-        %{name: "API token", description: "API token", value: "managed-secret-value"},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    binding =
-      ToolInstanceSecret
-      |> Ash.Changeset.for_create(
-        :create,
-        %{tool_instance_id: tool_instance.id, secret_id: secret.id, env_name: "API_TOKEN"},
-        actor: actor
-      )
-      |> Ash.create!(actor: actor)
-
-    context = %ExecutionContext{owner_id: actor.id}
-    assert :ok = Runtime.enqueue_if_absent(tool_instance, "run_command", %{}, context)
-
-    poll_response =
-      poll_outlet("runner-secret-fetch", %{
-        "runner_id" => "runner-secret-fetch",
-        "runner_session_id" => "runner-secret-fetch-session",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    [task] = poll_response["tasks"]
-
-    response =
       build_conn()
       |> put_req_header("authorization", "Bearer runner-secret-fetch")
       |> get("/api/outlet/calls/#{task["call_id"]}/secrets/API_TOKEN")
-      |> json_response(200)
-
-    assert response == %{"name" => "API_TOKEN", "value" => "managed-secret-value"}
-
-    binding
-    |> Ash.Changeset.for_destroy(:destroy, %{}, actor: actor)
-    |> Ash.destroy!(actor: actor)
-
-    build_conn()
-    |> put_req_header("authorization", "Bearer runner-secret-fetch")
-    |> get("/api/outlet/calls/#{task["call_id"]}/secrets/API_TOKEN")
-    |> json_response(404)
-  end
-
-  test "GET /api/outlet/calls/:call_id/files/:file_id streams an available file" do
-    reset_runtime!()
-
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Download outlet",
-        secrets: %{"token" => "runner-download-file"}
-      })
-
-    {:ok, file} = Files.create_from_binary("download.txt", "text/plain", "download payload")
-
-    context = %ExecutionContext{
-      owner_id: actor.id,
-      chat_id: 1,
-      available_file_external_ids: [file.external_id]
-    }
-
-    assert :ok = Runtime.enqueue_if_absent(tool_instance, "download_file", %{}, context)
-
-    poll_response =
-      poll_outlet("runner-download-file", %{
-        "runner_id" => "runner-download",
-        "runner_session_id" => "runner-download-session",
-        "capacity" => 1,
-        "max_wait_seconds" => 0
-      })
-
-    assert poll_response["status"] == "ok"
-    [task] = poll_response["tasks"]
-    assert task["function"] == "download_file"
-
-    conn =
-      build_conn()
-      |> put_req_header("authorization", "Bearer runner-download-file")
-      |> get("/api/outlet/calls/#{task["call_id"]}/files/#{file.external_id}")
-
-    assert response(conn, 200) == "download payload"
-    assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
-    assert List.first(get_resp_header(conn, "content-disposition")) =~ "download.txt"
-  end
-
-  test "POST /api/outlet/calls/:call_id/files accepts a durable background task id after its control call completes" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Durable upload outlet",
-        secrets: %{"token" => "runner-durable-upload"}
-      })
-
-    runner_payload = %{
-      "runner_id" => "runner-durable-upload",
-      "runner_session_id" => "runner-durable-upload-session",
-      "capacity" => 1,
-      "control_capacity" => 1,
-      "max_wait_seconds" => 0
-    }
-
-    discovery_response = poll_outlet("runner-durable-upload", runner_payload)
-    [discovery_task] = discovery_response["tasks"]
-
-    assert %{"status" => "ok"} =
-             complete_outlet("runner-durable-upload", %{
-               "call_id" => discovery_task["call_id"],
-               "runner_id" => runner_payload["runner_id"],
-               "runner_session_id" => runner_payload["runner_session_id"],
-               "status" => "done",
-               "result_raw" => %{"tools" => []}
-             })
-
-    background_task = create_outlet_background_task!(actor, tool_instance)
-
-    control_waiter =
-      Task.async(fn ->
-        Runtime.background_control_and_wait(
-          tool_instance,
-          "background_start",
-          background_task.id,
-          "run_command",
-          %{"command" => "echo durable"},
-          nil,
-          nil
-        )
-      end)
-
-    control_response =
-      poll_outlet(
-        "runner-durable-upload",
-        Map.merge(runner_payload, %{
-          "capacity" => 0,
-          "control_capacity" => 1,
-          "max_wait_seconds" => 1
-        })
-      )
-
-    [control_task] = control_response["tasks"]
-    assert control_task["operation"] == "background_start"
-    assert control_task["background_task_id"] == background_task.id
-    assert control_task["call_id"] != background_task.id
-
-    assert %{"status" => "ok"} =
-             complete_outlet("runner-durable-upload", %{
-               "call_id" => control_task["call_id"],
-               "runner_id" => runner_payload["runner_id"],
-               "runner_session_id" => runner_payload["runner_session_id"],
-               "status" => "done",
-               "result_raw" => %{
-                 "background_task_id" => background_task.id,
-                 "status" => "running",
-                 "progress" => [],
-                 "next_cursor" => "0"
-               }
-             })
-
-    assert {:ok, _result} = Task.await(control_waiter, 5_000)
-
-    assert {:error, :not_found} =
-             Runtime.fetch_running_call(tool_instance, control_task["call_id"])
-
-    response =
-      build_conn()
-      |> put_req_header("authorization", "Bearer runner-durable-upload")
-      |> put_req_header("content-type", "text/plain")
-      |> post(
-        "/api/outlet/calls/#{background_task.id}/files?filename=durable.txt",
-        "durable payload"
-      )
-      |> json_response(200)
-
-    assert response["file"]["filename"] == "durable.txt"
-    assert response["file"]["size_bytes"] == 15
-  end
-
-  test "GET /api/outlet/calls/:call_id/files/:file_id uses persisted background execution context" do
-    %{user: actor} = user_fixture()
-
-    tool_instance =
-      create_outlet_tool_instance!(actor, %{
-        name: "Durable download outlet",
-        secrets: %{"token" => "runner-durable-download"}
-      })
-
-    {:ok, file} =
-      Files.create_from_binary("durable-download.txt", "text/plain", "durable download payload")
-
-    background_task =
-      create_outlet_background_task!(actor, tool_instance, %{
-        execution_context: %{
-          "owner_id" => actor.id,
-          "available_file_external_ids" => [file.external_id]
-        }
-      })
-
-    assert {:error, :not_found} = Runtime.fetch_running_call(tool_instance, background_task.id)
-
-    conn =
-      build_conn()
-      |> put_req_header("authorization", "Bearer runner-durable-download")
-      |> get("/api/outlet/calls/#{background_task.id}/files/#{file.external_id}")
-
-    assert response(conn, 200) == "durable download payload"
-    assert List.first(get_resp_header(conn, "content-type")) =~ "text/plain"
-    assert List.first(get_resp_header(conn, "content-disposition")) =~ "durable-download.txt"
+      |> json_response(404)
+    end
   end
 
   defp reset_runtime! do
@@ -719,44 +741,6 @@ defmodule IntellectualClubWeb.OutletControllerTest do
     |> Ash.Query.filter(tool_instance_id == ^tool_instance_id)
     |> Ash.Query.sort(name: :asc)
     |> Ash.read!(authorize?: false)
-  end
-
-  defp create_outlet_tool_instance!(actor, attrs) when is_map(attrs) do
-    ToolInstance
-    |> Ash.Changeset.for_create(
-      :create,
-      Map.merge(
-        %{
-          type: "outlet",
-          name: "Outlet",
-          config: %{},
-          secrets: %{"token" => "runner-token"}
-        },
-        attrs
-      ),
-      actor: actor
-    )
-    |> Ash.create!()
-  end
-
-  defp create_tool_function!(actor, tool_instance_id, attrs) when is_integer(tool_instance_id) do
-    ToolFunction
-    |> Ash.Changeset.for_create(
-      :create,
-      Map.merge(
-        %{
-          tool_instance_id: tool_instance_id,
-          name: "tool",
-          description: "",
-          parameters_schema: %{"type" => "object"},
-          enabled: true,
-          discovered_at: DateTime.utc_now()
-        },
-        attrs
-      ),
-      actor: actor
-    )
-    |> Ash.create!()
   end
 
   defp create_outlet_background_task!(actor, tool_instance, attrs \\ %{}) do

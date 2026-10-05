@@ -28,7 +28,7 @@ defmodule IntellectualClub.FilesTest do
     assert file_count(file_a.sha256) == 2
 
     assert {:ok, {_stored_file, payload}} = Files.load_payload(file_a.id)
-    assert payload == image_payload()
+    assert payload == png_1x1()
   end
 
   test "create_from_path creates a file row without loading the source payload" do
@@ -172,6 +172,36 @@ defmodule IntellectualClub.FilesTest do
     refute FilesystemStorage.exists?(sha256)
   end
 
+  test "deleting a payload prunes its empty directory and keeps sibling payload directories" do
+    payload = unique_payload("sibling-a")
+    sha256 = sha256_hex(payload)
+
+    # A second payload in the same first-level directory but a different
+    # second-level directory, so pruning must stop at the shared parent.
+    {sibling, sibling_sha256} =
+      Stream.iterate(1, &(&1 + 1))
+      |> Stream.map(fn index ->
+        candidate = unique_payload("sibling-b-#{index}")
+        {candidate, sha256_hex(candidate)}
+      end)
+      |> Enum.find(fn {_payload, candidate} ->
+        binary_part(candidate, 0, 2) == binary_part(sha256, 0, 2) and
+          binary_part(candidate, 2, 2) != binary_part(sha256, 2, 2)
+      end)
+
+    assert {:ok, :created} = FilesystemStorage.store(sha256, payload)
+    assert {:ok, :created} = FilesystemStorage.store(sibling_sha256, sibling)
+    on_exit(fn -> FilesystemStorage.delete(sibling_sha256) end)
+
+    {:ok, path} = FilesystemStorage.path_for(sha256)
+    assert :ok = FilesystemStorage.delete(sha256)
+
+    refute FilesystemStorage.exists?(sha256)
+    refute File.exists?(Path.dirname(path))
+    assert File.dir?(Path.dirname(Path.dirname(path)))
+    assert {:ok, ^sibling} = FilesystemStorage.fetch(sibling_sha256)
+  end
+
   test "db storage backend is rejected" do
     attrs = %{
       sha256: sha256_hex("legacy"),
@@ -209,14 +239,8 @@ defmodule IntellectualClub.FilesTest do
     %{
       filename: filename,
       mime_type: "image/png",
-      payload: image_payload()
+      payload: png_1x1()
     }
-  end
-
-  defp image_payload do
-    <<137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-      0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0,
-      5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130>>
   end
 
   defp temp_file_path(filename) do

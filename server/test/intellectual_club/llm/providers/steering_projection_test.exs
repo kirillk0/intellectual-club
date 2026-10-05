@@ -12,156 +12,23 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Llm.Providers.ResponsesWss
 
-  test "responses steering is appended after the existing live input" do
-    raw_request = %{
-      "model" => "gpt-5",
-      "input" => [
-        user_responses_message("Start"),
-        %{"type" => "reasoning", "encrypted_content" => "opaque"},
-        %{
-          "type" => "function_call_output",
-          "call_id" => "call_1",
-          "output" => "done"
-        }
-      ],
-      "instructions" => "System",
-      "custom_parameter" => true
-    }
+  describe "inject_steering/3" do
+    for provider <- [:responses, :anthropic, :openrouter, :google, :demo] do
+      @provider provider
 
-    steering = [%{text: "Change direction", placement: :after_response}, "And be concise"]
-    result = Responses.inject_steering(raw_request, steering, %{})
+      test "#{provider} appends steering after the live input and tool results" do
+        {module, raw_request, steering, context, key, expected} = steering_case(@provider)
+        result = module.inject_steering(raw_request, steering, context)
 
-    assert result.raw_request["input"] ==
-             raw_request["input"] ++
-               [
-                 user_responses_message("Change direction"),
-                 user_responses_message("And be concise")
-               ]
+        assert result.raw_request[key] == expected
+        assert Map.delete(result.raw_request, key) == Map.delete(raw_request, key)
+        assert result.request_snapshot.model_input == expected
 
-    assert result.raw_request["custom_parameter"] == true
-    assert result.request_snapshot.model_input == result.raw_request["input"]
-
-    assert ResponsesWss.inject_steering(raw_request, steering, %{}) == result
-  end
-
-  test "anthropic steering is merged after tool results in the trailing user message" do
-    raw_request = %{
-      "model" => "claude-sonnet-4",
-      "messages" => [
-        %{"role" => "user", "content" => [%{"type" => "text", "text" => "Start"}]},
-        %{
-          "role" => "assistant",
-          "content" => [
-            %{"type" => "tool_use", "id" => "toolu_1", "name" => "lookup", "input" => %{}}
-          ]
-        },
-        %{
-          "role" => "user",
-          "content" => [
-            %{
-              "type" => "tool_result",
-              "tool_use_id" => "toolu_1",
-              "content" => "done"
-            }
-          ]
-        }
-      ],
-      "max_tokens" => 100,
-      "stream" => true
-    }
-
-    result =
-      AnthropicMessages.inject_steering(
-        raw_request,
-        [%{text: "Change direction"}, %{text: "And be concise"}],
-        %{cache_control_enabled: false}
-      )
-
-    assert List.last(result.raw_request["messages"])["content"] == [
-             %{"type" => "tool_result", "tool_use_id" => "toolu_1", "content" => "done"},
-             %{"type" => "text", "text" => "Change direction"},
-             %{"type" => "text", "text" => "And be concise"}
-           ]
-
-    assert result.request_snapshot.model_input == result.raw_request["messages"]
-  end
-
-  test "openrouter steering follows all tool result messages" do
-    raw_request = %{
-      "model" => "openai/gpt-5",
-      "messages" => [
-        %{"role" => "user", "content" => "Start"},
-        %{
-          "role" => "assistant",
-          "content" => "",
-          "tool_calls" => [
-            %{
-              "id" => "call_1",
-              "type" => "function",
-              "function" => %{"name" => "lookup", "arguments" => "{}"}
-            }
-          ]
-        },
-        %{"role" => "tool", "tool_call_id" => "call_1", "content" => "done"}
-      ],
-      "stream" => true
-    }
-
-    result =
-      OpenRouterChatCompletion.inject_steering(
-        raw_request,
-        ["Change direction", %{text: "And be concise"}],
-        %{cache_control_enabled: false}
-      )
-
-    assert Enum.take(result.raw_request["messages"], -3) == [
-             %{"role" => "tool", "tool_call_id" => "call_1", "content" => "done"},
-             %{"role" => "user", "content" => "Change direction"},
-             %{"role" => "user", "content" => "And be concise"}
-           ]
-
-    assert result.request_snapshot.model_input == result.raw_request["messages"]
-  end
-
-  test "google steering follows all function results" do
-    raw_request = %{
-      "model" => "gemini-2.5-flash",
-      "input" => [
-        %{"type" => "user_input", "content" => [%{"type" => "text", "text" => "Start"}]},
-        %{"type" => "function_result", "call_id" => "call_1", "result" => "done"}
-      ],
-      "stream" => true,
-      "store" => false
-    }
-
-    result =
-      GoogleInteractions.inject_steering(
-        raw_request,
-        [%{text: "Change direction"}, "And be concise"],
-        %{}
-      )
-
-    assert Enum.take(result.raw_request["input"], -3) == [
-             %{"type" => "function_result", "call_id" => "call_1", "result" => "done"},
-             google_user_input("Change direction"),
-             google_user_input("And be concise")
-           ]
-
-    assert result.request_snapshot.model_input == result.raw_request["input"]
-  end
-
-  test "demo provider appends steering as chat user messages" do
-    result =
-      Demo.inject_steering(
-        %{"messages" => [%{"role" => "user", "content" => "Start"}]},
-        ["Change direction"],
-        %{}
-      )
-
-    assert result.raw_request["messages"] == [
-             %{"role" => "user", "content" => "Start"},
-             %{"role" => "user", "content" => "Change direction"}
-           ]
+        for equivalent <- equivalent_adapters(module) do
+          assert equivalent.inject_steering(raw_request, steering, context) == result
+        end
+      end
+    end
   end
 
   test "canonical steering is projected at its exact position for every history format" do
@@ -440,6 +307,108 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
              google_user_input("Do not make that change"),
              google_model_output("Understood")
            ]
+  end
+
+  defp equivalent_adapters(Responses), do: [ResponsesWss]
+  defp equivalent_adapters(_module), do: []
+
+  # {module, raw_request, steering, context, input key, expected input}
+  defp steering_case(:responses) do
+    input = [
+      user_responses_message("Start"),
+      %{"type" => "reasoning", "encrypted_content" => "opaque"},
+      %{"type" => "function_call_output", "call_id" => "call_1", "output" => "done"}
+    ]
+
+    {Responses,
+     %{
+       "model" => "gpt-5",
+       "input" => input,
+       "instructions" => "System",
+       "custom_parameter" => true
+     }, [%{text: "Change direction", placement: :after_response}, "And be concise"], %{}, "input",
+     input ++
+       [user_responses_message("Change direction"), user_responses_message("And be concise")]}
+  end
+
+  defp steering_case(:anthropic) do
+    start = %{"role" => "user", "content" => [%{"type" => "text", "text" => "Start"}]}
+
+    tool_use = %{
+      "role" => "assistant",
+      "content" => [
+        %{"type" => "tool_use", "id" => "toolu_1", "name" => "lookup", "input" => %{}}
+      ]
+    }
+
+    tool_result = %{"type" => "tool_result", "tool_use_id" => "toolu_1", "content" => "done"}
+
+    {AnthropicMessages,
+     %{
+       "model" => "claude-sonnet-4",
+       "messages" => [start, tool_use, %{"role" => "user", "content" => [tool_result]}],
+       "max_tokens" => 100,
+       "stream" => true
+     }, [%{text: "Change direction"}, %{text: "And be concise"}], %{cache_control_enabled: false},
+     "messages",
+     [
+       start,
+       tool_use,
+       %{
+         "role" => "user",
+         "content" => [
+           tool_result,
+           %{"type" => "text", "text" => "Change direction"},
+           %{"type" => "text", "text" => "And be concise"}
+         ]
+       }
+     ]}
+  end
+
+  defp steering_case(:openrouter) do
+    messages = [
+      %{"role" => "user", "content" => "Start"},
+      %{
+        "role" => "assistant",
+        "content" => "",
+        "tool_calls" => [
+          %{
+            "id" => "call_1",
+            "type" => "function",
+            "function" => %{"name" => "lookup", "arguments" => "{}"}
+          }
+        ]
+      },
+      %{"role" => "tool", "tool_call_id" => "call_1", "content" => "done"}
+    ]
+
+    {OpenRouterChatCompletion,
+     %{"model" => "openai/gpt-5", "messages" => messages, "stream" => true},
+     ["Change direction", %{text: "And be concise"}], %{cache_control_enabled: false}, "messages",
+     messages ++
+       [
+         %{"role" => "user", "content" => "Change direction"},
+         %{"role" => "user", "content" => "And be concise"}
+       ]}
+  end
+
+  defp steering_case(:google) do
+    input = [
+      %{"type" => "user_input", "content" => [%{"type" => "text", "text" => "Start"}]},
+      %{"type" => "function_result", "call_id" => "call_1", "result" => "done"}
+    ]
+
+    {GoogleInteractions,
+     %{"model" => "gemini-2.5-flash", "input" => input, "stream" => true, "store" => false},
+     [%{text: "Change direction"}, "And be concise"], %{}, "input",
+     input ++ [google_user_input("Change direction"), google_user_input("And be concise")]}
+  end
+
+  defp steering_case(:demo) do
+    start = %{"role" => "user", "content" => "Start"}
+
+    {Demo, %{"messages" => [start]}, ["Change direction"], %{}, "messages",
+     [start, %{"role" => "user", "content" => "Change direction"}]}
   end
 
   defp canonical_history do

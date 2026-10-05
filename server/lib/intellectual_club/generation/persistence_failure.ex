@@ -10,7 +10,7 @@ defmodule IntellectualClub.Generation.PersistenceFailure do
   require Logger
 
   @rollback_codes [:deadlock_detected, :serialization_failure, "40P01", "40001"]
-  @retry_delays [100, 500, 1_500]
+  @default_retry_delays [100, 500, 1_500]
   @sql_scope {__MODULE__, :sql_scope}
   @sql_handler {__MODULE__, :sql_error}
 
@@ -160,9 +160,17 @@ defmodule IntellectualClub.Generation.PersistenceFailure do
     )
   end
 
+  defp retry_delays do
+    Application.get_env(
+      :intellectual_club,
+      :generation_persistence_retry_delays_ms,
+      @default_retry_delays
+    )
+  end
+
   def transaction(fun, opts \\ []) when is_function(fun, 0) do
     # At most three additional attempts, even if a caller supplies more delays.
-    delays = Keyword.get(opts, :delays, @retry_delays) |> Enum.take(3)
+    delays = Keyword.get_lazy(opts, :delays, &retry_delays/0) |> Enum.take(3)
 
     if IntellectualClub.Repo.in_transaction?() do
       # A nested Ash/Ecto transaction does not own the outer rollback. Let its
@@ -276,7 +284,7 @@ defmodule IntellectualClub.Generation.PersistenceFailure do
       raise ArgumentError, "idempotent retry must own its transaction boundary"
     end
 
-    retry_idempotent(fun, opts, Enum.take(Keyword.get(opts, :delays, @retry_delays), 3), 1)
+    retry_idempotent(fun, opts, Enum.take(Keyword.get_lazy(opts, :delays, &retry_delays/0), 3), 1)
   end
 
   defp retry_idempotent(fun, opts, delays, attempt) do
