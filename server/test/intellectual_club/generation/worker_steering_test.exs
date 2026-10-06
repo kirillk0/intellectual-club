@@ -126,6 +126,492 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
     end
   end
 
+  describe "tool interruption" do
+    test "pending steering wakes sleep and continues the same generation" do
+      fixture = generation_fixture!()
+      tool = create_tool_instance!(fixture.actor, type: "native-agent-management")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"pause" => tool},
+          test_tool_name: "pause__sleep",
+          test_tool_args: %{"seconds" => 3600}
+        )
+
+      trace_receives!(gen.worker)
+      send(gen.provider, {:complete, :tools})
+      worker = gen.worker
+
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {sleeper, _},
+                       {:tool_execution_phase, sleeper, :interruptible, _id}}},
+                     5_000
+
+      # The first interruptible phase is the rate limiter; the second is sleep itself.
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {^sleeper, _},
+                       {:tool_execution_phase, ^sleeper, :interruptible, _id}}},
+                     5_000
+
+      sleeper_monitor = Process.monitor(sleeper)
+      queued = enqueue_steer!(gen, "Wake up and answer", worker)
+      {provider, request} = await_provider!(gen)
+      assert_receive {:DOWN, ^sleeper_monitor, :process, ^sleeper, _reason}, 5_000
+
+      assert List.last(request["messages"]) == %{
+               "role" => "user",
+               "content" => "Wake up and answer"
+             }
+
+      assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+
+      assert [%{result_raw: %{"code" => "interrupted_by_steering", "outcome" => "interrupted"}}] =
+               Persistence.load_step_for_followup!(gen.step_id).results
+
+      assert [] = Persistence.list_missing_tool_calls!(gen.step_id)
+      assert message!(gen).status == :generating
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "steering stops waiting for background tasks without canceling them" do
+      fixture = generation_fixture!()
+      task = create_background_task!(fixture.actor, status: :running)
+      tool = create_tool_instance!(fixture.actor, type: "native-agent-management")
+      create_tool_function!(fixture.actor, tool, name: "wait_backround_tasks")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"agent" => tool},
+          test_tool_name: "agent__wait_backround_tasks",
+          test_tool_args: %{"background_task_ids" => [task.id]}
+        )
+
+      trace_receives!(gen.worker)
+      send(gen.provider, {:complete, :tools})
+      worker = gen.worker
+
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {_, _}, {:tool_execution_phase, _, :interruptible, _}}},
+                     5_000
+
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {_, _}, {:tool_execution_phase, _, :interruptible, _}}},
+                     5_000
+
+      enqueue_steer!(gen, "Do something else", worker)
+      {provider, _request} = await_provider!(gen)
+
+      current =
+        Ash.get!(IntellectualClub.BackgroundTasks.BackgroundTask, task.id, actor: gen.actor)
+
+      assert current.status == :running
+      refute current.cancel_requested
+
+      assert [%{result_raw: %{"code" => "interrupted_by_steering"}}] =
+               Persistence.load_step_for_followup!(gen.step_id).results
+
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "steering interrupts an active web request and retains an earlier committed sibling result" do
+      fixture = generation_fixture!()
+      test = self()
+      tool = web_search_tool!(fn _, _ -> {:wait, test} end)
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"web" => tool},
+          test_tool_calls: [
+            %{name: "web__web_search", args: %{"query" => "waiting"}},
+            %{name: "missing__run", args: %{}}
+          ]
+        )
+
+      send(gen.provider, {:complete, :tools})
+      assert_receive {:waiting, request_pid}, 5_000
+      wait_until(fn -> length(Persistence.load_step_for_followup!(gen.step_id).results) == 1 end)
+      queued = enqueue_steer!(gen, "No need to search", gen.worker)
+      {provider, request} = await_provider!(gen)
+      assert List.last(request["messages"])["content"] == "No need to search"
+      assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+      results = Persistence.load_step_for_followup!(gen.step_id).results
+      assert length(results) == 2
+      assert Enum.find(results, &(&1.name == "missing__run")).text == "Unknown tool alias"
+
+      assert Enum.find(results, &(&1.name == "web__web_search")).result_raw["code"] ==
+               "interrupted_by_steering"
+
+      send(request_pid, :continue)
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "lost interruption ACK is reconciled without canceling the generation" do
+      fixture = generation_fixture!()
+      tool = create_tool_instance!(fixture.actor, type: "native-agent-management")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"agent" => tool},
+          test_tool_name: "agent__sleep",
+          test_tool_args: %{"seconds" => 3600}
+        )
+
+      trace_receives!(gen.worker)
+      send(gen.provider, {:complete, :tools})
+      worker = gen.worker
+
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {_, _}, {:tool_execution_phase, _, :interruptible, _}}},
+                     5_000
+
+      gate = Barrier.gate_persistence(gen.message.id, tool_interruption: :stop)
+      queued = enqueue_steer!(gen, "Wake despite lost ACK", worker)
+      check = Barrier.await_persistence(:tool_interruption, :stop)
+      Barrier.detach(gate)
+      Barrier.crash(check)
+      {provider, _request} = await_provider!(gen)
+      assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+
+      assert [%{result_raw: %{"code" => "interrupted_by_steering"}}] =
+               Persistence.load_step_for_followup!(gen.step_id).results
+
+      assert_no_recovery(gen)
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    for {code, attempts} <- [{"23514", 1}, {"40001", 4}] do
+      @tag code: code, attempts: attempts
+      test "interruption rollback #{code} resumes dispatch after bounded writes",
+           %{code: code, attempts: attempts} do
+        tool = web_search_tool!(fn _, _ -> {200, %{"web" => %{"results" => []}}} end)
+
+        gen =
+          generation_fixture!()
+          |> start_generation!(
+            tool_instances_by_alias: %{"web" => tool},
+            test_tool_name: "web__web_search",
+            test_tool_args: %{"query" => "dispatch once"}
+          )
+
+        failure = inject_tool_interruption_sql_failure!(gen, code)
+
+        gate =
+          Barrier.gate_persistence(gen.message.id,
+            tool_interruption: :start,
+            tool_interruption_reconciliation: :stop
+          )
+
+        send(gen.provider, {:complete, :tools})
+        check = Barrier.await_persistence(:tool_interruption, :start)
+        queued = enqueue_steer!(gen, "Deliver after the tool")
+        Barrier.release(check)
+        reconciled = Barrier.await_persistence(:tool_interruption_reconciliation, :stop)
+        assert sql_attempts(failure) == attempts
+        assert [%{steering_interruption: nil}] = Persistence.list_missing_tool_calls!(gen.step_id)
+        assert_no_dispatch(gen, gen.worker)
+        assert_no_recovery(gen)
+        Barrier.detach(gate)
+        Barrier.release(reconciled)
+
+        assert_receive {:web_request, _, %{"q" => "dispatch once"}, _}, 5_000
+        {provider, request} = await_provider!(gen)
+        assert List.last(request["messages"])["content"] == "Deliver after the tool"
+        assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+        assert [%{result_raw: raw}] = Persistence.load_step_for_followup!(gen.step_id).results
+        refute raw["code"] == "interrupted_by_steering"
+        refute_receive {:web_request, _, _, _}, 0
+        assert sql_attempts(failure) == attempts
+        send(provider, {:complete, :answer})
+        assert_stopped(gen, :done)
+      end
+
+      @tag code: code, attempts: attempts
+      test "interruption rollback #{code} releases a deferred batch without retrying its writes",
+           %{code: code, attempts: attempts} do
+        test = self()
+        tool = web_search_tool!(fn _, _ -> {:wait, test} end)
+
+        gen =
+          generation_fixture!()
+          |> start_generation!(
+            tool_instances_by_alias: %{"web" => tool},
+            test_tool_name: "web__web_search",
+            test_tool_args: %{"query" => "complete once"}
+          )
+
+        send(gen.provider, {:complete, :tools})
+        assert_receive {:waiting, request_pid}, 5_000
+        assert_receive {:web_request, _, %{"q" => "complete once"}, _}, 5_000
+        failure = inject_tool_interruption_sql_failure!(gen, code)
+
+        gate =
+          Barrier.gate_persistence(gen.message.id,
+            tool_interruption: :stop,
+            tool_interruption_reconciliation: :start,
+            tool_interruption_reconciliation: :stop
+          )
+
+        queued = enqueue_steer!(gen, "Deliver after completed batch", gen.worker)
+        check = Barrier.await_persistence(:tool_interruption, :stop)
+        assert sql_attempts(failure) == attempts
+        worker = gen.worker
+        trace_receives!(worker)
+        send(request_pid, :continue)
+
+        assert_receive {:trace, ^worker, :receive, {_ref, {:tool_results, _results}}}, 5_000
+        assert {:results, _, _} = :sys.get_state(worker).deferred_tool_outcome
+        receipt = Persistence.load_step_for_followup!(gen.step_id).results
+        assert length(receipt) == 1
+        Barrier.release(check)
+        reconciliation = Barrier.await_persistence(:tool_interruption_reconciliation, :start)
+        refute_provider_started(gen)
+        Barrier.release(reconciliation)
+        reconciled = Barrier.await_persistence(:tool_interruption_reconciliation, :stop)
+        # Losing the read ACK must retry only reconciliation, not the broken write.
+        Barrier.crash(reconciled)
+        retried = Barrier.await_persistence(:tool_interruption_reconciliation, :start)
+        assert sql_attempts(failure) == attempts
+        assert {:results, _, _} = :sys.get_state(worker).deferred_tool_outcome
+        assert Persistence.load_step_for_followup!(gen.step_id).results == receipt
+        assert_no_recovery(gen)
+        Barrier.detach(gate)
+        Barrier.release(retried)
+
+        {provider, request} = await_provider!(gen)
+        assert List.last(request["messages"])["content"] == "Deliver after completed batch"
+        assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+        assert Persistence.load_step_for_followup!(gen.step_id).results == receipt
+        assert sql_attempts(failure) == attempts
+        refute_receive {:web_request, _, _, _}, 0
+        send(provider, {:complete, :answer})
+        assert_stopped(gen, :done)
+      end
+    end
+
+    test "a permanent interruption failure preserves markers committed before a lost ACK" do
+      fixture = generation_fixture!()
+      test = self()
+      web = web_search_tool!(fn _, _ -> {200, %{"web" => %{"results" => []}}} end)
+
+      {url, _port} =
+        start_http_server!(
+          {IntellectualClub.TestSupport.McpHttpJsonServer,
+           call_handler: fn _params ->
+             send(test, {:external_call, self()})
+
+             receive do
+               :complete -> %{"content" => [%{"type" => "text", "text" => "External finished"}]}
+             end
+           end}
+        )
+
+      external = create_tool_instance!(fixture.actor, config: %{"server_url" => url})
+      create_tool_function!(fixture.actor, external, name: "run")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"web" => web, "external" => external},
+          test_tool_calls: [
+            %{name: "web__web_search", args: %{"query" => "never dispatched"}},
+            %{name: "external__run", args: %{}}
+          ]
+        )
+
+      gate =
+        Barrier.gate_persistence(gen.message.id,
+          tool_interruption: :start,
+          tool_interruption: :stop,
+          tool_interruption_reconciliation: :stop
+        )
+
+      send(gen.provider, {:complete, :tools})
+      check = Barrier.await_persistence(:tool_interruption, :start)
+      queued = enqueue_steer!(gen, "Keep the committed interruption")
+      Barrier.release(check)
+      committed = Barrier.await_persistence(:tool_interruption, :stop)
+      calls = Persistence.list_missing_tool_calls!(gen.step_id)
+      assert Enum.find(calls, &(&1.name == "web__web_search")).steering_interruption == :safe
+      assert Enum.find(calls, &(&1.name == "external__run")).steering_interruption == nil
+      assert {:ok, _} = QueuedMessages.deliver_now(queued.id, gen.actor)
+      failure = inject_tool_interruption_sql_failure!(gen, "23514")
+      Barrier.crash(committed)
+
+      retried = Barrier.await_persistence(:tool_interruption, :start)
+      assert_no_dispatch(gen, gen.worker)
+      Barrier.release(retried)
+      failed = Barrier.await_persistence(:tool_interruption, :stop)
+      assert sql_attempts(failure) == 1
+      Barrier.release(failed)
+      reconciled = Barrier.await_persistence(:tool_interruption_reconciliation, :stop)
+      assert Persistence.list_missing_tool_calls!(gen.step_id) == calls
+      assert_no_dispatch(gen, gen.worker)
+      assert_no_recovery(gen)
+      Barrier.detach(gate)
+      Barrier.release(reconciled)
+
+      assert_receive {:external_call, external_request}, 5_000
+      refute_receive {:web_request, _, _, _}, 0
+      send(external_request, :complete)
+      {provider, request} = await_provider!(gen)
+      assert List.last(request["messages"])["content"] == "Keep the committed interruption"
+      results = Persistence.load_step_for_followup!(gen.step_id).results
+      assert length(results) == 2
+
+      assert Enum.find(results, &(&1.name == "web__web_search")).result_raw["code"] ==
+               "interrupted_by_steering"
+
+      assert Enum.find(results, &(&1.name == "external__run")).text == "External finished"
+      assert Persistence.list_missing_tool_calls!(gen.step_id) == []
+      assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+      assert sql_attempts(failure) == 1
+      refute_receive {:external_call, _}, 0
+      refute_receive {:web_request, _, _, _}, 0
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "steering skips safe calls before dispatch instead of starting their waits" do
+      fixture = generation_fixture!()
+      tool = web_search_tool!(fn _, _ -> {200, %{"web" => %{"results" => []}}} end)
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"web" => tool},
+          test_tool_name: "web__web_search",
+          test_tool_args: %{"query" => "not dispatched"}
+        )
+
+      gate = Barrier.gate_persistence(gen.message.id, provider_completed: :stop)
+      send(gen.provider, {:complete, :tools})
+      committed = Barrier.await_persistence(:provider_completed, :stop)
+      queued = enqueue_steer!(gen, "Changed before tools", gen.worker)
+      Barrier.detach(gate)
+      Barrier.release(committed)
+      {provider, request} = await_provider!(gen)
+      refute_received {:web_request, _, _, _}
+      assert List.last(request["messages"])["content"] == "Changed before tools"
+      assert {:ok, %{status: :delivered}} = QueuedMessages.get(queued.id, gen.actor)
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "automatic interruption leaves unsafe siblings running until immediate delivery is requested" do
+      fixture = generation_fixture!()
+      test = self()
+
+      {url, _port} =
+        start_http_server!(
+          {IntellectualClub.TestSupport.McpHttpJsonServer,
+           call_handler: fn _params ->
+             send(test, {:external_call, self()})
+
+             receive do
+               :complete -> %{"content" => [%{"type" => "text", "text" => "External finished"}]}
+             end
+           end}
+        )
+
+      external = create_tool_instance!(fixture.actor, config: %{"server_url" => url})
+      create_tool_function!(fixture.actor, external, name: "run")
+      agent = create_tool_instance!(fixture.actor, type: "native-agent-management")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"agent" => agent, "external" => external},
+          test_tool_calls: [
+            %{name: "agent__sleep", args: %{"seconds" => 3600}},
+            %{name: "external__run", args: %{}},
+            %{name: "missing__run", args: %{}}
+          ]
+        )
+
+      send(gen.provider, {:complete, :tools})
+      assert_receive {:external_call, external_request}, 5_000
+      wait_until(fn -> length(Persistence.load_step_for_followup!(gen.step_id).results) == 1 end)
+      # Hold the interruption ACK to inspect its committed selection.
+      gate = Barrier.gate_persistence(gen.message.id, tool_interruption: :stop)
+      queued = enqueue_steer!(gen, "Deliver while working", gen.worker)
+      check = Barrier.await_persistence(:tool_interruption, :stop)
+      calls = Persistence.load_step_for_followup!(gen.step_id).tool_calls
+      assert Enum.find(calls, &(&1.name == "agent__sleep")).steering_interruption == :safe
+      assert Enum.find(calls, &(&1.name == "external__run")).steering_interruption == nil
+      Barrier.detach(gate)
+      Barrier.release(check)
+      assert {:ok, %{status: :pending}} = QueuedMessages.get(queued.id, gen.actor)
+      refute_provider_started(gen)
+
+      assert {:ok, %{delivery_mode: :immediate}} =
+               QueuedMessages.deliver_now(queued.id, gen.actor)
+
+      Worker.queue_changed(gen.worker)
+      {provider, request} = await_provider!(gen)
+      results = Persistence.load_step_for_followup!(gen.step_id).results
+      assert length(results) == 3
+
+      assert Enum.find(results, &(&1.name == "external__run")).result_raw == %{
+               "isError" => true,
+               "code" => "interrupted_by_steering",
+               "outcome" => "unknown"
+             }
+
+      assert Enum.find(results, &(&1.name == "missing__run")).text == "Unknown tool alias"
+      assert List.last(request["messages"])["content"] == "Deliver while working"
+      assert {:ok, %{status: :delivered}} = QueuedMessages.deliver_now(queued.id, gen.actor)
+      assert_worker = gen.worker
+      assert Worker.get_current_state(assert_worker).status == :generating
+      send(external_request, :complete)
+      send(provider, {:complete, :answer})
+      assert_stopped(gen, :done)
+    end
+
+    test "recovery closes committed interruptions even if their steering was removed before the ACK" do
+      fixture = generation_fixture!()
+      tool = create_tool_instance!(fixture.actor, type: "native-agent-management")
+
+      gen =
+        start_generation!(fixture,
+          tool_instances_by_alias: %{"agent" => tool},
+          test_tool_name: "agent__sleep",
+          test_tool_args: %{"seconds" => 3600}
+        )
+
+      trace_receives!(gen.worker)
+      send(gen.provider, {:complete, :tools})
+      worker = gen.worker
+
+      assert_receive {:trace, ^worker, :receive,
+                      {:"$gen_call", {_, _}, {:tool_execution_phase, _, :interruptible, _}}},
+                     5_000
+
+      gate = Barrier.gate_persistence(gen.message.id, tool_interruption: :stop)
+      queued = enqueue_steer!(gen, "Will be removed", worker)
+      check = Barrier.await_persistence(:tool_interruption, :stop)
+      assert [%{steering_interruption: :safe}] = Persistence.list_missing_tool_calls!(gen.step_id)
+      assert {:ok, _} = QueuedMessages.cancel(queued.id, gen.actor)
+      Barrier.detach(gate)
+      GenServer.stop(worker, :normal)
+      assert_receive {:DOWN, _, :process, ^worker, :normal}, 5_000
+      refute_provider_started(gen)
+      resumed = start_worker!(gen, initial_step_status: :waiting_tools)
+      monitor = Process.monitor(resumed)
+      {provider, request} = await_provider!(gen)
+      refute Enum.any?(request["messages"], &(&1["content"] == "Will be removed"))
+
+      assert [%{result_raw: %{"code" => "interrupted_by_steering"}}] =
+               Persistence.load_step_for_followup!(gen.step_id).results
+
+      assert [] = Persistence.list_missing_tool_calls!(gen.step_id)
+      send(provider, {:complete, :answer})
+      assert_receive {:DOWN, ^monitor, :process, ^resumed, :normal}, 5_000
+      assert message!(gen).status == :done
+      Barrier.release(check)
+    end
+  end
+
   describe "steering deferred behind persistence" do
     for cancel? <- [false, true] do
       @tag cancel?: cancel?
@@ -422,10 +908,11 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
         gen = generation_fixture!() |> start_generation!()
         failure = inject_steering_sql_failure!(gen, code, 100)
 
-        Barrier.gate_persistence(gen.message.id,
-          queued_steers: :start,
-          steering_reconciliation: :stop
-        )
+        gate =
+          Barrier.gate_persistence(gen.message.id,
+            queued_steers: :start,
+            steering_reconciliation: :stop
+          )
 
         queued = enqueue_steer!(gen, "Rolled back instruction")
         send(gen.worker, :consume_queued_steers)
@@ -434,6 +921,8 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
         Barrier.release(publication)
         reconciliation = Barrier.await_persistence(:steering_reconciliation, :stop)
         assert_fenced_operation(gen, reconciliation)
+        # Subsequent empty-queue retries must not remain behind this assertion barrier.
+        Barrier.detach(gate)
         assert sql_attempts(failure) == attempts
         assert_original_generation(gen)
 
@@ -447,8 +936,12 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
           assert {:ok, _canceled} = QueuedMessages.cancel(queued.id, gen.actor)
           Barrier.release(reconciliation)
         else
+          rejection_gate = Barrier.gate_persistence(gen.message.id, steering_rejection: :stop)
           Barrier.release(reconciliation)
+          rejection = Barrier.await_persistence(:steering_rejection, :stop)
           assert_blocked_steer(gen, queued)
+          Barrier.detach(rejection_gate)
+          Barrier.release(rejection)
         end
 
         assert_original_generation(gen)
@@ -557,8 +1050,6 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
         sql_failure =
           if failure == :publication, do: inject_steering_sql_failure!(gen, "23514", 100)
 
-        completed_handler = Barrier.gate_persistence(gen.message.id, provider_completed: :stop)
-
         Barrier.gate_persistence(gen.message.id,
           tool_followup: :start,
           steering_reconciliation: :start,
@@ -566,15 +1057,9 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
         )
 
         send(gen.provider, {:complete, :tools})
-        completed = Barrier.await_persistence(:provider_completed, :stop)
-        queued = enqueue_steer!(gen, "Rejected optional follow-up instruction")
-        send(gen.worker, :consume_queued_steers)
-        assert :sys.get_state(gen.worker).queue_dirty?
-        Barrier.detach(completed_handler)
-        Barrier.release(completed)
-
         assert_receive {:web_request, _path, %{"q" => "one execution"}, _headers}, 5_000
         preparation = Barrier.await_persistence(:tool_followup, :start)
+        queued = enqueue_steer!(gen, "Rejected optional follow-up instruction")
         receipt = assert_tool_receipt(gen)
         Barrier.release(preparation)
         reconciliation = Barrier.await_persistence(:steering_reconciliation, :start)
@@ -779,6 +1264,16 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
       %{"attempt" => attempt, "retryable" => true} -> attempt
       _other -> nil
     end)
+  end
+
+  defp inject_tool_interruption_sql_failure!(gen, code) do
+    inject_sql_failure!(
+      "chat_message_items",
+      "BEFORE UPDATE",
+      "NEW.chat_message_step_id = #{gen.step_id} AND " <>
+        "OLD.steering_interruption IS NULL AND NEW.steering_interruption IS NOT NULL",
+      code
+    )
   end
 
   defp inject_steering_sql_failure!(gen, code, failures) do

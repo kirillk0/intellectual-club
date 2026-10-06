@@ -46,6 +46,12 @@ defmodule IntellectualClub.Tools.ToolFunction do
       default(true)
     end
 
+    attribute :safe_to_interrupt, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
+    end
+
     attribute :discovery_available, :boolean do
       allow_nil?(false)
       public?(true)
@@ -54,6 +60,7 @@ defmodule IntellectualClub.Tools.ToolFunction do
 
     attribute :execution_mode, :atom do
       allow_nil?(false)
+      public?(true)
       default(:direct)
       constraints(one_of: [:direct, :background])
     end
@@ -100,6 +107,7 @@ defmodule IntellectualClub.Tools.ToolFunction do
         :description,
         :parameters_schema,
         :enabled,
+        :safe_to_interrupt,
         :discovery_available,
         :execution_mode,
         :target_function_name,
@@ -116,6 +124,7 @@ defmodule IntellectualClub.Tools.ToolFunction do
         :description,
         :parameters_schema,
         :enabled,
+        :safe_to_interrupt,
         :discovery_available,
         :execution_mode,
         :target_function_name
@@ -159,14 +168,23 @@ defmodule IntellectualClub.Tools.ToolFunction do
     execution_mode = Ash.Changeset.get_attribute(changeset, :execution_mode)
     target_function_name = Ash.Changeset.get_attribute(changeset, :target_function_name)
 
-    if execution_mode == :background and
-         (not is_binary(target_function_name) or String.trim(target_function_name) == "") do
-      Ash.Changeset.add_error(changeset,
-        field: :target_function_name,
-        message: "is required for background execution"
-      )
-    else
-      changeset
+    cond do
+      execution_mode == :background and
+          (not is_binary(target_function_name) or String.trim(target_function_name) == "") ->
+        Ash.Changeset.add_error(changeset,
+          field: :target_function_name,
+          message: "is required for background execution"
+        )
+
+      execution_mode == :background and
+          Ash.Changeset.get_attribute(changeset, :safe_to_interrupt) == true ->
+        Ash.Changeset.add_error(changeset,
+          field: :safe_to_interrupt,
+          message: "cannot be enabled for background-start functions"
+        )
+
+      true ->
+        changeset
     end
   end
 end

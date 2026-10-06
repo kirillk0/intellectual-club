@@ -172,6 +172,7 @@ defmodule IntellectualClubWeb.Router do
     patch "/chat-queued-messages/:id", ChatQueuedMessagesController, :update
     delete "/chat-queued-messages/:id", ChatQueuedMessagesController, :delete
     post "/chat-queued-messages/:id/send-next", ChatQueuedMessagesController, :send_next
+    post "/chat-queued-messages/:id/deliver-now", ChatQueuedMessagesController, :deliver_now
 
     get "/chat-queued-messages/:id/contents/:content_id/file",
         ChatQueuedMessagesController,

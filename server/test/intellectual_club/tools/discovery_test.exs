@@ -5,6 +5,45 @@ defmodule IntellectualClub.Tools.DiscoveryTest do
 
   require Ash.Query
 
+  test "discovery seeds explicit interruption safety, preserves owner edits and never infers read-only hints" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor)
+
+    specs = [
+      %{"name" => "search", "safe_to_interrupt" => true},
+      %{"name" => "read", "annotations" => %{"readOnlyHint" => true}},
+      %{
+        "name" => "background",
+        "safe_to_interrupt" => true,
+        "execution_mode" => "background",
+        "target_function_name" => "search"
+      }
+    ]
+
+    {_stats, functions} = Discovery.sync_discovered_functions!(tool, specs, actor)
+    assert Enum.find(functions, &(&1.name == "search")).safe_to_interrupt
+    refute Enum.find(functions, &(&1.name == "read")).safe_to_interrupt
+    refute Enum.find(functions, &(&1.name == "background")).safe_to_interrupt
+    search = Enum.find(functions, &(&1.name == "search"))
+
+    search
+    |> Ash.Changeset.for_update(:update, %{safe_to_interrupt: false}, actor: actor)
+    |> Ash.update!()
+
+    {_stats, functions} = Discovery.sync_discovered_functions!(tool, specs, actor)
+    refute Enum.find(functions, &(&1.name == "search")).safe_to_interrupt
+    context = %ExecutionContext{owner_id: actor.id}
+    refute Executor.safe_to_interrupt?(%{"external" => tool}, "external__search", context)
+    read = Enum.find(functions, &(&1.name == "read"))
+
+    read
+    |> Ash.Changeset.for_update(:update, %{safe_to_interrupt: true}, actor: actor)
+    |> Ash.update!()
+
+    assert Executor.safe_to_interrupt?(%{"external" => tool}, "external__read", context)
+    refute Executor.safe_to_interrupt?(%{"external" => tool}, "external__background", context)
+  end
+
   test "sync_discovered_functions! reconciles functions and preserves enabled flags" do
     %{user: actor} = user_fixture()
 

@@ -780,6 +780,107 @@ defmodule IntellectualClub.Generation.Persistence do
     end
   end
 
+  @doc "Durably selects unfinished calls to interrupt before their processes are stopped."
+  def request_tool_interruptions!(message_id, step_id, safe_call?)
+      when is_function(safe_call?, 1) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+
+      queue =
+        QueuedMessage
+        |> Ash.Query.filter(
+          kind == :steer and status == :pending and target_generation_message_id == ^message_id
+        )
+        |> Ash.Query.sort(id: :asc)
+        |> Ash.Query.lock("FOR NO KEY UPDATE")
+        |> Ash.read!(actor: actor)
+
+      immediate? = Enum.any?(queue, &(&1.delivery_mode == :immediate))
+      eligible? = message.status == :generating and step.status == :waiting_tools and queue != []
+
+      step
+      |> missing_tool_calls()
+      |> Enum.reduce([], fn call, interrupted ->
+        cond do
+          not is_nil(call.steering_interruption) ->
+            [call.item_id | interrupted]
+
+          eligible? ->
+            safe? = safe_call?.(call)
+
+            if immediate? or safe? do
+              item = Enum.find(step.items, &(&1.id == call.item_id))
+
+              item
+              |> Ash.Changeset.for_update(
+                :request_steering_interruption,
+                %{steering_interruption: if(safe?, do: :safe, else: :unknown)},
+                actor: actor
+              )
+              |> Ash.update!(actor: actor)
+
+              [call.item_id | interrupted]
+            else
+              interrupted
+            end
+
+          true ->
+            interrupted
+        end
+      end)
+    end)
+  end
+
+  @doc "Closes interrupted calls after their execution tasks have drained."
+  def finish_tool_interruptions!(message_id, step_id) do
+    actor = actor_for_message!(message_id)
+
+    transaction!(fn ->
+      _message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
+
+      step
+      |> missing_tool_calls()
+      |> Enum.filter(&(not is_nil(&1.steering_interruption)))
+      |> Enum.each(fn call ->
+        # A protected writer that completed first keeps its real result.
+        current_step = load_step_with_items!(step_id, actor)
+        safe? = call.steering_interruption == :safe
+
+        text =
+          if safe? do
+            "Tool call interrupted to deliver a new user instruction. " <>
+              "Continue with the instruction; repeat the call only if it is still needed."
+          else
+            "Stopped waiting for this tool call to deliver a new user instruction. " <>
+              "Its outcome is unknown: external work may still be running or may have completed. " <>
+              "Do not assume it was undone or automatically retry it."
+          end
+
+        persist_tool_result_for_step_in_transaction!(
+          current_step,
+          call,
+          %{
+            text: text,
+            result_raw: %{
+              "isError" => true,
+              "code" => "interrupted_by_steering",
+              "outcome" => if(safe?, do: "interrupted", else: "unknown")
+            }
+          },
+          actor
+        )
+      end)
+
+      :ok
+    end)
+  end
+
   def list_missing_tool_calls!(step_id) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
 
@@ -1929,6 +2030,7 @@ defmodule IntellectualClub.Generation.Persistence do
           step_id: item.chat_message_step_id,
           sequence: item.sequence,
           created_at: item.created_at,
+          steering_interruption: item.steering_interruption,
           call_id: call_id,
           name: name,
           args: args,

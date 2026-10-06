@@ -172,4 +172,54 @@ describe('ChatQueuedMessagesPanel', () => {
     expect(wrapper.get('button[aria-label="Повторить"]').text()).toBe('Повторить');
   });
 
+  it('offers immediate delivery only for pending steering of the active generation', async () => {
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [...messages, failedSteer, { ...messages[0]!, id: 4, target_generation_message_id: 21 }],
+        activeGenerationId: 20,
+        actionId: null,
+        headFollowUpId: 2,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+    expect(wrapper.findAll('button[aria-label="Deliver immediately"]')).toHaveLength(1);
+    const button = wrapper.get('button[aria-label="Deliver immediately"]');
+    expect(button.attributes('title')).toContain('External operations may still complete');
+    await button.trigger('click');
+    expect(wrapper.emitted('deliver-now')).toEqual([[messages[0]]]);
+    await wrapper.setProps({ activeGenerationId: null });
+    expect(wrapper.find('button[aria-label="Deliver immediately"]').exists()).toBe(false);
+  });
+
+  it.each([
+    { readOnly: true },
+    { cancelingGenerationId: 20 },
+    { actionId: 1 },
+    { messages: [{ ...messages[0]!, delivery_mode: 'immediate' as const }] },
+  ])('blocks immediate delivery while unavailable: %j', async (extra) => {
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: {
+        messages: [messages[0]!], activeGenerationId: 20, actionId: null, headFollowUpId: null,
+        ...extra,
+      },
+      global: { stubs: { SvgIcon: true } },
+    });
+    const button = wrapper.get('button[aria-label="Deliver immediately"]');
+    expect(button.attributes('disabled')).toBeDefined();
+    await button.trigger('click');
+    expect(wrapper.emitted('deliver-now')).toBeUndefined();
+  });
+
+  it('localizes immediate delivery and its pending state', async () => {
+    setPreferredLocale('ru');
+    const wrapper = mount(ChatQueuedMessagesPanel, {
+      props: { messages: [messages[0]!], activeGenerationId: 20, actionId: null, headFollowUpId: null },
+      global: { stubs: { SvgIcon: true } },
+    });
+    expect(wrapper.get('button[aria-label="Доставить немедленно"]').text()).toBe('Доставить немедленно');
+    await wrapper.setProps({ messages: [{ ...messages[0]!, delivery_mode: 'immediate' }] });
+    expect(wrapper.get('[role="status"]').text()).toBe('Прерываем…');
+    expect(wrapper.text()).toContain('Use a shorter answer');
+  });
+
 });

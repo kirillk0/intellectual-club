@@ -65,6 +65,70 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
       assert persisted.enabled == true
     end
 
+    test "stored interruption safety is an independent owner-only boolean setting", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      %{user: outsider, password: other_password} = user_fixture()
+      tool = create_tool_instance!(actor)
+      function = create_tool_function!(actor, tool, enabled: false)
+      owner_conn = sign_in_conn(conn, actor.username, password)
+      path = "/api/bff/tool-functions/#{function.id}"
+      response = owner_conn |> patch(path, %{"safe_to_interrupt" => true}) |> json_response(200)
+      assert response["safe_to_interrupt"] == true
+      assert response["enabled"] == false
+      persisted = Ash.get!(ToolFunction, function.id, actor: actor)
+      assert persisted.safe_to_interrupt
+      refute persisted.enabled
+
+      rejected =
+        build_conn()
+        |> sign_in_conn(outsider.username, other_password)
+        |> patch(path, %{"safe_to_interrupt" => false})
+
+      assert rejected.status in [403, 404, 422]
+      assert Ash.get!(ToolFunction, function.id, actor: actor).safe_to_interrupt
+      invalid = owner_conn |> patch(path, %{"safe_to_interrupt" => "maybe"}) |> json_response(422)
+      assert invalid["error"] =~ "safe_to_interrupt must be a boolean"
+    end
+
+    test "background-start policy is exposed and cannot opt into automatic interruption", %{
+      conn: conn
+    } do
+      %{user: actor, password: password} = user_fixture()
+      tool = create_tool_instance!(actor)
+
+      function =
+        create_tool_function!(actor, tool,
+          name: "search_background",
+          execution_mode: :background,
+          target_function_name: "search"
+        )
+
+      signed_in = sign_in_conn(conn, actor.username, password)
+
+      document =
+        signed_in
+        |> put_req_header("accept", "application/vnd.api+json")
+        |> get("/api/ash/tool-instances/#{tool.id}?include=functions")
+        |> json_response(200)
+
+      exposed =
+        Enum.find(
+          document["included"],
+          &(&1["id"] == to_string(function.id) and &1["type"] == "tool-functions")
+        )
+
+      assert exposed["attributes"]["execution_mode"] == "background"
+      assert exposed["attributes"]["safe_to_interrupt"] == false
+
+      rejected =
+        signed_in
+        |> patch("/api/bff/tool-functions/#{function.id}", %{"safe_to_interrupt" => true})
+        |> json_response(422)
+
+      assert rejected["error"] =~ "cannot be enabled for background-start functions"
+      refute Ash.get!(ToolFunction, function.id, actor: actor).safe_to_interrupt
+    end
+
     test "PATCH /api/bff/tools/:id/fixed-functions/:name creates and updates fixed function overrides",
          %{conn: conn} do
       %{user: actor, password: password} = user_fixture()
@@ -90,6 +154,7 @@ defmodule IntellectualClubWeb.Bff.ToolsControllerTest do
         |> patch("/api/bff/tools/#{tool.id}/fixed-functions/web_search", %{"enabled" => false})
         |> json_response(200)
 
+      assert response["safe_to_interrupt"] == true
       assert response["name"] == "web_search"
       assert response["enabled"] == false
       assert response["description"] =~ "Search the web"

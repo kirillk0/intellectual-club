@@ -9,9 +9,13 @@ defmodule IntellectualClub.Generation.ToolExecution do
   """
 
   @owner_key {__MODULE__, :owner}
+  @call_key {__MODULE__, :call_item_id}
 
-  def run(owner, fun) when is_pid(owner) and is_function(fun, 0) do
+  def run(owner, fun), do: run(owner, nil, fun)
+
+  def run(owner, call_item_id, fun) when is_pid(owner) and is_function(fun, 0) do
     Process.put(@owner_key, owner)
+    Process.put(@call_key, call_item_id)
 
     try do
       checkpoint()
@@ -20,6 +24,7 @@ defmodule IntellectualClub.Generation.ToolExecution do
       :throw, {__MODULE__, :canceled} -> :canceled
     after
       Process.delete(@owner_key)
+      Process.delete(@call_key)
     end
   end
 
@@ -38,7 +43,13 @@ defmodule IntellectualClub.Generation.ToolExecution do
   defp transition(phase) do
     case Process.get(@owner_key) do
       owner when is_pid(owner) ->
-        case GenServer.call(owner, {:tool_execution_phase, self(), phase}, :infinity) do
+        command =
+          case Process.get(@call_key) do
+            nil -> {:tool_execution_phase, self(), phase}
+            id -> {:tool_execution_phase, self(), phase, id}
+          end
+
+        case GenServer.call(owner, command, :infinity) do
           :ok -> :ok
           :canceled -> throw({__MODULE__, :canceled})
         end

@@ -50,6 +50,42 @@ defmodule IntellectualClub.Tools.Executor do
     end
   end
 
+  @doc "Whether this function explicitly permits automatic steering interruption."
+  def safe_to_interrupt?(tool_instances_by_alias, name, execution_context) do
+    with {:ok, {alias_value, function_name}} <- parse_llm_tool_name(name),
+         {:ok, tool_instance} <- resolve_alias(tool_instances_by_alias, alias_value) do
+      driver = Registry.driver_for_type!(to_string(tool_instance.type))
+
+      case driver.functions_mode() do
+        :fixed ->
+          apply(driver, :fixed_functions, [tool_instance])
+          |> Enum.any?(fn spec ->
+            fixed_function_name(spec) == function_name and
+              Map.get(spec, "safe_to_interrupt") == true and
+              Map.get(spec, "is_background_function") != true
+          end)
+
+        :stored ->
+          actor = execution_actor(execution_context)
+
+          if actor do
+            ToolFunction
+            |> Ash.Query.filter(tool_instance_id == ^tool_instance.id and name == ^function_name)
+            |> Ash.Query.select([:safe_to_interrupt, :execution_mode])
+            |> Ash.read_one(actor: actor)
+            |> case do
+              {:ok, %ToolFunction{safe_to_interrupt: true, execution_mode: :direct}} -> true
+              _other -> false
+            end
+          else
+            false
+          end
+      end
+    else
+      _other -> false
+    end
+  end
+
   defp parse_llm_tool_name(value) do
     value = String.trim(value || "")
 
@@ -314,6 +350,7 @@ defmodule IntellectualClub.Tools.Executor do
       |> Ash.Query.select([
         :enabled,
         :discovery_available,
+        :safe_to_interrupt,
         :execution_mode,
         :target_function_name
       ])
@@ -324,6 +361,7 @@ defmodule IntellectualClub.Tools.Executor do
           {:ok,
            %{
              execution_mode: function.execution_mode,
+             safe_to_interrupt: function.safe_to_interrupt,
              target_function_name: normalize_target_function_name(function.target_function_name)
            }}
 
@@ -346,7 +384,11 @@ defmodule IntellectualClub.Tools.Executor do
 
     target_function_name = normalize_target_function_name(Map.get(raw, "target_function_name"))
 
-    %{execution_mode: execution_mode, target_function_name: target_function_name}
+    %{
+      execution_mode: execution_mode,
+      target_function_name: target_function_name,
+      safe_to_interrupt: Map.get(raw, "safe_to_interrupt") == true
+    }
   end
 
   defp normalize_target_function_name(value) when is_binary(value), do: String.trim(value)

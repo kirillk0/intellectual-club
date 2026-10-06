@@ -90,12 +90,21 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       try do
         function_id = String.to_integer(id)
-        enabled = parse_enabled!(params)
+        updates = function_updates!(params)
+        record = Ash.get!(ToolFunction, function_id, actor: actor)
+
+        if Map.has_key?(updates, :safe_to_interrupt) do
+          tool = Ash.get!(ToolInstance, record.tool_instance_id, actor: actor)
+          driver = Registry.driver_for_type!(tool.type)
+
+          if driver.functions_mode() != :stored,
+            do:
+              raise(ArgumentError, "Fixed function interruption policy is declared by its driver")
+        end
 
         function =
-          ToolFunction
-          |> Ash.get!(function_id, actor: actor)
-          |> Ash.Changeset.for_update(:update, %{enabled: enabled}, actor: actor)
+          record
+          |> Ash.Changeset.for_update(:update, updates, actor: actor)
           |> Ash.update!()
 
         json(conn, serialize_function(function))
@@ -157,6 +166,8 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       description: fn_record.description,
       parameters_schema: fn_record.parameters_schema,
       enabled: fn_record.enabled,
+      safe_to_interrupt: fn_record.safe_to_interrupt,
+      execution_mode: fn_record.execution_mode,
       discovery_available: fn_record.discovery_available,
       discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
     }
@@ -169,6 +180,7 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       description: fixed_function.description,
       parameters_schema: fixed_function.parameters_schema,
       enabled: fn_record.enabled,
+      safe_to_interrupt: fixed_function.safe_to_interrupt,
       discovery_available: fn_record.discovery_available,
       discovered_at: Serializer.datetime_iso(fn_record.discovered_at)
     }
@@ -254,12 +266,36 @@ defmodule IntellectualClubWeb.Bff.ToolsController do
       %{
         name: name,
         description: description,
-        parameters_schema: parameters_schema
+        parameters_schema: parameters_schema,
+        safe_to_interrupt: Map.get(raw, "safe_to_interrupt") == true
       }
     end
   end
 
   defp normalize_fixed_function(_other), do: nil
+
+  defp function_updates!(params) do
+    updates =
+      Enum.reduce(
+        [{:enabled, "enabled"}, {:safe_to_interrupt, "safe_to_interrupt"}],
+        %{},
+        fn {key, name}, attrs ->
+          case Map.fetch(params, name) do
+            {:ok, value} ->
+              case Helpers.parse_boolean(value, nil) do
+                value when is_boolean(value) -> Map.put(attrs, key, value)
+                _other -> raise ArgumentError, "#{name} must be a boolean"
+              end
+
+            :error ->
+              attrs
+          end
+        end
+      )
+
+    if updates == %{}, do: raise(ArgumentError, "enabled or safe_to_interrupt is required")
+    updates
+  end
 
   defp parse_enabled!(params) do
     case Map.fetch(params, "enabled") do

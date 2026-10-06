@@ -87,6 +87,17 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
     end
   end
 
+  def deliver_now(conn, %{"id" => id}) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, queued_message_id} <- ChatParams.resource_id(id),
+         {:ok, queued_message} <- QueuedMessages.deliver_now(queued_message_id, actor) do
+      if queued_message.status == :pending, do: notify_queued_message_changed(queued_message)
+      json(conn, %{queued_message: ChatQueuedMessagePayload.queued_message(queued_message)})
+    else
+      {:error, error} -> render_error(conn, error)
+    end
+  end
+
   def send_next(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, queued_message_id} <- ChatParams.resource_id(id),

@@ -89,6 +89,13 @@ defmodule IntellectualClub.Chat.QueuedMessage do
       constraints(one_of: [:pending, :blocked, :delivered, :canceled])
     end
 
+    attribute :delivery_mode, :atom do
+      allow_nil?(false)
+      public?(true)
+      default(:normal)
+      constraints(one_of: [:normal, :immediate])
+    end
+
     attribute :blocked_reason, :string do
       allow_nil?(true)
       public?(true)
@@ -174,6 +181,7 @@ defmodule IntellectualClub.Chat.QueuedMessage do
         :kind,
         :status,
         :blocked_reason,
+        :delivery_mode,
         :attempt_count,
         :finished_at,
         :anchor_message_id,

@@ -11,6 +11,7 @@ defmodule IntellectualClub.Generation.ToolCall do
           call_id: String.t(),
           name: String.t(),
           args: map(),
+          steering_interruption: :safe | :unknown | nil,
           raw: map()
         }
 
@@ -21,5 +22,6 @@ defmodule IntellectualClub.Generation.ToolCall do
             call_id: "",
             name: "",
             args: %{},
+            steering_interruption: nil,
             raw: %{}
 end

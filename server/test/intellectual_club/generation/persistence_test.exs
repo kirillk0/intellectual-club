@@ -813,6 +813,73 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       assert Persistence.list_missing_tool_calls!(step_id) == []
     end
 
+    test "interruption receipts retain real results and close only missing calls idempotently" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+
+      step_id =
+        Persistence.ensure_step_started!(message.id, %{"model" => "demo-model", "messages" => []})
+
+      runtime_step =
+        RuntimeTrace.new_step(
+          id: step_id,
+          sequence: 1,
+          raw_request: %{"model" => "demo-model", "messages" => []}
+        )
+        |> add_tool_call_to_runtime_step("call_1", "tool__safe", %{}, 1)
+        |> add_tool_call_to_runtime_step("call_2", "tool__unsafe", %{}, 2)
+        |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "response"}})
+
+      %{tool_calls: [first, second]} =
+        Persistence.persist_provider_completed!(message.id, runtime_step)
+
+      {:ok, queued} =
+        IntellectualClub.Chat.QueuedMessages.enqueue_steer(message.id, "Change", actor)
+
+      assert Persistence.request_tool_interruptions!(
+               message.id,
+               step_id,
+               &(&1.name == "tool__safe")
+             ) == [first.item_id]
+
+      assert {:ok, _} = IntellectualClub.Chat.QueuedMessages.deliver_now(queued.id, actor)
+
+      assert Enum.sort(
+               Persistence.request_tool_interruptions!(
+                 message.id,
+                 step_id,
+                 &(&1.name == "tool__safe")
+               )
+             ) ==
+               Enum.sort([first.item_id, second.item_id])
+
+      # A protected result writer wins before the batch has drained.
+      original =
+        Persistence.persist_tool_result!(message.id, step_id, first, %{
+          text: "Already completed",
+          result_raw: %{"ok" => true}
+        })
+
+      assert :ok = Persistence.finish_tool_interruptions!(message.id, step_id)
+      results = Persistence.load_step_for_followup!(step_id).results
+      assert [real, interrupted] = results
+      assert real.item_id == original.item_id
+      assert real.text == "Already completed"
+
+      assert interrupted.result_raw == %{
+               "isError" => true,
+               "code" => "interrupted_by_steering",
+               "outcome" => "unknown"
+             }
+
+      assert :ok = Persistence.finish_tool_interruptions!(message.id, step_id)
+
+      assert Enum.map(Persistence.load_step_for_followup!(step_id).results, & &1.item_id) ==
+               Enum.map(results, & &1.item_id)
+
+      assert [] == Persistence.list_missing_tool_calls!(step_id)
+    end
+
     test "persist_tool_result! gives parallel tool results non-conflicting stable sequences" do
       %{user: actor} = user_fixture()
       assistant_message = create_generating_assistant_message!(actor)

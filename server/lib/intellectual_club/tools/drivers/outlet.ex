@@ -1039,7 +1039,8 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
           "name" => name,
           "description" => description,
           "schema" => schema,
-          "supports_background" => supports_background
+          "supports_background" => supports_background,
+          "safe_to_interrupt" => Map.get(item, "safe_to_interrupt") == true
         }
       ]
     end

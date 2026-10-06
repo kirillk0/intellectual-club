@@ -257,9 +257,12 @@
             :active-generation-id="vm.activeGenerationId"
             :action-id="vm.queueActionId"
             :head-follow-up-id="vm.queuedFollowUpHeadId"
+            :read-only="vm.sharedReadonly"
+            :canceling-generation-id="vm.cancelingGenerationId"
             @edit="vm.startQueuedEdit"
             @remove="vm.removeFromQueue"
             @send-next="vm.sendNextQueuedMessage"
+            @deliver-now="vm.deliverQueuedSteeringNow"
             @open-attachment="vm.openExistingAttachmentPreview"
           />
           <div v-if="vm.sharedReadonly" class="chat-readonly-panel">

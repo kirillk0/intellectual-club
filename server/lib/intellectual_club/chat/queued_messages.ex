@@ -199,6 +199,46 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
+  @doc "Requests immediate delivery of pending steering without canceling its generation."
+  def deliver_now(id, actor) when is_integer(id) and is_map(actor) do
+    with {:ok, preliminary} <- get(id, actor),
+         true <- preliminary.kind == :steer do
+      transact(fn ->
+        with {:ok, chat} <- lock_owned_chat(preliminary.chat_id, actor),
+             {:ok, message} <-
+               lock_owned_generation(preliminary.target_generation_message_id, actor),
+             :ok <- ensure_message_chat(message, chat),
+             {:ok, requested} <- lock_one(id, actor),
+             :ok <- ensure_steering_retry_target(requested, message) do
+          cond do
+            requested.kind != :steer ->
+              {:error, :queued_steering_changed}
+
+            requested.status == :delivered ->
+              load_queue!(requested, actor)
+
+            requested.status != :pending ->
+              {:error, :queued_steering_changed}
+
+            message.status != :generating ->
+              {:error, :generation_not_active}
+
+            requested.delivery_mode == :immediate ->
+              load_queue!(requested, actor)
+
+            true ->
+              requested
+              |> update_steer_state!(%{delivery_mode: :immediate}, actor)
+              |> load_queue!(actor)
+          end
+        end
+      end)
+    else
+      false -> {:error, :queued_steering_changed}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc "Retries quarantined steering or re-anchors the idle head follow-up backlog."
   @spec send_next(integer(), map()) :: {:ok, QueuedMessage.t()} | {:error, term()}
   def send_next(id, actor) when is_integer(id) and is_map(actor) do

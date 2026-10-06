@@ -76,6 +76,7 @@ defmodule IntellectualClub.Generation.Worker do
     :failure_retry_timer,
     :steering_attempt,
     :steering_retry_timer,
+    :tool_interruption_retry,
     :deferred_provider_event,
     :deferred_tool_outcome,
     image_cache: %{},
@@ -85,6 +86,8 @@ defmodule IntellectualClub.Generation.Worker do
     lease_lost?: false,
     cancel_waiters: [],
     tool_executions: %{},
+    tool_execution_calls: %{},
+    interrupted_tool_calls: MapSet.new(),
     tool_cancel_requested?: false,
     queue_dirty?: false
   ]
@@ -489,6 +492,23 @@ defmodule IntellectualClub.Generation.Worker do
   def handle_info(:retry_current_step, state), do: {:noreply, state}
 
   @impl true
+  def handle_info(
+        {:retry_tool_interruption, token},
+        %{tool_interruption_retry: {_timer, token, action}} = state
+      ) do
+    state = %{state | tool_interruption_retry: nil}
+
+    case action do
+      {:tool_interruption, continuation} ->
+        begin_tool_interruption_check(state, continuation)
+
+      {:tool_interruption_reconciliation, continuation} ->
+        reconcile_tool_interruptions(state, continuation)
+    end
+  end
+
+  def handle_info({:retry_tool_interruption, _stale_token}, state), do: {:noreply, state}
+
   def handle_info(:consume_queued_steers, state) do
     consume_queued_steers_signal(state)
   end
@@ -542,7 +562,8 @@ defmodule IntellectualClub.Generation.Worker do
     opts = state.tool_result_opts || []
     state = %{state | tool_task: nil, tool_result_opts: nil}
 
-    if not is_nil(state.persistence_op) or steering_resolving?(state) do
+    if not is_nil(state.persistence_op) or steering_resolving?(state) or
+         not is_nil(state.tool_interruption_retry) do
       {:noreply, %{state | deferred_tool_outcome: {:results, results, opts}}}
     else
       advance(state, {:tool_results, results, opts})
@@ -562,7 +583,8 @@ defmodule IntellectualClub.Generation.Worker do
       event = {:provider_event, state.stream_ref, {:response_error, %{error_text: error_text}}}
       state = %{state | stream_task: nil}
 
-      if not is_nil(state.persistence_op) or steering_resolving?(state) do
+      if not is_nil(state.persistence_op) or steering_resolving?(state) or
+           not is_nil(state.tool_interruption_retry) do
         {:noreply, %{state | deferred_provider_event: state.deferred_provider_event || event}}
       else
         finalize_error(state, error_text)
@@ -578,7 +600,8 @@ defmodule IntellectualClub.Generation.Worker do
       error_text = Exception.format_exit(reason)
       state = %{state | tool_task: nil, tool_result_opts: nil}
 
-      if not is_nil(state.persistence_op) or steering_resolving?(state) do
+      if not is_nil(state.persistence_op) or steering_resolving?(state) or
+           not is_nil(state.tool_interruption_retry) do
         {:noreply, %{state | deferred_tool_outcome: {:error, error_text}}}
       else
         finalize_error(state, error_text)
@@ -590,7 +613,12 @@ defmodule IntellectualClub.Generation.Worker do
       when is_map_key(state.tool_executions, pid) do
     case state.tool_executions[pid] do
       {^ref, _phase} ->
-        {:noreply, %{state | tool_executions: Map.delete(state.tool_executions, pid)}}
+        {:noreply,
+         %{
+           state
+           | tool_executions: Map.delete(state.tool_executions, pid),
+             tool_execution_calls: Map.delete(state.tool_execution_calls, pid)
+         }}
 
       _other ->
         {:noreply, state}
@@ -765,16 +793,32 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def handle_call(:cancel_and_wait, from, state), do: request_cancel(state, from)
 
-  def handle_call({:tool_execution_phase, pid, phase}, {pid, _ref}, state)
+  def handle_call({:tool_interrupted?, call_item_id}, _from, state) do
+    {:reply, MapSet.member?(state.interrupted_tool_calls, call_item_id), state}
+  end
+
+  def handle_call({:tool_execution_phase, pid, phase}, from, state)
       when phase in [:protected, :interruptible] do
-    if state.tool_cancel_requested? or state.cancel_requested? or state.lease_lost? do
+    handle_call({:tool_execution_phase, pid, phase, nil}, from, state)
+  end
+
+  def handle_call({:tool_execution_phase, pid, phase, call_item_id}, {pid, _ref}, state)
+      when phase in [:protected, :interruptible] do
+    if state.tool_cancel_requested? or state.cancel_requested? or state.lease_lost? or
+         MapSet.member?(state.interrupted_tool_calls, call_item_id) do
       {:reply, :canceled, state}
     else
       {monitor, _previous} =
         Map.get_lazy(state.tool_executions, pid, fn -> {Process.monitor(pid), phase} end)
 
       executions = Map.put(state.tool_executions, pid, {monitor, phase})
-      {:reply, :ok, %{state | tool_executions: executions}}
+
+      {:reply, :ok,
+       %{
+         state
+         | tool_executions: executions,
+           tool_execution_calls: Map.put(state.tool_execution_calls, pid, call_item_id)
+       }}
     end
   end
 
@@ -821,11 +865,16 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp consume_queued_steers_signal(state) do
     cond do
-      state.status != :generating or state.lease_lost? or not is_nil(state.failure_plan) ->
+      state.status != :generating or state.cancel_requested? or state.lease_lost? or
+          not is_nil(state.failure_plan) ->
         {:noreply, state}
 
-      not is_nil(state.persistence_op) or steering_resolving?(state) ->
+      not is_nil(state.persistence_op) or steering_resolving?(state) or
+          not is_nil(state.tool_interruption_retry) ->
         {:noreply, %{state | queue_dirty?: true}}
+
+      state.runtime_step.status == :waiting_tools ->
+        begin_tool_interruption_check(state, state.continuation)
 
       state.runtime_step.status != :waiting_provider ->
         {:noreply, state}
@@ -838,6 +887,52 @@ defmodule IntellectualClub.Generation.Worker do
 
         begin_queued_steers(state, continuation)
     end
+  end
+
+  defp begin_tool_interruption_check(state, continuation) do
+    context = tool_execution_context(state)
+    instances = state.context.tool_instances_by_alias || %{}
+    state = %{state | queue_dirty?: false, continuation: continuation}
+
+    {:noreply,
+     begin_persistence(state, {:tool_interruption, continuation}, fn ->
+       safe_persist_value(state, :tool_interruption, fn ->
+         Persistence.request_tool_interruptions!(
+           state.context.message_id,
+           state.runtime_step.id,
+           &Executor.safe_to_interrupt?(instances, &1.name, context)
+         )
+       end)
+     end)}
+  end
+
+  defp reconcile_tool_interruptions(state, continuation) do
+    # A failed interruption is optional: leave steering pending for the normal
+    # followup instead of retrying a known-broken marker write. An earlier lost
+    # ACK may still have committed markers, so fence and read them before ANY
+    # dispatch, task cancellation or deferred batch completion can resume.
+    {:noreply,
+     begin_persistence(state, {:tool_interruption_reconciliation, continuation}, fn ->
+       safe_persist_value(state, :tool_interruption_reconciliation, fn ->
+         state.runtime_step.id
+         |> Persistence.list_missing_tool_calls!()
+         |> Enum.reject(&is_nil(&1.steering_interruption))
+         |> Enum.map(& &1.item_id)
+       end)
+     end)}
+  end
+
+  defp interrupt_selected_tool_tasks(state) do
+    Enum.each(state.tool_executions, fn
+      {pid, {_monitor, :interruptible}} ->
+        if MapSet.member?(state.interrupted_tool_calls, state.tool_execution_calls[pid]),
+          do: Process.exit(pid, :kill)
+
+      {_pid, {_monitor, :protected}} ->
+        :ok
+    end)
+
+    state
   end
 
   defp begin_queued_steers(state, continuation) do
@@ -1668,8 +1763,18 @@ defmodule IntellectualClub.Generation.Worker do
   defp cancel_tasks(state) do
     state
     |> cancel_retry_timer()
+    |> cancel_tool_interruption_retry()
     |> cancel_stream_task()
     |> cancel_tool_task()
+  end
+
+  defp cancel_tool_interruption_retry(%{tool_interruption_retry: nil} = state), do: state
+
+  defp cancel_tool_interruption_retry(
+         %{tool_interruption_retry: {timer, _token, _action}} = state
+       ) do
+    Process.cancel_timer(timer)
+    %{state | tool_interruption_retry: nil}
   end
 
   defp cancel_retry_timer(%{retry_timer_ref: nil} = state), do: state
@@ -2145,6 +2250,12 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp start_tool_task(state, tool_calls, prebuilt_results, opts \\ [])
        when is_list(tool_calls) and is_list(prebuilt_results) and is_list(opts) do
+    continuation = {:start_prepared_tools, tool_calls, prebuilt_results, opts}
+    {:noreply, state} = begin_tool_interruption_check(state, continuation)
+    state
+  end
+
+  defp start_prepared_tool_task(state, tool_calls, prebuilt_results, opts) do
     ensure_dispatch_allowed!(state)
     tool_instances_by_alias = state.context.tool_instances_by_alias || %{}
     execution_context = tool_execution_context(state)
@@ -2162,7 +2273,7 @@ defmodule IntellectualClub.Generation.Worker do
             tool_call_from_result(result) ||
               raise ArgumentError, "Tool result has no persisted call"
 
-          ToolExecution.run(owner, fn ->
+          ToolExecution.run(owner, call.item_id, fn ->
             persist_tool_result!(lease, message_id, step_id, call, result)
           end)
         end)
@@ -2209,7 +2320,7 @@ defmodule IntellectualClub.Generation.Worker do
     tool_calls
     |> Task.async_stream(
       fn call ->
-        ToolExecution.run(owner, fn ->
+        ToolExecution.run(owner, call.item_id, fn ->
           execution_context = execution_context_for_tool_call(execution_context, call)
 
           result =
@@ -2228,6 +2339,7 @@ defmodule IntellectualClub.Generation.Worker do
       end,
       max_concurrency: max_concurrency,
       ordered: false,
+      zip_input_on_exit: true,
       timeout: :infinity
     )
     |> Enum.reduce({[], nil}, fn
@@ -2237,9 +2349,14 @@ defmodule IntellectualClub.Generation.Worker do
       {:ok, :canceled}, acc ->
         acc
 
-      {:exit, reason}, {results, error} ->
-        send(owner, {:tool_batch_failed, self()})
-        {results, error || reason}
+      {:exit, {call, reason}}, {results, error} ->
+        if reason == :killed and
+             GenServer.call(owner, {:tool_interrupted?, call.item_id}, :infinity) do
+          {results, error}
+        else
+          send(owner, {:tool_batch_failed, self()})
+          {results, error || reason}
+        end
     end)
     |> then(fn
       {results, nil} -> results
@@ -2280,6 +2397,11 @@ defmodule IntellectualClub.Generation.Worker do
      begin_step_transition(state, {:tool_followup, opts}, :followup, fn ->
        with {:ok, persisted} <-
               safe_persist_value(state, :tool_results, fn ->
+                Persistence.finish_tool_interruptions!(
+                  state.context.message_id,
+                  state.runtime_step.id
+                )
+
                 Persistence.load_step_for_followup!(state.runtime_step.id,
                   raw_request: state.runtime_step.raw_request
                 )
@@ -2470,6 +2592,19 @@ defmodule IntellectualClub.Generation.Worker do
     runtime_step = %{state.runtime_step | id: step.id, status: step.status}
     state = install_runtime_step(state, runtime_step)
     continuation = if tool_calls == [], do: {:done, step.id, []}, else: {:tool_calls, tool_calls}
+    advance(state, continuation)
+  end
+
+  defp persistence_finished(state, {kind, continuation}, {:ok, interrupted})
+       when kind in [:tool_interruption, :tool_interruption_reconciliation] do
+    state =
+      %{
+        state
+        | interrupted_tool_calls:
+            MapSet.union(state.interrupted_tool_calls, MapSet.new(interrupted))
+      }
+      |> interrupt_selected_tool_tasks()
+
     advance(state, continuation)
   end
 
@@ -2747,6 +2882,41 @@ defmodule IntellectualClub.Generation.Worker do
     retry_failure_resolution(state, plan, failure)
   end
 
+  defp operation_failed(
+         state,
+         {:tool_interruption, continuation},
+         %PersistenceFailure{kind: kind} = failure
+       )
+       when kind in [:permanent, :retry_exhausted] do
+    PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
+
+    if state.cancel_requested?,
+      do: advance(state, :idle),
+      else: reconcile_tool_interruptions(state, continuation)
+  end
+
+  defp operation_failed(
+         state,
+         {kind, _continuation} = action,
+         %PersistenceFailure{kind: :unknown} = failure
+       )
+       when kind in [:tool_interruption, :tool_interruption_reconciliation] do
+    PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
+
+    if state.cancel_requested? do
+      advance(state, :idle)
+    else
+      # Unknown outcomes still gate dispatch. Reconciliation retries only its
+      # read; permanent/exhausted canonical-read failures use the fail-closed
+      # generation failure path below rather than restarting the marker write.
+      state = queued_steering_retry_state(state, failure.kind)
+      token = make_ref()
+      delay = min(50 * state.queued_steering_retry_attempt, 5_000)
+      timer = Process.send_after(self(), {:retry_tool_interruption, token}, delay)
+      {:noreply, %{state | tool_interruption_retry: {timer, token, action}}}
+    end
+  end
+
   defp operation_failed(state, action, %PersistenceFailure{} = failure) do
     failure = %{failure | operation: action_kind(action)}
     PersistenceFailure.log(failure, state.context.message_id, operation_step_id(state))
@@ -2941,6 +3111,9 @@ defmodule IntellectualClub.Generation.Worker do
     {:noreply, begin_persistence(state, :cancel, fn -> persist_cancellation(state) end)}
   end
 
+  defp advance(%{tool_interruption_retry: retry} = state, _continuation) when not is_nil(retry),
+    do: {:noreply, state}
+
   defp advance(%{deferred_provider_event: event} = state, _continuation) when not is_nil(event) do
     handle_info(event, %{state | deferred_provider_event: nil, continuation: :idle})
   end
@@ -2962,6 +3135,13 @@ defmodule IntellectualClub.Generation.Worker do
     begin_queued_steers(state, continuation)
   end
 
+  defp advance(
+         %{queue_dirty?: true, runtime_step: %{status: :waiting_tools}} = state,
+         continuation
+       ) do
+    begin_tool_interruption_check(state, continuation)
+  end
+
   defp advance(state, continuation) do
     dispatch_continuation(%{state | continuation: :idle}, continuation)
   end
@@ -2976,6 +3156,9 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp dispatch_continuation(state, {:tool_calls, calls}),
     do: handle_persisted_tool_calls(state, calls)
+
+  defp dispatch_continuation(state, {:start_prepared_tools, calls, prebuilt_results, opts}),
+    do: {:noreply, start_prepared_tool_task(state, calls, prebuilt_results, opts)}
 
   defp dispatch_continuation(state, {:resume_tools, calls}),
     do: {:noreply, start_tool_task(state, calls)}
@@ -3126,7 +3309,7 @@ defmodule IntellectualClub.Generation.Worker do
       if state.runtime_step && state.runtime_step.id == runtime_step.id do
         state
       else
-        %{state | request_images: nil, image_cache: %{}}
+        %{state | request_images: nil, image_cache: %{}, interrupted_tool_calls: MapSet.new()}
       end
 
     %{state | context: context, runtime_step: runtime_step, step_sequence: runtime_step.sequence}

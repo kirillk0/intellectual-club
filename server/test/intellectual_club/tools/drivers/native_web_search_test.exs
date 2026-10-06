@@ -289,6 +289,52 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     assert length(result.raw["attempts"]) == 2
   end
 
+  for {function, args, count} <- [
+        {"web_search", %{"query" => "waiting"}, 1},
+        {"web_fetch", %{"urls" => ["https://example.org/one", "https://example.org/two"]}, 2}
+      ] do
+    @tag :whitebox
+    @tag function: function, args: args, attempts: count
+    test "#{function} stops local attempts when its caller exits", context do
+      test = self()
+      base = server(fn _, _ -> {:wait, test} end)
+      tool = tool(base, ["tavily"])
+      supervisor = start_supervised!(Task.Supervisor)
+
+      caller =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Driver.execute(tool, context.function, context.args)
+        end)
+
+      handlers =
+        for _ <- 1..context.attempts do
+          assert_receive {:waiting, handler}, 5_000
+          on_exit(fn -> send(handler, :continue) end)
+          handler
+        end
+
+      attempts =
+        IntellectualClub.Tools.WebSearchTaskSupervisor
+        |> Task.Supervisor.children()
+        |> Enum.filter(fn pid ->
+          case Process.info(pid, :dictionary) do
+            {:dictionary, dictionary} -> caller.pid in Keyword.get(dictionary, :"$callers", [])
+            nil -> false
+          end
+        end)
+
+      assert length(attempts) == context.attempts
+      monitors = Enum.map(attempts, &{&1, Process.monitor(&1)})
+      Task.shutdown(caller, :brutal_kill)
+
+      for {pid, monitor} <- monitors do
+        assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, 5_000
+      end
+
+      Enum.each(handlers, &send(&1, :continue))
+    end
+  end
+
   test "Exa and Firecrawl request maximum cleaning and preserve provider warnings" do
     base =
       server(fn

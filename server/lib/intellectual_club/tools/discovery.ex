@@ -103,6 +103,7 @@ defmodule IntellectualClub.Tools.Discovery do
                   description: spec.description,
                   parameters_schema: spec.schema,
                   enabled: spec.enabled_by_default,
+                  safe_to_interrupt: spec.safe_to_interrupt,
                   discovery_available: true,
                   execution_mode: spec.execution_mode,
                   target_function_name: spec.target_function_name,
@@ -128,12 +129,19 @@ defmodule IntellectualClub.Tools.Discovery do
                 target_function_name: spec.target_function_name
               }
               |> maybe_reset_enabled(spec.enabled_by_default, semantics_changed?)
+              |> then(fn updates ->
+                if semantics_changed?,
+                  do: Map.put(updates, :safe_to_interrupt, spec.safe_to_interrupt),
+                  else: updates
+              end)
 
             if record.description != spec.description or record.parameters_schema != spec.schema or
                  record.discovery_available != true or
                  record.execution_mode != spec.execution_mode or
                  record.target_function_name != spec.target_function_name or
-                 (semantics_changed? and record.enabled != spec.enabled_by_default) do
+                 (semantics_changed? and
+                    (record.enabled != spec.enabled_by_default or
+                       record.safe_to_interrupt != spec.safe_to_interrupt)) do
               _ =
                 record
                 |> Ash.Changeset.for_update(:update, updates, actor: actor)
@@ -248,6 +256,8 @@ defmodule IntellectualClub.Tools.Discovery do
         description: description,
         schema: schema,
         enabled_by_default: enabled_by_default,
+        safe_to_interrupt:
+          execution_mode == :direct and Map.get(raw, "safe_to_interrupt") == true,
         execution_mode: execution_mode,
         target_function_name: target_function_name
       }

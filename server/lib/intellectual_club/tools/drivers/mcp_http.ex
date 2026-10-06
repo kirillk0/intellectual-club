@@ -386,6 +386,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
               %{
                 "name" => name,
                 "description" => to_string(Map.get(spec, "description") || ""),
+                "safe_to_interrupt" => Map.get(spec, "safe_to_interrupt") == true,
                 "schema" =>
                   case Map.get(spec, "schema") do
                     %{} = schema -> schema
@@ -445,6 +446,7 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
                 %{
                   "name" => name,
                   "description" => to_string(Map.get(item, "description") || ""),
+                  "safe_to_interrupt" => Map.get(item, "safe_to_interrupt") == true,
                   "schema" => schema
                 }
               ]

@@ -116,6 +116,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
     [
       %{
         "name" => "read_url",
+        "safe_to_interrupt" => true,
         "description" =>
           "Fetch a URL (HTML, PDF, DOCX, or text), extract text, and return a requested cached page.",
         "schema" => %{
@@ -136,6 +137,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
       },
       %{
         "name" => "search_url",
+        "safe_to_interrupt" => true,
         "description" =>
           "Fetch a URL (HTML, PDF, DOCX, or text), extract text, and search across pages returning snippets with page numbers.",
         "schema" => %{

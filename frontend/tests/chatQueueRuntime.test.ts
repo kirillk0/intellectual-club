@@ -58,6 +58,9 @@ const failedSteer = (): ChatQueuedMessage => ({
 const createRuntime = (messages = [followUp()], readOnly = false) => {
   const queuedMessages = ref<ChatQueuedMessage[]>(messages);
   const loadError = ref('');
+  const chatId = ref(2);
+  const activeGenerationId = ref<number | null>(8);
+  const cancelingGenerationId = ref<number | null>(null);
   const refreshChat = vi.fn().mockResolvedValue(undefined);
   const ensurePendingFilesUploaded = vi.fn().mockResolvedValue(['upload-1']);
   const clearPendingFilesCollection = vi.fn(async (files: { value: unknown[] }) => {
@@ -65,7 +68,9 @@ const createRuntime = (messages = [followUp()], readOnly = false) => {
   });
 
   const runtime = useChatQueueRuntime({
-    chatId: computed(() => 2),
+    chatId: computed(() => chatId.value),
+    activeGenerationId,
+    cancelingGenerationId,
     queuedMessages,
     readOnly: computed(() => readOnly),
     loadError,
@@ -81,7 +86,7 @@ const createRuntime = (messages = [followUp()], readOnly = false) => {
     refreshChat,
   });
 
-  return { runtime, queuedMessages, loadError, refreshChat };
+  return { runtime, queuedMessages, loadError, refreshChat, chatId, activeGenerationId, cancelingGenerationId };
 };
 
 describe('chat queue runtime', () => {
@@ -264,6 +269,124 @@ describe('chat queue runtime', () => {
     await runtime.sendNext({ ...followUp(), id: 30 });
     const readonly = createRuntime([failedSteer()], true);
     await readonly.runtime.sendNext(failedSteer());
+    expect(apiMocks.post).not.toHaveBeenCalled();
+  });
+
+  it('requests immediate delivery once and keeps pending steering visible until committed', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    const immediate = { ...pending, delivery_mode: 'immediate' } satisfies ChatQueuedMessage;
+    let resolve!: (payload: { queued_message: ChatQueuedMessage }) => void;
+    apiMocks.post.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const { runtime, queuedMessages, refreshChat } = createRuntime([pending]);
+
+    const request = runtime.deliverNow(pending);
+    expect(runtime.queueActionId.value).toBe(pending.id);
+    await runtime.deliverNow(pending);
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-queued-messages/20/deliver-now', {});
+    expect(queuedMessages.value).toEqual([pending]);
+
+    resolve({ queued_message: immediate });
+    await request;
+    expect(queuedMessages.value).toEqual([immediate]);
+    expect(runtime.queueActionId.value).toBeNull();
+    expect(refreshChat).toHaveBeenCalledTimes(1);
+    await runtime.deliverNow(pending);
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resurrect steering already delivered by polling', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    let resolve!: (payload: { queued_message: ChatQueuedMessage }) => void;
+    apiMocks.post.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const { runtime, queuedMessages } = createRuntime([pending]);
+    const request = runtime.deliverNow(pending);
+    queuedMessages.value = [];
+    resolve({ queued_message: { ...pending, delivery_mode: 'immediate' } });
+    await request;
+    expect(queuedMessages.value).toEqual([]);
+  });
+
+  it('accepts an already delivered response without sending the instruction again', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    apiMocks.post.mockResolvedValueOnce({ queued_message: { ...pending, status: 'delivered' } });
+    const { runtime, queuedMessages } = createRuntime([pending]);
+    await runtime.deliverNow(pending);
+    expect(queuedMessages.value).toEqual([]);
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes stale steering on conflict and keeps the instruction on error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    const error = { status: 409, bodyJson: { code: 'generation_not_active' } };
+    apiMocks.isHttpError.mockImplementation((value) => value === error);
+    apiMocks.post.mockRejectedValueOnce(error);
+    const { runtime, queuedMessages, loadError, refreshChat } = createRuntime([pending]);
+    refreshChat.mockImplementation(async () => { loadError.value = ''; });
+    await runtime.deliverNow(pending);
+    expect(queuedMessages.value).toEqual([pending]);
+    expect(loadError.value).toBe('Generation is no longer active.');
+    expect(refreshChat).toHaveBeenCalledTimes(1);
+    expect(runtime.queueActionId.value).toBeNull();
+  });
+
+  it('ignores a response after navigating to another chat', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    let resolve!: (payload: { queued_message: ChatQueuedMessage }) => void;
+    apiMocks.post.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const { runtime, queuedMessages, chatId, refreshChat } = createRuntime([pending]);
+    const request = runtime.deliverNow(pending);
+    chatId.value = 3;
+    queuedMessages.value = [];
+    resolve({ queued_message: { ...pending, delivery_mode: 'immediate' } });
+    await request;
+    expect(queuedMessages.value).toEqual([]);
+    expect(refreshChat).not.toHaveBeenCalled();
+  });
+
+  it('unblocks the new chat without allowing a stale request to clear its action', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    const next = { ...pending, id: 21, chat_id: 3 } satisfies ChatQueuedMessage;
+    let resolveOld!: (payload: { queued_message: ChatQueuedMessage }) => void;
+    let resolveNew!: (payload: { queued_message: ChatQueuedMessage }) => void;
+    apiMocks.post.mockImplementationOnce(() => new Promise((done) => { resolveOld = done; }));
+    apiMocks.post.mockImplementationOnce(() => new Promise((done) => { resolveNew = done; }));
+    const { runtime, queuedMessages, chatId, refreshChat } = createRuntime([pending]);
+    const oldRequest = runtime.deliverNow(pending);
+    chatId.value = 3;
+    queuedMessages.value = [next];
+    expect(runtime.queueActionId.value).toBeNull();
+    const newRequest = runtime.deliverNow(next);
+    expect(runtime.queueActionId.value).toBe(next.id);
+
+    resolveOld({ queued_message: { ...pending, delivery_mode: 'immediate' } });
+    await oldRequest;
+    expect(runtime.queueActionId.value).toBe(next.id);
+    expect(queuedMessages.value).toEqual([next]);
+    expect(refreshChat).not.toHaveBeenCalled();
+
+    resolveNew({ queued_message: { ...next, delivery_mode: 'immediate' } });
+    await newRequest;
+    expect(runtime.queueActionId.value).toBeNull();
+    expect(queuedMessages.value[0]?.delivery_mode).toBe('immediate');
+  });
+
+  it('rejects immediate delivery for inactive, read-only, canceling or non-pending steering', async () => {
+    const pending = { ...failedSteer(), status: 'pending', blocked_reason: null } satisfies ChatQueuedMessage;
+    const context = createRuntime([pending, followUp()]);
+    await context.runtime.deliverNow(followUp());
+    await context.runtime.deliverNow({ ...pending, id: 99 });
+    context.activeGenerationId.value = null;
+    await context.runtime.deliverNow(pending);
+    context.activeGenerationId.value = 9;
+    await context.runtime.deliverNow(pending);
+    context.activeGenerationId.value = 8;
+    context.cancelingGenerationId.value = 8;
+    await context.runtime.deliverNow(pending);
+    await createRuntime([pending], true).runtime.deliverNow(pending);
+    await createRuntime([failedSteer()]).runtime.deliverNow(failedSteer());
+    await createRuntime([{ ...pending, status: 'delivered' }]).runtime.deliverNow(pending);
     expect(apiMocks.post).not.toHaveBeenCalled();
   });
 

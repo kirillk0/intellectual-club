@@ -36,9 +36,13 @@ defmodule IntellectualClub.TestSupport.McpHttpJsonServer do
       "tools/call" ->
         query = get_in(payload, ["params", "arguments", "query"])
 
-        respond_json(conn, payload["id"], %{
-          "content" => [%{"type" => "text", "text" => "Found: #{query}"}]
-        })
+        result =
+          case Keyword.get(opts, :call_handler) do
+            handler when is_function(handler, 1) -> handler.(payload["params"])
+            _other -> %{"content" => [%{"type" => "text", "text" => "Found: #{query}"}]}
+          end
+
+        respond_json(conn, payload["id"], result)
 
       method ->
         conn

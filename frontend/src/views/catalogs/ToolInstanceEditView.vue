@@ -601,6 +601,25 @@
                   <span v-else class="badge muted" title="Built-in fixed function">fixed</span>
                 </div>
 
+                <label
+                  v-if="!fn.fixed && !fn.background"
+                  class="flex"
+                  style="gap: 6px; margin-top: 10px"
+                  :title="translate('Enable only for trusted read-only functions whose interruption cannot change user data or stop other work.')"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="fn.safe_to_interrupt"
+                    :disabled="sharedReadonly || savingFunctionIds.has(fn.key)"
+                    :aria-label="translate('Automatically interrupt on steering')"
+                    @change="toggleFunctionInterruption(fn, $event)"
+                  />
+                  {{ translate('Automatically interrupt on steering') }}
+                </label>
+                <p v-else-if="fn.safe_to_interrupt" class="muted" style="margin: 8px 0 0; font-size: 0.85rem">
+                  {{ translate('Automatically interrupted on steering') }}
+                </p>
+
                 <details
                   v-if="fn.parameters_schema"
                   style="margin-top: 10px"
@@ -718,6 +737,7 @@ type ToolDriverMeta = {
     description: string;
     enabled: boolean;
     enabled_by_default?: boolean;
+    safe_to_interrupt?: boolean;
     parameters_schema: unknown;
     is_background_function: boolean;
     provides_background_task_status: boolean;
@@ -758,10 +778,12 @@ type ToolFunctionRow = {
   name: string;
   description: string;
   enabled: boolean;
+  safe_to_interrupt: boolean;
   parameters_schema: unknown;
   discovered_at: string;
   readonly: boolean;
   fixed: boolean;
+  background: boolean;
 };
 
 const TOOL_DOCUMENT_INCLUDE = 'functions';
@@ -1800,10 +1822,12 @@ function parseFunctionRow(resource: JsonApiResource): ToolFunctionRow | null {
     name,
     description: String(attrs.description || '').trim(),
     enabled: Boolean(attrs.enabled),
+    safe_to_interrupt: attrs.safe_to_interrupt === true,
     parameters_schema: attrs.parameters_schema,
     discovered_at: String(attrs.discovered_at || '').trim(),
     readonly: false,
     fixed: false,
+    background: attrs.execution_mode === 'background',
   };
 }
 
@@ -1869,10 +1893,12 @@ function setFixedFunctions() {
     name: String(fn.name || '').trim(),
     description: String(fn.description || '').trim(),
     enabled: overrides.get(String(fn.name || '').trim())?.enabled ?? Boolean(fn.enabled),
+    safe_to_interrupt: fn.safe_to_interrupt === true,
     parameters_schema: fn.parameters_schema,
     discovered_at: overrides.get(String(fn.name || '').trim())?.discovered_at ?? '',
     readonly: false,
     fixed: true,
+    background: fn.is_background_function === true,
   }));
   functionsError.value = null;
   functionsLoading.value = false;
@@ -2019,6 +2045,43 @@ async function toggleFunction(fn: ToolFunctionRow, event: Event) {
   } catch (e) {
     console.error(e);
     alert('Failed to update function.');
+  } finally {
+    const next = new Set(savingFunctionIds.value);
+    next.delete(fn.key);
+    savingFunctionIds.value = next;
+  }
+}
+
+async function toggleFunctionInterruption(fn: ToolFunctionRow, event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+  if (sharedReadonly.value || fn.fixed || fn.background || !fn.id || savingFunctionIds.value.has(fn.key)) {
+    target.checked = fn.safe_to_interrupt;
+    return;
+  }
+
+  const nextSafe = target.checked;
+  const recordId = editor.numericId.value;
+  savingFunctionIds.value = new Set([...savingFunctionIds.value, fn.key]);
+  try {
+    const payload = await api.patch<{ safe_to_interrupt: boolean }>(
+      `/api/bff/tool-functions/${fn.id}`,
+      { safe_to_interrupt: nextSafe }
+    );
+    if (editor.numericId.value !== recordId) return;
+    const persistedSafe = payload.safe_to_interrupt === true;
+    functions.value = functions.value.map((row) =>
+      row.key === fn.key ? { ...row, safe_to_interrupt: persistedSafe } : row
+    );
+    persistedFunctionRows.value = persistedFunctionRows.value.map((row) =>
+      row.id === fn.id ? { ...row, safe_to_interrupt: persistedSafe } : row
+    );
+    target.checked = persistedSafe;
+  } catch (error) {
+    if (editor.numericId.value !== recordId) return;
+    console.error(error);
+    target.checked = fn.safe_to_interrupt;
+    alert(translate('Failed to update interruption policy.'));
   } finally {
     const next = new Set(savingFunctionIds.value);
     next.delete(fn.key);

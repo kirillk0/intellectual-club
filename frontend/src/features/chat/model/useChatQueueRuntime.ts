@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from 'vue';
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
@@ -19,6 +19,8 @@ type Params = {
   chatId: ComputedRef<number>;
   queuedMessages: Ref<ChatQueuedMessage[]>;
   readOnly: ComputedRef<boolean>;
+  activeGenerationId: Ref<number | null>;
+  cancelingGenerationId: Ref<number | null>;
   loadError: Ref<string>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
   ensurePendingFilesUploaded: (
@@ -47,6 +49,15 @@ export const isRetryableQueuedSteer = (message: ChatQueuedMessage) =>
   message.kind === 'steer' &&
   message.status === 'blocked' &&
   message.blocked_reason === 'steering_failed';
+
+export const isPendingQueuedSteerForGeneration = (
+  message: ChatQueuedMessage,
+  generationId: number | null
+) =>
+  generationId !== null &&
+  message.kind === 'steer' &&
+  message.status === 'pending' &&
+  message.target_generation_message_id === generationId;
 
 type NormalizedQueuedContent = {
   id: number;
@@ -108,6 +119,13 @@ export const queuedMessageAttachments = (message: ChatQueuedMessage): ExistingCh
 
 export function useChatQueueRuntime(params: Params) {
   const queueActionId = ref<number | null>(null);
+  let deliveryRequest: symbol | null = null;
+  const stopDeliveryWatch = watch(params.chatId, () => {
+    if (deliveryRequest !== null) {
+      deliveryRequest = null;
+      queueActionId.value = null;
+    }
+  }, { flush: 'sync' });
   const editingQueuedMessage = ref<ChatQueuedMessage | null>(null);
   const editContents = ref<string[]>([]);
   const editExistingAttachments = ref<ExistingChatAttachment[]>([]);
@@ -207,6 +225,7 @@ export function useChatQueueRuntime(params: Params) {
         follow_up_required: 'Only follow-up messages can be sent next.',
         queued_steering_changed: 'This steering message changed. Refresh and try again.',
         generation_not_active: 'Generation is no longer active.',
+        steering_required: 'Only pending steering can be delivered immediately.',
       };
       if (typeof code === 'string' && messageByCode[code]) return translate(messageByCode[code]);
     }
@@ -324,7 +343,60 @@ export function useChatQueueRuntime(params: Params) {
     }
   };
 
+  const deliverNow = async (message: ChatQueuedMessage) => {
+    const current = params.queuedMessages.value.find((item) => item.id === message.id);
+    if (
+      params.readOnly.value ||
+      params.cancelingGenerationId.value !== null ||
+      queueActionId.value !== null ||
+      savingEdit.value ||
+      !current ||
+      current.chat_id !== params.chatId.value ||
+      current.delivery_mode === 'immediate' ||
+      !isPendingQueuedSteerForGeneration(current, params.activeGenerationId.value)
+    ) return;
+
+    const chatId = params.chatId.value;
+    const request = Symbol('deliver-now');
+    deliveryRequest = request;
+    queueActionId.value = current.id;
+    params.loadError.value = '';
+    try {
+      const payload = await api.post<QueuedMessageMutationPayload>(
+        `/api/bff/chat-queued-messages/${current.id}/deliver-now`,
+        {}
+      );
+      if (deliveryRequest !== request || params.chatId.value !== chatId) return;
+      // Polling may already have removed a delivered instruction while the request was in flight.
+      if (params.queuedMessages.value.some((item) => item.id === current.id)) {
+        upsertQueuedMessage(payload.queued_message);
+      }
+      await params.refreshChat();
+    } catch (error) {
+      if (deliveryRequest !== request || params.chatId.value !== chatId) return;
+      console.error(error);
+      if (isHttpError(error) && error.status === 409) {
+        try {
+          await params.refreshChat();
+        } catch (refreshError) {
+          console.error(refreshError);
+        }
+      }
+      if (deliveryRequest === request && params.chatId.value === chatId) {
+        params.loadError.value = mutationError(error, 'Failed to deliver steering immediately.');
+      }
+    } finally {
+      if (deliveryRequest === request) {
+        deliveryRequest = null;
+        queueActionId.value = null;
+      }
+    }
+  };
+
   const dispose = async () => {
+    stopDeliveryWatch();
+    deliveryRequest = null;
+    queueActionId.value = null;
     await params.clearPendingFilesCollection(editPendingFiles);
     resetEditState();
   };
@@ -349,6 +421,7 @@ export function useChatQueueRuntime(params: Params) {
     saveEdit,
     removeFromQueue,
     sendNext,
+    deliverNow,
     dispose,
   };
 }

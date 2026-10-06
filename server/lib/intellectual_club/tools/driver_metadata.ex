@@ -109,6 +109,7 @@ defmodule IntellectualClub.Tools.DriverMetadata do
         "name" => name,
         "description" => description,
         "enabled" => enabled_by_default,
+        "safe_to_interrupt" => Map.get(raw, "safe_to_interrupt") == true,
         "enabled_by_default" => enabled_by_default,
         "parameters_schema" => parameters_schema,
         "is_background_function" => Map.get(raw, "is_background_function") == true,

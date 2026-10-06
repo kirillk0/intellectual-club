@@ -56,6 +56,11 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       )
     end
 
+    attribute :steering_interruption, :atom do
+      allow_nil?(true)
+      constraints(one_of: [:safe, :unknown])
+    end
+
     create_timestamp(:created_at)
     update_timestamp(:updated_at)
   end
@@ -104,6 +109,11 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       change(relate_actor(:owner))
       change({RequireRelatedOwnedByActor, relationships: [:chat_message_step]})
       change({ValidateToolResultItemLink, []})
+    end
+
+    update :request_steering_interruption do
+      accept([:steering_interruption])
+      require_atomic?(false)
     end
 
     update :update do

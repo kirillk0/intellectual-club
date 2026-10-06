@@ -31,12 +31,19 @@
             >
               {{ translate('Paused') }}
             </span>
+            <span
+              v-else-if="message.kind === 'steer' && message.delivery_mode === 'immediate'"
+              class="queued-message__status"
+              role="status"
+            >
+              {{ translate('Interrupting…') }}
+            </span>
             <span v-else class="queued-message__status">{{ translate('Waiting') }}</span>
           </div>
           <div class="queued-message__actions">
             <button
               type="button"
-              :disabled="actionId !== null"
+              :disabled="readOnly || actionId !== null"
               :aria-label="translate('Edit queued message')"
               @click="emit('edit', message)"
             >
@@ -44,17 +51,28 @@
             </button>
             <button
               type="button"
-              :disabled="actionId !== null"
+              :disabled="readOnly || actionId !== null"
               :aria-label="translate('Remove from queue')"
               @click="emit('remove', message)"
             >
               {{ translate('Remove from queue') }}
             </button>
             <button
+              v-if="isPendingQueuedSteerForGeneration(message, activeGenerationId)"
+              class="queued-message__send-next"
+              type="button"
+              :disabled="readOnly || cancelingGenerationId != null || actionId !== null || message.delivery_mode === 'immediate'"
+              :aria-label="translate('Deliver immediately')"
+              :title="translate('Interrupt remaining tool calls and continue with this instruction. External operations may still complete; completed actions are not undone.')"
+              @click="emit('deliver-now', message)"
+            >
+              {{ message.delivery_mode === 'immediate' || actionId === message.id ? translate('Interrupting…') : translate('Deliver immediately') }}
+            </button>
+            <button
               v-if="isRetryableQueuedSteer(message)"
               class="queued-message__send-next"
               type="button"
-              :disabled="actionId !== null"
+              :disabled="readOnly || actionId !== null"
               :aria-label="translate('Retry')"
               @click="emit('send-next', message)"
             >
@@ -64,7 +82,7 @@
               v-else-if="canSendNext(message)"
               class="queued-message__send-next"
               type="button"
-              :disabled="actionId !== null"
+              :disabled="readOnly || actionId !== null"
               :aria-label="translate('Send next queued message')"
               @click="emit('send-next', message)"
             >
@@ -106,6 +124,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { fileIconByMime, formatFileBytes, type ExistingChatAttachment } from '@/features/chat/attachments';
 import {
   isRetryableQueuedSteer,
+  isPendingQueuedSteerForGeneration,
   queuedMessageAttachments,
   queuedMessageText,
 } from '@/features/chat/model/useChatQueueRuntime';
@@ -117,12 +136,15 @@ const props = defineProps<{
   activeGenerationId: number | null;
   actionId: number | null;
   headFollowUpId: number | null;
+  readOnly?: boolean;
+  cancelingGenerationId?: number | null;
 }>();
 
 const emit = defineEmits<{
   (event: 'edit', message: ChatQueuedMessage): void;
   (event: 'remove', message: ChatQueuedMessage): void;
   (event: 'send-next', message: ChatQueuedMessage): void;
+  (event: 'deliver-now', message: ChatQueuedMessage): void;
   (event: 'open-attachment', attachment: ExistingChatAttachment): void;
 }>();
 

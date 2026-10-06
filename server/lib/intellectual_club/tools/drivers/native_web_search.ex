@@ -211,6 +211,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
     [
       %{
         "name" => "web_search",
+        "safe_to_interrupt" => true,
         "description" =>
           "Search the web and return ranked links and snippets. Provider failures and empty results proceed through the configured fallback chain; warnings report failed or empty attempts.",
         "enabled" => true,
@@ -248,6 +249,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
       },
       %{
         "name" => "web_fetch",
+        "safe_to_interrupt" => true,
         "description" =>
           "Read the contents of 1–10 HTTP(S) URLs as clean text or Markdown. Failed URLs are retried with the configured fallback providers. Brave uses the built-in Web Reader. Does not follow links to crawl a site.",
         "enabled" => true,
@@ -442,11 +444,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
               :ok ->
                 tasks =
                   Enum.map(state.pending, fn url ->
-                    {url,
-                     Task.Supervisor.async_nolink(
-                       IntellectualClub.Tools.WebSearchTaskSupervisor,
-                       fn -> safe_run(fn -> cfg.module.fetch(cfg, [url], tool) end) end
-                     )}
+                    {url, async_attempt(fn -> cfg.module.fetch(cfg, [url], tool) end)}
                   end)
 
                 replies =
@@ -567,12 +565,39 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
   end
 
   defp timed(fun, timeout) do
-    task =
-      Task.Supervisor.async_nolink(IntellectualClub.Tools.WebSearchTaskSupervisor, fn ->
-        safe_run(fun)
-      end)
-
+    task = async_attempt(fun)
     task_reply(task, Task.yield(task, timeout))
+  end
+
+  defp async_attempt(fun) do
+    owner = self()
+
+    Task.Supervisor.async_nolink(IntellectualClub.Tools.WebSearchTaskSupervisor, fn ->
+      watch_attempt_owner(owner)
+      safe_run(fun)
+    end)
+  end
+
+  defp watch_attempt_owner(owner) do
+    attempt = self()
+    ready = make_ref()
+
+    # Keep provider failures isolated, but do not leave local HTTP/extraction
+    # work running after the caller is interrupted, even by an untrappable kill.
+    spawn_link(fn ->
+      owner_ref = Process.monitor(owner)
+      attempt_ref = Process.monitor(attempt)
+      send(attempt, {ready, :watching})
+
+      receive do
+        {:DOWN, ^owner_ref, :process, ^owner, _reason} -> Process.exit(attempt, :kill)
+        {:DOWN, ^attempt_ref, :process, ^attempt, _reason} -> :ok
+      end
+    end)
+
+    receive do
+      {^ready, :watching} -> :ok
+    end
   end
 
   defp safe_run(fun) do

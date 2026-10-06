@@ -448,6 +448,63 @@ describe('shared read-only editor tabs', () => {
     expect(attributes.secrets.secret_headers).not.toHaveProperty('X-Keep');
   });
 
+  it('updates automatic interruption independently of function enablement', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    jsonApiMocks.get.mockResolvedValue(discoveredToolDocument());
+    clientMocks.patch.mockResolvedValue({ safe_to_interrupt: true });
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'Functions').trigger('click');
+    const checkbox = view.get<HTMLInputElement>('input[aria-label="Automatically interrupt on steering"]');
+    expect(checkbox.element.checked).toBe(false);
+    await checkbox.setValue(true);
+    await flushPromises();
+    expect(clientMocks.patch).toHaveBeenCalledExactlyOnceWith('/api/bff/tool-functions/101', { safe_to_interrupt: true });
+    expect(checkbox.element.checked).toBe(true);
+    expect(view.getComponent(CrudHeader).props('dirty')).toBe(false);
+  });
+
+  it('does not expose automatic interruption for background-start wrappers', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    const document = discoveredToolDocument();
+    document.included![0]!.attributes!.execution_mode = 'background';
+    jsonApiMocks.get.mockResolvedValue(document);
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'Functions').trigger('click');
+    expect(view.find('input[aria-label="Automatically interrupt on steering"]').exists()).toBe(false);
+  });
+
+  it('restores the interruption checkbox when the update fails', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    jsonApiMocks.get.mockResolvedValue(discoveredToolDocument());
+    clientMocks.patch.mockRejectedValueOnce(new Error('Unavailable'));
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+      await tabByText(view, 'Functions').trigger('click');
+      const checkbox = view.get<HTMLInputElement>('input[aria-label="Automatically interrupt on steering"]');
+      await checkbox.setValue(true);
+      await flushPromises();
+      expect(checkbox.element.checked).toBe(false);
+      expect(alert).toHaveBeenCalledWith('Failed to update interruption policy.');
+    } finally {
+      alert.mockRestore();
+      consoleError.mockRestore();
+    }
+  });
+
+  it('does not allow shared readers to change automatic interruption', async () => {
+    activeToolTypes = toolTypes.map((type) => ({ ...type, functions_mode: 'stored', supports_discovery: true }));
+    const document = discoveredToolDocument({ can_edit: false, shared_incoming: true });
+    jsonApiMocks.get.mockResolvedValue(document);
+    const view = await mountView(ToolInstanceEditView, '/catalogs/tools/27');
+    await tabByText(view, 'Functions').trigger('click');
+    const checkbox = view.get<HTMLInputElement>('input[aria-label="Automatically interrupt on steering"]');
+    expect(checkbox.attributes('disabled')).toBeDefined();
+    await checkbox.setValue(true);
+    expect(clientMocks.patch).not.toHaveBeenCalled();
+  });
+
   it('keeps the MCP form populated after discovery when the detail document is unchanged', async () => {
     activeToolTypes = toolTypes.map((toolType) => ({
       ...toolType,

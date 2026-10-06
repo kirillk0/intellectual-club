@@ -86,6 +86,7 @@ export type ChatQueuedMessage = {
   chat_id: number;
   kind: ChatQueuedMessageKind;
   status: ChatQueuedMessageStatus;
+  delivery_mode?: 'normal' | 'immediate';
   position?: number | null;
   anchor_message_id?: number | null;
   target_generation_message_id?: number | null;

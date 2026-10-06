@@ -216,6 +216,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       },
       %{
         "name" => "search_blocks",
+        "safe_to_interrupt" => true,
         "description" =>
           "Search all knowledge block pages in this library and return snippets with block ids and page numbers.",
         "schema" => %{
@@ -630,7 +631,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
             total_pages = DocumentReader.pages_total(doc_dir, meta)
 
             {block_snippets, _match_pages} =
-              DocumentReader.collect_snippets(doc_dir, total_pages, regex, snippet_len_chars, 1)
+              ToolExecution.interruptible(fn ->
+                DocumentReader.collect_snippets(doc_dir, total_pages, regex, snippet_len_chars, 1)
+              end)
 
             case block_snippets do
               [first_snippet | _rest] ->
@@ -664,13 +667,15 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     matches
     |> Enum.map(fn match ->
       {block_snippets, _match_pages} =
-        DocumentReader.collect_snippets(
-          match.doc_dir,
-          match.total_pages,
-          regex,
-          snippet_len_chars,
-          max_snippets
-        )
+        ToolExecution.interruptible(fn ->
+          DocumentReader.collect_snippets(
+            match.doc_dir,
+            match.total_pages,
+            regex,
+            snippet_len_chars,
+            max_snippets
+          )
+        end)
 
       block_snippets
       |> Enum.drop(1)

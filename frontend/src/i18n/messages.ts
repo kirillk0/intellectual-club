@@ -749,6 +749,17 @@ export const ruMessages: Record<string, string> = {
   'Sending…': 'Отправка…',
   'Send next': 'Отправить следующее',
   'Send next queued message': 'Отправить следующее сообщение из очереди',
+  'Deliver immediately': 'Доставить немедленно',
+  'Automatically interrupt on steering': 'Автоматически прерывать при steering',
+  'Automatically interrupted on steering': 'Автоматически прерывается при steering',
+  'Enable only for trusted read-only functions whose interruption cannot change user data or stop other work.': 'Включайте только для доверенных функций чтения, прерывание которых не изменяет пользовательские данные и не останавливает другую работу.',
+  'Failed to update interruption policy.': 'Не удалось изменить настройку прерывания.',
+
+  'Interrupting…': 'Прерываем…',
+  'Interrupt remaining tool calls and continue with this instruction. External operations may still complete; completed actions are not undone.': 'Прервать оставшиеся вызовы инструментов и продолжить с этой инструкцией. Внешние операции могут продолжить работу; выполненные действия не откатываются.',
+  'Only pending steering can be delivered immediately.': 'Немедленно доставить можно только ожидающую инструкцию.',
+  'Failed to deliver steering immediately.': 'Не удалось немедленно доставить инструкцию.',
+
   'Continue': 'Продолжить',
   'Continuing…': 'Продолжение…',
   'Steer': 'Направить',

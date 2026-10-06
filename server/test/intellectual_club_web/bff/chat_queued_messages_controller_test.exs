@@ -226,4 +226,59 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
     assert retried["anchor_message_id"] == generation.id
     assert retried["target_generation_message_id"] == nil
   end
+
+  test "immediate steering delivery is durable, idempotent and only signals pending entries", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+    chat = create_chat!(actor)
+    generation = create_generating_message!(actor, chat, user_text: "Question")
+    {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Interrupt", actor)
+
+    {:ok, _} =
+      Registry.register(IntellectualClub.Generation.Registry, {:message, generation.id}, %{})
+
+    route = ~p"/api/bff/chat-queued-messages/#{queued.id}/deliver-now"
+    response = conn |> post(route, %{}) |> json_response(200) |> Map.fetch!("queued_message")
+    assert response["delivery_mode"] == "immediate"
+    assert response["status"] == "pending"
+    assert_receive {:"$gen_cast", :queue_changed}
+    repeated = conn |> post(route, %{}) |> json_response(200) |> Map.fetch!("queued_message")
+    assert repeated["updated_at"] == response["updated_at"]
+    assert_receive {:"$gen_cast", :queue_changed}
+    {:ok, _} = QueuedMessages.mark_delivered(queued.id, %{}, actor)
+    delivered = conn |> post(route, %{}) |> json_response(200) |> Map.fetch!("queued_message")
+    assert delivered["status"] == "delivered"
+    refute_received {:"$gen_cast", :queue_changed}
+  end
+
+  test "immediate delivery rejects another owner, follow-ups and canceled steering", %{conn: conn} do
+    %{user: actor, password: password} = user_fixture()
+    %{user: outsider, password: other_password} = user_fixture()
+    chat = create_chat!(actor)
+    generation = create_generating_message!(actor, chat, user_text: "Question")
+    {:ok, queued} = QueuedMessages.enqueue_steer(generation.id, "Private", actor)
+
+    rejected =
+      conn
+      |> sign_in_conn(outsider.username, other_password)
+      |> post(~p"/api/bff/chat-queued-messages/#{queued.id}/deliver-now", %{})
+
+    assert rejected.status in [403, 404]
+    owner = build_conn() |> sign_in_conn(actor.username, password)
+    {:ok, _} = QueuedMessages.cancel(queued.id, actor)
+
+    assert %{"code" => "queued_steering_changed"} =
+             owner
+             |> post(~p"/api/bff/chat-queued-messages/#{queued.id}/deliver-now", %{})
+             |> json_response(409)
+
+    {:ok, followup} = QueuedMessages.enqueue_follow_up(chat.id, %{content: "Later"}, actor)
+
+    assert %{"code" => "queued_steering_changed"} =
+             owner
+             |> post(~p"/api/bff/chat-queued-messages/#{followup.id}/deliver-now", %{})
+             |> json_response(409)
+  end
 end

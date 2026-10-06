@@ -181,6 +181,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       },
       %{
         "name" => "wait_backround_tasks",
+        "safe_to_interrupt" => true,
         "description" =>
           "Wait until all listed background tasks finish or the optional timeout expires, " <>
             "then return their current statuses. Completed, failed, and canceled tasks are " <>
@@ -228,6 +229,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       },
       %{
         "name" => "sleep",
+        "safe_to_interrupt" => true,
         "description" =>
           "Pause agent execution for the requested number of seconds before continuing. " <>
             "Use this when waiting for time to pass.",

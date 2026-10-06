@@ -45,6 +45,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagePayload do
       chat_id: queued_message.chat_id,
       kind: atom_string(queued_message.kind),
       status: atom_string(queued_message.status),
+      delivery_mode: atom_string(queued_message.delivery_mode),
       position: position,
       blocked_reason: queued_message.blocked_reason,
       attempt_count: queued_message.attempt_count,
