@@ -275,6 +275,37 @@ describe('revision-aware generation polling', () => {
     expect(mocks.get).toHaveBeenCalledTimes(4);
   });
 
+  it('keeps the last reported token usage until the streaming step reports its own', async () => {
+    const latest = { id: 100, sequence: 1, input_tokens: 700, output_tokens: 100 };
+    const usage = { latest_step: latest, total: { input_tokens: 700, output_tokens: 100 } };
+    const pending = { id: 200, sequence: 2, input_tokens: null, output_tokens: null };
+    mocks.get
+      .mockResolvedValueOnce({ ...initial, usage })
+      .mockResolvedValueOnce({ ...initial, content: undefined, runtime_summary: pending })
+      .mockResolvedValueOnce({ ...initial, content: undefined, usage })
+      .mockResolvedValueOnce({ ...initial, content: undefined, runtime_summary: pending })
+      .mockResolvedValueOnce({ ...initial, content: undefined,
+        runtime_summary: { ...pending, input_tokens: 800, output_tokens: 200 } })
+      .mockResolvedValueOnce({ ...initial, content: undefined,
+        runtime_summary: { ...pending, input_tokens: 800, output_tokens: 220 } });
+    const { runtime, branch } = setupRuntime();
+    await runtime.startPolling(31);
+
+    for (let poll = 0; poll < 3; poll += 1) {
+      await vi.advanceTimersByTimeAsync(500);
+      expect(branch.value[0]!.usage).toMatchObject(usage);
+    }
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(branch.value[0]!.usage!.latest_step).toMatchObject({
+      id: 200, input_tokens: 800, output_tokens: 200,
+    });
+    expect(branch.value[0]!.usage!.total).toEqual({ input_tokens: 1500, output_tokens: 300 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(branch.value[0]!.usage!.latest_step!.output_tokens).toBe(220);
+    expect(branch.value[0]!.usage!.total).toEqual({ input_tokens: 1500, output_tokens: 320 });
+  });
+
   it('hands preserved runtime content back to canonical polling content', async () => {
     const current = streamingMessage();
     const canonical = persistedOnlyMessage();
@@ -425,6 +456,12 @@ describe('client-owned runtime cursors', () => {
     expect(result.total!.output_tokens).toBe(15);
     expect(result.total_cost).toBeCloseTo(0.7);
     expect(result.combined_total_cost).toBeCloseTo(0.9);
+  });
+
+  it.each(['input_tokens', 'output_tokens'] as const)('accepts zero reported %s as fresh usage', (metric) => {
+    const summary = { id: 2, sequence: 2, [metric]: 0 };
+    const result = mergeRuntimeUsage({ latest_step: { id: 1, sequence: 1, input_tokens: 700, output_tokens: 100 } }, summary);
+    expect(result.latest_step).toEqual(summary);
   });
 
   it('selects answer even when reasoning was returned first', () => {

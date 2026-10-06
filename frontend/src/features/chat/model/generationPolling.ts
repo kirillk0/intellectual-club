@@ -142,7 +142,12 @@ export function mergeRuntimeUsage(current: ChatMessageUsage | null | undefined,
   }
   const totalCost = typeof total.cost === 'number' ? total.cost : current?.total_cost;
   const subchatCost = current?.subchat_cost;
-  return { ...current, latest_step: summary, total, total_cost: totalCost,
+  // Match full snapshots: latest_step is the latest step with reported token usage.
+  const hasTokenUsage = (step: ChatMessageUsage['latest_step']) =>
+    step?.input_tokens != null || step?.output_tokens != null;
+  const latestStep = hasTokenUsage(summary) || !hasTokenUsage(current?.latest_step)
+    ? summary : current?.latest_step;
+  return { ...current, latest_step: latestStep, total, total_cost: totalCost,
     combined_total_cost: typeof totalCost === 'number' || typeof subchatCost === 'number'
       ? (totalCost || 0) + (subchatCost || 0) : null };
 }
