@@ -164,6 +164,15 @@ defmodule IntellectualClub.Llm.LlmProvider do
       require_atomic?(false)
       change({ValidateProviderAuth, []})
     end
+
+    # Leaves the provider in the same "credentials missing" state as a
+    # duplicate of a provider owned by someone else, so it is not validated.
+    update :clear_oauth_refresh_token do
+      public?(false)
+      accept([])
+      change(set_attribute(:oauth_refresh_token, nil))
+      require_atomic?(false)
+    end
   end
 
   policies do

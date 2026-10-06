@@ -771,6 +771,8 @@ export const ruMessages: Record<string, string> = {
   'The active branch changed. Use Send next to continue on this branch.': 'Активная ветка изменилась. Нажмите «Отправить следующее», чтобы продолжить в этой ветке.',
   'The previous generation failed. The queue is paused.': 'Предыдущая генерация завершилась с ошибкой. Очередь приостановлена.',
   'The previous generation was canceled. The queue is paused.': 'Предыдущая генерация отменена. Очередь приостановлена.',
+  'The queue was paused when this database was copied for a preview.':
+    'Очередь приостановлена при копировании базы данных для превью.',
   'This queued message has already been dispatched.': 'Это сообщение из очереди уже отправлено.',
   'This queued message no longer contains sendable content.': 'В этом сообщении очереди больше нет содержимого для отправки.',
   'Type a text instruction to steer the active generation.': 'Введите текстовую инструкцию для направления активной генерации.',

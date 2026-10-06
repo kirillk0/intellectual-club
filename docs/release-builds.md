@@ -24,6 +24,15 @@ tests; Docker builds wait for Linux backend tests. Publication is disabled for
 pull requests, which still run the shared frontend, Linux backend, and Windows
 checks.
 
+Pull requests from this repository (not forks or Dependabot) additionally build
+an amd64 preview app image without waiting for backend tests, rebuild the shell
+outlet image only when the pull request touches its inputs, and tag both as
+`pr-<number>`. The app image is labeled with the pull request number and head
+SHA (`org.intellectualclub.preview.pr`, `org.intellectualclub.preview.head-sha`).
+An environment started from such an image on a copy of an existing database
+must run `IntellectualClub.ReleaseTasks.PreparePreviewCopy.main()` before its
+first start (see the module documentation).
+
 Pushes to `main` build desktop packages and detect changes affecting the two
 Docker images. Manual runs expose `build_desktop`, `build_app`, and
 `build_shell_outlet` switches. Docker image tags and the six desktop release

@@ -44,6 +44,9 @@ jobs:
       commit_epoch: ${{ steps.release.outputs.commit_epoch }}
       commit_sha: ${{ steps.release.outputs.commit_sha }}
       outlet_version: ${{ steps.release.outputs.outlet_version }}
+      preview: ${{ steps.preview.outputs.enabled }}
+      preview_head_sha: ${{ steps.preview.outputs.head_sha }}
+      preview_pr_number: ${{ steps.preview.outputs.pr_number }}
       release_id: ${{ steps.release.outputs.release_id }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_timestamp: ${{ steps.release.outputs.release_timestamp }}
@@ -108,18 +111,23 @@ jobs:
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             app="${INPUT_BUILD_APP:-true}"
             shell_outlet="${INPUT_BUILD_SHELL_OUTLET:-true}"
-          elif [ "${EVENT_NAME}" = "pull_request" ]; then
-            app=false
-            shell_outlet=false
           else
-            zero_sha="0000000000000000000000000000000000000000"
-            base="${BEFORE_SHA}"
+            if [ "${EVENT_NAME}" = "pull_request" ]; then
+              # Pull requests check out a merge commit whose first parent is the
+              # base branch tip, so this diff is exactly the pull request change.
+              # Publication jobs ignore these flags for pull requests; preview
+              # builds use shell_outlet to decide whether to rebuild the outlet.
+              base="$(git rev-parse "${AFTER_SHA}^1")"
+            else
+              zero_sha="0000000000000000000000000000000000000000"
+              base="${BEFORE_SHA}"
 
-            if [ -z "${base}" ] || [ "${base}" = "${zero_sha}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-              if git rev-parse "${AFTER_SHA}^" >/dev/null 2>&1; then
-                base="$(git rev-parse "${AFTER_SHA}^")"
-              else
-                base="$(git rev-list --max-parents=0 "${AFTER_SHA}")"
+              if [ -z "${base}" ] || [ "${base}" = "${zero_sha}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+                if git rev-parse "${AFTER_SHA}^" >/dev/null 2>&1; then
+                  base="$(git rev-parse "${AFTER_SHA}^")"
+                else
+                  base="$(git rev-list --max-parents=0 "${AFTER_SHA}")"
+                fi
               fi
             fi
 
@@ -145,6 +153,34 @@ jobs:
           echo "shell_outlet=${shell_outlet}" >>"${GITHUB_OUTPUT}"
           echo "app=${app}"
           echo "shell_outlet=${shell_outlet}"
+
+      - name: Resolve preview environment
+        id: preview
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          enabled=false
+          # Preview images are pushed to GHCR, which needs a writable token.
+          # Fork and Dependabot pull requests only get a read-only one.
+          if [ "${EVENT_NAME}" = "pull_request" ] &&
+            [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ] &&
+            [ "${PR_AUTHOR}" != "dependabot[bot]" ]; then
+            enabled=true
+          fi
+
+          {
+            echo "enabled=${enabled}"
+            echo "head_sha=${PR_HEAD_SHA}"
+            echo "pr_number=${PR_NUMBER}"
+          } >>"${GITHUB_OUTPUT}"
+          echo "preview=${enabled}"
 
   frontend:
     name: Test frontend and build shared static assets
@@ -1001,3 +1037,181 @@ jobs:
           fi
 
           docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+
+  build-preview-app:
+    name: Build preview app image
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs:
+      - prepare
+      - frontend
+    if: needs.prepare.outputs.preview == 'true'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Download shared static assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-static-${{ needs.prepare.outputs.commit_sha }}
+          path: build/ci-static
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.APP_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.intellectualclub.preview.pr=${{ needs.prepare.outputs.preview_pr_number }}
+            org.intellectualclub.preview.head-sha=${{ needs.prepare.outputs.preview_head_sha }}
+
+      # Preview images are amd64 only to keep pull request builds short.
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-contexts: |
+            web-static=./build/ci-static
+          build-args: |
+            STATIC_ASSETS=prebuilt
+            BUILD_COMMIT_SHA=${{ needs.prepare.outputs.commit_sha }}
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.APP_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=gha,scope=preview-app-amd64
+            type=gha,scope=app-amd64
+          cache-to: type=gha,scope=preview-app-amd64,mode=max
+
+  build-preview-shell-outlet:
+    name: Build preview shell outlet image
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: prepare
+    if: needs.prepare.outputs.preview == 'true' && needs.prepare.outputs.shell_outlet == 'true'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SHELL_OUTLET_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.intellectualclub.preview.pr=${{ needs.prepare.outputs.preview_pr_number }}
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./native_tools/outlet-shell-image/Dockerfile
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.SHELL_OUTLET_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=gha,scope=preview-shell-outlet-amd64
+            type=gha,scope=shell-outlet-amd64
+          cache-to: type=gha,scope=preview-shell-outlet-amd64,mode=max
+
+  publish-preview:
+    name: Publish preview images
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - prepare
+      - build-preview-app
+      - build-preview-shell-outlet
+    # The outlet build is skipped when the pull request does not touch it.
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.prepare.outputs.preview == 'true' &&
+        needs.build-preview-app.result == 'success' &&
+        (needs.build-preview-shell-outlet.result == 'success' ||
+         needs.build-preview-shell-outlet.result == 'skipped')
+      }}
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Consumers may react as soon as the app tag moves, so the outlet tag is
+      # published first. An unchanged outlet reuses the current main image.
+      - name: Tag preview images
+        env:
+          APP_DIGEST: ${{ needs.build-preview-app.outputs.digest }}
+          OUTLET_DIGEST: ${{ needs.build-preview-shell-outlet.outputs.digest }}
+          PR_NUMBER: ${{ needs.prepare.outputs.preview_pr_number }}
+        run: |
+          set -euo pipefail
+
+          tag="pr-${PR_NUMBER}"
+          if [ -z "${APP_DIGEST}" ]; then
+            echo "Missing preview app digest" >&2
+            exit 1
+          fi
+
+          if [ -n "${OUTLET_DIGEST}" ]; then
+            outlet_source="${SHELL_OUTLET_IMAGE}@${OUTLET_DIGEST}"
+          else
+            outlet_source="${SHELL_OUTLET_IMAGE}:main"
+          fi
+
+          docker buildx imagetools create -t "${SHELL_OUTLET_IMAGE}:${tag}" "${outlet_source}"
+          docker buildx imagetools create -t "${APP_IMAGE}:${tag}" "${APP_IMAGE}@${APP_DIGEST}"
+
+          {
+            echo "### Preview images"
+            echo
+            echo "- App: \`${APP_IMAGE}:${tag}\` (${APP_DIGEST})"
+            echo "- Shell outlet: \`${SHELL_OUTLET_IMAGE}:${tag}\` (from \`${outlet_source}\`)"
+          } >>"${GITHUB_STEP_SUMMARY}"

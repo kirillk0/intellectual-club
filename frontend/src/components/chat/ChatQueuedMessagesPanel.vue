@@ -172,6 +172,7 @@ const blockedReason = (reason: string) => {
     head_removed: 'The first queued message was removed. The queue is paused.',
     empty_message: 'This queued message no longer contains sendable content.',
     steering_failed: 'Steering could not be applied. Edit or retry it.',
+    preview_copy: 'The queue was paused when this database was copied for a preview.',
   };
   return translate(labels[reason] || reason);
 };
