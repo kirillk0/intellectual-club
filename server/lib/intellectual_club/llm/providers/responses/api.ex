@@ -80,7 +80,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             receive_timeout: timeout_ms,
             into: :self,
             retry: false
-          ] ++ HttpPool.req_options(connect_timeout_ms)
+          ]
+          |> Keyword.merge(HttpPool.req_options(connect_timeout_ms))
+          |> Keyword.merge(extra_req_options())
 
         try do
           response = Req.request!(request_opts)
@@ -339,6 +341,12 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
     else
       String.slice(value, 0, limit) <> "…"
     end
+  end
+
+  # Extra Req options from app env, e.g. a `Req.Test` plug that replaces the
+  # network in tests.
+  defp extra_req_options do
+    Application.get_env(:intellectual_club, :responses_req_options, [])
   end
 
   defp retryable_exception?(exception) do

@@ -22,8 +22,20 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
   describe "transient provider failures" do
     test "transport failures are preserved as durable error steps before each retry" do
+      attempts = :counters.new(1, [])
+
+      put_app_env(:responses_req_options,
+        plug: fn conn ->
+          :counters.add(attempts, 1, 1)
+          Req.Test.transport_error(conn, :econnrefused)
+        end
+      )
+
       %{context: context, actor: actor} =
-        start_provider_generation!(%{base_url: "http://127.0.0.1:9"}, "Please fail on transport")
+        start_provider_generation!(
+          %{base_url: "http://provider.invalid/v1"},
+          "Please fail on transport"
+        )
 
       message = wait_for_retry_errors!(context.message_id, actor, 3)
       steps = ordered_steps(message)
@@ -32,6 +44,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
       assert Enum.map(steps, & &1.sequence) == [1, 2, 3, 4]
       assert Enum.map(steps, & &1.status) == [:error, :error, :error, :waiting_provider]
+      assert :counters.get(attempts, 1) == 3
       requests = StepRequests.requests_for_steps!(steps, actor: actor)
 
       assert Enum.map(steps, &Map.fetch!(requests, &1.id)) ==
