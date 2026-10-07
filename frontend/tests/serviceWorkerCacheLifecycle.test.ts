@@ -141,6 +141,7 @@ const createWorker = (
 ) => {
   const listeners = new Map<string, (event: any) => void>();
   const claim = vi.fn().mockResolvedValue(undefined);
+  const showNotification = vi.fn().mockResolvedValue(undefined);
   const delays: number[] = [];
   const messages: unknown[] = [];
   const worker = {
@@ -158,7 +159,7 @@ const createWorker = (
       openWindow: vi.fn(),
     },
     registration: {
-      showNotification: vi.fn(),
+      showNotification,
       getNotifications: vi.fn().mockResolvedValue([]),
     },
     skipWaiting: vi.fn().mockResolvedValue(undefined),
@@ -213,8 +214,44 @@ const createWorker = (
     return captured.response;
   };
 
-  return { claim, delays, messages, runFetch, runLifecycleEvent };
+  const fetchIsHandled = (request: Request) => {
+    let handled = false;
+    listeners.get('fetch')?.({
+      request,
+      respondWith() {
+        handled = true;
+      },
+      waitUntil() {},
+    });
+    return handled;
+  };
+
+  const runPush = (data: { json: () => unknown } | null, notification?: object) => {
+    let task: Promise<unknown> | null = null;
+    listeners.get('push')?.({
+      data,
+      notification,
+      waitUntil(promise: Promise<unknown>) {
+        task = promise;
+      },
+    });
+    if (!task) throw new Error('push listener did not register a task.');
+    return task as Promise<unknown>;
+  };
+
+  return {
+    claim,
+    delays,
+    fetchIsHandled,
+    messages,
+    runFetch,
+    runLifecycleEvent,
+    runPush,
+    showNotification,
+  };
 };
+
+const pushData = (raw: string) => ({ json: () => JSON.parse(raw) });
 
 const manifest = (revision: string): WorkerManifest => ({
   buildId: '/assets/js/spa-digest.js?vsn=d',
@@ -237,15 +274,20 @@ describe('service worker cache lifecycle', () => {
     ['/assets/code-version.json'],
     ['/assets/js/app.js.map'],
     ['https://example.invalid/asset.js'],
-  ])('rejects an unsafe precache URL before install: %s', (unsafeUrl) => {
+  ])('fails install for an unsafe precache URL and leaves requests to the network: %s', async (unsafeUrl) => {
     const storage = new MemoryCacheStorage();
     const unsafeManifest = manifest('unsafe-revision');
     unsafeManifest.assets.push(unsafeUrl);
+    const fetchMock = vi.fn();
+    const worker = createWorker(unsafeManifest, storage, fetchMock);
 
-    expect(() => createWorker(unsafeManifest, storage, vi.fn())).toThrow(
+    await expect(worker.runLifecycleEvent('install')).rejects.toThrow(
       'PWA precache manifest is missing or invalid.'
     );
     expect(storage.stores.size).toBe(0);
+    expect(worker.fetchIsHandled(navigationRequest('/chats'))).toBe(false);
+    expect(worker.fetchIsHandled(new Request(`${origin}/assets/js/spa-digest.js?vsn=d`))).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('reuses a complete active cache when worker code changes without a build change', async () => {
@@ -724,5 +766,199 @@ describe('service worker cache lifecycle', () => {
     expect(await response.text()).toBe('/assets/js/spa.js?v=100');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(worker.delays.filter((delay) => delay !== 10_000)).toEqual([]);
+  });
+});
+
+describe('service worker push notifications', () => {
+  const chatUrl = '/chats/12?focusMessage=34';
+
+  it('shows a declarative payload with an absolute navigate URL and an in-app click target', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+    const payload = {
+      web_push: 8030,
+      mutable: true,
+      notification: {
+        title: 'Генерация завершена',
+        body: 'Chat: answer',
+        lang: 'ru',
+        navigate: `${origin}${chatUrl}`,
+        tag: 'chat:12',
+        icon: `${origin}/images/pwa/icon-192.png`,
+        data: { url: chatUrl, chat_id: 12, message_id: 34, status: 'done' },
+      },
+      title: 'Legacy title',
+      body: 'Legacy body',
+      url: '/chats/99',
+      tag: 'chat:99',
+    };
+
+    await expect(worker.runPush(pushData(JSON.stringify(payload)))).resolves.toBeUndefined();
+
+    expect(worker.showNotification).toHaveBeenCalledTimes(1);
+    const [title, options] = worker.showNotification.mock.calls[0];
+    expect(title).toBe('Генерация завершена');
+    expect(options).toMatchObject({
+      body: 'Chat: answer',
+      tag: 'chat:12',
+      navigate: `${origin}${chatUrl}`,
+      data: { url: chatUrl, chat_id: 12, message_id: 34, status: 'done' },
+    });
+  });
+
+  it('replaces a WebKit declarative push from the proposed notification when push data is null', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+    const proposed = {
+      title: 'Генерация завершена',
+      body: 'Chat: answer',
+      tag: 'chat:12',
+      navigate: `${origin}${chatUrl}`,
+      data: { url: chatUrl, chat_id: 12, message_id: 34, status: 'done' },
+    };
+
+    await expect(worker.runPush(null, proposed)).resolves.toBeUndefined();
+
+    expect(worker.showNotification).toHaveBeenCalledTimes(1);
+    const [title, options] = worker.showNotification.mock.calls[0];
+    expect(title).toBe('Генерация завершена');
+    expect(options).toMatchObject({
+      body: 'Chat: answer',
+      tag: 'chat:12',
+      navigate: `${origin}${chatUrl}`,
+      data: { url: chatUrl, chat_id: 12, message_id: 34, status: 'done' },
+    });
+  });
+
+  it('keeps the proposed declarative notification when its replacement fails', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+    worker.showNotification.mockRejectedValueOnce(new TypeError('invalid navigate'));
+
+    await expect(
+      worker.runPush(null, { title: 'Generation finished', navigate: `${origin}${chatUrl}` })
+    ).resolves.toBeUndefined();
+
+    expect(worker.showNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('records shown notifications so the page can recover taps iOS does not route', async () => {
+    const storage = new MemoryCacheStorage();
+    const worker = createWorker(manifest('push-revision'), storage, vi.fn());
+    const legacy = (chatId: number, messageId: number) =>
+      pushData(
+        JSON.stringify({
+          title: 'Generation finished',
+          url: `/chats/${chatId}?focusMessage=${messageId}`,
+          tag: `chat:${chatId}`,
+        })
+      );
+
+    await worker.runPush(legacy(12, 34));
+    await worker.runPush(legacy(13, 35));
+    await worker.runPush(legacy(12, 36));
+
+    const stored = await storage
+      .match('/__web_push_shown_notifications__', { cacheName: 'intellectual-club:web-push:shown' })
+      .then((response) => response?.json());
+
+    expect(stored).toEqual([
+      { tag: 'chat:13', url: '/chats/13?focusMessage=35', shownAt: expect.any(Number) },
+      { tag: 'chat:12', url: '/chats/12?focusMessage=36', shownAt: expect.any(Number) },
+    ]);
+  });
+
+  it('does not record the generic fallback notification', async () => {
+    const storage = new MemoryCacheStorage();
+    const worker = createWorker(manifest('push-revision'), storage, vi.fn());
+
+    await worker.runPush(pushData('{not json'));
+
+    expect(storage.stores.has('intellectual-club:web-push:shown')).toBe(false);
+  });
+
+  it('keeps showing legacy payloads sent to browsers without declarative support', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+
+    await worker.runPush(
+      pushData(
+        JSON.stringify({
+          type: 'generation_finished',
+          status: 'error',
+          chat_id: 12,
+          message_id: 34,
+          title: 'Generation failed',
+          body: 'Chat: error',
+          url: chatUrl,
+          tag: 'chat:12',
+        })
+      )
+    );
+
+    const [title, options] = worker.showNotification.mock.calls[0];
+    expect(title).toBe('Generation failed');
+    expect(options).toMatchObject({
+      body: 'Chat: error',
+      tag: 'chat:12',
+      navigate: `${origin}${chatUrl}`,
+      data: { url: chatUrl, chat_id: 12, message_id: 34, status: 'error' },
+    });
+  });
+
+  it.each([
+    ['malformed JSON', pushData('{not json')],
+    ['a JSON array', pushData('[1, 2]')],
+    ['an empty push', null],
+  ])('shows the generic notification for %s', async (_label, data) => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+
+    await expect(worker.runPush(data)).resolves.toBeUndefined();
+
+    const [title, options] = worker.showNotification.mock.calls[0];
+    expect(title).toBe('Intellectual Club');
+    expect(options).toMatchObject({ body: '', navigate: `${origin}/`, data: { url: '/' } });
+  });
+
+  it('ignores cross-origin click targets', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+
+    await worker.runPush(
+      pushData(JSON.stringify({ title: 'Generation finished', url: 'https://evil.example/phish' }))
+    );
+
+    expect(worker.showNotification.mock.calls[0][1]).toMatchObject({
+      navigate: `${origin}/`,
+      data: { url: '/' },
+    });
+  });
+
+  it('falls back to a generic notification without rejecting when the first one fails', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+    worker.showNotification.mockRejectedValueOnce(new TypeError('invalid notification'));
+
+    await expect(
+      worker.runPush(pushData(JSON.stringify({ title: 'Generation finished', url: chatUrl })))
+    ).resolves.toBeUndefined();
+
+    expect(worker.showNotification).toHaveBeenCalledTimes(2);
+    expect(worker.showNotification.mock.calls[1][0]).toBe('Intellectual Club');
+  });
+
+  it('resolves the push lifetime even when no notification can be shown', async () => {
+    const worker = createWorker(manifest('push-revision'), new MemoryCacheStorage(), vi.fn());
+    worker.showNotification.mockRejectedValue(new Error('notifications unavailable'));
+
+    await expect(worker.runPush(pushData('{}'))).resolves.toBeUndefined();
+    expect(worker.showNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps handling pushes when the precache manifest is invalid', async () => {
+    const brokenManifest = manifest('broken-revision');
+    brokenManifest.assets = [];
+    const worker = createWorker(brokenManifest, new MemoryCacheStorage(), vi.fn());
+
+    await worker.runPush(pushData(JSON.stringify({ title: 'Generation finished', url: chatUrl })));
+
+    expect(worker.showNotification).toHaveBeenCalledWith(
+      'Generation finished',
+      expect.objectContaining({ data: expect.objectContaining({ url: chatUrl }) })
+    );
   });
 });

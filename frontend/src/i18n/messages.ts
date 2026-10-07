@@ -1030,6 +1030,14 @@ export const ruMessages: Record<string, string> = {
   'Notifications are available for this device.': 'Уведомления доступны для этого устройства.',
   'Notifications are disabled by the administrator.': 'Уведомления отключены администратором.',
   'Notifications are enabled for this device.': 'Уведомления включены для этого устройства.',
+  'Notifications on this device were turned off': 'Уведомления на этом устройстве отключились',
+  'The browser or the system removed the notification subscription for this device. Turn notifications on again to keep receiving alerts about finished generations.':
+    'Браузер или система удалили подписку на уведомления для этого устройства. Включите уведомления снова, чтобы получать оповещения о завершённых генерациях.',
+  'Notification permission is blocked. Allow notifications for this app in the system or browser settings.':
+    'Разрешение на уведомления заблокировано. Разрешите уведомления для этого приложения в настройках системы или браузера.',
+  'Turn on again': 'Включить снова',
+  'Turning on…': 'Включение…',
+  'Subscription device id is invalid.': 'Некорректный идентификатор устройства подписки.',
   'On iOS, install this app to the Home Screen to enable notifications.': 'На iOS установите приложение на экран «Домой», чтобы включить уведомления.',
   'On iPhone or iPad, notifications work only from the installed Home Screen app and only after tapping Enable notifications.': 'На iPhone и iPad уведомления работают только из установленного приложения на экране «Домой» и только после нажатия «Включить уведомления».',
   'Private VAPID key is stored on the server and is never returned to the browser.': 'Приватный VAPID-ключ хранится на сервере и никогда не возвращается в браузер.',

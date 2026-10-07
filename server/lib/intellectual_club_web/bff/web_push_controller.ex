@@ -86,6 +86,7 @@ defmodule IntellectualClubWeb.Bff.WebPushController do
         auth: Map.get(keys, "auth")
       },
       key_revision: Map.get(params, "key_revision"),
+      device_id: Map.get(params, "device_id"),
       expiration_time: Map.get(params, "expirationTime")
     }
   end

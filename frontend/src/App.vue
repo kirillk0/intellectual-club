@@ -127,7 +127,10 @@
       <div id="toolbar-host" class="toolbar-host"></div>
     </header>
 
-    <div v-if="loadingVisible || backendStatusBanner || appUpdateAvailable" class="app-banner-stack">
+    <div
+      v-if="loadingVisible || backendStatusBanner || appUpdateAvailable || webPushDeviceBannerVisible"
+      class="app-banner-stack"
+    >
       <LoadingStatusBanner />
 
       <section
@@ -147,6 +150,15 @@
         v-if="appUpdateAvailable"
         :updating="appUpdateReloading"
         @update="reloadApp"
+      />
+
+      <WebPushDeviceBanner
+        v-if="webPushDeviceBannerVisible && webPushDeviceNotice"
+        :notice="webPushDeviceNotice"
+        :enabling="webPushReenabling"
+        :error="webPushReenableError"
+        @enable="reenableWebPush"
+        @dismiss="dismissWebPushBanner"
       />
     </div>
 
@@ -174,10 +186,18 @@ import { useBackendStatusBanner } from '@/features/app/backendStatusBanner';
 import { pageTitleOverride, useDocumentTitle } from '@/features/app/documentTitle';
 import { useLoadCoordinator } from '@/features/app/loadCoordinator';
 import { useAppUpdateMonitor } from '@/features/pwa/appUpdate';
-import { syncExistingWebPushSubscription } from '@/features/push/webPush';
+import {
+  dismissWebPushDeviceNotice,
+  enableWebPush,
+  startWebPushTapRecovery,
+  syncExistingWebPushSubscription,
+  webPushDeviceNotice,
+  webPushSupportState,
+} from '@/features/push/webPush';
 import { clearServerStateQueries } from '@/features/serverState/queryClient';
 import { effectiveLocale, translate } from '@/i18n';
 import AppUpdateBanner from '@/components/AppUpdateBanner.vue';
+import WebPushDeviceBanner from '@/components/WebPushDeviceBanner.vue';
 import LoadingStatusBanner from '@/components/LoadingStatusBanner.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import StackRouterView from '@/components/StackRouterView.vue';
@@ -199,6 +219,11 @@ const {
   stop: stopAppUpdateMonitor,
 } = useAppUpdateMonitor();
 const signingOut = ref(false);
+const webPushReenabling = ref(false);
+const webPushReenableError = ref('');
+const webPushDeviceBannerVisible = computed(
+  () => Boolean(webPushDeviceNotice.value && currentUser.value && !isLoginRoute.value)
+);
 
 const isLoginRoute = computed(
   () => route.name === 'login' || (!route.name && window.location.pathname === '/login')
@@ -322,6 +347,30 @@ const syncWebPushForCurrentUser = () => {
   });
 };
 
+// Runs from the banner click so Safari treats the permission request and the new
+// subscription as user initiated.
+const reenableWebPush = async () => {
+  if (webPushReenabling.value) return;
+  webPushReenabling.value = true;
+  webPushReenableError.value = '';
+
+  try {
+    await enableWebPush();
+  } catch (error) {
+    console.warn('Failed to re-enable Web Push notifications.', error);
+    webPushReenableError.value =
+      error instanceof Error ? error.message : 'Failed to enable notifications.';
+    if (webPushSupportState().permission === 'denied') webPushDeviceNotice.value = 'blocked';
+  } finally {
+    webPushReenabling.value = false;
+  }
+};
+
+const dismissWebPushBanner = () => {
+  webPushReenableError.value = '';
+  dismissWebPushDeviceNotice();
+};
+
 const routeFromServiceWorkerUrl = (rawUrl: unknown) => {
   if (typeof rawUrl !== 'string' || rawUrl.trim() === '') return;
 
@@ -345,6 +394,8 @@ const routeFromServiceWorkerUrl = (rawUrl: unknown) => {
   });
 };
 
+let stopWebPushTapRecovery: (() => void) | null = null;
+
 const handleServiceWorkerMessage = (event: MessageEvent) => {
   const data = event.data;
   if (!data || typeof data !== 'object') return;
@@ -356,6 +407,7 @@ const handleServiceWorkerMessage = (event: MessageEvent) => {
 onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+  stopWebPushTapRecovery = startWebPushTapRecovery(routeFromServiceWorkerUrl);
   startAppUpdateMonitor();
 
   if (currentUser.value || !authInitialized.value) {
@@ -399,6 +451,8 @@ watch(
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside);
   navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+  stopWebPushTapRecovery?.();
+  stopWebPushTapRecovery = null;
   stopAppUpdateMonitor();
   window.removeEventListener('resize', scheduleCssVarUpdate);
   window.removeEventListener('orientationchange', scheduleCssVarUpdate);

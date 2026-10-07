@@ -21,6 +21,12 @@ defmodule IntellectualClub.Notifications do
   @singleton_key "default"
   @default_vapid_subject "mailto:admin@example.com"
   @notification_body_preview_length 180
+  @notification_icon_path "/images/pwa/icon-192.png"
+  # Opts a push message into Declarative Web Push parsing (the value honors RFC 8030).
+  @declarative_web_push_version 8030
+  # Push services cap encrypted messages at 4096 bytes and aesgcm adds 18 bytes of
+  # overhead, so the JSON payload keeps a safety margin below that limit.
+  @max_push_payload_bytes 3_584
   @default_generation_delivery_delay_ms 7_000
   @default_generation_delivery_timeout_ms 60_000
   @generation_delivery_claim_grace_ms 5_000
@@ -97,19 +103,25 @@ defmodule IntellectualClub.Notifications do
     with true <- settings.enabled || {:error, :web_push_disabled},
          {:ok, payload} <- subscription_payload(params, settings, user_agent),
          :ok <- validate_subscription_payload(payload) do
-      case find_subscription(payload.endpoint, actor) do
-        {:ok, %WebPushSubscription{} = subscription} ->
-          subscription
-          |> Ash.Changeset.for_update(:update, Map.delete(payload, :endpoint), actor: actor)
-          |> Ash.update()
+      result =
+        case find_subscription(payload.endpoint, actor) do
+          {:ok, %WebPushSubscription{} = subscription} ->
+            subscription
+            |> Ash.Changeset.for_update(:update, Map.delete(payload, :endpoint), actor: actor)
+            |> Ash.update()
 
-        {:ok, nil} ->
-          WebPushSubscription
-          |> Ash.Changeset.for_create(:create, payload, actor: actor)
-          |> Ash.create()
+          {:ok, nil} ->
+            WebPushSubscription
+            |> Ash.Changeset.for_create(:create, payload, actor: actor)
+            |> Ash.create()
 
-        {:error, error} ->
-          {:error, error}
+          {:error, error} ->
+            {:error, error}
+        end
+
+      with {:ok, subscription} <- result do
+        :ok = replace_device_subscriptions(subscription, actor)
+        {:ok, subscription}
       end
     else
       {:error, reason} -> {:error, reason}
@@ -314,7 +326,7 @@ defmodule IntellectualClub.Notifications do
 
     if settings.enabled do
       subscriptions = list_current_subscriptions(actor, settings.key_revision)
-      payload = generation_payload(message, status)
+      payload = generation_payload(message, status, settings)
 
       subscriptions
       |> Enum.map(&maybe_send_generation_payload(&1, payload, settings, actor, message.chat_id))
@@ -485,6 +497,11 @@ defmodule IntellectualClub.Notifications do
         :ok
 
       {:error, :expired} ->
+        Logger.warning(
+          "Web push subscription expired, removing it " <>
+            subscription_log_fields(subscription)
+        )
+
         _ = destroy_subscription(subscription, actor)
         :expired
 
@@ -667,6 +684,7 @@ defmodule IntellectualClub.Notifications do
       endpoint: normalize_required_string(Map.get(params, :endpoint)),
       p256dh: normalize_required_string(Map.get(keys, :p256dh)),
       auth: normalize_required_string(Map.get(keys, :auth)),
+      device_id: normalize_device_id(Map.get(params, :device_id)),
       user_agent: normalize_optional_string(user_agent),
       key_revision: parse_positive_integer(Map.get(params, :key_revision), settings.key_revision),
       expiration_time: parse_optional_non_negative_integer(Map.get(params, :expiration_time)),
@@ -685,15 +703,31 @@ defmodule IntellectualClub.Notifications do
   defp validate_subscription_payload(%{endpoint: _, p256dh: _, auth: ""}),
     do: {:error, {:validation, "Subscription auth key is required."}}
 
-  defp validate_subscription_payload(%{endpoint: endpoint}) do
+  defp validate_subscription_payload(%{endpoint: endpoint} = payload) do
     uri = URI.parse(endpoint)
 
-    if uri.scheme == "https" and is_binary(uri.host) and uri.host != "" do
-      :ok
-    else
-      {:error, {:validation, "Subscription endpoint must be an https URL."}}
+    cond do
+      not (uri.scheme == "https" and is_binary(uri.host) and uri.host != "") ->
+        {:error, {:validation, "Subscription endpoint must be an https URL."}}
+
+      not valid_device_id?(Map.get(payload, :device_id)) ->
+        {:error, {:validation, "Subscription device id is invalid."}}
+
+      true ->
+        :ok
     end
   end
+
+  defp normalize_device_id(nil), do: nil
+  defp normalize_device_id(value) when is_binary(value), do: normalize_optional_string(value)
+  defp normalize_device_id(_value), do: :invalid
+
+  defp valid_device_id?(nil), do: true
+
+  defp valid_device_id?(device_id) when is_binary(device_id),
+    do: Regex.match?(~r/\A[A-Za-z0-9_-]{8,64}\z/, device_id)
+
+  defp valid_device_id?(_device_id), do: false
 
   defp client_state_payload(params) do
     payload = %{
@@ -788,6 +822,75 @@ defmodule IntellectualClub.Notifications do
     |> Ash.read!(actor: actor)
   end
 
+  # A device that re-subscribed (for example after Safari revoked its subscription)
+  # keeps its device id, so endpoints it no longer owns are removed instead of
+  # silently accepting pushes forever.
+  defp replace_device_subscriptions(%WebPushSubscription{device_id: device_id} = current, actor)
+       when is_binary(device_id) do
+    WebPushSubscription
+    |> Ash.Query.filter(owner_id == ^actor.id and device_id == ^device_id and id != ^current.id)
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, stale_subscriptions} ->
+        Enum.each(stale_subscriptions, &remove_replaced_subscription(&1, current, actor))
+
+      {:error, error} ->
+        Logger.warning(
+          "Failed to load replaced web push subscriptions subscription_id=#{current.id}: " <>
+            inspect(error)
+        )
+    end
+
+    :ok
+  end
+
+  defp replace_device_subscriptions(_subscription, _actor), do: :ok
+
+  defp remove_replaced_subscription(stale, current, actor) do
+    Logger.warning(
+      "Web push subscription replaced by the same device, removing it " <>
+        "replacement_subscription_id=#{current.id} " <> subscription_log_fields(stale)
+    )
+
+    case destroy_subscription(stale, actor) do
+      :ok ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "Failed to remove replaced web push subscription subscription_id=#{stale.id}: " <>
+            inspect(error)
+        )
+    end
+  end
+
+  defp subscription_log_fields(%WebPushSubscription{} = subscription) do
+    [
+      subscription_id: subscription.id,
+      owner_id: subscription.owner_id,
+      endpoint_host: endpoint_host(subscription.endpoint),
+      device_id: subscription.device_id,
+      user_agent: subscription.user_agent,
+      created_at: subscription.created_at,
+      last_seen_at: subscription.last_seen_at
+    ]
+    |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{log_value(key, value)}" end)
+  end
+
+  defp endpoint_host(endpoint) when is_binary(endpoint) do
+    case URI.parse(endpoint) do
+      %URI{host: host} when is_binary(host) and host != "" -> host
+      _uri -> "unknown"
+    end
+  end
+
+  defp endpoint_host(_endpoint), do: "unknown"
+
+  defp log_value(_key, nil), do: "nil"
+  defp log_value(:user_agent, value), do: inspect(value)
+  defp log_value(_key, %DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp log_value(_key, value), do: to_string(value)
+
   defp destroy_subscription(subscription, actor) do
     case Ash.destroy(subscription, actor: actor) do
       :ok ->
@@ -860,22 +963,106 @@ defmodule IntellectualClub.Notifications do
     )
   end
 
-  defp generation_payload(%ChatMessage{} = message, status) do
+  # Legacy flat fields serve service workers installed before the declarative
+  # format; browsers with Declarative Web Push display `notification` even when the
+  # service worker fails, which exempts the push from WebKit's silent push penalty.
+  defp generation_payload(%ChatMessage{} = message, status, %WebPushSettings{} = settings) do
     locale = preferred_locale(message)
     chat_id = message.chat_id
     message_id = message.id
 
-    %{
+    legacy = %{
       type: "generation_finished",
       status: Atom.to_string(status),
       chat_id: chat_id,
       message_id: message_id,
       title: notification_title(status, locale),
-      body: notification_body(message, status, locale),
       url: "/chats/#{chat_id}?focusMessage=#{message_id}",
       tag: "chat:#{chat_id}"
     }
+
+    build_payload = fn body ->
+      legacy
+      |> Map.put(:body, body)
+      |> put_declarative_notification(settings.public_origin, locale)
+    end
+
+    fit_push_payload(build_payload, notification_body(message, status, locale))
   end
+
+  defp put_declarative_notification(payload, public_origin, locale) do
+    with {:ok, navigate} <- absolute_public_url(public_origin, payload.url),
+         {:ok, icon} <- absolute_public_url(public_origin, @notification_icon_path) do
+      Map.merge(payload, %{
+        web_push: @declarative_web_push_version,
+        # Lets the service worker replace the notification while the declarative
+        # content remains the fallback when it fails.
+        mutable: true,
+        notification: %{
+          title: payload.title,
+          body: payload.body,
+          lang: locale,
+          navigate: navigate,
+          tag: payload.tag,
+          icon: icon,
+          data: %{
+            url: payload.url,
+            chat_id: payload.chat_id,
+            message_id: payload.message_id,
+            status: payload.status
+          }
+        }
+      })
+    else
+      _error -> payload
+    end
+  end
+
+  # WebKit rejects the whole declarative message unless `navigate` and `icon` are absolute URLs.
+  defp absolute_public_url(origin, path) when is_binary(origin) and is_binary(path) do
+    case URI.new(String.trim(origin)) do
+      {:ok, %URI{scheme: scheme, host: host} = uri}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        {:ok, uri |> URI.merge(path) |> URI.to_string()}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp absolute_public_url(_origin, _path), do: :error
+
+  defp fit_push_payload(build_payload, body) do
+    payload = build_payload.(body)
+
+    if push_payload_fits?(payload) do
+      payload
+    else
+      fit_shortened_push_payload(build_payload, body, 0, String.length(body) - 1)
+    end
+  end
+
+  # Binary search for the longest shortened body whose payload still fits.
+  defp fit_shortened_push_payload(build_payload, body, low, high) when low < high do
+    middle = div(low + high + 1, 2)
+
+    if push_payload_fits?(build_payload.(shorten_notification_text(body, middle))) do
+      fit_shortened_push_payload(build_payload, body, middle, high)
+    else
+      fit_shortened_push_payload(build_payload, body, low, middle - 1)
+    end
+  end
+
+  defp fit_shortened_push_payload(build_payload, body, low, _high),
+    do: build_payload.(shorten_notification_text(body, low))
+
+  defp push_payload_fits?(payload),
+    do: byte_size(Jason.encode!(payload)) <= @max_push_payload_bytes
+
+  defp shorten_notification_text(_text, max_length) when max_length <= 1, do: ""
+
+  defp shorten_notification_text(text, max_length),
+    do: truncate_notification_text(text, max_length)
 
   defp preferred_locale(%{owner: %User{preferred_locale: locale}}) when locale in ["en", "ru"],
     do: locale

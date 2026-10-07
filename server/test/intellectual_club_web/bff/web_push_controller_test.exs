@@ -49,7 +49,9 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
         |> put_req_header("user-agent", "test-agent")
         |> post(
           "/api/bff/web-push/subscriptions",
-          subscription_payload("https://push.example/current")
+          "https://push.example/current"
+          |> subscription_payload()
+          |> Map.put("device_id", "device-aaaa1111")
         )
         |> json_response(200)
 
@@ -57,7 +59,7 @@ defmodule IntellectualClubWeb.Bff.WebPushControllerTest do
       assert get_in(response, ["subscription", "endpoint"]) == "https://push.example/current"
       assert get_in(response, ["subscription", "key_revision"]) == 1
 
-      assert [_subscription] =
+      assert [%WebPushSubscription{device_id: "device-aaaa1111", user_agent: "test-agent"}] =
                WebPushSubscription
                |> Ash.Query.filter(
                  owner_id == ^user.id and endpoint == "https://push.example/current"

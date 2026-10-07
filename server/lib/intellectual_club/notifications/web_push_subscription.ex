@@ -13,6 +13,11 @@ defmodule IntellectualClub.Notifications.WebPushSubscription do
 
     custom_indexes do
       index([:owner_id], name: "web_push_subscriptions_owner_id_index")
+
+      index([:owner_id, :device_id],
+        name: "web_push_subscriptions_owner_id_device_id_index",
+        where: "device_id IS NOT NULL"
+      )
     end
   end
 
@@ -45,6 +50,13 @@ defmodule IntellectualClub.Notifications.WebPushSubscription do
       allow_nil?(false)
       public?(true)
       constraints(min: 1)
+    end
+
+    # Stable per-browser-profile id that lets a re-subscribed device replace its stale endpoint.
+    attribute :device_id, :string do
+      allow_nil?(true)
+      public?(true)
+      constraints(trim?: true, allow_empty?: false, max_length: 64)
     end
 
     attribute :expiration_time, :integer do
@@ -81,6 +93,7 @@ defmodule IntellectualClub.Notifications.WebPushSubscription do
         :auth,
         :user_agent,
         :key_revision,
+        :device_id,
         :expiration_time,
         :last_seen_at
       ])
@@ -89,7 +102,16 @@ defmodule IntellectualClub.Notifications.WebPushSubscription do
     end
 
     update :update do
-      accept([:p256dh, :auth, :user_agent, :key_revision, :expiration_time, :last_seen_at])
+      accept([
+        :p256dh,
+        :auth,
+        :user_agent,
+        :key_revision,
+        :device_id,
+        :expiration_time,
+        :last_seen_at
+      ])
+
       require_atomic?(false)
     end
   end

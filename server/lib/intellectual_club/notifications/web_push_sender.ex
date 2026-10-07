@@ -25,9 +25,10 @@ defmodule IntellectualClub.Notifications.WebPushSender do
 
     message = Jason.encode!(payload)
 
+    # High urgency keeps FCM from deferring user-visible pushes while Android dozes.
     case WebPushElixir.send_notification(subscription_json, message,
            ttl: @ttl_seconds,
-           urgency: :normal,
+           urgency: :high,
            topic: topic(payload)
          ) do
       {:ok, _response} -> :ok

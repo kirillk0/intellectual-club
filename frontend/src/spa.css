@@ -367,6 +367,32 @@ fieldset {
   border-color: var(--color-primary);
 }
 
+.web-push-device-banner {
+  border-bottom-color: var(--color-info-border);
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+}
+
+.web-push-device-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.web-push-device-banner button {
+  border-color: var(--color-info-border);
+}
+
+.web-push-device-banner button.primary {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  border-color: var(--color-primary);
+}
+
+.app-status-copy .web-push-device-banner__error {
+  color: var(--color-danger-text);
+}
+
 :root {
   --app-header-height: 56px;
   --app-header-control-size: 34px;

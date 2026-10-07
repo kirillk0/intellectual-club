@@ -1,6 +1,4 @@
-importScripts('/assets/pwa-precache-manifest.js');
-
-const manifest = self.__PWA_PRECACHE_MANIFEST__;
+const INVALID_PRECACHE_MANIFEST_MESSAGE = 'PWA precache manifest is missing or invalid.';
 const APP_SHELL_URL = '/pwa/app-shell';
 const FORBIDDEN_PRECACHE_PATHS = new Set([
   '/assets/code-version.json',
@@ -43,34 +41,49 @@ const validPrecacheUrl = (value) => {
   );
 };
 
-const uniqueAssets =
-  Array.isArray(manifest?.assets) && new Set(manifest.assets).size === manifest.assets.length;
+const precacheManifestIsValid = (candidate) => {
+  if (!candidate || !Array.isArray(candidate.assets)) return false;
 
-if (
-  !manifest ||
-  typeof manifest.buildId !== 'string' ||
-  typeof manifest.revision !== 'string' ||
-  manifest.revision.length === 0 ||
-  manifest.revision.length > 128 ||
-  !Array.isArray(manifest.assets) ||
-  manifest.assets.length === 0 ||
-  manifest.assets.length > 500 ||
-  !uniqueAssets ||
-  !manifest.assets.includes(manifest.buildId) ||
-  !manifest.assets.includes(APP_SHELL_URL) ||
-  manifest.offlineUrl !== '/pwa/offline.html' ||
-  !manifest.assets.includes(manifest.offlineUrl) ||
-  !manifest.assets.every(validPrecacheUrl)
-) {
-  throw new Error('PWA precache manifest is missing or invalid.');
-}
+  const uniqueAssets = new Set(candidate.assets).size === candidate.assets.length;
+
+  return (
+    typeof candidate.buildId === 'string' &&
+    typeof candidate.revision === 'string' &&
+    candidate.revision.length > 0 &&
+    candidate.revision.length <= 128 &&
+    candidate.assets.length > 0 &&
+    candidate.assets.length <= 500 &&
+    uniqueAssets &&
+    candidate.assets.includes(candidate.buildId) &&
+    candidate.assets.includes(APP_SHELL_URL) &&
+    candidate.offlineUrl === '/pwa/offline.html' &&
+    candidate.assets.includes(candidate.offlineUrl) &&
+    candidate.assets.every(validPrecacheUrl)
+  );
+};
+
+// A script evaluation error would also break push handling, and Safari revokes
+// push subscriptions after a few pushes without a notification. A missing or
+// invalid manifest therefore only fails installation and disables caching.
+const loadPrecacheManifest = () => {
+  try {
+    importScripts('/assets/pwa-precache-manifest.js');
+  } catch (_error) {
+    return null;
+  }
+
+  const candidate = self.__PWA_PRECACHE_MANIFEST__;
+  return precacheManifestIsValid(candidate) ? candidate : null;
+};
+
+const manifest = loadPrecacheManifest();
 
 const CACHE_PREFIX = 'intellectual-club:pwa:';
 const META_CACHE = `${CACHE_PREFIX}meta`;
 const META_KEY = '/__pwa_cache_metadata__';
 const COMPLETE_KEY = '/__pwa_cache_complete__';
-const CURRENT_CACHE = `${CACHE_PREFIX}assets:${manifest.revision}`;
-const OFFLINE_URL = manifest.offlineUrl || '/pwa/offline.html';
+const CURRENT_CACHE = manifest ? `${CACHE_PREFIX}assets:${manifest.revision}` : null;
+const OFFLINE_URL = manifest?.offlineUrl || '/pwa/offline.html';
 const ASSET_ATTEMPT_TIMEOUT_MS = 10_000;
 const PRECACHE_CONCURRENCY = 6;
 const PRECACHE_RETRY_DELAYS_MS = [0, 500, 1_500];
@@ -652,14 +665,21 @@ const isStaticAssetRequest = (request) => {
 };
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(populateCurrentCache());
+  event.waitUntil(
+    manifest
+      ? populateCurrentCache()
+      : Promise.reject(new Error(INVALID_PRECACHE_MANIFEST_MESSAGE))
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(activateCurrentCache());
+  event.waitUntil(manifest ? activateCurrentCache() : self.clients.claim());
 });
 
 self.addEventListener('fetch', (event) => {
+  // Without a usable manifest the worker leaves every request to the network.
+  if (!manifest) return;
+
   if (isSpaNavigation(event.request)) {
     const networkResponse = fetchNavigation(event.request);
     event.waitUntil(networkResponse.catch(() => undefined));
@@ -672,32 +692,179 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
-self.addEventListener('push', (event) => {
-  event.waitUntil((async () => {
-    let payload = {};
+const DECLARATIVE_WEB_PUSH_VERSION = 8030;
+const NOTIFICATION_FALLBACK_TITLE = 'Intellectual Club';
+const NOTIFICATION_ICON_URL = '/images/pwa/icon-192.png';
+// Shared with the page (frontend/src/features/push/webPush.ts); kept outside
+// CACHE_PREFIX so activation cleanup leaves it alone.
+const SHOWN_NOTIFICATIONS_CACHE = 'intellectual-club:web-push:shown';
+const SHOWN_NOTIFICATIONS_KEY = '/__web_push_shown_notifications__';
+const SHOWN_NOTIFICATIONS_LIMIT = 20;
 
-    try {
-      payload = event.data ? event.data.json() : {};
-    } catch (_error) {
-      payload = {};
-    }
+const plainObject = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
 
-    const title = payload.title || 'Intellectual Club';
-    const options = {
-      body: payload.body || '',
-      icon: '/images/pwa/icon-192.png',
-      badge: '/images/pwa/icon-192.png',
-      tag: payload.tag || undefined,
-      data: {
-        url: payload.url || '/',
-        chat_id: payload.chat_id || null,
-        message_id: payload.message_id || null,
-        status: payload.status || null,
+const nonEmptyString = (value) =>
+  typeof value === 'string' && value.trim() !== '' ? value : null;
+
+// WebKit dispatches declarative pushes with `data === null` and exposes the parsed
+// message as the proposed `event.notification` instead.
+const proposedNotification = (event) => {
+  try {
+    return plainObject(event.notification);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const proposedNotificationPayload = (proposed) => {
+  try {
+    return {
+      web_push: DECLARATIVE_WEB_PUSH_VERSION,
+      notification: {
+        title: proposed.title,
+        body: proposed.body,
+        tag: proposed.tag,
+        navigate: proposed.navigate,
+        data: proposed.data,
       },
     };
+  } catch (_error) {
+    return null;
+  }
+};
 
-    await self.registration.showNotification(title, options);
-  })());
+const readPushPayload = (event, proposed) => {
+  try {
+    const payload = plainObject(event.data ? event.data.json() : null);
+    if (payload) return payload;
+  } catch (_error) {
+    // Fall back to the proposed declarative notification below.
+  }
+
+  return (proposed && proposedNotificationPayload(proposed)) || {};
+};
+
+// Notification clicks route inside the app, so only same-origin targets are kept.
+const sameOriginNotificationPath = (value) => {
+  if (typeof value !== 'string' || value === '') return null;
+
+  try {
+    const url = new URL(value, self.location.origin);
+    if (url.origin !== self.location.origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const notificationOptions = ({ body = '', tag, data }) => ({
+  body,
+  icon: NOTIFICATION_ICON_URL,
+  badge: NOTIFICATION_ICON_URL,
+  tag: tag || undefined,
+  // WebKit only lets a declarative push be replaced by a notification with an absolute `navigate` URL.
+  navigate: new URL(data.url, self.location.origin).href,
+  data,
+});
+
+// Payloads use the Declarative Web Push format, with legacy flat fields kept for
+// workers installed before it; browsers without declarative support land here too.
+const notificationFromPushPayload = (payload) => {
+  const declarative =
+    payload.web_push === DECLARATIVE_WEB_PUSH_VERSION ? plainObject(payload.notification) : null;
+  const source = declarative || payload;
+  const data = plainObject(declarative?.data) || payload;
+  const url =
+    sameOriginNotificationPath(data.url) ||
+    sameOriginNotificationPath(declarative?.navigate) ||
+    sameOriginNotificationPath(payload.url) ||
+    '/';
+
+  return {
+    title: nonEmptyString(source.title) || NOTIFICATION_FALLBACK_TITLE,
+    options: notificationOptions({
+      body: typeof source.body === 'string' ? source.body : '',
+      tag: nonEmptyString(source.tag) || nonEmptyString(payload.tag),
+      data: {
+        url,
+        chat_id: data.chat_id || null,
+        message_id: data.message_id || null,
+        status: data.status || null,
+      },
+    }),
+  };
+};
+
+// iOS restores a backgrounded Home Screen app without applying the tapped
+// notification's `navigate` URL and fires no `notificationclick` (WebKit bug
+// 268797), so the page infers taps from shown notifications that left
+// Notification Center while it was hidden.
+const recordShownNotification = async (options) => {
+  const tag = nonEmptyString(options?.tag);
+  const url = nonEmptyString(options?.data?.url);
+  if (!tag || !url) return;
+
+  try {
+    const cache = await caches.open(SHOWN_NOTIFICATIONS_CACHE);
+    let entries = [];
+
+    try {
+      const stored = await (await cache.match(SHOWN_NOTIFICATIONS_KEY))?.json();
+      if (Array.isArray(stored)) entries = stored.filter((entry) => plainObject(entry));
+    } catch (_error) {
+      entries = [];
+    }
+
+    entries = [...entries.filter((entry) => entry.tag !== tag), { tag, url, shownAt: Date.now() }];
+
+    await cache.put(
+      SHOWN_NOTIFICATIONS_KEY,
+      new Response(JSON.stringify(entries.slice(-SHOWN_NOTIFICATIONS_LIMIT)), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+  } catch (_error) {
+    // Tap recovery is best effort and must not affect the push lifetime.
+  }
+};
+
+// The push lifetime promise never rejects: a push that ends without a notification
+// counts as a silent push, and Safari drops the subscription after a few of them.
+const showPushNotification = async (event) => {
+  const proposed = proposedNotification(event);
+  let notification = null;
+
+  try {
+    notification = notificationFromPushPayload(readPushPayload(event, proposed));
+    await self.registration.showNotification(notification.title, notification.options);
+  } catch (_error) {
+    // The browser shows the proposed declarative notification when no replacement
+    // succeeds, so a generic fallback would only hide its content.
+    if (!proposed) {
+      await showFallbackNotification();
+      return;
+    }
+  }
+
+  if (notification) await recordShownNotification(notification.options);
+};
+
+const showFallbackNotification = async () => {
+  try {
+    await self.registration.showNotification(
+      NOTIFICATION_FALLBACK_TITLE,
+      notificationOptions({
+        data: { url: '/', chat_id: null, message_id: null, status: null },
+      })
+    );
+  } catch (_fallbackError) {
+    // Nothing else can be shown from this worker.
+  }
+};
+
+self.addEventListener('push', (event) => {
+  event.waitUntil(showPushNotification(event));
 });
 
 self.addEventListener('message', (event) => {

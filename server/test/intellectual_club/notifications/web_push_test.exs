@@ -15,6 +15,8 @@ end
 defmodule IntellectualClub.Notifications.WebPushTest do
   use IntellectualClub.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Notifications
@@ -77,7 +79,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     refute Map.has_key?(regenerated, :vapid_private_key)
   end
 
-  test "sender encodes a four-digit chat topic as base64url" do
+  test "sender requests high urgency and encodes a four-digit chat topic as base64url" do
     old_req_defaults = Req.default_options()
     test_pid = self()
     request_stub = {__MODULE__, :web_push_topic}
@@ -90,6 +92,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
 
     Req.Test.expect(request_stub, fn conn ->
       Kernel.send(test_pid, {:web_push_topic, Plug.Conn.get_req_header(conn, "topic")})
+      Kernel.send(test_pid, {:web_push_urgency, Plug.Conn.get_req_header(conn, "urgency")})
       Plug.Conn.send_resp(conn, 201, "")
     end)
 
@@ -112,6 +115,7 @@ defmodule IntellectualClub.Notifications.WebPushTest do
 
     assert :ok = WebPushSender.send(subscription, %{chat_id: 1000}, settings)
     assert_receive {:web_push_topic, ["Y2hhdDoxMDAw"]}
+    assert_receive {:web_push_urgency, ["high"]}
   end
 
   test "users can upsert and delete their own subscriptions" do
@@ -149,6 +153,208 @@ defmodule IntellectualClub.Notifications.WebPushTest do
              WebPushSubscription
              |> Ash.Query.filter(owner_id == ^actor.id and endpoint == "https://push.example/one")
              |> Ash.read!(actor: actor)
+  end
+
+  describe "device subscriptions" do
+    test "re-subscribing a device replaces only that device's previous endpoint" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+      %{user: other} = user_fixture()
+
+      _settings = enable_settings!(admin)
+
+      {:ok, stale} =
+        Notifications.upsert_subscription(
+          actor,
+          subscription_payload("https://push.example/stale", device_id: "device-aaaa1111"),
+          "ua/stale"
+        )
+
+      {:ok, other_device} =
+        Notifications.upsert_subscription(
+          actor,
+          subscription_payload("https://push.example/other-device", device_id: "device-bbbb2222")
+        )
+
+      {:ok, legacy} =
+        Notifications.upsert_subscription(
+          actor,
+          subscription_payload("https://push.example/legacy")
+        )
+
+      {:ok, other_owner} =
+        Notifications.upsert_subscription(
+          other,
+          subscription_payload("https://push.example/other-owner", device_id: "device-aaaa1111")
+        )
+
+      :ok = ActiveWebPushClients.upsert(actor.id, stale.endpoint, "client-1", 10)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, replacement} =
+                   Notifications.upsert_subscription(
+                     actor,
+                     subscription_payload("https://push.example/fresh",
+                       device_id: "device-aaaa1111"
+                     )
+                   )
+
+          assert replacement.device_id == "device-aaaa1111"
+        end)
+
+      assert log =~ "replaced by the same device"
+      assert log =~ "subscription_id=#{stale.id}"
+      assert log =~ "endpoint_host=push.example"
+      refute log =~ "push.example/stale"
+
+      assert {:error, _error} = Ash.get(WebPushSubscription, stale.id, actor: actor)
+      refute ActiveWebPushClients.active?(actor.id, stale.endpoint, 10)
+
+      assert {:ok, _subscription} = Ash.get(WebPushSubscription, other_device.id, actor: actor)
+      assert {:ok, _subscription} = Ash.get(WebPushSubscription, legacy.id, actor: actor)
+      assert {:ok, _subscription} = Ash.get(WebPushSubscription, other_owner.id, actor: other)
+
+      assert [
+               "https://push.example/fresh",
+               "https://push.example/legacy",
+               "https://push.example/other-device"
+             ] =
+               WebPushSubscription
+               |> Ash.Query.filter(owner_id == ^actor.id)
+               |> Ash.Query.sort(endpoint: :asc)
+               |> Ash.read!(actor: actor)
+               |> Enum.map(& &1.endpoint)
+    end
+
+    test "an existing endpoint adopts the device id it is synced with" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+
+      _settings = enable_settings!(admin)
+
+      {:ok, subscription} =
+        Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+      assert subscription.device_id == nil
+
+      assert {:ok, synced} =
+               Notifications.upsert_subscription(
+                 actor,
+                 subscription_payload("https://push.example/one", device_id: "device-aaaa1111")
+               )
+
+      assert synced.id == subscription.id
+      assert synced.device_id == "device-aaaa1111"
+    end
+
+    test "malformed device ids are rejected" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+
+      _settings = enable_settings!(admin)
+
+      for device_id <- ["short", "has spaces in it", String.duplicate("a", 65), %{"id" => 1}] do
+        assert {:error, {:validation, "Subscription device id is invalid."}} =
+                 Notifications.upsert_subscription(
+                   actor,
+                   subscription_payload("https://push.example/one", device_id: device_id)
+                 )
+      end
+    end
+  end
+
+  describe "generation payload" do
+    test "declarative notification mirrors legacy fields with absolute URLs" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+      actor = put_preferred_locale!(actor, "ru")
+
+      _settings = enable_settings!(admin)
+
+      {:ok, _subscription} =
+        Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+      message = assistant_message!(actor, "Готовый ответ")
+      assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+
+      assert_receive {:web_push_send, "https://push.example/one", payload, 1}
+
+      relative_url = "/chats/#{message.chat_id}?focusMessage=#{message.id}"
+
+      assert payload.web_push == 8030
+      assert payload.mutable == true
+      assert payload.url == relative_url
+      assert payload.title == "Генерация завершена"
+      assert payload.body == "Notifications test: Готовый ответ"
+
+      assert payload.notification == %{
+               title: "Генерация завершена",
+               body: "Notifications test: Готовый ответ",
+               lang: "ru",
+               navigate: "http://localhost:4000" <> relative_url,
+               tag: "chat:#{message.chat_id}",
+               icon: "http://localhost:4000/images/pwa/icon-192.png",
+               data: %{
+                 url: relative_url,
+                 chat_id: message.chat_id,
+                 message_id: message.id,
+                 status: "done"
+               }
+             }
+
+      decoded = payload |> Jason.encode!() |> Jason.decode!()
+      assert decoded["web_push"] == 8030
+
+      assert %URI{scheme: "http", host: "localhost"} =
+               URI.parse(decoded["notification"]["navigate"])
+    end
+
+    test "payload without a public origin carries only legacy fields" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+
+      _settings = enable_settings!(admin)
+
+      Notifications.ensure_settings!()
+      |> Ash.Changeset.for_update(:update_settings, %{public_origin: nil}, actor: admin)
+      |> Ash.update!(actor: admin)
+
+      {:ok, _subscription} =
+        Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+      message = assistant_message!(actor, "Done answer")
+      assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+
+      assert_receive {:web_push_send, "https://push.example/one", payload, 1}
+      refute Map.has_key?(payload, :web_push)
+      refute Map.has_key?(payload, :notification)
+      assert payload.title == "Generation finished"
+      assert payload.url == "/chats/#{message.chat_id}?focusMessage=#{message.id}"
+    end
+
+    test "oversized notification text is shortened below the push service limit" do
+      %{user: admin} = user_fixture(%{is_admin: true})
+      %{user: actor} = user_fixture()
+
+      _settings = enable_settings!(admin)
+
+      {:ok, _subscription} =
+        Notifications.upsert_subscription(actor, subscription_payload("https://push.example/one"))
+
+      message =
+        assistant_message!(actor, String.duplicate("ответ 😀 ", 200),
+          note: String.duplicate("Очень длинное название чата ", 200)
+        )
+
+      assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+
+      assert_receive {:web_push_send, "https://push.example/one", payload, 1}
+      assert byte_size(Jason.encode!(payload)) <= 3_584
+      assert String.ends_with?(payload.body, "…")
+      assert String.starts_with?(payload.body, "Очень длинное название чата")
+      assert payload.notification.body == payload.body
+    end
   end
 
   test "generation notification is idempotent and sends the expected payload" do
@@ -619,9 +825,19 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     put_app_env(:web_push_test_result, {:error, :expired})
 
     message = assistant_message!(actor, "Done answer")
-    assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+
+    log =
+      capture_log(fn ->
+        assert :ok = Notifications.deliver_generation_finished(message.id, :done)
+      end)
 
     assert_receive {:web_push_send, "https://push.example/expired", _payload, 1}
+
+    assert log =~ "Web push subscription expired"
+    assert log =~ "subscription_id=#{subscription.id}"
+    assert log =~ "owner_id=#{actor.id}"
+    assert log =~ "endpoint_host=push.example"
+    refute log =~ "push.example/expired"
 
     assert {:error, _error} = Ash.get(WebPushSubscription, subscription.id, actor: actor)
   end
@@ -783,6 +999,12 @@ defmodule IntellectualClub.Notifications.WebPushTest do
     settings
   end
 
+  defp put_preferred_locale!(user, locale) do
+    user
+    |> Ash.Changeset.for_update(:update_settings, %{preferred_locale: locale}, actor: user)
+    |> Ash.update!(actor: user)
+  end
+
   defp subscription_payload(endpoint, opts \\ []) do
     %{
       endpoint: endpoint,
@@ -790,16 +1012,17 @@ defmodule IntellectualClub.Notifications.WebPushTest do
         p256dh: Keyword.get(opts, :p256dh, "p256dh-key"),
         auth: Keyword.get(opts, :auth, "auth-key")
       },
-      key_revision: Keyword.get(opts, :key_revision, 1)
+      key_revision: Keyword.get(opts, :key_revision, 1),
+      device_id: Keyword.get(opts, :device_id)
     }
   end
 
-  defp assistant_message!(actor, text) do
+  defp assistant_message!(actor, text, opts \\ []) do
     chat =
       Chat
       |> Ash.Changeset.for_create(
         :create,
-        %{note: "Notifications test"},
+        %{note: Keyword.get(opts, :note, "Notifications test")},
         actor: actor
       )
       |> Ash.create!(actor: actor)
