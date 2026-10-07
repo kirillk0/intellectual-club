@@ -98,7 +98,11 @@ defmodule IntellectualClub.ImageProcessor do
       _error -> nil
     end
   else
+    @vips_cache_disabled_key {__MODULE__, :vips_cache_disabled}
+
     defp resize_backend(payload, mime_type, max_edge) do
+      :ok = disable_vips_operation_cache()
+
       with {:ok, suffix} <- image_suffix(mime_type),
            {:ok, image} <- Image.from_binary(payload),
            {:ok, resized_image} <- Image.thumbnail(image, max_edge, resize: :down),
@@ -114,6 +118,22 @@ defmodule IntellectualClub.ImageProcessor do
         nil -> {:error, :resized_image_invalid}
         {:error, reason} -> {:error, reason}
         other -> {:error, other}
+      end
+    end
+
+    # libvips keeps recently built operations alive together with their inputs and
+    # pixel buffers in a process-wide cache (up to 100 MB of native memory, invisible
+    # to the BEAM allocators). Every resize starts from a new payload, so the cache
+    # never hits. Configured on first use rather than at boot, so instances that
+    # never resize images do not load libvips at all.
+    defp disable_vips_operation_cache do
+      if :persistent_term.get(@vips_cache_disabled_key, false) do
+        :ok
+      else
+        :ok = Vix.Vips.cache_set_max(0)
+        :ok = Vix.Vips.cache_set_max_mem(0)
+        :ok = Vix.Vips.cache_set_max_files(0)
+        :persistent_term.put(@vips_cache_disabled_key, true)
       end
     end
   end

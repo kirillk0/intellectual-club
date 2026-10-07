@@ -7,6 +7,7 @@ defmodule IntellectualClub.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = load_application_modules()
     :ok = IntellectualClub.Generation.PersistenceFailure.attach_telemetry()
 
     children = [
@@ -73,6 +74,17 @@ defmodule IntellectualClub.Application do
   def config_change(changed, _new, removed) do
     IntellectualClubWeb.Endpoint.config_change(changed, removed)
     :ok
+  end
+
+  # Releases boot in interactive mode (rel/env.sh.eex) and load dependency code on
+  # first use. Application modules are loaded up front instead, so runtime checks
+  # such as function_exported?/3 and String.to_existing_atom/1 never depend on
+  # whether a module happened to be called already. Loading is sequential on
+  # purpose: the parallel loader leaves far more freed but unreturned native
+  # memory behind.
+  defp load_application_modules do
+    {:ok, modules} = :application.get_key(:intellectual_club, :modules)
+    Enum.each(modules, &Code.ensure_loaded!/1)
   end
 
   defp skip_migrations?() do

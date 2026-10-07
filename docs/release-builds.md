@@ -74,3 +74,16 @@ docker buildx build \
 Prebuilt mode fails for a missing, incomplete, modified, or different-commit
 artifact instead of silently rebuilding assets. Artifacts belong to a single
 workflow run; they are not selected from another run by a mutable branch name.
+
+## Runtime code loading
+
+Releases start in interactive mode (`server/rel/env.sh.eex` and `env.bat.eex`):
+dependency modules are loaded on first use. Preloading all of them (embedded
+mode) costs about 250 MB of resident memory, mostly for code that never runs.
+Setting `RELEASE_MODE=embedded` in the environment restores preloading.
+
+`IntellectualClub.Application` loads every application module before starting
+its supervision tree, so `function_exported?/3` and `String.to_existing_atom/1`
+see application modules exactly as in embedded mode. A dependency module is not
+loaded until something calls it: check it with `Code.ensure_loaded?/1` before
+`function_exported?/3`.
