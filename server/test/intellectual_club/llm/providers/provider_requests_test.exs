@@ -1114,7 +1114,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       assert result.request_snapshot.system_prompt == "Use tools when needed."
     end
 
-    test "anthropic provider uses 32k max tokens by default" do
+    test "anthropic provider uses 64k max tokens by default" do
       result =
         AnthropicMessages.build_initial_request(%{
           history: [%{role: :user, content: "Hello"}],
@@ -1125,7 +1125,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
           supports_image_input: false
         })
 
-      assert result.raw_request["max_tokens"] == 32_768
+      assert result.raw_request["max_tokens"] == 64_000
     end
 
     test "anthropic provider adds cache control markers only when requested" do

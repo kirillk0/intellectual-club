@@ -5,7 +5,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Payload do
 
   alias IntellectualClub.Generation.History
 
-  @default_max_tokens 32_768
+  @default_max_tokens 64_000
   @cache_control_payload %{"type" => "ephemeral"}
   @cacheable_block_types MapSet.new([
                            "text",
