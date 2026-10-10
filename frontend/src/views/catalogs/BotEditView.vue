@@ -177,14 +177,25 @@
           <p v-else class="muted">No first messages yet.</p>
         </div>
 
-        <div v-else-if="botTab === 'context'" class="stack">
-          <div class="stack">
-            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-              <div class="stack" style="gap: 2px">
-                <strong>Image</strong>
-                <div class="muted" style="font-size: 0.85rem">Used as the bot avatar.</div>
+        <div v-else-if="botTab === 'context'" class="settings-sections">
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Avatar</h3>
+            </header>
+
+            <div class="bot-avatar">
+              <ImageThumbnail :image="form.image" :label="form.name" :size="56" />
+              <div class="bot-avatar__info">
+                <template v-if="form.image">
+                  <div class="bot-avatar__filename" data-i18n-ignore>{{ form.image.filename }}</div>
+                  <div class="settings-field__hint">
+                    {{ form.image.mime_type }} · {{ formatBytes(form.image.size_bytes) }}
+                  </div>
+                </template>
+                <div v-else class="muted">No image uploaded.</div>
+                <div v-if="isNew" class="settings-field__hint">Save the bot before uploading an image.</div>
               </div>
-              <div class="flex" style="gap: 8px">
+              <div class="settings-actions">
                 <button type="button" :disabled="isNew || saving || sharedReadonly" @click="triggerImageUpload">Upload</button>
                 <button
                   type="button"
@@ -198,48 +209,82 @@
             </div>
 
             <input ref="imageInput" type="file" accept="image/*" style="display: none" @change="handleImageSelected" />
+          </section>
 
-            <div v-if="form.image" class="row" style="align-items: center; gap: 12px">
-              <ImageThumbnail :image="form.image" :label="form.name" :size="56" />
-              <div class="stack" style="gap: 2px; min-width: 0">
-                <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis">{{ form.image.filename }}</div>
-                <div class="muted" style="font-size: 0.85rem">{{ form.image.mime_type }}</div>
-                <div class="muted" style="font-size: 0.85rem">{{ formatBytes(form.image.size_bytes) }}</div>
-              </div>
-            </div>
-            <div v-else class="muted">No image uploaded.</div>
-            <div v-if="isNew" class="muted" style="font-size: 0.85rem">Save the bot before uploading an image.</div>
-          </div>
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Generation</h3>
+            </header>
 
-          <label :class="{ 'field-error': errors.hasField('default_llm_configuration_id') }">
-            Default configuration
-            <select
-              v-model="form.default_llm_configuration_id"
-              class="full"
-              :disabled="sharedReadonly || llmConfigurationsLoading"
-              @change="errors.clearField('default_llm_configuration_id')"
-            >
-              <option :value="null">No default configuration</option>
-              <option v-for="cfg in llmConfigurationOptions" :key="cfg.id" :value="cfg.id">
-                {{ configurationOptionLabel(cfg) }}
-              </option>
-            </select>
-            <div v-if="errors.hasField('default_llm_configuration_id')" class="error-text">
-              {{ errors.messageFor('default_llm_configuration_id') }}
-            </div>
-          </label>
-          <p v-if="llmConfigurationsLoading" class="muted">Loading configurations…</p>
-          <p v-else-if="llmConfigurationsError" class="error-text">{{ llmConfigurationsError }}</p>
-
-          <div :class="['stack', errors.hasField('handoff_message_block_id') && 'field-error']">
-            <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
-              <div class="stack" style="gap: 2px">
-                <strong>Handoff message block</strong>
-                <div class="muted" style="font-size: 0.85rem">
-                  Only the block content is used as the prompt. The title is ignored.
+            <div class="settings-grid">
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('default_llm_configuration_id') }">
+                <label class="settings-field__label" for="bot-default-llm-configuration">Default configuration</label>
+                <select
+                  id="bot-default-llm-configuration"
+                  v-model="form.default_llm_configuration_id"
+                  class="full"
+                  :disabled="sharedReadonly || llmConfigurationsLoading"
+                  @change="errors.clearField('default_llm_configuration_id')"
+                >
+                  <option :value="null">No default configuration</option>
+                  <option v-for="cfg in llmConfigurationOptions" :key="cfg.id" :value="cfg.id">
+                    {{ configurationOptionLabel(cfg) }}
+                  </option>
+                </select>
+                <div v-if="llmConfigurationsLoading" class="settings-field__hint">Loading configurations…</div>
+                <div v-else-if="llmConfigurationsError" class="error-text">{{ llmConfigurationsError }}</div>
+                <div v-else class="settings-field__hint">
+                  New chats start with the configuration of your latest chat with this bot, or with this one if there
+                  is no such chat.
+                </div>
+                <div v-if="errors.hasField('default_llm_configuration_id')" class="error-text">
+                  {{ errors.messageFor('default_llm_configuration_id') }}
                 </div>
               </div>
-              <div class="flex" style="gap: 8px">
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('history_mode') }">
+                <label class="settings-field__label" for="bot-history-mode">History mode</label>
+                <select
+                  id="bot-history-mode"
+                  v-model="form.history_mode"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @change="errors.clearField('history_mode')"
+                >
+                  <option value="agent">Agent — dialogue and tools</option>
+                  <option value="chat">Chat — visible dialogue</option>
+                  <option value="full">Full — dialogue, tools and reasoning</option>
+                </select>
+                <div class="settings-field__hint">
+                  Full reuses reasoning only from the same configuration. Chat keeps user messages, steering and
+                  answers. Agent is the default.
+                </div>
+                <div v-if="errors.hasField('history_mode')" class="error-text">{{ errors.messageFor('history_mode') }}</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section" :class="{ 'field-error': errors.hasField('handoff_message_block_id') }">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Handoff summary</h3>
+              <p class="settings-section__description">
+                Prompt the model uses to summarize a chat when it is handed off to a new chat.
+              </p>
+            </header>
+
+            <div class="bot-handoff">
+              <div v-if="selectedHandoffBlock" class="list bot-handoff__block">
+                <KnowledgeBlockListItem
+                  :name="selectedHandoffBlock.name"
+                  :image="selectedHandoffBlock.image"
+                  :version="selectedHandoffBlock.version"
+                  :tokenCount="selectedHandoffBlock.token_count"
+                  :openable="true"
+                  @open="openBlockEditor(selectedHandoffBlock.id)"
+                />
+              </div>
+              <div v-else class="bot-handoff__block muted">Use default handoff prompt</div>
+              <div class="settings-actions">
                 <button type="button" :disabled="sharedReadonly" @click="openHandoffBlockPicker">
                   {{ form.handoff_message_block_id ? 'Change' : 'Select' }}
                 </button>
@@ -252,82 +297,72 @@
                 </button>
               </div>
             </div>
-
-            <div v-if="selectedHandoffBlock" class="list">
-              <KnowledgeBlockListItem
-                :name="selectedHandoffBlock.name"
-                :image="selectedHandoffBlock.image"
-                :version="selectedHandoffBlock.version"
-                :tokenCount="selectedHandoffBlock.token_count"
-                :openable="true"
-                @open="openBlockEditor(selectedHandoffBlock.id)"
-              />
-            </div>
-            <p v-else class="muted">Use default handoff prompt</p>
+            <div class="settings-field__hint">Only the block content is used as the prompt. The title is ignored.</div>
 
             <div v-if="errors.hasField('handoff_message_block_id')" class="error-text">
               {{ errors.messageFor('handoff_message_block_id') }}
             </div>
-          </div>
+          </section>
 
-          <label :class="{ 'field-error': errors.hasField('history_mode') }">
-            History mode
-            <select id="bot-history-mode" v-model="form.history_mode" class="full" :disabled="sharedReadonly" @change="errors.clearField('history_mode')">
-              <option value="agent">Agent — dialogue and tools</option>
-              <option value="chat">Chat — visible dialogue</option>
-              <option value="full">Full — dialogue, tools and reasoning</option>
-            </select>
-            <div v-if="errors.hasField('history_mode')" class="error-text">{{ errors.messageFor('history_mode') }}</div>
-          </label>
-          <p class="muted">
-            Full reuses reasoning only from the same configuration. Chat keeps user messages, steering and answers. Agent is the default.
-          </p>
+          <section class="settings-section">
+            <header class="settings-section__header">
+              <h3 class="settings-section__title">Limits</h3>
+            </header>
 
-          <label :class="{ 'field-error': errors.hasField('max_tool_rounds') }">
-            Max tool rounds
-            <input
-              v-model.number="form.max_tool_rounds"
-              type="number"
-              min="0"
-              class="full"
-              :disabled="sharedReadonly"
-              @input="errors.clearField('max_tool_rounds')"
-            />
-            <div v-if="errors.hasField('max_tool_rounds')" class="error-text">
-              {{ errors.messageFor('max_tool_rounds') }}
+            <div class="settings-grid settings-grid--compact">
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('max_tool_rounds') }">
+                <label class="settings-field__label" for="bot-max-tool-rounds">Max tool rounds</label>
+                <input
+                  id="bot-max-tool-rounds"
+                  v-model.number="form.max_tool_rounds"
+                  type="number"
+                  min="0"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="errors.clearField('max_tool_rounds')"
+                />
+                <div class="settings-field__hint">Tool call rounds allowed in one response.</div>
+                <div v-if="errors.hasField('max_tool_rounds')" class="error-text">
+                  {{ errors.messageFor('max_tool_rounds') }}
+                </div>
+              </div>
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('context_soft_limit_percent') }">
+                <label class="settings-field__label" for="bot-context-soft-limit">Context soft limit (%)</label>
+                <input
+                  id="bot-context-soft-limit"
+                  v-model.number="form.context_soft_limit_percent"
+                  type="number"
+                  min="1"
+                  max="100"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="errors.clearField('context_soft_limit_percent')"
+                />
+                <div class="settings-field__hint">Above this share of the context window, tool calls are refused.</div>
+                <div v-if="errors.hasField('context_soft_limit_percent')" class="error-text">
+                  {{ errors.messageFor('context_soft_limit_percent') }}
+                </div>
+              </div>
+
+              <div class="settings-field" :class="{ 'field-error': errors.hasField('max_file_size_bytes') }">
+                <label class="settings-field__label" for="bot-max-file-size">Max file size (MB)</label>
+                <input
+                  id="bot-max-file-size"
+                  v-model.number="form.max_file_size_mb"
+                  type="number"
+                  min="1"
+                  class="full"
+                  :disabled="sharedReadonly"
+                  @input="errors.clearField('max_file_size_bytes')"
+                />
+                <div class="settings-field__hint">Applies to each file uploaded to a chat.</div>
+                <div v-if="errors.hasField('max_file_size_bytes')" class="error-text">
+                  {{ errors.messageFor('max_file_size_bytes') }}
+                </div>
+              </div>
             </div>
-          </label>
-
-          <label :class="{ 'field-error': errors.hasField('context_soft_limit_percent') }">
-            Context soft limit (%)
-            <input
-              v-model.number="form.context_soft_limit_percent"
-              type="number"
-              min="1"
-              max="100"
-              class="full"
-              :disabled="sharedReadonly"
-              @input="errors.clearField('context_soft_limit_percent')"
-            />
-            <div v-if="errors.hasField('context_soft_limit_percent')" class="error-text">
-              {{ errors.messageFor('context_soft_limit_percent') }}
-            </div>
-          </label>
-
-          <label :class="{ 'field-error': errors.hasField('max_file_size_bytes') }">
-            Max file size (MB)
-            <input
-              v-model.number="form.max_file_size_mb"
-              type="number"
-              min="1"
-              class="full"
-              :disabled="sharedReadonly"
-              @input="errors.clearField('max_file_size_bytes')"
-            />
-            <div v-if="errors.hasField('max_file_size_bytes')" class="error-text">
-              {{ errors.messageFor('max_file_size_bytes') }}
-            </div>
-          </label>
+          </section>
         </div>
 
         <div v-else-if="botTab === 'configTags'" class="stack">
@@ -1291,5 +1326,33 @@ async function saveSharing(payload: { groupIds: number[]; toolModes: Record<stri
   align-items: center;
   border-color: var(--color-info-border);
   background: var(--color-info-bg);
+}
+
+.bot-avatar,
+.bot-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.bot-avatar__info {
+  display: flex;
+  flex: 1 1 160px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bot-avatar__filename {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bot-handoff__block {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 </style>

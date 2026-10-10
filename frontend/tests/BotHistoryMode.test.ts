@@ -70,6 +70,17 @@ describe('bot history mode', () => {
     expect(view.getComponent(CrudHeader).props('dirty')).toBe(false);
   });
 
+  it('groups settings into titled sections with Russian translations', async () => {
+    const view = await mountView('/catalogs/bots/new');
+    const titles = view.findAll('.settings-section__title').map((title) => title.text());
+    expect(titles).toEqual(['Avatar', 'Generation', 'Handoff summary', 'Limits']);
+
+    const texts = view
+      .findAll('.settings-section__title, .settings-section__description, .settings-field__label, .settings-field__hint')
+      .map((node) => node.text());
+    expect(texts.filter((text) => !ruMessages[text])).toEqual([]);
+  });
+
   it('loads full and saves chat through JSON:API', async () => {
     mocks.get.mockResolvedValue(botDocument('full'));
     mocks.update.mockResolvedValue(botDocument('chat'));

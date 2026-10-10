@@ -267,7 +267,7 @@
               </p>
             </header>
 
-            <div class="settings-grid settings-grid--pricing">
+            <div class="settings-grid settings-grid--compact">
               <div
                 class="settings-field"
                 :class="{ 'field-error': errors.hasField('cached_input_price_per_million_tokens') }"
@@ -1455,124 +1455,5 @@ async function saveSharing(groupIds: number[]) {
 .small-text {
   margin-top: 4px;
   font-size: 0.85rem;
-}
-
-.settings-sections {
-  display: flex;
-  flex-direction: column;
-}
-
-.settings-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 0;
-}
-
-.settings-section:first-child {
-  padding-top: 4px;
-}
-
-.settings-section:last-child {
-  padding-bottom: 0;
-}
-
-.settings-section + .settings-section {
-  border-top: 1px solid var(--color-border);
-}
-
-.settings-section__header {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-section__title {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--color-text-strong);
-}
-
-.settings-section__description {
-  margin: 0;
-  font-size: 0.85rem;
-  line-height: 1.4;
-  color: var(--color-text-muted);
-}
-
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px 16px;
-  align-items: start;
-}
-
-.settings-grid--pricing {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-}
-
-.settings-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.settings-field__inline {
-  display: flex;
-  gap: 8px;
-}
-
-.settings-field__inline select {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.settings-field__number {
-  flex: 0 0 96px;
-  width: 96px;
-}
-
-.settings-field__hint {
-  font-size: 0.8rem;
-  line-height: 1.4;
-  color: var(--color-text-subtle);
-}
-
-.settings-checks {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.settings-check {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 10px;
-  align-items: start;
-  cursor: pointer;
-}
-
-.settings-check input[type='checkbox'] {
-  margin: 3px 0 0;
-}
-
-.settings-check__body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-check__title {
-  color: var(--color-text);
-}
-
-.settings-check:has(input:disabled) {
-  cursor: default;
-}
-
-.settings-check--unavailable .settings-check__title {
-  color: var(--color-text-muted);
 }
 </style>

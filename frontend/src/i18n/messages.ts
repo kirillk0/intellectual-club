@@ -108,6 +108,7 @@ export const ruMessages: Record<string, string> = {
   'API Key': 'API-ключ',
   'API key will be removed on save.': 'API-ключ будет удален при сохранении.',
   'Appearance': 'Внешний вид',
+  'Applies to each file uploaded to a chat.': 'Действует для каждого файла, загружаемого в чат.',
   'Approve an outlet runner to connect it to your account.': 'Подтвердите runner outlet, чтобы подключить его к вашей учетной записи.',
   'Approve another': 'Подтвердить еще один',
   'Approved.': 'Подтверждено.',
@@ -125,8 +126,11 @@ export const ruMessages: Record<string, string> = {
   'Auth method': 'Метод аутентификации',
   'Authentication method': 'Метод аутентификации',
   'Auto': 'Авто',
+  'Avatar': 'Аватар',
   'Available after save': 'Появится после сохранения',
   'Available levels depend on the selected model.': 'Доступные уровни зависят от выбранной модели.',
+  'Above this share of the context window, tool calls are refused.':
+    'При превышении этой доли окна контекста вызовы инструментов отклоняются.',
   'Adds explicit prompt cache breakpoints to requests if the provider supports them.':
     'Добавляет в запросы явные точки кэширования промпта, если провайдер их поддерживает.',
   'Back': 'Назад',
@@ -530,6 +534,8 @@ export const ruMessages: Record<string, string> = {
   'New block': 'Новый блок',
   'New bot': 'Новый бот',
   'New chat': 'Новый чат',
+  'New chats start with the configuration of your latest chat with this bot, or with this one if there is no such chat.':
+    'Новые чаты начинаются с конфигурации вашего последнего чата с этим ботом, а если такого чата нет — с этой.',
   'New configuration': 'Новая конфигурация',
   'New external ID': 'Новый внешний ID',
   'New group': 'Новая группа',
@@ -658,6 +664,8 @@ export const ruMessages: Record<string, string> = {
   'Previous branch': 'Предыдущая ветка',
   'Previous step': 'Предыдущий шаг',
   'Prompt': 'Prompt',
+  'Prompt the model uses to summarize a chat when it is handed off to a new chat.':
+    'Prompt, по которому модель составляет сводку чата при передаче работы в новый чат.',
   'Provider': 'Провайдер',
   'Provider error': 'Ошибка провайдера',
   'Provider type metadata could not be loaded.': 'Не удалось загрузить метаданные типа провайдера.',
@@ -950,6 +958,7 @@ export const ruMessages: Record<string, string> = {
   'Tool bindings': 'Привязки инструментов',
   'Tool bindings will be saved when you save the bot.': 'Привязки инструментов будут сохранены при сохранении бота.',
   'Tool call': 'Вызов инструмента',
+  'Tool call rounds allowed in one response.': 'Допустимое число раундов вызова инструментов в одном ответе.',
   'Tool is already attached to this bot.': 'Инструмент уже прикреплен к этому боту.',
   'Tool is already linked to this chat.': 'Инструмент уже привязан к этому чату.',
   'Tool name (optional)': 'Имя инструмента (необязательно)',
