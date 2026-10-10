@@ -280,145 +280,168 @@
               {{ vm.continuingConversation ? 'Continuing…' : 'Continue conversation' }}
             </button>
           </div>
-          <form
-            v-else
-            class="chat-input-form"
-            :class="{ 'chat-input-form--dragging': dragActive }"
-            @submit.prevent="vm.submitComposer()"
-            @dragenter.prevent="handleDragEnter"
-            @dragover.prevent="handleDragOver"
-            @dragleave.prevent="handleDragLeave"
-            @drop.prevent="handleDrop"
-          >
-            <div v-if="vm.pendingFiles.length" class="pending-files">
-              <div
-                v-for="item in vm.pendingFiles"
-                :key="item.id"
-                class="pending-file"
-                :title="`${item.name}  (${formatPendingFileSize(item.size)})`"
-                role="button"
-                tabindex="0"
-                :aria-label="`Open attachment ${item.name}`"
-                @click="vm.openPendingAttachmentPreview(item.id, 'composer')"
-                @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
-                @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
+          <Teleport v-else to="body" :disabled="!composerExpanded">
+            <div
+              :class="['chat-composer-layer', composerExpanded && 'chat-composer-layer--expanded']"
+              :style="composerLayerStyle"
+              :role="composerExpanded ? 'dialog' : undefined"
+              :aria-modal="composerExpanded ? 'true' : undefined"
+              :aria-label="composerExpanded ? translate('Message editor') : undefined"
+              @click.self="setComposerExpanded(false)"
+              @keydown.esc="handleComposerEscape"
+            >
+              <form
+                ref="composerFormRef"
+                class="chat-input-form"
+                :class="{ 'chat-input-form--dragging': dragActive }"
+                @submit.prevent="runComposerAction(vm.submitComposer)"
+                @dragenter.prevent="handleDragEnter"
+                @dragover.prevent="handleDragOver"
+                @dragleave.prevent="handleDragLeave"
+                @drop.prevent="handleDrop"
               >
-                <span class="pending-file__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(item.mimeType, item.name)" /></span>
-                <div class="pending-file__meta">
-                  <span class="pending-file__name">{{ item.name }}</span>
-                  <span class="pending-file__status">{{ describePendingFileStatus(item) }}</span>
+                <div v-if="vm.pendingFiles.length" class="pending-files">
                   <div
-                    v-if="item.uploadStatus !== 'idle' || item.progress > 0"
-                    class="pending-file__progress"
-                    aria-hidden="true"
+                    v-for="item in vm.pendingFiles"
+                    :key="item.id"
+                    class="pending-file"
+                    :title="`${item.name}  (${formatPendingFileSize(item.size)})`"
+                    role="button"
+                    tabindex="0"
+                    :aria-label="`Open attachment ${item.name}`"
+                    @click="vm.openPendingAttachmentPreview(item.id, 'composer')"
+                    @keydown.enter.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
+                    @keydown.space.prevent="vm.openPendingAttachmentPreview(item.id, 'composer')"
                   >
-                    <span class="pending-file__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
+                    <span class="pending-file__icon" aria-hidden="true"><SvgIcon :name="fileIconByMime(item.mimeType, item.name)" /></span>
+                    <div class="pending-file__meta">
+                      <span class="pending-file__name">{{ item.name }}</span>
+                      <span class="pending-file__status">{{ describePendingFileStatus(item) }}</span>
+                      <div
+                        v-if="item.uploadStatus !== 'idle' || item.progress > 0"
+                        class="pending-file__progress"
+                        aria-hidden="true"
+                      >
+                        <span class="pending-file__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
+                      </div>
+                    </div>
+                    <button
+                      class="pending-file__remove"
+                      type="button"
+                      aria-label="Remove attachment"
+                      @click.stop="vm.removePendingFile(item.id)"
+                    >✕</button>
                   </div>
                 </div>
-                <button
-                  class="pending-file__remove"
-                  type="button"
-                  aria-label="Remove attachment"
-                  @click.stop="vm.removePendingFile(item.id)"
-                >✕</button>
-              </div>
+                <div class="chat-composer">
+                  <textarea
+                    ref="composerTextareaRef"
+                    class="chat-composer__textarea"
+                    v-model="vm.draft"
+                    placeholder="Type your message"
+                    @paste="handleComposerPaste"
+                    @keydown.enter.ctrl.exact.prevent="runComposerAction(vm.submitComposer)"
+                    @keydown.enter.meta.exact.prevent="runComposerAction(vm.submitComposer)"
+                  ></textarea>
+                  <button
+                    class="chat-composer__expand"
+                    type="button"
+                    :aria-label="translate(composerExpanded ? 'Collapse message editor' : 'Expand message editor')"
+                    :title="translate(composerExpanded ? 'Collapse message editor' : 'Expand message editor')"
+                    :aria-expanded="composerExpanded ? 'true' : 'false'"
+                    @pointerdown.prevent
+                    @click="setComposerExpanded(!composerExpanded)"
+                  >
+                    <SvgIcon :name="composerExpanded ? 'minimize' : 'maximize'" size="16" aria-hidden="true" />
+                  </button>
+                  <div class="chat-composer__actions">
+                    <button
+                      class="chat-composer__attach"
+                      type="button"
+                      aria-label="Attach files"
+                      :disabled="!vm.canAttachFiles"
+                      :title="vm.fileAttachTitle"
+                      @click="openAttachFilesDialog"
+                    >
+                      Attach
+                    </button>
+                    <button
+                      v-if="vm.activeGenerationId"
+                      class="chat-composer__send"
+                      type="button"
+                      :disabled="
+                        !vm.canSteerGeneration ||
+                        vm.sending ||
+                        vm.steeringGenerationId === vm.activeGenerationId ||
+                        vm.cancelingGenerationId === vm.activeGenerationId
+                      "
+                      :title="
+                        !vm.draft
+                          ? translate('Type a text instruction to steer the active generation.')
+                          : undefined
+                      "
+                      @click="runComposerAction(vm.steerGeneration)"
+                    >
+                      {{ vm.steerButtonLabel }}
+                    </button>
+                    <button
+                      v-if="vm.activeGenerationId"
+                      class="chat-composer__queue"
+                      type="button"
+                      :disabled="
+                        !vm.hasSendPayload ||
+                        vm.sending ||
+                        vm.steeringGenerationId === vm.activeGenerationId ||
+                        vm.cancelingGenerationId === vm.activeGenerationId ||
+                        vm.isConfigSyncPending
+                      "
+                      :title="translate('Add this message to the server queue')"
+                      @click="runComposerAction(vm.queueMessage)"
+                    >
+                      {{ vm.queueButtonLabel }}
+                    </button>
+                    <button
+                      v-if="vm.activeGenerationId"
+                      class="chat-composer__cancel"
+                      type="button"
+                      :disabled="
+                        vm.cancelingGenerationId === vm.activeGenerationId ||
+                        vm.steeringGenerationId === vm.activeGenerationId ||
+                        vm.sending
+                      "
+                      @pointerdown="vm.handleCancelPointerDown"
+                      @click="vm.cancelActiveGeneration"
+                    >
+                      {{ vm.cancelButtonLabel }}
+                    </button>
+                    <button
+                      v-else
+                      class="chat-composer__send"
+                      type="submit"
+                      :disabled="
+                        vm.sending ||
+                        vm.isConfigSyncPending ||
+                        (vm.hasFollowUpBacklog && !vm.hasSendPayload)
+                      "
+                      :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
+                    >
+                      {{ vm.sendButtonLabel }}
+                    </button>
+                    <input
+                      ref="attachInputRef"
+                      class="input-file"
+                      type="file"
+                      multiple
+                      :accept="vm.fileInputAccept || undefined"
+                      :disabled="!vm.canAttachFiles"
+                      @change="handleAttachInputChange"
+                    />
+                  </div>
+                </div>
+                <div v-if="dragActive && vm.canAttachFiles" class="drop-hint">{{ vm.fileDropHint }}</div>
+              </form>
             </div>
-            <div class="chat-composer">
-              <textarea
-                ref="composerTextareaRef"
-                class="chat-composer__textarea"
-                v-model="vm.draft"
-                placeholder="Type your message"
-                @paste="handleComposerPaste"
-                @keydown.enter.ctrl.exact.prevent="vm.submitComposer()"
-                @keydown.enter.meta.exact.prevent="vm.submitComposer()"
-              ></textarea>
-              <div class="chat-composer__actions">
-                <button
-                  class="chat-composer__attach"
-                  type="button"
-                  aria-label="Attach files"
-                  :disabled="!vm.canAttachFiles"
-                  :title="vm.fileAttachTitle"
-                  @click="openAttachFilesDialog"
-                >
-                  Attach
-                </button>
-                <button
-                  v-if="vm.activeGenerationId"
-                  class="chat-composer__send"
-                  type="button"
-                  :disabled="
-                    !vm.canSteerGeneration ||
-                    vm.sending ||
-                    vm.steeringGenerationId === vm.activeGenerationId ||
-                    vm.cancelingGenerationId === vm.activeGenerationId
-                  "
-                  :title="
-                    !vm.draft
-                      ? translate('Type a text instruction to steer the active generation.')
-                      : undefined
-                  "
-                  @click="vm.steerGeneration"
-                >
-                  {{ vm.steerButtonLabel }}
-                </button>
-                <button
-                  v-if="vm.activeGenerationId"
-                  class="chat-composer__queue"
-                  type="button"
-                  :disabled="
-                    !vm.hasSendPayload ||
-                    vm.sending ||
-                    vm.steeringGenerationId === vm.activeGenerationId ||
-                    vm.cancelingGenerationId === vm.activeGenerationId ||
-                    vm.isConfigSyncPending
-                  "
-                  :title="translate('Add this message to the server queue')"
-                  @click="vm.queueMessage"
-                >
-                  {{ vm.queueButtonLabel }}
-                </button>
-                <button
-                  v-if="vm.activeGenerationId"
-                  class="chat-composer__cancel"
-                  type="button"
-                  :disabled="
-                    vm.cancelingGenerationId === vm.activeGenerationId ||
-                    vm.steeringGenerationId === vm.activeGenerationId ||
-                    vm.sending
-                  "
-                  @pointerdown="vm.handleCancelPointerDown"
-                  @click="vm.cancelActiveGeneration"
-                >
-                  {{ vm.cancelButtonLabel }}
-                </button>
-                <button
-                  v-else
-                  class="chat-composer__send"
-                  type="submit"
-                  :disabled="
-                    vm.sending ||
-                    vm.isConfigSyncPending ||
-                    (vm.hasFollowUpBacklog && !vm.hasSendPayload)
-                  "
-                  :title="vm.isConfigSyncPending ? 'Waiting for configuration sync' : undefined"
-                >
-                  {{ vm.sendButtonLabel }}
-                </button>
-                <input
-                  ref="attachInputRef"
-                  class="input-file"
-                  type="file"
-                  multiple
-                  :accept="vm.fileInputAccept || undefined"
-                  :disabled="!vm.canAttachFiles"
-                  @change="handleAttachInputChange"
-                />
-              </div>
-            </div>
-            <div v-if="dragActive && vm.canAttachFiles" class="drop-hint">{{ vm.fileDropHint }}</div>
-          </form>
+          </Teleport>
         </section>
 
         <ChatLibrarySidebar
@@ -739,6 +762,14 @@
                 :placeholder="translate('Type your message')"
                 disabled
               ></textarea>
+              <button
+                class="chat-composer__expand"
+                type="button"
+                :aria-label="translate('Expand message editor')"
+                disabled
+              >
+                <SvgIcon name="maximize" size="16" aria-hidden="true" />
+              </button>
               <div class="chat-composer__actions">
                 <button class="chat-composer__attach" type="button" disabled>
                   {{ translate('Attach') }}
@@ -756,7 +787,16 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, reactive, ref, Teleport, watch, type ComponentPublicInstance } from 'vue';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  reactive,
+  ref,
+  Teleport,
+  watch,
+  type ComponentPublicInstance,
+} from 'vue';
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -796,6 +836,7 @@ import {
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import { translate } from '@/i18n';
 import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
+import { lockDocumentScroll, unlockDocumentScroll } from '@/utils/documentScrollLock';
 
 const vm = reactive(useChatViewModel());
 const route = useRoute();
@@ -1006,6 +1047,127 @@ const handleComposerPaste = (event: ClipboardEvent) => {
     event.preventDefault();
   }
 };
+
+type ComposerViewport = { top: number; height: number; keyboardOpen: boolean };
+
+// The visual viewport shrinks by more than this when an on-screen keyboard is shown.
+const KEYBOARD_VIEWPORT_INSET_PX = 120;
+
+const composerFormRef = ref<HTMLFormElement | null>(null);
+const composerExpanded = ref(false);
+const composerViewport = ref<ComposerViewport | null>(null);
+let composerScrollLocked = false;
+
+const composerLayerStyle = computed(() => {
+  const viewport = composerViewport.value;
+  if (!composerExpanded.value || !viewport) return undefined;
+
+  return {
+    '--chat-composer-layer-top': `${viewport.top}px`,
+    '--chat-composer-layer-height': `${viewport.height}px`,
+    ...(viewport.keyboardOpen ? { '--chat-composer-layer-safe-bottom': '0px' } : {}),
+  };
+});
+
+// Fits the expanded composer into the visual viewport so its actions stay above the on-screen keyboard.
+const syncComposerViewport = () => {
+  const viewport = window.visualViewport;
+  composerViewport.value = viewport
+    ? {
+        top: viewport.offsetTop,
+        height: viewport.height,
+        keyboardOpen: window.innerHeight - viewport.height > KEYBOARD_VIEWPORT_INSET_PX,
+      }
+    : null;
+};
+
+const attachComposerViewportListeners = () => {
+  window.visualViewport?.addEventListener('resize', syncComposerViewport);
+  window.visualViewport?.addEventListener('scroll', syncComposerViewport);
+  syncComposerViewport();
+};
+
+const detachComposerViewportListeners = () => {
+  window.visualViewport?.removeEventListener('resize', syncComposerViewport);
+  window.visualViewport?.removeEventListener('scroll', syncComposerViewport);
+  composerViewport.value = null;
+};
+
+// Resizing the textarea keeps its scroll offset, which can leave the caret out of view.
+const revealComposerCaret = (textarea: HTMLTextAreaElement) => {
+  const length = textarea.value.length;
+  if (length === 0) return;
+  const overflow = textarea.scrollHeight - textarea.clientHeight;
+  textarea.scrollTop = overflow * (textarea.selectionEnd / length);
+};
+
+const releaseComposerScrollLock = () => {
+  if (!composerScrollLocked) return;
+  composerScrollLocked = false;
+  unlockDocumentScroll();
+};
+
+async function setComposerExpanded(expanded: boolean) {
+  if (composerExpanded.value === expanded) return;
+
+  // Teleporting the composer detaches the textarea, which drops its focus.
+  const textarea = composerTextareaRef.value;
+  const restoreFocus = expanded || (textarea !== null && document.activeElement === textarea);
+  const selection = textarea
+    ? {
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+        direction: textarea.selectionDirection ?? undefined,
+      }
+    : null;
+
+  if (expanded) {
+    // Lock before the composer leaves the page flow, so the saved scroll position is not clamped.
+    lockDocumentScroll();
+    composerScrollLocked = true;
+    attachComposerViewportListeners();
+  } else {
+    detachComposerViewportListeners();
+  }
+
+  composerExpanded.value = expanded;
+  await nextTick();
+
+  if (!expanded) {
+    releaseComposerScrollLock();
+    composerFormRef.value?.scrollIntoView({ block: 'nearest' });
+  }
+
+  if (!restoreFocus || !textarea?.isConnected) return;
+  textarea.focus({ preventScroll: true });
+  if (selection) textarea.setSelectionRange(selection.start, selection.end, selection.direction);
+  revealComposerCaret(textarea);
+}
+
+const handleComposerEscape = (event: KeyboardEvent) => {
+  if (!composerExpanded.value || event.isComposing) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void setComposerExpanded(false);
+};
+
+// Sending from the expanded editor returns to the conversation to follow the reply.
+const runComposerAction = (action: () => unknown) => {
+  void setComposerExpanded(false);
+  return action();
+};
+
+watch(
+  [() => vm.chat?.id, () => vm.sharedReadonly, () => route.fullPath],
+  () => {
+    void setComposerExpanded(false);
+  }
+);
+
+onBeforeUnmount(() => {
+  detachComposerViewportListeners();
+  releaseComposerScrollLock();
+});
 </script>
 
 <style>
@@ -1441,6 +1603,7 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
 /* --- Unified chat composer --- */
 .chat-composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--color-border-strong);
@@ -1460,11 +1623,84 @@ const handleComposerPaste = (event: ClipboardEvent) => {
   outline: none;
   resize: vertical;
   min-height: 130px;
-  padding: 12px 14px 4px;
+  /* The right padding keeps text clear of the expand toggle. */
+  padding: 12px 40px 4px 14px;
   border-radius: 12px 12px 0 0;
   font: inherit;
   line-height: 1.5;
   background: transparent;
+}
+
+.chat-composer__expand {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-subtle);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-composer__expand:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+/* Collapsed, the layer is transparent to layout; expanded, it is teleported to <body> as an overlay. */
+.chat-composer-layer {
+  display: contents;
+}
+
+.chat-composer-layer--expanded {
+  position: fixed;
+  top: var(--chat-composer-layer-top, 0px);
+  right: 0;
+  left: 0;
+  /* Below .modal-backdrop, so attachment previews open on top of the editor. */
+  z-index: 2900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--chat-composer-layer-height, 100dvh);
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.4);
+  overscroll-behavior: none;
+}
+
+.chat-composer-layer--expanded .chat-input-form {
+  width: min(1120px, 96vw);
+  height: min(900px, 100%);
+  min-height: 0;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.chat-composer-layer--expanded .pending-files {
+  flex: 0 0 auto;
+  max-height: 30%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-composer-layer--expanded .chat-composer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.chat-composer-layer--expanded .chat-composer__textarea {
+  min-height: 0;
+  resize: none;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 .chat-composer__actions {
@@ -1597,6 +1833,26 @@ const handleComposerPaste = (event: ClipboardEvent) => {
 
   .chat-composer__cancel {
     order: 3;
+  }
+
+  .chat-composer-layer--expanded {
+    align-items: stretch;
+    padding: 0;
+    background: var(--color-bg);
+  }
+
+  .chat-composer-layer--expanded .chat-input-form {
+    width: 100%;
+    height: 100%;
+    padding:
+      calc(8px + var(--app-safe-area-top))
+      calc(8px + var(--app-safe-area-right))
+      calc(8px + var(--chat-composer-layer-safe-bottom, var(--app-safe-area-bottom)))
+      calc(8px + var(--app-safe-area-left));
+    border: none;
+    border-radius: 0;
+    background: var(--color-bg);
+    box-shadow: none;
   }
 }
 
