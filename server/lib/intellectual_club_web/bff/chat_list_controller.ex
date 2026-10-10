@@ -269,6 +269,10 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> Enum.filter(&generation_readable?(&1, actor.id, readable_foreign_chat_ids))
         |> Enum.map(&Map.take(&1, [:chat_id, :message_id]))
 
+      # A subchat remains visible under its original id after its worker hands off.
+      inactive_chat_ids = chat_ids -- Enum.map(chat_generations, & &1.chat_id)
+      chat_generations = chat_generations ++ subchat_generations(inactive_chat_ids, actor)
+
       active_message_ids =
         candidates.message_generations
         |> Enum.filter(&generation_readable?(&1, actor.id, readable_foreign_chat_ids))
@@ -279,6 +283,29 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         active_message_ids: active_message_ids
       })
     end
+  end
+
+  defp subchat_generations([], _actor), do: []
+
+  defp subchat_generations(chat_ids, actor) do
+    chats =
+      Chat
+      |> Ash.Query.filter(id in ^chat_ids and subagent == true)
+      |> Ash.Query.load(:last_message, strict?: true)
+      |> Ash.read!(actor: actor)
+
+    child_handoff_counts = Listing.child_handoff_counts(Enum.map(chats, & &1.id), actor)
+
+    chats
+    |> Subagent.lifecycle_states(actor, child_handoff_counts)
+    |> Enum.sort_by(fn {chat_id, _state} -> chat_id end)
+    |> Enum.flat_map(fn
+      {chat_id, %{active_generation_message_id: message_id}} when is_integer(message_id) ->
+        [%{chat_id: chat_id, message_id: message_id}]
+
+      _other ->
+        []
+    end)
   end
 
   defp foreign_generation_chat_ids(candidates, owner_id) do

@@ -364,7 +364,7 @@ defmodule IntellectualClub.Chat.Subagent do
   def snapshot(_reference, _actor, _cursor), do: {:error, :invalid_subagent_reference}
 
   @doc """
-  Resolves the effective generation lifecycle for fork and spawn subchats.
+  Resolves the effective generation lifecycle for subchats and their continuations.
 
   Persisted handoff tool results are followed in batches without resuming orphaned
   generation workers. The returned map is keyed by the original subchat id.
@@ -381,7 +381,7 @@ defmodule IntellectualClub.Chat.Subagent do
           last_message: %ChatMessage{id: message_id}
         },
         acc
-        when is_integer(chat_id) and relation_kind in @creation_relation_kinds and
+        when is_integer(chat_id) and relation_kind in [:fork, :spawn, :handoff] and
                is_integer(message_id) ->
           [
             %{
@@ -418,7 +418,7 @@ defmodule IntellectualClub.Chat.Subagent do
           parent_relation_kind: relation_kind,
           last_message: %ChatMessage{status: status}
         }
-        when is_integer(chat_id) and relation_kind in @creation_relation_kinds ->
+        when is_integer(chat_id) and relation_kind in [:fork, :spawn, :handoff] ->
           status != :done or Map.get(child_handoff_counts, chat_id, 0) == 0
 
         _chat ->

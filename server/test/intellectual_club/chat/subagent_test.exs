@@ -367,6 +367,19 @@ defmodule IntellectualClub.Chat.SubagentTest do
                message_id: ^terminal_message_id
              } = Subagent.lifecycle_states([root], actor)[root.id]
 
+      child = Ash.load!(child, [:last_message], actor: actor)
+
+      for states <- [
+            Subagent.lifecycle_states([child], actor),
+            Subagent.lifecycle_states([child], actor, %{child.id => 1})
+          ] do
+        assert %{
+                 active_generation_message_id: ^terminal_message_id,
+                 chat_id: ^terminal_id,
+                 last_message_status: :generating
+               } = states[child.id]
+      end
+
       assert :not_found ==
                IntellectualClub.Generation.Supervisor.get_generation_state(terminal_message.id)
 
