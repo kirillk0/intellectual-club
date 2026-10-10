@@ -1170,7 +1170,6 @@ export function useChatViewModel() {
     selectedDisabledConfig: headerControls.selectedDisabledConfig,
     selectedDisabledConfigReason: headerControls.selectedDisabledConfigReason,
     configLabel: headerControls.configLabel,
-    editConfigLabel: headerControls.editConfigLabel,
     menuOpen: ui.menuOpen,
     menuStyle: ui.menuStyle,
     currentBotId: headerControls.currentBotId,

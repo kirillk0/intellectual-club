@@ -10,7 +10,7 @@
       ref="configTriggerRef"
       type="button"
       class="config-select__trigger"
-      :disabled="disabled"
+      :disabled="!menuAvailable"
       :aria-expanded="configMenuOpen ? 'true' : 'false'"
       aria-haspopup="menu"
       :title="title || currentConfigText"
@@ -61,60 +61,74 @@
         </template>
         <template v-else>
           <button
-            v-if="defaultConfig"
-            class="config-select__item"
+            class="config-select__item config-select__item--action"
             type="button"
             role="menuitem"
-            :title="configLabel(defaultConfig)"
-            @click="selectConfig(defaultConfig.id)"
+            :disabled="!canOpenEditor"
+            @click="openEditor"
           >
-            {{ configLabel(defaultConfig) }}
+            <SvgIcon name="edit" size="16" />
+            <span>{{ t('Edit configuration') }}</span>
           </button>
-          <div v-if="defaultConfig && (regularSelectableConfigs.length || moreMenuItems.length)" class="menu-divider"></div>
-          <button
-            v-for="cfg in regularSelectableConfigs"
-            :key="cfg.id"
-            class="config-select__item"
-            type="button"
-            role="menuitem"
-            :title="configLabel(cfg)"
-            @click="selectConfig(cfg.id)"
-          >
-            {{ configLabel(cfg) }}
-          </button>
-          <div class="config-select__footer">
-            <div
-              v-if="moreMenuItems.length"
-              class="config-select__submenu"
-              @mouseenter="scheduleOpenMoreConfigMenu"
-              @pointerenter="scheduleOpenMoreConfigMenu"
-              @mouseleave="scheduleCloseMoreConfigMenu"
-              @pointerleave="scheduleCloseMoreConfigMenu"
+          <template v-if="!disabled">
+            <div class="menu-divider"></div>
+            <button
+              v-if="defaultConfig"
+              class="config-select__item"
+              type="button"
+              role="menuitem"
+              :title="configLabel(defaultConfig)"
+              @click="selectConfig(defaultConfig.id)"
             >
-              <button
-                ref="moreTriggerRef"
-                class="config-select__item config-select__submenu-trigger"
-                type="button"
-                role="menuitem"
-                aria-haspopup="menu"
-                :aria-expanded="moreMenuOpen ? 'true' : 'false'"
-                @focus="openMoreConfigMenu"
-                @click.stop="openMoreConfigMenu"
+              {{ configLabel(defaultConfig) }}
+            </button>
+            <div v-if="defaultConfig && (regularSelectableConfigs.length || moreMenuItems.length)" class="menu-divider"></div>
+            <button
+              v-for="cfg in regularSelectableConfigs"
+              :key="cfg.id"
+              class="config-select__item"
+              type="button"
+              role="menuitem"
+              :title="configLabel(cfg)"
+              @click="selectConfig(cfg.id)"
+            >
+              {{ configLabel(cfg) }}
+            </button>
+            <div class="config-select__footer">
+              <div
+                v-if="moreMenuItems.length"
+                class="config-select__submenu"
+                @mouseenter="scheduleOpenMoreConfigMenu"
+                @pointerenter="scheduleOpenMoreConfigMenu"
+                @mouseleave="scheduleCloseMoreConfigMenu"
+                @pointerleave="scheduleCloseMoreConfigMenu"
               >
-                <span class="config-select__submenu-label">{{ t('More') }}</span>
-                <span aria-hidden="true">‹</span>
+                <button
+                  ref="moreTriggerRef"
+                  class="config-select__item config-select__submenu-trigger"
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  :aria-expanded="moreMenuOpen ? 'true' : 'false'"
+                  @focus="openMoreConfigMenu"
+                  @click.stop="openMoreConfigMenu"
+                >
+                  <span class="config-select__submenu-label">{{ t('More') }}</span>
+                  <span aria-hidden="true">‹</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="config-select__search-toggle"
+                :aria-label="t('Search configurations')"
+                :title="t('Type to search all configurations')"
+                @click="showSearch()"
+              >
+                <SvgIcon name="tool-search" size="16" />
               </button>
             </div>
-            <button
-              type="button"
-              class="config-select__search-toggle"
-              :aria-label="t('Search configurations')"
-              :title="t('Type to search all configurations')"
-              @click="showSearch()"
-            >
-              <SvgIcon name="tool-search" size="16" />
-            </button>
-          </div>
+          </template>
+          <div v-else-if="title" class="config-select__note" role="note">{{ title }}</div>
         </template>
       </div>
     </Teleport>
@@ -190,6 +204,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'update:modelValue', value: ConfigValue): void;
   (e: 'change'): void;
+  (e: 'edit'): void;
 }>();
 
 const configMenuRef = ref<HTMLElement | null>(null);
@@ -206,6 +221,10 @@ const configMenuStyle = ref<Record<string, string>>({});
 const moreMenuStyle = ref<Record<string, string>>({});
 let moreMenuOpenTimer: number | null = null;
 let moreMenuCloseTimer: number | null = null;
+
+const canOpenEditor = computed(() => props.modelValue !== '');
+// The editor stays reachable while switching is locked (read-only chat, active generation).
+const menuAvailable = computed(() => !props.disabled || canOpenEditor.value);
 
 const moreConfigReason = (config: LlmConfiguration) => {
   if (config.enabled === false) return ` ${t('(disabled)')}`;
@@ -340,7 +359,7 @@ const updateMoreMenuPosition = () => {
 };
 
 const openConfigMenu = async () => {
-  if (props.disabled) return;
+  if (!menuAvailable.value) return;
   configMenuOpen.value = true;
   await nextTick();
   updateConfigMenuPosition();
@@ -358,7 +377,7 @@ const showSearch = async (query = searchQuery.value) => {
 };
 
 const handleMenuKeydown = async (event: KeyboardEvent) => {
-  if (props.disabled || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!menuAvailable.value || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === 'Escape' && configMenuOpen.value) {
     event.preventDefault();
     event.stopPropagation();
@@ -373,7 +392,7 @@ const handleMenuKeydown = async (event: KeyboardEvent) => {
     const menu = moreDropdownRef.value?.contains(event.target as Node)
       ? moreDropdownRef.value
       : configDropdownRef.value;
-    const items = Array.from(menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+    const items = Array.from(menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
     if (!items.length) return;
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     const nextIndex = event.key === 'ArrowDown' ? index + 1 : (index < 0 ? 0 : index) - 1;
@@ -390,16 +409,22 @@ const handleMenuKeydown = async (event: KeyboardEvent) => {
     return;
   }
 
-  if (event.key.length !== 1 || !event.key.trim()) return;
+  if (props.disabled || event.key.length !== 1 || !event.key.trim()) return;
   event.preventDefault();
   if (!configMenuOpen.value) await openConfigMenu();
   await showSearch(searchQuery.value + event.key);
 };
 
 watch([searchQuery, searchVisible], updateConfigMenuPosition, { flush: 'post' });
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) closeConfigMenu();
+  }
+);
 
 const toggleConfigMenu = async () => {
-  if (props.disabled) return;
+  if (!menuAvailable.value) return;
   if (configMenuOpen.value) {
     closeConfigMenu();
     return;
@@ -459,6 +484,12 @@ const selectConfig = (value: ConfigValue) => {
   if (props.modelValue === value) return;
   emit('update:modelValue', value);
   emit('change');
+};
+
+const openEditor = () => {
+  if (!canOpenEditor.value) return;
+  closeConfigMenu();
+  emit('edit');
 };
 
 onMounted(() => {
@@ -521,6 +552,9 @@ onBeforeUnmount(() => {
 
 .config-select--disabled .config-select__trigger {
   opacity: 0.6;
+}
+
+.config-select__trigger:disabled {
   cursor: default;
 }
 
@@ -558,9 +592,32 @@ onBeforeUnmount(() => {
   word-break: normal;
 }
 
-.config-select__item:hover,
+.config-select__item:hover:not(:disabled),
 .config-select__item:focus-visible {
   background: var(--color-surface-muted);
+}
+
+.config-select__item:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.config-select__item--action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.config-select__item--action .svg-icon {
+  color: var(--color-text-muted);
+  stroke-width: 1.35;
+}
+
+.config-select__note {
+  padding: 6px 12px 4px;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  line-height: 1.3;
 }
 
 .config-select__submenu {

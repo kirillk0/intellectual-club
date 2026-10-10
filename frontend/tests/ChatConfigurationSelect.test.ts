@@ -41,7 +41,7 @@ afterEach(() => {
 it('reveals search on the first typed character and includes disabled and incompatible configurations', async () => {
   await wrapper.get('button').trigger('click');
   expect(menu().find('input').exists()).toBe(false);
-  expect(labels()).toEqual(['Default model', 'Claude active', 'More‹']);
+  expect(labels()).toEqual(['Edit configuration', 'Default model', 'Claude active', 'More‹']);
   expect(document.activeElement).toBe(menu().element);
 
   await menu().trigger('keydown', { key: 'C' });
@@ -92,7 +92,7 @@ it('shows empty results, restores all options on clearing, and resets after Esca
   await body().trigger('click');
   await wrapper.get('button').trigger('click');
   expect(menu().find('input').exists()).toBe(false);
-  expect(labels()).toHaveLength(3);
+  expect(labels()).toHaveLength(4);
 });
 
 it('switches from the More submenu to the same search', async () => {
@@ -135,5 +135,44 @@ it('does not intercept shortcuts, composition, typing elsewhere, or input when d
   await menu().trigger('keydown', { key: 'Escape' });
   await wrapper.setProps({ disabled: true });
   await wrapper.get('.config-select').trigger('keydown', { key: 'c' });
+  expect(body().find('[role="menu"]').exists()).toBe(false);
+});
+
+it('opens the selected configuration editor from the first menu item', async () => {
+  await wrapper.get('button').trigger('click');
+  const edit = menu().get('.config-select__item--action');
+  expect(edit.text()).toBe('Edit configuration');
+  await edit.trigger('click');
+  expect(wrapper.emitted('edit')).toHaveLength(1);
+  expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+  expect(body().find('[role="menu"]').exists()).toBe(false);
+
+  await wrapper.setProps({ modelValue: '' });
+  await wrapper.get('button').trigger('click');
+  expect(menu().get('.config-select__item--action').attributes('disabled')).toBeDefined();
+  await menu().trigger('keydown', { key: 'ArrowDown' });
+  expect(document.activeElement?.textContent?.trim()).toBe('Default model');
+});
+
+it('keeps only the editor reachable while switching is locked', async () => {
+  await wrapper.setProps({ disabled: true, title: 'Cannot change configuration while generating a response' });
+  await wrapper.get('button').trigger('click');
+  expect(labels()).toEqual(['Edit configuration']);
+  expect(menu().get('[role="note"]').text()).toBe('Cannot change configuration while generating a response');
+  await menu().trigger('keydown', { key: 'c' });
+  expect(menu().find('input').exists()).toBe(false);
+  await menu().get('.config-select__item--action').trigger('click');
+  expect(wrapper.emitted('edit')).toHaveLength(1);
+
+  await wrapper.setProps({ modelValue: '' });
+  expect(wrapper.get('button').attributes('disabled')).toBeDefined();
+});
+
+it('closes the menu when switching becomes locked while it is open', async () => {
+  await wrapper.get('button').trigger('click');
+  await menu().trigger('keydown', { key: 'c' });
+  await flushPromises();
+  expect(input().element.value).toBe('c');
+  await wrapper.setProps({ disabled: true });
   expect(body().find('[role="menu"]').exists()).toBe(false);
 });

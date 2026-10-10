@@ -45,6 +45,7 @@ import MoreHorizontalIcon from './svg/more-horizontal.svg?component';
 import ChevronLeftIcon from './svg/chevron-left.svg?component';
 import ChevronRightIcon from './svg/chevron-right.svg?component';
 import RetryIcon from './svg/retry.svg?component';
+import SwitchIcon from './svg/switch.svg?component';
 import FileTextIcon from './svg/file-text.svg?component';
 import FileGenericIcon from './svg/file-generic.svg?component';
 import FileImageIcon from './svg/file-image.svg?component';
@@ -107,6 +108,7 @@ const iconMap: Record<string, Component> = {
   'chevron-left': ChevronLeftIcon,
   'chevron-right': ChevronRightIcon,
   'retry': RetryIcon,
+  'switch': SwitchIcon,
   'file-text': FileTextIcon,
   'file-generic': FileGenericIcon,
   'file-image': FileImageIcon,

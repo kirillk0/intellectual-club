@@ -55,6 +55,7 @@
             :config-label="configLabel"
             @update:model-value="emit('update:selectedConfig', $event)"
             @change="emit('change-config')"
+            @edit="emit('open-config-editor')"
           />
         </div>
 
@@ -96,17 +97,6 @@
 
         <Teleport to="body">
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
-            <button
-              class="menu-item chat-menu-item"
-              type="button"
-              @click="emit('open-config-editor')"
-              :disabled="!selectedConfig"
-            >
-              <span class="chat-menu-item__icon" aria-hidden="true">
-                <SvgIcon name="sliders" size="16" />
-              </span>
-              <span class="chat-menu-item__label">{{ t(editConfigLabel) }}</span>
-            </button>
             <button v-if="canEdit" class="menu-item chat-menu-item" type="button" @click="emit('open-share')">
               <span class="chat-menu-item__icon" aria-hidden="true">
                 <SvgIcon name="share-outgoing" size="16" />
@@ -126,7 +116,7 @@
               </span>
               <span class="chat-menu-item__label">{{ t(handoffPending ? 'Handing off…' : 'Handoff') }}</span>
             </button>
-            <div class="menu-divider" aria-hidden="true"></div>
+            <div v-if="canEdit" class="menu-divider" aria-hidden="true"></div>
             <div v-if="hasContinuationNav" class="menu-item chat-menu-section chat-menu-section--continuations">
               <div class="chat-menu-section__heading">
                 <SvgIcon name="branch" size="16" />
@@ -147,20 +137,28 @@
                 <span>{{ t('Bot') }}</span>
               </div>
               <div class="chat-menu-section__row">
+                <span class="chat-menu-value" :title="currentBotName || t('No bot')">
+                  {{ currentBotName || t('No bot') }}
+                </span>
                 <button
                   v-if="currentBotId"
                   type="button"
-                  class="link chat-menu-link"
+                  class="icon-button chat-menu-icon-action"
+                  :aria-label="t('Edit bot')"
+                  :title="t('Edit bot')"
                   @click="emit('open-bot-editor')"
-                  :title="t('Open bot editor: {value}', { value: currentBotName })"
                 >
-                  <span>{{ currentBotName }}</span>
+                  <SvgIcon name="edit" size="14" />
                 </button>
-                <span v-else class="chat-menu-value">
-                  {{ currentBotName || t('No bot') }}
-                </span>
-                <button v-if="canEdit" type="button" class="link chat-menu-inline-action" @click="emit('open-bot-modal')">
-                  <span>{{ t('change') }}</span>
+                <button
+                  v-if="canEdit"
+                  type="button"
+                  class="icon-button chat-menu-icon-action"
+                  :aria-label="t('Switch bot')"
+                  :title="t('Switch bot')"
+                  @click="emit('open-bot-modal')"
+                >
+                  <SvgIcon name="switch" size="14" />
                 </button>
               </div>
             </div>
@@ -173,8 +171,15 @@
                 <span class="chat-menu-value" :title="chatNote || t('No note')">
                   {{ chatNote || t('No note') }}
                 </span>
-                <button v-if="canEdit" type="button" class="link chat-menu-inline-action" @click="emit('open-note-modal')">
-                  <span>{{ t('edit') }}</span>
+                <button
+                  v-if="canEdit"
+                  type="button"
+                  class="icon-button chat-menu-icon-action"
+                  :aria-label="t('Edit note')"
+                  :title="t('Edit note')"
+                  @click="emit('open-note-modal')"
+                >
+                  <SvgIcon name="edit" size="14" />
                 </button>
               </div>
             </div>
@@ -236,7 +241,6 @@ interface Props {
   selectedDisabledConfig: LlmConfiguration | null;
   selectedDisabledConfigReason: 'disabled' | 'incompatible' | null;
   configLabel: (cfg: LlmConfiguration) => string;
-  editConfigLabel: string;
   configSyncStatus: 'synced' | 'pending' | 'error';
   configSyncError: string;
   configurationOptionsReady: boolean;
@@ -489,34 +493,29 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   font-size: 0.93rem;
 }
 
-.chat-menu-link,
-.chat-menu-inline-action,
 .chat-menu-value {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.chat-menu-link {
   flex: 1;
-  padding: 0;
-  text-align: left;
-}
-
-.chat-menu-link span,
-.chat-menu-value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chat-menu-value {
-  flex: 1;
+.chat-menu-icon-action {
+  flex: 0 0 auto;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--color-text-muted);
 }
 
-.chat-menu-inline-action {
-  flex: 0 0 auto;
-  padding: 0;
+.chat-menu-icon-action:hover {
+  color: var(--color-text);
+}
+
+.chat-menu-icon-action .svg-icon {
+  stroke-width: 1.35;
 }
 
 .chat-menu-continuation-nav {

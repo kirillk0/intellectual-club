@@ -23,7 +23,6 @@
         :selected-disabled-config="vm.selectedDisabledConfig"
         :selected-disabled-config-reason="vm.selectedDisabledConfigReason"
         :config-label="vm.configLabel"
-        :edit-config-label="vm.editConfigLabel"
         :config-sync-status="vm.configSyncStatus"
         :config-sync-error="vm.configSyncError"
         :configuration-options-ready="vm.chatSettingsReady"

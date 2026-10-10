@@ -86,8 +86,6 @@ export function useChatHeaderControls(params: Params) {
     return cfg ? configLabel(cfg) : `Config #${configId}`;
   };
 
-  const editConfigLabel = computed(() => 'Edit configuration');
-
   const currentBotId = computed(() => params.chat.value?.bot_id ?? null);
   const currentBotInfo = computed(() => {
     const id = currentBotId.value;
@@ -464,7 +462,6 @@ export function useChatHeaderControls(params: Params) {
     currentConfig,
     configLabel,
     messageConfigLabel,
-    editConfigLabel,
     currentBotId,
     currentBotInfo,
     currentBotName,
