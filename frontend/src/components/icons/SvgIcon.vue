@@ -36,6 +36,7 @@ import BookmarkIcon from './svg/bookmark.svg?component';
 import GearIcon from './svg/gear.svg?component';
 import CheckIcon from './svg/check.svg?component';
 import PlusIcon from './svg/plus.svg?component';
+import LinkIcon from './svg/link.svg?component';
 import SaveIcon from './svg/save.svg?component';
 import UndoIcon from './svg/undo.svg?component';
 import XIcon from './svg/x.svg?component';
@@ -103,6 +104,7 @@ const iconMap: Record<string, Component> = {
   'gear': GearIcon,
   'check': CheckIcon,
   'plus': PlusIcon,
+  'link': LinkIcon,
   'save': SaveIcon,
   'undo': UndoIcon,
   'x': XIcon,

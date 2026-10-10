@@ -969,6 +969,20 @@ fieldset {
   background: var(--color-danger-bg);
 }
 
+/* List card header actions: icon-only in narrow containers, icon with label in wide ones. */
+@container (min-width: 480px) {
+  .list-header-action.icon-button--labeled {
+    width: auto;
+    max-width: 12rem;
+    gap: 6px;
+    padding: 0 10px;
+  }
+
+  .list-header-action.icon-button--labeled .icon-button__label {
+    display: inline-block;
+  }
+}
+
 .crud-nav-actions {
   gap: 3px;
 }

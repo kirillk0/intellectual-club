@@ -2,13 +2,20 @@
   <div class="stack tool-bindings-card">
     <div v-if="showHeader && title" class="flex" style="justify-content: space-between; align-items: center">
       <strong v-if="title">{{ title }}</strong>
-      <div v-if="slots['header-actions']" class="flex" style="gap: 8px; align-items: center">
-        <slot name="header-actions"></slot>
-      </div>
-      <div v-else class="flex" style="gap: 8px; align-items: center">
-        <button type="button" :disabled="addDisabled || readonly" @click="emit('add')">
-          {{ addLabel }}
-        </button>
+      <div class="flex tool-bindings-header-actions">
+        <slot name="header-actions">
+          <button
+            class="icon-button icon-button--labeled crud-icon-button list-header-action"
+            type="button"
+            :disabled="addDisabled || readonly"
+            :title="addLabel"
+            :aria-label="addLabel"
+            @click="emit('add')"
+          >
+            <SvgIcon name="link" size="16" />
+            <span class="icon-button__label">{{ addShortLabel }}</span>
+          </button>
+        </slot>
       </div>
     </div>
 
@@ -127,6 +134,7 @@ const props = withDefaults(
     showActions?: boolean;
     openable?: boolean;
     addLabel?: string;
+    addShortLabel?: string;
     addDisabled?: boolean;
     toggleDisabled?: (item: T) => boolean;
     actionsDisabled?: (item: T) => boolean;
@@ -140,7 +148,8 @@ const props = withDefaults(
     showToggle: true,
     showActions: true,
     openable: false,
-    addLabel: 'Add',
+    addLabel: 'Link tools',
+    addShortLabel: 'Add',
     addDisabled: false,
     toggleDisabled: () => false,
     actionsDisabled: () => false,
@@ -211,6 +220,12 @@ const shadowedReason = (item: T) =>
 <style scoped>
 .tool-bindings-card {
   container-type: inline-size;
+}
+
+.tool-bindings-header-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
 }
 
 .tool-binding-enabled {

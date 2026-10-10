@@ -2,13 +2,29 @@
   <div class="stack kb-links-card">
     <div v-if="showHeader" class="flex" style="justify-content: space-between; align-items: center">
       <strong>{{ title }}</strong>
-      <div class="flex" style="gap: 8px; align-items: center">
+      <div class="flex kb-links-header-actions">
         <slot name="header-actions">
-          <button type="button" :disabled="addDisabled || readonly" @click="emit('add')">
-            {{ addLabel }}
+          <button
+            class="icon-button icon-button--labeled crud-icon-button list-header-action"
+            type="button"
+            :disabled="newDisabled || readonly"
+            :title="newLabel"
+            :aria-label="newLabel"
+            @click="emit('new')"
+          >
+            <SvgIcon name="plus" size="16" />
+            <span class="icon-button__label">{{ newShortLabel }}</span>
           </button>
-          <button type="button" :disabled="newDisabled || readonly" @click="emit('new')">
-            {{ newLabel }}
+          <button
+            class="icon-button icon-button--labeled crud-icon-button list-header-action"
+            type="button"
+            :disabled="addDisabled || readonly"
+            :title="addLabel"
+            :aria-label="addLabel"
+            @click="emit('add')"
+          >
+            <SvgIcon name="link" size="16" />
+            <span class="icon-button__label">{{ addShortLabel }}</span>
           </button>
         </slot>
       </div>
@@ -109,8 +125,10 @@ const props = withDefaults(
     metaText?: (item: T) => string;
     emptyText?: string;
     addLabel?: string;
+    addShortLabel?: string;
     addDisabled?: boolean;
     newLabel?: string;
+    newShortLabel?: string;
     newDisabled?: boolean;
     openable?: boolean;
     readonly?: boolean;
@@ -121,9 +139,11 @@ const props = withDefaults(
   {
     showHeader: true,
     emptyText: 'No blocks linked yet.',
-    addLabel: 'Add',
+    addLabel: 'Link existing blocks',
+    addShortLabel: 'Add',
     addDisabled: false,
-    newLabel: 'New',
+    newLabel: 'Create new block',
+    newShortLabel: 'Create',
     newDisabled: false,
     openable: false,
     readonly: false,
@@ -163,6 +183,12 @@ const handleToggle = (item: T, event: Event) => {
 <style scoped>
 .kb-links-card {
   container-type: inline-size;
+}
+
+.kb-links-header-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
 }
 
 .kb-enabled {

@@ -113,16 +113,6 @@
       @move="(binding, delta) => emit('move-tool-binding', binding.id, delta)"
       @remove="(id) => emit('remove-tool-binding', id)"
     >
-      <template #header-actions>
-        <button
-          type="button"
-          :disabled="toolLibraryLoading || toolBindingsSaving || sharedReadonly"
-          @click="openToolBindingPicker"
-        >
-          Add
-        </button>
-      </template>
-
       <template #note>
         <p v-if="toolLibraryError" class="error-text" style="margin: 0">{{ toolLibraryError }}</p>
       </template>
