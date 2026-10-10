@@ -5,6 +5,57 @@ defmodule IntellectualClub.Generation.WorkerResponsesWssTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
 
+  for transport <- [:http, :websocket] do
+    @tag transport: transport
+    test "#{transport} token-limited responses persist a completed partial answer without retry",
+         %{
+           transport: transport
+         } do
+      %{user: actor} = user_fixture()
+
+      response = %{
+        "id" => "resp_partial",
+        "status" => "incomplete",
+        "incomplete_details" => %{"reason" => "max_output_tokens"},
+        "output" => [assistant_message("Partial answer.")],
+        "usage" => %{"input_tokens" => 4, "output_tokens" => 32}
+      }
+
+      {base_url, agent} =
+        start_wss_server!(fn _base_url ->
+          script = [%{"type" => "response.incomplete", "response" => response}]
+
+          case transport do
+            :http -> %{websocket: [], http: [script]}
+            :websocket -> [script]
+          end
+        end)
+
+      provider_type = if transport == :http, do: :responses, else: :responses_wss
+      chat = create_chat_with_web_tool!(actor, base_url, provider_type)
+      Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{chat.id}")
+
+      {:ok, _user_message} =
+        Threads.add_message_to_end(chat, :user, "Write a long answer", actor: actor)
+
+      {:ok, context} = GenerationSupervisor.start_generation(chat.id, actor: actor)
+
+      assert_receive {:done, message_id}, 10_000
+      assert message_id == context.message_id
+      message = wait_for_message!(message_id, actor, &(&1.status == :done))
+
+      assert message.error_detail == nil
+      assert message_answer_text(message) == "Partial answer."
+      assert [step] = message.steps
+      assert step.status == :done
+      assert step.response_final
+      assert step.input_tokens == 4
+      assert step.output_tokens == 32
+      assert Ash.load!(step, :raw_response, actor: actor).raw_response == response
+      assert length(requests_for(agent)) + length(http_requests_for(agent)) == 1
+    end
+  end
+
   test "responses_wss session is stateful within one assistant message and rebuilt for the next message" do
     %{user: actor} = user_fixture()
 

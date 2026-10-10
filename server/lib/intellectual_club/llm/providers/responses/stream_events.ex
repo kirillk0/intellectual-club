@@ -87,31 +87,36 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
   end
 
   def handle_event(state, %{"type" => "response.completed"} = obj, raw_request, emit) do
-    response =
-      obj
-      |> Map.get("response")
-      |> case do
-        %{} = response -> hydrate_response_output(response, state)
-        _other -> %{}
-      end
+    complete_response(state, obj, raw_request, emit)
+  end
 
-    _ = emit_step_snapshot_from_response(response, emit)
+  def handle_event(
+        state,
+        %{
+          "type" => "response.incomplete",
+          "response" => %{"incomplete_details" => %{"reason" => "max_output_tokens"}}
+        } = obj,
+        raw_request,
+        emit
+      ) do
+    complete_response(state, obj, raw_request, emit)
+  end
 
-    usage = normalize_usage(Map.get(response, "usage"))
-
-    emit.({:trace, {:set_step_raw_response, response}})
-
-    emit.({:trace, {:set_step_usage, usage}})
-
-    emit.({:trace, {:set_step_response_final, true}})
+  def handle_event(state, %{"type" => "response.incomplete"} = obj, raw_request, emit) do
+    response = Map.get(obj, "response") || %{}
+    reason = get_in(response, ["incomplete_details", "reason"]) || "unknown"
 
     emit.(
-      {:response_complete,
+      {:response_error,
        %{
          provider: :responses,
+         status_code: nil,
+         url: nil,
+         retryable: false,
+         error_kind: "provider",
+         error_text: "Response incomplete: #{reason}",
          raw_request: raw_request,
-         raw_response: response,
-         usage: usage
+         raw_response: response
        }}
     )
 
@@ -533,6 +538,36 @@ defmodule IntellectualClub.Llm.Providers.Responses.StreamEvents do
   end
 
   def handle_event(state, _obj, _raw_request, _emit), do: state
+
+  defp complete_response(state, obj, raw_request, emit) do
+    response =
+      obj
+      |> Map.get("response")
+      |> case do
+        %{} = response -> hydrate_response_output(response, state)
+        _other -> %{}
+      end
+
+    _ = emit_step_snapshot_from_response(response, emit)
+
+    usage = normalize_usage(Map.get(response, "usage"))
+
+    emit.({:trace, {:set_step_raw_response, response}})
+    emit.({:trace, {:set_step_usage, usage}})
+    emit.({:trace, {:set_step_response_final, true}})
+
+    emit.(
+      {:response_complete,
+       %{
+         provider: :responses,
+         raw_request: raw_request,
+         raw_response: response,
+         usage: usage
+       }}
+    )
+
+    %{state | done?: true}
+  end
 
   defp emit_step_snapshot_from_response(response, emit) when is_map(response) do
     outputs = Map.get(response, "output") || []

@@ -475,6 +475,114 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
            end)
   end
 
+  describe "incomplete responses" do
+    for output_source <- [:terminal, :stream, :empty] do
+      @tag output_source: output_source
+      test "completes a token-limited response with #{output_source} output", %{
+        output_source: output_source
+      } do
+        item = %{
+          "id" => "msg_partial",
+          "type" => "message",
+          "role" => "assistant",
+          "status" => "incomplete",
+          "content" => [%{"type" => "output_text", "text" => "Partial answer"}]
+        }
+
+        response = %{
+          "id" => "resp_incomplete",
+          "status" => "incomplete",
+          "incomplete_details" => %{"reason" => "max_output_tokens"},
+          "output" => if(output_source == :terminal, do: [item], else: []),
+          "usage" => %{
+            "input_tokens" => 12,
+            "output_tokens" => 32,
+            "output_tokens_details" => %{"reasoning_tokens" => 8}
+          }
+        }
+
+        deltas =
+          if output_source == :stream do
+            [
+              %{
+                "type" => "response.output_item.added",
+                "output_index" => 0,
+                "item" => %{item | "content" => [], "status" => "in_progress"}
+              },
+              %{
+                "type" => "response.output_text.delta",
+                "item_id" => item["id"],
+                "output_index" => 0,
+                "content_index" => 0,
+                "delta" => "Partial answer"
+              }
+            ]
+          else
+            []
+          end
+
+        {base_url, _agent} =
+          start_scripted_server!(%{
+            "/responses" => [
+              {200,
+               sse_chunks(deltas ++ [%{"type" => "response.incomplete", "response" => response}])}
+            ]
+          })
+
+        events = stream_events!(base_url)
+        meta = response_complete!(events)
+        step = trace_step(events)
+
+        refute Enum.any?(events, &match?({:response_error, _}, &1))
+        assert step.response_final
+        assert step.raw_response == meta.raw_response
+        assert meta.raw_response["status"] == "incomplete"
+        assert meta.raw_response["incomplete_details"] == %{"reason" => "max_output_tokens"}
+        assert meta.usage.input_tokens == 12
+        assert meta.usage.output_tokens == 32
+        assert meta.usage.reasoning_tokens == 8
+
+        if output_source == :empty do
+          assert meta.raw_response["output"] == []
+          assert RuntimeTrace.text_for_item_type(step, :answer) == ""
+        else
+          assert RuntimeTrace.text_for_item_type(step, :answer) == "Partial answer"
+          assert [output] = meta.raw_response["output"]
+          assert output["content"] == item["content"]
+        end
+      end
+    end
+
+    for reason <- ["content_filter", "future_reason", nil] do
+      @tag reason: reason
+      test "reports #{inspect(reason)} as a terminal provider error without retry", %{
+        reason: reason
+      } do
+        response = %{
+          "id" => "resp_incomplete",
+          "status" => "incomplete",
+          "incomplete_details" => if(reason, do: %{"reason" => reason}),
+          "output" => []
+        }
+
+        {base_url, _agent} =
+          start_scripted_server!(%{
+            "/responses" => [
+              {200, sse_chunks([%{"type" => "response.incomplete", "response" => response}])}
+            ]
+          })
+
+        events = stream_events!(base_url)
+        assert [error] = for({:response_error, meta} <- events, do: meta)
+        refute Enum.any?(events, &match?({:response_complete, _}, &1))
+        assert error.retryable == false
+        assert error.error_kind == "provider"
+        assert error.error_text == "Response incomplete: #{reason || "unknown"}"
+        assert error.raw_response == response
+      end
+    end
+  end
+
   describe "Endpoint.resolve/2" do
     for {url, opts, transport, http_base_url, websocket_base_url} <- [
           {nil, [], :http, "https://api.openai.com/v1", "wss://api.openai.com/v1"},
