@@ -1,5 +1,5 @@
 <template>
-  <div v-if="hasWorking" ref="workingBlockEl" class="working-block">
+  <div v-if="hasWorking" ref="workingBlockEl" class="working-block" :class="{ 'working-block--open': open }">
     <button
       class="working-toggle"
       type="button"
@@ -7,7 +7,8 @@
       :aria-expanded="open"
       :aria-controls="workingBodyId"
     >
-      Working<span v-if="lastStepNumber != null && lastStepNumber > 1" class="working-toggle-count">
+      <span class="working-toggle-title">Working</span>
+      <span v-if="lastStepNumber != null && lastStepNumber > 1" class="working-toggle-count">
         ({{ lastStepNumber }})
       </span>
       <span
@@ -39,32 +40,58 @@
       >
         {{ retryStatusLabel }}
       </span>
-      <span class="chevron">{{ open ? '▲' : '▼' }}</span>
+      <SvgIcon name="chevron-right" size="16" class="working-toggle-chevron" />
     </button>
 
     <transition name="fade">
       <div v-show="open" class="working-body" :id="workingBodyId" :aria-busy="loading ? 'true' : 'false'">
         <template v-if="currentStep">
-          <div v-if="showStepNavigation" class="working-nav">
-            <div class="working-nav-buttons" role="group" aria-label="Step navigation">
-              <button type="button" class="link" :disabled="loading || !canGoPrev" @click="goFirst">
-                &lt;&lt; first
-              </button>
-              <button type="button" class="link" :disabled="loading || !canGoPrev" @click="goPrev">
-                &lt; previous
-              </button>
-              <button type="button" class="link" :disabled="loading || !canGoNext" @click="goNext">
-                next &gt;
-              </button>
-              <button type="button" class="link" :disabled="loading || !canGoNext" @click="goLast">
-                last &gt;&gt;
+          <div class="working-step-bar">
+            <div class="working-step-meta">
+              <span v-if="!showStepNavigation" class="working-step-label">{{ stepLabel(currentStepNumber) }}</span>
+              <span
+                v-if="currentStepTime"
+                class="working-step-time"
+                title="Step duration"
+                aria-label="Step duration"
+              >
+                {{ currentStepTime }}
+              </span>
+              <button
+                v-if="canOpenStep(currentStep)"
+                class="working-text-button working-step-details"
+                type="button"
+                @click.stop.prevent="emit('step-info', currentStep)"
+              >
+                Details
               </button>
             </div>
-            <label class="working-nav-select-wrap">
-              <span v-if="loading" class="working-nav-loading" role="status" aria-live="polite">
-                Loading…
-              </span>
-              <span class="working-nav-select-label">Step</span>
+
+            <span v-if="loading" class="working-step-loading" role="status" aria-live="polite">
+              Loading…
+            </span>
+
+            <div v-if="showStepNavigation" class="working-nav" role="group" aria-label="Step navigation">
+              <button
+                type="button"
+                class="working-nav-button"
+                :disabled="loading || !canGoPrev"
+                title="First step"
+                aria-label="First step"
+                @click="goFirst"
+              >
+                <SvgIcon name="chevrons-left" size="14" />
+              </button>
+              <button
+                type="button"
+                class="working-nav-button"
+                :disabled="loading || !canGoPrev"
+                title="Previous step"
+                aria-label="Previous step"
+                @click="goPrev"
+              >
+                <SvgIcon name="chevron-left" size="14" />
+              </button>
               <select
                 class="working-nav-select"
                 :value="currentStepId || ''"
@@ -73,14 +100,32 @@
                 aria-label="Select step"
               >
                 <option v-for="option in stepOptions" :key="option.id" :value="option.id">
-                  Step {{ option.number }}
+                  {{ stepLabel(option.number) }}
                 </option>
               </select>
-            </label>
+              <button
+                type="button"
+                class="working-nav-button"
+                :disabled="loading || !canGoNext"
+                title="Next step"
+                aria-label="Next step"
+                @click="goNext"
+              >
+                <SvgIcon name="chevron-right" size="14" />
+              </button>
+              <button
+                type="button"
+                class="working-nav-button"
+                :disabled="loading || !canGoNext"
+                title="Last step"
+                aria-label="Last step"
+                @click="goLast"
+              >
+                <SvgIcon name="chevrons-right" size="14" />
+              </button>
+            </div>
           </div>
-          <div v-else-if="loading" class="working-inline-state muted" role="status" aria-live="polite">
-            Loading step…
-          </div>
+
           <div v-if="error" class="working-inline-state error-text" role="alert">{{ error }}</div>
           <div
             v-if="showRetryNotice"
@@ -94,125 +139,178 @@
             <span class="working-retry-notice__text">{{ latestRetryErrorPreview }}</span>
           </div>
 
-          <div class="working-step">
-            <div class="working-step-links">
-              <button
-                v-if="canOpenStep(currentStep)"
-                class="link working-step-number working-step-number-button"
-                type="button"
-                @click.stop.prevent="emit('step-info', currentStep)"
+          <div v-if="currentTraceEntries.length" class="working-trace">
+            <template v-for="entry in currentTraceEntries" :key="entry.key">
+              <div
+                v-if="entry.kind === 'tool'"
+                class="working-item working-item--tool"
+                :class="{ 'working-item--pending': isToolGroupPending(entry) }"
               >
-                Step {{ currentStepNumber }}
-              </button>
-              <span v-else class="working-step-number">Step {{ currentStepNumber }}</span>
-              <span
-                v-if="currentStepTime"
-                class="working-step-time"
-                title="Step duration"
-                aria-label="Step duration"
-              >
-                {{ currentStepTime }}
-              </span>
-            </div>
+                <div class="working-item-header">
+                  <SvgIcon name="wrench" size="14" class="working-item-icon" />
+                  <span class="working-item-label">{{ itemTitle('tool_call') }}</span>
+                  <code class="working-tool-name">{{ toolCallInfo(entry.call).name || 'unknown' }}</code>
+                  <span
+                    v-if="isToolGroupPending(entry)"
+                    class="working-item-status"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {{ translate('Running…') }}
+                  </span>
+                  <span v-else-if="!entry.results.length" class="working-item-status">
+                    {{ translate('No result') }}
+                  </span>
+                </div>
 
-            <template v-for="item in traceItems(currentStep)" :key="item.id">
-              <div v-if="isCompactPreviewItem(item)" class="working-item working-item-preview">
-                <span class="working-item-preview-label">{{ itemTitle(item.type) }}:</span>
-                <span class="working-item-preview-text">{{ compactItemPreview(item) || translate('No data') }}</span>
+                <div v-if="toolCallInfo(entry.call).arguments !== null" class="working-item-section working-item-json">
+                  <JsonTreeView
+                    :value="toolCallInfo(entry.call).arguments"
+                    :download-filename="toolCallArgumentsDownloadFilename(entry.call)"
+                    preserve-expanded-on-value-change
+                  >
+                    <template #label>
+                      <span class="working-section-label">{{ translate('Arguments') }}</span>
+                    </template>
+                  </JsonTreeView>
+                </div>
+
+                <div
+                  v-for="result in entry.results"
+                  :key="result.id"
+                  class="working-item-section working-tool-result-section"
+                >
+                  <div class="working-section-label">{{ translate('Result') }}</div>
+                  <pre v-if="itemText(result).trim()" class="code-block working-tool-result">{{ itemText(result) }}</pre>
+                  <button
+                    v-if="canOpenFullText(result)"
+                    type="button"
+                    class="working-text-button"
+                    @click.stop.prevent="openFullText(result)"
+                  >
+                    {{ translate('Show full text') }}
+                  </button>
+                  <ChatMediaList
+                    v-if="toolItemMedia(result).length"
+                    :message-id="props.messageId"
+                    :contents="toolItemMedia(result)"
+                    @preview="(payload) => emit('attachment-open', payload)"
+                  />
+                  <div
+                    v-if="!itemText(result).trim() && !toolItemMedia(result).length"
+                    class="working-empty"
+                  >
+                    {{ translate('No data') }}
+                  </div>
+                </div>
+
+                <div
+                  v-for="artifact in entry.artifacts"
+                  :key="artifact.id"
+                  class="working-item-section"
+                >
+                  <div class="working-section-label">{{ itemTitle('artifact') }}</div>
+                  <ChatMediaList
+                    v-if="toolItemMedia(artifact).length"
+                    :message-id="props.messageId"
+                    :contents="toolItemMedia(artifact)"
+                    @preview="(payload) => emit('attachment-open', payload)"
+                  />
+                  <div v-else class="working-empty">{{ translate('No data') }}</div>
+                </div>
               </div>
 
-              <div v-else class="working-item">
-                <div class="working-item-title-row">
-                  <div class="working-item-title">{{ itemTitle(item.type) }}</div>
+              <div
+                v-else-if="isCompactPreviewItem(entry.item)"
+                class="working-item working-item--compact"
+                :class="`working-item--${entry.item.type}`"
+              >
+                <SvgIcon :name="itemIcon(entry.item.type)" size="14" class="working-item-icon" />
+                <span class="working-item-label working-item-preview-label">{{ itemTitle(entry.item.type) }}</span>
+                <span class="working-item-preview-text">
+                  {{ compactItemPreview(entry.item) || translate('No data') }}
+                </span>
+              </div>
+
+              <div v-else class="working-item" :class="`working-item--${entry.item.type}`">
+                <div class="working-item-header">
+                  <SvgIcon :name="itemIcon(entry.item.type)" size="14" class="working-item-icon" />
+                  <span class="working-item-label">{{ itemTitle(entry.item.type) }}</span>
                   <button
-                    v-if="canCopyThinking(item)"
+                    v-if="canCopyThinking(entry.item)"
                     type="button"
                     class="working-copy-button"
-                    :class="{ copied: copiedThinkingItemId === item.id }"
-                    :aria-label="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
-                    :title="copiedThinkingItemId === item.id ? 'Thinking copied' : 'Copy thinking'"
-                    @click.stop.prevent="copyThinking(item)"
+                    :class="{ copied: copiedThinkingItemId === entry.item.id }"
+                    :aria-label="copiedThinkingItemId === entry.item.id ? 'Thinking copied' : 'Copy thinking'"
+                    :title="copiedThinkingItemId === entry.item.id ? 'Thinking copied' : 'Copy thinking'"
+                    @click.stop.prevent="copyThinking(entry.item)"
                   >
-                    <SvgIcon name="copy" size="16" />
+                    <SvgIcon :name="copiedThinkingItemId === entry.item.id ? 'check' : 'copy'" size="14" />
                   </button>
                 </div>
 
                 <div
-                  v-if="item.type === 'reasoning' && itemText(item).trim()"
+                  v-if="entry.item.type === 'reasoning' && itemText(entry.item).trim()"
                   class="working-item-body"
-                  v-html="renderHtml(itemText(item))"
+                  v-html="renderHtml(itemText(entry.item))"
                 ></div>
 
-                <div v-else-if="item.type === 'tool_call'" class="working-item-body">
-                  <div class="muted" style="margin-bottom: 6px">
-                    Calling <code>{{ toolCallInfo(item).name || 'unknown' }}</code>
-                  </div>
-                  <div v-if="toolCallInfo(item).arguments !== null" class="working-item-json">
-                    <div class="muted" style="margin-bottom: 4px">Arguments</div>
-                    <JsonTreeView
-                      :value="toolCallInfo(item).arguments"
-                      :download-filename="toolCallArgumentsDownloadFilename(item)"
-                      preserve-expanded-on-value-change
-                    />
-                  </div>
-                </div>
-
-                <div v-else-if="item.type === 'tool_result'" class="working-item-body">
-                  <div v-if="itemText(item).trim()">
-                    <pre class="code-block working-tool-result">{{ itemText(item) }}</pre>
-                    <button
-                      v-if="canOpenFullText(item)"
-                      type="button"
-                      class="link"
-                      @click.stop.prevent="openFullText(item)"
-                    >
-                      more
-                    </button>
-                  </div>
+                <div v-else-if="entry.item.type === 'tool_result'" class="working-item-body">
+                  <pre
+                    v-if="itemText(entry.item).trim()"
+                    class="code-block working-tool-result"
+                  >{{ itemText(entry.item) }}</pre>
+                  <button
+                    v-if="canOpenFullText(entry.item)"
+                    type="button"
+                    class="working-text-button"
+                    @click.stop.prevent="openFullText(entry.item)"
+                  >
+                    {{ translate('Show full text') }}
+                  </button>
                   <ChatMediaList
-                    v-if="toolItemMedia(item).length"
+                    v-if="toolItemMedia(entry.item).length"
                     :message-id="props.messageId"
-                    :contents="toolItemMedia(item)"
+                    :contents="toolItemMedia(entry.item)"
                     @preview="(payload) => emit('attachment-open', payload)"
                   />
                 </div>
 
-                <div v-else-if="item.type === 'artifact'" class="working-item-body">
+                <div v-else-if="entry.item.type === 'artifact'" class="working-item-body">
                   <ChatMediaList
-                    v-if="toolItemMedia(item).length"
+                    v-if="toolItemMedia(entry.item).length"
                     :message-id="props.messageId"
-                    :contents="toolItemMedia(item)"
+                    :contents="toolItemMedia(entry.item)"
                     @preview="(payload) => emit('attachment-open', payload)"
                   />
-                  <div v-else class="muted">No data</div>
+                  <div v-else class="working-empty">No data</div>
                 </div>
 
                 <div
-                  v-else-if="item.type === 'error' && itemText(item).trim()"
+                  v-else-if="entry.item.type === 'error' && itemText(entry.item).trim()"
                   class="working-item-body"
-                >
-                  <div class="error-text" v-html="renderHtml(itemText(item))"></div>
-                </div>
+                  v-html="renderHtml(itemText(entry.item))"
+                ></div>
 
                 <div
-                  v-else-if="unknownContentValue(item) !== null"
+                  v-else-if="unknownContentValue(entry.item) !== null"
                   class="working-item-body working-item-json"
                 >
                   <JsonTreeView
-                    :value="unknownContentValue(item)"
-                    :download-filename="unknownContentDownloadFilename(item)"
+                    :value="unknownContentValue(entry.item)"
+                    :download-filename="unknownContentDownloadFilename(entry.item)"
                     preserve-expanded-on-value-change
                   />
                 </div>
 
-                <div v-else class="working-item-body muted">No data</div>
+                <div v-else class="working-item-body working-empty">No data</div>
               </div>
             </template>
           </div>
         </template>
-        <div v-else-if="open && loading" class="working-item-body muted">Loading working details…</div>
-        <div v-else-if="open && error" class="working-item-body error-text">{{ error }}</div>
-        <div v-else-if="open" class="working-item-body muted">No working details</div>
+        <div v-else-if="open && loading" class="working-empty">Loading working details…</div>
+        <div v-else-if="open && error" class="error-text">{{ error }}</div>
+        <div v-else-if="open" class="working-empty">No working details</div>
       </div>
     </transition>
   </div>
@@ -438,6 +536,19 @@ const stepNumber = (step: ChatMessageStep, index: number) => {
   return index + 1;
 };
 
+const stepLabel = (number: number | null) =>
+  number == null ? translate('Step') : translate('Step {number}', { number });
+
+const itemIcon = (type: string) => {
+  if (type === 'reasoning') return 'lightbulb';
+  if (type === 'answer') return 'chat';
+  if (type === 'steering') return 'user';
+  if (type === 'tool_call' || type === 'tool_result') return 'wrench';
+  if (type === 'artifact') return 'tool-artifact';
+  if (type === 'error') return 'alert';
+  return 'document';
+};
+
 const itemTitle = (type: string) => {
   if (type === 'reasoning') return translate('Thinking');
   if (type === 'answer') return translate('Answering');
@@ -567,6 +678,72 @@ const renderHtml = (text: string) => {
 };
 
 const traceItems = (step: ChatMessageStep) => orderedItems(step).filter((item) => item.type !== 'input');
+
+type WorkingToolGroup = {
+  kind: 'tool';
+  key: string;
+  call: ChatMessageItem;
+  results: ChatMessageItem[];
+  artifacts: ChatMessageItem[];
+};
+
+type WorkingTraceEntry = WorkingToolGroup | { kind: 'item'; key: string; item: ChatMessageItem };
+
+/**
+ * Groups every tool call with its results so each result renders right after its call.
+ * Artifact items carry no call reference; they are persisted right after the result
+ * that produced them, so they join the group of the immediately preceding result.
+ */
+const buildTraceEntries = (items: ChatMessageItem[]): WorkingTraceEntry[] => {
+  const groupsByCallId = new Map<number, WorkingToolGroup>();
+  for (const item of items) {
+    if (item.type !== 'tool_call' || groupsByCallId.has(item.id)) continue;
+    groupsByCallId.set(item.id, { kind: 'tool', key: `tool-${item.id}`, call: item, results: [], artifacts: [] });
+  }
+
+  const entries: WorkingTraceEntry[] = [];
+  let artifactOwner: WorkingToolGroup | null = null;
+
+  for (const item of items) {
+    if (item.type === 'tool_call') {
+      const group = groupsByCallId.get(item.id);
+      if (group?.call === item) {
+        entries.push(group);
+        artifactOwner = null;
+        continue;
+      }
+    }
+
+    if (item.type === 'tool_result' && item.tool_call_item_id != null) {
+      const group = groupsByCallId.get(item.tool_call_item_id);
+      if (group) {
+        group.results.push(item);
+        artifactOwner = group;
+        continue;
+      }
+    }
+
+    if (item.type === 'artifact' && artifactOwner) {
+      artifactOwner.artifacts.push(item);
+      continue;
+    }
+
+    artifactOwner = null;
+    entries.push({ kind: 'item', key: `item-${item.id}`, item });
+  }
+
+  return entries;
+};
+
+const currentTraceEntries = computed(() =>
+  currentStep.value ? buildTraceEntries(traceItems(currentStep.value)) : []
+);
+
+const isToolGroupPending = (group: WorkingToolGroup) =>
+  group.results.length === 0 &&
+  isMessageGenerating.value &&
+  currentStep.value != null &&
+  isActiveStep(currentStep.value);
 
 const itemText = (item: Pick<ChatMessageItem, 'type' | 'contents'>) =>
   joinItemTextContents(item.type, item.contents);
@@ -726,9 +903,12 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
 
 <style scoped>
 .working-block {
+  --working-label-size: 0.78rem;
+  --working-body-size: 0.9rem;
+  --working-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   margin-bottom: 8px;
   border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--color-surface-muted);
   overflow: hidden;
   width: 100%;
@@ -738,8 +918,9 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   width: 100%;
   text-align: left;
   border: none;
-  background: var(--color-surface-muted);
-  padding: 10px 12px;
+  border-radius: 0;
+  background: transparent;
+  padding: 9px 12px;
   font-weight: 400;
   display: flex;
   align-items: center;
@@ -747,19 +928,18 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   cursor: pointer;
 }
 
-.working-toggle .chevron {
-  margin-left: auto;
-  font-size: 0.9em;
+.working-toggle:hover {
+  background: var(--color-surface-hover);
 }
 
-.working-toggle-count {
-  color: var(--color-text-muted);
+.working-toggle-title {
+  font-weight: 600;
 }
 
+.working-toggle-count,
 .working-toggle-time {
   color: var(--color-text-muted);
   font-size: 0.85rem;
-  font-weight: 400;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -768,7 +948,6 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   margin-left: auto;
   color: var(--color-text-muted);
   font-size: 0.85rem;
-  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -780,50 +959,111 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   color: var(--color-warning-text);
 }
 
-.working-toggle-status + .chevron {
+.working-toggle-chevron {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.working-toggle-status + .working-toggle-chevron {
   margin-left: 0;
+}
+
+.working-block--open .working-toggle-chevron {
+  transform: rotate(-90deg);
 }
 
 .working-body {
   border-top: 1px solid var(--color-border-strong);
-  padding: 10px 12px;
-  background: var(--color-surface-muted);
+  padding: 10px;
+}
+
+.working-body > :last-child {
+  margin-bottom: 0;
+}
+
+.working-step-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: var(--working-label-size);
+  color: var(--color-text-muted);
 }
 
 .working-nav {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
 }
 
-.working-nav-buttons {
-  display: flex;
+.working-nav-button {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.working-nav-select-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.85rem;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
   color: var(--color-text-muted);
 }
 
-.working-nav-loading {
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.working-nav-select-label {
-  white-space: nowrap;
+.working-nav-button:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
 }
 
 .working-nav-select {
-  min-width: 108px;
+  height: 28px;
+  min-width: 96px;
+  padding: 0 6px;
+  border-color: var(--color-border);
+  font-size: var(--working-label-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.working-step-label {
+  font-weight: 600;
+}
+
+.working-step-loading {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.working-step-loading + .working-nav {
+  margin-left: 0;
+}
+
+.working-step-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+
+.working-step-time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.working-text-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-link);
+  font-size: var(--working-label-size);
+  line-height: 1.4;
+}
+
+.working-text-button:hover {
+  background: transparent;
+  text-decoration: underline;
 }
 
 .working-inline-state {
@@ -839,7 +1079,7 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   margin-bottom: 10px;
   padding: 7px 9px;
   border: 1px solid var(--color-warning-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
   font-size: 0.85rem;
@@ -863,76 +1103,158 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   white-space: nowrap;
 }
 
-.working-step {
+.working-trace {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
-.working-step-number {
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
+.working-item {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 50%, var(--color-border-strong));
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-size: var(--working-body-size);
 }
 
-.working-step-time {
-  margin-left: auto;
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.working-item-title-row {
+.working-item-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.working-item-title {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-text-muted);
-}
-
-.working-item-preview {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
-  font-size: 0.9em;
+  min-height: 32px;
+  padding: 4px 6px 4px 10px;
 }
 
-.working-item-preview-label {
+.working-item-icon {
+  color: var(--color-text-subtle);
+}
+
+.working-item-label,
+.working-section-label {
   flex: none;
   color: var(--color-text-muted);
+  font-size: var(--working-label-size);
   font-weight: 600;
+  line-height: 1.4;
+}
+
+.working-section-label {
+  margin-bottom: 6px;
+}
+
+.json-viewer-toolbar-left > .working-section-label {
+  margin-bottom: 0;
+}
+
+.working-item-body {
+  padding: 0 10px 10px;
+  overflow-wrap: anywhere;
+}
+
+.working-item-body > :deep(:first-child) {
+  margin-top: 0;
+}
+
+.working-item-body > :deep(:last-child) {
+  margin-bottom: 0;
+}
+
+.working-item-body :deep(p),
+.working-item-body :deep(ul),
+.working-item-body :deep(ol) {
+  margin: 0 0 6px;
+}
+
+.working-item--compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
 }
 
 .working-item-preview-text {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.working-item--steering .working-item-preview-text {
   color: var(--color-text-muted);
+}
+
+.working-item--tool .working-item-header {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.working-item-header .working-tool-name {
+  min-width: 0;
   overflow-wrap: anywhere;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+  font-family: var(--working-mono);
+  font-size: 0.8rem;
+}
+
+.working-item-status {
+  flex: none;
+  margin-left: auto;
+  padding-right: 4px;
+  color: var(--color-text-muted);
+  font-size: var(--working-label-size);
+  white-space: nowrap;
+}
+
+.working-item--pending .working-item-status {
+  color: var(--color-info-text);
+}
+
+.working-item-section {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.working-tool-result-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.working-tool-result-section > .code-block,
+.working-tool-result-section > :deep(.chat-media-list) {
+  align-self: stretch;
+}
+
+.working-item--error {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+}
+
+.working-item--error .working-item-icon,
+.working-item--error .working-item-label,
+.working-item--error .working-item-body {
+  color: var(--color-danger-text);
 }
 
 .working-copy-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   margin-left: auto;
   padding: 0;
   border-color: transparent;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-text-muted);
   line-height: 1;
-}
-
-.working-copy-button :deep(.svg-icon) {
-  stroke-width: 1.5;
 }
 
 .working-copy-button:hover {
@@ -946,12 +1268,28 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   color: var(--color-success);
 }
 
-.working-item-body {
-  font-size: 0.95em;
-}
-
 .working-item-json {
   width: 100%;
+  box-sizing: border-box;
+}
+
+.working-item-json :deep(.json-viewer-summary),
+.working-item-json :deep(.json-viewer-download) {
+  color: var(--color-text-subtle);
+  font-size: var(--working-label-size);
+}
+
+.working-item-json :deep(.json-viewer-download:hover) {
+  color: var(--color-text);
+}
+
+.working-item-json :deep(.json-viewer-toolbar-left) {
+  gap: 8px;
+}
+
+.working-item-json :deep(.json-viewer-toggle) {
+  padding: 2px 8px;
+  font-size: 0.75rem;
 }
 
 .working-item-json :deep(.json-viewer-body) {
@@ -962,6 +1300,13 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   max-height: 22vh;
 }
 
+.working-item :deep(.code-block) {
+  border-radius: 6px;
+  font-family: var(--working-mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .working-tool-result {
   max-height: 240px;
   overflow: auto;
@@ -969,48 +1314,14 @@ const normalizeToolCallArguments = (value: unknown): unknown | null => {
   word-break: break-word;
 }
 
-.working-step-footer {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  margin-top: 2px;
-}
-
-.working-step-links {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.95em;
-  width: 100%;
-}
-
-.working-step-links-secondary {
-  margin-top: 4px;
-}
-
-.working-step-links-spacer {
-  margin-left: auto;
-}
-
-.working-step-sep {
-  height: 1px;
-  width: 100%;
-  background: var(--color-border-strong);
-}
-
-.info-link {
-  padding: 0;
+.working-empty {
+  color: var(--color-text-muted);
+  font-size: var(--working-body-size);
 }
 
 @media (max-width: 720px) {
-  .working-nav {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .working-nav-select-wrap {
-    justify-content: space-between;
+  .working-step-bar {
+    flex-wrap: wrap;
   }
 }
 </style>

@@ -44,6 +44,10 @@ import MinimizeIcon from './svg/minimize.svg?component';
 import MoreHorizontalIcon from './svg/more-horizontal.svg?component';
 import ChevronLeftIcon from './svg/chevron-left.svg?component';
 import ChevronRightIcon from './svg/chevron-right.svg?component';
+import ChevronsLeftIcon from './svg/chevrons-left.svg?component';
+import ChevronsRightIcon from './svg/chevrons-right.svg?component';
+import LightbulbIcon from './svg/lightbulb.svg?component';
+import AlertIcon from './svg/alert.svg?component';
 import RetryIcon from './svg/retry.svg?component';
 import SwitchIcon from './svg/switch.svg?component';
 import FileTextIcon from './svg/file-text.svg?component';
@@ -107,6 +111,10 @@ const iconMap: Record<string, Component> = {
   'more-horizontal': MoreHorizontalIcon,
   'chevron-left': ChevronLeftIcon,
   'chevron-right': ChevronRightIcon,
+  'chevrons-left': ChevronsLeftIcon,
+  'chevrons-right': ChevronsRightIcon,
+  'lightbulb': LightbulbIcon,
+  'alert': AlertIcon,
   'retry': RetryIcon,
   'switch': SwitchIcon,
   'file-text': FileTextIcon,

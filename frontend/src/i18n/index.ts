@@ -119,6 +119,9 @@ const translatePatternRu = (key: string): string | null => {
 
   const blockLabel = (value: string) => resourceLabel(value, ['блок', 'блока', 'блоков']);
   const toolLabel = (value: string) => resourceLabel(value, ['инструмент', 'инструмента', 'инструментов']);
+  const jsonKeyLabel = (value: string) => resourceLabel(value, ['ключ', 'ключа', 'ключей']);
+  const jsonItemLabel = (value: string) => resourceLabel(value, ['элемент', 'элемента', 'элементов']);
+  const charLabel = (value: string) => resourceLabel(value, ['символ', 'символа', 'символов']);
   const sameChatBotLabel = (value: string) => value === 'No bot' ? (ruMessages['No bot'] ?? value) : value;
 
   const patterns: Array<[RegExp, (match: RegExpExecArray) => string]> = [
@@ -136,6 +139,9 @@ const translatePatternRu = (key: string): string | null => {
       `${match[1]} ${blockLabel(match[1])} · ${match[2]} ${toolLabel(match[2])}`],
     [/^(\d+) blocks?$/u, (match) => `${match[1]} ${blockLabel(match[1])}`],
     [/^(\d+) tools?$/u, (match) => `${match[1]} ${toolLabel(match[1])}`],
+    [/^(\d+) keys?$/u, (match) => `${match[1]} ${jsonKeyLabel(match[1])}`],
+    [/^(\d+) items?$/u, (match) => `${match[1]} ${jsonItemLabel(match[1])}`],
+    [/^(\d+) chars$/u, (match) => `${match[1]} ${charLabel(match[1])}`],
     [/^Delete tag "(.+)"\?$/u, (match) => `Удалить тег "${match[1]}"?`],
     [/^Delete user "(.+)"\?$/u, (match) => `Удалить пользователя "${match[1]}"?`],
     [/^Delete group "(.+)"\?$/u, (match) => `Удалить группу "${match[1]}"?`],

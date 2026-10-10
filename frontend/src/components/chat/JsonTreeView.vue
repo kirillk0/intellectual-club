@@ -2,6 +2,7 @@
   <div class="json-viewer">
     <div class="json-viewer-toolbar">
       <div class="json-viewer-toolbar-left">
+        <slot name="label" />
         <div class="json-viewer-summary">{{ valueSummary }}</div>
         <button type="button" class="json-viewer-toggle" @click="showRawText = !showRawText">
           {{ showRawText ? 'Hide raw text' : 'Show raw text' }}
