@@ -8,6 +8,7 @@ import {
   getAttachmentName,
   getAttachmentPreviewKind,
   type AttachmentPreviewKind,
+  type ChatAttachmentOpenPayload,
   type ExistingChatAttachment,
   type PendingChatFile,
 } from '@/features/chat/attachments';
@@ -24,6 +25,7 @@ import type {
   ChatMessageStep,
   ChatUsageStats,
 } from '@/types/api';
+import { translate } from '@/i18n';
 
 type ScrollToLastMessage = (opts?: {
   behavior?: ScrollBehavior;
@@ -719,12 +721,31 @@ export function useChatInspectors(params: Params) {
     await showAttachmentPreviewItem(attachmentPreviewItems.value[attachmentPreviewIndex.value]);
   };
 
-  const openAttachmentPreview = async (payload: {
-    messageId: number;
-    content: ChatMessageContent;
-    contents?: ChatMessageContent[] | null;
-  }) => {
-    await openMessageAttachmentPreview(payload);
+  const openAttachmentPreview = async (payload: ChatAttachmentOpenPayload) => {
+    const token = ++attachmentPreviewRequestToken.value;
+    if ('content' in payload) {
+      await openMessageAttachmentPreview(payload);
+      return;
+    }
+
+    const fileId = payload.fileId.toLowerCase();
+    const content = payload.contents?.find((item) => item.media?.file_external_id?.toLowerCase() === fileId);
+    if (content) {
+      await openMessageAttachmentPreview({ ...payload, content });
+      return;
+    }
+
+    try {
+      const attachment = await api.get<{ message_id: number; content: ChatMessageContent }>(
+        `/api/bff/chat-files/${fileId}/attachment`,
+        { showErrorBanner: false }
+      );
+      if (attachmentPreviewRequestToken.value !== token) return;
+      await openMessageAttachmentPreview({ messageId: attachment.message_id, content: attachment.content });
+    } catch (error) {
+      if (attachmentPreviewRequestToken.value !== token) return;
+      alert(errorMessage(error, translate('Failed to open attachment.')));
+    }
   };
 
   const openPendingAttachmentPreview = async (

@@ -19,13 +19,13 @@ const traceItem = (id: number, sequence: number, type: string, text: string): Ch
 });
 
 describe('ChatMessageWorkingBlock canonical trace', () => {
-  it('renders file downloads and inline images in working steps', () => {
+  it('opens file links for preview and renders inline images in working steps', () => {
     const fileId = 'c6012361-90b8-4f6b-afb0-35729ae584c6';
     const step: ChatMessageStep = {
       id: 20,
       sequence: 1,
       status: 'done',
-      items: [traceItem(1, 1, 'reasoning', `[File](file://${fileId})\n\n![Image](file://${fileId})`)],
+      items: [traceItem(1, 1, 'reasoning', `[**File**](file://${fileId})\n\n![Image](file://${fileId})`)],
     };
     const wrapper = mount(ChatMessageWorkingBlock, {
       props: {
@@ -41,6 +41,10 @@ describe('ChatMessageWorkingBlock canonical trace', () => {
     expect(wrapper.get('.working-item-body a').attributes('href')).toBe(`/api/bff/chat-files/${fileId}`);
     expect(wrapper.get('.working-item-body a').attributes()).toHaveProperty('download');
     expect(wrapper.get('.working-item-body img').attributes('src')).toBe(`/api/bff/chat-files/${fileId}?inline=1`);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    wrapper.get('.working-item-body a strong').element.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(wrapper.emitted('attachment-open')).toEqual([[{ messageId: 10, fileId }]]);
     wrapper.unmount();
   });
 

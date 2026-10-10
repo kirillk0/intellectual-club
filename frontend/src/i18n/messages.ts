@@ -334,6 +334,7 @@ export const ruMessages: Record<string, string> = {
   'Failed to delete the message.': 'Не удалось удалить сообщение.',
   'Failed to delete user.': 'Не удалось удалить пользователя.',
   'Failed to download attachment.': 'Не удалось скачать вложение.',
+  'Failed to open attachment.': 'Не удалось открыть вложение.',
   'Failed to duplicate record.': 'Не удалось дублировать запись.',
   'Failed to export chat.': 'Не удалось экспортировать чат.',
   'Failed to link knowledge block.': 'Не удалось привязать блок знаний.',

@@ -203,6 +203,7 @@ defmodule IntellectualClubWeb.Router do
         :content_file
 
     get "/chat-files/:file_external_id", ChatFilesController, :show
+    get "/chat-files/:file_external_id/attachment", ChatFilesController, :attachment
 
     post "/knowledge-blocks/markdown-import/preview", KnowledgeBlocksMarkdownController, :preview
     post "/knowledge-blocks/markdown-import", KnowledgeBlocksMarkdownController, :import

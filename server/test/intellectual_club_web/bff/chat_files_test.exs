@@ -31,6 +31,25 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
     assert get_resp_header(conn, "cache-control") == ["private, no-cache"]
   end
 
+  test "resolves file UUIDs to authorized attachments for preview", %{conn: conn, actor: actor} do
+    chat = create_chat!(actor)
+    message = create_message!(actor, chat)
+    step = create_step!(actor, message)
+    item = create_item!(actor, step, type: :artifact)
+    file = create_file!(filename: "notes.md", mime_type: "text/markdown", payload: "# Notes")
+    content = create_content!(actor, item, kind: :media, file_id: file.id)
+
+    result = conn |> get(file_url(file) <> "/attachment") |> json_response(200)
+
+    assert result["message_id"] == message.id
+    assert result["content"]["id"] == content.id
+    assert result["content"]["kind"] == "media"
+    assert result["content"]["media"]["external_id"] == content.external_id
+    assert result["content"]["media"]["file_external_id"] == file.external_id
+    assert result["content"]["media"]["filename"] == "notes.md"
+    assert result["content"]["media"]["mime_type"] == "text/markdown"
+  end
+
   test "downloads images by default and renders them inline only when requested", %{
     conn: conn,
     actor: actor
@@ -77,11 +96,13 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
     %{user: other_actor} = user_fixture()
     %{file: file} = attachment(other_actor)
 
-    assert conn |> get(file_url(file)) |> json_response(404) == %{"error" => "Not found"}
+    for url <- [file_url(file), file_url(file) <> "/attachment"] do
+      assert conn |> get(url) |> json_response(404) == %{"error" => "Not found"}
 
-    assert build_conn() |> get(file_url(file)) |> json_response(401) == %{
-             "error" => "Unauthorized"
-           }
+      assert build_conn() |> get(url) |> json_response(401) == %{
+               "error" => "Unauthorized"
+             }
+    end
   end
 
   test "finds attachments in any accessible chat", %{conn: conn, actor: actor} do
@@ -98,8 +119,10 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
     {:ok, unbound_file} = Files.create_from_binary("unbound.txt", "text/plain", "unbound")
 
     for id <- ["not-a-uuid", Ash.UUID.generate(), content.external_id, unbound_file.external_id] do
-      assert conn |> get("/api/bff/chat-files/#{id}") |> json_response(404) ==
-               %{"error" => "Not found"}
+      for suffix <- ["", "/attachment"] do
+        assert conn |> get("/api/bff/chat-files/#{id}" <> suffix) |> json_response(404) ==
+                 %{"error" => "Not found"}
+      end
     end
   end
 

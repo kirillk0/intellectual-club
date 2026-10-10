@@ -716,6 +716,16 @@ const resolveAttachmentReferences = (root: HTMLElement) => {
   });
 };
 
+export const clickedChatAttachmentFileId = (event: MouseEvent): string | null => {
+  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return null;
+  if (!(event.target instanceof Element)) return null;
+
+  const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
+  const match = /^\/api\/bff\/chat-files\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu
+    .exec(anchor?.getAttribute('href') || '');
+  return match?.[1]?.toLowerCase() || null;
+};
+
 export const renderChatMessageHtml = (
   content: string | null | undefined,
   options?: { highlightCode?: boolean; codeCopyButtons?: boolean; attachmentLinks?: boolean }

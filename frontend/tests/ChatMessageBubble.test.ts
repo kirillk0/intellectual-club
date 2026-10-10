@@ -62,6 +62,33 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(wrapper.get('.message-content a').attributes('href')).toBe(`/api/bff/chat-files/${fileId}`);
     expect(wrapper.get('.message-content a').attributes()).toHaveProperty('download');
     expect(wrapper.get('.message-content img').attributes('src')).toBe(`/api/bff/chat-files/${fileId}?inline=1`);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    wrapper.get('.message-content a').element.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(wrapper.emitted('attachment-open')).toEqual([[{ messageId: 10, fileId, contents: [] }]]);
+    wrapper.unmount();
+  });
+
+  it('keeps external links and modified attachment clicks native', async () => {
+    const fileId = 'c6012361-90b8-4f6b-afb0-35729ae584c6';
+    const wrapper = mount(ChatMessageBubble, {
+      props: {
+        message: {
+          id: 10, role: 'user', status: 'done',
+          content: { items: [], media: [], parts: [{
+            content_id: 1, sequence: 1, item_type: 'input',
+            text: `[File](file://${fileId})\n\n[Web](https://example.com)`,
+          }] },
+        },
+        index: 0,
+      },
+    });
+
+    await wrapper.get('.message-content a[href^="https:"]').trigger('click');
+    for (const modifier of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+      await wrapper.get('.message-content a[download]').trigger('click', { [modifier]: true });
+    }
+    expect(wrapper.emitted('attachment-open')).toBeUndefined();
     wrapper.unmount();
   });
 

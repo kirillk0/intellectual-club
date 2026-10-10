@@ -1,5 +1,10 @@
 import type { Bot, ChatMessageContent, LlmConfiguration } from '@/types/api';
 
+export type ChatAttachmentOpenPayload = {
+  messageId: number;
+  contents?: ChatMessageContent[] | null;
+} & ({ content: ChatMessageContent } | { fileId: string });
+
 export type PendingChatFile = {
   id: string;
   file: File;

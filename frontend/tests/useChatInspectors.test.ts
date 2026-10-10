@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
 
 import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
 import type { ExistingChatAttachment, PendingChatFile } from '@/features/chat/attachments';
+import * as download from '@/utils/download';
 
 const createInspectors = (
   queueAttachments: ExistingChatAttachment[] = [],
@@ -93,8 +94,88 @@ describe('chat step details', () => {
 });
 
 describe('attachment preview', () => {
+  beforeEach(() => {
+    apiMocks.get.mockReset();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['text', 'notes.txt', 'text/plain', false],
+    ['html', 'page.html', 'text/html', false],
+    ['markdown', 'notes.md', 'text/markdown', false],
+    ['image', 'photo.png', 'image/png', true],
+    ['pdf', 'document.pdf', 'application/pdf', false],
+    ['video', 'clip.mp4', 'video/mp4', false],
+    ['audio', 'sound.mp3', 'audio/mpeg', false],
+  ] as const)('previews a linked %s attachment from another message', async (kind, filename, mimeType, isImage) => {
+    const fileId = 'c6012361-90b8-4f6b-afb0-35729ae584c6';
+    const content = {
+      id: 18, sequence: 1, kind: 'media',
+      media: { external_id: 'content-uuid', file_external_id: fileId, filename, mime_type: mimeType, size_bytes: 10, sha256: '', is_image: isImage },
+    };
+    apiMocks.get.mockResolvedValue({ message_id: 7, content });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => 'file contents' });
+    vi.stubGlobal('fetch', fetchMock);
+    const inspectors = createInspectors();
+
+    await inspectors.openAttachmentPreview({ messageId: 99, fileId, contents: [] });
+
+    expect(apiMocks.get).toHaveBeenCalledWith(`/api/bff/chat-files/${fileId}/attachment`, { showErrorBanner: false });
+    expect(inspectors.attachmentPreviewOpen.value).toBe(true);
+    expect(inspectors.attachmentPreviewKind.value).toBe(kind);
+    expect(inspectors.attachmentPreviewTitle.value).toBe(filename);
+    expect(inspectors.attachmentPreviewUrl.value).toBe('/api/bff/chat-messages/7/contents/18/file');
+    if (['text', 'html', 'markdown'].includes(kind)) {
+      expect(inspectors.attachmentPreviewText.value).toBe('file contents');
+    } else {
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('downloads a linked attachment whose type cannot be previewed', async () => {
+    const save = vi.spyOn(download, 'saveUrlAsFile').mockResolvedValue(undefined);
+    const content = {
+      id: 18, sequence: 1, kind: 'media',
+      media: { external_id: 'file-zip', filename: 'archive.zip', mime_type: 'application/zip', size_bytes: 10, sha256: '', is_image: false },
+    };
+    apiMocks.get.mockResolvedValue({ message_id: 7, content });
+    const inspectors = createInspectors();
+
+    await inspectors.openAttachmentPreview({ messageId: 99, fileId: 'file-zip' });
+
+    expect(inspectors.attachmentPreviewOpen.value).toBe(false);
+    expect(save).toHaveBeenCalledWith('/api/bff/chat-messages/7/contents/18/file', 'archive.zip', 'application/zip');
+  });
+
+  it('keeps a newer preview when an older linked attachment lookup completes', async () => {
+    let resolveLookup!: (value: unknown) => void;
+    apiMocks.get.mockReturnValue(new Promise((resolve) => { resolveLookup = resolve; }));
+    const content = {
+      id: 18, sequence: 1, kind: 'media',
+      media: { external_id: 'file-image', filename: 'photo.png', mime_type: 'image/png', size_bytes: 10, sha256: '', is_image: true },
+    };
+    const inspectors = createInspectors();
+    const older = inspectors.openAttachmentPreview({ messageId: 99, fileId: 'old-file' });
+    await inspectors.openAttachmentPreview({ messageId: 7, content });
+    resolveLookup({ message_id: 99, content: { ...content, id: 19 } });
+    await older;
+
+    expect(inspectors.attachmentPreviewUrl.value).toBe('/api/bff/chat-messages/7/contents/18/file');
+  });
+
+  it('reports a failed linked attachment lookup without opening an empty preview', async () => {
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    apiMocks.get.mockRejectedValue({ status: 404 });
+    const inspectors = createInspectors();
+
+    await inspectors.openAttachmentPreview({ messageId: 99, fileId: 'missing-file' });
+
+    expect(inspectors.attachmentPreviewOpen.value).toBe(false);
+    expect(alert).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -183,7 +264,7 @@ describe('attachment preview', () => {
     expect(inspectors.attachmentPreviewText.value).toBe(html);
   });
 
-  it('loads saved HTML and switches to the next previewable attachment', async () => {
+  it.each(['attachment', 'link'])('loads saved HTML through a %s and switches to the next previewable attachment', async (source) => {
     const html = '<h1>Saved HTML</h1>';
     const fetchMock = vi.fn().mockImplementation((url: string) =>
       Promise.resolve({
@@ -198,6 +279,7 @@ describe('attachment preview', () => {
       kind: 'media' as const,
       media: {
         external_id: 'file-html',
+        file_external_id: 'file-html-uuid',
         filename: 'preview.html',
         mime_type: 'text/html',
         size_bytes: html.length,
@@ -222,13 +304,14 @@ describe('attachment preview', () => {
 
     await inspectors.openAttachmentPreview({
       messageId: 7,
-      content: htmlContent,
+      ...(source === 'link' ? { fileId: 'FILE-HTML-UUID' } : { content: htmlContent }),
       contents: [htmlContent, textContent],
     });
 
     expect(inspectors.attachmentPreviewKind.value).toBe('html');
     expect(inspectors.attachmentPreviewText.value).toBe(html);
     expect(inspectors.attachmentPreviewCanNavigate.value).toBe(true);
+    expect(apiMocks.get).not.toHaveBeenCalled();
 
     await inspectors.showNextAttachmentPreview();
 

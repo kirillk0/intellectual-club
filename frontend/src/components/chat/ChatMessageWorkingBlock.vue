@@ -1,5 +1,5 @@
 <template>
-  <div v-if="hasWorking" ref="workingBlockEl" class="working-block" :class="{ 'working-block--open': open }">
+  <div v-if="hasWorking" ref="workingBlockEl" class="working-block" :class="{ 'working-block--open': open }" @click="handleAttachmentLinkClick">
     <button
       class="working-toggle"
       type="button"
@@ -323,6 +323,7 @@ import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import JsonTreeView from '@/components/chat/JsonTreeView.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import { translate } from '@/i18n';
+import type { ChatAttachmentOpenPayload } from '@/features/chat/attachments';
 import type {
   ChatMessageContent,
   ChatMessageItem,
@@ -330,7 +331,7 @@ import type {
   ChatMessageWorkingSummary,
 } from '@/types/api';
 import { joinItemTextContents } from '@/utils/chatItemText';
-import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { clickedChatAttachmentFileId, enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import { copyTextWithFallback } from '@/utils/clipboard';
 
 interface Props {
@@ -360,8 +361,17 @@ const emit = defineEmits<{
   (e: 'step-select', stepId: number): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
-  (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent }): void;
+  (e: 'attachment-open', payload: ChatAttachmentOpenPayload): void;
 }>();
+
+const handleAttachmentLinkClick = (event: MouseEvent) => {
+  const fileId = clickedChatAttachmentFileId(event);
+  if (!fileId) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  emit('attachment-open', { messageId: Number(props.messageId || 0), fileId });
+};
 
 const sortBySequence = <T extends { sequence?: number | null }>(a: T, b: T) => {
   const aSeq = typeof a.sequence === 'number' && Number.isFinite(a.sequence) ? a.sequence : 0;

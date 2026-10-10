@@ -378,6 +378,7 @@ import {
   type HandoffSystemEventKind,
 } from '@/features/chat/model/chatMessageContent';
 import type { OpenWorkingState } from '@/features/chat/model/useChatMessageActions';
+import type { ChatAttachmentOpenPayload } from '@/features/chat/attachments';
 import type {
   ChatBranchMessage,
   ChatMessageContent,
@@ -385,7 +386,7 @@ import type {
   ChatMessageStep,
   ChatRelationSummary,
 } from '@/types/api';
-import { enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
+import { clickedChatAttachmentFileId, enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
 import { formatTimeOfDay } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -454,7 +455,7 @@ const emit = defineEmits<{
   (e: 'working-step-select', stepId: number): void;
   (e: 'step-info', step: ChatMessageStep): void;
   (e: 'content-open', payload: { messageId: number; contentId: number; title: string }): void;
-  (e: 'attachment-open', payload: { messageId: number; content: ChatMessageContent; contents?: ChatMessageContent[] }): void;
+  (e: 'attachment-open', payload: ChatAttachmentOpenPayload): void;
   (e: 'relation-navigate', event: MouseEvent, chatId: number): void;
 }>();
 
@@ -1033,6 +1034,14 @@ const setCopyButtonState = (button: HTMLButtonElement, copied: boolean) => {
 };
 
 const handleMessageContentClick = async (event: MouseEvent) => {
+  const fileId = clickedChatAttachmentFileId(event);
+  if (fileId) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit('attachment-open', { messageId: Number(messageId.value || 0), fileId, contents: previewAttachmentContents.value });
+    return;
+  }
+
   const target = event.target;
   if (!(target instanceof Element)) return;
 

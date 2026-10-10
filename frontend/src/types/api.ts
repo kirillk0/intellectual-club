@@ -305,6 +305,7 @@ export type ChatMessageContent = {
   content_json?: unknown;
   media?: {
     external_id: string;
+    file_external_id?: string;
     filename: string;
     mime_type: string;
     size_bytes: number;
