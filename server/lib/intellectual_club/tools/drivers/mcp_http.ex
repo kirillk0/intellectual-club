@@ -501,8 +501,14 @@ defmodule IntellectualClub.Tools.Drivers.McpHttp do
 
         {:ok, {text, raw_result}}
 
+      {:ok, %{messages: [%{"error" => error} | _]}} ->
+        {:error, "MCP tools/call error: #{Jason.encode!(error)}"}
+
       {:ok, %{messages: []}} ->
         {:error, "MCP server returned no messages for tools/call."}
+
+      {:ok, %{messages: [%{} = first | _]}} ->
+        {:error, "MCP tools/call response missing result (first=#{Jason.encode!(first)})."}
 
       {:error, _} = error ->
         error

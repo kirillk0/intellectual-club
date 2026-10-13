@@ -25,6 +25,43 @@ defmodule IntellectualClub.Tools.Drivers.McpHttpTest do
     assert raw_result["content"] == [%{"type" => "text", "text" => "Found: MCP"}]
   end
 
+  describe "tools/call responses" do
+    for transport <- [:json, :chunked] do
+      test "returns JSON-RPC errors from #{transport} responses" do
+        error = %{
+          "code" => -32000,
+          "message" => "Free-tier rate limit exceeded. Retry later.",
+          "data" => %{"retry_after" => 60}
+        }
+
+        response = %{"jsonrpc" => "2.0", "id" => 2, "error" => error}
+        tool = tool_instance(start_call_response_server!(response, unquote(transport)))
+
+        assert {:error, "MCP tools/call error: " <> error_json} =
+                 McpHttp.execute(tool, "search_docs", %{"query" => "MCP"})
+
+        assert Jason.decode!(error_json) == error
+      end
+    end
+
+    test "returns an error for a response without result or error" do
+      response = %{"jsonrpc" => "2.0", "id" => 2}
+      tool = tool_instance(start_call_response_server!(response))
+
+      assert {:error, message} = McpHttp.execute(tool, "search_docs", %{"query" => "MCP"})
+
+      assert message ==
+               "MCP tools/call response missing result (first=#{Jason.encode!(response)})."
+    end
+
+    test "returns an error when the server sends no messages" do
+      tool = tool_instance(start_call_response_server!([]))
+
+      assert {:error, "MCP server returned no messages for tools/call."} =
+               McpHttp.execute(tool, "search_docs", %{"query" => "MCP"})
+    end
+  end
+
   test "sends open and secret headers with every MCP request" do
     server_url = start_json_server!(test_pid: self())
 
@@ -115,6 +152,23 @@ defmodule IntellectualClub.Tools.Drivers.McpHttpTest do
 
   defp start_json_server!(opts \\ []) do
     {base_url, _port} = start_http_server!({McpHttpJsonServer, opts})
+    base_url
+  end
+
+  defp start_call_response_server!(response, transport \\ :json) do
+    initialize = %{
+      "jsonrpc" => "2.0",
+      "id" => 1,
+      "result" => %{"capabilities" => %{}}
+    }
+
+    responses =
+      Enum.map([initialize, response], fn message ->
+        body = if transport == :json, do: message, else: sse_chunks([message])
+        {200, body}
+      end)
+
+    {base_url, _agent} = start_scripted_server!(%{"/" => responses}, response: transport)
     base_url
   end
 
