@@ -4,6 +4,204 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
   alias IntellectualClub.Tools.DocumentReader
   alias IntellectualClub.Tools.Drivers.NativeWebReader
 
+  describe "HTML hyperlinks" do
+    setup do
+      %{user: actor} = user_fixture()
+
+      tool =
+        create_tool_instance!(actor,
+          name: "Web Reader",
+          type: "native-web-reader"
+        )
+
+      %{tool: tool}
+    end
+
+    test "preserves absolute destinations and visible link text", %{tool: tool} do
+      html = ~S"""
+      <html><body>
+        <a href="https://example.org/docs?a=1&amp;b=2"><strong>Guide</strong> &amp; reference</a>
+        <A title="Go > there" HREF='https://example.org/single'>Single quotes</A>
+        <a href=https://example.org/bare>Bare address</a>
+        <a data-href="https://wrong.example/" title="href='https://wrong.example/'"
+           href="mailto:team@example.org">Contact</a>
+      </body></html>
+      """
+
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:ok, {text, _raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/page"
+               })
+
+      assert text =~ "[Guide & reference](https://example.org/docs?a=1&b=2)"
+      assert text =~ "[Single quotes](https://example.org/single)"
+      assert text =~ "[Bare address](https://example.org/bare)"
+      assert text =~ "[Contact](mailto:team@example.org)"
+      refute text =~ "wrong.example"
+    end
+
+    test "resolves relative paths, hosts, fragments and queries against the page URL", %{
+      tool: tool
+    } do
+      links = [
+        {"sibling", "next.html", "/docs/next.html"},
+        {"parent", "../up", "/up"},
+        {"root", "/root", "/root"},
+        {"fragment", "#details", "/docs/page.html?lang=en#details"},
+        {"query", "?lang=ru&amp;page=2", "/docs/page.html?lang=ru&page=2"},
+        {"empty", "", "/docs/page.html?lang=en"}
+      ]
+
+      html =
+        "<html><body>" <>
+          Enum.map_join(links, "\n", fn {label, href, _} -> ~s(<a href="#{href}">#{label}</a>) end) <>
+          ~s(<a href="//example.org/path">host</a></body></html>)
+
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+      origin = "http://127.0.0.1:#{server.port}"
+
+      assert {:ok, {text, _raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => origin <> "/docs/page.html?lang=en"
+               })
+
+      for {label, _, path} <- links do
+        assert text =~ "[#{label}](#{origin}#{path})"
+      end
+
+      assert text =~ "[host](http://example.org/path)"
+    end
+
+    test "honors the first base href resolved against the page URL", %{tool: tool} do
+      html = """
+      <html><head>
+        <base target="_blank"><base href="../assets/"><base href="https://wrong.example/">
+      </head><body><a href="guide.html">Guide</a></body></html>
+      """
+
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:ok, {text, _raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/docs/page.html"
+               })
+
+      assert text =~ "[Guide](http://127.0.0.1:#{server.port}/assets/guide.html)"
+    end
+
+    test "uses the final URL after redirects for relative destinations", %{tool: tool} do
+      html = ~s(<html><body><a href="next.html">Next</a></body></html>)
+      {:ok, destination} = start_raw_http_server(200, "text/html", html)
+      final_url = "http://127.0.0.1:#{destination.port}/moved/page.html"
+      {:ok, redirect} = start_raw_http_server(302, "text/plain", "", [{"Location", final_url}])
+
+      on_exit(fn ->
+        stop_raw_http_server(redirect)
+        stop_raw_http_server(destination)
+      end)
+
+      assert {:ok, {text, raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{redirect.port}/original"
+               })
+
+      assert raw["url"] == final_url
+      assert text =~ "[Next](http://127.0.0.1:#{destination.port}/moved/next.html)"
+    end
+
+    test "escapes Markdown syntax while preserving decoded labels and destinations", %{tool: tool} do
+      html = ~S"""
+      <html><body>
+        <a href="https://example.org/a(b)&#32;c?q=&quot;x&quot;&amp;n=&#49;">[A] *B* \ C &lt;D&gt;</a>
+      </body></html>
+      """
+
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:ok, {text, _raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/page"
+               })
+
+      assert text =~ ~S"[\[A\] \*B\* \\ C \<D\>](https://example.org/a%28b%29%20c?q=%22x%22&n=1)"
+    end
+
+    test "keeps anchors without href as text and omits non-readable markup", %{tool: tool} do
+      html = """
+      <html><body>
+        <a name="section">Section</a><a href="/empty"></a>
+        <!-- <a href="/comment">Comment link</a> -->
+        <script><a href="/script">Script link</a></script>
+        <style><a href="/style">Style link</a></style>
+        <noscript><a href="/noscript">Noscript link</a></noscript>
+      </body></html>
+      """
+
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:ok, {text, _raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/page"
+               })
+
+      assert text =~ "Section"
+      assert text =~ "[](http://127.0.0.1:#{server.port}/empty)"
+      refute text =~ "[Section]"
+      refute text =~ "link"
+    end
+
+    test "searches and caches Markdown destinations", %{tool: tool} do
+      html = ~s(<html><body><a href="/target">Destination</a></body></html>)
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+      url = "http://127.0.0.1:#{server.port}/page"
+      link = "[Destination](http://127.0.0.1:#{server.port}/target)"
+
+      for cached <- [false, true] do
+        assert {:ok, {text, raw}} = NativeWebReader.execute(tool, "read_url", %{"url" => url})
+        assert raw["cached"] == cached
+        assert text =~ link
+      end
+
+      assert {:ok, {_text, raw}} =
+               NativeWebReader.execute(tool, "search_url", %{"url" => url, "regex" => "/target"})
+
+      assert raw["cached"]
+      assert [%{"snippet" => snippet}] = raw["snippets"]
+      assert snippet =~ link
+    end
+
+    test "re-extracts pages stored before Markdown hyperlinks were supported", %{tool: tool} do
+      html = ~s(<html><body><a href="/target">Destination</a></body></html>)
+      {:ok, server} = start_raw_http_server(200, "text/html", html)
+      on_exit(fn -> stop_raw_http_server(server) end)
+      url = "http://127.0.0.1:#{server.port}/page"
+      cache_root = Path.join([System.tmp_dir!(), "club_web_reader_cache", "tool_#{tool.id}"])
+      old_doc_id = DocumentReader.doc_id(url)
+
+      assert {:ok, _cache} =
+               DocumentReader.ensure_text_cache_ready(
+                 cache_root,
+                 tool.id,
+                 old_doc_id,
+                 "Destination without a link",
+                 %{},
+                 DocumentReader.config_from_map(%{})
+               )
+
+      assert {:ok, {text, raw}} = NativeWebReader.execute(tool, "read_url", %{"url" => url})
+      refute raw["cached"]
+      assert text =~ "[Destination](http://127.0.0.1:#{server.port}/target)"
+    end
+  end
+
   test "read_url rejects compressed bulk downloads before fetching" do
     %{user: actor} = user_fixture()
 

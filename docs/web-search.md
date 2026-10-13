@@ -20,7 +20,10 @@ Firecrawl enables both main-content and additional Markdown cleaning. Brave
 uses the built-in Web Reader and does not require an API key for fetch. This
 supports HTML, PDF, DOCX, and text using the same extraction and cache as the
 standalone Web Reader; the complete extracted document is returned within the
-configured output limit. The built-in reader does not render JavaScript.
+configured output limit. HTML hyperlinks are preserved as Markdown links with
+their text and destination. Relative destinations (including fragments and
+query-only links) resolve against the final URL after redirects, honoring an
+HTML `base href` when present. The built-in reader does not render JavaScript.
 
 Every invocation starts at the first provider. A failed request proceeds to the
 next provider without hidden HTTP retries. Valid empty search results also

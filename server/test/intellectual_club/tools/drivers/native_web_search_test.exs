@@ -237,6 +237,20 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     refute_received {:web_request, "/document", _, _}
   end
 
+  test "Brave fetch preserves HTML hyperlinks as Markdown with absolute destinations" do
+    html = ~s(<html><body><a href="../guide?q=1&amp;p=2">Guide</a></body></html>)
+    base = server(fn "/docs/page", _ -> {200, "text/html", html} end)
+
+    assert {:ok, result} =
+             Driver.execute(tool(base, ["brave"], %{}), "web_fetch", %{
+               "urls" => [base <> "/docs/page"]
+             })
+
+    refute result.raw["isError"]
+    assert result.text =~ "[Guide](#{base}/guide?q=1&p=2)"
+    assert hd(result.raw["results"])["text"] =~ "[Guide](#{base}/guide?q=1&p=2)"
+  end
+
   test "local reader failures fall through to a remote reader and vice versa" do
     base =
       server(fn

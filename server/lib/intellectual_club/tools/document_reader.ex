@@ -11,6 +11,9 @@ defmodule IntellectualClub.Tools.DocumentReader do
   @default_cache_max_bytes 1 * 1024 * 1024 * 1024
   @default_extract_timeout_seconds 45.0
   @default_max_extract_chars 500_000
+  @html_link ~r/(<a\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>(?<content>.*?)<\/a\s*>)/isu
+  @html_base ~r/<base\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>/iu
+  @html_attribute ~r/(?:^|\s)([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/u
 
   def default_chunk_size_tokens, do: @default_chunk_size_tokens
   def default_cache_ttl_seconds, do: @default_cache_ttl_seconds
@@ -420,7 +423,7 @@ defmodule IntellectualClub.Tools.DocumentReader do
       html_source?(source_meta) or html_binary?(bytes) ->
         text =
           bytes
-          |> extract_html_text()
+          |> extract_html_text(source_meta)
           |> limit_chars(cfg.max_extract_chars)
 
         {:ok, {text, %{"extractor" => "html_text"}}}
@@ -655,10 +658,38 @@ defmodule IntellectualClub.Tools.DocumentReader do
     end
   end
 
-  defp extract_html_text(bytes) when is_binary(bytes) do
-    bytes
-    |> sanitize_binary_text()
-    |> String.replace(~r/<(script|style|noscript)\b[^>]*>.*?<\/\1>/isu, " ")
+  defp extract_html_text(bytes, source_meta) when is_binary(bytes) and is_map(source_meta) do
+    html =
+      bytes
+      |> sanitize_binary_text()
+      |> String.replace(~r/<!--.*?-->/su, " ")
+      |> String.replace(~r/<(script|style|noscript)\b[^>]*>.*?<\/\1>/isu, " ")
+
+    source_url = Map.get(source_meta, "final_url") || Map.get(source_meta, "url")
+
+    base_url =
+      @html_base
+      |> Regex.scan(html, capture: :all_but_first)
+      |> Enum.find_value(fn [attributes] -> html_href(attributes) end)
+      |> case do
+        nil -> source_url
+        href -> resolve_html_href(href, source_url)
+      end
+
+    @html_link
+    |> Regex.split(html, include_captures: true, capture: :first)
+    |> Enum.map(fn fragment ->
+      case Regex.run(@html_link, fragment, capture: ["attributes", "content"]) do
+        [attributes, content] -> html_markdown_link(attributes, content, base_url)
+        nil -> html_text_fragment(fragment)
+      end
+    end)
+    |> IO.iodata_to_binary()
+    |> normalize_text()
+  end
+
+  defp html_text_fragment(html) do
+    html
     |> String.replace(~r/<(br|hr)\b[^>]*>/iu, "\n")
     |> String.replace(
       ~r/<\/(p|div|section|article|header|footer|main|li|tr|h[1-6]|table|ul|ol|blockquote)>/iu,
@@ -666,7 +697,46 @@ defmodule IntellectualClub.Tools.DocumentReader do
     )
     |> String.replace(~r/<[^>]+>/u, " ")
     |> decode_html_entities()
-    |> normalize_text()
+  end
+
+  defp html_markdown_link(attributes, content, base_url) do
+    label = content |> html_text_fragment() |> String.replace(~r/\s+/u, " ") |> String.trim()
+
+    case html_href(attributes) do
+      nil ->
+        " #{label} "
+
+      href ->
+        label = String.replace(label, ~r/[\\\[\]`*_<>]/u, fn char -> "\\" <> char end)
+
+        url =
+          href
+          |> resolve_html_href(base_url)
+          |> URI.encode(fn char -> char > 32 and char not in ~c"()<>\\\"" and char != 127 end)
+
+        " [#{label}](#{url}) "
+    end
+  end
+
+  defp html_href(attributes) do
+    @html_attribute
+    |> Regex.scan(attributes, capture: :all_but_first)
+    |> Enum.find_value(fn [name | values] ->
+      if String.downcase(name) == "href" do
+        values
+        |> Enum.find("", &(&1 != ""))
+        |> decode_html_entities()
+        |> String.trim()
+      end
+    end)
+  end
+
+  defp resolve_html_href(href, nil), do: href
+
+  defp resolve_html_href(href, base_url) do
+    base_url |> URI.merge(href) |> URI.to_string()
+  rescue
+    ArgumentError -> href
   end
 
   defp decode_html_entities(text) when is_binary(text) do

@@ -6,6 +6,7 @@ defmodule IntellectualClub.Tools.WebDocumentReader do
   @default_max_download_bytes 100 * 1024 * 1024
   @default_http_timeout_seconds 30.0
   @default_user_agent "IntellectualClubWebReader/0.1"
+  @cache_version 2
   @unsupported_url_suffixes ~w(
     .7z
     .bz2
@@ -97,7 +98,7 @@ defmodule IntellectualClub.Tools.WebDocumentReader do
 
   def ensure_cache_ready(%ToolInstance{} = tool_instance, normalized_url, cfg) do
     cache_root = cache_root(tool_instance)
-    doc_id = DocumentReader.doc_id(normalized_url)
+    doc_id = DocumentReader.doc_id("#{@cache_version}:#{normalized_url}")
 
     DocumentReader.ensure_cache_ready(cache_root, tool_instance.id, doc_id, cfg, fn ->
       download_to_binary(normalized_url, cfg)
