@@ -11,6 +11,7 @@ defmodule IntellectualClub.Generation.RecoveryGate do
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageItem, ChatMessageStep}
   alias IntellectualClub.Generation.{Lease, PersistenceFailure, QueueCoordinator}
   alias IntellectualClub.Notifications.Dispatcher
+  alias IntellectualClub.Repo
 
   require Ash.Query
   require Logger
@@ -129,27 +130,33 @@ defmodule IntellectualClub.Generation.RecoveryGate do
         end
       end)
 
-    # Queue/notification bugs must never roll back the minimal terminal commit.
-    # Each aftermath runs independently so one failure cannot suppress the rest.
     case result do
       {:ok, status} ->
-        best_effort(message_id, :settle_queue, fn ->
-          QueueCoordinator.settle_generation(message_id, status)
+        best_effort(message_id, :schedule_aftermath, fn ->
+          Repo.after_commit(fn -> finish_aftermath(message_id, status) end)
         end)
-
-        best_effort(message_id, :cancel_background_tasks, fn ->
-          BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
-        end)
-
-        best_effort(message_id, :notify, fn ->
-          Dispatcher.notify_generation_finished(message_id, status)
-        end)
-
-        result
 
       {:error, _reason} ->
-        result
+        :ok
     end
+
+    result
+  end
+
+  defp finish_aftermath(message_id, status) do
+    # The outermost transaction must commit before any external effects run.
+    # Each aftermath is independent and cannot turn a committed write into an error.
+    best_effort(message_id, :settle_queue, fn ->
+      QueueCoordinator.settle_generation(message_id, status)
+    end)
+
+    best_effort(message_id, :cancel_background_tasks, fn ->
+      BackgroundTasks.cancel_for_lifecycle_message_async(message_id)
+    end)
+
+    best_effort(message_id, :notify, fn ->
+      Dispatcher.notify_generation_finished(message_id, status)
+    end)
   end
 
   @doc false

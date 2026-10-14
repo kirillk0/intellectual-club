@@ -2,10 +2,12 @@ defmodule IntellectualClub.Generation.RecoveryGateTest do
   use IntellectualClub.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, Subagent}
+  alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, QueuedMessage, Subagent}
+  alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.{Lease, RecoveryGate}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.SqlCapture
+  alias IntellectualClub.Notifications.WebPushGenerationEvent
 
   require Ash.Query
 
@@ -538,6 +540,20 @@ defmodule IntellectualClub.Generation.RecoveryGateTest do
 
     test "a rolled back minimal finish keeps terminal intent for the next startup" do
       fixture = fixture()
+      task = create_background_task!(fixture.actor, generation: fixture.message)
+
+      queued =
+        create!(
+          QueuedMessage,
+          :enqueue,
+          %{
+            chat_id: fixture.chat.id,
+            kind: :follow_up,
+            anchor_message_id: fixture.message.id
+          },
+          fixture.actor
+        )
+
       assert {:ok, :recorded} = record(fixture, terminal_status: :error)
 
       assert {:error, _rollback_error} =
@@ -545,16 +561,105 @@ defmodule IntellectualClub.Generation.RecoveryGateTest do
                  assert {:ok, :error} =
                           RecoveryGate.finish(fixture.message.id, nil, fixture.actor)
 
+                 assert generation_events(fixture) == []
+
+                 assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status ==
+                          :pending
+
+                 refute Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
                  Ash.DataLayer.rollback(ChatMessage, :rollback_finish)
                end)
 
       assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :generating
       assert recovery(fixture)["terminal_status"] == "error"
+      assert generation_events(fixture) == []
+      assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status == :pending
+      refute Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
+
+      # A later successful transaction must not inherit the rolled-back callbacks.
+      assert {:ok, :unrelated} = Repo.transaction(fn -> :unrelated end)
+      assert generation_events(fixture) == []
+      assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status == :pending
+      refute Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
 
       assert {:ok, %{status: :error, recovery_finished?: true}} =
                GenerationSupervisor.resume_orphaned_message(fixture.message.id,
                  actor: fixture.actor
                )
+
+      assert [%{status: :error, delivered_count: 0}] = generation_events(fixture)
+      assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status == :blocked
+      assert Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
+    end
+
+    test "nested finalization dispatches only after the outer transaction commits" do
+      fixture = fixture()
+      task = create_background_task!(fixture.actor, generation: fixture.message)
+
+      queued =
+        create!(
+          QueuedMessage,
+          :enqueue,
+          %{
+            chat_id: fixture.chat.id,
+            kind: :follow_up,
+            anchor_message_id: fixture.message.id
+          },
+          fixture.actor
+        )
+
+      assert {:ok, :recorded} = record(fixture, terminal_status: :error)
+
+      assert {:ok, {:ok, :committed}} =
+               Ash.transaction([Chat, ChatMessage, ChatMessageStep], fn ->
+                 assert {:ok, :nested} =
+                          Repo.transact(fn ->
+                            assert {:ok, :error} =
+                                     RecoveryGate.finish(fixture.message.id, nil, fixture.actor)
+
+                            assert generation_events(fixture) == []
+
+                            assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status ==
+                                     :pending
+
+                            refute Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
+
+                            {:ok, :nested}
+                          end)
+
+                 assert generation_events(fixture) == []
+
+                 assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status ==
+                          :pending
+
+                 refute Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
+                 {:ok, :committed}
+               end)
+
+      assert [%{status: :error, delivered_count: 0}] = generation_events(fixture)
+      assert Ash.get!(QueuedMessage, queued.id, actor: fixture.actor).status == :blocked
+      assert Ash.get!(BackgroundTask, task.id, actor: fixture.actor).cancel_requested
+      assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :error
+    end
+
+    test "an exception discards finalization effects without leaking into later transactions" do
+      fixture = fixture()
+      assert {:ok, :recorded} = record(fixture, terminal_status: :error)
+
+      assert_raise RuntimeError, "abort finalization", fn ->
+        Ash.transaction([Chat, ChatMessage, ChatMessageStep], fn ->
+          assert {:ok, :error} = RecoveryGate.finish(fixture.message.id, nil, fixture.actor)
+          assert generation_events(fixture) == []
+          raise "abort finalization"
+        end)
+      end
+
+      assert {:ok, :unrelated} = Repo.transaction(fn -> :unrelated end)
+      assert generation_events(fixture) == []
+      assert Ash.get!(ChatMessage, fixture.message.id, actor: fixture.actor).status == :generating
+
+      assert {:ok, :error} = RecoveryGate.finish(fixture.message.id, nil, fixture.actor)
+      assert [%{status: :error, delivered_count: 0}] = generation_events(fixture)
     end
 
     test "manual retry reset rolls back with replacement and clears only on explicit retry" do
@@ -632,6 +737,12 @@ defmodule IntellectualClub.Generation.RecoveryGateTest do
     |> Ash.Query.select([:generation_recovery])
     |> Ash.read_one!(actor: fixture.actor)
     |> Map.fetch!(:generation_recovery)
+  end
+
+  defp generation_events(fixture) do
+    WebPushGenerationEvent
+    |> Ash.Query.filter(chat_message_id == ^fixture.message.id)
+    |> Ash.read!(actor: fixture.actor)
   end
 
   defp corrupt_request!(fixture) do
