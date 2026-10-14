@@ -370,27 +370,31 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert length(requests_for(agent)) == 1
   end
 
-  test "HTTP 520 during WebSocket handshake remains retryable during fallback" do
-    handler = fn conn, _opts -> Plug.Conn.send_resp(conn, 520, "Unknown upstream error") end
-    {_base_url, port} = start_http_server!(handler)
-    {:ok, session} = Session.start(%{provider_type: "responses_wss"})
-    on_exit(fn -> Session.stop(session) end)
+  for status <- [507, 520] do
+    @status status
 
-    opts = %{
-      base_url: "ws://127.0.0.1:#{port}",
-      api_key: "test-key",
-      request_payload: %{"model" => "gpt-4.1", "input" => []},
-      timeout_ms: provider_deadline_ms(),
-      connect_timeout_ms: provider_deadline_ms(),
-      provider: "responses_wss"
-    }
+    test "HTTP #{status} during WebSocket handshake remains retryable during fallback" do
+      handler = fn conn, _opts -> Plug.Conn.send_resp(conn, @status, "Unknown upstream error") end
+      {_base_url, port} = start_http_server!(handler)
+      {:ok, session} = Session.start(%{provider_type: "responses_wss"})
+      on_exit(fn -> Session.stop(session) end)
 
-    assert {:fallback_to_http, fallback, _cache} =
-             Session.stream_generate(session, opts, fn _event -> :ok end)
+      opts = %{
+        base_url: "ws://127.0.0.1:#{port}",
+        api_key: "test-key",
+        request_payload: %{"model" => "gpt-4.1", "input" => []},
+        timeout_ms: provider_deadline_ms(),
+        connect_timeout_ms: provider_deadline_ms(),
+        provider: "responses_wss"
+      }
 
-    assert fallback.status_code == 520
-    assert fallback.retryable == true
-    assert fallback.failure_phase == "handshake"
+      assert {:fallback_to_http, fallback, _cache} =
+               Session.stream_generate(session, opts, fn _event -> :ok end)
+
+      assert fallback.status_code == @status
+      assert fallback.retryable == true
+      assert fallback.failure_phase == "handshake"
+    end
   end
 
   test "handshake failure before sending requests immediate HTTP fallback" do

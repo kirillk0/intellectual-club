@@ -192,14 +192,14 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     assert meta.error_kind == "timeout"
   end
 
-  for status <- [503, 520] do
+  for status <- [503, 507, 520] do
     @status status
 
     test "returns retryable metadata on transient refresh HTTP #{status}" do
       refresh_token = "rt_" <> Integer.to_string(System.unique_integer([:positive]))
 
       Req.Test.expect(OpenAIOAuth, 1, fn conn ->
-        Plug.Conn.send_resp(conn, @status, "temporarily unavailable")
+        Plug.Conn.send_resp(conn, @status, "Request failed")
       end)
 
       assert {:error, message, meta} = OpenAIOAuth.get_access_token_with_meta(refresh_token)

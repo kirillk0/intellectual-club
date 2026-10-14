@@ -25,7 +25,8 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
   @upstream_reset "upstream connect error or disconnect/reset before headers"
 
   describe "non-JSON HTTP error bodies" do
-    for provider <- [:anthropic, :responses, :openrouter, :google], status <- [503, 520] do
+    for provider <- [:anthropic, :responses, :openrouter, :google, :nvidia],
+        status <- [503, 507, 520] do
       @provider provider
       @status status
 
@@ -211,7 +212,7 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
   ]
 
   nvidia_cases =
-    for status <- [500, 520] do
+    for status <- [500, 507, 520] do
       {"nvidia HTTP #{status} JSON errors are retryable only for transient statuses", :nvidia,
        {status,
         {:json,
@@ -225,12 +226,57 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
        [
          provider: :nvidia_build_chat_completion,
          status_code: status,
-         retryable: status == 520,
+         retryable: status in [507, 520],
          error_text: @multimodal_disabled
        ]}
     end
 
-  @cases @cases ++ nvidia_cases
+  http_507_cases =
+    for provider <- [:anthropic, :responses, :openrouter, :google, :nvidia] do
+      {"#{provider} HTTP 507 is retryable without a retry hint in the JSON body", provider,
+       {507,
+        {:json,
+         %{
+           "error" => %{
+             "code" => "unexpected_error",
+             "type" => "unexpected_error",
+             "message" => "Request failed"
+           }
+         }}}, [status_code: 507, retryable: true, error_text: "Request failed"]}
+    end
+
+  streamed_507_cases = [
+    {"responses error events with code 507 are retryable", :responses,
+     {200,
+      {:sse, [%{"type" => "error", "error" => %{"code" => 507, "message" => "Request failed"}}]}},
+     [status_code: 507, retryable: true, error_text: "Request failed"]},
+    {"responses failed events with code 507 are retryable", :responses,
+     {200,
+      {:sse,
+       [
+         %{
+           "type" => "response.failed",
+           "response" => %{"error" => %{"code" => 507, "message" => "Request failed"}}
+         }
+       ]}}, [status_code: 507, retryable: true, error_text: "Request failed"]},
+    {"openrouter error chunks with code 507 are retryable", :openrouter,
+     {200, {:sse, [%{"error" => %{"code" => 507, "message" => "Request failed"}}]}},
+     [status_code: 507, retryable: true, error_text: "Request failed"]},
+    {"nvidia error chunks with code 507 are retryable", :nvidia,
+     {200, {:sse, [%{"error" => %{"code" => 507, "message" => "Request failed"}}]}},
+     [status_code: 507, retryable: true, error_text: "Request failed"]},
+    {"google error events with code 507 are retryable", :google,
+     {200,
+      {:sse,
+       [
+         %{
+           "event_type" => "error",
+           "error" => %{"code" => 507, "message" => "Request failed"}
+         }
+       ]}}, [status_code: 507, retryable: true, error_text: "Request failed"]}
+  ]
+
+  @cases @cases ++ nvidia_cases ++ http_507_cases ++ streamed_507_cases
 
   describe "provider error payloads" do
     for {name, provider, response, expected} <- @cases do

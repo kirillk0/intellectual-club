@@ -104,16 +104,21 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       cancel_and_wait!(context.message_id, actor)
     end
 
-    for status <- [429, 520] do
+    for status <- [429, 507, 520] do
       @tag status: status
       test "an HTTP #{status} retry error step is kept when a later attempt succeeds",
            %{status: status} do
+        error_text =
+          if status == 507,
+            do: "Request failed",
+            else: "Upstream provider is temporarily rate-limited"
+
         raw_response = %{
           "error" => %{
             "code" => status,
             "message" => "Provider returned error",
             "metadata" => %{
-              "raw" => "Upstream provider is temporarily rate-limited",
+              "raw" => error_text,
               "provider_name" => "Test Provider"
             }
           },
@@ -129,7 +134,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
                  retryable: status == 429,
                  error_kind: "http",
                  status_code: status,
-                 error_text: "Upstream provider is temporarily rate-limited",
+                 error_text: error_text,
                  raw_response: raw_response
                }}
             ]
@@ -169,7 +174,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
 
         retry_text = single_error_item_text!(Enum.at(steps, 0))
         assert retry_text =~ "Transient provider error on attempt 1."
-        assert retry_text =~ "Upstream provider is temporarily rate-limited"
+        assert retry_text =~ error_text
         refute retry_text =~ "Partial text that must not be persisted."
         assert answer_item_text(Enum.at(steps, 1)) == "Recovered answer."
       end
