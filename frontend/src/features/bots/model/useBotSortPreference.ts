@@ -1,4 +1,4 @@
-import { effectScope, ref, watch } from 'vue';
+import { ref, watch } from 'vue';
 
 export type BotSortMode = 'name' | 'recent_activity';
 
@@ -12,10 +12,8 @@ type BotSortRecord = {
 
 const BOT_SORT_STORAGE_KEY = 'ic.bots.sort_mode.v1';
 const DEFAULT_BOT_SORT_MODE: BotSortMode = 'name';
-const persistenceScope = effectScope(true);
 
 const mode = ref<BotSortMode>(DEFAULT_BOT_SORT_MODE);
-let initialized = false;
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -43,6 +41,18 @@ const persistSortMode = (next: BotSortMode) => {
     // Ignore storage failures for private mode/quota limits.
   }
 };
+
+mode.value = restoreSortMode();
+
+// Create the shared watcher outside setup so it cannot retain a consumer component.
+watch(mode, persistSortMode);
+
+if (isBrowser()) {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== BOT_SORT_STORAGE_KEY) return;
+    mode.value = normalizeSortMode(event.newValue);
+  });
+}
 
 const parseTimestamp = (value: string | null | undefined): number => {
   if (!value) return 0;
@@ -94,27 +104,4 @@ export const sortBotsByPreference = <T extends BotSortRecord>(list: T[], mode: B
   return [...noBotOptions, ...regularOptions];
 };
 
-const ensureInitialized = () => {
-  if (initialized) return;
-  initialized = true;
-
-  mode.value = restoreSortMode();
-
-  persistenceScope.run(() => {
-    watch(mode, (next) => {
-      persistSortMode(next);
-    });
-  });
-
-  if (isBrowser()) {
-    window.addEventListener('storage', (event) => {
-      if (event.key !== BOT_SORT_STORAGE_KEY) return;
-      mode.value = normalizeSortMode(event.newValue);
-    });
-  }
-};
-
-export const useBotSortPreference = () => {
-  ensureInitialized();
-  return mode;
-};
+export const useBotSortPreference = () => mode;
