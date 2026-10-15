@@ -284,6 +284,8 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
       assert initial_source["usage"]["total_cost"] == 0.01
       assert initial_source["usage"]["subchat_cost"] == 0.02
       assert initial_source["usage"]["combined_total_cost"] == 0.03
+      assert initial_source["usage"]["subchat_total"]["input_tokens"] == 10
+      assert initial_source["usage"]["subchat_total"]["output_tokens"] == 5
 
       # Append only to the ledger: child lifecycle and parent phase stay unchanged.
       previous_usage =
@@ -330,6 +332,8 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
       assert changed_source["usage"]["total_cost"] == 0.01
       assert changed_source["usage"]["subchat_cost"] == 0.03
       assert changed_source["usage"]["combined_total_cost"] == 0.04
+      assert changed_source["usage"]["subchat_total"]["input_tokens"] == 20
+      assert changed_source["usage"]["subchat_total"]["output_tokens"] == 10
       assert changed_state["idle_revision"] != initial_state["idle_revision"]
 
       assert conn

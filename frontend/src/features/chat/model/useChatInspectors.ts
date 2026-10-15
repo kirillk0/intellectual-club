@@ -256,6 +256,10 @@ export function useChatInspectors(params: Params) {
     const message = params.branchMessageById(messageStatsMessageId.value);
     return message?.usage?.total ?? null;
   });
+  const messageSubchatStats = computed<ChatUsageStats | null>(() => {
+    const message = params.branchMessageById(messageStatsMessageId.value);
+    return message?.usage?.subchat_total ?? null;
+  });
 
   const openMessageStats = (message: ChatBranchMessage) => {
     if (!message.id) return;
@@ -896,6 +900,7 @@ export function useChatInspectors(params: Params) {
     stepDetailsResponsePayload,
     messageStatsOpen,
     messageStats,
+    messageSubchatStats,
     openStepDetails,
     closeStepDetails,
     openMessageStats,

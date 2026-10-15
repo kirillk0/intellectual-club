@@ -374,6 +374,8 @@ export type ChatMessageUsage = {
   latest_step?: Omit<ChatMessageStep, 'items'> | null;
   total?: ChatUsageStats | null;
   total_cost?: number | null;
+  /** Ledger usage of the message's subchat tree; present only when subchats exist. */
+  subchat_total?: ChatUsageStats | null;
   subchat_cost?: number | null;
   combined_total_cost?: number | null;
 };

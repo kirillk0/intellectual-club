@@ -1,6 +1,7 @@
 defmodule IntellectualClub.Chat.SubchatCosts do
   @moduledoc """
-  Authorized, phase-cached provider costs for a source message's subchat tree.
+  Authorized, phase-cached provider usage (tokens and cost) for a source
+  message's subchat tree.
 
   The ledger remains authoritative. A child usage update alone intentionally does
   not invalidate a snapshot; parent step boundaries or an explicit reload do.
@@ -17,7 +18,9 @@ defmodule IntellectualClub.Chat.SubchatCosts do
   @root_relation_kinds [:fork, :spawn]
   @descendant_relation_kinds [:handoff, :fork, :spawn]
   @max_descendant_chats 10_000
-  @chunk_size 100
+  @usage_fields [:input_tokens, :output_tokens, :cached_input_tokens, :reasoning_tokens, :cost]
+  # Every chat in a batch contributes one filtered SUM per usage field.
+  @chunk_size 20
   @step_revision_fields [
     :id,
     :chat_message_id,
@@ -28,8 +31,22 @@ defmodule IntellectualClub.Chat.SubchatCosts do
     :updated_at
   ]
 
+  @type usage :: %{
+          input_tokens: integer() | nil,
+          output_tokens: integer() | nil,
+          cached_input_tokens: integer() | nil,
+          reasoning_tokens: integer() | nil,
+          cost: float() | nil
+        }
+
+  @typedoc """
+  `usage_by_message_id` has an entry for every source message with a readable
+  subchat tree, even when no usage is known yet. `costs_by_message_id` keeps
+  only known costs.
+  """
   @type summary :: %{
           costs_by_message_id: %{optional(integer()) => float()},
+          usage_by_message_id: %{optional(integer()) => usage()},
           revision: String.t()
         }
 
@@ -145,16 +162,18 @@ defmodule IntellectualClub.Chat.SubchatCosts do
           scopes =
             Map.new(keys, fn {_actor, id} -> {id, Map.fetch!(chat_ids_by_message_id, id)} end)
 
-          costs = aggregate_costs(scopes, actor)
-          Map.new(keys, fn {_actor, id} = key -> {key, Map.get(costs, id)} end)
+          usage = aggregate_usage(scopes, actor)
+          Map.new(keys, fn {_actor, id} = key -> {key, Map.get(usage, id, empty_usage())} end)
         end,
         opts
       )
 
+    usage_by_message_id = Map.new(values, fn {{_actor, id}, usage} -> {id, usage} end)
+
     costs =
-      values
+      usage_by_message_id
       |> Enum.flat_map(fn
-        {{_actor, id}, cost} when is_number(cost) -> [{id, cost * 1.0}]
+        {id, %{cost: cost}} when is_number(cost) -> [{id, cost}]
         _other -> []
       end)
       |> Map.new()
@@ -164,10 +183,15 @@ defmodule IntellectualClub.Chat.SubchatCosts do
       |> Enum.map(fn {{_actor, id} = key, revision} -> {id, revision, Map.get(values, key)} end)
       |> Enum.sort()
 
-    %{costs_by_message_id: costs, revision: hash(revision_rows)}
+    %{
+      costs_by_message_id: costs,
+      usage_by_message_id: usage_by_message_id,
+      revision: hash(revision_rows)
+    }
   end
 
-  defp empty_summary, do: %{costs_by_message_id: %{}, revision: hash([])}
+  defp empty_summary,
+    do: %{costs_by_message_id: %{}, usage_by_message_id: %{}, revision: hash([])}
 
   defp readable_messages([], _actor), do: []
 
@@ -251,20 +275,20 @@ defmodule IntellectualClub.Chat.SubchatCosts do
     |> Ash.read!(actor: actor)
   end
 
-  defp aggregate_costs(scopes, _actor) when map_size(scopes) == 0, do: %{}
+  defp aggregate_usage(scopes, _actor) when map_size(scopes) == 0, do: %{}
 
-  defp aggregate_costs(scopes, actor) when map_size(scopes) == 1 do
+  defp aggregate_usage(scopes, actor) when map_size(scopes) == 1 do
     [{message_id, chat_ids}] = Map.to_list(scopes)
 
-    cost =
+    sums =
       LlmUsageRecord
       |> Ash.Query.filter(chat_id in ^chat_ids)
-      |> Ash.sum!(:cost, actor: actor)
+      |> Ash.aggregate!(Enum.map(@usage_fields, &{&1, :sum, field: &1}), actor: actor)
 
-    %{message_id => cost}
+    %{message_id => normalize_usage(sums)}
   end
 
-  defp aggregate_costs(scopes, actor) do
+  defp aggregate_usage(scopes, actor) do
     source_by_chat_id =
       scopes
       |> Enum.flat_map(fn {message_id, ids} -> Enum.map(ids, &{&1, message_id}) end)
@@ -274,28 +298,53 @@ defmodule IntellectualClub.Chat.SubchatCosts do
     |> Map.keys()
     |> Enum.sort()
     |> Enum.chunk_every(@chunk_size)
-    |> Enum.reduce(%{}, fn chat_ids, costs ->
+    |> Enum.reduce(%{}, fn chat_ids, usage ->
       # Named filtered SUMs are grouped by AshPostgres into one SQL query per
       # batch. String names avoid creating atoms from unbounded database IDs.
       aggregates =
-        Enum.map(chat_ids, fn id ->
-          {Integer.to_string(id), :sum, field: :cost, query: [filter: [chat_id: id]]}
-        end)
+        for id <- chat_ids, field <- @usage_fields do
+          {aggregate_name(id, field), :sum, field: field, query: [filter: [chat_id: id]]}
+        end
 
       sums =
         LlmUsageRecord
         |> Ash.Query.filter(chat_id in ^chat_ids)
         |> Ash.aggregate!(aggregates, actor: actor)
 
-      Enum.reduce(chat_ids, costs, fn id, acc ->
-        case Map.get(sums, Integer.to_string(id)) do
-          cost when is_number(cost) ->
-            Map.update(acc, Map.fetch!(source_by_chat_id, id), cost, &(&1 + cost))
+      Enum.reduce(chat_ids, usage, fn id, acc ->
+        chat_usage =
+          @usage_fields
+          |> Map.new(&{&1, Map.get(sums, aggregate_name(id, &1))})
+          |> normalize_usage()
 
-          _unknown ->
-            acc
-        end
+        Map.update(acc, Map.fetch!(source_by_chat_id, id), chat_usage, &add_usage(&1, chat_usage))
       end)
+    end)
+  end
+
+  defp aggregate_name(chat_id, field), do: "#{field}_#{chat_id}"
+
+  defp empty_usage, do: Map.new(@usage_fields, &{&1, nil})
+
+  defp normalize_usage(sums) do
+    Map.new(@usage_fields, fn field -> {field, usage_value(field, Map.get(sums, field))} end)
+  end
+
+  defp usage_value(field, %Decimal{} = value), do: usage_value(field, Decimal.to_float(value))
+  defp usage_value(:cost, value) when is_number(value), do: value * 1.0
+  defp usage_value(_field, value) when is_number(value), do: trunc(value)
+  defp usage_value(_field, _value), do: nil
+
+  defp add_usage(left, right) do
+    Map.new(@usage_fields, fn field ->
+      value =
+        case {Map.get(left, field), Map.get(right, field)} do
+          {nil, value} -> value
+          {value, nil} -> value
+          {left_value, right_value} -> left_value + right_value
+        end
+
+      {field, value}
     end)
   end
 

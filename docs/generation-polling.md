@@ -42,8 +42,8 @@ Ash round trips. All application reads and mutations still pass through Ash and
 its authorization policies. The counter does not change on runtime chunks.
 
 Cursor polling compares compact message/runtime revisions before enumerating
-trace metadata or reading completed bodies. Subchat costs retain their existing
-authorized, parent-phase-based refresh policy. Runtime summary changes do not
+trace metadata or reading completed bodies. Subchat usage totals (tokens and
+cost) retain their existing authorized, parent-phase-based refresh policy. Runtime summary changes do not
 require full content projection. A successful `204` does not scan persisted
 items/contents or serialize/hash accumulated runtime text.
 

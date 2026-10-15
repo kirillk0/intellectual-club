@@ -94,6 +94,27 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
     assert after_zero.costs_by_message_id[source_zero.id] == 0.0
     assert before_zero.costs_by_message_id[source_zero.id] == nil
     assert before_zero.revision != after_zero.revision
+
+    # Tokens are summed over the same subtree; a known tree with no usage yet
+    # still reports an (unknown) entry so the client knows subchats exist.
+    assert %{
+             input_tokens: 30,
+             output_tokens: 15,
+             cached_input_tokens: nil,
+             reasoning_tokens: nil
+           } = after_zero.usage_by_message_id[source_one.id]
+
+    assert %{input_tokens: 10, output_tokens: 5} = after_zero.usage_by_message_id[source_two.id]
+
+    assert before_zero.usage_by_message_id[source_zero.id] == %{
+             input_tokens: nil,
+             output_tokens: nil,
+             cached_input_tokens: nil,
+             reasoning_tokens: nil,
+             cost: nil
+           }
+
+    assert after_zero.usage_by_message_id[source_zero.id].input_tokens == 10
   end
 
   defp persist_cost!(chat, configuration, actor, cost) do

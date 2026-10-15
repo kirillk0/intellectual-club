@@ -139,7 +139,8 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
       measure(fn -> SubchatCosts.summary(f.root.id, f.actor, [refresh?: true] ++ f.opts) end)
 
     assert_sum(query)
-    assert length(Regex.scan(~r/\bsum\s*\(/i, query.sql)) == 2
+    # One filtered SUM per chat and usage field (tokens and cost).
+    assert length(Regex.scan(~r/\bsum\s*\(/i, query.sql)) == 10
     assert full.costs_by_message_id[f.source.id] == 0.0
     assert full.costs_by_message_id[other_source.id] == nil
     assert {full, []} == measure(fn -> SubchatCosts.summary(f.root.id, f.actor, f.opts) end)

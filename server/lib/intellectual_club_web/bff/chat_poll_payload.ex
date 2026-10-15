@@ -91,7 +91,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollPayload do
             working: data.summaries |> Serializer.working_summary() |> Map.merge(retry_summary),
             usage:
               Serializer.usage_summary(data.summaries,
-                subchat_cost: Map.get(costs.costs_by_message_id, message.id)
+                subchat_usage: Map.get(costs.usage_by_message_id, message.id)
               )
           })
 
@@ -224,7 +224,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollPayload do
 
       usage =
         Serializer.usage_summary(summaries,
-          subchat_cost: Map.get(costs.costs_by_message_id, message.id)
+          subchat_usage: Map.get(costs.usage_by_message_id, message.id)
         )
 
       payload =
@@ -419,7 +419,7 @@ defmodule IntellectualClubWeb.Bff.ChatPollPayload do
 
   defp completed_payload(message, actor, data) do
     PollCache.fetch(cache_key(message, actor, :display), data.revision, fn ->
-      ChatBranchPayload.message(message, actor, subchat_costs_by_message_id: %{})
+      ChatBranchPayload.message(message, actor, subchat_usage_by_message_id: %{})
       |> Map.take([:content, :working])
     end)
   end

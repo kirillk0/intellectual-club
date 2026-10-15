@@ -385,6 +385,7 @@ import type {
   ChatMessageContentPart,
   ChatMessageStep,
   ChatRelationSummary,
+  ChatUsageStats,
 } from '@/types/api';
 import { clickedChatAttachmentFileId, enhanceRenderedChatMessageHtml, renderChatMessageHtml as renderMessage } from '@/utils/chatMarkdown';
 import ChatMessageWorkingBlock from '@/components/chat/ChatMessageWorkingBlock.vue';
@@ -499,20 +500,22 @@ const hasMessageStatsValue = (value: unknown) => {
   return true;
 };
 
-const hasMessageStats = computed(() => {
-  const stats = msg.value.usage?.total;
-  if (!stats) return false;
-
-  return [
-    stats.input_tokens,
-    stats.cached_input_tokens,
-    stats.output_tokens,
-    stats.reasoning_tokens,
-    stats.time_to_first_token_ms,
-    stats.tokens_per_second,
-    stats.cost,
+const hasUsageStats = (stats: ChatUsageStats | null | undefined) =>
+  Boolean(stats) &&
+  [
+    stats!.input_tokens,
+    stats!.cached_input_tokens,
+    stats!.output_tokens,
+    stats!.reasoning_tokens,
+    stats!.time_to_first_token_ms,
+    stats!.tokens_per_second,
+    stats!.cost,
   ].some(hasMessageStatsValue);
-});
+
+// Subchat usage alone is enough: a delegating message may report none itself.
+const hasMessageStats = computed(
+  () => hasUsageStats(msg.value.usage?.total) || hasUsageStats(msg.value.usage?.subchat_total)
+);
 
 const historyLocked = computed(() => props.readonly || props.historyReadonly === true);
 const showMoreActions = computed(() => !props.readonly || hasMessageStats.value);

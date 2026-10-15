@@ -650,6 +650,7 @@
       <ChatMessageStatsModal
         :open="vm.messageStatsOpen"
         :stats="vm.messageStats"
+        :subchat-stats="vm.messageSubchatStats"
         @close="vm.closeMessageStats"
       />
     </Teleport>

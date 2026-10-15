@@ -418,20 +418,55 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
       assert usage.total.cost == 0.03
       assert usage.total_cost == 0.03
       assert usage.subchat_cost == nil
+      assert usage.subchat_total == nil
       assert usage.combined_total_cost == 0.03
     end
 
-    test "keeps message and subchat costs separate while exposing their total" do
+    test "keeps message and subchat usage separate while exposing their total cost" do
       usage =
         Serializer.usage_summary(
-          [%{id: 101, sequence: 1, status: "done", cost: 0.03}],
-          subchat_cost: 0.07
+          [%{id: 101, sequence: 1, status: "done", input_tokens: 40, cost: 0.03}],
+          subchat_usage: %{
+            input_tokens: 500,
+            output_tokens: 70,
+            cached_input_tokens: 100,
+            reasoning_tokens: nil,
+            cost: 0.07
+          }
         )
 
+      assert usage.total.input_tokens == 40
       assert usage.total.cost == 0.03
       assert usage.total_cost == 0.03
+
+      assert usage.subchat_total == %{
+               input_tokens: 500,
+               output_tokens: 70,
+               cached_input_tokens: 100,
+               reasoning_tokens: nil,
+               cost: 0.07
+             }
+
       assert usage.subchat_cost == 0.07
       assert_in_delta usage.combined_total_cost, 0.1, 0.0001
+    end
+
+    test "reports known subchats with unknown usage without changing the message cost" do
+      usage =
+        Serializer.usage_summary([%{id: 101, sequence: 1, status: "done", cost: 0.03}],
+          subchat_usage: %{input_tokens: nil, cost: nil}
+        )
+
+      assert usage.subchat_total == %{
+               input_tokens: nil,
+               output_tokens: nil,
+               cached_input_tokens: nil,
+               reasoning_tokens: nil,
+               cost: nil
+             }
+
+      assert usage.subchat_cost == nil
+      assert usage.combined_total_cost == 0.03
     end
 
     test "falls back to latest step when no token usage exists" do

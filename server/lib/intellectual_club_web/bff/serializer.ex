@@ -470,15 +470,24 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  @doc """
+  Summarizes a message's own step usage.
+
+  `:subchat_usage` is the ledger total of the message's subchat tree. It is
+  exposed separately as `subchat_total` (nil when the message has no readable
+  subchats) and only its cost is folded into `combined_total_cost`.
+  """
   def usage_summary(steps, opts \\ []) when is_list(steps) and is_list(opts) do
     summaries = Enum.map(steps, &working_step_summary/1)
     total_cost = total_step_cost(summaries)
-    subchat_cost = numeric_value(Keyword.get(opts, :subchat_cost))
+    subchat_total = subchat_usage_summary(Keyword.get(opts, :subchat_usage))
+    subchat_cost = if subchat_total, do: subchat_total.cost
 
     %{
       latest_step: latest_step_with_usage_summary(summaries),
       total: total_step_usage_summary(summaries),
       total_cost: total_cost,
+      subchat_total: subchat_total,
       subchat_cost: subchat_cost,
       combined_total_cost: combined_cost(total_cost, subchat_cost)
     }
@@ -861,6 +870,18 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       cost: total_cost
     }
   end
+
+  defp subchat_usage_summary(%{} = usage) do
+    %{
+      input_tokens: integer_value(Map.get(usage, :input_tokens)),
+      output_tokens: integer_value(Map.get(usage, :output_tokens)),
+      cached_input_tokens: integer_value(Map.get(usage, :cached_input_tokens)),
+      reasoning_tokens: integer_value(Map.get(usage, :reasoning_tokens)),
+      cost: numeric_value(Map.get(usage, :cost))
+    }
+  end
+
+  defp subchat_usage_summary(_usage), do: nil
 
   defp total_integer_metric(summaries, key) when is_list(summaries) do
     {total, count} =

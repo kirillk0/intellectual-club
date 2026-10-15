@@ -33,8 +33,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
     steps = read_steps_for_messages(message_ids, actor)
 
-    subchat_costs_by_message_id =
-      subchat_costs_by_message_id(messages, actor, Keyword.put(opts, :steps, steps))
+    subchat_usage_by_message_id =
+      subchat_usage_by_message_id(messages, actor, Keyword.put(opts, :steps, steps))
 
     display = read_display_payload(steps, actor)
     retry_errors_by_message_id = read_retry_error_payload(steps, actor)
@@ -52,7 +52,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
           display,
           Map.get(retry_errors_by_message_id, message.id, []),
           runtime_step,
-          Map.get(subchat_costs_by_message_id, message.id)
+          Map.get(subchat_usage_by_message_id, message.id)
         )
 
       Serializer.branch_message_light(message, branch_meta_by_id, bookmarked_message_ids, extras)
@@ -94,7 +94,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
          display,
          retry_errors,
          runtime_step,
-         subchat_cost
+         subchat_usage
        ) do
     steps = sort_by_sequence(steps)
     persisted_summaries = Enum.map(steps, &Serializer.working_step_summary/1)
@@ -110,18 +110,18 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
 
     %{
       content: content,
-      usage: Serializer.usage_summary(summaries, subchat_cost: subchat_cost),
+      usage: Serializer.usage_summary(summaries, subchat_usage: subchat_usage),
       working: Serializer.working_summary(summaries, retry_errors)
     }
   end
 
-  defp subchat_costs_by_message_id(messages, actor, opts) do
-    case Keyword.fetch(opts, :subchat_costs_by_message_id) do
-      {:ok, costs} when is_map(costs) ->
-        costs
+  defp subchat_usage_by_message_id(messages, actor, opts) do
+    case Keyword.fetch(opts, :subchat_usage_by_message_id) do
+      {:ok, usage} when is_map(usage) ->
+        usage
 
       _other ->
-        SubchatCosts.for_messages(messages, actor, opts).costs_by_message_id
+        SubchatCosts.for_messages(messages, actor, opts).usage_by_message_id
     end
   end
 

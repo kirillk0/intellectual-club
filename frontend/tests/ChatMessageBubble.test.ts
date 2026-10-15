@@ -586,6 +586,26 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(wrapper.get('.handoff-inline-event__content').text()).toContain('Internal request');
   });
 
+  it('offers message stats when only the subchats reported usage', async () => {
+    const wrapper = mount(ChatMessageBubble, {
+      attachTo: document.body,
+      props: {
+        message: {
+          id: 27,
+          role: 'assistant',
+          status: 'done',
+          usage: { total: {}, subchat_total: { input_tokens: 90, cost: 0.04 } },
+        },
+        index: 0,
+      },
+    });
+
+    await wrapper.get('[aria-label="More actions for message 1"]').trigger('click');
+    expect(document.body.querySelector('[aria-label="Show message stats for message 1"]')).not.toBeNull();
+
+    wrapper.unmount();
+  });
+
   it('keeps only read-only actions for messages containing handoff events', async () => {
     const message = handoffMessage(26, 'assistant', 'handoff_summary', 'Transfer summary', 'error');
     message.working = { step_count: 1, completed_step_duration_ms: 0 };

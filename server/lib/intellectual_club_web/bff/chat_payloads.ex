@@ -43,7 +43,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
       fork_context: fork_context,
       branch:
         serialize_branch(messages, branch_meta_by_id, actor,
-          subchat_costs_by_message_id: subchat_cost_summary.costs_by_message_id
+          subchat_usage_by_message_id: subchat_cost_summary.usage_by_message_id
         ),
       relations: serialize_relations(relations, lifecycle_states),
       continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),

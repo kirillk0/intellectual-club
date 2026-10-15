@@ -1,3 +1,4 @@
+import type { ChatUsageStats } from '@/types/api';
 import { formatTokenCount } from '@/utils/tokens';
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -7,6 +8,32 @@ export const subtractIncludedTokens = (total: unknown, included: unknown): numbe
   if (!isFiniteNumber(total) || !isFiniteNumber(included)) return null;
   return Math.max(total - included, 0);
 };
+
+const sumKnown = (left: unknown, right: unknown): number | null => {
+  const a = isFiniteNumber(left) ? left : null;
+  const b = isFiniteNumber(right) ? right : null;
+  if (a == null) return b;
+  if (b == null) return a;
+  return a + b;
+};
+
+/**
+ * Message usage plus its subchat tree. Subchat totals come from the usage
+ * ledger, which has tokens and cost but no timing, so latency and speed stay
+ * unknown instead of mixing unrelated generations.
+ */
+export const combineUsageWithSubchats = (
+  own: ChatUsageStats | null | undefined,
+  subchats: ChatUsageStats | null | undefined
+): ChatUsageStats => ({
+  input_tokens: sumKnown(own?.input_tokens, subchats?.input_tokens),
+  cached_input_tokens: sumKnown(own?.cached_input_tokens, subchats?.cached_input_tokens),
+  output_tokens: sumKnown(own?.output_tokens, subchats?.output_tokens),
+  reasoning_tokens: sumKnown(own?.reasoning_tokens, subchats?.reasoning_tokens),
+  time_to_first_token_ms: null,
+  tokens_per_second: null,
+  cost: sumKnown(own?.cost, subchats?.cost),
+});
 
 export const formatStepMetric = (value: unknown): string => {
   if (value == null || value === '') return '—';

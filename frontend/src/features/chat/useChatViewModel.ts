@@ -1356,6 +1356,7 @@ export function useChatViewModel() {
     stepDetailsResponsePayload: inspectors.stepDetailsResponsePayload,
     messageStatsOpen: inspectors.messageStatsOpen,
     messageStats: inspectors.messageStats,
+    messageSubchatStats: inspectors.messageSubchatStats,
     openStepDetails: inspectors.openStepDetails,
     closeStepDetails: inspectors.closeStepDetails,
     openMessageStats: inspectors.openMessageStats,
